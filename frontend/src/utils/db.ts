@@ -944,6 +944,13 @@ class ConversationDB implements DB {
         // Strip transient shell markers — they must never reach IndexedDB.
         // saveConversations (bulk path) already blocks shell writes;
         // this single-record path needs the same protection.
+        // Capture the flag first: the guard below needs to know the caller
+        // passed a shell (content-stripped, max 2 messages) so it can
+        // preserve existing messages unconditionally.  The count-based
+        // heuristic alone misses the case where the existing record has
+        // ≤2 messages — equal counts let the shell's blanked content
+        // overwrite real content.
+        const wasShell = !!(conversation as any)._isShell;
         const toWrite = { ...conversation } as any;
         delete toWrite._isShell;
         delete toWrite._fullMessageCount;
@@ -954,8 +961,11 @@ class ConversationDB implements DB {
             getReq.onsuccess = () => {
                 try {
                     const existing = getReq.result;
-                    if (existing?.messages?.length > conversation.messages?.length
-                        && existing.messages.length > 2) {
+                    const preserve = wasShell
+                        ? (existing?.messages?.length > 0)
+                        : (existing?.messages?.length > conversation.messages?.length
+                            && existing.messages.length > 2);
+                    if (preserve) {
                         console.warn(
                             `🛡️ SAVE_GUARD: Preserving ${existing.messages.length} messages ` +
                             `for ${conversation.id.substring(0, 8)} (caller had ${conversation.messages?.length || 0})`
@@ -1803,8 +1813,58 @@ class ConversationDB implements DB {
             return [];
         }
 
+        // Server-side search is the primary path: the backend streams chat
+        // files one at a time, so we never pull every conversation's full
+        // message bodies into the browser just to substring-scan them.
+        // `projectId` set => search strictly that project; unset => all
+        // projects (matches the sidebar's "all projects" toggle).
+        try {
+            const { searchChats } = await import('../api/conversationSyncApi');
+            const pid = options.projectId
+                ?? (window as any).__ZIYA_CURRENT_PROJECT_ID__;
+            if (pid) {
+                const server = await searchChats(pid, query, {
+                    allProjects: !options.projectId,
+                    caseSensitive: options.caseSensitive,
+                    maxSnippetLength: options.maxSnippetLength,
+                });
+                if (server !== null) {
+                    return server as SearchResult[];
+                }
+            }
+        } catch (e) {
+            console.debug('Server search unavailable, falling back to local IndexedDB scan:', e);
+        }
+
+        // Fallback: local IndexedDB scan (offline, or chats not yet synced
+        // to the server).  Reads full message bodies — only used when the
+        // server path is unavailable.
+        return this._searchConversationsLocal(query, options);
+    }
+
+    private async _searchConversationsLocal(query: string, options: SearchOptions = {}): Promise<SearchResult[]> {
+        if (!query || query.trim().length === 0) {
+            return [];
+        }
+
         const { caseSensitive = false, maxSnippetLength = 150, projectId } = options;
         const searchTerm = caseSensitive ? query : query.toLowerCase();
+
+        // Message.content is typed as string but at runtime can be an array
+        // of content blocks (multimodal / tool / image messages) or undefined.
+        // Calling .toLowerCase() on a non-string throws, and because the whole
+        // search runs inside one try/catch that returns [], a single poisoned
+        // record silently zeroes out ALL search results. Coerce to a searchable
+        // string here: extract text from block arrays, drop everything else.
+        const toSearchableText = (c: unknown): string => {
+            if (typeof c === 'string') return c;
+            if (Array.isArray(c)) {
+                return c
+                    .map(b => (b && typeof b === 'object' && typeof (b as any).text === 'string') ? (b as any).text : '')
+                    .join(' ');
+            }
+            return '';
+        };
 
         try {
             // Get all active conversations
@@ -1821,12 +1881,14 @@ class ConversationDB implements DB {
                 const matches: MessageMatch[] = [];
 
                 // Search through conversation title
-                const titleToSearch = caseSensitive ? conv.title : conv.title.toLowerCase();
+                const titleStr = typeof conv.title === 'string' ? conv.title : '';
+                const titleToSearch = caseSensitive ? titleStr : titleStr.toLowerCase();
                 const titleMatches = titleToSearch.includes(searchTerm);
 
                 // Search through messages
                 conv.messages.forEach((msg, index) => {
-                    const contentToSearch = caseSensitive ? msg.content : msg.content.toLowerCase();
+                    const contentStr = toSearchableText(msg.content);
+                    const contentToSearch = caseSensitive ? contentStr : contentStr.toLowerCase();
 
                     if (contentToSearch.includes(searchTerm)) {
                         // Find all occurrences in this message
@@ -1849,15 +1911,15 @@ class ConversationDB implements DB {
                             const firstOccurrence = occurrences[0];
                             const snippetStart = Math.max(0, firstOccurrence.start - 50);
                             const snippetEnd = Math.min(
-                                msg.content.length,
+                                contentStr.length,
                                 firstOccurrence.start + searchTerm.length + 100
                             );
 
-                            let snippet = msg.content.substring(snippetStart, snippetEnd);
+                            let snippet = contentStr.substring(snippetStart, snippetEnd);
 
                             // Add ellipsis if truncated
                             if (snippetStart > 0) snippet = '...' + snippet;
-                            if (snippetEnd < msg.content.length) snippet = snippet + '...';
+                            if (snippetEnd < contentStr.length) snippet = snippet + '...';
 
                             // Limit snippet length
                             if (snippet.length > maxSnippetLength) {
@@ -1868,7 +1930,7 @@ class ConversationDB implements DB {
                                 messageIndex: index,
                                 messageRole: msg.role,
                                 snippet,
-                                fullContent: msg.content,
+                                fullContent: contentStr,
                                 timestamp: msg._timestamp || conv.lastAccessedAt || Date.now(),
                                 highlightPositions: occurrences
                             });
