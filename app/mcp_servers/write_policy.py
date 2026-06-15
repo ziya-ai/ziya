@@ -48,12 +48,25 @@ class ShellWriteChecker:
         return self.pm.policy
 
     def check(self, command: str, split_fn: Callable) -> Tuple[bool, str]:
-        for _op, seg in split_fn(command):
-            for fn in (self._always_blocked, self._destructive,
-                       self._inplace_edit, self._interpreter):
-                ok, reason = fn(seg)
-                if not ok:
-                    return False, reason
+        # Heredoc bodies are stdin *data*, not commands. Strip them before
+        # splitting so body lines containing words like ``rm`` or ``sudo``
+        # aren't mistaken for command segments. The redirection scan below
+        # still receives the original command (it strips bodies itself).
+        scan_command = _strip_heredoc_bodies(command)
+        # ``split_fn`` (the server's operator splitter) does not break on
+        # newlines, so a command hidden after a heredoc terminator —
+        # e.g. ``cat <<EOF\n..\nEOF\nrm /etc/passwd`` — would otherwise
+        # collapse into a single unchecked segment. Split on newlines too.
+        for raw_line in scan_command.split('\n'):
+            line = raw_line.strip()
+            if not line or line.startswith('#'):
+                continue
+            for _op, seg in split_fn(line):
+                for fn in (self._always_blocked, self._destructive,
+                           self._inplace_edit, self._interpreter):
+                    ok, reason = fn(seg)
+                    if not ok:
+                        return False, reason
         return self._redirection(command)
 
     def _always_blocked(self, cmd: str) -> Tuple[bool, str]:
