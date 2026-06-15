@@ -274,7 +274,9 @@ class BedrockRegionRouter:
                 continue
 
             # Pick a representative region for this prefix
-            region = self._pick_region_for_prefix(prefix, available_regions, primary_region)
+            region = self._pick_region_for_prefix(
+                prefix, available_regions, primary_region, set(self._endpoints.keys())
+            )
 
             bonus = _PRIMARY_REGION_BONUS if region == primary_region else 1.0
             self._endpoints[region] = RegionEndpoint(
@@ -293,18 +295,25 @@ class BedrockRegionRouter:
         prefix: str,
         available_regions: List[str],
         primary_region: str,
+        taken_regions: Optional[set] = None,
     ) -> str:
         """Select the best AWS region for a model_id prefix."""
+        taken = taken_regions or set()
         candidate_regions = _PREFIX_TO_REGIONS.get(prefix, [])
 
-        # Prefer the user's primary region if it matches this prefix
-        if primary_region in candidate_regions:
+        # Prefer the user's primary region if it matches this prefix and is free
+        if primary_region in candidate_regions and primary_region not in taken:
             return primary_region
 
-        # Prefer a region that's in the model's available_regions list
+        # Prefer a free region that's in the model's available_regions list
         for r in candidate_regions:
-            if r in available_regions:
+            if r in available_regions and r not in taken:
                 return r
 
-        # Fall back to first candidate, or primary_region
+        # Fall back to first free candidate (avoids overwriting a claimed region)
+        for r in candidate_regions:
+            if r not in taken:
+                return r
+
+        # Last resort: first candidate or primary (may collide if all taken)
         return candidate_regions[0] if candidate_regions else primary_region
