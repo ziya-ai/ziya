@@ -333,6 +333,29 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
 
         logger.debug(f"Before parsing hunks, git_diff first 10 lines:\n{git_diff.splitlines()[:10]}")
         hunks = list(parse_unified_diff_exact_plus(git_diff, file_path))
+
+        # Guard against silent no-op "success" on unparseable diffs. If the
+        # parser yields zero hunks but the diff actually carries change lines
+        # (+/- that aren't file headers), the hunk header was malformed — e.g.
+        # a bare "@@ def foo" that escaped frontend synthesis. Without this
+        # guard the pipeline reports status=already_applied / is_success=True
+        # while writing nothing, masking the failure. Treat it as an error.
+        if not hunks:
+            change_lines = [
+                ln for ln in git_diff.splitlines()
+                if (ln.startswith('+') and not ln.startswith('+++'))
+                or (ln.startswith('-') and not ln.startswith('---'))
+            ]
+            if change_lines:
+                error = (
+                    "Diff parsed to zero hunks despite containing "
+                    f"{len(change_lines)} change line(s) — malformed or missing "
+                    "hunk header (expected '@@ -n,m +n,m @@')."
+                )
+                logger.error(error)
+                pipeline.complete(error=error)
+                return pipeline.result.to_dict()
+
         pipeline.initialize_hunks(hunks)
         
         # Check for whitespace-only changes
