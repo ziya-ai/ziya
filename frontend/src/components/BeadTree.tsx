@@ -224,7 +224,11 @@ const BeadTree: React.FC<BeadTreeProps> = ({ conversationId, onResume }) => {
         borderBottom: `1px solid ${isDarkMode ? '#1e293b' : '#e2e8f0'}`,
         paddingBottom: 6,
       }}>
-        <span>Task threads — click ⏸ resume to switch</span>
+        <span>
+          {parkedCount > 0
+            ? 'Task threads — click ⏸ resume to switch'
+            : 'Task threads'}
+        </span>
         <button
           onClick={loadBeads}
           disabled={loading}
