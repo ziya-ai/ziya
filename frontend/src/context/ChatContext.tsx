@@ -2647,17 +2647,28 @@ export function ChatProvider({ children }: ChatProviderProps) {
         };
 
         const syncWithServer = async () => {
+            // Recompute switch-vs-poll PER INVOCATION.  The effect-body
+            // \`isActualProjectSwitch\` is captured once at effect-mount and
+            // reused by setInterval — so after a genuine project switch,
+            // every 30s tick would still see it as true and re-run the
+            // reselection block below, restoring the per-project saved
+            // conversation over a just-created one (the "switches back to
+            // the last conversation every 30s" bug).  serverSyncedForProject
+            // is set to projectId by the first sync (below), so the immediate
+            // call sees a switch and all interval ticks correctly see a poll.
+            const thisIsSwitch = serverSyncedForProject.current !== null
+                && serverSyncedForProject.current !== projectId;
             // Re-entrancy guard for periodic polling.  An actual project
             // switch always proceeds (the epoch counter handles staleness
             // at write sites); periodic ticks bail when a previous tick
             // is still in flight.  This eliminates the multi-sync race
             // that drops just-created conversations during long hydration
             // cycles on large projects.
-            if (!isActualProjectSwitch && periodicSyncInFlightRef.current) {
+            if (!thisIsSwitch && periodicSyncInFlightRef.current) {
                 console.debug('📡 SERVER_SYNC: skipping periodic tick — previous sync still in flight');
                 return;
             }
-            const isPeriodicTick = !isActualProjectSwitch;
+            const isPeriodicTick = !thisIsSwitch;
             if (isPeriodicTick) periodicSyncInFlightRef.current = true;
             // No "drop if another sync in flight" guard here: a project switch
             // mid-sync used to wait up to 30s for the next interval tick.  We
@@ -2714,8 +2725,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     // server during periodic polling overwrites IDB with stale
                     // data, creating a window where a crash loses unsaved messages.
                     // Only skip during polling — initial project switches
-                    // (isActualProjectSwitch) need to fetch everything.
-                    const activeConvId = isActualProjectSwitch ? null : currentConversationRef.current;
+                    // (thisIsSwitch) need to fetch everything.
+                    const activeConvId = thisIsSwitch ? null : currentConversationRef.current;
 
                     for (const sc of serverChats) {
                         const local = localMap.get(sc.id);
@@ -3349,7 +3360,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     // For actual project switches: relocate to a conversation that
                     // belongs to the new project.  The old conversation from the
                     // previous project is irrelevant and confusing if left visible.
-                    if (isActualProjectSwitch) {
+                    if (thisIsSwitch) {
                         // Stale syncs must not change the active conversation
                         // — that would yank the user from a chat the user
                         // actually clicked into for the current project.
