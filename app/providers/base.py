@@ -98,6 +98,7 @@ class ErrorType(Enum):
     READ_TIMEOUT = auto()    # Network timeout
     OVERLOADED = auto()      # 529 overloaded
     AUTH = auto()             # Permission / credential errors
+    SERVER_ERROR = auto()    # 5xx InternalServerException — persistent, not retried
     UNKNOWN = auto()
 
 
