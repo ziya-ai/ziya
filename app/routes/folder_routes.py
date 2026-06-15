@@ -6,6 +6,7 @@ Extracted from server.py during Phase 3b refactoring.
 import os
 import re
 import time
+import asyncio
 from app.context import get_project_root
 import threading
 import json
@@ -414,7 +415,9 @@ async def get_folders_cached():
             max_depth = 15
             
         # Get ignored patterns
-        ignored_patterns = get_ignored_patterns(user_codebase_dir)
+        # Off the event loop: pattern building walks the project tree on a
+        # cold cache (e.g. right after a project switch).
+        ignored_patterns = await asyncio.to_thread(get_ignored_patterns, user_codebase_dir)
         
         # Import here to avoid circular imports
         from app.utils.directory_util import _folder_cache as du_folder_cache, _token_cache, _cache_lock
@@ -465,7 +468,8 @@ async def get_folders_with_accurate_tokens():
             max_depth = 15
             
         # Get ignored patterns
-        ignored_patterns = get_ignored_patterns(user_codebase_dir)
+        # Off the event loop — same reasoning as /api/folders-cached above.
+        ignored_patterns = await asyncio.to_thread(get_ignored_patterns, user_codebase_dir)
         logger.debug(f"Loaded {len(ignored_patterns)} ignore patterns")
         
         # Check if we have cached accurate token counts
@@ -562,9 +566,6 @@ async def api_get_folders(refresh: bool = False, project_path: str = Query(None)
             logger.error(f"Permission denied accessing: {user_codebase_dir}")
             return {"error": "Permission denied accessing directory"}
         
-        # Get ignored patterns (will use cache if available)
-        ignored_patterns = get_ignored_patterns(user_codebase_dir)
-        
         # Get max depth from environment or use default
         try:
             max_depth = ziya_env("ZIYA_MAX_DEPTH")
@@ -574,7 +575,12 @@ async def api_get_folders(refresh: bool = False, project_path: str = Query(None)
             
         # Get ignored patterns
         try:
-            ignored_patterns = get_ignored_patterns(user_codebase_dir)
+            # Run on a worker thread: building gitignore patterns walks the
+            # entire project tree and can take tens of seconds on large
+            # projects.  This endpoint is async def, so calling it inline
+            # blocks the event loop — freezing every other request
+            # (conversation sync, chat lazy-loads) until the walk completes.
+            ignored_patterns = await asyncio.to_thread(get_ignored_patterns, user_codebase_dir)
             logger.debug(f"Loaded {len(ignored_patterns)} ignore patterns")
         except re.error as e:
             logger.error(f"Invalid gitignore pattern detected: {e}")
@@ -590,7 +596,9 @@ async def api_get_folders(refresh: bool = False, project_path: str = Query(None)
         scan_status_before = get_scan_progress()
         
         # Use our enhanced cached folder structure function
-        result = get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth, synchronous=refresh)
+        result = await asyncio.to_thread(
+            get_cached_folder_structure, user_codebase_dir, ignored_patterns,
+            max_depth, synchronous=refresh)
         
         # Log the structure we're returning
         has_external = '[external]' in result if isinstance(result, dict) else False
