@@ -58,7 +58,7 @@ def _capturing_stub(captured: list[str], summaries: list[str] | None = None):
     call_idx = {"n": 0}
     canned = summaries or []
 
-    async def _stub(block, project_root=None, project_id=None):
+    async def _stub(block, project_root=None, project_id=None, **kwargs):
         captured.append(block.instructions or "")
         idx = call_idx["n"]
         call_idx["n"] += 1
@@ -129,7 +129,13 @@ class TestPropagation:
         with patch("app.agents.block_executor.execute_task_block",
                    _capturing_stub(captured, ["first", "second", "third"])):
             await execute_block(block, ctx)
-        assert captured == ["prev=", "prev=first", "prev=second"]
+        # Production prepends an auto-generated iteration-context preamble
+        # (block_executor._build_iteration_context); the rendered template
+        # is the suffix.  Assert the substitution result, tolerant of the
+        # preamble.
+        assert all(c.endswith(e) for c, e in
+                   zip(captured, ["prev=", "prev=first", "prev=second"]))
+        assert len(captured) == 3
 
     @pytest.mark.asyncio
     async def test_propagate_all_summaries(self, storage, run):
@@ -141,9 +147,10 @@ class TestPropagation:
         with patch("app.agents.block_executor.execute_task_block",
                    _capturing_stub(captured, ["A", "B", "C"])):
             await execute_block(block, ctx)
-        assert captured[0] == "history:\n"
-        assert captured[1] == "history:\nA"
-        assert captured[2] == "history:\nA\n\nB"
+        # Suffix match tolerates the auto-prepended iteration-context preamble.
+        assert captured[0].endswith("history:\n")
+        assert captured[1].endswith("history:\nA")
+        assert captured[2].endswith("history:\nA\n\nB")
 
 
 class TestForEachSource:
@@ -160,7 +167,11 @@ class TestForEachSource:
         with patch("app.agents.block_executor.execute_task_block",
                    _capturing_stub(captured)):
             await execute_block(block, ctx)
-        assert captured == ["process alpha", "process beta", "process gamma"]
+        # for_each iterations carry an `item` binding, so even iteration 0
+        # gets an iteration-context preamble; assert the rendered suffix.
+        assert all(c.endswith(e) for c, e in zip(
+            captured, ["process alpha", "process beta", "process gamma"]))
+        assert len(captured) == 3
 
     @pytest.mark.asyncio
     async def test_for_each_dict_items(self, storage, run):
@@ -175,4 +186,6 @@ class TestForEachSource:
         with patch("app.agents.block_executor.execute_task_block",
                    _capturing_stub(captured)):
             await execute_block(block, ctx)
-        assert captured == ["x=1", "y=2"]
+        # Rendered suffix after the iteration-context preamble.
+        assert all(c.endswith(e) for c, e in zip(captured, ["x=1", "y=2"]))
+        assert len(captured) == 2

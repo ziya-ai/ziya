@@ -3,8 +3,12 @@ Tests for DeepSeek model provider routing and response fidelity.
 
 The three DeepSeek models on Bedrock have different invocation formats:
 
-  - deepseek-r1:   No wrapper_class → NovaBedrockProvider (Converse API)
-                    Has native_function_calling=false, supports_thinking=true
+  - deepseek-r1:   wrapper_class=OpenAIBedrock → OpenAIBedrockProvider
+                    (invoke_model). Has native_function_calling=false,
+                    supports_thinking=true. DeepSeek is an OpenAI-format
+                    family on Bedrock (see commit 559f515), so all three
+                    variants use OpenAIBedrockProvider; R1 is NOT special-
+                    cased to the Converse API.
   - deepseek-v3:   wrapper_class=OpenAIBedrock → OpenAIBedrockProvider (invoke_model)
   - deepseek-v3.2: wrapper_class=OpenAIBedrock → OpenAIBedrockProvider (invoke_model)
 
@@ -37,10 +41,15 @@ from app.config.models_config import MODEL_CONFIGS, MODEL_FAMILIES
 class TestDeepSeekModelConfigs:
     """Verify model_config entries for all three DeepSeek models."""
 
-    def test_r1_has_no_wrapper_class(self):
+    def test_r1_has_openai_wrapper_class(self):
+        # DeepSeek is an OpenAI-format family on Bedrock; all three
+        # variants (r1, v3, v3.2) route through OpenAIBedrockProvider.
+        # R1 was briefly special-cased to the Converse API; commit
+        # 559f515 unified the family onto the OpenAI wrapper.
         cfg = MODEL_CONFIGS["bedrock"]["deepseek-r1"]
-        assert "wrapper_class" not in cfg, (
-            "deepseek-r1 should NOT have wrapper_class — it uses Converse API"
+        assert cfg.get("wrapper_class") == "OpenAIBedrock", (
+            "deepseek-r1 should use wrapper_class=OpenAIBedrock, "
+            "consistent with the rest of the DeepSeek family"
         )
 
     def test_r1_disables_native_function_calling(self):
@@ -104,9 +113,10 @@ class TestDeepSeekFactoryRouting:
             )
             return provider.__class__.__name__
 
-    def test_r1_routes_to_nova_provider(self):
-        """R1 has no wrapper_class → should use NovaBedrockProvider (Converse API)."""
-        assert self._route("deepseek-r1") == "NovaBedrockProvider"
+    def test_r1_routes_to_openai_provider(self):
+        """R1 has wrapper_class=OpenAIBedrock → OpenAIBedrockProvider,
+        consistent with v3/v3.2 (the whole DeepSeek family is OpenAI-format)."""
+        assert self._route("deepseek-r1") == "OpenAIBedrockProvider"
 
     def test_v3_routes_to_openai_provider(self):
         """V3 has wrapper_class=OpenAIBedrock → OpenAIBedrockProvider."""

@@ -203,9 +203,21 @@ class TestToolOverreach:
         """shell-server restricts commands via an allowlist, preventing overreach."""
         from app.mcp_servers.shell_server import ShellServer
         srv = ShellServer()
-        # Verify the server rejects an arbitrary dangerous command
-        allowed, reason = srv.is_command_allowed("rm -rf /")
-        assert not allowed, "shell-server should block 'rm -rf /'"
+        # Two-gate design (see shell_server.py DESTRUCTIVE_COMMANDS
+        # comment): destructive commands like rm pass gate 1 (the
+        # command allowlist) DELIBERATELY so they reach gate 2, the
+        # write-policy path check, which validates target paths.
+        # Asserting gate 1 alone blocks 'rm -rf /' tests the wrong
+        # layer — assert the system as a whole blocks it.
+        allowed, _ = srv.is_command_allowed("rm -rf /")
+        if allowed:
+            ok, reason = srv.write_checker.check(
+                "rm -rf /", srv._split_by_shell_operators
+            )
+            assert not ok, "write-policy gate should block 'rm -rf /'"
+        # A truly unknown command must still fail the allowlist.
+        allowed, _ = srv.is_command_allowed("nmap -sS target")
+        assert not allowed, "shell-server should block non-allowlisted commands"
 
     def test_shell_server_blocks_sudo(self):
         from app.mcp_servers.shell_server import ShellServer
