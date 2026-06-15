@@ -1011,10 +1011,22 @@ class StreamingToolExecutor:
         # Build set of tool names where every input param is optional
         optional_only_tools: set = set()
         for _t in all_tools:
-            _schema = getattr(_t, 'InputSchema', None)
+            # Builtin tools are wrapped in DirectMCPTool, which carries the
+            # pydantic schema on .tool_instance.InputSchema / .args_schema —
+            # NOT on the wrapper itself. Probe all three so builtins (beads,
+            # etc.) are correctly recognized; otherwise no-arg/optional-only
+            # tools get hit with the "EMPTY ARGUMENTS" rejection gate.
+            _schema = (
+                getattr(_t, 'InputSchema', None)
+                or getattr(getattr(_t, 'tool_instance', None), 'InputSchema', None)
+                or getattr(_t, 'args_schema', None)
+            )
             if _schema is not None:
                 _fields = getattr(_schema, 'model_fields', {})
-                if _fields and all(not f.is_required() for f in _fields.values()):
+                # A schema with no fields at all (e.g. BeadStatusInput) is
+                # inherently zero-arg, so it belongs here too. Only exclude
+                # when there is at least one *required* field.
+                if all(not f.is_required() for f in _fields.values()):
                     optional_only_tools.add(getattr(_t, 'name', ''))
 
         # Convert and deduplicate tools
