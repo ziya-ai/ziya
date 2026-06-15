@@ -1406,6 +1406,20 @@ class MCPManager:
             workspace_client = await self._get_or_create_workspace_client(target_server_name, workspace_path, session_id=conversation_id)
             
             if workspace_client:
+                # Workspace-scoped calls previously returned here BEFORE
+                # _normalize_tool_parameters / _coerce_argument_types run
+                # below, so schema-based coercion never applied on this
+                # path.  Models frequently send numeric params as JSON
+                # strings (e.g. timeout="60"); uncoerced, the shell
+                # server's min() clamp raises TypeError and the call
+                # fails — making optional params like timeout appear
+                # unsupported.  Apply the same normalization/coercion
+                # the non-workspace path gets.  (_task_scope is not in
+                # any schema; coercion passes unknown keys through.)
+                arguments = self._normalize_tool_parameters(internal_tool_name, arguments)
+                arguments = self._coerce_argument_types(internal_tool_name, arguments)
+                if isinstance(arguments, dict) and arguments.get("__validation_error__"):
+                    return {"error": True, "message": arguments.get("message", "Invalid arguments"), "code": -32602}
                 result = await self._call_tool_with_timeout(workspace_client, internal_tool_name, arguments)
                 
                 # Trigger periodic cleanup
