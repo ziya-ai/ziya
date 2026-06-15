@@ -8,6 +8,19 @@ from typing import List, Tuple, Optional, Dict
 
 from app.utils.logging_utils import logger
 from .base import LanguageHandler
+# Style findings that describe cosmetic drift, not broken or
+# behavior-changing code. These are demoted to advisory: logged, never
+# block a diff apply. Quote/semicolon consistency is a legitimate
+# within-file variation (a "don't" string in a single-quote file; a
+# comma-separated type literal beside a semicolon object literal) and is
+# caught trivially by prettier/eslint downstream. Mirrors the earlier
+# advisory demotion of detect_duplicates. Structural findings (bracket
+# imbalance, real tsc/node syntax errors) and the infinite-loop heuristic
+# stay blocking and are NOT listed here.
+_ADVISORY_ISSUES = frozenset({
+    "Inconsistent quote style (mixing ' and \")",
+    "Inconsistent semicolon usage",
+})
 
 # Special handling for JSON content in JavaScript/TypeScript files
 class JsonContentHandler:
@@ -162,8 +175,12 @@ class JavaScriptHandler(LanguageHandler):
                 
                 # Additional verification: check for common issues
                 issues = cls._check_common_issues(original_content, modified_content)
-                if issues:
-                    return False, f"Code verification issues: {'; '.join(issues)}"
+                blocking, advisory = cls.partition_issues(issues)
+                if advisory:
+                    logger.debug(f"JS style advisories (non-fatal) for {file_path}: "
+                                 f"{'; '.join(advisory)}")
+                if blocking:
+                    return False, f"Code verification issues: {'; '.join(blocking)}"
                 
                 return True, None
             finally:
@@ -216,7 +233,14 @@ class JavaScriptHandler(LanguageHandler):
             without_semi = 0
             for line in content.splitlines():
                 stripped = line.strip()
-                if not stripped or stripped.startswith('//') or stripped.startswith('/*') or stripped.endswith('*/'):
+                # Skip comment lines, including JSDoc/block-comment continuation
+                # lines that start with '*'. Without the '*' case, every
+                # docstring body line (" * foo") is miscounted as a statement
+                # missing its semicolon, which can drag a semicolon-majority
+                # file below the consistency threshold and produce a spurious
+                # "Inconsistent semicolon usage" rejection.
+                if (not stripped or stripped.startswith('//') or stripped.startswith('/*')
+                        or stripped.startswith('*') or stripped.endswith('*/')):
                     continue
                 if stripped.endswith(';'):
                     with_semi += 1
@@ -248,6 +272,23 @@ class JavaScriptHandler(LanguageHandler):
             issues.append("Potential infinite loop (while(true) without break)")
         
         return issues
+
+    @classmethod
+    def partition_issues(cls, issues: List[str]) -> Tuple[List[str], List[str]]:
+        """Split issue strings into (blocking, advisory).
+
+        Advisory issues (quote/semicolon style) are logged by callers but
+        never fail a diff apply. Everything else — infinite-loop, and any
+        TS-specific structural finding layered on top — blocks.
+        """
+        blocking: List[str] = []
+        advisory: List[str] = []
+        for issue in issues:
+            if issue in _ADVISORY_ISSUES:
+                advisory.append(issue)
+            else:
+                blocking.append(issue)
+        return blocking, advisory
         
     @classmethod
     def detect_duplicates(cls, original_content: str, modified_content: str) -> Tuple[bool, List[str]]:
