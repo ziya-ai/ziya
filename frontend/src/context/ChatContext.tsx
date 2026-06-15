@@ -6,6 +6,7 @@ import { ActiveChatProvider } from './ActiveChatContext';
 import { Conversation, Message, ConversationFolder } from "../utils/types";
 import { v4 as uuidv4 } from "uuid";
 import { db } from '../utils/db';
+import * as syncMerge from '../utils/syncMerge';
 import { detectIncompleteResponse } from '../utils/responseUtils';
 import { message } from 'antd';
 import { useTheme } from './ThemeContext';
@@ -22,6 +23,11 @@ import { useDelegateStreaming } from '../hooks/useDelegateStreaming';
 import { folderIsEffectivelyGlobal, conversationIsEffectivelyGlobal } from '../utils/folderUtil';
 
 const TERMINAL_PLAN_STATUSES = new Set(['completed', 'completed_partial', 'cancelled']);
+
+// Titles that are placeholders rather than meaningful (auto- or user-set)
+// names.  Used by the sync/save merge guards to avoid downgrading a resolved
+// title back to a placeholder when in-memory _version is newer.
+const PLACEHOLDER_TITLES = new Set(['New Conversation', 'New Ephemeral Chat', 'Loading...', 'Untitled', '']);
 
 /** Return true when the server folder should replace the local copy. */
 function serverFolderWins(local: ConversationFolder | undefined, server: ConversationFolder): boolean {
@@ -828,7 +834,16 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     const mergedMsgCount = finalConversations[mergedIdx].messages?.length || 0;
                     const liveVerIsNewer = (liveConv._version || 0) > (finalConversations[mergedIdx]._version || 0);
                     if (liveMsgCount > mergedMsgCount || (liveVerIsNewer && liveMsgCount > 0)) {
-                        finalConversations[mergedIdx] = { ...liveConv, _version: Date.now() };
+                        // Spread liveConv to keep its (authoritative) messages,
+                        // but don't let a placeholder title in React state
+                        // overwrite a real title the merge already resolved.
+                        // _version bumps on every message append, so liveConv
+                        // can be "newer" while still holding "New Conversation".
+                        const mergedTitle = finalConversations[mergedIdx].title;
+                        const liveTitleIsPlaceholder = !liveConv.title || PLACEHOLDER_TITLES.has(liveConv.title);
+                        const keepTitle = (liveTitleIsPlaceholder && mergedTitle && !PLACEHOLDER_TITLES.has(mergedTitle))
+                            ? mergedTitle : liveConv.title;
+                        finalConversations[mergedIdx] = { ...liveConv, title: keepTitle, _version: Date.now() };
                     }
                 }
             }
@@ -1530,6 +1545,23 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
         try {
             console.log('🔄 Loading conversation:', conversationId);
+            // Switch the UI immediately — selection must not wait on network.
+            // The lazy-load below can include a server fetch (getChat) which,
+            // during a project switch, queues behind the file scan for many
+            // seconds.  Setting the ID first makes the click take effect
+            // instantly: the shell's summary content renders now, and the
+            // full messages hydrate in via setConversations when the
+            // lazy-load resolves.
+            setCurrentConversationId(conversationId);
+            try {
+                setTabState('ZIYA_CURRENT_CONVERSATION_ID', conversationId);
+                if (currentProject?.id) {
+                    saveProjectConversationId(currentProject.id, conversationId);
+                }
+            } catch (e) {
+                console.error('Failed to persist conversation ID during switch:', e);
+            }
+
             // Lazy-load messages for conversations that only have summary
             // metadata (e.g. after SERVER_SYNC with empty/corrupt IDB) or
             // shell data (first+last messages only from startup fast-path),
@@ -1637,20 +1669,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         : conv)
             );
 
-            // Set the current conversation ID after updating state
-            // Remove artificial delay that might be blocking
-            // await new Promise(resolve => setTimeout(resolve, 50));
-            setCurrentConversationId(conversationId);
-
-            // CRITICAL: Persist to localStorage immediately when switching conversations
-            try {
-                setTabState('ZIYA_CURRENT_CONVERSATION_ID', conversationId);
-                if (currentProject?.id) {
-                    saveProjectConversationId(currentProject.id, conversationId);
-                }
-            } catch (e) {
-                console.error('Failed to persist conversation ID during switch:', e);
-            }
+            // (conversation ID was already set at the top of this function)
 
             // Delegate conversations are created server-side. Their messages
             // may not be in IndexedDB yet. Fetch fresh data on demand.
@@ -1963,23 +1982,40 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 newVersion
             });
 
-            // Use the single save pipeline to avoid races with other concurrent
-            // writes.  queueSave serialises DB writes and posts to
-            // BroadcastChannel so other same-project tabs see the move.
-            setConversations(prev => {
-                const updated = prev.map(conv =>
-                    conv.id === conversationId
-                        ? { ...conv, folderId, _version: newVersion, lastAccessedAt: newVersion }
-                        : conv
-                );
-                queueSave(updated, { changedIds: [conversationId] }).catch(console.error);
-                return updated;
-            });
+            // Immediate state update so drag-drop feels instant.  Sidebar
+            // entries may be shells — overlay metadata only.
+            setConversations(prev => prev.map(conv =>
+                conv.id === conversationId
+                    ? { ...conv, folderId, _version: newVersion, lastAccessedAt: newVersion }
+                    : conv
+            ));
+
+            if (isEphemeralMode) return;
+
+            // Unified mutation path: hydrate the full record from IDB,
+            // patch, persist, broadcast cross-tab, and push to the server
+            // immediately.  The legacy queueSave route relied on the 2s
+            // dual-write debounce AND filtered out shells — sidebar entries
+            // for non-active conversations are shells, so folder moves on
+            // them never reached the server until the next periodic sync's
+            // push side, leaving a window where a server-side _version bump
+            // would revert the move (same mechanism as the rename bug).
+            const { mutateConversationMeta } = await import('../utils/conversationMutations');
+            const result = await mutateConversationMeta(
+                conversationId,
+                { folderId, lastAccessedAt: newVersion },
+                { projectId: currentProject?.id }
+            );
+            if (!result.ok) {
+                // Not in IDB yet (brand-new conversation) — fall back to
+                // the legacy save pipeline so the move still persists.
+                queueSave(conversationsRef.current, { changedIds: [conversationId] }).catch(console.error);
+            }
         } catch (error) {
             console.error('Error moving conversation to folder:', error);
             throw error;
         }
-    }, [queueSave]);
+    }, [queueSave, isEphemeralMode, currentProject?.id]);
 
     // Derive currentMessages synchronously — no useState/useEffect needed.
     // The previous useEffect called setCurrentMessages on every render,
@@ -2683,72 +2719,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
                     for (const sc of serverChats) {
                         const local = localMap.get(sc.id);
-                        if (!local) {
-                            // Skip if we already fetched full data this session
-                            // (React.startTransition may not have committed yet)
-                            if (!recentlyFetchedFullIds.current.has(sc.id)) {
-                                needFullFetch.push(sc.id);
-                            }
-                        } else if (sc.id === activeConvId) {
-                            // Skip full-fetch for the active conversation during
-                            // periodic polling.  React state has the latest messages;
-                            // fetching stale server data just creates merge risk.
-                            // Metadata (delegateMeta, title) is updated via summary.
-                            continue;
-                        } else {
-                            // Always fetch full data if server has delegate metadata
-                            // or folder assignment that local is missing
-                            const serverHasDelegateMeta = sc.delegateMeta && !local.delegateMeta;
-                            const serverHasFolder = (sc.groupId || sc.folderId) && !local.folderId;
-                            if (serverHasDelegateMeta || serverHasFolder) {
-                                if (!recentlyFetchedFullIds.current.has(sc.id)) {
-                                    needFullFetch.push(sc.id);
-                                }
-                                continue;
-                            }
-                            const serverVer = (sc as any)._version || sc.lastActiveAt || 0;
-                            // Shell conversations have _version: undefined, making them
-                            // appear stale on every sync cycle. Treat them as current to
-                            // prevent repeated full fetches before lazy-load completes.
-                            //
-                            // Exception: if the shell reports _fullMessageCount === 0 but
-                            // the server's summary says messageCount > 0, the local IDB
-                            // record is genuinely empty and the server has the real data.
-                            // Pin localVer to 0 so the comparison below forces a pull.
-                            // Without this, a wiped-local/populated-server state is a
-                            // permanent trap: localVer=Infinity blocks the pull forever.
-                            const localFullCount = (local as any)._fullMessageCount;
-                            const serverSummaryMsgs = typeof (sc as any).messageCount === 'number' ? (sc as any).messageCount : 0;
-                            const emptyLocalPopulatedServer = (local as any)._isShell && localFullCount === 0 && serverSummaryMsgs > 0;
-                            const localVer = emptyLocalPopulatedServer
-                                ? 0
-                                : ((local as any)._isShell ? Infinity : ((local as any)._version || local.lastAccessedAt || 0));
-                            // Symmetric message-count divergence check (mirror of the
-                            // push-side filter below).  If server reports strictly
-                            // more messages than we have locally, fetch — even if
-                            // versions match.  Without this, a local copy that fell
-                            // behind the server with coincident _version stays
-                            // permanently behind.  Shells are excluded (they
-                            // intentionally carry a reduced message count until
-                            // lazy-load completes).
-                            const localMsgCount = (local as any)._isShell
-                                ? Infinity
-                                : (Array.isArray(local.messages) ? local.messages.length : 0);
-                            const serverMsgCount = typeof (sc as any).messageCount === 'number'
-                                ? (sc as any).messageCount
-                                : 0;
-                            const countDiverged = serverMsgCount > localMsgCount;
-                            const versionDiverged = serverVer > localVer;
-                            if (countDiverged || versionDiverged) {
-                                // For version divergence, skip if already fetched this session.
-                                // For count divergence, always fetch — local state is behind
-                                // right now regardless of what was fetched earlier this session.
-                                if (versionDiverged && !countDiverged
-                                    && recentlyFetchedFullIds.current.has(sc.id)) {
-                                    continue;
-                                }
-                                needFullFetch.push(sc.id);
-                            }
+                        // Fetch-decision core extracted to utils/syncMerge.ts
+                        // (pure + unit-testable).  Behavior unchanged: see
+                        // shouldFetchFull for the version/count comparison
+                        // rules and their rationale comments.
+                        if (syncMerge.shouldFetchFull(sc as any, local as any, {
+                            isActiveConv: sc.id === activeConvId,
+                            alreadyFetchedThisSession: recentlyFetchedFullIds.current.has(sc.id),
+                        })) {
+                            needFullFetch.push(sc.id);
                         }
                     }
 
@@ -2774,140 +2753,42 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
                     // 3. Three-way merge: use _version to determine winner, keep all unique
                     const mergedMap = new Map<string, any>();
-
                     // Start with local conversations
                     localProjectConvs.forEach((conv: any) => {
                         mergedMap.set(conv.id, conv);
                     });
 
                     // Merge server conversations
+                    // Merge-decision core extracted to utils/syncMerge.ts
+                    // (pure + unit-testable).  Behavior unchanged: see
+                    // mergeServerChat for the empty-shell / adopt-full /
+                    // shell-placeholder / summary-overlay rules and their
+                    // rationale comments.  Orchestration policies stay
+                    // here: the per-cycle GC staging cap and the tab-scoped
+                    // attempted-id dedup (both involve refs/limits that
+                    // belong to this sync cycle, not the decision).
                     serverChats.forEach((sc: any) => {
-                        const local = mergedMap.get(sc.id);
-                        const serverVersion = sc._version || 0;
-                        const localVersion = local?._version || 0;
-
-                        if (!local) {
-                            // Server-only conversation — use full-fetched data if available
-                            const full = fullFetchMap.get(sc.id);
-
-                            // Skip empty "New Conversation" shells from the server.
-                            // These are stale empties that the GC purged locally;
-                            // re-importing them defeats the cleanup.
-                            // Exception: if the shell IS the user's active
-                            // conversation, dropping it strands currentConversationId
-                            // pointing at a conversation that's not in state. The
-                            // next send would then go through the missing-conv
-                            // fallback in currentMessages and route to an orphan id.
-                            const isEmptyShell = sc.title === 'New Conversation'
-                                && (!full?.messages || full.messages.length === 0);
-                            const isActiveConv = sc.id === currentConversationRef.current;
-                            if (isEmptyShell && !isActiveConv) {
-                                console.debug(`📡 SERVER_SYNC: skipping empty-shell ${sc.id?.substring(0, 8)} title="${sc.title}"`);
-                                // Stage for server-side delete if this empty
-                                // shell belongs to the current project (don't
-                                // delete cross-project globals — those are
-                                // someone else's problem) and is stale enough
-                                // that no live tab is mid-creation.
-                                const shellProjectId = sc.projectId || projectId;
-                                const shellAge = Date.now() - (sc.lastActiveAt || 0);
-                                if (shellProjectId === projectId
-                                    && shellAge > STALE_SHELL_AGE_MS
-                                    && !serverGcAttemptedIds.current.has(sc.id)
-                                    && staleEmptyShellIds.length < STALE_SHELL_DELETE_CAP) {
-                                    staleEmptyShellIds.push(sc.id);
-                                    serverGcAttemptedIds.current.add(sc.id);
-                                }
-                                return;
+                        const decision = syncMerge.mergeServerChat(
+                            sc,
+                            mergedMap.get(sc.id),
+                            fullFetchMap.get(sc.id),
+                            {
+                                projectId,
+                                isActiveConv: sc.id === currentConversationRef.current,
+                                now: Date.now(),
+                                staleShellAgeMs: STALE_SHELL_AGE_MS,
                             }
-
-                            if (full) {
-                                mergedMap.set(sc.id, {
-                                    ...full,
-                                    _isShell: false,
-                                    _fullMessageCount: undefined,
-                                    projectId: full.projectId || projectId,
-                                    folderId: full.groupId || full.folderId || sc.groupId || sc.folderId || null,
-                                    delegateMeta: full.delegateMeta || null,
-                                    lastAccessedAt: full.lastAccessedAt || full.lastActiveAt,
-                                    isActive: full.isActive !== false,
-                                    _version: full._version || Date.now(),
-                                });
+                        );
+                        if (decision.action === 'skip-empty-shell') {
+                            console.debug(`📡 SERVER_SYNC: skipping empty-shell ${sc.id?.substring(0, 8)} title="${sc.title}"`);
+                            if (decision.staleDeleteEligible
+                                && !serverGcAttemptedIds.current.has(sc.id)
+                                && staleEmptyShellIds.length < STALE_SHELL_DELETE_CAP) {
+                                staleEmptyShellIds.push(sc.id);
+                                serverGcAttemptedIds.current.add(sc.id);
                             }
-                            // Server-only conversation, full fetch deferred (or failed).
-                            // Add as a SHELL with the server's _version so the sidebar
-                            // populates immediately.  The pendingHydration loop below
-                            // will fetch and replace it with the full body.  Marking
-                            // _isShell prevents the IDB write step from saving a
-                            // zero-message record (FAST_PATH_TOMBSTONE) and prevents
-                            // the push step from sending it back to the server.
-                            if (!full && !isEmptyShell) {
-                                mergedMap.set(sc.id, {
-                                    id: sc.id,
-                                    title: sc.title || 'Loading...',
-                                    messages: [],
-                                    _isShell: true,
-                                    _fullMessageCount: typeof (sc as any).messageCount === 'number' ? (sc as any).messageCount : 0,
-                                    projectId: sc.projectId || projectId,
-                                    folderId: sc.groupId || sc.folderId || null,
-                                    lastAccessedAt: sc.lastActiveAt || 0,
-                                    isActive: true,
-                                    isGlobal: sc.isGlobal ?? false,
-                                    _version: serverVersion,
-                                });
-                            }
-                        } else if (serverVersion > localVersion) {
-                            // Server is newer — use full-fetched data if available,
-                            // otherwise update metadata only from summary
-                            const full = fullFetchMap.get(sc.id);
-                            if (full) {
-                                // Message-count guard: if the server has fewer
-                                // messages than local, keep local messages but
-                                // update metadata from server.  This prevents
-                                // partial syncs from destroying conversation history.
-                                // For shell entries (messages stripped for memory),
-                                // _fullMessageCount carries the real on-disk count.
-                                const localMsgCount = (local as any)._isShell
-                                    ? ((local as any)._fullMessageCount || 0)
-                                    : (local.messages?.length || 0);
-                                const serverMsgCount = full.messages?.length || 0;
-                                if (serverMsgCount < localMsgCount && localMsgCount > 2) {
-                                    console.warn(`🛡️ SYNC_GUARD: Keeping ${localMsgCount} local messages for ${sc.id?.substring(0, 8)} (server had ${serverMsgCount})`);
-                                    full.messages = local.messages;
-                                }
-                                mergedMap.set(sc.id, {
-                                    ...full,
-                                    _isShell: false,
-                                    _fullMessageCount: undefined,
-                                    projectId: full.projectId || projectId,
-                                    folderId: full.groupId || full.folderId || null,
-                                    delegateMeta: full.delegateMeta || null,
-                                    lastAccessedAt: full.lastAccessedAt || full.lastActiveAt,
-                                    isActive: full.isActive !== false,
-                                    _version: full._version || Date.now(),
-                                });
-                            } else {
-                                // Summary-only update (full fetch wasn't needed or failed).
-                                // \`local\` came from getConversationShells() which strips
-                                // \`messages\`, so we must preserve \`_isShell\` on the merged
-                                // entry — otherwise step 5 (saveConversations) will write
-                                // it as a real (empty-messages) record and trigger
-                                // FAST_PATH_TOMBSTONE on every sync cycle.
-                                // `isGlobal` is authoritative on the server: a chat marked
-                                // global on disk must render with the global label in every
-                                // project, regardless of whether IDB has caught up.  Without
-                                // this overlay, IDB's stale `isGlobal: undefined` wins and
-                                // global chats render as plain project chats.
-                                mergedMap.set(sc.id, {
-                                    ...local,
-                                    title: sc.title || local.title,
-                                    projectId: sc.projectId || local.projectId || projectId,
-                                    folderId: sc.groupId || sc.folderId || local.folderId || null,
-                                    lastActiveAt: sc.lastActiveAt || local.lastActiveAt,
-                                    isGlobal: sc.isGlobal ?? local.isGlobal,
-                                    _version: serverVersion,
-                                    _isShell: (local as any)._isShell,
-                                });
-                            }
+                        } else if (decision.action === 'set') {
+                            mergedMap.set(sc.id, decision.record);
                         }
                     });
 
@@ -3235,7 +3116,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             if (inMemory && inMemoryIsNewer) {
                                 mc.folderId = inMemory.folderId;
                                 mc.isGlobal = inMemory.isGlobal;
-                                mc.title = inMemory.title;
+                                // Title preservation must NOT downgrade a real
+                                // (auto- or user-set) merged title back to a
+                                // placeholder.  addMessageToConversation bumps
+                                // _version on every append while the in-memory
+                                // title may still be the "New Conversation"
+                                // placeholder, so inMemoryIsNewer alone would
+                                // clobber a title the sync just resolved.  Only
+                                // adopt the in-memory title when it is itself a
+                                // meaningful value (a genuine in-flight rename).
+                                if (inMemory.title && !PLACEHOLDER_TITLES.has(inMemory.title)) {
+                                    mc.title = inMemory.title;
+                                }
                             }
                             // Preserve user-read state across syncs.
                             // hasUnreadResponse is cleared on conversation view
