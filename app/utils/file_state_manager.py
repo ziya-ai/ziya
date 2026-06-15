@@ -67,6 +67,10 @@ class FileStateManager:
                         self.conversation_states = {}
                         return
 
+                    # Use the state file's mtime as the access-time proxy for
+                    # loaded conversations (no per-conversation timestamp is
+                    # persisted). This lets Phase 1 TTL eviction apply to them.
+                    state_mtime = os.path.getmtime(self.state_file)
                     for conv_id, files in data.items():
                         self.conversation_states[conv_id] = {}
                         for file_path, state_data in files.items():
@@ -85,6 +89,7 @@ class FileStateManager:
                                 last_seen_content=state_data['last_seen_content'],
                                 last_context_submission_content=state_data.get('last_context_submission_content', state_data['current_content'])
                             )
+                        self._conversation_access_times[conv_id] = state_mtime
                     if self.conversation_states:
                         logger.info(f"Loaded file states for {len(self.conversation_states)} conversations")
             except Exception as e:
@@ -178,11 +183,17 @@ class FileStateManager:
         # Phase 2: evict oldest if still over the cap
         overflow = len(self.conversation_states) - _MAX_CONVERSATIONS
         if overflow > 0:
+            # Sort ALL in-memory conversations, not just those with recorded
+            # access times. Conversations loaded from disk by _load_state()
+            # have no access-time entry; treating them as oldest (0.0) makes
+            # them eviction candidates. Previously only conversations touched
+            # this session were candidates, so the newly created active
+            # conversation was evicted while stale loaded ones survived.
             sorted_convs = sorted(
-                self._conversation_access_times.items(),
-                key=lambda x: x[1]
+                self.conversation_states.keys(),
+                key=lambda cid: self._conversation_access_times.get(cid, 0.0)
             )
-            for cid, _ in sorted_convs[:overflow]:
+            for cid in sorted_convs[:overflow]:
                 self.conversation_states.pop(cid, None)
                 self.conversation_diffs.pop(cid, None)
                 self._conversation_access_times.pop(cid, None)
