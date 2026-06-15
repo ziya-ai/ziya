@@ -187,7 +187,16 @@ class PrecisionPromptSystem:
                     bead_directive = get_bead_directive()
                     if bead_directive:
                         messages[0]["content"] += bead_directive
-                    bead_status = get_bead_status_summary()
+                    # Count prior user turns so the empty-state nudge only
+                    # fires for multi-turn sessions (see get_bead_status_summary).
+                    turn_count = sum(
+                        1 for m in chat_history
+                        if isinstance(m, dict) and (
+                            m.get("type") in ("human", "user")
+                            or m.get("role") == "user"
+                        )
+                    )
+                    bead_status = get_bead_status_summary(turn_count)
                     if bead_status:
                         messages[0]["content"] += bead_status
                 except (ImportError, RuntimeError, OSError) as e:

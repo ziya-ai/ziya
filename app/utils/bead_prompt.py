@@ -82,11 +82,18 @@ def get_bead_directive() -> str:
     return BEAD_DIRECTIVE
 
 
-def get_bead_status_summary() -> str:
+def get_bead_status_summary(turn_count: int = 0) -> str:
     """Return a compact summary of the current bead tree for injection.
 
     Only included when there are parked beads — gives the model awareness
     of pending threads without bloating the prompt for simple conversations.
+
+    When there are *no* beads yet but the conversation has become multi-turn
+    (``turn_count`` >= 3), emit a brief live nudge instead of staying silent.
+    The static directive is buried deep in a long system prompt by the time a
+    session gets busy; this puts the trigger conditions back into recent
+    context every turn — precisely when threads are most likely to be dropped.
+    Single-shot / short exchanges stay quiet, preserving the original design.
     """
     from app.mcp.builtin_tools import is_builtin_category_enabled
     if not is_builtin_category_enabled("beads"):
@@ -97,10 +104,18 @@ def get_bead_status_summary() -> str:
     try:
         from app.storage.beads import load_bead_tree
         tree = load_bead_tree()
-        if not tree.beads:
-            return ""
-        parked = tree.parked_beads
+        parked = tree.parked_beads if tree.beads else []
         if not parked:
+            # No pending threads. Stay silent for short conversations, but
+            # for ongoing ones surface a one-line reminder so the trigger
+            # conditions aren't lost at the bottom of a long static prompt.
+            if turn_count >= 3:
+                return (
+                    "\n\n### Bead check: no threads tracked yet. "
+                    "If this turn you flagged an aside, noticed an unrelated "
+                    "issue ('noticed in passing'), or listed options the user "
+                    "didn't all pick, park a bead now before it's lost."
+                )
             return ""
 
         lines = ["\n\n### Pending Beads (parked threads):"]
