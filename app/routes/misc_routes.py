@@ -38,7 +38,7 @@ class PcapAnalyzeRequest(BaseModel):
 
 
 @router.post("/api/extract-document")
-async def extract_document(file: UploadFile = File(...)):
+async def extract_document(file: UploadFile = File(...), request: Request = None):
     """
     Accept a document file upload and return extracted text.
 
@@ -46,10 +46,29 @@ async def extract_document(file: UploadFile = File(...)):
     delegated to the existing document_extractor module which uses
     pdfplumber / pypdf / python-docx / openpyxl / python-pptx.
     """
-    from app.utils.document_extractor import UPLOAD_HANDLER_REGISTRY
+    from app.utils.document_extractor import UPLOAD_HANDLER_REGISTRY, NoExtractableTextError
 
     filename = file.filename or "upload"
     ext = os.path.splitext(filename)[1].lower()
+
+    size_limit = 50 * 1024 * 1024
+
+    # Reject oversized uploads from the Content-Length header BEFORE
+    # buffering the body into memory.  Without this, a multi-GB upload is
+    # fully read via file.read() before the post-read size check fires —
+    # a memory-exhaustion DoS shape.  Content-Length can be absent or
+    # spoofed, so the post-read check below remains the authority.
+    if request is not None:
+        declared = request.headers.get("content-length")
+        if declared is not None:
+            try:
+                if int(declared) > size_limit:
+                    return JSONResponse(
+                        status_code=413,
+                        content={"error": "file_too_large", "message": f"File exceeds {size_limit // (1024*1024)} MB limit"}
+                    )
+            except (ValueError, TypeError):
+                pass  # Malformed header — fall through to post-read check
 
     handler = UPLOAD_HANDLER_REGISTRY.get(ext)
     if handler is None:
@@ -59,7 +78,6 @@ async def extract_document(file: UploadFile = File(...)):
         )
 
     contents = await file.read()
-    size_limit = 200 * 1024 * 1024
     if len(contents) > size_limit:
         return JSONResponse(
             status_code=413,
@@ -106,6 +124,13 @@ async def extract_document(file: UploadFile = File(...)):
         return JSONResponse({"filename": filename, "rag": rag_used,
                              **({"indexed_path": kept_path} if rag_used else {}),
                              **result})
+    except NoExtractableTextError as e:
+        # Document genuinely has no extractable text and no image
+        # fallback — a client-side condition (unprocessable document),
+        # not a server fault.  Map to a typed 422 so the frontend can
+        # surface "no text found" rather than a generic 500.
+        logger.info(f"No extractable text for {filename}: {e}")
+        return JSONResponse(status_code=422, content={"error": "no_text_extracted", "message": str(e)})
     except Exception as e:
         logger.error(f"Document extraction failed for {filename}: {e}", exc_info=True)
         return JSONResponse(status_code=500, content={"error": "server_error", "message": str(e)})

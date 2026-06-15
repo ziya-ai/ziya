@@ -14,6 +14,17 @@ from functools import lru_cache
 
 from app.utils.logging_utils import logger
 
+
+class NoExtractableTextError(RuntimeError):
+    """A document has no extractable text and no usable image fallback.
+
+    Distinguished from a generic RuntimeError so the upload route can map
+    it to a typed 422 (unprocessable document — a client-side condition)
+    rather than a 500 (server fault).  Subclasses RuntimeError so existing
+    ``except RuntimeError`` handlers continue to catch it.
+    """
+
+
 # Track which libraries are available
 _LIBRARIES_CHECKED = False
 _AVAILABLE_LIBRARIES = {
@@ -147,7 +158,7 @@ def _document_upload_handler(tmp_path: str, filename: str) -> dict:
                         "images": page_images,
                         "message": f"No readable text found. Extracted {len(page_images)} page image(s) from the PDF.",
                     }
-            raise RuntimeError(
+            raise NoExtractableTextError(
                 f"Could not extract readable text from {filename}. "
                 "The document may be a scanned image without a text layer, or may be empty."
             )
