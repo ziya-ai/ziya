@@ -194,8 +194,12 @@ class TypeScriptHandler(LanguageHandler):
                 
                 # Additional verification: check for common issues
                 issues = cls._check_common_issues(original_content, modified_content)
-                if issues:
-                    return False, f"Code verification issues: {'; '.join(issues)}"
+                blocking, advisory = JavaScriptHandler.partition_issues(issues)
+                if advisory:
+                    logger.debug(f"TS style advisories (non-fatal) for {file_path}: "
+                                 f"{'; '.join(advisory)}")
+                if blocking:
+                    return False, f"Code verification issues: {'; '.join(blocking)}"
                 
                 return True, None
             finally:

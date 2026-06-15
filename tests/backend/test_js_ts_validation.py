@@ -246,22 +246,31 @@ class TestTscPathResolution(unittest.TestCase):
             self.assertTrue(is_valid, f"Non-syntax tsc errors should not reject valid code, got: {error}")
 
     def test_syntax_tsc_errors_reject(self):
-        """When tsc fails with a syntax error (TS1xxx), should reject the diff."""
+        """When tsc fails with a syntax error (TS1xxx) the diff INTRODUCED, reject it.
+
+        Differential validation runs tsc twice — once on the modified content,
+        once on the original.  A TS1xxx error only rejects when it is absent
+        from the original (the diff introduced it); a pre-existing failure on a
+        file fragment is forgiven.  So the original must be valid and the
+        modified broken, and the two subprocess calls return distinct results.
+        """
         from app.utils.diff_utils.language_handlers.typescript import TypeScriptHandler
 
-        broken_code = "const x: number = ;\n"  # actual syntax error
+        valid_code = "const x: number = 1;\n"   # original: clean
+        broken_code = "const x: number = ;\n"   # modified: syntax error introduced
 
-        # Mock tsc returning TS1109 (expression expected) — a real syntax error
-        mock_result = mock.Mock()
-        mock_result.returncode = 1
-        mock_result.stdout = "file.ts(1,19): error TS1109: Expression expected.\n"
-        mock_result.stderr = ""
+        # First subprocess.run (modified) reports TS1109; the differential
+        # second run (original) comes back clean, so the error is attributed
+        # to the diff and rejected.
+        modified_result = mock.Mock(returncode=1, stderr="",
+            stdout="file.ts(1,19): error TS1109: Expression expected.\n")
+        clean_result = mock.Mock(returncode=0, stdout="", stderr="")
 
         with mock.patch('shutil.which', return_value='/usr/bin/tsc'), \
              mock.patch('os.path.isfile', return_value=False), \
-             mock.patch('subprocess.run', return_value=mock_result):
+             mock.patch('subprocess.run', side_effect=[modified_result, clean_result]):
             is_valid, error = TypeScriptHandler.verify_changes(
-                broken_code, broken_code, '/project/src/file.ts'
+                valid_code, broken_code, '/project/src/file.ts'
             )
             self.assertFalse(is_valid, "Syntax errors (TS1xxx) should reject the diff")
             self.assertIn('TS1109', error or '')
@@ -269,8 +278,8 @@ class TestTscPathResolution(unittest.TestCase):
 
 class TestPipelineValidatorPathResolution(unittest.TestCase):
     """
-    pipeline_validator.py should fall back to os.getcwd() when the file is
-    not found under ZIYA_USER_CODEBASE_DIR.
+    pipeline_validator.py should fall back to the request-scoped project root
+    (get_project_root()) when the file is not found under ZIYA_USER_CODEBASE_DIR.
     """
 
     def _get_validator_source(self) -> str:
@@ -284,20 +293,21 @@ class TestPipelineValidatorPathResolution(unittest.TestCase):
 
     def test_cwd_fallback_present(self):
         source = self._get_validator_source()
-        self.assertIn('os.getcwd()', source,
-                      "pipeline_validator should fall back to os.getcwd() "
-                      "when file not found at primary codebase_dir")
+        self.assertIn('get_project_root()', source,
+                      "pipeline_validator should fall back to the request-scoped "
+                      "project root when file not found at primary codebase_dir")
 
     def test_cwd_fallback_only_used_when_primary_path_missing(self):
-        """The cwd fallback must be guarded by an os.path.exists check."""
+        """The project-root fallback must be guarded by an os.path.exists check."""
         source = self._get_validator_source()
-        # The pattern should be: if not os.path.exists(full_path): ... os.getcwd()
-        cwd_idx = source.find('os.getcwd()')
+        # Anchor on cwd_candidate, which uniquely marks the fallback block (a
+        # bare get_project_root() also appears later for the temp-dir redirect).
+        cwd_idx = source.find('cwd_candidate')
         self.assertGreater(cwd_idx, -1)
-        # There must be an 'os.path.exists' check before the cwd fallback
+        # There must be an 'os.path.exists' check before the fallback
         pre_cwd = source[:cwd_idx]
         self.assertIn('os.path.exists', pre_cwd,
-                      "cwd fallback should only activate when primary path doesn't exist")
+                      "project-root fallback should only activate when primary path doesn't exist")
 
 
 if __name__ == '__main__':

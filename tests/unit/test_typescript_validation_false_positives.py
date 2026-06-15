@@ -34,12 +34,14 @@ class TestTscNonSyntaxDiagnostics:
     @patch('subprocess.run')
     @patch('shutil.which', return_value='/usr/bin/tsc')
     def test_tsc_ts1xxx_still_fails(self, mock_which, mock_run):
-        """tsc reporting syntax errors (TS1xxx) should still fail."""
-        mock_run.return_value = MagicMock(
-            returncode=1,
-            stdout="test.ts(3,1): error TS1005: ';' expected.\n",
-            stderr=""
-        )
+        """tsc reporting syntax errors (TS1xxx) the diff introduced should fail."""
+        # Differential validation runs tsc twice: first on the modified content
+        # (TS1005), then on the original.  The original is valid TS, so its run
+        # is clean — proving the diff introduced the error, which must reject.
+        mock_run.side_effect = [
+            MagicMock(returncode=1, stdout="test.ts(3,1): error TS1005: ';' expected.\n", stderr=""),
+            MagicMock(returncode=0, stdout="", stderr=""),
+        ]
         original = "const x = 1;\n"
         modified = "const x = \n"
 
@@ -50,14 +52,16 @@ class TestTscNonSyntaxDiagnostics:
     @patch('shutil.which', return_value='/usr/bin/tsc')
     def test_tsc_mixed_errors_fails_on_syntax(self, mock_which, mock_run):
         """Mixed TS1xxx + TS2xxx should fail because of the syntax error."""
-        mock_run.return_value = MagicMock(
-            returncode=1,
-            stdout=(
+        # Differential validation: modified run reports the mixed errors; the
+        # second run on the (valid) original is clean, so the introduced TS1005
+        # rejects.
+        mock_run.side_effect = [
+            MagicMock(returncode=1, stdout=(
                 "test.ts(2,1): error TS1005: ';' expected.\n"
                 "test.ts(5,10): error TS2307: Cannot find module 'foo'.\n"
-            ),
-            stderr=""
-        )
+            ), stderr=""),
+            MagicMock(returncode=0, stdout="", stderr=""),
+        ]
         original = "const x = 1;\n"
         modified = "const x = \nimport foo from 'foo';\n"
 
@@ -69,7 +73,8 @@ class TestFallbackHeuristicAdvisoryOnly:
     """When tsc is not available, heuristic checks should be advisory, not blocking."""
 
     @patch('shutil.which', return_value=None)
-    def test_any_type_does_not_block(self, mock_which):
+    @patch('os.path.isfile', return_value=False)
+    def test_any_type_does_not_block(self, mock_isfile, mock_which):
         """Use of `any` type should not block diff application."""
         original = "const x = 1;\n"
         modified = "function process(data: any): void {\n  console.log(data);\n}\n"
@@ -78,7 +83,8 @@ class TestFallbackHeuristicAdvisoryOnly:
         assert is_valid, f"'any' type should not block: {error}"
 
     @patch('shutil.which', return_value=None)
-    def test_jsx_angle_brackets_do_not_block(self, mock_which):
+    @patch('os.path.isfile', return_value=False)
+    def test_jsx_angle_brackets_do_not_block(self, mock_isfile, mock_which):
         """JSX elements in object literals should not be misread as broken generics."""
         original = "const x = 1;\n"
         modified = (
@@ -91,7 +97,8 @@ class TestFallbackHeuristicAdvisoryOnly:
         assert is_valid, f"JSX angle brackets should not block: {error}"
 
     @patch('shutil.which', return_value=None)
-    def test_real_bracket_mismatch_still_caught(self, mock_which):
+    @patch('os.path.isfile', return_value=False)
+    def test_real_bracket_mismatch_still_caught(self, mock_isfile, mock_which):
         """Mismatched brackets should still be caught even without tsc."""
         original = "const x = 1;\n"
         modified = "function broken() {\n  if (true) {\n    console.log('x');\n}\n"
