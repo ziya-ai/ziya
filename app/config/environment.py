@@ -136,6 +136,17 @@ def setup_environment(args: Any) -> None:
     explicit_region = getattr(args, 'region', None)
     model = getattr(args, 'model', None)
 
+    # Resolve model aliases (e.g. --model fable → fable5) before the value is
+    # used for region defaults, endpoint validation, or ZIYA_MODEL.  Without
+    # this the startup --model flag only accepts canonical names, while the
+    # interactive /model command resolves aliases — an inconsistency that made
+    # "--model fable" fail.  Resolution is per-endpoint, matching /model.
+    if model:
+        _aliases = config.MODEL_ALIASES.get(endpoint, {})
+        if model not in config.MODEL_CONFIGS.get(endpoint, {}) and model in _aliases:
+            logger.info(f"Resolved model alias '{model}' → '{_aliases[model]}'")
+            model = _aliases[model]
+
     if explicit_region:
         os.environ["AWS_REGION"] = explicit_region
         logger.info(f"Using AWS region from command line: {explicit_region}")
