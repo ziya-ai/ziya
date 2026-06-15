@@ -1913,6 +1913,7 @@ class CLI:
 
     async def cmd_clear(self, arg: str) -> bool:
         """/clear — clear conversation history."""
+        count = len(self.history)
         self.history = []
         # Fresh session identity: the next save writes a new session file,
         # and conversation-scoped state (bead tree) starts over since
@@ -1920,6 +1921,28 @@ class CLI:
         self._session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"
         self._session_name = None
         self._session_start_time = None
+        print(f"\033[32m✓ Cleared {count} messages from history\033[0m")
+        return True
+
+    async def cmd_reset(self, arg: str) -> bool:
+        """/reset — clear history, files, and all session state."""
+        hist_count = len(self.history)
+        file_count = len(self.files)
+        self.history = []
+        self.files = []
+        self._session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"
+        self._session_name = None
+        self._session_start_time = None
+        self._session_shell_commands = None
+        self._session_yolo = False
+        self._session_timeout = None
+        self._partial_response = ""
+        print(f"\033[32m✓ Session reset\033[0m")
+        print(f"\033[90m  Cleared {hist_count} messages, {file_count} files\033[0m")
+        return True
+
+    async def cmd_suspend(self, arg: str) -> bool:
+        """/suspend [name] — save session and exit."""
         try:
             session_id = save_session(self, arg.strip() or None)
         except Exception as e:
@@ -1928,11 +1951,18 @@ class CLI:
         print(f"\033[32m✓ Session saved: {session_id}\033[0m")
         print("\033[90mResume with: ziya chat --resume\033[0m")
         return False
+
+    async def cmd_save(self, arg: str) -> bool:
+        """/save [name] — checkpoint session without exiting."""
         try:
             session_id = save_session(self, arg.strip() or None)
             print(f"\033[32m✓ Session saved: {session_id}\033[0m")
         except Exception as e:
             print(f"\033[31mSave failed: {e}\033[0m")
+        return True
+
+    async def cmd_resume(self, arg: str) -> bool:
+        """/resume [name] — restore a previous session."""
         arg = arg.strip()
         if arg:
             session_id = find_session_by_name(arg)
@@ -1962,24 +1992,6 @@ class CLI:
         self._session_start_time = data.get('start_time', data.get('timestamp'))
         print(f"\033[32m✓ Resumed session {self._session_id}\033[0m")
         print(f"  Files: {len(self.files)}, Messages: {len(self.history)}\n")
-        print("\033[32m✓ History cleared\033[0m")
-        return True
-
-    async def cmd_reset(self, arg: str) -> bool:
-        """/reset — clear history, files, and all session state."""
-        self.files = []
-        print("\033[32m✓ Session reset: history, files, and session state cleared\033[0m")
-        return True
-
-    async def cmd_suspend(self, arg: str) -> bool:
-        """/suspend [name] — save session and exit."""
-
-    async def cmd_save(self, arg: str) -> bool:
-        """/save [name] — checkpoint session without exiting."""
-        return True
-
-    async def cmd_resume(self, arg: str) -> bool:
-        """/resume [name] — restore a previous session."""
         return True
 
     async def cmd_shell(self, arg: str) -> bool:
