@@ -59,6 +59,7 @@ const sourceBadge = (source?: string, isDarkMode: boolean = true) => {
     builtin:  { bg: ['#e5e7eb', '#2a2a2a'], fg: ['#6b7280', '#aaa'], label: 'built-in' },
     model_discoverable: { bg: ['#dcfce7', '#1a2e1a'], fg: ['#16a34a', '#4ade80'], label: 'AI-available' },
     project:  { bg: ['#cffafe', '#164e63'], fg: ['#0891b2', '#67e8f9'], label: 'project' },
+    user:     { bg: ['#ffedd5', '#3b2410'], fg: ['#ea580c', '#fb923c'], label: 'user' },
     custom:   { bg: ['#fef3c7', '#3b2f1a'], fg: ['#d97706', '#fbbf24'], label: 'custom' },
   };
   const s = styles[source || ''] || styles.custom;
@@ -160,7 +161,7 @@ export const SkillsSection: React.FC<Props> = ({
   );
 
   /* ---- group by source: user stuff first, then built-in ---- */
-  const userSkills   = filtered.filter(s => s.source === 'custom' || s.source === 'project' || (!s.source && !s.isBuiltIn));
+  const userSkills   = filtered.filter(s => s.source === 'custom' || s.source === 'project' || s.source === 'user' || (!s.source && !s.isBuiltIn));
   const builtinSkills = filtered.filter(s => s.source === 'builtin' || s.isBuiltIn);
 
   /* ---- sort within groups: active first, then on-demand, then off ---- */

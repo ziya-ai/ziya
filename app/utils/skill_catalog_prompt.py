@@ -60,6 +60,17 @@ def get_skill_catalog_section() -> str:
     except Exception as e:
         logger.debug(f"Project skill catalog merge failed: {e}")
 
+    # User-global skills from ~/.ziya/skills (cross-project, all projects).
+    try:
+        from app.services.skill_discovery import discover_user_skills
+        from app.services.token_service import TokenService
+        for us in discover_user_skills(TokenService(), load_body=False):
+            if us.visibility != "model_discoverable":
+                continue
+            rows.append(f"  • {us.name} — {us.description}")
+    except Exception as e:
+        logger.debug(f"User skill catalog merge failed: {e}")
+
     if not rows:
         return ""
 

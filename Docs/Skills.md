@@ -20,7 +20,7 @@ Each skill has an activation level that controls when it's included:
 
 - **Off** — Disabled. Not sent to the model.
 - **Always on** — Injected into every message as a system prompt supplement.
-- **On-demand** (model-discoverable skills only) — The model can load the skill's instructions when it decides they're relevant, via the `get_skill_details` tool. This saves tokens when the skill isn't needed.
+- **On-demand** — The model can load a skill's instructions when it decides they're relevant, via the `get_skill_details` tool. This saves tokens when the skill isn't needed. Model-discoverable skills are advertised to the model in a compact catalog so it knows they exist; file-backed skills (project `.agents/skills/` and user-global `~/.ziya/skills/`) can additionally be loaded by an explicit name or keyword lookup even when they are *user-selectable* and therefore absent from that catalog.
 
 Click the skill card to expand it and use the segmented control to change the activation level.
 

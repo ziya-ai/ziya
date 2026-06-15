@@ -321,6 +321,36 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     };
     loadSkills();
   }, [currentProject?.id]);
+
+  // Hydrate full prompt bodies for any skills that are active but whose
+  // body was omitted by listSkills (file-backed project/user skills, served
+  // with load_body=False for a cheap catalog).  The interactive toggle
+  // (addSkillToLens) hydrates on activation, but lens restore on page load /
+  // project switch sets activeSkillIds directly from localStorage, bypassing
+  // it — without this, a skill that was active before a reload injects an
+  // empty "[Active Skill: <name>]" prompt.
+  useEffect(() => {
+    if (!currentProject || skills.length === 0 || activeSkillIds.length === 0) return;
+    const needHydration = activeSkillIds.filter(id => {
+      const s = skills.find(sk => sk.id === id);
+      return s && !s.prompt;
+    });
+    if (needHydration.length === 0) return;
+    Promise.all(
+      needHydration.map(id =>
+        skillApi.getSkill(currentProject.id, id)
+          .then(full => (full?.prompt ? { id, full } : null))
+          .catch(() => null)
+      )
+    ).then(results => {
+      const valid = results.filter((r): r is { id: string; full: Skill } => r !== null);
+      if (valid.length === 0) return;
+      setSkills(prev => prev.map(s => {
+        const hit = valid.find(v => v.id === s.id);
+        return hit ? { ...s, ...hit.full } : s;
+      }));
+    });
+  }, [currentProject?.id, skills, activeSkillIds]);
   
   // Calculate active files from contexts + additional
   const activeFiles = useMemo(() => {
@@ -701,15 +731,33 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       prev.includes(skillId) ? prev : [...prev, skillId]
     );
 
-    // Auto-activate contexts referenced by this skill
+    // File-backed skills (project/user) are returned by listSkills with the
+    // body omitted — the backend discovers them with load_body=False for a
+    // cheap catalog (progressive disclosure stage 1).  So skill.prompt is ""
+    // until hydrated.  Activating one and relying on that empty prompt injects
+    // "[Active Skill: <name>]\n" with no instructions, which is why the
+    // atlas-metrics skill appeared active but was unusable.  Fetch the full
+    // skill (GET /skills/{id} → storage.get → load_body=True) and patch the
+    // body into local state so activeSkillPrompts produces the real prompt.
     const skill = skills.find(s => s.id === skillId);
+    if (currentProject && skill && !skill.prompt) {
+      skillApi.getSkill(currentProject.id, skillId)
+        .then(full => {
+          if (full?.prompt) {
+            setSkills(prev => prev.map(s => s.id === skillId ? { ...s, ...full } : s));
+          }
+        })
+        .catch(err => console.error(`Failed to hydrate skill ${skillId}:`, err));
+    }
+
+    // Auto-activate contexts referenced by this skill
     if (skill?.contextIds && skill.contextIds.length > 0) {
       setActiveContextIds(prev => {
         const merged = new Set([...prev, ...skill.contextIds!]);
         return Array.from(merged);
       });
     }
-  }, [skills]);  
+  }, [skills, currentProject]);
   const removeSkillFromLens = useCallback((skillId: string) => {
     setActiveSkillIds(prev => prev.filter(id => id !== skillId));
   }, []);
