@@ -70,8 +70,18 @@ class TestCommandDispatch:
 class TestGoalCreate:
     """Test goal creation flow."""
 
-    def test_creates_card_and_launches(self, client, mock_project_storage):
-        """Goal create synthesizes a card, saves it, and launches."""
+    def test_creates_card_and_stages(self, client, mock_project_storage):
+        """Goal create synthesizes a card, saves it, and STAGES it.
+
+        The goal flow was deliberately changed from launch-immediately to
+        stage-then-confirm (see _goal_create in app/api/commands.py): the
+        binding is created with run_id=None so the user can review the
+        synthesized instructions and adjust scoped permissions before
+        clicking Run on the inline tile.  The response type is therefore
+        'goal_staged' (not 'goal_launched') and the data carries
+        binding_id but no run_id.  No run is launched, so
+        _launch_run_for_card is NOT invoked on this path.
+        """
         mock_card = MagicMock()
         mock_card.id = "card_123"
         mock_card.source = "goal"
@@ -79,20 +89,14 @@ class TestGoalCreate:
         mock_card_storage = MagicMock()
         mock_card_storage.create.return_value = mock_card
 
-        mock_run = MagicMock()
-        mock_run.id = "run_456"
-
         mock_binding = MagicMock()
         mock_binding.id = "bind_789"
 
         mock_binding_storage = MagicMock()
         mock_binding_storage.create.return_value = mock_binding
 
-        # `_launch_run_for_card` is imported inside `_goal_create`, so we
-        # patch it at the source module rather than at app.api.commands.
         with patch("app.api.commands.TaskCardStorage", return_value=mock_card_storage), \
-             patch("app.api.commands.TaskBindingStorage", return_value=mock_binding_storage), \
-             patch("app.api.task_cards._launch_run_for_card", new_callable=AsyncMock, return_value=mock_run):
+             patch("app.api.commands.TaskBindingStorage", return_value=mock_binding_storage):
 
             resp = client.post("/api/v1/commands", json={
                 "command": "goal",
@@ -102,32 +106,36 @@ class TestGoalCreate:
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["type"] == "goal_launched"
+        assert data["type"] == "goal_staged"
         assert data["data"]["card_id"] == "card_123"
-        assert data["data"]["run_id"] == "run_456"
+        # Staged, not launched: a binding exists but no run was created.
         assert data["data"]["binding_id"] == "bind_789"
-        assert "fix all lint errors" in data["message"]
+        assert data["data"].get("run_id") is None
+        assert "fix all lint errors" in data["data"]["goal_text"]
 
         # Verify card was created with goal source
         mock_card_storage.create.assert_called_once()
+        # The binding must be created with run_id=None (staged).
+        assert mock_binding_storage.create.call_args.kwargs.get("run_id") is None
         create_arg = mock_card_storage.create.call_args[0][0]
         assert "Goal:" in create_arg.name
         assert "goal" in create_arg.tags
 
     def test_goal_without_conversation_id_skips_binding(self, client, mock_project_storage):
-        """Goal without conversation_id still creates and launches."""
+        """Goal without conversation_id still creates and stages the card.
+
+        With no conversation to bind to, the binding step is skipped
+        (binding_id stays None), but the card is still synthesized and the
+        response is 'goal_staged' (see the staging redesign documented in
+        test_creates_card_and_stages).  No run is launched.
+        """
         mock_card = MagicMock()
         mock_card.id = "card_123"
 
         mock_card_storage = MagicMock()
         mock_card_storage.create.return_value = mock_card
 
-        mock_run = MagicMock()
-        mock_run.id = "run_456"
-
-        with patch("app.api.commands.TaskCardStorage", return_value=mock_card_storage), \
-             patch("app.api.task_cards._launch_run_for_card", new_callable=AsyncMock, return_value=mock_run):
-
+        with patch("app.api.commands.TaskCardStorage", return_value=mock_card_storage):
             resp = client.post("/api/v1/commands", json={
                 "command": "goal",
                 "args": "deploy the service",
@@ -135,7 +143,7 @@ class TestGoalCreate:
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["type"] == "goal_launched"
+        assert data["type"] == "goal_staged"
         assert data["data"]["binding_id"] is None
 
 

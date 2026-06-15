@@ -409,6 +409,20 @@ class TestRecoveryOnRehydratedPlan:
 
         result = await mgr.promote_to_stub_crystal(plan_id, "D1")
 
+        # Promotion succeeded on the rehydrated plan.
         assert result["promoted"] == "D1"
-        assert mgr._statuses[plan_id]["D1"] == "crystal"
-        assert "D1" in mgr._crystals[plan_id]
+        assert result["status"] == "crystal"
+
+        # D1 was the only delegate, so promoting it completes the plan.
+        # on_crystal_ready then runs the completion cascade, which calls
+        # cleanup_plan() and frees _statuses[plan_id] / _crystals[plan_id]
+        # by design (documented: "Free in-memory state ... for completed
+        # plans").  Asserting that freed state is therefore wrong; assert
+        # the completion side-effects fired instead, which is what
+        # "promotion drove the rehydrated plan to completion" actually
+        # means.  (Contrast test_retry_on_rehydrated_plan, where retry
+        # returns the plan to 'running' so no cleanup occurs and the
+        # _statuses assertion is valid.)
+        mgr._orchestrator_final_synthesis.assert_awaited_once_with(plan_id)
+        mgr._post_completion_to_source.assert_called_once()
+        assert plan_id not in mgr._statuses
