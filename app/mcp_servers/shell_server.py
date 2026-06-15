@@ -92,7 +92,19 @@ def _consume_assignment_with_subst(segment: str) -> str | None:
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from app.config.shell_config import get_default_shell_config
 from app.config.write_policy import WritePolicyManager
-from app.mcp_servers.write_policy import ShellWriteChecker
+from app.mcp_servers.write_policy import ShellWriteChecker, _strip_heredoc_bodies
+
+# Heredoc redirection: "<<DELIM\n", "<<-DELIM\n", "<< 'DELIM'\n", '<< "DELIM"\n'.
+# Kept in lockstep with write_policy._strip_heredoc_bodies so detection and
+# stripping agree on what counts as a heredoc. A heredoc body is stdin *data*,
+# not executable commands, so a command using one must be handed to a real
+# shell (sh -c); the manual shell=False orchestrator cannot feed a body to
+# stdin and would pass "<<DELIM" plus every body line as literal argv.
+_HEREDOC_RE = re.compile(r"""<<-?\s*(?:'[^']+'|"[^"]+"|\S+)\n""", re.MULTILINE)
+
+
+def _has_heredoc(command: str) -> bool:
+    return bool(_HEREDOC_RE.search(command))
 
 
 class ShellServer:
@@ -468,6 +480,24 @@ class ShellServer:
                 cwd=effective_cwd,
             )
 
+        # Heredoc redirection (cmd <<EOF ... EOF) also requires a real
+        # shell: the manual orchestrator below runs each segment with
+        # shell=False and cannot feed a heredoc body to stdin, so it
+        # would pass "<<EOF" and every body line as literal argv. The
+        # body is stdin *data*, not commands, so routing the whole
+        # command to sh -c does not widen the executable surface — and
+        # is_command_allowed has already validated every command segment
+        # (with bodies stripped) before we reach here.
+        if _has_heredoc(command):
+            return subprocess.run(
+                ['sh', '-c', command],
+                shell=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                cwd=effective_cwd,
+            )
+
         last_result = None
         accumulated_stdout = ""
         accumulated_stderr = ""
@@ -671,6 +701,27 @@ class ShellServer:
             return False, "Empty command"
         
         command = command.strip()
+
+        # Heredoc commands span multiple physical lines and must NOT be
+        # truncated to the first line below: the body is stdin *data*, but
+        # a real command may be sequenced after the terminator
+        # (e.g. ``cat <<EOF .. EOF; rm /etc/passwd``). Execution routes
+        # heredocs to a real shell (see _execute_pipeline), so we must
+        # validate every command that shell would run. Strip the heredoc
+        # bodies, then validate each remaining command line against the
+        # allowlist. Compound constructs (if/while/...) are excluded — they
+        # keep their dedicated _validate_compound_body path below.
+        if _has_heredoc(command) and not self._is_compound_command(command):
+            stripped = _strip_heredoc_bodies(command)
+            for hd_line in stripped.split('\n'):
+                hd_line = hd_line.strip()
+                if not hd_line or hd_line.startswith('#'):
+                    continue
+                ok, reason = self.is_command_allowed(hd_line)
+                if not ok:
+                    return False, reason
+            return True, ""
+
         # Skip leading shell comment lines so "# explanation\nsed ..."
         # correctly identifies 'sed' as the command, not '#'.
         lines = command.split('\n')
