@@ -268,6 +268,25 @@ export function parseHunkRanges(diffContent: string): [number, number][] {
 }
 
 /**
+ * Extract the ZIYA_NOPOS functional locators (section hints) from a
+ * frontend-synthesized diff. Synthesized hunks carry a placeholder
+ * "@@ -1,N +1,M @@ ZIYA_NOPOS <locator>" header whose line range is
+ * meaningless, so overlap must be judged by the named locator instead.
+ * Returns the set of non-empty locator strings; an empty set means the
+ * diff carries real line positions (not synthesized).
+ */
+export function extractNoPosLocators(diffContent: string): Set<string> {
+    const locators = new Set<string>();
+    const re = /^@@.*@@\s*ZIYA_NOPOS\s*(.*)$/gm;
+    let match;
+    while ((match = re.exec(diffContent)) !== null) {
+        const loc = match[1].trim();
+        if (loc) locators.add(loc);
+    }
+    return locators;
+}
+
+/**
  * Extract the target file path from a single-file diff block.
  * Looks for `+++ b/path` first, then `+++ path`.
  */
@@ -342,6 +361,7 @@ export function findSupersededDiffIndices(diffs: string[]): Set<number> {
 
     const filePaths = diffs.map(extractDiffFilePath);
     const hunkRanges = diffs.map(parseHunkRanges);
+    const noPosLocators = diffs.map(extractNoPosLocators);
     const superseded = new Set<number>();
 
     for (let i = 0; i < diffs.length; i++) {
@@ -353,6 +373,18 @@ export function findSupersededDiffIndices(diffs: string[]): Set<number> {
             if (hunkRanges[i].length === 0 && hunkRanges[j].length === 0) {
                 superseded.add(i);
                 break;
+            }
+
+            // Synthesized (ZIYA_NOPOS) hunks carry placeholder line ranges, so
+            // positional overlap is meaningless. Treat them as superseding only
+            // when they share a named functional locator with the other diff.
+            if (noPosLocators[i].size > 0 || noPosLocators[j].size > 0) {
+                const sharesLocator = [...noPosLocators[i]].some(loc => noPosLocators[j].has(loc));
+                if (sharesLocator && !isSequentialPair(diffs[i], diffs[j])) {
+                    superseded.add(i);
+                    break;
+                }
+                continue; // different / unknown locators → independent changes
             }
 
             if (rangesOverlap(hunkRanges[i], hunkRanges[j])) {

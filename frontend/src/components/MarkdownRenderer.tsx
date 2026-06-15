@@ -1384,7 +1384,58 @@ const isDeletionDiff = (content: string) => {
     return content.includes('diff --git') && hasDeletedFileMode && hasDevNullTarget;
 };
 
-const normalizeGitDiff = (diff: string): string => {
+// A hunk header carrying a real unified-diff range, e.g. "@@ -12,7 +12,9 @@".
+const VALID_HUNK_HEADER = /^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@/;
+
+// Synthesize valid numeric hunk headers for "context-anchored" diffs whose
+// @@ lines carry only a section hint (e.g. "@@ def list") and no
+// -old,count +new,count range. react-diff-view's parseDiff requires a numeric
+// range to render; without it the entire diff falls back to raw text and never
+// reaches the apply pipeline (no Apply button). We cannot know the real start
+// line of a headerless hunk, so we emit a 1-based placeholder range with
+// correct line counts and preserve the original hint as the section heading —
+// the heading is what the apply pipeline later uses to scope context matching.
+const synthesizeMissingHunkHeaders = (diff: string): string => {
+    const lines = diff.split('\n');
+    const hasMalformedHunk = lines.some(l => l.startsWith('@@') && !VALID_HUNK_HEADER.test(l));
+    if (!hasMalformedHunk) return diff;
+
+    const out: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.startsWith('@@') && !VALID_HUNK_HEADER.test(line)) {
+            // Pull any section hint out of the bare "@@ ... [@@]" marker.
+            const hint = line.replace(/^@@+/, '').replace(/@@.*$/, '').trim();
+            // Count old/new lines in the hunk body (until the next hunk/file).
+            let oldCount = 0;
+            let newCount = 0;
+            for (let j = i + 1; j < lines.length; j++) {
+                const b = lines[j];
+                if (b.startsWith('@@') || b.startsWith('diff --git')) break;
+                // Trailing newline artifact from split() — ignore.
+                if (b === '' && j === lines.length - 1) continue;
+                const marker = b[0];
+                if (marker === '+') newCount++;
+                else if (marker === '-') oldCount++;
+                else if (b.startsWith('\\')) { /* "\ No newline" — counts for neither */ }
+                else { oldCount++; newCount++; } // context (incl. blank lines)
+            }
+            // Mark the synthesized range with a ZIYA_NOPOS sentinel so the apply
+            // pipeline knows the -1,N start line is a placeholder (not a real
+            // position) and must locate the hunk by context, bypassing the
+            // MAX_OFFSET gate. The section hint is preserved after the marker.
+            out.push(`@@ -1,${oldCount} +1,${newCount} @@ ZIYA_NOPOS${hint ? ` ${hint}` : ''}`);
+        } else {
+            out.push(line);
+        }
+    }
+    return out.join('\n');
+};
+
+const normalizeGitDiff = (rawDiff: string): string => {
+    // Repair context-anchored hunk headers ("@@ def foo") that lack a numeric
+    // range before any further normalization or parsing happens.
+    const diff = synthesizeMissingHunkHeaders(rawDiff);
     // because LLMs tend to ignore instructions and get lazy
     if (diff.startsWith('diff --git') || diff.match(/^---\s+\S+/m) || diff.includes('/dev/null') ||
         diff.match(/^@@\s+-\d+/m)) {
@@ -2558,7 +2609,11 @@ const isDiffComplete = (diffContent: string, isStreaming: boolean): boolean => {
     const hasGitHeader = lines.some(line => line.startsWith('diff --git'));
     const hasFileHeaders = lines.some(line => line.startsWith('---')) &&
         lines.some(line => line.startsWith('+++'));
-    const hasHunkHeader = lines.some(line => line.match(/^@@\s+-\d+/));
+    // Accept both numeric ("@@ -12,7 +12,9 @@") and context-anchored
+    // ("@@ def foo" / synthesized "@@ ... ZIYA_NOPOS ...") hunk headers.
+    // Without the latter, bare-header diffs never read as complete while
+    // streaming and their Apply button stays permanently greyed.
+    const hasHunkHeader = lines.some(line => /^@@\s+-\d+/.test(line) || /^@@(?!.*-\d+)/.test(line));
     const hasContent = lines.some(line => line.match(/^[+-\s]/));
 
     // Check if the diff ends properly (not cut off mid-hunk)
@@ -2674,7 +2729,12 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
 
         try {
             // Use API layer for diff application
-            const result = await applyDiff(diff, filePath, requestId, diffElementId, buttonInstanceId, currentProject);
+            // Synthesize numeric headers for context-anchored ("@@ def foo")
+            // hunks before sending to the backend. The raw diff carries bare
+            // headers the server parser can't read (0 hunks -> silent
+            // "already_applied" no-op). This is a no-op for normal diffs.
+            const applyReadyDiff = synthesizeMissingHunkHeaders(diff);
+            const result = await applyDiff(applyReadyDiff, filePath, requestId, diffElementId, buttonInstanceId, currentProject);
 
             if (result.success || result.status === 'partial') {
                 const data = result.data!;
@@ -4293,7 +4353,13 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
             }
         });
         if (diffTexts.length > 1) {
-            const rawSuperseded = findSupersededDiffIndices(diffTexts.map(d => d.text));
+            // Synthesize numeric headers first so supersede detection sees the
+            // same form the apply pipeline does. On raw bare-header diffs
+            // ("@@ def foo") parseHunkRanges returns empty — making every
+            // same-file pair look like duplicate new-file creations — and the
+            // ZIYA_NOPOS locators are absent, so the locator-aware branch never
+            // runs. Both effects wrongly grey out earlier diffs to the file.
+            const rawSuperseded = findSupersededDiffIndices(diffTexts.map(d => synthesizeMissingHunkHeaders(d.text)));
             rawSuperseded.forEach(di => supersededIndices.add(diffTexts[di].index));
         }
     }
@@ -5313,8 +5379,11 @@ marked.use({
     }],
     tokenizer: {
         // Disable the built-in single-tilde strikethrough rule.
-        // Returning false tells marked to skip this core rule entirely,
-        // letting our extension (which requires ~~) handle all del tokens.
+        // NOTE: returning `false` from a tokenizer override tells marked to
+        // FALL BACK to the built-in tokenizer (which matches single tildes) —
+        // the opposite of skipping it. Return `undefined` instead, which is
+        // falsy to the lexer (rule produces no token) without triggering the
+        // fallback chain in marked's use() wrapper.
         del(src: string): any {
             const match = src.match(/^~~(?=[^\s~])([\s\S]*?[^\s~])~~(?=[^~]|$)/);
             if (match) {
@@ -5324,7 +5393,7 @@ marked.use({
                     text: match[1],
                 };
             }
-            return false as any;
+            return undefined;
         },
     },
 });
