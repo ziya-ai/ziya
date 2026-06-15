@@ -1167,7 +1167,12 @@ def apply_diff_with_difflib_hybrid_forced(
             if fuzzy_best_pos is not None and fuzzy_best_ratio >= min_confidence:
                 offset_diff = abs(fuzzy_best_pos - fuzzy_initial_pos_search)
                 max_allowed_offset = get_max_offset()  # Use configurable MAX_OFFSET
-                if offset_diff > max_allowed_offset:
+                # Context-anchored hunks (frontend-synthesized "@@ -1,N +1,M @@
+                # ZIYA_NOPOS ..." headers) carry a placeholder start line, so the
+                # offset from that placeholder to the real match is meaningless.
+                # Exclude them from the MAX_OFFSET gate so they flow into the
+                # verification path below and are located purely by context.
+                if offset_diff > max_allowed_offset and not h.get('synthesized_pos'):
                     msg = f"Hunk #{hunk_idx} => large offset ({offset_diff} > {max_allowed_offset}) found at pos {fuzzy_best_pos + 1}, skipping."
                     logger.error(msg)
                     hunk_failures.append((msg, {"hunk": hunk_idx, "offset": offset_diff}))

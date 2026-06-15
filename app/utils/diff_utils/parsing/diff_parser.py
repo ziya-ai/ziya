@@ -358,7 +358,12 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
                     'old_lines': old_count,     # Store old line count for patch application
                     'removed_lines': [],        # Track removed lines
                     'added_lines': [],          # Track added lines
-                    'header': line              # Store the original header
+                    'header': line,             # Store the original header
+                    # ZIYA_NOPOS marks a frontend-synthesized header whose
+                    # -old_start +new_start range is a 1-based placeholder
+                    # (context-anchored diff). The MAX_OFFSET gate must be
+                    # bypassed for these — locate purely by context.
+                    'synthesized_pos': 'ZIYA_NOPOS' in line
                 }
 
                 # Start collecting content for this hunk
