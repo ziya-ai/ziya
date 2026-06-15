@@ -328,12 +328,17 @@ class TestExtractDocumentEndpoint:
         assert len(img["data"]) > 100
 
     def test_upload_blank_pdf_no_images_when_unavailable(self, client):
-        """When page image rendering fails, should still return 422."""
-        with patch("app.routes.misc_routes.extract_pdf_page_images", return_value=None):
-            # Need to ensure the patched import is used — patch at the call site
-            pass
+        """When page image rendering fails, should still return 422.
 
-        # Use a more targeted approach: mock at the module level
+        extract_pdf_page_images is called inside document_extractor itself
+        (the route delegates to the util module), so it must be patched
+        where it is looked up — app.utils.document_extractor — not on
+        misc_routes, which no longer imports the symbol.  A stale
+        ``patch("app.routes.misc_routes.extract_pdf_page_images")`` block
+        used to sit here and raised AttributeError; the real monkeypatch
+        below is what exercises the no-images path.
+        """
+        # Mock at the module level where the function is resolved.
         import app.utils.document_extractor as mod
         original_fn = mod.extract_pdf_page_images
         mod.extract_pdf_page_images = lambda *a, **kw: None
