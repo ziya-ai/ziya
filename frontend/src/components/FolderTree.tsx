@@ -231,8 +231,8 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                         key: '2',
                         label: (
                             <span style={{ display: 'flex', alignItems: 'center', whiteSpace: 'nowrap', gap: getTabDisplayMode('2') === 'full' ? 6 : 0 }}>
-                                <span style={{ fontSize: 16 }}>📦</span>
-                                {getTabDisplayMode('2') === 'full' && <span>Contexts</span>}
+                                <span style={{ fontSize: 16 }}>🎓</span>
+                                {getTabDisplayMode('2') === 'full' && <span>Skills</span>}
                             </span>
                         ),
                         children: (
