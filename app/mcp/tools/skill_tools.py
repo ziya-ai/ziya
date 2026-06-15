@@ -77,9 +77,12 @@ class GetSkillDetailsTool(BaseMCPTool):
                     skill = candidate
                     break
 
-        # Fall back to project-discovered SKILL.md files marked
-        # visibility: model_discoverable.  Loads the full body on demand
-        # (agentskills.io progressive disclosure stage 2).
+        # Fall back to project-discovered SKILL.md files.  The match below is
+        # keyed on an explicit name/id/keyword, so visibility is intentionally
+        # NOT gated here: when the model deliberately asks for a skill by name
+        # it should get the body even if the skill is user_selectable (i.e.
+        # normally toggled in the UI rather than auto-listed in the catalog).
+        # Loads the full body on demand (agentskills.io progressive disclosure).
         if not skill:
             try:
                 from app.services.skill_discovery import discover_project_skills
@@ -90,8 +93,6 @@ class GetSkillDetailsTool(BaseMCPTool):
                     for ps in discover_project_skills(
                         workspace, TokenService(), load_body=True,
                     ):
-                        if ps.visibility != "model_discoverable":
-                            continue
                         ps_kw = [k.lower() for k in (ps.keywords or [])]
                         if skill_id in (ps.name, ps.id) or skill_id in ps_kw:
                             logger.info(
@@ -102,6 +103,26 @@ class GetSkillDetailsTool(BaseMCPTool):
                             }
             except Exception as e:
                 logger.debug(f"Project skill lookup failed: {e}")
+
+        # Fall back to user-global SKILL.md files (~/.ziya/skills).  As with
+        # the project block above, visibility is not gated: an explicit
+        # by-name lookup loads the body regardless of model_discoverable vs
+        # user_selectable.  Cross-project, available in every workspace; loads
+        # the full body on demand (progressive disclosure).
+        if not skill:
+            try:
+                from app.services.skill_discovery import discover_user_skills
+                from app.services.token_service import TokenService
+
+                for us in discover_user_skills(TokenService(), load_body=True):
+                    us_kw = [k.lower() for k in (us.keywords or [])]
+                    if skill_id in (us.name, us.id) or skill_id in us_kw:
+                        logger.info(f"🎓 SKILL_ACTIVATED (user): {us.name}")
+                        return {
+                            "content": f"[Skill: {us.name}]\n\n{us.prompt}"
+                        }
+            except Exception as e:
+                logger.debug(f"User skill lookup failed: {e}")
 
         if not skill:
             available = [s["id"] for s in get_model_discoverable_skills()]

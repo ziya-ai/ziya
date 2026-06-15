@@ -107,6 +107,15 @@ class SkillStorage(BaseStorage[Skill]):
             except Exception as e:
                 logger.warning("Project skill discovery failed during get: %s", e)
 
+        # Try user-global skills (~/.ziya/skills) — available in every project
+        try:
+            from ..services.skill_discovery import discover_user_skills
+            for us in discover_user_skills(self.token_service, load_body=True):
+                if us.id == skill_id:
+                    return us
+        except Exception as e:
+            logger.warning("User skill discovery failed during get: %s", e)
+
         return None
     
     def list(self) -> List[Skill]:
@@ -132,6 +141,16 @@ class SkillStorage(BaseStorage[Skill]):
                         skills.append(ps)
             except Exception as e:
                 logger.warning("Project skill discovery failed: %s", e)
+
+        # Discover user-global skills from ~/.ziya/skills (cross-project)
+        try:
+            from ..services.skill_discovery import discover_user_skills
+            existing_ids = {s.id for s in skills}
+            for us in discover_user_skills(self.token_service, load_body=False):
+                if us.id not in existing_ids:
+                    skills.append(us)
+        except Exception as e:
+            logger.warning("User skill discovery failed: %s", e)
 
         return sorted(skills, key=lambda s: s.lastUsedAt, reverse=True)
     
@@ -172,9 +191,10 @@ class SkillStorage(BaseStorage[Skill]):
         if skill.isBuiltIn:
             raise ValueError("Cannot update built-in skills")
         
-        # Cannot update project-discovered skills (edit the SKILL.md file directly)
-        if skill.source == 'project':
-            raise ValueError("Cannot update project skills — edit the SKILL.md file directly")
+        # Cannot update file-backed skills (project or user) — edit the
+        # SKILL.md file on disk directly; it's re-read on next discovery.
+        if skill.source in ('project', 'user'):
+            raise ValueError("Cannot update file-backed skills — edit the SKILL.md file directly")
 
         update_dict = data.model_dump(exclude_unset=True)
         
@@ -203,8 +223,8 @@ class SkillStorage(BaseStorage[Skill]):
             raise ValueError("Cannot delete built-in skills")
         
         # Cannot delete project-discovered skills
-        if skill.source == 'project':
-            raise ValueError("Cannot delete project skills — remove the skill directory instead")
+        if skill.source in ('project', 'user'):
+            raise ValueError("Cannot delete file-backed skills — remove the skill directory instead")
 
         skill_file = self._skill_file(skill_id)
         if not skill_file.exists():

@@ -76,3 +76,79 @@ def test_project_skill_user_selectable_not_in_catalog(tmp_path, monkeypatch):
     from app.utils.skill_catalog_prompt import get_skill_catalog_section
     section = get_skill_catalog_section()
     assert "user-only-skill" not in section
+
+    # ...but an explicit by-name lookup via get_skill_details MUST still load
+    # it (with full body).  Visibility gates the auto-listed catalog, not a
+    # deliberate request — otherwise a user_selectable skill is reachable
+    # only via the UI toggle, which is the atlas-metrics bug.
+    from app.mcp.tools.skill_tools import GetSkillDetailsTool
+    tool = GetSkillDetailsTool()
+    result = asyncio.run(tool.execute(skill_name="user-only-skill"))
+    assert not result.get("error"), f"tool errored on user_selectable skill: {result}"
+    content = result.get("content", "")
+    assert "user-only-skill" in content
+    assert "Body." in content
+
+
+def test_project_skill_user_selectable_lookup_by_keyword(tmp_path, monkeypatch):
+    """A user_selectable project skill is also loadable by one of its
+    declared keywords, not just its exact name."""
+    skills_dir = tmp_path / ".agents" / "skills" / "telemetry-skill"
+    skills_dir.mkdir(parents=True)
+    (skills_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: telemetry-skill\n"
+        "description: Query telemetry.\n"
+        "keywords: atlas metrics\n"
+        "---\n"
+        "\nTelemetry body content.\n"
+    )
+
+    monkeypatch.setenv("ZIYA_USER_CODEBASE_DIR", str(tmp_path))
+
+    from app.mcp.tools.skill_tools import GetSkillDetailsTool
+    tool = GetSkillDetailsTool()
+    result = asyncio.run(tool.execute(skill_name="atlas"))  # keyword, not name
+    assert not result.get("error"), f"keyword lookup failed: {result}"
+    assert "Telemetry body content." in result.get("content", "")
+
+
+def test_user_global_skill_user_selectable_loadable(tmp_path, monkeypatch):
+    """A user-global (~/.ziya/skills) user_selectable skill — the exact
+    atlas-metrics shape — must be loadable by name via get_skill_details
+    even though it never appears in the model catalog."""
+    ziya_home = tmp_path / "ziya_home"
+    user_skill_dir = ziya_home / "skills" / "atlas-metrics"
+    user_skill_dir.mkdir(parents=True)
+    (user_skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: atlas-metrics\n"
+        "description: Query Kuiper Atlas telemetry.\n"
+        "metadata:\n"
+        "  ziya-visibility: user_selectable\n"
+        "---\n"
+        "\n# Atlas Metrics Skill\n\nUser-global body content.\n"
+    )
+
+    # Point Ziya home at the temp dir and ensure no project workspace
+    # accidentally shadows the lookup.
+    monkeypatch.setenv("ZIYA_HOME", str(ziya_home))
+    monkeypatch.delenv("ZIYA_USER_CODEBASE_DIR", raising=False)
+
+    # Sanity: discovery sees it as user_selectable.
+    from app.services.skill_discovery import discover_user_skills
+    from app.services.token_service import TokenService
+    user_skills = {s.name: s for s in discover_user_skills(TokenService(), load_body=False)}
+    assert "atlas-metrics" in user_skills, f"discovery missed it: {list(user_skills)}"
+    assert user_skills["atlas-metrics"].visibility == "user_selectable"
+
+    # It stays out of the model-facing catalog.
+    from app.utils.skill_catalog_prompt import get_skill_catalog_section
+    assert "atlas-metrics" not in get_skill_catalog_section()
+
+    # But get_skill_details loads it by name with full body.
+    from app.mcp.tools.skill_tools import GetSkillDetailsTool
+    tool = GetSkillDetailsTool()
+    result = asyncio.run(tool.execute(skill_name="atlas-metrics"))
+    assert not result.get("error"), f"user-global lookup failed: {result}"
+    assert "User-global body content." in result.get("content", "")

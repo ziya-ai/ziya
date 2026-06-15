@@ -150,10 +150,105 @@ def _lead_paragraph(markdown_body: str, *, max_chars: int = 1024) -> str:
     return " ".join(paragraph).strip()[:max_chars]
 
 
-def _stable_id(project_path: str, skill_name: str) -> str:
-    """Generate a deterministic ID for a project skill."""
-    digest = hashlib.sha256(f"{project_path}:{skill_name}".encode()).hexdigest()[:12]
-    return f"project-{skill_name}-{digest}"
+def _stable_id(base_path: str, skill_name: str, prefix: str = "project") -> str:
+    """Generate a deterministic ID for a file-backed skill.
+
+    ``prefix`` distinguishes project ('project-…') from user-global
+    ('user-…') skills; ``base_path`` is the discovery root so the same
+    skill name under different roots yields distinct, stable IDs.
+    """
+    digest = hashlib.sha256(f"{base_path}:{skill_name}".encode()).hexdigest()[:12]
+    return f"{prefix}-{skill_name}-{digest}"
+
+
+def _skill_from_dir(
+    child: Path,
+    token_service: TokenService,
+    *,
+    load_body: bool,
+    source: str,
+    id_base: str,
+    id_prefix: str,
+) -> Optional[Skill]:
+    """Parse one skill directory's SKILL.md into a Skill.
+
+    Shared by discover_project_skills and discover_user_skills so the two
+    discovery roots cannot drift in parsing, name validation, or field
+    population.  Returns None when the directory lacks a valid SKILL.md or
+    fails agentskills.io name validation.
+    """
+    skill_md = child / "SKILL.md"
+    if not skill_md.exists():
+        return None
+
+    parsed = parse_skill_md(skill_md)
+    if parsed is None:
+        return None
+
+    fm, body = parsed
+    name = fm.get("name", "")
+
+    # Validate name per agentskills spec
+    if not name or not _NAME_RE.match(name) or len(name) > 64:
+        logger.warning(
+            "Skipping %s: invalid name '%s' (must be lowercase-hyphenated, 1-64 chars)",
+            skill_md, name,
+        )
+        return None
+
+    # Spec requires: name must match parent directory name
+    if name != child.name:
+        logger.warning(
+            "Skipping %s: name '%s' does not match directory '%s'",
+            skill_md, name, child.name,
+        )
+        return None
+
+    # Frontmatter ``description:`` is the preferred source.  When absent,
+    # fall back to the first markdown paragraph so under-specified SKILL.md
+    # files still surface useful browse-time text.
+    description = (fm.get("description", "") or _lead_paragraph(body))[:1024]
+    prompt = body if load_body else ""
+    now = int(time.time() * 1000)
+
+    skill_metadata = _parse_metadata_string(fm.get("metadata", ""))
+    # visibility: 'model_discoverable' (auto-loadable via the model's skill
+    # catalog) or 'user_selectable' (toggled by the user in the UI).
+    # 'visibility' is NOT an agentskills.io frontmatter field, so the
+    # spec-conformant location is the free-form metadata map under the
+    # ``ziya-visibility`` key.  A top-level ``visibility:`` is still honored
+    # as a back-compat fallback for files authored before this convention.
+    # Defaults to user_selectable per agentskills.io conservatism.
+    visibility = (
+        skill_metadata.get("ziya-visibility")
+        or fm.get("visibility", "")
+    ).strip().lower()
+    if visibility not in ("model_discoverable", "user_selectable"):
+        visibility = "user_selectable"
+
+    return Skill(
+        id=_stable_id(id_base, name, prefix=id_prefix),
+        name=name,
+        description=description,
+        prompt=prompt,
+        color=generate_color(name),
+        tokenCount=token_service.count_tokens(prompt) if prompt else 0,
+        isBuiltIn=False,
+        source=source,
+        visibility=visibility,
+        createdAt=int(skill_md.stat().st_mtime * 1000),
+        lastUsedAt=now,
+        # agentskills metadata
+        keywords=fm.get("keywords", "").split() if fm.get("keywords") else None,
+        license=fm.get("license"),
+        compatibility=fm.get("compatibility"),
+        skillMetadata=skill_metadata,
+        allowedTools=fm.get("allowed-tools", "").split() if fm.get("allowed-tools") else None,
+        skillPath=str(child),
+        hasScripts=(child / "scripts").is_dir(),
+        hasReferences=(child / "references").is_dir(),
+        hasAssets=(child / "assets").is_dir(),
+    )
 
 
 def discover_project_skills(
@@ -187,75 +282,63 @@ def discover_project_skills(
         for child in sorted(skills_root.iterdir()):
             if not child.is_dir():
                 continue
-            skill_md = child / "SKILL.md"
-            if not skill_md.exists():
+            skill = _skill_from_dir(
+                child, token_service, load_body=load_body,
+                source="project", id_base=workspace_path, id_prefix="project",
+            )
+            if skill is None:
                 continue
-
-            parsed = parse_skill_md(skill_md)
-            if parsed is None:
-                continue
-
-            fm, body = parsed
-            name = fm.get("name", "")
-
-            # Validate name per agentskills spec
-            if not name or not _NAME_RE.match(name) or len(name) > 64:
-                logger.warning(
-                    "Skipping %s: invalid name '%s' (must be lowercase-hyphenated, 1-64 chars)",
-                    skill_md, name,
-                )
-                continue
-
-            # Spec requires: name must match parent directory name
-            if name != child.name:
-                logger.warning(
-                    "Skipping %s: name '%s' does not match directory '%s'",
-                    skill_md, name, child.name,
-                )
-                continue
-
-            if name in seen_names:
+            if skill.name in seen_names:
                 continue  # First discovery path wins
-            seen_names.add(name)
-
-            # Frontmatter ``description:`` is the preferred source.
-            # When absent, fall back to the first markdown paragraph so
-            # under-specified SKILL.md files still surface useful
-            # browse-time text instead of the generic placeholder.
-            description = (fm.get("description", "") or _lead_paragraph(body))[:1024]
-            prompt = body if load_body else ""
-            now = int(time.time() * 1000)
-
-            # visibility: 'model_discoverable' (auto-loadable via the model's
-            # skill catalog) or 'user_selectable' (toggled by the user in the
-            # UI).  Defaults to user_selectable per agentskills.io conservatism.
-            visibility = fm.get("visibility", "user_selectable").strip().lower()
-            if visibility not in ("model_discoverable", "user_selectable"):
-                visibility = "user_selectable"
-
-            skills.append(Skill(
-                id=_stable_id(workspace_path, name),
-                name=name,
-                description=description,
-                prompt=prompt,
-                color=generate_color(name),
-                tokenCount=token_service.count_tokens(prompt) if prompt else 0,
-                isBuiltIn=False,
-                source="project",
-                visibility=visibility,
-                createdAt=int(skill_md.stat().st_mtime * 1000),
-                lastUsedAt=now,
-                # agentskills metadata
-                keywords=fm.get("keywords", "").split() if fm.get("keywords") else None,
-                license=fm.get("license"),
-                compatibility=fm.get("compatibility"),
-                skillMetadata=_parse_metadata_string(fm.get("metadata", "")),
-                allowedTools=fm.get("allowed-tools", "").split() if fm.get("allowed-tools") else None,
-                skillPath=str(child),
-                hasScripts=(child / "scripts").is_dir(),
-                hasReferences=(child / "references").is_dir(),
-                hasAssets=(child / "assets").is_dir(),
-            ))
+            seen_names.add(skill.name)
+            skills.append(skill)
 
     logger.info("Discovered %d project skills from %s", len(skills), workspace_path)
+    return skills
+
+
+def discover_user_skills(
+    token_service: TokenService,
+    *,
+    load_body: bool = True,
+) -> List[Skill]:
+    """Scan ~/.ziya/skills/<name>/SKILL.md for user-global skills.
+
+    Cross-project sibling of discover_project_skills: same one-level
+    directory model, same strict SKILL.md + name-matches-directory
+    validation, same agentskills.io frontmatter.  These skills live under
+    the Ziya home directory so they are available in every project.
+
+    Returns:
+        List of Skill objects with source='user'.
+    """
+    from ..utils.paths import get_ziya_home
+    try:
+        skills_root = get_ziya_home() / "skills"
+    except Exception as e:
+        logger.debug("Could not resolve Ziya home for user skills: %s", e)
+        return []
+
+    if not skills_root.is_dir():
+        return []
+
+    id_base = str(skills_root)
+    skills: List[Skill] = []
+    seen_names: set = set()
+
+    for child in sorted(skills_root.iterdir()):
+        if not child.is_dir():
+            continue
+        skill = _skill_from_dir(
+            child, token_service, load_body=load_body,
+            source="user", id_base=id_base, id_prefix="user",
+        )
+        if skill is None:
+            continue
+        if skill.name in seen_names:
+            continue
+        seen_names.add(skill.name)
+        skills.append(skill)
+
+    logger.info("Discovered %d user skills from %s", len(skills), skills_root)
     return skills
