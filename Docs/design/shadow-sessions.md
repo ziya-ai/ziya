@@ -66,6 +66,8 @@ e.g. `a3f21e`):
   "started_at": "2026-06-11T00:41:03Z",
   "socket": "~/.ziya/shadow/sessions/a3f21e.sock",
   "allow_exec": false,
+  "headless": false,
+  "spawned_by": null,
   "control_ceiling": "none | gated | unrestricted",
   "segmentation": "osc133 | prompt-heuristic | raw"
 }
@@ -73,12 +75,21 @@ e.g. `a3f21e`):
 
 - `label` defaults to the wrapped argv joined, overridable with
   `--label`.
+- Labels are **not required to be unique** (fleet loops naturally spawn
+  many `prod-*` sessions). The `session_id` is the unambiguous handle;
+  display forms always carry it (`prod-42 (a3f21e)`). `@label`
+  addressing resolves uniquely when unique; on collision the chat CLI
+  lists candidates (id, label, age, last activity) for interactive
+  pick, and `@label:id` / `@id` address a session directly.
 - `label` and `meta` (freeform key-value) are **mutable at runtime**,
   from the shadow side (§8 menu) or by an attached chat (`set_meta`,
   §5). Each change is journaled as a `meta` record. This is the v1
   answer to multi-hop ambiguity: the wrapper cannot know what is at
   the far end of the stream, but the user (or model, observing an
   `ssh` command in the journal) can annotate it.
+- `headless` marks agent-spawned sessions (§6.2); `spawned_by` carries
+  the spawning conversation's provenance (`{conversation_id, turn}`)
+  and is null for interactive sessions.
 - Registry hygiene: every reader MUST verify liveness (`os.kill(pid, 0)`)
   and unlink stale entries. The shadow process also removes its entry on
   clean exit (SIGTERM/SIGHUP handlers + atexit).
@@ -338,6 +349,46 @@ say so plainly.
 
 ## 7. Secret masking
 
+### 6.2 Headless sessions (agent-spawned)
+
+A shadow session does not require a human terminal. `shadow_spawn`
+(chat-side tool) forks a **headless** shadow host: daemonized (setsid,
+no controlling terminal), PTY pair opened, child command run (e.g.
+`ssh prod-42`), registered in the same registry with the same
+journal/socket contract. Use case: the agent establishes and keeps
+alive its own connections to N remote hosts — sessions that outlive
+any single conversation turn and are attachable later by any chat
+session (or by a human via `ziya shadow --attach <id>`, later phase).
+
+Architecturally this splits the shadow host into:
+
+- **core** — PTY management, segmenter, masking, journal, socket
+  server, leases. Always present; has no dependency on a terminal.
+- **frontend** — passthrough to the human's terminal, overlay
+  renderer, menu key, soft-pause buffer, ask composer. Present only in
+  interactive mode.
+
+Authority inverts cleanly: a headless session has no second human at
+a shadow terminal, so the **spawning conversation is the authority**
+— the chat-side human approved the spawn tool call itself. The spawn
+sets the ceiling, and the spawning conversation receives an
+**implicit lease at spawn**: no banner, no keystroke — that grant
+already happened in the chat terminal. `shadow_spawn` is therefore
+the chat-side-gated action (it passes through normal tool approval
+once); `shadow_send` then rides the lease as usual (§9, E3).
+
+Lifecycle: the registry entry records `spawned_by` provenance. A
+headless session with no live lease heartbeat and no subscriber for
+an idle period (default 24 h) shuts itself down — journaled, then
+unlink-on-exit as usual. `shadow_list` shows headless sessions to
+every chat session; any conversation may attach via the normal lease
+handshake, except the grant prompt renders in the *requesting chat
+terminal* — the only human in the loop — naming the session and
+requested restriction.
+
+Soft-pause does not apply (no canvas keystrokes). Revoke is
+`shadow_release`, owner `shadow_kill`, or heartbeat death. Asks (§8)
+do not exist headless; the comment channel becomes a no-op.
 Non-negotiable before any release:
 
 - Detect password-style prompts in the output stream (regex set:
@@ -408,6 +459,31 @@ same-process, same codebase):
 - `shadow_set_meta(session_id, label=None, **data)` → update the
   session's label/metadata — e.g. relabel to `prod-42` after observing
   a hop in the journal. Journaled with provenance.
+- `shadow_spawn(argv, label=None, ceiling="gated")` → fork a headless
+  session (§6.2): daemonized shadow host running `argv`. Returns the
+  session id; the spawning conversation holds an implicit lease at the
+  requested ceiling. Chat-side gated (normal tool approval).
+- `shadow_kill(session_id)` → terminate a headless session this
+  conversation owns; journaled, then unlink-on-exit.
+
+Chat-side permissioning: **the lease is the permission.** `shadow_send`
+and `shadow_send_keys` pass through no additional chat-side approval
+gate (no `/shell`-style per-command prompt): the human keystroke grant
+at the shadow terminal already authorized exactly this delegation, at
+the terminal physically attached to the target, at a restriction tier
+the human chose. A second gate in the chat terminal would re-ask the
+same human the same question. The effective privilege ladder is:
+
+- **gated lease** — mutating-classified commands confirm with one
+  keystroke at the shadow terminal; read-only commands flow freely.
+- **unrestricted lease** (total control) — no per-command gates at
+  all; requires ceiling `unrestricted` AND an explicit unrestricted
+  request AND the human grant. Supervision is the canvas, soft-pause,
+  revoke, and the journal.
+
+The chat side's obligation is **visibility**: every `shadow_send` and
+its results render in the chat transcript as well as on the canvas, so
+the conversation log is self-contained and auditable on its own.
 
 With multiple attached sessions the chat conversation orchestrates them
 as named resources — reading journals side by side, diffing command
@@ -424,6 +500,7 @@ auto-injects a `shadow_read` tail of the matching session.
 | Remote host | Nothing installed; observation is of the user's own authorized session |
 | Exec authorization | Off by default; per-session opt-in; human keystroke approval in the shadow terminal; full audit trail |
 | Control authorization | §6.1: two-sided — shadow-side ceiling (`none\|gated\|unrestricted`) ∧ per-lease human grant at or below it; gated leases confirm mutating commands per-keystroke; human keystrokes auto-pause the lease; menu revoke; every model-sent byte journaled with provenance and effective restriction |
+| Headless authorization | §6.2: `shadow_spawn` is chat-side gated (normal tool approval); spawning conversation holds an implicit lease bounded by the spawn-time ceiling; later attachers grant in their own chat terminal; idle shutdown (24 h default); `spawned_by` provenance in registry and journal |
 | Secrets at rest | Echo-off + prompt-regex masking before journal write |
 | Journal exposure | Plaintext local file, 0600; documented as shell-history-equivalent; rotation cap |
 | Model exposure | Chat side sends journal excerpts to the model — same trust boundary as the user pasting terminal output, but automated; excerpt size bounded by tool params |
@@ -441,7 +518,9 @@ user- or model-maintained claim about the far end, not a measurement.
   full segmentation ladder, masking, overlay renderer + ask composer,
   on-demand shell instrumentation (§4.1),
   socket with info/read/tail/search/comment/subscribe/set_meta,
-  `shadow_list`/`shadow_read`/`shadow_comment` tools. No exec.
+  `shadow_list`/`shadow_read`/`shadow_comment` tools. No exec. The
+  shadow host is built core/frontend split from the start (§6.2) —
+  headless operation is a structural property, not a retrofit.
   Independently useful:
   chat sessions can reason over live remote terminal state.
 - **Phase 2 — exec.** `--allow-exec`, confirmation handshake, audit
@@ -449,7 +528,8 @@ user- or model-maintained claim about the far end, not a measurement.
 - **Phase 3 — line control.** Control leases (§6.1) in line mode only
   (§6.1a): `control_acquire`/`send_line`/`wait_idle`, pause/revoke
   semantics, altscreen/echo-off input rejection, multi-session
-  orchestration tools. No screen mirror — the smallest path to
+  orchestration tools, and headless spawn (`shadow_spawn`/
+  `shadow_kill`, §6.2). No screen mirror — the smallest path to
   model-driven remote operations.
 - **Phase 4 — screen control.** Screen mode (§6.1b): headless screen
   mirror, `send_keys`/`screen`, TUI-capable control loops.
