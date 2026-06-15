@@ -552,6 +552,33 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
         logger.debug(f"Neither old nor new indentation matches at pos {pos} - hunk NOT already applied")
         return False
     
+    # CRITICAL: Invisible-character-only changes need exact comparison,
+    # for the same reason as the indentation-only case above:
+    # normalize_line_for_comparison strips invisible Unicode, so the
+    # removed and added lines normalize identically and normalized
+    # comparison cannot distinguish pre-state from post-state.  Without
+    # this, a hunk whose only effect is adding/removing invisible
+    # characters is reported "already applied" before it ever runs
+    # (apply_diff_with_difflib then raises "All hunks already applied").
+    if removed_lines and added_lines and len(removed_lines) == len(added_lines):
+        _any_exact_diff = any(r != a for r, a in zip(removed_lines, added_lines))
+        _all_norm_equal = all(
+            normalize_line_for_comparison(r) == normalize_line_for_comparison(a)
+            for r, a in zip(removed_lines, added_lines)
+        )
+        if _any_exact_diff and _all_norm_equal:
+            if pos + len(removed_lines) <= len(file_lines):
+                file_slice = file_lines[pos:pos + len(removed_lines)]
+                if all(f.rstrip('\r\n') == a.rstrip('\r\n')
+                       for f, a in zip(file_slice, added_lines)):
+                    logger.debug(f"Invisible-only change: exact NEW content at pos {pos} - already applied")
+                    return True
+            # Exact NEW content not at this pos — either the OLD content is
+            # here (not applied) or we're misaligned; caller scans other
+            # positions.  Never fall through to normalized heuristics, which
+            # are blind to this change class.
+            return False
+
     # For pure additions, check if content already exists at the expected position
     if len(removed_lines) == 0 and len(added_lines) > 0:
         return _check_pure_addition_already_applied(file_lines, added_lines, hunk, pos, _file_normalized=_file_normalized)
