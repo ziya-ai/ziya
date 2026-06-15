@@ -45,6 +45,44 @@ function projectHeaders(): Record<string, string> {
   return path ? { 'X-Project-Root': path } : {};
 }
 
+export interface SearchChatsOpts {
+  allProjects?: boolean;
+  caseSensitive?: boolean;
+  maxSnippetLength?: number;
+}
+
+/**
+ * Server-side conversation search. Scans chat files on the server one at a
+ * time and returns SearchResult-shaped objects, avoiding loading every
+ * conversation's full message bodies into the browser just to substring-scan.
+ * allProjects=false searches strictly the given project.
+ * Returns null on transport failure so callers can fall back to a local scan.
+ */
+export async function searchChats(
+  projectId: string,
+  query: string,
+  opts: SearchChatsOpts = {}
+): Promise<any[] | null> {
+  const params = new URLSearchParams({
+    q: query,
+    all_projects: String(!!opts.allProjects),
+    case_sensitive: String(!!opts.caseSensitive),
+    max_snippet_length: String(opts.maxSnippetLength ?? 150),
+  });
+  try {
+    const url = `${BASE}/${projectId}/chats/search?${params.toString()}`;
+    const res = await fetch(url, { headers: projectHeaders() });
+    if (!res.ok) {
+      console.debug('Server search failed, will fall back to local:', res.status);
+      return null;
+    }
+    return res.json();
+  } catch (e) {
+    console.debug('Server search threw, will fall back to local:', e);
+    return null;
+  }
+}
+
 export async function listChats(projectId: string, includeMessages = false): Promise<ServerChat[]> {
   const res = await fetch(`${BASE}/${projectId}/chats?include_messages=${includeMessages}`, {
     headers: projectHeaders(),

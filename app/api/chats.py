@@ -283,6 +283,34 @@ async def list_chats(
     
     return summaries
 
+@router.get("/api/v1/projects/{project_id}/chats/search")
+async def search_chats_endpoint(
+    project_id: str,
+    q: str = Query(..., min_length=1),
+    all_projects: bool = Query(False),
+    case_sensitive: bool = Query(False),
+    max_snippet_length: int = Query(150, ge=10, le=2000),
+):
+    """Search chat message/title text server-side.
+
+    Registered BEFORE ``/chats/{chat_id}`` so the literal path segment
+    "search" is not captured as a chat id.  Streams chat files one at a
+    time (see app/storage/chat_search.search_chats) so the whole history
+    is never resident in memory.  ``all_projects=False`` searches strictly
+    this project; ``True`` searches every project.
+    """
+    # Validate the project exists (consistent 404 with other endpoints).
+    get_chat_storage(project_id)
+    from ..storage.chat_search import search_chats
+    return search_chats(
+        ziya_home=get_ziya_home(),
+        project_id=project_id,
+        query=q,
+        all_projects=all_projects,
+        case_sensitive=case_sensitive,
+        max_snippet_length=max_snippet_length,
+    )
+
 @router.post("/api/v1/projects/{project_id}/chats", response_model=Chat)
 async def create_chat(project_id: str, data: ChatCreate):
     """Create a new chat."""
