@@ -618,6 +618,13 @@ class ShellServer:
             # Handle backslash escaping first
             if char == '\\' and i + 1 < len(command):
                 next_next_char = command[i + 1]
+                # Backslash-newline is shell line continuation: consume both
+                # characters and emit nothing, joining the two physical lines
+                # into one logical command. (Inside single quotes a backslash
+                # is literal, so leave it intact there.)
+                if next_next_char == '\n' and not in_single_quote:
+                    i += 2
+                    continue
                 # If we're escaping a backtick, treat it as literal
                 if next_next_char == '`':
                     current_segment += char + next_next_char
@@ -681,6 +688,17 @@ class ShellServer:
                     current_segment = ""
                     i += 1
                     continue
+                # A bare newline separates commands like ``;`` (sequential
+                # execution). Escaped newlines were already consumed above as
+                # line continuations, so any newline reaching here is a real
+                # separator — normalize it to ``;``.
+                elif char == '\n':
+                    if current_segment.strip():
+                        segments.append((current_operator, current_segment.strip()))
+                    current_operator = ';'
+                    current_segment = ""
+                    i += 1
+                    continue
             
             current_segment += char
             i += 1
@@ -722,11 +740,16 @@ class ShellServer:
                     return False, reason
             return True, ""
 
-        # Skip leading shell comment lines so "# explanation\nsed ..."
-        # correctly identifies 'sed' as the command, not '#'.
+        # Strip whole-line shell comments, then KEEP every remaining line.
+        # A bare newline is a command separator (the splitter normalizes it
+        # to ``;``), so we must NOT truncate to the first line — doing so
+        # would let a command after a newline (e.g. "echo hi\nrm -rf x")
+        # execute unvalidated once _execute_pipeline runs the segments.
+        # Lines joined by a trailing backslash are reassembled by the
+        # splitter as line continuations, not separators.
         lines = command.split('\n')
         lines = [l for l in lines if not l.lstrip().startswith('#')]
-        command = lines[0].strip() if lines else ''
+        command = '\n'.join(lines).strip()
         if not command:
             return False, "Command is only comments"
 
@@ -741,7 +764,10 @@ class ShellServer:
         # YOLO mode — allow everything except always_blocked commands
         if self.yolo_mode:
             always_blocked = self.wp_manager.policy.get('always_blocked', [])
-            for token in re.split(r'\s*[|;&]+\s*', command):
+            # Include bare newlines as separators: a newline acts like ``;``
+            # (see _split_by_shell_operators), so "echo hi\nsudo reboot" must
+            # have its second segment scanned, not hidden behind the newline.
+            for token in re.split(r'\s*[|;&\n]+\s*', command):
                 first_word = token.strip().split()[0] if token.strip() else ''
                 if first_word in always_blocked:
                     print(f"YOLO mode: '{first_word}' is in always_blocked list", file=sys.stderr)
