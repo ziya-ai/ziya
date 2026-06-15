@@ -115,6 +115,12 @@ class ShellWriteChecker:
         if matched_safe_pattern and re.match(r'^python3?\s+-c\s+', s):
             for pat in self.policy.get('script_write_indicators', []):
                 if re.search(pat, cmd):
+                    # Scope-aware exemption: if every file the script
+                    # writes is inside permitted writable scope, the
+                    # write is allowed — fall through to the redirection
+                    # check instead of a blanket block.
+                    if self._writes_within_scope(cmd):
+                        return self._redirection(cmd)
                     return False, f"Script appears to write files (matched: {pat}). Use git diffs."
         
         # Safe pattern matched and no obvious writes → only check redirection
@@ -124,6 +130,10 @@ class ShellWriteChecker:
         # Not a safe pattern → check all write indicators
         for pat in self.policy.get('script_write_indicators', []):
             if re.search(pat, cmd):
+                # Scope-aware exemption (see above): allow when every
+                # write target resolves inside writable scope.
+                if self._writes_within_scope(cmd):
+                    return self._redirection(cmd)
                 # Slice B: per-task shell command grant overrides the
                 # script-write-indicator block.  Useful for tasks that
                 # legitimately need an interpreter one-liner ``python -c``.
@@ -131,6 +141,19 @@ class ShellWriteChecker:
                     return self._redirection(cmd)
                 return False, f"Script appears to write files (matched: {pat}). Use git diffs."
         return True, ""
+
+    def _writes_within_scope(self, cmd: str) -> bool:
+        """Return True iff every file the one-liner writes is in scope.
+
+        Conservative: returns False unless all of the script's writes map
+        to recognized path-bearing forms with a literal path.  Any
+        destructive/opaque write keeps the blanket block (see
+        _extract_write_target_paths).
+        """
+        paths, complete = _extract_write_target_paths(cmd)
+        if not complete or not paths:
+            return False
+        return all(self._is_write_allowed(p) for p in paths)
 
     def _redirection(self, command: str) -> Tuple[bool, str]:
         # Strip heredoc bodies — they aren't shell-level I/O but contain
@@ -304,3 +327,39 @@ def _extract_target(cmd: str, pos: int) -> Tuple[str, int]:
         while pos < len(cmd) and cmd[pos] not in ' \t;|&':
             target += cmd[pos]; pos += 1
     return target, pos
+
+
+_DESTRUCTIVE_SCRIPT_RE = re.compile(
+    r"shutil\.\s*(?:copy|move|rmtree|copytree)"
+    r"|os\.\s*(?:rename|remove|unlink|makedirs|mkdir|rmdir)"
+    r"|(?:pathlib\.)?Path\s*\([^)]*\)\s*\.\s*(?:unlink|mkdir|rename|rmdir|replace)"
+    r"|subprocess\.\s*(?:run|call|Popen)"
+)
+
+
+def _extract_write_target_paths(command: str) -> Tuple[List[str], bool]:
+    """Find filesystem paths a Python one-liner writes to.
+
+    Returns ``(paths, complete)``.  ``complete`` is True only when every
+    write maps to a recognized path-bearing form — ``open(P, 'w'|'a'|'x')``
+    or ``Path(P).write_text/bytes`` — with a literal path.  Any
+    destructive/opaque write (shutil/os/subprocess or a non-literal path)
+    sets ``complete`` False so the caller keeps the blanket block.
+    """
+    paths: List[str] = []
+    for m in re.finditer(r"open\s*\(([^)]*)\)", command, re.DOTALL):
+        args = m.group(1)
+        mode_m = re.search(r"""(?:,\s*|mode\s*=\s*)(['"])([rwaxbt+]*)\1""", args)
+        if not mode_m or not any(c in mode_m.group(2) for c in 'wax+'):
+            continue
+        path_m = re.match(r"""\s*[frbu]*(['"])((?:\\.|(?!\1).)*)\1""", args)
+        if not path_m:
+            return paths, False
+        paths.append(path_m.group(2))
+    for m in re.finditer(
+        r"""(?:pathlib\.)?Path\s*\(\s*(['"])((?:\\.|(?!\1).)*)\1\s*\)\s*\.\s*write_(?:text|bytes)""",
+        command,
+    ):
+        paths.append(m.group(2))
+    complete = _DESTRUCTIVE_SCRIPT_RE.search(command) is None
+    return paths, complete
