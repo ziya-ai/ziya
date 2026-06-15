@@ -1252,8 +1252,15 @@ const MUIChatHistory = () => {
       const conversationToMove = conversations.find(c => c.id === cleanConversationId);
       if (conversationToMove && conversationToMove.isActive === false) {
         console.warn('🔧 DEFENSIVE: Conversation was marked inactive, restoring to active before move');
-        conversationToMove.isActive = true;
-        await db.saveConversation(conversationToMove);
+        // Unified mutation path: hydrates the full record (the sidebar
+        // entry may be a shell), bumps _version, and pushes to the server
+        // so the restore can't be reverted by the next periodic sync.
+        // The previous direct db.saveConversation of the (possibly-shell)
+        // state object also mutated React state in place.
+        const { mutateConversationMeta } = await import('../utils/conversationMutations');
+        await mutateConversationMeta(cleanConversationId, { isActive: true }, {
+          projectId: currentProject?.id,
+        });
       }
 
       console.log('🔧 Calling moveConversationToFolder with:', { conversationId: cleanConversationId, folderId });
@@ -1287,7 +1294,7 @@ const MUIChatHistory = () => {
       console.error('❌ Move failed:', error);
       message.error('Failed to move conversation');
     }
-  }, [conversations, moveConversationToFolder, folders]);
+  }, [conversations, moveConversationToFolder, folders, currentProject?.id]);
 
   // Handle moving a folder
   const handleMoveFolder = useCallback(async (folderId: string, targetParentId: string | null, insertionContext?: { type: string; targetNodeId?: string }) => {
@@ -1907,23 +1914,33 @@ const MUIChatHistory = () => {
     if (id.startsWith('conv-')) {
       const conversationId = id.substring(5);
       try {
-        // Update state first - no timestamp update for rename
-        const updatedConversations = conversations.map(conv =>
-          conv.id === conversationId ? {
-            ...conv,
-            title: newValue,
-            isActive: conv.isActive !== false ? true : conv.isActive,  // Preserve active state
-            // Keep original lastAccessedAt - renaming shouldn't affect sort order
-            _version: Date.now() // Only update version for sync purposes
-          } : conv
+        // Unified mutation path: hydrates the full record from IDB,
+        // bumps _version, persists, broadcasts cross-tab, and pushes to
+        // the server immediately (so server-side _version bumps during a
+        // chat turn can't revert the rename at the next periodic sync).
+        const { mutateConversationMeta } = await import('../utils/conversationMutations');
+        const result = await mutateConversationMeta(
+          conversationId,
+          { title: newValue },
+          {
+            projectId: currentProject?.id,
+            // Brand-new conversations may not be in IDB yet — fall back
+            // to the in-memory record only if it isn't a stripped shell.
+            fallback: conversations.find(
+              c => c.id === conversationId && !(c as any)._isShell
+            ),
+          }
         );
+        if (!result.ok) throw result.error;
 
-        // Persist only the changed conversation to IndexedDB
-        const changed = updatedConversations.find(c => c.id === conversationId);
-        if (changed) await db.saveConversation(changed);
-
-        // Update state after successful save
-        setConversations(updatedConversations);
+        // Reflect the rename in sidebar state.  Keep the existing shell
+        // entries — only overlay the patched metadata; don't inject the
+        // hydrated full record (sidebar state holds shells by design).
+        setConversations(conversations.map(conv =>
+          conv.id === conversationId
+            ? { ...conv, title: newValue, _version: result.conversation?._version }
+            : conv
+        ));
         setEditingId(null);
         setEditValue('');
       } catch (error) {
