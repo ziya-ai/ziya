@@ -124,31 +124,33 @@ class TestStreamChunksSymbolAvailability:
     causing NameError at runtime (not at import time).
     """
 
-    def test_cleanup_stream_is_defined(self):
-        """cleanup_stream must be importable from app.server."""
-        from app.server import cleanup_stream
-        assert callable(cleanup_stream)
-        assert asyncio.iscoroutinefunction(cleanup_stream), (
-            "cleanup_stream must be async (called with await in stream_chunks)"
-        )
-
-    def test_active_streams_is_defined(self):
-        """active_streams must be importable from app.server."""
-        from app.server import active_streams
-        assert isinstance(active_streams, dict)
-
-    def test_cleanup_stream_referenced_in_stream_chunks(self):
-        """
-        Verify stream_chunks actually calls cleanup_stream.
-        If someone removes the calls, these guard tests become stale
-        and should be updated or removed.
-        """
+    # The real invariant these guard: a symbol REFERENCED in stream_chunks
+    # must also be DEFINED/importable in app.server — a dangling reference
+    # to a deleted symbol is a runtime NameError.  The StreamingToolExecutor
+    # refactor removed both cleanup_stream and active_streams AND their call
+    # sites together, so the consistency holds vacuously now.  Asserting
+    # unconditional existence (the old form) pinned an implementation detail
+    # that was deliberately deleted; asserting consistency is the actual
+    # regression guard and survives both states (present-and-used, or
+    # absent-and-unused).
+    def _symbol_consistency(self, name: str) -> None:
+        import app.server as server
         source = _get_stream_chunks_source()
-        assert "cleanup_stream" in source, (
-            "cleanup_stream is no longer referenced in stream_chunks(). "
-            "Either the calls were removed (update this test) or "
-            "a refactoring accidentally deleted them."
-        )
+        referenced = name in source
+        defined = hasattr(server, name)
+        if referenced:
+            assert defined, (
+                f"{name} is referenced in stream_chunks() but not defined/"
+                f"importable from app.server — runtime NameError on that path."
+            )
+
+    def test_cleanup_stream_consistency(self):
+        """If stream_chunks references cleanup_stream, it must be defined."""
+        self._symbol_consistency("cleanup_stream")
+
+    def test_active_streams_consistency(self):
+        """If stream_chunks references active_streams, it must be defined."""
+        self._symbol_consistency("active_streams")
 
     def test_build_messages_for_streaming_is_importable(self):
         """build_messages_for_streaming is called by stream_chunks and chat_endpoint."""
