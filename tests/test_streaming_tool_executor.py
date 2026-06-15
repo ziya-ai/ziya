@@ -1,6 +1,69 @@
 """
 Tests for StreamingToolExecutor internals.
 """
+import os
+import pytest
+from unittest.mock import patch, MagicMock, AsyncMock
+
+
+def _make_executor():
+    """Create a StreamingToolExecutor without running __init__."""
+    with patch.dict(os.environ, {
+        "ZIYA_ENDPOINT": "bedrock",
+        "ZIYA_MODEL": "sonnet3.7",
+    }):
+        with patch('app.streaming_tool_executor.StreamingToolExecutor.__init__', return_value=None):
+            from app.streaming_tool_executor import StreamingToolExecutor
+            executor = StreamingToolExecutor.__new__(StreamingToolExecutor)
+            executor.model_id = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
+            executor.model_config = {"family": "claude", "max_output_tokens": 8192}
+            executor.bedrock = None
+            executor.provider = None
+            return executor
+
+
+class TestOptionalOnlyToolsDetection:
+    """Regression: the empty-args rejection gate consults
+    optional_only_tools. Builtin tools are DirectMCPTool wrappers whose
+    pydantic schema lives on .tool_instance, not the wrapper — so no-arg
+    builtins (bead_status) and optional-only builtins (bead_complete)
+    must still be recognized. Previously they were not, and the web
+    streaming path rejected them with 'EMPTY ARGUMENTS' before dispatch
+    while the CLI path (no such gate) worked — the reported
+    'beads never called from web UX' symptom."""
+
+    @pytest.mark.asyncio
+    async def test_bead_tools_recognized_as_optional_only(self):
+        from app.mcp.enhanced_tools import DirectMCPTool
+        from app.mcp.tools.bead_tools import (
+            BeadCreateTool, BeadCompleteTool, BeadStatusTool,
+        )
+
+        # Real wrappers around the real builtin bead tools — this is
+        # exactly what create_secure_mcp_tools() emits for builtins.
+        wrapped = [
+            DirectMCPTool(BeadCreateTool()),
+            DirectMCPTool(BeadCompleteTool()),
+            DirectMCPTool(BeadStatusTool()),
+        ]
+
+        executor = _make_executor()
+
+        mock_manager = MagicMock()
+        mock_manager.is_initialized = True
+        mock_manager.initialize = AsyncMock()
+
+        with patch('app.mcp.manager.get_mcp_manager', return_value=mock_manager), \
+             patch('app.mcp.enhanced_tools.create_secure_mcp_tools', return_value=wrapped):
+            (_all, _bedrock, _builtin, _internal,
+             optional_only) = await executor._load_and_prepare_tools()
+
+        # bead_status has NO fields → inherently zero-arg → optional-only
+        assert 'bead_status' in optional_only
+        # bead_complete has only an optional bead_id → optional-only
+        assert 'bead_complete' in optional_only
+        # bead_create has a required 'content' field → NOT optional-only
+        assert 'bead_create' not in optional_only
 
 
 class TestImageContentCompaction:
