@@ -21,7 +21,7 @@ export const LeftPanel: React.FC = () => {
   // Define all tabs with icons
   const allTabs = useMemo(() => [
     { key: 'files', label: 'Files', icon: <FileOutlined />, fullLabel: '📁 Files' },
-    { key: 'contexts', label: 'Contexts', icon: <FolderOutlined />, fullLabel: '📦 Contexts' },
+    { key: 'contexts', label: 'Skills', icon: <FolderOutlined />, fullLabel: '🎓 Skills' },
     { key: 'chats', label: 'Chats', icon: <MessageOutlined />, fullLabel: '💬 Chats' },
   ], []);
   
@@ -121,9 +121,9 @@ export const LeftPanel: React.FC = () => {
         <TabPane 
           tab={
             isCompact ? (
-              <span style={{ fontSize: '16px' }}>📦</span>
+              <span style={{ fontSize: '16px' }}>🎓</span>
             ) : (
-              <span style={{ fontSize: '12px' }}>📦 Contexts</span>
+              <span style={{ fontSize: '12px' }}>🎓 Skills</span>
             )
           }
           key="contexts"
