@@ -187,7 +187,7 @@ class BedrockProvider(LLMProvider):
                 classified = self._classify_error(error_str)
                 logger.warning(
                     f"BedrockProvider: call failed after {time.time() - call_start:.1f}s — "
-                    f"{classified.value}: {error_str[:200]}")
+                    f"{classified.name}: {error_str[:500]}{'…[truncated]' if len(error_str) > 500 else ''}")
 
                 # Safety net: if CustomBedrockClient didn't handle context limit
                 # (e.g. no conversation_id available), try once with extended context.
@@ -255,7 +255,7 @@ class BedrockProvider(LLMProvider):
                 )
                 logger.warning(
                     f"BedrockProvider: failed after {time.time() - call_start:.1f}s — "
-                    f"{classified.name}: {error_str[:200]}"
+                    f"{classified.name}: {error_str[:500]}{'…[truncated]' if len(error_str) > 500 else ''}"
                 )
                 return
 
@@ -626,7 +626,7 @@ class BedrockProvider(LLMProvider):
                 # surfaced as a phantom "no output" completion — seen
                 # intermittently on opus4.8.
                 _exc_keys = {
-                    "internalServerException": ErrorType.OVERLOADED,
+                    "internalServerException": ErrorType.SERVER_ERROR,
                     "modelStreamErrorException": ErrorType.UNKNOWN,
                     "throttlingException": ErrorType.THROTTLE,
                     "modelTimeoutException": ErrorType.READ_TIMEOUT,
@@ -752,6 +752,8 @@ class BedrockProvider(LLMProvider):
             return ErrorType.CONTEXT_LIMIT
         if any(s in error_str for s in ("Read timed out", "ReadTimeoutError")) or "timeout" in lowered:
             return ErrorType.READ_TIMEOUT
+        if "InternalServerException" in error_str:
+            return ErrorType.SERVER_ERROR
         if "overloaded" in lowered or "529" in error_str or "ServiceUnavailableException" in error_str:
             return ErrorType.OVERLOADED
         return ErrorType.UNKNOWN
