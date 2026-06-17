@@ -31,7 +31,7 @@ import { useProject } from '../context/ProjectContext';
 import { useSendPayload } from '../hooks/useSendPayload';
 import { useStreamingContext } from '../context/StreamingContext';
 import { parseD3Spec } from '../utils/d3SpecParser';
-import { escapeNestedBacktickFences, stripBareProseFences, matchFenceOpen, applyOutsideFences, splitJsonSpecTrailingContent } from './fenceScanner';
+import { escapeNestedBacktickFences, stripBareProseFences, matchFenceOpen, applyOutsideFences, splitJsonSpecTrailingContent, upgradeNestedFences } from './fenceScanner';
 import { processInlineMath } from '../utils/inlineMathClassifier';
 /**
  * Determine whether a diff for the given language should soft-wrap long lines
@@ -5847,52 +5847,10 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // prefixed with a single space: " ```" matches the closing fence
             // pattern (up to 3 spaces indent + 3+ backticks + nothing else).
             // We scan for such collisions and increase the outer fence length.
-            {
-                const fenceUpgradeLines = processedMarkdown.split('\n');
-                const fenceUpgradeOutput: string[] = [];
-                let fui = 0;
-                while (fui < fenceUpgradeLines.length) {
-                    // Gate the opener through the shared CommonMark rule so the
-                    // tail of a wrapped inline-code span is not taken as a fence
-                    // opener. Only column-0 backtick fences are upgraded.
-                    const _open = matchFenceOpen(fenceUpgradeLines[fui]);
-                    if (_open && _open.char === '`' && _open.indent === 0) {
-                        const outerLen = _open.len;
-                        const _info = _open.info;
-                        // Find the closing fence
-                        let closeIdx = -1;
-                        let maxInnerFence = 0;
-                        for (let fj = fui + 1; fj < fenceUpgradeLines.length; fj++) {
-                            // If we hit a language-tagged fence opener, we've overshot
-                            // into the NEXT code block.  Stop scanning — the real close
-                            // for our block is either indented (valid per CommonMark but
-                            // not column-0) or missing.  Continuing would mis-pair with
-                            // a later bare ``` that belongs to a different block.
-                            const nextOpener = matchFenceOpen(fenceUpgradeLines[fj]);
-                            if (nextOpener && nextOpener.info !== '') break;
-
-                            const cl = fenceUpgradeLines[fj].match(/^(`{3,})\s*$/);
-                            if (cl && cl[1].length >= outerLen) { closeIdx = fj; break; }
-                            // Check if this content line looks like a closing fence
-                            // (1-3 spaces indent + backticks + optional spaces)
-                            const innerFence = fenceUpgradeLines[fj].match(/^ {1,3}(`{3,})\s*$/);
-                            if (innerFence) {
-                                maxInnerFence = Math.max(maxInnerFence, innerFence[1].length);
-                            }
-                        }
-                        if (closeIdx !== -1 && maxInnerFence >= outerLen) {
-                            const newLen = maxInnerFence + 1;
-                            const newFence = '`'.repeat(newLen);
-                            const langPart = _info;
-                            fenceUpgradeLines[fui] = newFence + langPart;
-                            fenceUpgradeLines[closeIdx] = newFence;
-                        }
-                    }
-                    fenceUpgradeOutput.push(fenceUpgradeLines[fui]);
-                    fui++;
-                }
-                processedMarkdown = fenceUpgradeOutput.join('\n');
-            }
+            // Upgrade outer fences that contain colliding nested fences (e.g. a
+            // ```diff patching a file with its own ```sql/```json) so the block
+            // parses as one unit. See upgradeNestedFences in fenceScanner.ts.
+            processedMarkdown = upgradeNestedFences(processedMarkdown);
             // Fix 0: Code fence immediately after bold/emphasis markers (e.g., "**text**\n```language")
             processedMarkdown = applyOutsideFences(processedMarkdown, (s) =>
                 s.replace(/(\*\*[^*]+\*\*|\*[^*]+\*|__[^_]+__|_[^_]+_)\n(```[a-zA-Z0-9_-]*)/gm, '$1\n\n$2')
