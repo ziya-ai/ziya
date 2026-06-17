@@ -262,7 +262,11 @@ async def unapply_changes(request: Request):
         
         # Validate path is within codebase
         resolved_path = os.path.abspath(file_path)
-        if not resolved_path.startswith(os.path.abspath(user_codebase_dir)):
+        # Boundary must include os.sep, else "/home/u/projbackup" passes the
+        # check for root "/home/u/proj" (sibling-prefix escape). Compare with
+        # the separator appended (and allow the root itself).
+        _root = os.path.abspath(user_codebase_dir)
+        if resolved_path != _root and not resolved_path.startswith(_root + os.sep):
             raise ValueError("Invalid file path specified")
         
         if not os.path.exists(file_path):
