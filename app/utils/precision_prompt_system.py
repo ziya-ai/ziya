@@ -227,14 +227,56 @@ class PrecisionPromptSystem:
             
             # Add chat history before the question
             if chat_history:
+                import datetime as _dt
+                # Explain the hidden per-message time tags to the model once.
+                # The frontend strips these from display; they exist only so
+                # the model can reason about elapsed time between turns.
+                if messages and messages[0]["role"] == "system":
+                    messages[0]["content"] += (
+                        "\n\n## Message Timing\n"
+                        "Each prior message below is prefixed with a hidden "
+                        "<MessageTime value=\"YYYY-MM-DD HH:MM:SS\" /> tag recording when "
+                        "it was sent. Combine these with <CurrentDateTime> to reason about "
+                        "elapsed time between turns (how long a task took, how stale prior "
+                        "context is, etc.). These tags are invisible to the user — never "
+                        "repeat, quote, or echo them in your responses."
+                    )
+
+                def _with_time_tag(content, ts):
+                    """Prepend a hidden <MessageTime> tag to a history message.
+
+                    Handles both plain-string and multi-modal (list-of-blocks)
+                    content. Returns content unchanged when no timestamp is
+                    available.
+                    """
+                    if ts is None:
+                        return content
+                    try:
+                        iso = _dt.datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M:%S")
+                    except (ValueError, OSError, TypeError):
+                        return content
+                    tag = f'<MessageTime value="{iso}" />\n'
+                    if isinstance(content, str):
+                        return tag + content
+                    if isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                block["text"] = tag + block.get("text", "")
+                                return content
+                        return [{"type": "text", "text": tag}] + content
+                    return content
+
                 # Insert chat history before the last message (the question)
                 question_msg = messages.pop() if messages else None
                 for msg in chat_history:
                     if isinstance(msg, dict):
+                        ts = msg.get('_timestamp')
                         if 'type' in msg:
                             role = 'user' if msg['type'] in ['human', 'user'] else 'assistant'
-                            messages.append({"role": role, "content": msg.get('content', '')})
+                            messages.append({"role": role, "content": _with_time_tag(msg.get('content', ''), ts)})
                         elif 'role' in msg:
+                            if ts is not None:
+                                msg = {**msg, "content": _with_time_tag(msg.get('content', ''), ts)}
                             messages.append(msg)
                 if question_msg:
                     messages.append(question_msg)

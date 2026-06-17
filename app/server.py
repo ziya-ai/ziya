@@ -292,7 +292,10 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
             
             processed_chat_history.append({
                 'type': msg.get('type', 'human'),
-                'content': formatted_content
+                'content': formatted_content,
+                # Preserve per-message timestamp (epoch ms) so the precision
+                # prompt system can expose elapsed-time context to the model.
+                '_timestamp': msg.get('_timestamp')
             })
         elif isinstance(msg, (list, tuple)):
             # Handle tuple format: [role, content] or [role, content, images_json]
@@ -1064,21 +1067,29 @@ async def chat_endpoint(request: Request):
             for msg in messages_to_process:
                 if isinstance(msg, list) and len(msg) >= 2:
                     # Frontend tuple format: ["human", "content"]
-                    # or ["human", "content", json_encoded_images]
+                    # or ["human", "content", json_encoded_images, timestamp_ms].
+                    # The images slot is "" when absent; the timestamp slot
+                    # (epoch ms as a string) is hidden from users but exposed
+                    # to the model so it can reason about elapsed time.
                     role, content = msg[0], msg[1]
                     images = None
-                    if len(msg) >= 3:
+                    if len(msg) >= 3 and msg[2]:
                         try:
                             images = json.loads(msg[2])
                         except (json.JSONDecodeError, TypeError):
                             logger.warning(f"Failed to parse images from message: {msg[2][:100] if len(msg[2]) > 100 else msg[2]}")
-                    
+                    msg_ts = None
+                    if len(msg) >= 4 and msg[3]:
+                        try:
+                            msg_ts = int(msg[3])
+                        except (ValueError, TypeError):
+                            msg_ts = None
                     if role in ['human', 'user']:
                         chat_history.append({'type': 'human', 'content': content, 'images': images,
-                                             '_timestamp': None})
+                                             '_timestamp': msg_ts})
                     elif role in ['assistant', 'ai']:
                         chat_history.append({'type': 'ai', 'content': content, 'images': images,
-                                             '_timestamp': None})
+                                             '_timestamp': msg_ts})
                 elif isinstance(msg, dict):
                     # Already in dict format
                     role = msg.get('role', msg.get('type', 'user'))
