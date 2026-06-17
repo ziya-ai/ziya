@@ -1387,6 +1387,92 @@ const isDeletionDiff = (content: string) => {
 // A hunk header carrying a real unified-diff range, e.g. "@@ -12,7 +12,9 @@".
 const VALID_HUNK_HEADER = /^@@\s+-\d+(?:,\d+)?\s+\+\d+(?:,\d+)?\s+@@/;
 
+/**
+ * Decide whether a HEADERLESS continuation diff block (one with no
+ * "diff --git"/"--- a/"/"+++ b/" headers of its own) is safe to chain to the
+ * previous headed diff's file.
+ *
+ * We can only verify a chain assumption against real file content at apply
+ * time (server-side); it is not reachable in this synchronous render pass.
+ * So the conservative rule is:
+ *   - PURE-ADD bodies (every body line is "+", blank, or "\") make no claim
+ *     about existing file content and are safe to chain.
+ *   - Bodies containing "-" removals or " " context lines assert what the
+ *     target file currently contains. We cannot verify that here, so we drop
+ *     the continuation assumption rather than point an Apply button at a file
+ *     the block may not actually match.
+ *
+ * `text` is the block body with any leading "@@ ..." hunk-header line removed.
+ */
+const isPureAddContinuation = (text: string): boolean => {
+    const bodyLines = text.split('\n')
+        .filter(l => l !== '' && !l.startsWith('\\'));
+    if (bodyLines.length === 0) return false;
+    return bodyLines.every(l => l.startsWith('+'));
+};
+
+/**
+ * Given the texts of consecutive ```diff blocks in document order, synthesize
+ * the missing "diff --git"/"--- a/"/"+++ b/" (and placeholder "@@") headers for
+ * headerless CONTINUATION blocks so each parses standalone and associates with
+ * the right file.
+ *
+ * A block is "headed" if it carries a "diff --git" line or bare "--- a/PATH" /
+ * "+++ b/PATH" unified headers; its path anchors subsequent headerless blocks.
+ * Intervening prose between blocks does NOT break the chain (callers pass only
+ * diff-token texts, in order) — the model frequently narrates between fixes to
+ * the same file. Continuation blocks are only chained when they are pure-add
+ * (see isPureAddContinuation); otherwise the assumption is dropped.
+ *
+ * Pure + exported so the chaining/association behavior is unit-testable.
+ */
+export const chainHeaderlessContinuationDiffs = (blockTexts: string[]): string[] => {
+    let lastHeadedDiffPath: string | null = null;
+    return blockTexts.map((original) => {
+        const text = (original || '').trimStart();
+        if (!text) return original;
+        const hasDiffGitHeader = text.startsWith('diff --git ') ||
+            text.split('\n').slice(0, 3).some(l => l.startsWith('diff --git '));
+        const minusMatch = text.match(/^--- a\/(\S+)/m);
+        const plusMatch = text.match(/^\+\+\+ b\/(\S+)/m);
+        if (hasDiffGitHeader) {
+            // Prefer the b/ (post-image) path when both are present.
+            const pathMatch = text.match(/^diff --git a\/(\S+) b\/(\S+)/m);
+            if (pathMatch) lastHeadedDiffPath = pathMatch[2] || pathMatch[1];
+            return original;
+        }
+        if (plusMatch || minusMatch) {
+            // Headed only by ---/+++ : self-sufficient, but record its path.
+            lastHeadedDiffPath = (plusMatch && plusMatch[1]) ||
+                (minusMatch && minusMatch[1]) || lastHeadedDiffPath;
+            return original;
+        }
+        if (lastHeadedDiffPath === null) return original;
+        // Headerless continuation: starts with "@@ ..." OR directly with hunk
+        // body lines ("+"/"-"/" ") when the model drops the @@ marker too.
+        const p = lastHeadedDiffPath;
+        const startsWithAt = text.startsWith('@@');
+        // Body to gate on: drop a leading "@@ ..." line for the pure-add check.
+        const gateBody = startsWithAt
+            ? text.split('\n').slice(1).join('\n')
+            : text;
+        if (!isPureAddContinuation(gateBody)) {
+            // Not verifiable here and not a pure add — drop the assumption.
+            return original;
+        }
+        const firstBodyLine = original.split('\n').find(l => l.length > 0) || '';
+        if (startsWithAt) {
+            return `diff --git a/${p} b/${p}\n--- a/${p}\n+++ b/${p}\n${original}`;
+        }
+        if (/^[+\- ]/.test(firstBodyLine)) {
+            // Bare hunk body — prepend headers plus a placeholder "@@"; the
+            // synthesizeMissingHunkHeaders() pass fills in real line counts.
+            return `diff --git a/${p} b/${p}\n--- a/${p}\n+++ b/${p}\n@@\n${original}`;
+        }
+        return original;
+    });
+};
+
 // Synthesize valid numeric hunk headers for "context-anchored" diffs whose
 // @@ lines carry only a section hint (e.g. "@@ def list") and no
 // -old,count +new,count range. react-diff-view's parseDiff requires a numeric
@@ -4312,38 +4398,25 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
         // the missing "diff --git" / "--- a/" / "+++ b/" headers using the
         // last seen headed diff's file path.  Each block then parses standalone
         // and renders inline with its own Apply button.
-        if (!isSubRender) {
-            // Path (without a/ or b/ prefix) of the most recent headed diff.
-            // We assume any subsequent headerless "@@"-only block targets the
-            // same file — true in every observed case.  Intervening prose,
-            // lists, or tool blocks no longer break the chain because the
-            // model frequently narrates between fixes to the same file.
-            let lastHeadedDiffPath: string | null = null;
-            for (let i = 0; i < tokens.length; i++) {
-                const tok = tokens[i] as TokenWithText;
-                if (determineTokenType(tok) !== 'diff' || !tok.text) continue;
-                const text = tok.text.trimStart();
-                const hasDiffGitHeader = text.startsWith('diff --git ') ||
-                    text.split('\n').slice(0, 3).some(l => l.startsWith('diff --git '));
-                if (hasDiffGitHeader) {
-                    // Extract path from "diff --git a/PATH b/PATH" so subsequent
-                    // headerless continuations can synthesize matching headers.
-                    // Prefer the b/ path (post-image) when both are present.
-                    const pathMatch = text.match(/^diff --git a\/(\S+) b\/(\S+)/m);
-                    if (pathMatch) lastHeadedDiffPath = pathMatch[2] || pathMatch[1];
-                } else if (lastHeadedDiffPath !== null && text.startsWith('@@')) {
-                    // Headerless continuation — synthesize git + unified headers
-                    // using the last headed diff's path so this block parses
-                    // standalone (and stays at its original inline position).
-                    const p = lastHeadedDiffPath;
-                    tok.text =
-                        `diff --git a/${p} b/${p}\n` +
-                        `--- a/${p}\n` +
-                        `+++ b/${p}\n` +
-                        tok.text;
-                }
-            }
+        // Collect diff-token texts in document order, run them through the
+        // (gated, unit-tested) chaining helper, and write the rewritten text
+        // back onto each token. The helper only chains pure-add continuation
+        // blocks; blocks with removals/context (whose file assumption we can't
+        // verify in this synchronous render pass) are left un-chained.
+        const diffTokenIdx: number[] = [];
+        const diffTokenTexts: string[] = [];
+        for (let i = 0; i < tokens.length; i++) {
+            const tok = tokens[i] as TokenWithText;
+            if (determineTokenType(tok) !== 'diff' || !tok.text) continue;
+            diffTokenIdx.push(i);
+            diffTokenTexts.push(tok.text);
         }
+        const chained = chainHeaderlessContinuationDiffs(diffTokenTexts);
+        diffTokenIdx.forEach((tokIdx, k) => {
+            if (chained[k] !== diffTokenTexts[k]) {
+                (tokens[tokIdx] as TokenWithText).text = chained[k];
+            }
+        });
 
         const diffTexts: { index: number; text: string }[] = [];
         tokens.forEach((token, index) => {
