@@ -410,6 +410,44 @@ class BedrockProvider(LLMProvider):
     # Internal: request body building
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _coalesce_same_role(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Merge consecutive same-role turns so the outgoing array always has
+        strictly alternating roles, as the Anthropic Messages API requires.
+
+        The conversation array is mutated in-loop by the tool executor
+        (empty-after-tools nudges, deferred-feedback injection, max-tokens
+        continuation). Any of those can append a turn whose role matches the
+        previous turn — e.g. a nudge after a user[tool_result] turn yields
+        user->user. opus4.8 answers a non-alternating array with an empty 200,
+        so the recovery nudge becomes the cause of an empty-response loop.
+        Repairing here, at the single choke point through which every outgoing
+        array passes, makes that class of malformation impossible regardless of
+        which upstream path produced it. The MSG_STRUCT diagnostic below then
+        acts as a verifier: same_role_adjacent_idx should always read '-'.
+        """
+        merged: List[Dict[str, Any]] = []
+        for msg in messages:
+            if merged and merged[-1].get("role") == msg.get("role"):
+                prev, cur = merged[-1].get("content"), msg.get("content")
+                if isinstance(prev, str) and isinstance(cur, str):
+                    merged[-1]["content"] = prev + "\n\n" + cur
+                elif isinstance(prev, list) and isinstance(cur, list):
+                    merged[-1]["content"] = prev + cur
+                else:
+                    pblocks = prev if isinstance(prev, list) else [{"type": "text", "text": prev}]
+                    cblocks = cur if isinstance(cur, list) else [{"type": "text", "text": cur}]
+                    merged[-1]["content"] = pblocks + cblocks
+                logger.info(
+                    "🧹 COALESCE: Merged consecutive '%s' turns before send.",
+                    msg.get("role"),
+                )
+            else:
+                # Shallow-copy so a later in-place content merge never mutates
+                # the caller's live conversation array.
+                merged.append(dict(msg))
+        return merged
+
     def _build_request_body(
         self,
         messages: List[Dict[str, Any]],
@@ -417,6 +455,9 @@ class BedrockProvider(LLMProvider):
         tools: List[Dict[str, Any]],
         config: ProviderConfig,
     ) -> Dict[str, Any]:
+        # Coalesce BEFORE cache-control so cache markers are computed on the
+        # final, strictly-alternating array.
+        messages = self._coalesce_same_role(messages)
         body: Dict[str, Any] = {
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": config.max_output_tokens,
