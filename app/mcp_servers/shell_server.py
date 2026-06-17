@@ -312,11 +312,23 @@ class ShellServer:
             remaining = remaining[len(tok):].lstrip()
         return remaining, env, ""
 
-    @staticmethod
-    def _is_compound_command(command: str) -> bool:
-        """Check if command is a compound shell construct (for/while/if/etc)."""
-        first_word = command.strip().split()[0] if command.strip() else ''
-        return first_word in _COMPOUND_STARTERS
+    def _is_compound_command(self, command: str) -> bool:
+        """Check if any pipeline segment is a compound shell construct.
+
+        Compound constructs (for/while/if/case/select) can appear after
+        other commands (e.g. ``cd dir && for f in *; do …; done``).  The
+        first word of the whole command is ``cd`` there, so inspecting only
+        the command's very first token missed the loop and routed it to the
+        manual shell=False pipeline orchestrator, which split the construct
+        on ``;``/``&&`` and tried to exec ``for`` as a binary
+        (``No such file or directory: 'for'``).  Inspect the first word of
+        every operator-split segment instead.
+        """
+        for _operator, segment in self._split_by_shell_operators(command):
+            words = segment.strip().split()
+            if words and words[0] in _COMPOUND_STARTERS:
+                return True
+        return False
 
     def _validate_compound_body(self, command: str) -> tuple:
         """Validate commands inside a compound shell construct.
@@ -339,11 +351,14 @@ class ShellServer:
             # Strip leading shell keywords to find the real command
             idx = 0
             while idx < len(words) and words[idx] in _SHELL_KEYWORDS:
-                # After 'for', skip variable name + word list (not commands)
-                if words[idx] == 'for' and idx + 1 < len(words):
-                    idx += 1          # skip loop variable name
-                    while idx < len(words) and words[idx] not in ('do', 'in'):
-                        idx += 1
+                # A 'for X in LIST' header (and the C-style 'for ((...))')
+                # contains only loop data -- the loop variable and the
+                # iteration word-list -- never a runnable command.  The body
+                # lives in a later segment after 'do' (segments are pre-split
+                # on ; \n && || |).  So consume the whole segment on 'for'.
+                if words[idx] == 'for':
+                    idx = len(words)
+                    break
                 idx += 1
 
             if idx >= len(words):
