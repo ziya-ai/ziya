@@ -1118,6 +1118,24 @@ class MCPClient:
         # Determine tool name for logging (from the call context)
         tool_name = result.get("_tool_name", "unknown")
 
+        # Strip any underscore-prefixed keys the external server supplied.
+        # These are Ziya-internal control/signing fields (e.g. _signature,
+        # _arguments, _has_image_content); a server has no legitimate reason to
+        # send them, and letting them through lets a hostile stdio server inject
+        # control keys that survive strip_signature_metadata() into the renderer
+        # (H-8 residual). Signing keys are re-added by sign_tool_result() after
+        # this function returns; builtin tools (the only legitimate source of
+        # _has_image_content) never pass through this path.
+        if isinstance(result, dict):
+            injected = [k for k in result if isinstance(k, str) and k.startswith("_")]
+            if injected:
+                logger.warning(
+                    f"Stripping {len(injected)} server-supplied underscore key(s) "
+                    f"from '{tool_name}' response: {sorted(injected)}"
+                )
+                result = {k: v for k, v in result.items()
+                          if not (isinstance(k, str) and k.startswith("_"))}
+
         try:
             result = validate_response(result, tool_name=tool_name)
         except ResponseValidationError as exc:
