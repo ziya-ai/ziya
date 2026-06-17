@@ -3309,14 +3309,20 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
             }
         }
         // Include images if present
+        // Per-message timestamp (epoch ms) is appended as the final tuple
+        // element so the backend can expose it to the model. It is never
+        // rendered to the user. The images slot is always present (empty
+        // string when absent) to keep the timestamp at a stable position.
+        const tsStr = (message._timestamp != null) ? String(message._timestamp) : '';
         if (message.images && message.images.length > 0) {
             messageTuples.push([
                 message.role,
                 content,
-                JSON.stringify(message.images)
+                JSON.stringify(message.images),
+                tsStr
             ]);
         } else {
-            messageTuples.push([message.role, content]);
+            messageTuples.push([message.role, content, '', tsStr]);
         }
     }
 
