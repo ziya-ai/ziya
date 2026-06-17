@@ -260,9 +260,12 @@ async def get_system_info(request: Request):
         # ZIYA environment variables
         ziya_vars = {k: v for k, v in os.environ.items() if k.startswith('ZIYA_')}
         info['environment_variables'] = {}
+        # Mask anything credential-adjacent. The prior list (KEY/SECRET/TOKEN)
+        # missed PASSWORD/PASSPHRASE/COOKIE/SESSION/CRED/AUTH/PRIVATE.
+        _SENSITIVE = ('KEY', 'SECRET', 'TOKEN', 'PASSWORD', 'PASSPHRASE',
+                      'COOKIE', 'SESSION', 'CRED', 'AUTH', 'PRIVATE')
         for key, value in sorted(ziya_vars.items()):
-            # Mask sensitive values
-            if 'KEY' in key or 'SECRET' in key or 'TOKEN' in key:
+            if any(marker in key.upper() for marker in _SENSITIVE):
                 info['environment_variables'][key] = value[:8] + '...' if len(value) > 8 else '***'
             else:
                 info['environment_variables'][key] = value
