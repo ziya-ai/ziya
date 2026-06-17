@@ -236,10 +236,15 @@ class DataEncryptor:
                 else:
                     # Check for KEK rotation
                     if active.kek_id != self._kek_id:
-                        logger.info(f"🔑 KEK changed ({active.kek_id} → {self._kek_id}), re-wrapping DEKs")
-                        # Try to derive old KEK for re-wrapping
-                        # For now, generate new DEK (safest approach)
-                        self._generate_dek()
+                        # T1-4 migration: if the old DEK was wrapped with a KEK
+                        # derived from the legacy static salt, recompute that
+                        # KEK and re-wrap in place so existing data stays
+                        # readable. Otherwise fall back to a fresh DEK.
+                        if self._try_legacy_salt_migration(active):
+                            logger.info("🔑 Migrated DEKs from legacy static salt to per-install salt")
+                        else:
+                            logger.info(f"🔑 KEK changed ({active.kek_id} → {self._kek_id}), generating new DEK")
+                            self._generate_dek()
 
                     # Check for DEK rotation
                     if self._policy.dek_rotation_interval:
@@ -348,20 +353,69 @@ class DataEncryptor:
         # Fallback: passphrase from env var
         passphrase = os.environ.get("ZIYA_ENCRYPTION_KEY")
         if passphrase:
-            from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-            from cryptography.hazmat.primitives import hashes
-            kdf = PBKDF2HMAC(
-                algorithm=hashes.SHA256(),
-                length=32,
-                salt=b"ziya-ale-v1-passphrase",
-                iterations=600_000,
-            )
-            kek = kdf.derive(passphrase.encode())
+            salt = self._get_or_create_passphrase_salt()
+            kek = self._derive_passphrase_kek(passphrase, salt)
+            # Stash so _initialize()'s KEK-rotation path can migrate any DEKs
+            # that were wrapped under the legacy static-salt KEK.
+            self._migration_passphrase = passphrase
             self._kek_id = f"passphrase-{hashlib.sha256(kek).hexdigest()[:12]}"
             logger.info("🔑 KEK derived from ZIYA_ENCRYPTION_KEY passphrase")
             return kek
 
         return None
+
+    # Legacy salt used before per-install random salts (T1-4). Retained ONLY
+    # to recompute the old KEK and migrate existing data on upgrade.
+    _LEGACY_STATIC_SALT = b"ziya-ale-v1-passphrase"
+
+    def _passphrase_salt_path(self) -> Path:
+        from app.utils.paths import get_ziya_home
+        return get_ziya_home() / "ale_passphrase_salt"
+
+    def _get_or_create_passphrase_salt(self) -> bytes:
+        """Return the per-install PBKDF2 salt, creating it on first use.
+
+        A random per-install salt defeats cross-installation precomputation
+        (rainbow tables): two installs with the same passphrase no longer
+        derive the same KEK.
+        """
+        path = self._passphrase_salt_path()
+        if path.exists():
+            return path.read_bytes()
+        salt = os.urandom(16)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(salt)
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        logger.info("🔑 Generated per-install passphrase salt")
+        return salt
+
+    @staticmethod
+    def _derive_passphrase_kek(passphrase: str, salt: bytes) -> bytes:
+        from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+        from cryptography.hazmat.primitives import hashes
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(), length=32, salt=salt, iterations=600_000,
+        )
+        return kdf.derive(passphrase.encode())
+
+    def _try_legacy_salt_migration(self, active: "WrappedDEK") -> bool:
+        """Re-wrap DEKs from the legacy static-salt KEK to the new salted KEK.
+
+        Returns True iff the existing active DEK was wrapped with a KEK derived
+        from the legacy static salt and we re-wrapped successfully. Otherwise
+        False (caller falls back to its normal KEK-change handling).
+        """
+        passphrase = getattr(self, "_migration_passphrase", None)
+        if not passphrase or not active.kek_id.startswith("passphrase-"):
+            return False
+        old_kek = self._derive_passphrase_kek(passphrase, self._LEGACY_STATIC_SALT)
+        if f"passphrase-{hashlib.sha256(old_kek).hexdigest()[:12]}" != active.kek_id:
+            return False  # not derived from the legacy static salt
+        self._keyring.rewrap_all(old_kek, self._kek, self._kek_id)
+        return True
 
     def _generate_dek(self):
         """Generate a new DEK, wrap it, and store in keyring."""
