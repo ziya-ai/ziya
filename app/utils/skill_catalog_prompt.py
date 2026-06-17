@@ -40,36 +40,23 @@ def get_skill_catalog_section() -> str:
         desc = skill.get("catalog_description") or skill.get("description", "")
         rows.append(f"  • {sid} — {desc}")
 
-    # Also include project-discovered SKILL.md files marked
+    # Also include file-discovered SKILL.md files (across all well-known
+    # project + user-global roots, precedence resolved) marked
     # visibility: model_discoverable (agentskills.io progressive disclosure
-    # stage 1 — frontmatter only, no body).
+    # stage 1 — frontmatter only, no body).  Use skill name as the catalog
+    # ID (matches what the model passes to get_skill_details).
     try:
-        workspace = os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
-        if workspace:
-            from app.services.skill_discovery import discover_project_skills
-            from app.services.token_service import TokenService
-            project_skills = discover_project_skills(
-                workspace, TokenService(), load_body=False,
-            )
-            for ps in project_skills:
-                if ps.visibility != "model_discoverable":
-                    continue
-                # Use skill name as the catalog ID (matches what the model
-                # will pass to get_skill_details).
-                rows.append(f"  • {ps.name} — {ps.description}")
-    except Exception as e:
-        logger.debug(f"Project skill catalog merge failed: {e}")
-
-    # User-global skills from ~/.ziya/skills (cross-project, all projects).
-    try:
-        from app.services.skill_discovery import discover_user_skills
+        from app.services.skill_discovery import discover_all_skills
         from app.services.token_service import TokenService
-        for us in discover_user_skills(TokenService(), load_body=False):
-            if us.visibility != "model_discoverable":
+        workspace = os.environ.get("ZIYA_USER_CODEBASE_DIR", "") or None
+        for ds in discover_all_skills(
+            workspace, TokenService(), load_body=False,
+        ):
+            if ds.visibility != "model_discoverable":
                 continue
-            rows.append(f"  • {us.name} — {us.description}")
+            rows.append(f"  • {ds.name} — {ds.description}")
     except Exception as e:
-        logger.debug(f"User skill catalog merge failed: {e}")
+        logger.debug(f"Skill catalog merge failed: {e}")
 
     if not rows:
         return ""
