@@ -102,6 +102,36 @@ describe('matchFenceClose', () => {
     it('allows trailing whitespace on a close', () => {
         expect(matchFenceClose(BT + '   ', { char: '`', len: 3 })).toEqual({ len: 3 });
     });
+
+    // A column-0 ```diff fence is only closed by a column-0 backtick run.
+    // Any indented bare fence is diff content (a fenced block inside the
+    // file being patched, carried in as a +/-/space-prefixed line), not
+    // the wrapping close — accepting it would truncate the diff mid-body.
+    it('does NOT close a column-0 ```diff fence with a space-indented run', () => {
+        expect(
+            matchFenceClose(' ' + BT, { char: '`', len: 3, info: 'diff', indent: 0 }),
+        ).toBeNull();
+    });
+
+    it('DOES close a column-0 ```diff fence with a column-0 run', () => {
+        expect(
+            matchFenceClose(BT, { char: '`', len: 3, info: 'diff', indent: 0 }),
+        ).toEqual({ len: 3 });
+    });
+
+    it('keeps CommonMark indent tolerance for an INDENTED ```diff open', () => {
+        // When the diff fence itself opened indented, its close may match
+        // that indent — the column-0 rule only applies to column-0 opens.
+        expect(
+            matchFenceClose('  ' + BT, { char: '`', len: 3, info: 'diff', indent: 2 }),
+        ).toEqual({ len: 3 });
+    });
+
+    it('keeps indent tolerance for a non-diff fence', () => {
+        expect(
+            matchFenceClose(' ' + BT, { char: '`', len: 3, info: 'json', indent: 0 }),
+        ).toEqual({ len: 3 });
+    });
 });
 
 describe('classifyFenceLines', () => {
@@ -166,9 +196,35 @@ describe('classifyFenceLines', () => {
         ]);
     });
 
-    it('leaves an unterminated fence tail as content (streaming case)', () => {
-        const md = [BT + 'diff', '-old', '+new'].join('\n');
-        expect(kinds(md)).toEqual(['open', 'content', 'content']);
+    // Regression: a ```diff that patches a file containing its OWN fenced
+    // code blocks. Those inner fences arrive as diff body lines — a context
+    // line is " ```" (leading context space), an added opener is "+```sql".
+    // The space-indented " ```" must NOT close the outer diff; only the
+    // final column-0 ``` does. Previously the first " ```" truncated the
+    // diff and everything after spilled out as loose markdown.
+    it('keeps space-indented body fences inside a column-0 ```diff', () => {
+        const md = [
+            BT + 'diff',
+            '--- a/SKILL.md',
+            '+++ b/SKILL.md',
+            '@@ -1,5 +1,7 @@',
+            ' Install the model:',
+            ' ' + BT + 'bash',
+            ' aws configure',
+            ' ' + BT,          // context-space close of SKILL.md's own block
+            '+More text',
+            '+' + BT + 'json',  // added opener inside the diff body
+            '+{"a": 1}',
+            '+' + BT,
+            BT,                 // the REAL outer close, at column 0
+        ].join('\n');
+        const k = kinds(md);
+        // Exactly one open and one close; everything between is content.
+        expect(k[0]).toBe('open');
+        expect(k[k.length - 1]).toBe('close');
+        expect(k.filter(x => x === 'open')).toHaveLength(1);
+        expect(k.filter(x => x === 'close')).toHaveLength(1);
+        expect(k.slice(1, -1).every(x => x === 'content')).toBe(true);
     });
 
     it('does not close a 4-backtick fence with a 3-backtick run', () => {

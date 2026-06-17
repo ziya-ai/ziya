@@ -96,15 +96,34 @@ export function matchFenceOpen(
  * Test whether a line closes the given active fence. A close must use
  * the SAME delimiter character, a run length >= the opener, <=3 spaces
  * indent, and nothing but trailing whitespace after the run.
+ *
+ * Diff-scoped exception: when the active fence is a ```diff opener that
+ * began at column 0, only a COLUMN-0 backtick run may close it. Every
+ * line of a unified-diff body carries a +/-/space prefix, so a bare ```
+ * that is part of the diff content (a fenced block inside the file being
+ * patched, carried in as a context/added line) is always indented by at
+ * least that prefix. Without this guard, classifyFenceLines accepts that
+ * indented body fence as the close and truncates the diff mid-body; the
+ * real wrapping close is markdown-level and sits at column 0.
  */
 export function matchFenceClose(
     line: string,
-    active: { char: FenceChar; len: number },
+    active: { char: FenceChar; len: number; info?: string; indent?: number },
 ): { len: number } | null {
     const re = active.char === '`' ? CLOSE_BACKTICK_RE : CLOSE_TILDE_RE;
     const m = re.exec(line);
     if (!m) return null;
     if (m[1].length < active.len) return null;
+    // A column-0 ```diff fence is only closed by a column-0 backtick run:
+    // any indented bare fence inside it is diff content, not the close.
+    if (
+        active.char === '`' &&
+        (active.info || '').toLowerCase() === 'diff' &&
+        (active.indent ?? 0) === 0 &&
+        /^ /.test(line)
+    ) {
+        return null;
+    }
     return { len: m[1].length };
 }
 
@@ -122,13 +141,13 @@ export function matchFenceClose(
 export function classifyFenceLines(markdown: string): LineClass[] {
     const lines = markdown.split('\n');
     const out: LineClass[] = [];
-    let active: { char: FenceChar; len: number } | null = null;
+    let active: { char: FenceChar; len: number; info: string; indent: number } | null = null;
 
     for (const line of lines) {
         if (active === null) {
             const open = matchFenceOpen(line);
             if (open) {
-                active = { char: open.char, len: open.len };
+                active = { char: open.char, len: open.len, info: open.info, indent: open.indent };
                 out.push({
                     kind: 'open',
                     char: open.char,
@@ -477,4 +496,105 @@ export function splitJsonSpecTrailingContent(markdown: string): string {
         prev = next;
     }
     return prev;
+}
+
+/**
+ * Upgrade an outer column-0 backtick fence to a longer run when its body
+ * contains a backtick run of equal-or-greater length that would prematurely
+ * close it. This commonly happens in `diff` blocks that patch a markdown/code
+ * file containing its own ```sql / ```json fences, or in `markdown` blocks that
+ * quote fenced examples: CommonMark closes the outer fence at the first inner
+ * ``` and the remainder spills out as loose text.
+ *
+ * Outer fences whose body can legitimately wrap nested fences (NESTABLE_OUTER:
+ * diff/markdown/md) are scanned with DEPTH PAIRING — a lang-tagged opener
+ * descends one level, a bare fence ascends, and the true outer close is the
+ * column-0 bare fence at depth 0. Other (non-nestable) outer fences keep the
+ * conservative behavior of bailing at the first lang-tagged opener so a missing
+ * close does not mis-pair with a later sibling block's bare fence.
+ *
+ * When a collision is found (an inner run length >= the outer run length) the
+ * outer opener and its matched close are widened to maxInnerFence + 1 backticks.
+ * Pure (no React) and exported so the behavior is directly unit-testable.
+ */
+const NESTABLE_OUTER = new Set(['diff', 'markdown', 'md']);
+
+export function upgradeNestedFences(markdown: string): string {
+    const lines = markdown.split('\n');
+    let i = 0;
+    while (i < lines.length) {
+        // Gate the opener through the shared CommonMark rule so the tail of a
+        // wrapped inline-code span is not taken as a fence opener. Only column-0
+        // backtick fences are upgraded.
+        const open = matchFenceOpen(lines[i]);
+        if (open && open.char === '`' && open.indent === 0) {
+            const outerLen = open.len;
+            const info = open.info;
+            const nestable = NESTABLE_OUTER.has(info.toLowerCase());
+            let closeIdx = -1;
+            let maxInnerFence = 0;
+            let depth = 0;
+            for (let j = i + 1; j < lines.length; j++) {
+                const line = lines[j];
+                if (!nestable) {
+                    // Non-nestable outer fence: a lang-tagged opener means we
+                    // overshot into the NEXT block; stop rather than mis-pair
+                    // with a later bare ``` belonging to a different block.
+                    const nextOpener = matchFenceOpen(line);
+                    if (nextOpener && nextOpener.info !== '') break;
+                    const cl = line.match(/^(`{3,})\s*$/);
+                    if (cl && cl[1].length >= outerLen) { closeIdx = j; break; }
+                    const innerFence = line.match(/^ {1,3}(`{3,})\s*$/);
+                    if (innerFence) {
+                        maxInnerFence = Math.max(maxInnerFence, innerFence[1].length);
+                    }
+                } else {
+                    // Nestable outer fence (diff/markdown): depth-pair to find
+                    // the true outer close (the column-0 bare fence at depth 0).
+                    //
+                    // A diff body carries inner fences as diff lines: an added
+                    // code block is "+```sql ... +```", a context one is
+                    // " ```sql ...  ```". The +/-/space prefix must be stripped
+                    // before classifying the fence, otherwise diff-prefixed
+                    // CLOSES never decrement depth, the counter never returns to
+                    // 0, and the real outer close is consumed as a pop — leaving
+                    // closeIdx = -1 and the block un-upgraded (it then truncates
+                    // in the renderer at the first stray inner ```).
+                    //
+                    // True outer close: a bare backtick run at COLUMN 0 (no diff
+                    // prefix) of length >= outer, seen at depth 0.
+                    const bareCol0 = line.match(/^(`{3,})\s*$/);
+                    if (bareCol0 && bareCol0[1].length >= outerLen && depth === 0) {
+                        closeIdx = j;
+                        break;
+                    }
+                    // Classify the inner fence shape with any leading +/- diff
+                    // marker removed, so prefixed openers AND closes both move
+                    // the depth counter symmetrically.
+                    const stripped = line.replace(/^[+\-]/, '');
+                    const innerOpen = stripped.match(/^\s*(`{3,})(\S.*)?$/);
+                    if (innerOpen) {
+                        maxInnerFence = Math.max(maxInnerFence, innerOpen[1].length);
+                        const hasInfo = !!(innerOpen[2] && innerOpen[2].trim() !== '');
+                        if (hasInfo) depth++;
+                        else if (depth > 0) depth--;
+                    }
+                }
+            }
+            if (closeIdx !== -1 && maxInnerFence >= outerLen) {
+                const newFence = '`'.repeat(maxInnerFence + 1);
+                lines[i] = newFence + info;
+                lines[closeIdx] = newFence;
+            }
+            // For a nestable block, jump past it so its inner lang-tagged fences
+            // are not re-scanned as fresh top-level openers (which would wrongly
+            // upgrade them).
+            if (nestable && closeIdx !== -1) {
+                i = closeIdx + 1;
+                continue;
+            }
+        }
+        i++;
+    }
+    return lines.join('\n');
 }
