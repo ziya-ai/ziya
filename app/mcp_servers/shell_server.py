@@ -40,6 +40,27 @@ _BLOCKED_ENV_PREFIXES = frozenset({
 _ENV_ASSIGN_RE = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)=')
 
 
+def _clean_child_env(extra: dict | None = None) -> dict:
+    """Return a copy of os.environ safe to hand to child processes.
+
+    macOS injects the ``Malloc*`` debug-allocator variables
+    (``MallocStackLogging``, ``MallocScribble``, ``MallocGuardEdges``, …)
+    into a process's environment when it is launched under Xcode,
+    Instruments, the ``leaks``/``malloc_history`` tools, or a
+    debugger-attached IDE terminal.  Children inherit them and the
+    allocator prints noisy warnings on startup/teardown such as
+    "MallocStackLogging: can't turn off malloc stack logging because it
+    was not enabled."  We never set these ourselves, so strip the whole
+    family from the environment passed to children; this is cosmetic and
+    does not affect any command's behavior.  ``extra`` (peeled
+    ``VAR=value`` prefixes / pipeline-local vars) is applied last.
+    """
+    env = {k: v for k, v in os.environ.items() if not k.startswith('Malloc')}
+    if extra:
+        env.update(extra)
+    return env
+
+
 def _consume_assignment_with_subst(segment: str) -> str | None:
     """Consume a full VAR=$(...) or VAR="$(...)" token from *segment*.
 
@@ -440,15 +461,11 @@ class ShellServer:
             args = self._expand_and_tokenize(inner_cmd, extra_env)
             if not args:
                 return ""
-            sub_env = None
-            if extra_env:
-                sub_env = os.environ.copy()
-                sub_env.update(extra_env)
             try:
                 r = subprocess.run(
                     args, shell=False, capture_output=True, text=True,
                     timeout=timeout,
-                    env=sub_env,
+                    env=_clean_child_env(extra_env),
                     cwd=cwd if cwd and os.path.isdir(cwd) else None,
                 )
                 return r.stdout.rstrip("\n")
