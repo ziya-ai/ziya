@@ -208,14 +208,35 @@ class ShellServer:
         print(f"Write patterns: {self.wp_manager.policy.get('allowed_write_patterns', [])}", file=sys.stderr)
         print(f"Interpreters: {self.wp_manager.policy.get('allowed_interpreters', [])}", file=sys.stderr)
         
-    def _expand_and_tokenize(self, cmd_segment: str) -> list:
+    @staticmethod
+    def _expandvars_with(text: str, mapping: dict) -> str:
+        """Expand $VAR / ${VAR} using the given mapping instead of os.environ.
+
+        Mirrors os.path.expandvars' quote-naive behavior (it expands inside
+        quotes too) so callers get consistent semantics whether or not
+        pipeline-local variables are in play.  Unknown names are left
+        untouched, matching the stdlib expander.
+        """
+        def _repl(m: 're.Match') -> str:
+            name = m.group(1) or m.group(2)
+            return mapping.get(name, m.group(0))
+        return re.sub(r'\$(\w+)|\$\{(\w+)\}', _repl, text)
+
+    def _expand_and_tokenize(self, cmd_segment: str, extra_env: dict | None = None) -> list:
         """Expand shell features in Python and tokenize into an args list.
 
         Handles environment variables, tilde expansion, and glob patterns
         so that subprocess can be called with shell=False.
         """
-        # Expand environment variables ($VAR, ${VAR}) before tokenizing
-        expanded = os.path.expandvars(cmd_segment)
+        # Expand environment variables ($VAR, ${VAR}) before tokenizing.
+        # When pipeline-local shell variables are supplied, expand against a
+        # merged view (os.environ overlaid with them) so assignments earlier
+        # in the same command are visible; otherwise defer to the stdlib
+        # expander to preserve its exact semantics.
+        if extra_env:
+            expanded = self._expandvars_with(cmd_segment, {**os.environ, **extra_env})
+        else:
+            expanded = os.path.expandvars(cmd_segment)
 
         try:
             tokens = shlex.split(expanded)
@@ -395,18 +416,24 @@ class ShellServer:
 
         return cleaned, kwargs
 
-    def _resolve_substitutions(self, cmd_segment: str, timeout: float, cwd: str) -> str:
+    def _resolve_substitutions(self, cmd_segment: str, timeout: float, cwd: str,
+                               extra_env: dict | None = None) -> str:
         """Resolve $(...) and backtick command substitutions by executing them."""
         import re as _re
 
         def _run_substitution(inner_cmd: str) -> str:
-            args = self._expand_and_tokenize(inner_cmd)
+            args = self._expand_and_tokenize(inner_cmd, extra_env)
             if not args:
                 return ""
+            sub_env = None
+            if extra_env:
+                sub_env = os.environ.copy()
+                sub_env.update(extra_env)
             try:
                 r = subprocess.run(
                     args, shell=False, capture_output=True, text=True,
                     timeout=timeout,
+                    env=sub_env,
                     cwd=cwd if cwd and os.path.isdir(cwd) else None,
                 )
                 return r.stdout.rstrip("\n")
@@ -501,10 +528,17 @@ class ShellServer:
         last_result = None
         accumulated_stdout = ""
         accumulated_stderr = ""
+        # Pipeline-local shell variables.  A bare NAME=value segment
+        # (no trailing command) sets one here so later segments -- and
+        # command substitutions within them -- can expand $NAME.  These
+        # stay local to this command invocation and are used for expansion
+        # only (not injected into child env) to match a shell's treatment
+        # of non-exported variables.
+        shell_vars: dict = {}
 
         for idx, (operator, cmd_segment) in enumerate(segments):
             # Resolve command substitutions first
-            resolved = self._resolve_substitutions(cmd_segment, timeout, cwd)
+            resolved = self._resolve_substitutions(cmd_segment, timeout, cwd, shell_vars)
             # Expand shell special parameters ($?, $$, $!) using the previous
             # segment's exit status. Bash treats $? as 0 before any command has
             # run, so default to 0 for the first segment. Must happen before
@@ -516,8 +550,14 @@ class ShellServer:
             # rejected blocked names, so any reason returned here is a
             # belt-and-suspenders no-op.
             resolved, segment_env, _ = self._peel_env_prefix(resolved)
-            args = self._expand_and_tokenize(resolved)
+            # Expand using pipeline-local vars plus this segment's own inline
+            # VAR=value cmd prefix (the latter wins for the segment).
+            args = self._expand_and_tokenize(resolved, {**shell_vars, **segment_env})
             if not args:
+                # A bare assignment (no command): record it for later
+                # segments rather than discarding it, then move on.
+                if segment_env:
+                    shell_vars.update(segment_env)
                 continue
             
             # Handle `cd` in-process: update effective_cwd for subsequent
