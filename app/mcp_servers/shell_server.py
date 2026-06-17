@@ -856,6 +856,14 @@ class ShellServer:
                 print(f"Peeled env prefix; validating: '{peeled_segment}'", file=sys.stderr)
                 cmd_segment = peeled_segment
 
+            # Block high-risk AWS CLI subcommands (IAM/STS role escalation,
+            # bulk data movement, infra deploy). 'aws' is allowlisted for
+            # read use, but these specific subcommands enable privilege
+            # escalation or exfiltration with the developer's credentials.
+            aws_block = self._aws_subcommand_blocked(cmd_segment)
+            if aws_block:
+                return False, aws_block
+
             # Bare variable assignment with no trailing command (e.g.
             # 'f=$(find .)').  Validate any command substitution inside
             # the original segment, then allow it.
@@ -942,6 +950,76 @@ class ShellServer:
         return True, ""
         
     
+    def _aws_subcommand_blocked(self, cmd_segment: str) -> Optional[str]:
+        """Return a denial reason if the segment is a high-risk aws subcommand.
+
+        'aws' stays allowlisted for read-only use, but credential-vending,
+        IAM mutation, infra deploy, and bulk data-movement subcommands are
+        denied because they enable privilege escalation or exfiltration with
+        the developer's credentials. Defense-in-depth, not a complete sandbox;
+        YOLO mode bypasses this (it bypasses the whole allowlist).
+        """
+        # AWS global options that consume the FOLLOWING token as their value,
+        # so "--region us-west-2 iam ..." isn't mis-read as service "us-west-2".
+        _value_opts = frozenset({
+            '--region', '--profile', '--output', '--endpoint-url', '--query',
+            '--ca-bundle', '--cli-read-timeout', '--cli-connect-timeout',
+            '--color', '--page-size', '--max-items', '--starting-token',
+        })
+        try:
+            tokens = shlex.split(cmd_segment)
+        except ValueError:
+            tokens = cmd_segment.split()
+        if not tokens or tokens[0] != 'aws':
+            return None
+
+        # Locate the first two positionals (service, action), skipping global
+        # options and any values they consume.
+        positionals = []
+        i = 1
+        while i < len(tokens) and len(positionals) < 2:
+            tok = tokens[i]
+            if tok.startswith('-'):
+                if '=' not in tok and tok in _value_opts:
+                    i += 1  # also skip this option's value
+                i += 1
+                continue
+            positionals.append(tok)
+            i += 1
+        if not positionals:
+            return None
+        service = positionals[0]
+        action = positionals[1] if len(positionals) > 1 else ''
+
+        def _starts(prefixes) -> bool:
+            return any(action.startswith(p) for p in prefixes)
+
+        blocked = (
+            (service == 'sts' and action.startswith('assume-role'))
+            or (service == 'iam' and _starts((
+                'create-', 'put-', 'attach-', 'detach-', 'update-',
+                'delete-', 'add-', 'remove-', 'set-', 'upload-')))
+            or (service == 's3' and action in {
+                'cp', 'mv', 'sync', 'rm', 'rb', 'mb'})
+            or (service == 's3api' and _starts(('put-', 'delete-', 'create-')))
+            or (service == 'lambda' and action in {
+                'create-function', 'update-function-code',
+                'update-function-configuration', 'add-permission', 'invoke'})
+            or (service == 'cloudformation' and action in {
+                'deploy', 'create-stack', 'update-stack',
+                'delete-stack', 'execute-change-set'})
+            or (service == 'ec2' and _starts(('run-instances', 'create-')))
+            or (service == 'ssm' and action in {'send-command', 'start-session'})
+            or (service == 'secretsmanager' and action == 'get-secret-value')
+        )
+        if blocked:
+            return (
+                f"{('aws ' + service + ' ' + action).strip()!r} is blocked: IAM/STS "
+                f"escalation, infra deploy, and bulk data-movement subcommands "
+                f"are not permitted from the shell tool"
+            )
+        return None
+
     def _validate_single_command(self, cmd_segment: str) -> bool:
         """Validate a single command segment against allowed patterns."""
         # Check against all allowed patterns
