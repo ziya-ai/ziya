@@ -513,6 +513,19 @@ class MCPClient:
                 logger.debug(f"MCP server process cleanup (server: {self.server_config.get('name', 'unknown')})")
             finally:
                 self._fail_all_pending(ConnectionError("MCP disconnected"))
+                # Explicitly close the subprocess transport while the event
+                # loop is still alive. asyncio's BaseSubprocessTransport.__del__
+                # otherwise runs at GC/interpreter-exit — after asyncio.run()
+                # has closed the loop — and calls loop.call_soon(), raising the
+                # cosmetic "RuntimeError: Event loop is closed" traceback on CLI
+                # exit. Closing here marks the transport closed so __del__ is a
+                # no-op. The child is already terminated by this point.
+                transport = getattr(self.process, "_transport", None)
+                if transport is not None:
+                    try:
+                        transport.close()
+                    except (RuntimeError, OSError):
+                        pass  # loop may already be closing; nothing to recover
                 self.process = None
                 self.is_connected = False
     
