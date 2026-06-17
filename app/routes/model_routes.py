@@ -28,7 +28,11 @@ class SetModelRequest(BaseModel):
     model_id: str
 
 class ModelSettingsRequest(BaseModel):
-    model_config = {"extra": "allow"}
+    # extra="ignore": unknown fields are dropped rather than retained. With the
+    # old extra="allow", any JSON key flowed through model_dump() into
+    # os.environ as ZIYA_<KEY>, letting an unauthenticated caller inject policy
+    # vars (ZIYA_ALLOW_ALL_ENDPOINTS, ZIYA_RETENTION_DAYS, ...).
+    model_config = {"extra": "ignore"}
     temperature: float = Field(default=0.3, ge=0, le=1)
     top_k: int = Field(default=15, ge=0, le=500)
     max_output_tokens: int = Field(default=DEFAULT_MAX_OUTPUT_TOKENS, ge=1)
@@ -701,7 +705,17 @@ async def _update_model_settings_locked(settings: ModelSettingsRequest):
                 logger.info(f"Switched region to {preferred_region} for model {new_model}")
 
         # Store all settings in environment variables with ZIYA_ prefix
+        # Defense in depth alongside extra="ignore": only these keys may mutate
+        # process env via this route, so even a future model field cannot set
+        # policy-bearing ZIYA_* variables.
+        _SETTABLE_KEYS = {
+            'temperature', 'top_k', 'top_p', 'max_output_tokens',
+            'thinking_mode', 'thinking_level', 'thinking_effort',
+        }
         for key, value in settings.model_dump().items():
+            if key not in _SETTABLE_KEYS:
+                logger.debug(f"  Ignoring non-settable model setting key: {key}")
+                continue
             if value is not None:  # Only set if value is provided
                 env_key = f"ZIYA_{key.upper()}"
                 logger.info(f"  Set {env_key}={value}")
