@@ -114,11 +114,17 @@ function updateAstStatusUI(status: AstStatus): void {
       }, 300);
     }, 5000);
   } else if (status.error) {
-    statusContainer.innerHTML = `
-      <div>
-        <strong>AST Indexing Error:</strong> ${status.error}
-      </div>
-    `;
+    // status.error is str(e) from an indexing exception and can contain
+    // file paths/content from the indexed repo. Build the node with
+    // textContent so any markup in the error is rendered as text, not HTML
+    // (closes the unescaped-innerHTML XSS, T2-1).
+    statusContainer.innerHTML = '';
+    const wrap = document.createElement('div');
+    const label = document.createElement('strong');
+    label.textContent = 'AST Indexing Error:';
+    wrap.appendChild(label);
+    wrap.appendChild(document.createTextNode(' ' + String(status.error)));
+    statusContainer.appendChild(wrap);
     statusContainer.style.backgroundColor = 'rgba(220, 53, 69, 0.8)';
   }
 }
