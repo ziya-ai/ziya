@@ -1802,6 +1802,50 @@ class StreamingToolExecutor:
         # to actually run. Bounded to avoid infinite text-only loops when the
         # model legitimately has nothing more to do.
         textonly_grace_used = 0
+        # Phrases that announce intent to act ("Let me check X before writing…").
+        # Used by both text-only grace branches below to distinguish a response
+        # that promises work it hasn't done yet (continue) from one that has
+        # actually finished (end). Defined once at method scope so the two call
+        # sites can never drift apart.
+        _intent_phrases = (
+            'let me check', 'let me look', 'let me examine',
+            'let me search', 'let me verify', 'let me read',
+            'let me review', 'let me see', 'let me inspect',
+            'let me explore', 'let me first', 'let me dig',
+            "i'll check", "i'll look", "i'll examine",
+            "i'll search", "i'll verify", "i'll read",
+            "i'll review", "i'll inspect",
+            "before writing", "before i write",
+            "before creating", "before i create",
+            "first, let me", "first let me",
+            "i need to read", "i need to check",
+        )
+
+        def _grace_probe(branch: str, *, says_continue: bool, decider: str = "phrase"):
+            # Instrumentation only — does NOT influence the decision. Logs what
+            # the active decider (English phrase heuristic for the text-grace
+            # branches, structural _prev_is_tool_result for the empty branch)
+            # decided vs. what the model's own stop_reason would say, so the
+            # next occurrence can be graded by grepping 🔬 GRACE_PROBE.
+            # stop_reason is NOT uniformly normalized
+            # across providers (anthropic_direct/google_direct hardcode
+            # 'end_turn'; openai_direct emits raw 'length'/'stop'/'tool_calls'),
+            # so map both vocabularies to a single interpretation here.
+            raw = last_stop_reason
+            _cut = {'max_tokens', 'length'}
+            _act = {'tool_use', 'tool_calls'}
+            if raw in _cut:
+                sr_says = 'continue(cutoff)'
+            elif raw in _act:
+                sr_says = 'continue(tool)'
+            else:
+                sr_says = 'end'  # end_turn, stop, stop_sequence, None
+            logger.info(
+                "🔬 GRACE_PROBE[%s] decider=%s→%s stop_reason=%r→%s agree=%s",
+                branch, decider, 'continue' if says_continue else 'end',
+                raw, sr_says, (says_continue == sr_says.startswith('continue')),
+            )
+
         # Separate, tightly-bounded budget for the case where the model returns
         # a completely empty completion (no text, no tools, zero usage tokens)
         # on the first turn after a normal user message — a transient provider
@@ -3259,20 +3303,8 @@ Please retry the tool call with valid JSON. Ensure:
                         # If the response is very short (< 50 chars) and we're repeating iterations
                         # with identical output, it's a stable completion - end the stream
                         if iteration >= 1 and len(assistant_text.strip()) < 50:
-                            _INTENT_PHRASES = (
-                                'let me check', 'let me look', 'let me examine',
-                                'let me search', 'let me verify', 'let me read',
-                                'let me review', 'let me see', 'let me inspect',
-                                'let me explore', 'let me first', 'let me dig',
-                                "i'll check", "i'll look", "i'll examine",
-                                "i'll search", "i'll verify", "i'll read",
-                                "i'll review", "i'll inspect",
-                                "before writing", "before i write",
-                                "before creating", "before i create",
-                                "first, let me", "first let me",
-                                "i need to read", "i need to check",
-                            )
-                            _has_intent = any(p in assistant_text.lower() for p in _INTENT_PHRASES)
+                            _has_intent = any(p in assistant_text.lower() for p in _intent_phrases)
+                            _grace_probe("SHORT_INTENT", says_continue=_has_intent)
                             if _has_intent and textonly_grace_used < 3:
                                 textonly_grace_used += 1
                                 logger.info(
@@ -3311,7 +3343,12 @@ Please retry the tool call with valid JSON. Ensure:
                         # legitimately-complete short text reply still ends.
                         if (word_count_after_block >= 20 and 
                             text_after_last_block.rstrip().endswith(('.', '!', '?'))):
+                            _grace_probe(
+                                "TEXTONLY",
+                                says_continue=any(p in assistant_text.lower() for p in _intent_phrases),
+                            )
                             if (not tools_executed_this_iteration
+                                    and any(p in assistant_text.lower() for p in _intent_phrases)
                                     and textonly_grace_used < 1
                                     and iteration == 0):
                                 textonly_grace_used += 1
@@ -3370,13 +3407,26 @@ Please retry the tool call with valid JSON. Ensure:
                         )
                         if _prev_is_tool_result and textonly_grace_used < 3:
                             textonly_grace_used += 1
+                            # Symptom-A probe: the decider is structural
+                            # (_prev_is_tool_result), which always nudges. This
+                            # surfaces how often we nudge a turn the model ended
+                            # (end_turn → over-nudge) vs. a real cutoff.
+                            _grace_probe("EMPTY_AFTER_TOOLS", says_continue=True, decider="prev_is_tool_result")
                             logger.info(
                                 f"🔄 EMPTY_AFTER_TOOLS_RETRY: Model returned nothing after tool results "
                                 f"(iteration={iteration}, grace={textonly_grace_used}/3). Nudging."
                             )
-                            conversation.append({
-                                "role": "user",
-                                "content": "[System: Please continue — analyze the tool results above and proceed with your task.]"
+                            # Append the nudge as a text block INSIDE the existing
+                            # tool_result user turn, not as a new user message.
+                            # A separate user turn after user[tool_result] yields
+                            # two consecutive same-role messages (see the
+                            # MSG_STRUCT same_role_adjacent_idx diagnostic), which
+                            # opus4.8 answers with another empty completion —
+                            # turning this recovery nudge into the cause of the
+                            # empty-response loop it is trying to break.
+                            conversation[-1]["content"].append({
+                                "type": "text",
+                                "text": "[System: Please continue — analyze the tool results above and proceed with your task.]",
                             })
                             continue
                         if not _prev_is_tool_result and empty_completion_retry_used < 2:
