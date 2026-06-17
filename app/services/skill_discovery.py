@@ -22,8 +22,27 @@ from ..services.token_service import TokenService
 
 logger = logging.getLogger(__name__)
 
-# Directories to scan (relative to project root), in priority order
-DISCOVERY_PATHS = [".agents/skills", ".skills", "SKILLS"]
+# Remembers shadowing situations already warned about, so the per-call
+# discovery in list()/catalog paths doesn't re-log the same clash every
+# request.  Keyed on (name, winner_path, tuple(shadowed_paths)).
+_WARNED_SHADOWS: set = set()
+
+# Project-relative skill roots, in priority order.  ``.ziya/skills`` is
+# first so a project's Ziya-native skills win within the project tier; the
+# rest cover other common agent harnesses (agentskills, Claude, Kiro).
+DISCOVERY_PATHS = [
+    ".ziya/skills",
+    ".agents/skills",
+    ".skills",
+    "SKILLS",
+    ".claude/skills",
+    ".kiro/skills",
+]
+
+# Home-relative skill roots scanned for user-global skills.  The ``.ziya``
+# user root is resolved via get_ziya_home() (honors $ZIYA_HOME); these are
+# the non-Ziya harness equivalents under $HOME.
+USER_HARNESS_PATHS = [".claude/skills", ".kiro/skills"]
 
 # YAML frontmatter regex — captures everything between opening and closing ---
 _FRONTMATTER_RE = re.compile(
@@ -342,3 +361,129 @@ def discover_user_skills(
 
     logger.info("Discovered %d user skills from %s", len(skills), skills_root)
     return skills
+
+
+def _scan_skill_root(
+    skills_root: Path,
+    token_service: TokenService,
+    *,
+    load_body: bool,
+    source: str,
+    id_base: str,
+    id_prefix: str,
+) -> List[Skill]:
+    """Parse every valid skill directory directly under ``skills_root``.
+
+    Unlike discover_project_skills/discover_user_skills this performs NO
+    name-level dedup — callers (notably discover_all_skills) need the raw
+    per-root candidate list so cross-root precedence can be applied.
+    Returns an empty list when the root does not exist.
+    """
+    if not skills_root.is_dir():
+        return []
+    out: List[Skill] = []
+    for child in sorted(skills_root.iterdir()):
+        if not child.is_dir():
+            continue
+        skill = _skill_from_dir(
+            child, token_service, load_body=load_body,
+            source=source, id_base=id_base, id_prefix=id_prefix,
+        )
+        if skill is not None:
+            out.append(skill)
+    return out
+
+
+def discover_all_skills(
+    workspace_path: Optional[str],
+    token_service: TokenService,
+    *,
+    load_body: bool = True,
+) -> List[Skill]:
+    """Discover skills across every well-known root and resolve name clashes.
+
+    Roots scanned (each existing root only):
+      * Project (relative to ``workspace_path``): the DISCOVERY_PATHS list,
+        i.e. .ziya/skills, .agents/skills, .skills, SKILLS, .claude/skills,
+        .kiro/skills.
+      * User-global: ~/.ziya/skills (via get_ziya_home, honors $ZIYA_HOME)
+        plus the USER_HARNESS_PATHS equivalents under $HOME.
+
+    When the same skill *name* appears in more than one root, a single
+    winner is chosen by this precedence (lower rank wins):
+      1. a ``.ziya`` root beats any non-ziya root (absolute preference);
+      2. otherwise a project root beats a user-global root;
+      3. otherwise the newest SKILL.md (by mtime) wins.
+    A warning is logged naming the winning path and the shadowed paths.
+
+    Returns a name-deduped list.  IDs/sources match the legacy
+    discover_project_skills / discover_user_skills outputs so stored-skill
+    cross-references stay stable.
+    """
+    # name -> list of (skill, is_ziya, tier_rank)  (tier_rank: 0=project,1=user)
+    candidates: Dict[str, List[Tuple[Skill, bool, int]]] = {}
+
+    def _add(skill: Skill, is_ziya: bool, tier_rank: int) -> None:
+        candidates.setdefault(skill.name, []).append((skill, is_ziya, tier_rank))
+
+    # --- project roots ---
+    if workspace_path:
+        root = Path(workspace_path)
+        if root.is_dir():
+            for rel in DISCOVERY_PATHS:
+                is_ziya = rel.startswith(".ziya")
+                for skill in _scan_skill_root(
+                    root / rel, token_service, load_body=load_body,
+                    source="project", id_base=workspace_path, id_prefix="project",
+                ):
+                    _add(skill, is_ziya, 0)
+
+    # --- user-global roots ---
+    user_roots: List[Tuple[Path, bool]] = []
+    try:
+        from ..utils.paths import get_ziya_home
+        user_roots.append((get_ziya_home() / "skills", True))
+    except Exception as e:
+        logger.debug("Could not resolve Ziya home for user skills: %s", e)
+    try:
+        home = Path.home()
+        for rel in USER_HARNESS_PATHS:
+            user_roots.append((home / rel, rel.startswith(".ziya")))
+    except Exception as e:
+        logger.debug("Could not resolve $HOME for user skills: %s", e)
+
+    for skills_root, is_ziya in user_roots:
+        for skill in _scan_skill_root(
+            skills_root, token_service, load_body=load_body,
+            source="user", id_base=str(skills_root), id_prefix="user",
+        ):
+            _add(skill, is_ziya, 1)
+
+    # --- resolve precedence per name ---
+    result: List[Skill] = []
+    for name, cands in candidates.items():
+        # Sort ascending so the first element is the winner:
+        #   ziya first, then project-over-user, then newest mtime.
+        ranked = sorted(
+            cands,
+            key=lambda c: (0 if c[1] else 1, c[2], -c[0].createdAt),
+        )
+        winner = ranked[0][0]
+        if len(ranked) > 1:
+            shadowed = [c[0].skillPath for c in ranked[1:]]
+            sig = (name, winner.skillPath, tuple(shadowed))
+            if sig not in _WARNED_SHADOWS:
+                _WARNED_SHADOWS.add(sig)
+                logger.warning(
+                    "Skill '%s' found in multiple roots; using %s "
+                    "(preferred), shadowing: %s",
+                    name, winner.skillPath,
+                    ", ".join(p for p in shadowed if p),
+                )
+        result.append(winner)
+
+    logger.info(
+        "Discovered %d skills across all roots (workspace=%s)",
+        len(result), workspace_path,
+    )
+    return result

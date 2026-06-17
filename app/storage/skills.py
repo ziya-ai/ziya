@@ -92,29 +92,17 @@ class SkillStorage(BaseStorage[Skill]):
         if data:
             return Skill(**data)
 
-        # Try project-discovered skills (with full body loaded)
-        if self.workspace_path:
-            try:
-                from ..services.skill_discovery import discover_project_skills
-                project_skills = discover_project_skills(
-                    self.workspace_path,
-                    self.token_service,
-                    load_body=True,
-                )
-                for ps in project_skills:
-                    if ps.id == skill_id:
-                        return ps
-            except Exception as e:
-                logger.warning("Project skill discovery failed during get: %s", e)
-
-        # Try user-global skills (~/.ziya/skills) — available in every project
+        # Try file-discovered skills across all well-known roots (project +
+        # user-global), with cross-root precedence resolved.  Full body loaded.
         try:
-            from ..services.skill_discovery import discover_user_skills
-            for us in discover_user_skills(self.token_service, load_body=True):
-                if us.id == skill_id:
-                    return us
+            from ..services.skill_discovery import discover_all_skills
+            for s in discover_all_skills(
+                self.workspace_path, self.token_service, load_body=True,
+            ):
+                if s.id == skill_id:
+                    return s
         except Exception as e:
-            logger.warning("User skill discovery failed during get: %s", e)
+            logger.warning("Skill discovery failed during get: %s", e)
 
         return None
     
@@ -126,31 +114,20 @@ class SkillStorage(BaseStorage[Skill]):
                 if data:
                     skills.append(Skill(**data))
 
-        # Discover agentskills-format skills from the project workspace
-        if self.workspace_path:
-            try:
-                from ..services.skill_discovery import discover_project_skills
-                project_skills = discover_project_skills(
-                    self.workspace_path,
-                    self.token_service,
-                    load_body=False,  # Progressive disclosure: metadata only for list
-                )
-                stored_ids = {s.id for s in skills}
-                for ps in project_skills:
-                    if ps.id not in stored_ids:
-                        skills.append(ps)
-            except Exception as e:
-                logger.warning("Project skill discovery failed: %s", e)
-
-        # Discover user-global skills from ~/.ziya/skills (cross-project)
+        # Discover agentskills-format skills across all well-known roots
+        # (project + user-global) with cross-root precedence resolved.
+        # Stored JSON skills win: only add discovered names/ids not present.
         try:
-            from ..services.skill_discovery import discover_user_skills
-            existing_ids = {s.id for s in skills}
-            for us in discover_user_skills(self.token_service, load_body=False):
-                if us.id not in existing_ids:
-                    skills.append(us)
+            from ..services.skill_discovery import discover_all_skills
+            stored_ids = {s.id for s in skills}
+            stored_names = {s.name for s in skills}
+            for ds in discover_all_skills(
+                self.workspace_path, self.token_service, load_body=False,
+            ):
+                if ds.id not in stored_ids and ds.name not in stored_names:
+                    skills.append(ds)
         except Exception as e:
-            logger.warning("User skill discovery failed: %s", e)
+            logger.warning("Skill discovery failed: %s", e)
 
         return sorted(skills, key=lambda s: s.lastUsedAt, reverse=True)
     
