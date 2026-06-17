@@ -11,6 +11,8 @@ import json
 import os
 from pathlib import Path
 
+from app.utils.logging_utils import logger
+
 # SINGLE SOURCE OF TRUTH for shell command configuration
 DEFAULT_SHELL_CONFIG = {
     "enabled": True,
@@ -144,8 +146,21 @@ def is_yolo_mode() -> bool:
 
 
 def set_yolo_mode(enabled: bool) -> None:
+    # Persisting YOLO_MODE=true lets a one-time bypass (prompt injection or
+    # social engineering) survive process restarts, permanently disabling the
+    # allowlist until a human edits mcp_config.json. Only allow *persisting*
+    # the enabled state when an operator has explicitly opted in via
+    # ZIYA_ALLOW_PERSISTENT_YOLO. Disabling is always allowed to persist.
     cfg = _read_mcp_config()
     env = _ensure_shell_env(cfg)
+    if enabled and os.environ.get("ZIYA_ALLOW_PERSISTENT_YOLO", "").lower() not in ("1", "true", "yes"):
+        logger.warning(
+            "Refusing to persist YOLO_MODE=true (set ZIYA_ALLOW_PERSISTENT_YOLO=1 "
+            "to override). YOLO remains off across restarts."
+        )
+        env["YOLO_MODE"] = "false"
+        _write_mcp_config(cfg)
+        return
     env["YOLO_MODE"] = "true" if enabled else "false"
     _write_mcp_config(cfg)
 
