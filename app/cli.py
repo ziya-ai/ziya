@@ -223,6 +223,35 @@ def find_session_by_name(name: str) -> Optional[str]:
     return candidates[0][2]
 
 
+def list_sessions_for_completion(limit: int = 50) -> List[Tuple[str, str]]:
+    """Return (completion_text, meta) pairs for session-name completion.
+
+    Sessions are listed most-recently-updated first.  The completion text is
+    the friendly name when present, otherwise the session id.  The meta is a
+    short human hint (name/id + message count) shown in the menu.
+    """
+    session_dir = get_session_dir()
+    results: List[Tuple[str, str]] = []
+    seen = set()
+    for p in sorted(session_dir.glob('*.json'),
+                    key=lambda p: p.stat().st_mtime, reverse=True)[:limit]:
+        try:
+            with open(p) as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError, ValueError):
+            continue
+        sid = data.get('id') or p.stem
+        sname = data.get('name') or ''
+        text = sname or sid
+        if text in seen:
+            continue
+        seen.add(text)
+        msg_count = len(data.get('history', []))
+        meta = f"id {sid[:8]} · {msg_count} msgs" if sname else f"{msg_count} msgs"
+        results.append((text, meta))
+    return results
+
+
 # Once-per-process guard for the orphaned-bead TTL sweep.
 _bead_sweep_done = False
 
@@ -605,18 +634,24 @@ COMMAND_SPEC = [
         'name': '/suspend',
         'help': 'Save session and exit',
         'usage': '/suspend [name]',
+        'completion': 'session',
+        'arg_hint': 'session name',
         'handler': 'cmd_suspend',
     },
     {
         'name': '/save',
         'help': 'Checkpoint the current session without exiting',
         'usage': '/save [name]',
+        'completion': 'session',
+        'arg_hint': 'session name',
         'handler': 'cmd_save',
     },
     {
         'name': '/resume',
         'help': "Restore a previous session's files and history",
         'usage': '/resume [name]',
+        'completion': 'session',
+        'arg_hint': 'session name',
         'handler': 'cmd_resume',
     },
     {
@@ -673,6 +708,27 @@ CLI_COMMANDS, CLI_SUBCOMMANDS, CLI_THIRD_LEVEL = _derive_command_tables(COMMAND_
 # derived from the spec's 'completion' field.
 CLI_MODEL_ARG_COMMANDS = {
     n for e in COMMAND_SPEC if e.get('completion') == 'model'
+    for n in [e['name']] + e.get('aliases', [])
+}
+
+# Commands whose argument completes as a filesystem path.
+CLI_PATH_ARG_COMMANDS = {
+    n for e in COMMAND_SPEC if e.get('completion') == 'path'
+    for n in [e['name']] + e.get('aliases', [])
+}
+
+# Commands whose argument completes as a saved-session name (e.g.
+# /suspend, /save, /resume), derived from the spec's 'completion' field.
+CLI_SESSION_ARG_COMMANDS = {
+    n for e in COMMAND_SPEC if e.get('completion') == 'session'
+    for n in [e['name']] + e.get('aliases', [])
+}
+
+# Free-text argument hints, shown in the completion menu for commands that
+# take an argument but have no path/model completion (e.g. a session name).
+CLI_ARG_HINTS = {
+    n: e['arg_hint']
+    for e in COMMAND_SPEC if e.get('arg_hint')
     for n in [e['name']] + e.get('aliases', [])
 }
 
@@ -842,16 +898,56 @@ class CLI:
                             # No deeper completions for these commands
                             return
 
-                        # Find where the command ends and the path argument begins
-                        space_idx = stripped.index(' ')
-                        path_part = stripped[space_idx + 1:]
-                        
-                        # Create a new document with just the path part for completion
-                        path_doc = Document(
-                            text=path_part,
-                            cursor_position=len(path_part)
-                        )
-                        yield from self.path_completer.get_completions(path_doc, complete_event)
+                        # Path completion only for commands that explicitly
+                        # accept a path argument.  Other commands (e.g.
+                        # /suspend, /save, /resume) take free-text or no
+                        # argument — don't expand filenames in that position.
+                        if command in CLI_PATH_ARG_COMMANDS:
+                            space_idx = stripped.index(' ')
+                            path_part = stripped[space_idx + 1:]
+                            path_doc = Document(
+                                text=path_part,
+                                cursor_position=len(path_part)
+                            )
+                            yield from self.path_completer.get_completions(
+                                path_doc, complete_event)
+                            return
+
+                        # Session-name completion: list saved sessions,
+                        # filtered by the text typed after the command.
+                        if command in CLI_SESSION_ARG_COMMANDS:
+                            space_idx = stripped.index(' ')
+                            typed = stripped[space_idx + 1:]
+                            sessions = list_sessions_for_completion()
+                            # Before anything is typed, surface the arg hint so
+                            # it's clear a (new or existing) name can be entered
+                            # — not just the existing-session list.  Shown first
+                            # so it's visible even when prior sessions exist.
+                            if not typed:
+                                hint = CLI_ARG_HINTS.get(command)
+                                if hint:
+                                    yield Completion(
+                                        text='', start_position=0,
+                                        display=f"<{hint}>",
+                                        display_meta='type a name',
+                                    )
+                            for name, meta in sessions:
+                                if name.lower().startswith(typed.lower()):
+                                    yield Completion(
+                                        text=name,
+                                        start_position=-len(typed),
+                                        display=name, display_meta=meta,
+                                    )
+                            return
+
+                        # Command takes a free-text argument (or none): show an
+                        # interactive hint instead of expanding filenames.
+                        hint = CLI_ARG_HINTS.get(command)
+                        if hint:
+                            yield Completion(
+                                text='', start_position=0,
+                                display=f"<{hint}>", display_meta='optional',
+                            )
                         return
                     else:
                         # Still typing the command - show command completions
@@ -1944,12 +2040,15 @@ class CLI:
     async def cmd_suspend(self, arg: str) -> bool:
         """/suspend [name] — save session and exit."""
         try:
-            session_id = save_session(self, arg.strip() or None)
+            name = arg.strip() or None
+            session_id = save_session(self, name)
         except Exception as e:
             print(f"\033[31mSave failed: {e}\033[0m")
             return True  # don't exit on a failed save
-        print(f"\033[32m✓ Session saved: {session_id}\033[0m")
-        print("\033[90mResume with: ziya chat --resume\033[0m")
+        label = name or session_id
+        print(f"\033[32m✓ Session saved: {label}\033[0m")
+        resume_arg = name or session_id
+        print(f"\033[90mResume with: ziya chat --resume {resume_arg}\033[0m")
         return False
 
     async def cmd_save(self, arg: str) -> bool:
