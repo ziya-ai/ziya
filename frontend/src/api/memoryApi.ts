@@ -260,3 +260,42 @@ export const LAYER_ICONS: Record<string, string> = {
   preference: '💜',
   negative_constraint: '🚫',
 };
+
+// ── Pure helpers for the Health-tab organize status line ──────────────
+// Extracted from MemoryBrowser's inline IIFE so they are unit-testable
+// without dragging the component (and its render chain) into jest.
+
+/** Threshold at which orphan accumulation auto-triggers organize.
+ *  Mirrors AUTO_ORGANIZE_ORPHAN_THRESHOLD in app/memory/organizer.py. */
+export const AUTO_ORGANIZE_ORPHAN_THRESHOLD = 15;
+
+/** Relative-time label for a past epoch-ms timestamp ("5m ago", "3h ago",
+ *  "2d ago"), or "never" when no timestamp is given.  now is injectable
+ *  for deterministic tests. */
+export function formatLastRunLabel(timestampMs: number | null | undefined, now: number = Date.now()): string {
+  if (!timestampMs) return 'never';
+  const mins = Math.floor((now - timestampMs) / 60000);
+  if (mins < 0) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1440) return `${Math.floor(mins / 60)}h ago`;
+  return `${Math.floor(mins / 1440)}d ago`;
+}
+
+export interface OrphanStatus {
+  count: number;
+  atThreshold: boolean;   // count >= threshold → auto-organize will fire
+  label: string;
+}
+
+/** Build the "Currently N orphans — auto-organize triggers at T" status. */
+export function orphanStatus(
+  orphanCount: number | null | undefined,
+  threshold: number = AUTO_ORGANIZE_ORPHAN_THRESHOLD,
+): OrphanStatus {
+  const count = Math.max(0, orphanCount || 0);
+  return {
+    count,
+    atThreshold: count >= threshold,
+    label: `Currently ${count} orphan${count === 1 ? '' : 's'} — auto-organize triggers at ${threshold}.`,
+  };
+}
