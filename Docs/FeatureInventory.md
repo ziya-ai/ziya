@@ -60,6 +60,34 @@ Durable, cross-session work units anchored to a chat. Distinct from chat streami
 
 ---
 
+## 2b. Work & Knowledge Primitives
+
+Ziya tracks state across three distinct primitives on **different axes** — they
+are not tiers of one pipeline, and work never auto-flows into durable memory.
+See `design/work-primitives-taxonomy.md` for the full rationale.
+
+| Primitive | Scope | Nature | Visibility | Status |
+|---|---|---|---|---|
+| **Beads** | conversation | *noticed* — attention-debt (forks not taken, asides, "come back to that") | agent-internal | shipped |
+| **Work items** | conversation | *committed* — agreed work with status | user-visible queue | **not yet built** (committed direction) |
+| **Memory** | cross-session | *settled* — durable knowledge (facts, decisions, vocabulary, lessons) | user-owned, reviewable | shipped |
+
+- **Beads** are conversational debt the agent maintains silently to avoid
+  dropping threads; they live and die with the conversation.
+- **Work items** (planned) are a standalone, conversation-scoped queue of committed
+  work — distinct from Task Cards (§2a), which are an *execution engine*, not a
+  lightweight agreed-work record. Mirrors the standalone task queue pattern
+  seen in peer tools (e.g. Kiro).
+- **Memory** is settled, user-owned knowledge fed by post-conversation
+  extraction and explicit save — never by an automatic "work completed →
+  memory" deposit.
+
+Allowed promotions: `bead → work item` (commit a noticed thread). Forbidden:
+`work item → memory` (a decision about in-flight work is work state, not
+settled knowledge).
+
+---
+
 ## 3. Code Intelligence
 
 | Feature | Detail |

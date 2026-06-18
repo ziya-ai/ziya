@@ -444,13 +444,14 @@ All memories live in a single JSON file (`memories.json`).  Each entry has:
 
 ### Tools
 
-The model interacts with memory through five builtin MCP tools:
+The model interacts with memory through six builtin MCP tools:
 
 | Tool | Purpose |
 |---|---|
 | `memory_search` | Keyword/tag/layer search across the flat store |
 | `memory_save` | Direct save (user-initiated via `/remember`) |
 | `memory_propose` | Agent proposes a memory for later user approval |
+| `memory_retract_proposal` | Agent withdraws a proposal **it created this session** (own-session only; never approves — approval stays the user's gate) |
 | `memory_context` | Browse mind-map handles — omit node_id for root overview |
 | `memory_expand` | Load all memories under a node and its descendants |
 
@@ -488,8 +489,7 @@ The frontend includes an interactive **Memory Browser** (`frontend/src/component
 | 🌐 Knowledge Graph | Force-directed SVG visualization of mind-map nodes (large circles) and individual memories (colored dots).  Nodes are draggable; links show parent-child, cross-links, and memory refs.  Importance maps to node size/glow, layer maps to color. Click a memory node to jump to it in the Explorer tab. |
 | 📚 Explorer | Searchable, filterable list of all memories with inline edit, delete, and real-time search.  Memories show layer badge, importance stars, freshness label, and tags. |
 | 💡 Proposals | Review queue for pending memory proposals.  Each card shows content, layer, tags, and age.  Approve individually or in batch. |
-| 🩺 Health | Stale memories (90+ days unaccessed), oversized mind-map nodes (12+ memories that should split), orphan memories (not linked to any node).  "Organize Knowledge" triggers LLM-powered clustering and relation extraction.  "Run Maintenance" triggers cell division and cross-link discovery. |
-
+| 🩺 Health | Stale memories (90+ days unaccessed), oversized mind-map nodes (12+ memories that should split), orphan memories (not linked to any node).  A status line shows when organize last ran, that organize is not time-scheduled (on-demand / startup / 15+ orphans), and the current orphan count vs the auto-trigger threshold.  "Organize Knowledge" triggers LLM-powered clustering and relation extraction; "Run Maintenance" triggers cell division and cross-link discovery (no LLM, non-destructive).  Both buttons show a spinner while running.  An embedding-coverage line (`Embeddings: N/M memories (P%)`) warns when memories are missing vectors — since embedding-centroid cross-linking can only see embedded memories — and surfaces a **Backfill Embeddings** button when coverage is partial. |
 ### Knowledge Organization
 
 The **memory organizer** (`app/utils/memory_organizer.py`) uses LLM calls to build
@@ -498,12 +498,45 @@ mind-map structure from unorganized memories:
 1. **Clustering** — Groups memories into thematic domains (e.g. "Network Architecture", "AI Tooling") via a service model call.  Batched for large corpora.
 2. **Placement** — Creates mind-map nodes for each domain and assigns memories to them.  Merges with existing domains when tag/handle overlap is sufficient.
 3. **Relation extraction** — Within each domain, identifies `supports`, `contradicts`, `elaborates`, and `depends_on` relationships between memories.
-4. **Cross-link discovery** — Connects domains in different branches that share tags (algorithmic, uses existing `memory_maintenance.py`).
+4. **Cross-link discovery** — Connects domains in different branches by two algorithmic signals (no LLM): ≥2 shared tags, and member-memory embedding-centroid cosine similarity (≥`ZIYA_NODE_CROSS_LINK_SIMILARITY`, default 0.62).  The embedding signal catches semantically-related domains that share no literal tags — the common case, since clustering assigns mostly-distinct tags per domain.
 5. **Cell division** — Splits oversized nodes into focused children when a tag cluster reaches threshold.
 
 Auto-triggers when orphan memories exceed 15 (configurable via `AUTO_ORGANIZE_ORPHAN_THRESHOLD`).
 
+In addition to the orphan auto-trigger, organize runs **periodically** via the
+internal system-job registry (see "Periodic System Jobs" below): the
+`memory_organize` job is checked at most every 6 hours and fires only when
+there are pending orphans OR the last organize is more than 24 hours stale, so
+a stable corpus never burns LLM spend clustering nothing.
+
 The API layer (`frontend/src/api/memoryApi.ts`) provides typed wrappers around all `/api/v1/memory` endpoints with shared constants for layer colors, labels, and icons.
+
+### Periodic System Jobs
+
+Internal maintenance that needs to run on a cadence (currently only
+memory-organize) is handled by a small system-job registry
+(`app/agents/system_jobs.py`) that rides the existing task-card scheduler
+loop (`app/agents/task_scheduler.py`).  This reuses the scheduler's
+single-writer guarantee — the `~/.ziya/scheduler.lock` heartbeat ensures
+that across multiple Ziya servers sharing one `~/.ziya` home, exactly one
+process fires these jobs.
+
+A job is a `SystemJob(name, interval_s, gate, run)`:
+
+- **interval_s** gates the *check* cadence, so the 15s scheduler tick does
+  not run an O(N) store scan every tick.
+- **gate** is a cheap synchronous predicate evaluated at most once per
+  interval; it decides whether work actually happens *now*.
+- **run** is the async work; exceptions are caught and logged per-job, so
+  one job's failure never affects another job or the card-fire pass.
+
+Per-job state (`last_check_ms`, `last_run_ms`, `runs_so_far`) persists to
+`~/.ziya/system_jobs.json`.
+
+This is the minimal first step toward a general user-task/workflow cron
+kernel: the registry interface is a superset target, so a future
+user-authored scheduled workflow becomes just another registered job
+without changing the loop integration.
 
 ### Behavioral Activation
 
@@ -542,7 +575,9 @@ Every `memory_save` call triggers automatic maintenance:
 2. **Cell division** — if the target node now exceeds 12 memories, the
    strongest tag cluster is split into a new child node.
 3. **Cross-link discovery** — nodes in different branches sharing ≥2
-   tags get bidirectional cross-links.
+   tags get bidirectional cross-links; an embedding-centroid pass
+   additionally links nodes whose member memories are cosine-similar
+   (≥`ZIYA_NODE_CROSS_LINK_SIMILARITY`, default 0.62) regardless of tag overlap.
 4. **Auto-linking** — embedding cosine similarity against the full store
    finds the top-5 most similar memories.  Above 0.88 similarity,
    an `elaborates` relation is created; 0.75–0.88 creates a `supports`
