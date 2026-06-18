@@ -313,6 +313,7 @@ class MemoryProposeTool(BaseMCPTool):
 
         tags = kwargs.get("tags", [])
         layer = kwargs.get("layer", "domain_context")
+        _conversation_id = kwargs.pop("conversation_id", None)
         if isinstance(tags, str):
             tags = [t.strip() for t in tags.split(",") if t.strip()]
 
@@ -321,7 +322,7 @@ class MemoryProposeTool(BaseMCPTool):
         project_path = kwargs.pop("_workspace_path", None) or os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
 
         from app.storage.memory import get_memory_storage
-        from app.models.memory import MemoryProposal
+        from app.models.memory import MemoryProposal, MemoryScope
 
         store = get_memory_storage()
         proposal = MemoryProposal(
@@ -330,8 +331,15 @@ class MemoryProposeTool(BaseMCPTool):
             layer=layer,
             learned_from="observation",
         )
+        # Stamp the originating conversation so memory_retract_proposal can
+        # verify own-session ownership before allowing a dismiss.  The agent
+        # may retract a proposal it created THIS session; it may never
+        # retract a prior-session proposal (conversation_id mismatch) nor a
+        # legacy one (conversation_id None) — those await the user's review.
+        if _conversation_id:
+            proposal.conversation_id = _conversation_id
         if project_path:
-            proposal.scope = {"project_paths": [project_path]}
+            proposal.scope = MemoryScope(project_paths=[project_path])
         store.add_proposal(proposal)
         pending_count = len(store.list_proposals())
         return {
@@ -472,3 +480,103 @@ class MemoryExpandTool(BaseMCPTool):
             logger.debug(f"record_load (expand) failed: {fb_err}")
 
         return {"content": "\n\n".join(formatted), "count": len(memories)}
+
+
+# ---------------------------------------------------------------------------
+# Tool: memory_retract_proposal
+# ---------------------------------------------------------------------------
+
+class MemoryRetractProposalInput(BaseModel):
+    """Input schema for memory_retract_proposal."""
+    proposal_id: str = Field(
+        ...,
+        description="The prop_* id of a proposal THIS conversation created "
+                    "(returned by memory_propose). Only own-session proposals "
+                    "may be retracted.",
+    )
+
+
+class MemoryRetractProposalTool(BaseMCPTool):
+    """Retract a memory proposal the agent created this session.
+
+    Deliberately narrow.  The proposal queue is the human-ownership gate
+    for durable memory: the agent proposes, the user reviews and approves.
+    This tool restores symmetry for ONE half of that contract only — the
+    agent may withdraw its OWN premature suggestion (e.g. a design decision
+    about in-flight work that, per the work-primitives taxonomy, should
+    never have been proposed as durable knowledge).  It must NOT be able to:
+      - approve any proposal (that is the user's gate, always),
+      - dismiss a proposal from a prior session or another conversation
+        (those are pending the user's review and are not the agent's to
+        clear).
+    Ownership is proven by matching the proposal's stamped conversation_id
+    against the current conversation.
+    """
+
+    name: str = "memory_retract_proposal"
+    description: str = (
+        "Retract (dismiss) a memory proposal that YOU created earlier in "
+        "THIS conversation — for example, a proposal you now realize was "
+        "premature, redundant, or was in-flight work state rather than "
+        "durable knowledge. Pass the prop_* id returned by memory_propose. "
+        "You may only retract proposals from the current session; proposals "
+        "from prior sessions are awaiting the user's review and are not "
+        "yours to dismiss. This never approves a proposal — approval is "
+        "always the user's decision."
+    )
+    InputSchema = MemoryRetractProposalInput
+
+    async def execute(self, **kwargs) -> Dict[str, Any]:
+        proposal_id = (kwargs.get("proposal_id") or "").strip()
+        _conversation_id = kwargs.pop("conversation_id", None)
+        if not proposal_id:
+            return {"error": True, "message": "proposal_id is required."}
+
+        from app.storage.memory import get_memory_storage
+        store = get_memory_storage()
+
+        # Locate the proposal in the review queue.
+        target = None
+        for p in store.list_proposals():
+            if p.id == proposal_id:
+                target = p
+                break
+        if target is None:
+            return {
+                "error": True,
+                "message": f"No pending proposal with id '{proposal_id}'. "
+                           f"It may have already been approved, dismissed, "
+                           f"or never existed.",
+            }
+
+        # Ownership gate: only the conversation that created the proposal
+        # may retract it.  Fails closed — a missing stamp (legacy proposal,
+        # or one created before this field was set) is NOT retractable.
+        owner = getattr(target, "conversation_id", None)
+        if not _conversation_id or owner != _conversation_id:
+            logger.info(
+                f"🔒 memory_retract_proposal denied for {proposal_id}: "
+                f"owner={owner!r} current={_conversation_id!r} (not own-session)"
+            )
+            return {
+                "error": True,
+                "message": (
+                    f"Proposal '{proposal_id}' was not created in this "
+                    f"conversation, so it can't be retracted here — it is "
+                    f"awaiting the user's review. Only proposals you created "
+                    f"this session may be retracted."
+                ),
+            }
+
+        if store.dismiss_proposal(proposal_id):
+            logger.info(f"↩️ Retracted own-session proposal {proposal_id}: {target.content[:60]}")
+            return {
+                "success": True,
+                "message": f"Retracted proposal {proposal_id}.",
+                "proposal_id": proposal_id,
+            }
+        return {
+            "error": True,
+            "message": f"Proposal '{proposal_id}' could not be retracted "
+                       f"(already removed?).",
+        }
