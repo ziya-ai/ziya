@@ -55,6 +55,7 @@ def __getattr__(name: str):
         "get_review_summary": ("app.memory.maintenance", "get_review_summary"),
         "maybe_divide_node": ("app.memory.maintenance", "maybe_divide_node"),
         "discover_cross_links": ("app.memory.maintenance", "discover_cross_links"),
+        "discover_cross_links_by_embedding": ("app.memory.maintenance", "discover_cross_links_by_embedding"),
         # Organizer
         "reorganize": ("app.memory.organizer", "reorganize"),
         "should_auto_organize": ("app.memory.organizer", "should_auto_organize"),
@@ -83,7 +84,7 @@ __all__ = [
     "apply_feedback", "record_load", "is_labile",
     "run_lifecycle_pass",
     "run_post_save_maintenance", "get_review_summary",
-    "maybe_divide_node", "discover_cross_links",
+    "maybe_divide_node", "discover_cross_links", "discover_cross_links_by_embedding",
     "reorganize", "should_auto_organize", "cleanup_corpus",
     "load_organize_history", "append_organize_result",
     "Memory", "MindMapNode", "MEMORY_LAYERS",

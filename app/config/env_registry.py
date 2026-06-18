@@ -205,6 +205,14 @@ _VARS: List[EnvVar] = [
            "AWS region for the embedding service."),
     EnvVar("ZIYA_EMBEDDING_DIM", int, 1024, EnvCategory.GROUNDING,
            "Embedding vector dimension."),
+    EnvVar("ZIYA_NODE_CROSS_LINK_SIMILARITY", float, 0.62, EnvCategory.GROUNDING,
+           "Min mind-map node centroid cosine similarity to create a cross-link."),
+    EnvVar("ZIYA_MEMORY_INTERFERENCE_STALE_DAYS", int, 21, EnvCategory.GROUNDING,
+           "Accelerated relevance-aging window (days) for high-interference "
+           "redundant memories.  Below the 90-day idle ceiling; never above it "
+           "(90 aligns with the Amazon idle-conversation retention policy)."),
+    EnvVar("ZIYA_MEMORY_INTERFERENCE_SIMILARITY", float, 0.85, EnvCategory.GROUNDING,
+           "Min cosine similarity for two active memories to interfere."),
     EnvVar("ZIYA_PDF_EMBEDDING_MODEL", str, "all-MiniLM-L6-v2", EnvCategory.GROUNDING,
            "Local sentence-transformer model for PDF search."),
     EnvVar("ZIYA_PDF_RAG_TOKEN_THRESHOLD", int, None, EnvCategory.GROUNDING,
