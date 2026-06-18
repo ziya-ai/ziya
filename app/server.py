@@ -1653,8 +1653,32 @@ async def stream_chunks(body):
                         
                         # Add feedback to messages and restart generation
                         
-                        # Simple feedback - model will acknowledge naturally
-                        enhanced_feedback = validation_feedback
+                        # Scope the restart to an APPEND-style amendment. The
+                        # frontend has already committed the prior answer to the
+                        # transcript (we don't rewind), so a bare replay makes the
+                        # model re-derive the whole response — the user sees the
+                        # full answer twice. Constrain it to: a one-line note of
+                        # what failed, then the corrected diff, nothing else.
+                        #
+                        # Validation only checked DIFF APPLICABILITY, so the prompt
+                        # must NOT assert the rest of the prior answer was correct —
+                        # that would be a false signal about something never verified.
+                        enhanced_feedback = (
+                            validation_feedback
+                            + "\n\n---\n"
+                            "IMPORTANT — how to respond to this:\n"
+                            "Your previous response has already been shown to the "
+                            "user and remains visible. Only the diff(s) named above "
+                            "failed to apply; nothing else about your prior response "
+                            "has been checked, so do not characterize it as correct "
+                            "or restate its conclusions.\n"
+                            "Respond with ONLY:\n"
+                            "  1. A brief note (1-2 sentences) of what was wrong with "
+                            "the failed diff.\n"
+                            "  2. The corrected diff.\n"
+                            "Do NOT re-derive, re-explain, or repeat any analysis, "
+                            "prose, or tool output from your previous response."
+                        )
                         messages.append(HumanMessage(content=enhanced_feedback))
                         
                         # Send a transition marker so the frontend can show a separator
