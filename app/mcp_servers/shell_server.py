@@ -888,6 +888,14 @@ class ShellServer:
             if curl_block:
                 return False, curl_block
 
+            # Block infra-deploy verbs of sam/cdk (H-6 infra-deploy leg).
+            # Both stay allowlisted for read/build use (synth, diff, build,
+            # validate, local); only the verbs that stand up or tear down
+            # real infrastructure are denied.
+            deploy_block = self._iac_deploy_blocked(cmd_segment)
+            if deploy_block:
+                return False, deploy_block
+
             # Bare variable assignment with no trailing command (e.g.
             # 'f=$(find .)').  Validate any command substitution inside
             # the original segment, then allow it.
@@ -1104,6 +1112,58 @@ class ShellServer:
                         f"curl @file upload of a credential path ({ref!r}) is "
                         f"blocked: this is a credential-exfiltration vector"
                     )
+        return None
+
+    def _iac_deploy_blocked(self, cmd_segment: str) -> Optional[str]:
+        """Return a denial reason for the deploy/destroy verbs of sam / cdk.
+
+        sam and cdk stay fully allowlisted for everything except standing up
+        or tearing down real infrastructure: build, synth, diff, validate,
+        local, ls, bootstrap, sync, publish, import, migrate, rollback are all
+        allowed. Only `sam deploy`, `cdk deploy`, and `cdk destroy` — the verbs
+        that provision or destroy account resources — are denied, since an AI
+        coding assistant must not deploy/destroy infrastructure. Defense-in-
+        depth, not a complete sandbox; YOLO mode bypasses this.
+        """
+        # Global options that consume the FOLLOWING token as their value, so
+        # "cdk --app build deploy" isn't mis-read as subcommand "build".
+        _value_opts = frozenset({
+            '--app', '--profile', '--region', '--context', '-c',
+            '--output', '-o', '--role-arn', '--toolkit-stack-name',
+            '--template', '-t', '--region',
+        })
+        _blocked = {
+            'sam': frozenset({'deploy'}),
+            'cdk': frozenset({'deploy', 'destroy'}),
+        }
+        try:
+            tokens = shlex.split(cmd_segment)
+        except ValueError:
+            tokens = cmd_segment.split()
+        if not tokens or tokens[0] not in _blocked:
+            return None
+        tool = tokens[0]
+
+        # Locate the first positional (the subcommand), skipping global
+        # options and any values they consume.
+        i = 1
+        subcommand = ''
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok.startswith('-'):
+                if '=' not in tok and tok in _value_opts:
+                    i += 1  # also skip this option's value
+                i += 1
+                continue
+            subcommand = tok
+            break
+        if subcommand in _blocked[tool]:
+            return (
+                f"{tool!r} {subcommand!r} is blocked: deploying or destroying "
+                f"infrastructure is not permitted from the shell tool. All other "
+                f"{tool} subcommands (build, synth, diff, validate, local, ls, "
+                f"bootstrap, …) are allowed."
+            )
         return None
 
     def _validate_single_command(self, cmd_segment: str) -> bool:
