@@ -200,9 +200,9 @@ def get_memory_tools() -> List[Type[BaseMCPTool]]:
     try:
         from app.mcp.tools.memory_tools import (
             MemorySearchTool, MemorySaveTool, MemoryProposeTool,
-            MemoryContextTool, MemoryExpandTool
+            MemoryContextTool, MemoryExpandTool, MemoryRetractProposalTool
         )
-        return [MemorySearchTool, MemorySaveTool, MemoryProposeTool, MemoryContextTool, MemoryExpandTool]
+        return [MemorySearchTool, MemorySaveTool, MemoryProposeTool, MemoryContextTool, MemoryExpandTool, MemoryRetractProposalTool]
     except ImportError as e:
         logger.warning(f"Could not import memory tools: {e}")
         return []
