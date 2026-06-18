@@ -108,6 +108,121 @@ def _consume_assignment_with_subst(segment: str) -> str | None:
     return None  # unbalanced parens
 
 
+def _find_substitution_spans(command: str) -> list:
+    """Return outermost command-substitution spans in *command*.
+
+    Each element is ``(start, end, body, kind)`` where ``start``/``end`` are
+    the half-open index range of the whole substitution token in *command*
+    (``$(...)`` including the ``$(`` and ``)``, or `` `...` `` including both
+    backticks), ``body`` is the inner command text, and ``kind`` is
+    ``'dollar'`` or ``'backtick'``.
+
+    This is the single quote- and nesting-aware walker shared by
+    ``_extract_command_substitutions`` (validation) and
+    ``_resolve_substitutions`` (execution), so the set of spans the validator
+    checks is exactly the set the resolver runs.  Bash semantics:
+      - inside single quotes nothing is a substitution;
+      - ``$( )`` nesting is balanced by depth, ignoring ``)`` inside quotes;
+      - backticks do not nest and are literal inside single quotes;
+      - backslash escapes the next char except inside single quotes.
+    Only outermost spans are returned; nested substitutions live inside
+    ``body`` and are handled by the caller (re-validated or recursively
+    resolved).
+    """
+    spans = []
+    i = 0
+    n = len(command)
+    in_sq = in_dq = False
+    while i < n:
+        ch = command[i]
+        if ch == '\\' and not in_sq and i + 1 < n:
+            i += 2
+            continue
+        if ch == "'" and not in_dq:
+            in_sq = not in_sq
+            i += 1
+            continue
+        if ch == '"' and not in_sq:
+            in_dq = not in_dq
+            i += 1
+            continue
+        if not in_sq and ch == '$' and i + 1 < n and command[i + 1] == '(':
+            depth = 0
+            j = i + 1  # positioned at '('
+            start_body = i + 2
+            s_sq = s_dq = False
+            while j < n:
+                c = command[j]
+                if c == '\\' and not s_sq and j + 1 < n:
+                    j += 2
+                    continue
+                if c == "'" and not s_dq:
+                    s_sq = not s_sq
+                elif c == '"' and not s_sq:
+                    s_dq = not s_dq
+                elif not s_sq and not s_dq:
+                    if c == '(':
+                        depth += 1
+                    elif c == ')':
+                        depth -= 1
+                        if depth == 0:
+                            spans.append((i, j + 1, command[start_body:j], 'dollar'))
+                            break
+                j += 1
+            i = j + 1
+            continue
+        if not in_sq and ch == '`':
+            j = i + 1
+            start_body = i + 1
+            while j < n:
+                c = command[j]
+                if c == '\\' and j + 1 < n:
+                    j += 2
+                    continue
+                if c == '`':
+                    spans.append((i, j + 1, command[start_body:j], 'backtick'))
+                    break
+                j += 1
+            i = j + 1
+            continue
+        i += 1
+    return spans
+
+
+def _extract_command_substitutions(command: str) -> list:
+    """Return the *outermost* command substitutions found in *command*.
+
+    Recognizes both ``$( ... )`` and backtick ``` ... ``` forms and is
+    quote- and nesting-aware, replacing three duplicated, broken call
+    sites that used ``re.findall(r'\\$\\(([^)]+)\\)', ...)`` plus ad-hoc
+    ``re.sub``/``.replace`` masking.  Those had three defects this fixes:
+
+      1. ``[^)]+`` stopped at the first ``)``, truncating a genuine
+         substitution whose body contained a ``)`` inside a quoted string
+         (e.g. ``echo "$(grep ')' file)"``) and leaving the tail
+         unvalidated.
+      2. They masked single-quoted regions with a separate ``re.sub`` —
+         correct, but duplicated and easy to drift.
+      3. The main path stripped *all* backticks before the backtick
+         ``findall``, so backtick substitutions were never validated at
+         all (a real enforcement gap, not just a false positive).
+
+    Parsing rules (bash semantics):
+      - inside single quotes nothing is a substitution;
+      - ``$( )`` nesting is balanced by depth, ignoring ``)`` that appears
+        inside quotes within the substitution body;
+      - backticks do not nest; a backtick is literal inside single quotes;
+      - backslash escapes the next char except inside single quotes.
+
+    Only outermost substitutions are returned.  Nested substitutions are
+    revalidated naturally because each returned string is passed back
+    through ``is_command_allowed``.  Empty/whitespace-only captures are
+    dropped so callers don't recurse into a nonsense "Empty command".
+    """
+    return [body for _start, _end, body, _kind in _find_substitution_spans(command)
+            if body.strip()]
+
+
 # Import centralized shell configuration
 # Go up two levels: shell_server.py -> mcp_servers/ -> app/ -> site-packages (or project root)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -358,8 +473,11 @@ class ShellServer:
         checks the actual commands against the allowlist.
         Returns (allowed: bool, denial_reason: str).
         """
-        # Split into fine-grained segments by ; \n && || |
-        parts = re.split(r'[;\n]|\s*\&\&\s*|\s*\|\|\s*|\s*\|\s*', command)
+        # Split into fine-grained segments by ; \n && || | using the
+        # quote-aware splitter. A naive re.split() would tear apart operators
+        # that appear *inside* quotes (e.g. grep -E "\|"), leaving a dangling
+        # quote char that then fails the allowlist as a bogus command word.
+        parts = [seg for _op, seg in self._split_by_shell_operators(command)]
 
         for part in parts:
             part = part.strip()
@@ -394,14 +512,16 @@ class ShellServer:
             # Validate the command against the allowlist
             test_cmd = ' '.join(words[idx:])
             segment_ok = any(
-                re.match(p, test_cmd, re.IGNORECASE)
+                re.match(p, test_cmd, re.IGNORECASE | re.DOTALL)
                 for p in self.safe_command_patterns.values()
             )
             if not segment_ok:
                 return False, f"'{cmd_word}' is not allowed"
 
-        # Validate $() and backtick substitutions
-        for sub in re.findall(r'\$\(([^)]+)\)', command) + re.findall(r'`([^`]+)`', command):
+        # Validate $() and backtick substitutions using the quote- and
+        # nesting-aware extractor (handles ) inside quoted bodies, nested
+        # $( ), and backtick subs that the old masking+findall missed).
+        for sub in _extract_command_substitutions(command):
             sub_ok, sub_reason = self.is_command_allowed(sub.strip())
             if not sub_ok:
                 return False, sub_reason
@@ -455,9 +575,11 @@ class ShellServer:
     def _resolve_substitutions(self, cmd_segment: str, timeout: float, cwd: str,
                                extra_env: dict | None = None) -> str:
         """Resolve $(...) and backtick command substitutions by executing them."""
-        import re as _re
-
         def _run_substitution(inner_cmd: str) -> str:
+            # Resolve any nested substitutions in the body first (inner-first),
+            # then execute. Each level has already been validated: the
+            # validator recurses into nested bodies via is_command_allowed.
+            inner_cmd = self._resolve_substitutions(inner_cmd, timeout, cwd, extra_env)
             args = self._expand_and_tokenize(inner_cmd, extra_env)
             if not args:
                 return ""
@@ -473,19 +595,25 @@ class ShellServer:
                 print(f"Substitution failed for '{inner_cmd}': {exc}", file=sys.stderr)
                 return ""
 
-        # Replace $(...) — outermost only (non-greedy, no nested parens)
-        result = _re.sub(
-            r'\$\(([^)]+)\)',
-            lambda m: _run_substitution(m.group(1)),
-            cmd_segment,
-        )
-        # Replace `...`
-        result = _re.sub(
-            r'`([^`]+)`',
-            lambda m: _run_substitution(m.group(1)),
-            result,
-        )
-        return result
+        # Locate substitutions with the shared quote- and nesting-aware
+        # span-finder (the same one the validator uses), then splice each
+        # whole token out and replace it with its executed output. Using the
+        # shared finder closes a validation bypass: the old quote-blind regex
+        # executed a $()/backtick inside single quotes, which bash treats as
+        # a literal and the validator therefore never checked. It also fixes
+        # the [^)]+ truncation at a ) inside a quoted body and supports
+        # nested substitutions (resolved inner-first in _run_substitution).
+        spans = _find_substitution_spans(cmd_segment)
+        if not spans:
+            return cmd_segment
+        out = []
+        prev = 0
+        for start, end, body, _kind in spans:
+            out.append(cmd_segment[prev:start])
+            out.append(_run_substitution(body))
+            prev = end
+        out.append(cmd_segment[prev:])
+        return "".join(out)
 
     @staticmethod
     def _expand_special_params(cmd_segment: str, exit_status: int) -> str:
@@ -533,6 +661,7 @@ class ShellServer:
             return subprocess.run(
                 ['sh', '-c', command],
                 shell=False,
+                env=_clean_child_env(),
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -551,6 +680,7 @@ class ShellServer:
             return subprocess.run(
                 ['sh', '-c', command],
                 shell=False,
+                env=_clean_child_env(),
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -627,14 +757,13 @@ class ShellServer:
                 shell=False, capture_output=False, text=True,
                 timeout=timeout, cwd=effective_cwd, input=stdin_data,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                env=_clean_child_env(),
             )
             # Merge any peeled env assignments onto the parent env for
             # this segment only.  Each segment in the pipeline gets its
             # own merged copy — assignments do not leak across segments.
             if segment_env:
-                merged_env = os.environ.copy()
-                merged_env.update(segment_env)
-                run_kwargs['env'] = merged_env
+                run_kwargs['env'] = _clean_child_env(segment_env)
             run_kwargs.update(redir_kwargs)
 
             last_result = subprocess.run(
@@ -819,9 +948,30 @@ class ShellServer:
         # execute unvalidated once _execute_pipeline runs the segments.
         # Lines joined by a trailing backslash are reassembled by the
         # splitter as line continuations, not separators.
-        lines = command.split('\n')
-        lines = [l for l in lines if not l.lstrip().startswith('#')]
-        command = '\n'.join(lines).strip()
+        # Quote-aware: a line whose first non-whitespace char is ``#`` is a
+        # real shell comment only when we are NOT inside a quote carried over
+        # from a previous physical line. Inside a multiline quoted argument
+        # (e.g. ``python3 -c "...\n# a python comment\n..."``) the ``#`` line
+        # is data, not a comment, and must be preserved so the validated
+        # string matches what _execute_pipeline actually runs.
+        kept_lines = []
+        in_single = in_double = False
+        for line in command.split('\n'):
+            if not (in_single or in_double) and line.lstrip().startswith('#'):
+                continue  # whole-line shell comment outside any quote
+            kept_lines.append(line)
+            escaped = False
+            for ch in line:
+                if escaped:
+                    escaped = False
+                    continue
+                if ch == '\\' and not in_single:
+                    escaped = True
+                elif ch == "'" and not in_double:
+                    in_single = not in_single
+                elif ch == '"' and not in_single:
+                    in_double = not in_double
+        command = '\n'.join(kept_lines).strip()
         if not command:
             return False, "Command is only comments"
 
@@ -901,13 +1051,7 @@ class ShellServer:
             # the original segment, then allow it.
             if not cmd_segment.strip():
                 original = segments[i][1]
-                scan_target = re.sub(r"'[^']*'", "", original)
-                scan_target = scan_target.replace(r'`', '')
-                substitutions = re.findall(r'\$\(([^)]+)\)', scan_target)
-                substitutions.extend(re.findall(r'`([^`]+)`', scan_target))
-                for sub_cmd in substitutions:
-                    if not sub_cmd.strip():
-                        continue
+                for sub_cmd in _extract_command_substitutions(original):
                     sub_ok, sub_reason = self.is_command_allowed(sub_cmd)
                     if not sub_ok:
                         return False, f"'{sub_cmd.strip().split()[0]}' (in command substitution) is not allowed"
@@ -915,23 +1059,13 @@ class ShellServer:
             
             # Check for command substitution in the segment
             if '$(' in cmd_segment or '`' in cmd_segment:
-                # Extract and validate substituted commands.
-                # Bash does not perform command substitution inside
-                # single-quoted strings, and ` inside double quotes is
-                # a literal backtick — both must be excluded or this
-                # validator throws false positives on grep/sed patterns
-                # that legitimately contain backticks.
-                scan_target = re.sub(r"'[^']*'", "", cmd_segment)
-                # Mask escaped backticks so they don't pair with real ones.
-                scan_target = scan_target.replace(r'`', '')
-                substitutions = re.findall(r'\$\(([^)]+)\)', scan_target)
-                substitutions.extend(re.findall(r'`([^`]+)`', scan_target))
-                for sub_cmd in substitutions:
-                    # An empty / whitespace-only capture is not a real
-                    # substitution; skip rather than recursing into a
-                    # nonsense "Empty command" denial.
-                    if not sub_cmd.strip():
-                        continue
+                # Extract and validate substituted commands using the quote-
+                # and nesting-aware extractor. This replaces the old
+                # masking+findall, which (a) truncated a $() body at the
+                # first ) inside a quote and (b) stripped all backticks
+                # before the backtick findall, so backtick substitutions
+                # were never actually validated here.
+                for sub_cmd in _extract_command_substitutions(cmd_segment):
                     print(f"Validating command substitution: '{sub_cmd}'", file=sys.stderr)
                     sub_ok, _sub_reason = self.is_command_allowed(sub_cmd)
                     if not sub_ok:
@@ -945,7 +1079,7 @@ class ShellServer:
             segment_allowed = False
             for pattern_name, pattern in self.safe_command_patterns.items():
                 try:
-                    if re.match(pattern, cmd_segment, re.IGNORECASE):
+                    if re.match(pattern, cmd_segment, re.IGNORECASE | re.DOTALL):
                         print(f"Segment '{cmd_segment}' matched pattern '{pattern_name}'", file=sys.stderr)
                         segment_allowed = True
                         break
@@ -1171,7 +1305,7 @@ class ShellServer:
         # Check against all allowed patterns
         for pattern_name, pattern in self.safe_command_patterns.items():
             try:
-                if re.match(pattern, cmd_segment, re.IGNORECASE):
+                if re.match(pattern, cmd_segment, re.IGNORECASE | re.DOTALL):
                     return True
             except re.error as e:
                 print(f"Regex error in pattern '{pattern_name}': {e}", file=sys.stderr)
