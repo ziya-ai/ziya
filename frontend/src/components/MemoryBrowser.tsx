@@ -502,6 +502,8 @@ const ProposalCard: React.FC<{
   const color = LAYER_COLORS[proposal.layer] || '#888';
   const age = Math.floor((Date.now() - proposal.proposed_at) / 60000);
   const ageLabel = age < 60 ? `${age}m ago` : age < 1440 ? `${Math.floor(age / 60)}h ago` : `${Math.floor(age / 1440)}d ago`;
+  const layerLabel = LAYER_LABELS[proposal.layer] || proposal.layer;
+  const icon = LAYER_ICONS[proposal.layer] || '📝';
 
   return (
     <div style={{
@@ -510,18 +512,14 @@ const ProposalCard: React.FC<{
       borderLeft: `4px solid #f59e0b`,
       borderRadius: 8, padding: '12px 16px', marginBottom: 8,
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
-        <Tag color={color} style={{ margin: 0, fontSize: 11 }}>{LAYER_LABELS[proposal.layer] || proposal.layer}</Tag>
-        <span style={{ fontSize: 10, color: isDarkMode ? '#64748b' : '#94a3b8' }}>Proposed {ageLabel}</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }}>
+        <Tag color={color} style={{ margin: 0, fontSize: 11 }}>{icon} {layerLabel}</Tag>
+        {proposal.tags.map(tag => <Tag key={tag} style={{ fontSize: 10, margin: 0 }}>{tag}</Tag>)}
+        <span style={{ fontSize: 10, color: isDarkMode ? '#64748b' : '#94a3b8', marginLeft: 'auto' }}>Proposed {ageLabel}</span>
       </div>
       <div style={{ fontSize: 13, lineHeight: 1.5, color: isDarkMode ? '#e2e8f0' : '#334155', marginBottom: 8 }}>
         {proposal.content}
       </div>
-      {proposal.tags.length > 0 && (
-        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 8 }}>
-          {proposal.tags.map(tag => <Tag key={tag} style={{ fontSize: 10, margin: 0 }}>{tag}</Tag>)}
-        </div>
-      )}
       <div style={{ display: 'flex', gap: 8 }}>
         <Button type="primary" size="small" icon={<CheckCircleOutlined />}
           onClick={() => onApprove(proposal.id)}
@@ -608,6 +606,8 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ visible, onClose }) => {
   const [filterProject, setFilterProject] = useState<string | null>(null);
   const [filterSpecial, setFilterSpecial] = useState<'all' | 'synthesis' | 'contested'>('all');
   const [history, setHistory] = useState<api.OrganizeHistoryRecord[]>([]);
+  const [isOrganizing, setIsOrganizing] = useState(false);
+  const [isMaintaining, setIsMaintaining] = useState(false);
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
 
   // Load all data
@@ -692,23 +692,28 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ visible, onClose }) => {
   }, [loadData]);
 
   const handleMaintenance = useCallback(async () => {
+    setIsMaintaining(true);
     try {
       const result = await api.runMaintenance();
       message.success(`Maintenance complete: ${result.divided.length} divisions, ${result.cross_linked.length} cross-links`);
       loadData();
     } catch { message.error('Maintenance failed'); }
+    finally { setIsMaintaining(false); }
   }, [loadData]);
 
   const handleOrganize = useCallback(async () => {
+    setIsOrganizing(true);
     try {
       message.loading({ content: 'Organizing knowledge (LLM clustering)...', key: 'organize', duration: 0 });
       const result = await api.runOrganize();
       const cleaned = (result.cleanup?.removed || 0) + (result.cleanup?.merged || 0);
       const created = result.bootstrap?.domains_created || 0;
       const relations = result.relations?.relations_found || 0;
-      message.success({ content: `Organized: ${cleaned} cleaned, ${created} domains, ${relations} relations`, key: 'organize' });
+      const crossLinks = (result.cross_links || []).length;
+      message.success({ content: `Organized: ${cleaned} cleaned, ${created} domains, ${relations} relations, ${crossLinks} cross-links`, key: 'organize' });
       loadData();
     } catch { message.error({ content: 'Organization failed', key: 'organize' }); }
+    finally { setIsOrganizing(false); }
   }, [loadData]);
 
   const handleGraphSelect = useCallback((id: string) => {
@@ -938,13 +943,51 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ visible, onClose }) => {
       label: '🩺 Health',
       children: (
         <div style={{ padding: '12px 0' }}>
+          {/* Organize status + policy — surfaces what the controls below
+              actually do, when organize last ran, and that it is NOT on a
+              timer.  history is newest-first. */}
+          {(() => {
+            const last = history[0];
+            const lastLabel = api.formatLastRunLabel(last?.timestamp);
+            const orphan = review ? api.orphanStatus(review.orphans?.length) : null;
+            return (
+              <div style={{
+                marginBottom: 16, padding: '10px 12px', borderRadius: 6,
+                fontSize: 12, lineHeight: 1.5,
+                background: isDarkMode ? '#1e293b' : '#f8fafc',
+                border: `1px solid ${isDarkMode ? '#334155' : '#e2e8f0'}`,
+                color: isDarkMode ? '#94a3b8' : '#64748b',
+              }}>
+                <span style={{ fontWeight: 600, color: isDarkMode ? '#e2e8f0' : '#1e293b' }}>
+                  Organize last ran: {lastLabel}
+                </span>
+                {last && <> ({new Date(last.timestamp).toLocaleString()})</>}
+                <br />
+                Organize runs on demand (the button below), once at startup if
+                no mind-map exists, automatically at 15+ orphan (unplaced)
+                memories, and <strong>periodically</strong> (checked every 6h,
+                fires only when orphans are pending or the last run is &gt;24h old).
+                See the 🌙 Recent Activity tab for the full run log.
+                {orphan && (
+                  <>
+                    <br />
+                    <span style={{ color: orphan.atThreshold ? '#f59e0b' : undefined }}>
+                      {orphan.label}
+                    </span>
+                  </>
+                )}
+              </div>
+            );
+          })()}
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
             <Tooltip title="Use LLM to cluster memories into domains, extract relations, and build the knowledge graph">
               <Button type="primary" icon={<ThunderboltOutlined />} onClick={handleOrganize}
                 style={{ background: '#8b5cf6', borderColor: '#8b5cf6' }}>
                 Organize Knowledge</Button>
             </Tooltip>
-            <Button icon={<ThunderboltOutlined />} onClick={handleMaintenance}>Run Maintenance</Button>
+            <Tooltip title="Safe structural tidy-up (no LLM, no memories deleted): splits over-full nodes into sub-topics and adds cross-links between related nodes (shared tags + embedding similarity). Runs instantly.">
+              <Button icon={<ThunderboltOutlined />} onClick={handleMaintenance} style={{ marginLeft: 8 }}>Run Maintenance</Button>
+            </Tooltip>
             <Button icon={<ReloadOutlined />} onClick={loadData} style={{ marginLeft: 8 }}>Refresh</Button>
           </div>
 
