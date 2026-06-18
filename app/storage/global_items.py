@@ -57,6 +57,82 @@ def _full_cache_put(path_str: str, value: tuple) -> None:
         _full_cache.popitem(last=False)
 
 
+# Per-project effective-global group-id cache.
+# Keyed by absolute _groups.json path; value is (st_mtime, st_size, frozenset[str]).
+# Holds the set of group ids in that project that are effectively global — own
+# isGlobal flag OR any ancestor group global (folder-inheritance, mirroring the
+# frontend folderIsEffectivelyGlobal).  Recomputed only when _groups.json
+# changes; this is what makes a folder-global toggle take effect for
+# cross-project surfacing WITHOUT touching individual chat-file mtimes (the
+# per-chat caches below cache decision *inputs*, not the surfacing decision).
+_group_global_cache = {}
+
+
+def _effective_global_group_ids(project_dir: Path) -> frozenset:
+    """Return the set of group ids in *project_dir* that are effectively
+    global: own isGlobal OR any ancestor group (via parentId) is global.
+
+    Mirrors the frontend folderIsEffectivelyGlobal ancestor walk — cycle-safe
+    (visited set) and depth-bounded.  Result is mtime-cached per project so a
+    steady-state /chats poll pays one stat() per project, not a decrypt+parse.
+    """
+    groups_file = project_dir / "chats" / "_groups.json"
+    try:
+        st = groups_file.stat()
+    except OSError:
+        return frozenset()
+
+    path_str = str(groups_file)
+    cached = _group_global_cache.get(path_str)
+    if cached is not None and cached[0] == st.st_mtime and cached[1] == st.st_size:
+        return cached[2]
+
+    try:
+        raw = groups_file.read_bytes()
+        if not raw:
+            result = frozenset()
+            _group_global_cache[path_str] = (st.st_mtime, st.st_size, result)
+            return result
+
+        from app.utils.encryption import is_encrypted, get_encryptor
+        if is_encrypted(raw):
+            raw = get_encryptor().decrypt(raw)
+        data = json.loads(raw)
+
+        by_id = {}
+        own_global = set()
+        for g in data.get("groups", []) or []:
+            gid = g.get("id")
+            if not gid:
+                continue
+            by_id[gid] = g
+            if g.get("isGlobal"):
+                own_global.add(gid)
+
+        eff = set()
+        for gid in by_id:
+            cur = gid
+            seen = set()
+            depth = 0
+            while cur and cur not in seen and depth < 100:
+                seen.add(cur)
+                if cur in own_global:
+                    eff.add(gid)
+                    break
+                parent = by_id.get(cur)
+                if not parent:
+                    break
+                cur = parent.get("parentId")
+                depth += 1
+
+        result = frozenset(eff)
+        _group_global_cache[path_str] = (st.st_mtime, st.st_size, result)
+        return result
+    except Exception as exc:
+        logger.debug(f"_effective_global_group_ids: skipping {groups_file}: {exc}")
+        return frozenset()
+
+
 def collect_global_chats(
     ziya_home: Path,
     exclude_project_id: str,
@@ -87,6 +163,11 @@ def collect_global_chats(
         if not chats_dir.exists():
             continue
 
+        # Group ids in THIS project that are effectively global (own flag or
+        # inherited from an ancestor folder).  A chat surfaces cross-project if
+        # its own isGlobal is set OR its groupId is in this set.
+        eff_groups = _effective_global_group_ids(project_dir)
+
         for chat_file in chats_dir.glob("*.json"):
             if chat_file.name.startswith("_"):
                 continue
@@ -103,16 +184,23 @@ def collect_global_chats(
                 if cached is not None and cached[0] == st.st_mtime and cached[1] == st.st_size:
                     n_hit += 1
                     _full_cache.move_to_end(path_str)
-                    if cached[2] is not None:
-                        results.append(cached[2])
+                    own_g, grp_id, built = cached[2], cached[3], cached[4]
+                    surface = own_g or (grp_id is not None and grp_id in eff_groups)
+                    if not surface:
+                        continue
+                    if built is not None:
+                        results.append(built)
                         n_globals += 1
-                    continue
+                        continue
+                    # Newly effective-global via a folder toggle (chat file
+                    # unchanged, so we cached inputs but never built the Chat).
+                    # Rare — fall through to read+build, then cache the object.
                 n_miss += 1
 
                 t_r = time.perf_counter()
                 raw = chat_file.read_bytes()
                 if not raw:
-                    _full_cache_put(path_str, (st.st_mtime, st.st_size, None))
+                    _full_cache_put(path_str, (st.st_mtime, st.st_size, False, None, None))
                     continue
 
                 from app.utils.encryption import is_encrypted, get_encryptor
@@ -122,13 +210,15 @@ def collect_global_chats(
 
                 t_p = time.perf_counter()
                 data = json.loads(raw)
-                if not data.get("isGlobal"):
-                    _full_cache_put(path_str, (st.st_mtime, st.st_size, None))
+                own_g = bool(data.get("isGlobal"))
+                grp_id = data.get("groupId")
+                if not (own_g or (grp_id is not None and grp_id in eff_groups)):
+                    _full_cache_put(path_str, (st.st_mtime, st.st_size, own_g, grp_id, None))
                     t_parse += time.perf_counter() - t_p
                     continue
 
                 chat = Chat(**data)
-                _full_cache_put(path_str, (st.st_mtime, st.st_size, chat))
+                _full_cache_put(path_str, (st.st_mtime, st.st_size, own_g, grp_id, chat))
                 results.append(chat)
                 n_globals += 1
                 t_parse += time.perf_counter() - t_p
@@ -178,6 +268,9 @@ def collect_global_chat_summaries(
         if not chats_dir.exists():
             continue
 
+        # See collect_global_chats: own-global OR group-inherited-global.
+        eff_groups = _effective_global_group_ids(project_dir)
+
         for chat_file in chats_dir.glob("*.json"):
             if chat_file.name.startswith("_"):
                 continue
@@ -193,16 +286,23 @@ def collect_global_chat_summaries(
                 cached = _summary_cache.get(path_str)
                 if cached is not None and cached[0] == st.st_mtime and cached[1] == st.st_size:
                     n_hit += 1
-                    if cached[2] is not None:
-                        results.append(cached[2])
+                    own_g, grp_id, built = cached[2], cached[3], cached[4]
+                    surface = own_g or (grp_id is not None and grp_id in eff_groups)
+                    if not surface:
+                        continue
+                    if built is not None:
+                        results.append(built)
                         n_globals += 1
-                    continue
+                        continue
+                    # Newly effective-global via folder toggle — chat file
+                    # unchanged, so we cached inputs but not the summary.
+                    # Fall through to read+build (rare).
                 n_miss += 1
 
                 t_r = time.perf_counter()
                 raw = chat_file.read_bytes()
                 if not raw:
-                    _summary_cache[path_str] = (st.st_mtime, st.st_size, None)
+                    _summary_cache[path_str] = (st.st_mtime, st.st_size, False, None, None)
                     continue
 
                 from app.utils.encryption import is_encrypted, get_encryptor
@@ -212,8 +312,10 @@ def collect_global_chat_summaries(
 
                 t_p = time.perf_counter()
                 data = json.loads(raw)
-                if not data.get("isGlobal"):
-                    _summary_cache[path_str] = (st.st_mtime, st.st_size, None)
+                own_g = bool(data.get("isGlobal"))
+                grp_id = data.get("groupId")
+                if not (own_g or (grp_id is not None and grp_id in eff_groups)):
+                    _summary_cache[path_str] = (st.st_mtime, st.st_size, own_g, grp_id, None)
                     t_parse += time.perf_counter() - t_p
                     continue
 
@@ -233,7 +335,7 @@ def collect_global_chat_summaries(
                     **({"_version": version} if version else {}),
                     **({"isGlobal": True}),
                 )
-                _summary_cache[path_str] = (st.st_mtime, st.st_size, summary)
+                _summary_cache[path_str] = (st.st_mtime, st.st_size, own_g, grp_id, summary)
                 results.append(summary)
                 n_globals += 1
                 t_parse += time.perf_counter() - t_p
@@ -266,6 +368,10 @@ def collect_global_groups(
         if not groups_file.exists():
             continue
 
+        # Surface effectively-global groups (own flag OR inherited), so a
+        # child folder of a global folder crosses over and nests under it.
+        eff_groups = _effective_global_group_ids(project_dir)
+
         try:
             raw = groups_file.read_bytes()
 
@@ -275,7 +381,7 @@ def collect_global_groups(
 
             data = json.loads(raw)
             for group_data in data.get("groups", []):
-                if group_data.get("isGlobal"):
+                if group_data.get("isGlobal") or group_data.get("id") in eff_groups:
                     results.append(ChatGroup(**group_data))
         except Exception as exc:
             logger.debug(f"Skipping {groups_file} during global scan: {exc}")
