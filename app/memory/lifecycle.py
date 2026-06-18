@@ -136,6 +136,14 @@ def _make_active_embedding_lookup():
 
     import numpy as np
 
+    # Stack once into an (N, dim) matrix so each proposal lookup is a single
+    # matrix-vector product instead of a Python-level max() over a generator
+    # of N dot products.  Cosine semantics are unchanged: the embedding cache
+    # stores pre-normalized vectors, so matrix @ prop_vec yields cosine
+    # similarities directly.  np.stack copies the row views returned by
+    # cache.get, so later cache mutations can't corrupt this snapshot.
+    active_matrix = np.stack(active_vectors).astype(np.float32)
+
     def _lookup(proposal: Dict[str, Any]) -> float:
         pid = proposal.get("id")
         if not pid:
@@ -143,7 +151,7 @@ def _make_active_embedding_lookup():
         prop_vec = cache.get(pid)
         if prop_vec is None:
             return 0.0
-        return float(max(np.dot(prop_vec, av) for av in active_vectors))
+        return float(np.max(active_matrix @ prop_vec))
 
     return _lookup
 
