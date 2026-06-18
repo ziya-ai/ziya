@@ -666,8 +666,25 @@ class MCPManager:
 
                 # Scan external tool descriptions for prompt injection
                 is_builtin = self.server_configs.get(server_name, {}).get("builtin", False)
-                if not is_builtin:
+                is_trusted = self.server_configs.get(server_name, {}).get("trusted", False)
+                if is_trusted:
+                    logger.debug(
+                        f"Skipping tool-poisoning scan for trusted server '{server_name}'"
+                    )
+                if not is_builtin and not is_trusted:
+                    # Disabled tools never reach the agent context (filtered in
+                    # enhanced_tools), so a poisoned description is inert. Skip
+                    # scanning them to avoid noisy connect-time warnings.
+                    from app.mcp.permissions import get_permissions_manager
+                    _perms = get_permissions_manager().get_permissions()
+                    _srv_perms = _perms.get('servers', {}).get(server_name, {})
+                    _default_perm = _perms.get('defaults', {}).get('tool', 'enabled')
                     for tool in client.tools:
+                        _tool_perm = _srv_perms.get('tools', {}).get(
+                            tool.name, {}
+                        ).get('permission', _default_perm)
+                        if _tool_perm == 'disabled':
+                            continue
                         for w in scan_tool_description(tool.name, tool.description):
                             logger.warning(f"⚠️  TOOL POISONING: {w}")
             else:
