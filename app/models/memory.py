@@ -129,6 +129,19 @@ class Memory(BaseModel):
                     "this memory.  Preserved across proposal-to-memory "
                     "promotion so lineage isn't lost.",
     )
+    # ── Interference (redundancy) telemetry ────────────────────────
+    # Stamped by the maintenance pass (app/memory/maintenance.py
+    # stamp_interference_scores), read by the opportunistic-decay gate
+    # in memory_tools.py.  High score == this memory is redundant with
+    # newer/similar active memories and is eligible for accelerated
+    # (relevance) aging — archive, never delete.  0.0 == no measured
+    # interference (also the value when embeddings are unavailable).
+    interference_score: float = Field(
+        default=0.0,
+        description="Sum of cosine-weighted overlap with similar active "
+                    "memories (retroactive 0.6 / proactive 0.4).  Higher "
+                    "== more redundant; drives accelerated archive aging.",
+    )
     learned_from_conversation: Optional[str] = None
     learned_from_message: Optional[str] = None
     # ── Reference layer (only set when layer == "reference") ───────

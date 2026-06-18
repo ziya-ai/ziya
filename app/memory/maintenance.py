@@ -18,7 +18,7 @@ import asyncio
 import json
 import time
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from collections import Counter
 
 from app.utils.logging_utils import logger
@@ -35,6 +35,24 @@ AUTO_LINK_TOP_K = 5            # how many similar memories to consider for linki
 AUTO_LINK_MIN_SIMILARITY = 0.75  # minimum cosine similarity to create a link
 AUTO_LINK_STRONG_SIMILARITY = 0.88  # above this = "elaborates" relation
 TAG_ENRICHMENT_MIN_SIMILARITY = 0.80  # minimum to propagate tags
+# Node-level cross-linking by embedding centroid (Option C).  Tag overlap
+# (CROSS_LINK_MIN_OVERLAP) rarely fires because bootstrap assigns mostly
+# distinct tags per domain, so cross-links stayed at 0.  Centroid cosine
+# catches semantically-related domains regardless of literal tag overlap.
+# Tunable via ZIYA_NODE_CROSS_LINK_SIMILARITY.
+NODE_CROSS_LINK_MIN_SIMILARITY = 0.62
+
+# Interference-based forgetting (relevance aging, NOT compliance deletion).
+# Redundant memories (high cosine overlap with newer/similar active memories)
+# accrue an interference score; the opportunistic-decay gate in
+# memory_tools.py then archives them on an ACCELERATED window instead of the
+# normal 90-day idle window.  Archive is reversible (restorable in the Memory
+# Browser) — never a hard delete.  Retroactive (0.6) > proactive (0.4) weight
+# encodes the finding that newer learning disrupts older traces: when two
+# memories collide the OLDER one accrues more interference and ages first.
+INTERFERENCE_MIN_SIMILARITY = 0.85   # tunable via ZIYA_MEMORY_INTERFERENCE_SIMILARITY
+INTERFERENCE_RETROACTIVE_WEIGHT = 0.6
+INTERFERENCE_PROACTIVE_WEIGHT = 0.4
 
 
 def run_post_save_maintenance(memory_id: str) -> Dict[str, any]:
@@ -417,6 +435,124 @@ def maybe_divide_node(store, node_id: str) -> List[str]:
     return [child_id]
 
 
+def _same_branch_ids(store, node_id: str) -> Set[str]:
+    """Return the set of node ids in the same branch as node_id (the node
+    itself, all ancestors, all descendants).  Cross-links are only created
+    between DIFFERENT branches, so these are excluded as candidates.
+
+    Extracted so the tag-overlap and embedding-centroid cross-linkers share
+    one definition of "same branch" and can't drift apart.
+    """
+    ancestors: Set[str] = set()
+    cur = node_id
+    for _ in range(20):
+        n = store.get_mindmap_node(cur)
+        if not n or not n.parent:
+            break
+        ancestors.add(n.parent)
+        cur = n.parent
+
+    descendants: Set[str] = set()
+
+    def _collect_desc(nid: str, depth: int = 0):
+        if depth > 20:
+            return
+        n = store.get_mindmap_node(nid)
+        if not n:
+            return
+        for cid in n.children:
+            descendants.add(cid)
+            _collect_desc(cid, depth + 1)
+
+    _collect_desc(node_id)
+    return ancestors | descendants | {node_id}
+
+
+def _node_centroid(cache, node):
+    """Mean of the (pre-normalized) embeddings of a node's member memories,
+    re-normalized to unit length.  None when the node has no embedded
+    members — those nodes can't participate in centroid similarity.
+    """
+    if not node.memory_refs:
+        return None
+    import numpy as np
+    vecs = []
+    for mid in node.memory_refs:
+        v = cache.get(mid)
+        if v is not None:
+            vecs.append(v)
+    if not vecs:
+        return None
+    centroid = np.mean(np.vstack(vecs), axis=0)
+    norm = np.linalg.norm(centroid)
+    if norm == 0:
+        return None
+    return centroid / norm
+
+
+def discover_cross_links_by_embedding(store, node_id: str, centroid_cache=None) -> List[Tuple[str, str]]:
+    """Cross-link nodes whose memory-centroid cosine similarity meets the
+    threshold, regardless of literal tag overlap (Option C).
+
+    Complements discover_cross_links (tag overlap): both are additive and
+    skip pairs already linked.  No-op when the embedding provider is the
+    Noop (embeddings disabled).  centroid_cache lets a caller iterating all
+    nodes (reorganize) compute each centroid once instead of O(N^2) times.
+
+    Returns list of (node_id, linked_node_id) pairs added.
+    """
+    try:
+        from app.services.embedding_service import (
+            get_embedding_provider, get_embedding_cache, NoopProvider
+        )
+        provider = get_embedding_provider()
+        if isinstance(provider, NoopProvider):
+            return []
+        cache = get_embedding_cache()
+    except Exception as e:
+        logger.debug(f"Embedding cross-link unavailable: {e}")
+        return []
+
+    node = store.get_mindmap_node(node_id)
+    if not node:
+        return []
+
+    if centroid_cache is None:
+        centroid_cache = {}
+
+    def _centroid_for(n):
+        if n.id not in centroid_cache:
+            centroid_cache[n.id] = _node_centroid(cache, n)
+        return centroid_cache[n.id]
+
+    my_centroid = _centroid_for(node)
+    if my_centroid is None:
+        return []
+
+    import numpy as np
+    from app.config.env_registry import ziya_env
+    threshold = ziya_env("ZIYA_NODE_CROSS_LINK_SIMILARITY", default=NODE_CROSS_LINK_MIN_SIMILARITY)
+    same_branch = _same_branch_ids(store, node_id)
+    added: List[Tuple[str, str]] = []
+    for other in store.list_mindmap_nodes():
+        if other.id in same_branch:
+            continue
+        if other.id in (node.cross_links or []):
+            continue
+        oc = _centroid_for(other)
+        if oc is None:
+            continue
+        sim = float(np.dot(my_centroid, oc))
+        if sim >= threshold:
+            node.cross_links = list(set((node.cross_links or []) + [other.id]))
+            other.cross_links = list(set((other.cross_links or []) + [node_id]))
+            store.save_mindmap_node(node)
+            store.save_mindmap_node(other)
+            added.append((node_id, other.id))
+            logger.info(f"🔗 CROSS_LINK(embed): {node_id} ↔ {other.id} (sim={sim:.2f})")
+    return added
+
+
 def discover_cross_links(store, node_id: str) -> List[Tuple[str, str]]:
     """Find nodes in other branches that share tags with this node.
 
@@ -430,29 +566,7 @@ def discover_cross_links(store, node_id: str) -> List[Tuple[str, str]]:
     all_nodes = store.list_mindmap_nodes()
     added: List[Tuple[str, str]] = []
 
-    # Collect ancestor chain to avoid linking within the same branch
-    ancestors: Set[str] = set()
-    cur = node_id
-    for _ in range(20):
-        n = store.get_mindmap_node(cur)
-        if not n or not n.parent:
-            break
-        ancestors.add(n.parent)
-        cur = n.parent
-
-    descendants: Set[str] = set()
-    def _collect_desc(nid: str, depth: int = 0):
-        if depth > 20:
-            return
-        n = store.get_mindmap_node(nid)
-        if not n:
-            return
-        for cid in n.children:
-            descendants.add(cid)
-            _collect_desc(cid, depth + 1)
-    _collect_desc(node_id)
-
-    same_branch = ancestors | descendants | {node_id}
+    same_branch = _same_branch_ids(store, node_id)
 
     for other in all_nodes:
         if other.id in same_branch:
@@ -470,6 +584,112 @@ def discover_cross_links(store, node_id: str) -> List[Tuple[str, str]]:
             logger.info(f"🔗 CROSS_LINK: {node_id} ↔ {other.id} (shared: {overlap})")
 
     return added
+
+
+def _memory_age_days(m) -> float:
+    """Day-granularity age from the memory's created date.  Falls back to 0
+    (treated as newest) on unparseable dates, matching the decay gate's
+    tolerance."""
+    try:
+        return (time.time() - time.mktime(time.strptime(m.created, "%Y-%m-%d"))) / 86400.0
+    except (ValueError, TypeError, OverflowError):
+        return 0.0
+
+
+def stamp_interference_scores(store) -> Dict[str, Any]:
+    """Compute and persist interference_score for every active memory.
+
+    Interference(mi) = Σ_j w_ij · sim(mi, mj) over active mj != mi with
+    sim >= INTERFERENCE_MIN_SIMILARITY, where w_ij is retroactive (0.6) when
+    mj is NEWER than mi (new learning disrupts old) and proactive (0.4) when
+    mj is older.  Cosine == dot product (cache vectors are pre-normalized).
+
+    Stamps Memory.interference_score in place via save_many.  No-ops cleanly
+    when embeddings are disabled (Noop provider) or no memory has a vector —
+    in that case every score is reset to 0.0 so a stale stamp can't linger.
+
+    Returns a summary dict for the organize-history log.
+    """
+    summary = {"scored": 0, "high_interference": 0, "skipped": False}
+    try:
+        from app.services.embedding_service import (
+            get_embedding_provider, get_embedding_cache, NoopProvider,
+        )
+        provider = get_embedding_provider()
+        if isinstance(provider, NoopProvider):
+            summary["skipped"] = True
+            return summary
+        cache = get_embedding_cache()
+    except Exception as e:
+        logger.debug(f"Interference scoring unavailable: {e}")
+        summary["skipped"] = True
+        return summary
+
+    from app.config.env_registry import ziya_env
+    threshold = ziya_env("ZIYA_MEMORY_INTERFERENCE_SIMILARITY",
+                         default=INTERFERENCE_MIN_SIMILARITY)
+
+    active = store.list_memories(status="active")
+    if len(active) < 2:
+        # Nothing can interfere with itself; clear any stale stamps.
+        changed = [m for m in active if (m.interference_score or 0.0) != 0.0]
+        for m in changed:
+            m.interference_score = 0.0
+        if changed:
+            store.save_many(changed)
+        return summary
+
+    import numpy as np
+    vecs = []
+    rows = []  # (memory, age_days) aligned with vecs
+    for m in active:
+        v = cache.get(m.id)
+        if v is not None:
+            vecs.append(v)
+            rows.append((m, _memory_age_days(m)))
+    if len(vecs) < 2:
+        changed = [m for m in active if (m.interference_score or 0.0) != 0.0]
+        for m in changed:
+            m.interference_score = 0.0
+        if changed:
+            store.save_many(changed)
+        return summary
+
+    matrix = np.stack(vecs).astype(np.float32)      # (N, dim), pre-normalized
+    ages = np.array([age for _, age in rows], dtype=np.float64)
+    sim = matrix @ matrix.T                          # (N, N) cosine
+    np.fill_diagonal(sim, 0.0)
+    # newer[i, j] True when j is NEWER than i (smaller age == newer).
+    newer = ages[None, :] < ages[:, None]
+    weights = np.where(newer, INTERFERENCE_RETROACTIVE_WEIGHT,
+                       INTERFERENCE_PROACTIVE_WEIGHT)
+    mask = sim >= threshold
+    contrib = np.where(mask, weights * sim, 0.0)
+    scores = contrib.sum(axis=1)
+
+    changed = []
+    for (m, _age), score in zip(rows, scores):
+        new_score = round(float(score), 4)
+        if abs((m.interference_score or 0.0) - new_score) > 1e-6:
+            m.interference_score = new_score
+            changed.append(m)
+        if new_score > 0.0:
+            summary["high_interference"] += 1
+        summary["scored"] += 1
+    # Reset stamps on memories that had no cached vector this pass so a
+    # later embedding removal can't strand a stale high score.
+    scored_ids = {m.id for m, _ in rows}
+    for m in active:
+        if m.id not in scored_ids and (m.interference_score or 0.0) != 0.0:
+            m.interference_score = 0.0
+            changed.append(m)
+    if changed:
+        store.save_many(changed)
+    logger.info(
+        f"🧮 Interference scoring: {summary['scored']} scored, "
+        f"{summary['high_interference']} with measurable interference"
+    )
+    return summary
 
 
 def find_stale_memories(store, days: int = STALE_DAYS) -> List[dict]:
