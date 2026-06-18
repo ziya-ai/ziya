@@ -78,7 +78,7 @@ class BeadCreateTool(BaseMCPTool):
         if _is_ephemeral_context():
             return _EPHEMERAL_SKIP
         if not content:
-            return {"ok": False, "error": "content is required"}
+            return {"ok": False, "error": True, "message": "content is required"}
         if len(content) > 200:
             content = content[:200]
 
@@ -120,7 +120,7 @@ class BeadCreateTool(BaseMCPTool):
             }
         except Exception as e:
             logger.warning(f"bead_create failed: {e}")
-            return {"ok": False, "error": str(e)}
+            return {"ok": False, "error": True, "message": str(e)}
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +163,7 @@ class BeadCompleteTool(BaseMCPTool):
                 target = tree.active_bead
 
             if not target:
-                return {"ok": False, "error": "No active bead to complete"}
+                return {"ok": False, "error": True, "message": "No active bead to complete"}
 
             target.status = "completed"
 
@@ -183,7 +183,7 @@ class BeadCompleteTool(BaseMCPTool):
             }
         except Exception as e:
             logger.warning(f"bead_complete failed: {e}")
-            return {"ok": False, "error": str(e)}
+            return {"ok": False, "error": True, "message": str(e)}
 
 
 # ---------------------------------------------------------------------------
@@ -247,4 +247,4 @@ class BeadStatusTool(BaseMCPTool):
             return {"ok": True, "tree": "\n".join(lines)}
         except Exception as e:
             logger.warning(f"bead_status failed: {e}")
-            return {"ok": False, "error": str(e)}
+            return {"ok": False, "error": True, "message": str(e)}
