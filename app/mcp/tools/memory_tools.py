@@ -85,6 +85,18 @@ class MemorySearchTool(BaseMCPTool):
         try:
             _DECAY_THRESHOLD_DAYS = 90
             _DECAY_IMPORTANCE_CEILING = 0.5  # initial default importance
+            # Interference-based forgetting (relevance aging, not compliance
+            # deletion).  Redundant memories — high interference_score stamped
+            # by maintenance.stamp_interference_scores — age out on a SHORTER
+            # window than the 90-day idle ceiling.  90 is the ceiling because
+            # it aligns with the Amazon idle-conversation retention policy;
+            # the accelerated window must stay strictly below it.  Real
+            # retrieval still rescues a redundant memory: the use-signal bumps
+            # importance above the ceiling, exempting it from BOTH clauses.
+            from app.config.env_registry import ziya_env
+            _INTERFERENCE_STALE_DAYS = ziya_env(
+                "ZIYA_MEMORY_INTERFERENCE_STALE_DAYS", default=21)
+            _INTERFERENCE_MIN_SCORE = 0.0  # >0 == measurable redundancy
             # Throttle: the decay scan is O(N) over all active memories and
             # runs on the search hot path.  Cap it to once per 10 minutes
             # per process so high-frequency searches don't repeatedly pay it.
@@ -101,10 +113,20 @@ class MemorySearchTool(BaseMCPTool):
                                   - time.mktime(time.strptime(mem.last_accessed, "%Y-%m-%d"))) / 86400
                 except (ValueError, OverflowError):
                     days_since = 0
-                if days_since >= _DECAY_THRESHOLD_DAYS and mem.importance <= _DECAY_IMPORTANCE_CEILING:
+                _idle_decay = (days_since >= _DECAY_THRESHOLD_DAYS
+                               and mem.importance <= _DECAY_IMPORTANCE_CEILING)
+                _interference = getattr(mem, "interference_score", 0.0) or 0.0
+                _interference_decay = (
+                    _interference > _INTERFERENCE_MIN_SCORE
+                    and days_since >= _INTERFERENCE_STALE_DAYS
+                    and mem.importance <= _DECAY_IMPORTANCE_CEILING
+                )
+                if _idle_decay or _interference_decay:
                     mem.status = "archived"
                     _to_archive.append(mem)
-                    logger.info(f"🗑️ Archived stale memory {mem.id} (importance={mem.importance:.2f}, "
+                    _reason = "idle" if _idle_decay else f"interference={_interference:.2f}"
+                    logger.info(f"🗑️ Archived stale memory {mem.id} ({_reason}, "
+                                f"importance={mem.importance:.2f}, "
                                 f"last_accessed={mem.last_accessed}): {mem.content[:60]}")
             if _to_archive:
                 store.save_many(_to_archive)

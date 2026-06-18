@@ -535,18 +535,41 @@ async def reorganize(store=None) -> Dict[str, Any]:
         logger.error(f"REM phase failed: {e}")
         results["rem"] = {"status": "error", "error": str(e)}
 
-    from app.memory.maintenance import discover_cross_links, maybe_divide_node
+    from app.memory.maintenance import (
+        discover_cross_links, discover_cross_links_by_embedding, maybe_divide_node,
+        stamp_interference_scores,
+    )
     try:
         for node in store.list_mindmap_nodes():
             results["cross_links"].extend(discover_cross_links(store, node.id))
     except Exception as e:
         logger.error(f"Cross-link discovery failed: {e}")
 
+    # Option C: embedding-centroid cross-links — catches semantically related
+    # domains that share no literal tags.  Shared centroid cache makes this
+    # O(N) centroid computations instead of O(N^2) across the node loop.
+    try:
+        _centroids: Dict[str, Any] = {}
+        for node in store.list_mindmap_nodes():
+            results["cross_links"].extend(
+                discover_cross_links_by_embedding(store, node.id, _centroids))
+    except Exception as e:
+        logger.error(f"Embedding cross-link discovery failed: {e}")
+
     try:
         for node in store.list_mindmap_nodes():
             results["divisions"].extend(maybe_divide_node(store, node.id))
     except Exception as e:
         logger.error(f"Cell division failed: {e}")
+
+    # Interference (redundancy) scoring — stamps Memory.interference_score so
+    # the opportunistic-decay gate can age out redundant memories on the
+    # accelerated window.  Embedding-native; no-ops when embeddings disabled.
+    try:
+        results["interference"] = stamp_interference_scores(store)
+    except Exception as e:
+        logger.error(f"Interference scoring failed: {e}")
+        results["interference"] = {"status": "error", "error": str(e)}
 
     # Append summary to bounded history log for the Memory Browser UI.
     try:

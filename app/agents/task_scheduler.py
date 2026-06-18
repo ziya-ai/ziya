@@ -396,6 +396,16 @@ async def _scheduler_loop() -> None:
                             _write_state(target.project_id, state)
                             continue
                         await _fire_one(target)
+
+                # System-job pass — internal periodic jobs (memory organize,
+                # etc.) that ride this same single-writer loop.  Each job is
+                # interval-gated and isolated; a failure here never affects
+                # card firing.  See app/agents/system_jobs.py.
+                try:
+                    from app.agents.system_jobs import tick_system_jobs
+                    await tick_system_jobs(now_ms)
+                except Exception as e:
+                    logger.warning(f"⏰ System-job tick error (continuing): {e}")
             except Exception as e:
                 logger.warning(f"⏰ Scheduler tick error (continuing): {e}", exc_info=True)
             await asyncio.sleep(_TICK_INTERVAL_S)

@@ -196,13 +196,17 @@ async def run_maintenance():
     """Trigger a full maintenance pass: cell division + cross-links for all nodes."""
     from app.storage.memory import get_memory_storage
     from app.memory import maybe_divide_node, discover_cross_links
+    from app.memory.maintenance import discover_cross_links_by_embedding
     store = get_memory_storage()
     results = {"divided": [], "cross_linked": []}
+    _centroids = {}
     for node in store.list_mindmap_nodes():
         divided = maybe_divide_node(store, node.id)
         results["divided"].extend(divided)
         links = discover_cross_links(store, node.id)
         results["cross_linked"].extend(links)
+        results["cross_linked"].extend(
+            discover_cross_links_by_embedding(store, node.id, _centroids))
     return results
 
 
