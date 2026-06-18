@@ -1421,16 +1421,21 @@ const isPureAddContinuation = (text: string): boolean => {
  * "+++ b/PATH" unified headers; its path anchors subsequent headerless blocks.
  * Intervening prose between blocks does NOT break the chain (callers pass only
  * diff-token texts, in order) — the model frequently narrates between fixes to
- * the same file. Continuation blocks are only chained when they are pure-add
+ * the same file. Continuation blocks starting with a valid @@ -N,N +N,N @@
+ * header are merged unconditionally (apply-time validation covers correctness).
+ * Bare hunk bodies without a numeric @@ header are only merged when pure-add
  * (see isPureAddContinuation); otherwise the assumption is dropped.
  *
  * Pure + exported so the chaining/association behavior is unit-testable.
  */
 export const chainHeaderlessContinuationDiffs = (blockTexts: string[]): string[] => {
     let lastHeadedDiffPath: string | null = null;
-    return blockTexts.map((original) => {
+    let lastHeadedIdx: number | null = null;
+    const result = [...blockTexts];
+    for (let i = 0; i < blockTexts.length; i++) {
+        const original = blockTexts[i];
         const text = (original || '').trimStart();
-        if (!text) return original;
+        if (!text) continue;
         const hasDiffGitHeader = text.startsWith('diff --git ') ||
             text.split('\n').slice(0, 3).some(l => l.startsWith('diff --git '));
         const minusMatch = text.match(/^--- a\/(\S+)/m);
@@ -1439,38 +1444,49 @@ export const chainHeaderlessContinuationDiffs = (blockTexts: string[]): string[]
             // Prefer the b/ (post-image) path when both are present.
             const pathMatch = text.match(/^diff --git a\/(\S+) b\/(\S+)/m);
             if (pathMatch) lastHeadedDiffPath = pathMatch[2] || pathMatch[1];
-            return original;
+            lastHeadedIdx = i;
+            continue;
         }
         if (plusMatch || minusMatch) {
             // Headed only by ---/+++ : self-sufficient, but record its path.
             lastHeadedDiffPath = (plusMatch && plusMatch[1]) ||
                 (minusMatch && minusMatch[1]) || lastHeadedDiffPath;
-            return original;
+            lastHeadedIdx = i;
+            continue;
         }
-        if (lastHeadedDiffPath === null) return original;
+        if (lastHeadedDiffPath === null || lastHeadedIdx === null) continue;
         // Headerless continuation: starts with "@@ ..." OR directly with hunk
         // body lines ("+"/"-"/" ") when the model drops the @@ marker too.
-        const p = lastHeadedDiffPath;
         const startsWithAt = text.startsWith('@@');
-        // Body to gate on: drop a leading "@@ ..." line for the pure-add check.
+        // If the block starts with a well-formed numeric hunk header
+        // (@@ -N,N +N,N @@), the apply pipeline can validate correctness at
+        // apply time using the explicit line numbers. Chain it unconditionally.
+        const startsWithValidHunkHeader = startsWithAt && VALID_HUNK_HEADER.test(text);
+        // For bare hunk bodies (no @@ header, or @@ without numeric range),
+        // we can only safely chain pure-add blocks where there is nothing to
+        // verify against the existing file content.
         const gateBody = startsWithAt
             ? text.split('\n').slice(1).join('\n')
             : text;
-        if (!isPureAddContinuation(gateBody)) {
-            // Not verifiable here and not a pure add — drop the assumption.
-            return original;
+        if (!startsWithValidHunkHeader && !isPureAddContinuation(gateBody)) {
+            // Cannot verify context lines here and not a pure add — drop the
+            // assumption rather than point Apply at a potentially wrong file.
+            continue;
         }
-        const firstBodyLine = original.split('\n').find(l => l.length > 0) || '';
-        if (startsWithAt) {
-            return `diff --git a/${p} b/${p}\n--- a/${p}\n+++ b/${p}\n${original}`;
+        // Merge this continuation hunk into the headed block so the result is
+        // one diff with multiple hunks rather than N separate diffs. Set this
+        // block to '' so the call site can absorb (skip) its render slot.
+        if (startsWithValidHunkHeader) {
+            // Clean hunk with a valid @@ header — append directly.
+            result[lastHeadedIdx] = result[lastHeadedIdx].trimEnd() + '\n' + text;
+        } else {
+            // Pure-add bare body — needs a placeholder @@ before the body
+            // so synthesizeMissingHunkHeaders() can fill in real line counts.
+            result[lastHeadedIdx] = result[lastHeadedIdx].trimEnd() + '\n@@\n' + text;
         }
-        if (/^[+\- ]/.test(firstBodyLine)) {
-            // Bare hunk body — prepend headers plus a placeholder "@@"; the
-            // synthesizeMissingHunkHeaders() pass fills in real line counts.
-            return `diff --git a/${p} b/${p}\n--- a/${p}\n+++ b/${p}\n@@\n${original}`;
-        }
-        return original;
-    });
+        result[i] = '';
+    }
+    return result;
 };
 
 // Synthesize valid numeric hunk headers for "context-anchored" diffs whose
@@ -4399,10 +4415,10 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
         // last seen headed diff's file path.  Each block then parses standalone
         // and renders inline with its own Apply button.
         // Collect diff-token texts in document order, run them through the
-        // (gated, unit-tested) chaining helper, and write the rewritten text
-        // back onto each token. The helper only chains pure-add continuation
-        // blocks; blocks with removals/context (whose file assumption we can't
-        // verify in this synchronous render pass) are left un-chained.
+        // chaining helper, and write the rewritten text back onto each token.
+        // The helper chains continuation blocks that start with a valid numeric
+        // @@ hunk header (apply-time validation covers correctness) and pure-add
+        // blocks (no file content claims to verify at render time).
         const diffTokenIdx: number[] = [];
         const diffTokenTexts: string[] = [];
         for (let i = 0; i < tokens.length; i++) {
@@ -4415,6 +4431,11 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
         diffTokenIdx.forEach((tokIdx, k) => {
             if (chained[k] !== diffTokenTexts[k]) {
                 (tokens[tokIdx] as TokenWithText).text = chained[k];
+                // A continuation block whose text was set to '' was merged into
+                // a headed block. Absorb it so it renders as nothing.
+                if (!chained[k]) {
+                    absorbedDiffIndices.add(tokIdx);
+                }
             }
         });
 
