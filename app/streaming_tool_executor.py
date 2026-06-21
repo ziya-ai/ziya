@@ -1716,6 +1716,12 @@ class StreamingToolExecutor:
         from app.mcp.manager import get_mcp_manager
         mcp_manager = get_mcp_manager()
 
+        # F-010: reset the per-turn tool-call ceiling at the start of every
+        # turn so the circuit breaker bounds a single runaway burst rather
+        # than lifetime usage (which would lock long conversations out).
+        if conversation_id and hasattr(mcp_manager, "reset_turn_tool_count"):
+            mcp_manager.reset_turn_tool_count(conversation_id)
+
         # Build conversation from messages
         conversation, system_content = self._build_conversation_from_messages(messages)
         logger.debug(f"🔍 STREAMING_TOOL_EXECUTOR: Built conversation with {len(conversation)} messages")

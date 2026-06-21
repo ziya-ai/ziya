@@ -145,6 +145,13 @@ _VARS: List[EnvVar] = [
            "Enforce strict MCP result signing and verification."),
     EnvVar("ZIYA_MAX_TOOL_ITERATIONS", int, 200, EnvCategory.MCP,
            "Maximum agentic loop iterations per streaming response."),
+    EnvVar("ZIYA_MAX_TOOLS_PER_TURN", int, 1000, EnvCategory.MCP,
+           "Per-turn circuit breaker: maximum tool invocations allowed within "
+           "a single streaming response (one user turn) before further calls "
+           "are refused. Resets at the start of every turn, so it never locks "
+           "a long-running conversation out of tools. Guards against prompt-"
+           "injection / hallucination loops chaining tools at machine speed "
+           "(OWASP Agentic AI AG03). 0 disables the ceiling."),
     EnvVar("ZIYA_MCP_ENV_PASSTHROUGH", str, None, EnvCategory.MCP,
            "Comma-separated list of additional parent environment variable "
            "names to forward to MCP server subprocesses. By default "
