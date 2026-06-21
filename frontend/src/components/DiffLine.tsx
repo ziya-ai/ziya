@@ -1,6 +1,7 @@
 import React, { useState, useRef, useMemo, useLayoutEffect } from 'react';
 import { loadPrismLanguage } from '../utils/prismLoader';
 import { useTheme } from '../context/ThemeContext';
+import { escapeHtml } from '../utils/htmlSanitize';
 
 interface DiffLineProps {
     content: string;
@@ -94,17 +95,25 @@ export const DiffLine = React.memo(({
         }
 
         // For non-HTML text (plain text fallback), do normal processing
+        // SECURITY (ASR F-026): this branch handles RAW (non-Prism) diff
+        // content that is written straight to dangerouslySetInnerHTML by the
+        // render sites below. Diff content is attacker-influenced (model
+        // output), so it MUST be HTML-escaped here — otherwise a line like
+        // `<img src=x onerror=alert(1)>` executes on every re-render. The
+        // whitespace-marker <span>s are appended AFTER escaping so they
+        // remain real markup; whitespace chars are unaffected by escaping.
+        const safe = escapeHtml(text);
         // For completely empty or whitespace-only lines
         if (!text.trim()) {
-            const markers = text.replace(/[ \t]/g, c => c === ' ' ? '\u2591' : '→');
+            const markers = safe.replace(/[ \t]/g, c => c === ' ' ? '\u2591' : '→');
             const wsClass = type === 'insert' ? 'ws-add' : type === 'delete' ? 'ws-delete' : 'ws-normal';
             return `<span class="token-line">` +
-                `<span class="ws-marker ${wsClass}">${markers}</span>${text}` +
+                `<span class="ws-marker ${wsClass}">${markers}</span>${safe}` +
                 `</span>`;
         }
 
         // For trailing whitespace
-        const match = text.match(/^(.*?)([ \t]+)$/);
+        const match = safe.match(/^(.*?)([ \t]+)$/);
         if (match) {
             const [_, baseText, trailingWs] = match;
             // Create the visual markers
@@ -114,7 +123,7 @@ export const DiffLine = React.memo(({
             const wsClass = type === 'insert' ? 'ws-add' : type === 'delete' ? 'ws-delete' : '';
             result = `${baseText}<span class="ws-marker ${wsClass}">${markers}</span>${trailingWs}`;
         } else {
-            result = text;
+            result = safe;
         }
 
         // Cache the result
