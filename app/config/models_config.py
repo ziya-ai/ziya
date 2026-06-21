@@ -61,7 +61,7 @@ DEFAULT_SERVICE_MODELS = {
 # strength over cost here — the volume is low (once per conversation).
 SERVICE_MODEL_OVERRIDES: dict[str, dict[str, str]] = {
     "memory_extraction": {
-        "bedrock": "us.anthropic.claude-3-5-haiku-20241022-v1:0",
+        "bedrock": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
         "google": "gemini-2.0-flash",       # flash (not lite) for extraction
         "openai": "gpt-5.5-mini",           # already strong enough
         "anthropic": "claude-haiku-4-5-20251001",
