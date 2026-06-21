@@ -17,10 +17,82 @@ import uuid
 import time
 
 from app.utils.logging_utils import logger
+from app.config.env_registry import ziya_env
 
 # Upper bound on the unmatched-response buffer so a misbehaving server
 # (late responses, unknown ids) cannot grow it without limit.
 _MAX_RESPONSE_BUFFER = 256
+
+# Environment variables that must never be inherited by MCP server
+# subprocesses. MCP servers can be installed from a third-party registry, so
+# they are treated as untrusted code: they must not receive the developer's
+# AWS/Midway credentials or any other secret material from the parent
+# process environment. (ASR F-003)
+_MCP_ENV_DENY_SUBSTRINGS = (
+    "SECRET", "PASSWORD", "PASSWD", "TOKEN", "CREDENTIAL",
+    "PRIVATE_KEY", "ACCESS_KEY", "API_KEY", "APIKEY",
+)
+_MCP_ENV_DENY_PREFIXES = (
+    "AWS_", "MIDWAY_", "BEDROCK_", "ANTHROPIC_", "OPENAI_",
+    "GOOGLE_", "AZURE_", "GITHUB_TOKEN", "GH_TOKEN",
+)
+# Non-secret AWS vars that are safe and commonly needed by AWS-backed MCP
+# servers; kept despite the AWS_ prefix denylist above.
+_MCP_ENV_ALLOW_EXACT = frozenset({"AWS_REGION", "AWS_DEFAULT_REGION"})
+
+
+def _is_sensitive_env_key(key: str) -> bool:
+    """True if *key* names a credential/secret that must not be inherited."""
+    upper = key.upper()
+    if upper in _MCP_ENV_ALLOW_EXACT:
+        return False
+    if any(upper.startswith(p) for p in _MCP_ENV_DENY_PREFIXES):
+        return True
+    if any(s in upper for s in _MCP_ENV_DENY_SUBSTRINGS):
+        return True
+    return False
+
+
+def build_mcp_subprocess_env(
+    process_env: Optional[Dict[str, str]] = None,
+    base_env: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    """Build a filtered environment for an MCP server subprocess.
+
+    MCP servers are untrusted (installable from a third-party registry), so
+    they must not inherit credential material from the parent process. This
+    strips known-sensitive variables (AWS/Midway credentials, tokens,
+    secrets, API keys) from the inherited environment while preserving benign
+    vars (PATH, HOME, LANG, etc.).
+
+    Variables explicitly configured for the server via its ``env`` config are
+    always applied on top — the operator opted into those — and users can
+    force additional parent vars through with the comma-separated
+    ``ZIYA_MCP_ENV_PASSTHROUGH`` allowlist.
+    """
+    base = os.environ if base_env is None else base_env
+    passthrough: set = set()
+    raw_passthrough = ziya_env("ZIYA_MCP_ENV_PASSTHROUGH")
+    if raw_passthrough:
+        passthrough = {p.strip() for p in raw_passthrough.split(",") if p.strip()}
+
+    filtered: Dict[str, str] = {}
+    stripped: List[str] = []
+    for key, value in base.items():
+        if key in passthrough or not _is_sensitive_env_key(key):
+            filtered[key] = value
+        else:
+            stripped.append(key)
+    # Explicit server-config env always wins (operator opted in).
+    if process_env:
+        filtered.update(process_env)
+    if stripped:
+        logger.debug(
+            "MCP subprocess env: stripped %d sensitive var(s): %s",
+            len(stripped), ", ".join(sorted(stripped)),
+        )
+    return filtered
+
 
 @dataclass
 class MCPResource:
@@ -245,8 +317,11 @@ class MCPClient:
             logger.debug(f"Starting MCP server with command: {' '.join(final_popen_command)} in {working_dir}")
             # Get environment variables for the process
             process_env = self.server_config.get("env", {})
-            full_env = os.environ.copy()
-            full_env.update(process_env)
+            # MCP servers are untrusted (registry-installable). Strip
+            # credential-bearing vars from the inherited environment so an
+            # installed server cannot read the developer's AWS/Midway creds.
+            # (ASR F-003)
+            full_env = build_mcp_subprocess_env(process_env)
 
             self.process = await asyncio.create_subprocess_exec(
                 *final_popen_command,
