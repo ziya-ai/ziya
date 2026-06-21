@@ -538,8 +538,13 @@ function showError(errorDetail: string, conversationId: string, addMessageToConv
     if (errorDetail.length > 100) {
         // Sanitize server-supplied error text to prevent XSS
         const safeDetail = escapeHtml(errorDetail);
+        // Convert newlines to <br> so multi-line content stays contained within
+        // HTML elements — bare \n\n causes the markdown processor to break out.
+        const safeDetailHtml = safeDetail.replace(/\n/g, '<br>');
         // Check if this is an authentication error that should have a retry button
         const isAuthError = errorType === 'authentication_error' || errorDetail.includes('credential') || errorDetail.includes('mwinit') || errorDetail.includes('AWS credentials');
+        // Context-size errors get the same treatment: visible text + retry button, no collapsible.
+        const isContextSizeError = errorType === 'context_size_error' || errorDetail.includes('too large');
 
         // Auth errors get a prominent, immediately-visible banner instead of the
         // generic collapsed <details> block.  Extract an actionable hint from the
@@ -583,13 +588,36 @@ ${escapeHtml(actionHint)}
 <details style="margin-top: 14px; border-top: 1px solid var(--auth-error-border, #ffd6cc); padding-top: 10px;">
 <summary style="cursor: pointer; font-size: 12px; color: var(--auth-error-muted, #8c8c8c);">Technical details</summary>
 <div style="margin-top: 8px; white-space: pre-wrap; font-family: monospace; font-size: 12px; color: var(--auth-error-detail, #8c1f1f); max-height: 200px; overflow-y: auto;">
-${safeDetail}
+${safeDetailHtml}
 </div>
 </details>
 </div>`,
                 _timestamp: Date.now()
             };
             addMessageToConversation(authMessage, conversationId);
+            return;
+        }
+
+        // Context-size errors: show text directly with a retry button.
+        // No <details> collapse — the message is short and actionable.
+        if (isContextSizeError) {
+            const contextSizeMessage: Message = {
+                role: 'assistant',
+                content: `<div class="context-size-error-banner" style="margin: 16px 0; padding: 16px 20px; background: var(--auth-error-bg, linear-gradient(135deg, #fff2f0 0%, #fff7f0 100%)); border: 1px solid var(--auth-error-border, #ffccc7); border-left: 4px solid var(--auth-error-accent, #ff4d4f); border-radius: 6px; color: var(--auth-error-text, #434343);">
+<div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
+<span style="font-size: 24px;">📏</span>
+<span style="font-size: 16px; font-weight: 600; color: var(--auth-error-heading, #cf1322);">Content Too Large</span>
+</div>
+<div style="font-size: 14px; line-height: 1.6; margin-bottom: 16px;">
+${safeDetailHtml}
+</div>
+<div style="display: flex; align-items: center; gap: 12px;">
+<button class="context-error-retry-button" data-conversation-id="${conversationId}" style="padding: 10px 24px; background-color: #1890ff; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='#40a9ff'" onmouseout="this.style.backgroundColor='#1890ff'">🔄 Retry Request</button>
+</div>
+</div>`,
+                _timestamp: Date.now()
+            };
+            addMessageToConversation(contextSizeMessage, conversationId);
             return;
         }
 
@@ -700,11 +728,6 @@ export const sendPayload = async (
     // Throttle BroadcastChannel relay to avoid flooding other tabs
     let lastBroadcastTime = 0;
     let hallucinationDetected = false;  // Failsafe: track if model is generating fake tool output
-    // Track whether the tab was hidden at ANY point during streaming.
-    // ERR_NETWORK_IO_SUSPENDED fires after the machine wakes up (hidden=false),
-    // but the root cause is that the tab WAS hidden when the OS suspended networking.
-    let wasHiddenDuringStream = false;
-
     // ── Screen Wake Lock ──────────────────────────────────────────────
     // Prevent the display from dimming / OS from sleeping while a
     // stream is active.  Keeping the display awake stops the OS power
@@ -733,9 +756,6 @@ export const sendPayload = async (
     const _onVisibilityChangeForWakeLock = () => {
         if (document.visibilityState === 'visible' && !isAborted && !errorOccurred) {
             _acquireWakeLock();
-        }
-        if (document.visibilityState === 'hidden') {
-            wasHiddenDuringStream = true;
         }
     };
 
@@ -2640,33 +2660,27 @@ export const sendPayload = async (
                         console.error('Error type:', (error as any)?.constructor?.name);
                         // document.hidden is unreliable for ERR_NETWORK_IO_SUSPENDED:
                         // the machine has already woken up by the time this handler runs.
-                        // Use the session-wide flag that the visibilitychange listener sets
-                        // whenever the tab goes hidden during streaming.
-                        const wasHidden = document.hidden || wasHiddenDuringStream;
-                        console.error('Tab hidden at time of error:', wasHidden);
                         console.error('Error message:', (error as any)?.message);
                         console.error('Error stack:', (error as any)?.stack);
                         console.error('Last chunk before error:', chunk?.substring(0, 200));
 
-                        // Save partial content before aborting — but only if the
-                        // abort listener hasn't already persisted it.  The listener
-                        // sets isAborted=true before calling addMessageToConversation.
+                        // Save partial content so the user doesn't lose work, then
+                        // auto-retry.  The retry handler in StreamedContent strips this
+                        // sentinel message and re-issues the request transparently.
                         if (currentContent && currentContent.trim() && !isAborted) {
                             const partialMessage: Message = {
                                 role: 'assistant',
-                                content: currentContent + (wasHidden
-                                    ? '\n\n[Stream interrupted while screen was inactive - partial response saved. You can retry the request to continue.]'
-                                    : '\n\n[Stream interrupted - partial response saved]'),
+                                content: currentContent + '\n\n<span class="stream-interruption-sentinel"></span>',
                                 _timestamp: Date.now()
                             };
                             addMessageToConversation(partialMessage, conversationId, !isStreamingToCurrentConversation);
                             console.log('💾 Saved partial content on abort:', currentContent.length, 'characters');
-                            showError(
-                                wasHidden
-                                    ? `Stream interrupted while screen was inactive (screen saver / sleep). Saved ${currentContent.length} characters. You can retry to continue.`
-                                    : `Stream interrupted. Saved ${currentContent.length} characters of partial response.`,
-                                conversationId, addMessageToConversation, 'warning'
-                            );
+                            // Fire auto-retry after a short delay so state settles.
+                            setTimeout(() => {
+                                window.dispatchEvent(new CustomEvent('retryStreamInterruption', {
+                                    detail: { conversationId }
+                                }));
+                            }, 800);
                         } else {
                             message.error('Stream reading error. Check JS console for details.');
                         }
