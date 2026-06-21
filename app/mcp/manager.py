@@ -100,7 +100,14 @@ class MCPManager:
         self._recent_tool_calls: Dict[str, List[tuple]] = {}  # conversation_id -> [(tool_name, arguments, timestamp)]
         self._max_recent_calls = 10
         self._loop_detection_window = 60  # seconds - increased for conversation-aware tracking
-    
+
+        # F-010: per-turn aggregate tool-call ceiling (circuit breaker).
+        # Complements the per-round (ZIYA_MAX_TOOLS_PER_ROUND) limit by bounding
+        # the TOTAL tool calls within one streaming response (one user turn),
+        # stopping a prompt-injection/hallucination loop from chaining tools at
+        # machine speed. Reset at the start of every turn (see
+        # stream_with_tools), so long conversations are never locked out.
+        self._turn_tool_counts: Dict[str, int] = {}  # conversation_id -> calls this turn    
     def _get_builtin_server_definitions(self) -> Dict[str, Dict[str, Any]]:
         """Defines configurations for built-in MCP servers."""
         builtin_servers = {}
@@ -917,6 +924,43 @@ class MCPManager:
                 self._recent_tool_calls[conv_id] = self._recent_tool_calls[conv_id][-self._max_recent_calls:]
         
         return identical_calls >= 5  # Allow max 5 identical calls before blocking
+
+    def _turn_limit(self) -> int:
+        """Resolve the per-turn tool-call ceiling (0 = disabled)."""
+        try:
+            return int(ziya_env("ZIYA_MAX_TOOLS_PER_TURN"))
+        except (TypeError, ValueError):
+            return 1000
+
+    def _exceeds_turn_ceiling(self, conversation_id: Optional[str]) -> bool:
+        """Increment the per-turn call counter and report whether the
+        ceiling has been exceeded.
+
+        F-010 circuit breaker. Counts accepted tool invocations within the
+        current turn; once the count would exceed ZIYA_MAX_TOOLS_PER_TURN the
+        call is refused. The counter is reset at the start of every turn
+        (reset_turn_tool_count), so this bounds a single runaway burst without
+        ever penalizing legitimate cumulative use across a long conversation.
+        A ceiling of 0 disables the breaker.
+        """
+        limit = self._turn_limit()
+        if limit <= 0:
+            return False  # disabled
+        conv_id = conversation_id or 'default'
+        count = self._turn_tool_counts.get(conv_id, 0) + 1
+        self._turn_tool_counts[conv_id] = count
+        if count > limit:
+            logger.warning(
+                f"🛑 TURN_CEILING: conversation '{conv_id}' hit the per-turn "
+                f"tool-call ceiling ({count} > {limit})"
+            )
+            return True
+        return False
+
+    def reset_turn_tool_count(self, conversation_id: str) -> None:
+        """Reset the per-turn tool counter. Called at the start of each turn
+        so the F-010 ceiling bounds a single burst, not lifetime usage."""
+        self._turn_tool_counts.pop(conversation_id or 'default', None)
     
     def _coerce_argument_types(self, tool_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Coerce argument types based on tool schema to fix string-to-number issues."""
@@ -1451,6 +1495,23 @@ class MCPManager:
         # startup cwd.
         if workspace_path and isinstance(arguments, dict):
             arguments = self._inject_workspace_defaults(internal_tool_name, arguments, workspace_path)
+
+        # F-010: per-turn circuit breaker. Checked before the
+        # repetitive-call guard so a prompt-injection/hallucination loop that
+        # varies its arguments (evading repetition detection) still cannot
+        # chain tools without bound.
+        if self._exceeds_turn_ceiling(conversation_id):
+            return {
+                "error": True,
+                "message": (
+                    f"Tool call refused: this turn reached the per-turn "
+                    f"tool-call ceiling ({self._turn_limit()}). This circuit "
+                    f"breaker guards against runaway tool loops within a single "
+                    f"response. Send a new message to continue, or raise "
+                    f"ZIYA_MAX_TOOLS_PER_TURN."
+                ),
+                "code": -32001,
+            }
 
         if self._is_repetitive_call(tool_name, arguments, conversation_id):
             logger.warning(f"🔍 MCP_MANAGER: Blocking repetitive tool call: {tool_name} with {arguments}")
