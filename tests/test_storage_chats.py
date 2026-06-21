@@ -36,6 +36,36 @@ def sample_chat(storage) -> Chat:
     return storage.create(data)
 
 
+# ── Branch lineage round-trip (bead-branching prerequisite) ──────────
+# The three branchedFrom / branchedAtMessageIndex / branchedFromLabel
+# fields are authored by the frontend at fork time and must survive the
+# write→read round-trip the sync layer relies on (the same path bulk-sync
+# uses: _write_json a dict, then storage.get reconstructs a Chat).
+# See design/bead-branching.md.
+
+def test_branch_lineage_fields_round_trip(storage, sample_chat):
+    """Lineage fields survive a write→read round-trip via storage."""
+    raw = storage._read_json(storage._chat_file(sample_chat.id))
+    raw["branchedFrom"] = "parent-conv-123"
+    raw["branchedAtMessageIndex"] = 7
+    raw["branchedFromLabel"] = "investigate microburst drops"
+    storage._write_json(storage._chat_file(sample_chat.id), raw)
+
+    loaded = storage.get(sample_chat.id)
+    assert loaded.branchedFrom == "parent-conv-123"
+    assert loaded.branchedAtMessageIndex == 7
+    assert loaded.branchedFromLabel == "investigate microburst drops"
+
+
+def test_branch_lineage_absent_on_normal_chat(storage, sample_chat):
+    """A conversation that was never branched has null lineage fields —
+    the fields are opt-in and default to None on trunk conversations."""
+    loaded = storage.get(sample_chat.id)
+    assert loaded.branchedFrom is None
+    assert loaded.branchedAtMessageIndex is None
+    assert loaded.branchedFromLabel is None
+
+
 # ── Create ─────────────────────────────────────────────────────────
 
 class TestCreate:

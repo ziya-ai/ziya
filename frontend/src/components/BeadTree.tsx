@@ -10,6 +10,7 @@ import { Popover, Button, Empty, message, Tooltip, Spin } from 'antd';
 import { BranchesOutlined } from '@ant-design/icons';
 import { useTheme } from '../context/ThemeContext';
 import { useStreamingContext } from '../context/StreamingContext';
+import { useActiveChat } from '../context/ActiveChatContext';
 import * as beadApi from '../api/beadApi';
 import type { BeadItem, BeadTreeResponse } from '../api/beadApi';
 
@@ -43,11 +44,15 @@ const BeadNode: React.FC<{
   depth: number;
   isDarkMode: boolean;
   onResume: (beadId: string) => void;
-}> = ({ bead, allBeads, depth, isDarkMode, onResume }) => {
+  onSplit: (beadId: string) => void;
+}> = ({ bead, allBeads, depth, isDarkMode, onResume, onSplit }) => {
   const children = allBeads.filter(b => b.parent_id === bead.id);
   const icon = STATUS_ICONS[bead.status] || '?';
   const color = STATUS_COLORS[bead.status] || '#888';
   const isResumable = bead.status === 'parked';
+  // Split requires a recorded seam; pre-feature beads (message_index null)
+  // can't be branched — the backend 400s — so don't offer the action.
+  const isSplittable = bead.status === 'parked' && bead.message_index !== null;
 
   return (
     <div style={{ marginLeft: depth * 16, marginBottom: 4 }}>
@@ -93,6 +98,28 @@ const BeadNode: React.FC<{
             </button>
           </Tooltip>
         )}
+        {isSplittable && (
+          <Tooltip title="Split from here — give this thread its own conversation, starting from where it came up">
+            <button
+              onClick={() => onSplit(bead.id)}
+              style={{
+                background: 'none',
+                border: `1px solid ${isDarkMode ? '#4cc9f055' : '#1890ff44'}`,
+                borderRadius: 4,
+                padding: '1px 6px',
+                fontSize: 10,
+                color: isDarkMode ? '#4cc9f0' : '#1890ff',
+                cursor: 'pointer',
+                flexShrink: 0,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 3,
+              }}
+            >
+              <BranchesOutlined style={{ fontSize: 9 }} /> split
+            </button>
+          </Tooltip>
+        )}
       </div>
       {bead.context_hint && bead.status === 'parked' && (
         <div style={{
@@ -112,6 +139,7 @@ const BeadNode: React.FC<{
           depth={depth + 1}
           isDarkMode={isDarkMode}
           onResume={onResume}
+          onSplit={onSplit}
         />
       ))}
     </div>
@@ -122,6 +150,7 @@ const BeadNode: React.FC<{
 const BeadTree: React.FC<BeadTreeProps> = ({ conversationId, onResume }) => {
   const { isDarkMode } = useTheme();
   const { streamingConversations } = useStreamingContext();
+  const { loadConversation } = useActiveChat();
   const [tree, setTree] = useState<BeadTreeResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
@@ -165,6 +194,24 @@ const BeadTree: React.FC<BeadTreeProps> = ({ conversationId, onResume }) => {
       message.error('Failed to resume bead');
     }
   }, [conversationId, onResume, loadBeads]);
+
+  // "Split from here" — fork the conversation at this parked bead's seam into
+  // a new branched conversation (design/bead-branching.md, Mode 1), then
+  // navigate to it.  The source is left intact; the new chat opens with this
+  // thread active.  Mirrors handleResume's shape (optimistic toast, reload),
+  // but switches conversations rather than staying in place.
+  const handleSplit = useCallback(async (beadId: string) => {
+    try {
+      const result = await beadApi.forkFromBead(conversationId, beadId);
+      message.success(
+        `Branched: ${result.branchedFromLabel || 'thread'} — original preserved`
+      );
+      setOpen(false);
+      loadConversation(result.new_chat_id);
+    } catch (e) {
+      message.error('Failed to split from bead');
+    }
+  }, [conversationId, loadConversation]);
 
   // Compute display state.
   const beadCount = tree?.beads.length ?? 0;
@@ -275,6 +322,7 @@ const BeadTree: React.FC<BeadTreeProps> = ({ conversationId, onResume }) => {
             depth={0}
             isDarkMode={isDarkMode}
             onResume={handleResume}
+            onSplit={handleSplit}
           />
         ))
       )}

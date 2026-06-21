@@ -39,6 +39,21 @@ class Chat(BaseModel):
     # Delegate fields — None for regular conversations.
     # See design/newux-context.md for DelegateMeta schema.
     delegateMeta: Optional[DelegateMeta] = None
+    # Branch lineage — None for trunk/unbranched conversations.  Authored
+    # at fork time when splitting from a bead (a parked bead is an un-taken
+    # branch point recorded with its message_index seam).  Declared
+    # explicitly — rather than relying on extra="allow" — so the round-trip
+    # is first-class and documented, matching the projectId/folderId/
+    # delegateMeta convention above.  See design/bead-branching.md.
+    branchedFrom: Optional[str] = None
+    branchedAtMessageIndex: Optional[int] = None
+    branchedFromLabel: Optional[str] = None
+    # Fork-lineage root for shared bead trees (design/bead-branching.md "b2").
+    # A plain fork ("continue this work in a fresh space") stamps this with
+    # its lineage's ROOT id; beads live on the root record and every
+    # conversation in the lineage resolves to that one shared, state-synced
+    # tree.  None on a root/trunk conversation (it is its own root).
+    lineageRootId: Optional[str] = None
 
 class ChatCreate(BaseModel):
     model_config = {"extra": "allow"}
@@ -73,6 +88,12 @@ class ChatSummary(BaseModel):
     createdAt: int
     lastActiveAt: int
     delegateMeta: Optional[DelegateMeta] = None
+    # Cheap derived "open work" counts for the sidebar indicators.  Always
+    # present (default 0); recomputed from the chat record's _beads /
+    # _work_items on each summary build.  openWorkItemCount is a correct
+    # shell — 0 until the work-item queue exists.
+    openBeadCount: int = 0
+    openWorkItemCount: int = 0
     _version: Optional[int] = None
 
 

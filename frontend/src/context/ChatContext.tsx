@@ -992,6 +992,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
         return Array.from(merged.values());
     }, []);
 
+    // Buffer messages that arrive while a shell conversation is loading its full history.
+    const pendingShellMessages = useRef<Map<string, Message[]>>(new Map());
+
     const addMessageToConversation = useCallback((message: Message, targetConversationId: string, isNonCurrentConversation?: boolean) => {
         // CRITICAL: Always use targetConversationId - never fall back to currentConversationId
         // This prevents responses from being routed to the wrong conversation when user switches mid-stream
@@ -1045,17 +1048,28 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         `(has ${existingConversation.messages.length} messages, full count ${fullCount}). ` +
                         `Queueing lazy-load before message append.`
                     );
-                    // Fire-and-forget: load full messages then re-add this message
+                    // Queue this message so it isn't lost during the async load.
+                    const queue = pendingShellMessages.current;
+                    const pending = queue.get(conversationId) ?? [];
+                    const alreadyLoading = pending.length > 0;
+                    queue.set(conversationId, [...pending, message]);
+
+                    // Only kick off one IDB load per conversation — subsequent
+                    // messages while the load is in-flight just join the queue.
+                    if (!alreadyLoading) {
                     (db.getConversation(conversationId)).then(full => {
+                        const toApply = queue.get(conversationId) ?? [];
+                        queue.delete(conversationId);
                         if (full?.messages?.length > existingConversation.messages.length) {
                             setConversations(prev => prev.map(c =>
                                 c.id === conversationId
-                                    ? { ...c, messages: [...full.messages, message], _isShell: false, _fullMessageCount: undefined, _version: Date.now() }
+                                    ? { ...c, messages: [...full.messages, ...toApply], _isShell: false, _fullMessageCount: undefined, _version: Date.now() }
                                     : c
                             ));
                         }
                     }).catch(e => console.error('Shell recovery failed:', e));
-                    // Return unchanged for now — the async recovery will apply
+                    }
+                    // Return unchanged — the async recovery will apply all queued messages
                     return prevConversations;
                 }
             }
@@ -2121,6 +2135,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // GC pass runs below after shells are loaded.
             // Messages for the active conversation are loaded below.
             const savedConversations = await db.getConversationShells();
+            // Load folders too: the startup visibility filter below must honor
+            // global-by-inheritance (a conversation in a global folder keeps its
+            // own isGlobal=false but is still shared cross-project). Without the
+            // folder set, conversationIsEffectivelyGlobal can't resolve ancestry
+            // and such conversations get dropped from the sidebar on reloads
+            // where their own project isn't active.
+            const startupFolders = await db.getFolders();
             // Scope the initial shell load to the current project. IndexedDB
             // holds shells for every project the user has ever opened in this
             // browser; dumping all of them into state on refresh produced a
@@ -2135,7 +2156,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // the filter engages on the very first render after refresh.
             const startupPid = currentProject?.id || (() => { try { return localStorage.getItem('ZIYA_LAST_PROJECT_ID') || undefined; } catch { return undefined; } })();
             const scopedShells = startupPid
-                ? savedConversations.filter(c => !c.projectId || c.projectId === startupPid || (c as any).isGlobal)
+                ? savedConversations.filter(c => !c.projectId || c.projectId === startupPid || conversationIsEffectivelyGlobal(c, startupFolders))
                 : savedConversations;
             console.log('✅ Setting conversation shells immediately:', scopedShells.length, `(of ${savedConversations.length} total across all projects)`);
             setConversations(scopedShells);
@@ -3161,14 +3182,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         let anyReferenceChanged = prev.length !== safeConvs.length;
                         const result = safeConvs.map((mc: any) => {
                             const existing = prevMap.get(mc.id);
-                            if (existing &&
-                                (mc._version || 0) <= (existing._version || 0) &&
-                                (mc.messages?.length || 0) <= (existing.messages?.length || 0) &&
-                                mc.title === existing.title &&
-                                mc.folderId === existing.folderId &&
-                                mc.isGlobal === existing.isGlobal &&
-                                mc.delegateMeta?.status === existing.delegateMeta?.status &&
-                                mc.hasUnreadResponse === existing.hasUnreadResponse) {
+                            if (syncMerge.canReusePrevConversation(mc, existing)) {
                                 return existing;
                             }
                             anyReferenceChanged = true;
@@ -3193,6 +3207,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         const globalCount = mergedResult.filter((c: any) => c.isGlobal).length;
                         const otherCount = mergedResult.length - localCount - globalCount;
                         console.log(`📡 SERVER_SYNC: commit breakdown for ${projectId.substring(0, 8)}: ${localCount} local, ${globalCount} global, ${otherCount} other`);
+                        // Folder snapshot for effective-global resolution in the
+                        // late-preservation filter below. A conversation that is
+                        // global-by-inheritance (own isGlobal:false, inside a global
+                        // folder) must not be dropped by sync — same class of bug as
+                        // the startup filter previously had (raw isGlobal vs effective).
+                        const syncFolders = await db.getFolders();
                         React.startTransition(() => {
                             setConversations(prev => {
                                 // Late preservation: catch in-memory conversations created
@@ -3209,7 +3229,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                 const missed = prev.filter((p: any) =>
                                     !mergedIdSet.has(p.id)
                                     && p.isActive !== false
-                                    && (!p.projectId || p.projectId === projectId || (p as any).isGlobal)
+                                    && (!p.projectId || p.projectId === projectId || conversationIsEffectivelyGlobal(p, syncFolders))
                                     && !knownServerConversationIds.current.has(p.id)
                                     && (nowTs - (p.lastAccessedAt || p._version || 0)) < PRESERVATION_MAX_AGE_MS
                                 );
@@ -3996,6 +4016,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
             id: newId,
             title: `Fork: ${source.title}`,
             lastAccessedAt: Date.now(),
+            // Shared-root bead lineage (b2): inherit the source's root, or
+            // adopt the source's own id as root when the source is itself a
+            // trunk.  Flat — a fork of a fork points at the SAME ultimate
+            // root, never chains — so the whole lineage shares one bead tree.
+            lineageRootId: (source as any).lineageRootId || source.id,
             _version: Date.now(),
             hasUnreadResponse: false,
             isActive: true,

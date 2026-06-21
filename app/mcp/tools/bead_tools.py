@@ -89,7 +89,9 @@ class BeadCreateTool(BaseMCPTool):
 
         try:
             from app.models.bead import Bead
-            from app.storage.beads import load_bead_tree, save_bead_tree
+            from app.storage.beads import (
+                load_bead_tree, save_bead_tree, get_conversation_message_count,
+            )
 
             tree = load_bead_tree(conversation_id=conversation_id)
             active = tree.active_bead
@@ -99,11 +101,19 @@ class BeadCreateTool(BaseMCPTool):
             if status == "active" and active:
                 active.status = "parked"
 
+            # Record the conversation seam (user-visible message count at
+            # creation) so a parked bead carries its divergence point.  This
+            # is what branch-from-bead truncates at; None when the chat isn't
+            # resolvable (CLI / not-yet-synced), which simply disables
+            # branching for that bead.  See design/bead-branching.md.
+            seam_index = get_conversation_message_count(conversation_id)
+
             new_bead = Bead(
                 parent_id=parent_id,
                 content=content,
                 status=status,
                 context_hint=context_hint,
+                message_index=seam_index,
             )
             tree.beads.append(new_bead)
             save_bead_tree(tree, conversation_id=conversation_id)
@@ -126,6 +136,43 @@ class BeadCreateTool(BaseMCPTool):
 # ---------------------------------------------------------------------------
 # Tool: bead_complete
 # ---------------------------------------------------------------------------
+
+
+def _resolve_bead_by_id(tree, bead_id: str):
+    """Resolve a bead by exact id, then by unique prefix.
+
+    bead_status renders ids truncated to 8 chars (bead_ + 3 hex) — and that
+    truncated string is the only id surface the model is given, yet
+    bead_complete historically matched only on the exact full id.  The shown
+    id was therefore unusable as a completion key: a closed loop with no way
+    out from the tool layer.  Accepting a unique prefix closes it.  A prefix
+    matching more than one bead returns an ambiguity error rather than
+    silently completing the wrong thread; exact match is tried first so a full
+    id that is also a prefix of a longer id still resolves unambiguously.
+
+    Returns (bead, None) on success or (None, error_dict) on failure;
+    error_dict follows the {"ok": False, "error": True, "message": ...}
+    surfacing contract.
+    """
+    exact = next((b for b in tree.beads if b.id == bead_id), None)
+    if exact is not None:
+        return exact, None
+    prefix_hits = [b for b in tree.beads if b.id.startswith(bead_id)]
+    if len(prefix_hits) == 1:
+        return prefix_hits[0], None
+    if len(prefix_hits) > 1:
+        return None, {
+            "ok": False, "error": True,
+            "message": (
+                f"Ambiguous bead id '{bead_id}' matches {len(prefix_hits)} "
+                f"beads; provide more characters."
+            ),
+        }
+    return None, {
+        "ok": False, "error": True,
+        "message": f"No bead matching id '{bead_id}'.",
+    }
+
 
 class BeadCompleteInput(BaseModel):
     """Input schema for bead_complete."""
@@ -158,12 +205,15 @@ class BeadCompleteTool(BaseMCPTool):
 
             tree = load_bead_tree(conversation_id=conversation_id)
             if bead_id:
-                target = next((b for b in tree.beads if b.id == bead_id), None)
+                # Exact id, then unique-prefix, so the 8-char id shown by
+                # bead_status is a usable completion key (see _resolve_bead_by_id).
+                target, err = _resolve_bead_by_id(tree, bead_id)
+                if err is not None:
+                    return err
             else:
                 target = tree.active_bead
-
-            if not target:
-                return {"ok": False, "error": True, "message": "No active bead to complete"}
+                if not target:
+                    return {"ok": False, "error": True, "message": "No active bead to complete"}
 
             target.status = "completed"
 
@@ -173,6 +223,21 @@ class BeadCompleteTool(BaseMCPTool):
                 if parent and parent.status == "parked":
                     parent.status = "active"
 
+            # Resolve the origin thread if this bead was forked from another
+            # conversation.  Completing a forked thread makes the origin's
+            # parked note a stale lie — walk the lineage edge and complete it
+            # too (best-effort; non-terminal origins only).  Done before the
+            # local save so a resolve failure can't lose the local completion.
+            origin_conv = getattr(target, "origin_conversation_id", None)
+            origin_bead = getattr(target, "origin_bead_id", None)
+            resolved_origin = None
+            if origin_conv and origin_bead:
+                try:
+                    from app.storage.beads import resolve_origin_bead
+                    resolved_origin = resolve_origin_bead(origin_conv, origin_bead)
+                except Exception as e:
+                    logger.debug(f"📿 origin resolve failed (non-fatal): {e}")
+
             save_bead_tree(tree, conversation_id=conversation_id)
             active = tree.active_bead
             return {
@@ -180,6 +245,7 @@ class BeadCompleteTool(BaseMCPTool):
                 "completed": target.id,
                 "resumed": active.id if active else None,
                 "parked_count": len(tree.parked_beads),
+                **({"resolved_origin": resolved_origin} if resolved_origin else {}),
             }
         except Exception as e:
             logger.warning(f"bead_complete failed: {e}")

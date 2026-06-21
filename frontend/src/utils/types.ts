@@ -81,6 +81,27 @@ export interface Conversation {
     _editInProgress?: boolean;
     displayMode?: 'raw' | 'pretty';
     delegateMeta?: DelegateMeta | null;
+    // Cheap derived counts for the sidebar open-work indicators.  Populated
+    // by the server summary path (ChatSummary) and carried through the sync
+    // merge; never authored on the frontend.  openWorkItemCount is currently
+    // always 0 — the work-item queue is unbuilt (design/work-primitives-taxonomy.md).
+    openBeadCount?: number;
+    openWorkItemCount?: number;
+    // ── Branch lineage (bead-branching, see design/bead-branching.md) ──
+    // Present only on conversations created by splitting from a bead.
+    // A parked bead is an un-taken branch point; forkFromBead truncates at
+    // the bead's message_index seam and stamps these so the conversation
+    // can render its lineage (breadcrumb bar) and the eventual graph panel
+    // can reconstruct the branch tree.  All three are authored together at
+    // fork time; absent (undefined) on trunk/unbranched conversations.
+    branchedFrom?: string;            // parent conversation id
+    branchedAtMessageIndex?: number;  // the seam — parent's message index at split
+    branchedFromLabel?: string;       // bead content, for display ("microburst drops")
+    // Fork-lineage root for shared bead trees (design/bead-branching.md "b2").
+    // A plain fork inherits its source's lineageRootId (or, if the source is
+    // itself a root, the source's id), so the whole lineage shares one
+    // bead tree resolved on the backend.  Absent on root/trunk conversations.
+    lineageRootId?: string;
 }
 
 export interface ConversationFolder {

@@ -18,6 +18,10 @@ class ResumeBeadRequest(BaseModel):
     bead_id: str
 
 
+class ForkBeadRequest(BaseModel):
+    bead_id: str
+
+
 @router.get("/api/v1/projects/{project_id}/chats/{chat_id}/beads")
 async def get_beads(project_id: str, chat_id: str, request: Request):
     """Return the bead tree for a conversation."""
@@ -83,4 +87,82 @@ async def resume_bead(project_id: str, chat_id: str, body: ResumeBeadRequest, re
             f"Let's go back to: {target.content}"
             + (f"\n\nContext: {target.context_hint}" if target.context_hint else "")
         ),
+    }
+
+
+@router.post("/api/v1/projects/{project_id}/chats/{chat_id}/beads/fork")
+async def fork_from_bead(project_id: str, chat_id: str, body: ForkBeadRequest, request: Request):
+    """Split a conversation at a bead's seam into a new branched conversation.
+
+    Mode-1 non-destructive fork (design/bead-branching.md): the source
+    conversation is left fully intact; a new conversation is created holding
+    only the messages up to the chosen bead's message_index seam, with that
+    bead's thread promoted active, the inherited beads carried along (timeline
+    rule: message_index <= seam), and lineage metadata stamped so the UI can
+    render the branch relationship.  This is the backend mechanism; the
+    "split from here" UI action that calls it is step 3.
+    """
+    import uuid
+    import time as _time
+    from app.storage.chats import ChatStorage
+    from app.storage.beads import _parse_beads, load_bead_tree, inherit_beads_for_seam
+    from app.models.bead import BeadTree
+    from app.utils.paths import get_project_dir
+
+    project_dir = get_project_dir(project_id)
+    storage = ChatStorage(project_dir)
+
+    raw = storage._read_json(storage._chat_file(chat_id))
+    if not raw:
+        raise HTTPException(status_code=404, detail="Source conversation not found")
+
+    # Prefer the bead snapshot on the chat record (the synced common case, and
+    # consistent with the same raw snapshot the messages are truncated from);
+    # fall back to load_bead_tree for beads that live only in the standalone
+    # fallback store (a brand-new conversation not yet synced to disk).
+    raw_beads = raw.get("_beads")
+    tree = (BeadTree(beads=_parse_beads(raw_beads)) if raw_beads
+            else load_bead_tree(chat_storage=storage, conversation_id=chat_id))
+
+    try:
+        seam, inherited, label = inherit_beads_for_seam(tree, body.bead_id, chat_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # message_index is the user-visible message count at bead creation, so
+    # messages[:seam] keeps exactly the prefix through the message that raised
+    # the thread.  seam > len (source later shortened) is safe — slice clamps.
+    truncated = (raw.get("messages") or [])[:seam]
+
+    new_id = str(uuid.uuid4())
+    now = int(_time.time() * 1000)
+    new_chat = {
+        "id": new_id,
+        "title": (label or "Branch")[:60],
+        "messages": truncated,
+        "createdAt": now,
+        "lastActiveAt": now,
+        "lastAccessedAt": now,
+        "_version": now,
+        "projectId": project_id,
+        "folderId": raw.get("folderId"),
+        "isActive": True,
+        "branchedFrom": chat_id,
+        "branchedAtMessageIndex": seam,
+        "branchedFromLabel": label,
+        "_beads": [b.model_dump() for b in inherited],
+    }
+    storage._write_json(storage._chat_file(new_id), new_chat)
+    logger.info(
+        f"🌿 fork_from_bead: {chat_id[:8]} @bead {body.bead_id[:8]} "
+        f"(seam={seam}, {len(truncated)} msgs, {len(inherited)} beads) → {new_id[:8]}"
+    )
+    return {
+        "ok": True,
+        "new_chat_id": new_id,
+        "branchedFrom": chat_id,
+        "branchedAtMessageIndex": seam,
+        "branchedFromLabel": label,
+        "message_count": len(truncated),
+        "inherited_bead_count": len(inherited),
     }

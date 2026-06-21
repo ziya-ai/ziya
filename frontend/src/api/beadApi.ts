@@ -10,6 +10,10 @@ export interface BeadItem {
   created_at: number;
   message_index: number | null;
   context_hint: string | null;
+  // Branch lineage — present on beads inherited into a fork (see
+  // design/bead-branching.md); null on natively-created beads.
+  origin_conversation_id?: string | null;
+  origin_bead_id?: string | null;
 }
 
 export interface BeadTreeResponse {
@@ -24,6 +28,16 @@ export interface ResumeBeadResponse {
   resumed_bead: BeadItem;
   breadcrumb: string;
   suggested_message: string;
+}
+
+export interface ForkBeadResponse {
+  ok: boolean;
+  new_chat_id: string;
+  branchedFrom: string;
+  branchedAtMessageIndex: number;
+  branchedFromLabel: string;
+  message_count: number;
+  inherited_bead_count: number;
 }
 
 function headers(): Record<string, string> {
@@ -61,5 +75,26 @@ export async function resumeBead(chatId: string, beadId: string): Promise<Resume
     }
   );
   if (!res.ok) throw new Error(`Resume bead failed: ${res.status}`);
+  return res.json();
+}
+
+/**
+ * Split a conversation at a parked bead's seam into a new branched
+ * conversation (Mode-1 non-destructive fork; see design/bead-branching.md).
+ * The source is left intact; the new chat holds messages up to the bead's
+ * message_index, carries the inherited beads, and is stamped with lineage
+ * metadata.  Returns the new chat id so the caller can navigate to it.
+ */
+export async function forkFromBead(chatId: string, beadId: string): Promise<ForkBeadResponse> {
+  const pid = getProjectId();
+  const res = await fetch(
+    `/api/v1/projects/${pid}/chats/${chatId}/beads/fork`,
+    {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({ bead_id: beadId }),
+    }
+  );
+  if (!res.ok) throw new Error(`Fork from bead failed: ${res.status}`);
   return res.json();
 }

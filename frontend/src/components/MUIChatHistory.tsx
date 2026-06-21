@@ -59,6 +59,8 @@ import {
   PushpinOutlined as AntPushpinOutlined,
   GlobalOutlined as AntGlobalOutlined,
   SwapOutlined as AntSwapOutlined,
+  BranchesOutlined as AntBranchesOutlined,
+  CheckSquareOutlined as AntCheckSquareOutlined,
 } from '@ant-design/icons';
 
 // Spinning animation for the loading icon
@@ -110,6 +112,11 @@ interface ChatTreeItemProps {
   isRunningTask?: boolean;
   hasUnreadResponse?: boolean;
   conversationCount?: number;
+  // Open-work indicators (conversation rows only): parked+active beads and
+  // open work items.  openWorkItemCount is a correct shell — always 0 until
+  // the work-item queue is built (design/work-primitives-taxonomy.md).
+  openBeadCount?: number;
+  openWorkItemCount?: number;
   onEdit: (id: string) => void;
   onDelete: (id: string) => void;
   onAddChat: (id: string) => void;
@@ -163,6 +170,8 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     isRunningTask = false,
     hasUnreadResponse = false,
     conversationCount = 0,
+    openBeadCount = 0,
+    openWorkItemCount = 0,
     onEdit,
     onDelete,
     onAddChat,
@@ -347,7 +356,30 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                   <PushPinIcon fontSize="small" color="primary" sx={{ ml: 0.5, fontSize: 14 }} />
                 )}
                 {isGlobalItem && (
-                  isHovered ? <Tooltip title="Visible in all projects"><PublicIcon fontSize="small" color="info" sx={{ ml: 0.5, fontSize: 14 }} /></Tooltip> : <PublicIcon fontSize="small" color="info" sx={{ ml: 0.5, fontSize: 14 }} />
+                  <Tooltip title={isGlobalByInheritanceOnly ? "Shared across projects via parent folder" : "Shared across all projects"}>
+                    <PublicIcon fontSize="small" color="info" sx={{ ml: 0.5, fontSize: 14 }} />
+                  </Tooltip>
+                )}
+                {/* Open-work indicators (conversation rows only).  Beads use
+                    the branch glyph + amber, matching the BeadTree chip; work
+                    items use a check-square.  The work-item count is a shell —
+                    always 0 today, so its icon never renders until the queue
+                    lands (design/work-primitives-taxonomy.md). */}
+                {!isFolder && openBeadCount > 0 && (
+                  <Tooltip title={`${openBeadCount} open task thread${openBeadCount !== 1 ? 's' : ''} (beads)`}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', marginLeft: 4, color: '#f59e0b', fontSize: 11, gap: 1 }}>
+                      <AntBranchesOutlined style={{ fontSize: 12 }} />
+                      {openBeadCount}
+                    </span>
+                  </Tooltip>
+                )}
+                {!isFolder && openWorkItemCount > 0 && (
+                  <Tooltip title={`${openWorkItemCount} open work item${openWorkItemCount !== 1 ? 's' : ''}`}>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', marginLeft: 4, color: '#3b82f6', fontSize: 11, gap: 1 }}>
+                      <AntCheckSquareOutlined style={{ fontSize: 12 }} />
+                      {openWorkItemCount}
+                    </span>
+                  </Tooltip>
                 )}
                 {isFolder && conversationCount > 0 ? (
                   <Typography variant="caption" sx={{ ml: 0.5, color: 'text.secondary' }}>({conversationCount})</Typography>
@@ -2572,7 +2604,7 @@ const MUIChatHistory = () => {
     // Structural hash: identity, titles, folder placement, delegate status
     const sh = fnv1a();
     safeFolders.forEach(f => { sh.add(f.id || ''); sh.add(f.name || ''); sh.add(f.parentId || ''); sh.add(f.isGlobal ? 'g' : ''); sh.add(f.taskPlan?.source_conversation_id || ''); });
-    safeConversations.forEach(c => { sh.add(c.id || ''); sh.add(c.title || ''); sh.add(c.folderId || ''); sh.add(c.isActive === false ? '0' : '1'); sh.add(c.isGlobal ? 'g' : ''); sh.add(c.delegateMeta?.status || ''); });
+    safeConversations.forEach(c => { sh.add(c.id || ''); sh.add(c.title || ''); sh.add(c.folderId || ''); sh.add(c.isActive === false ? '0' : '1'); sh.add(c.isGlobal ? 'g' : ''); sh.add(c.delegateMeta?.status || ''); sh.add(String((c as any).openBeadCount || 0)); sh.add(String((c as any).openWorkItemCount || 0)); });
     const structuralHash = sh.value();
 
     // Sort hash: activity times and pin state that only affect ordering
@@ -3689,6 +3721,8 @@ const MUIChatHistory = () => {
                 const isStreamingConv = !!(convId && streamingConversations.has(convId));
                 const isRunningTaskConv = !!(convId && runningTaskConversations.has(convId));
                 const conversationCount = isFolder ? node.conversationCount : 0;
+                const openBeadCount = isFolder ? 0 : (node.conversation?.openBeadCount || 0);
+                const openWorkItemCount = isFolder ? 0 : (node.conversation?.openWorkItemCount || 0);
                 const isEditingNode = editingId === (isFolder ? nodeId : nodeId.substring(5));
 
                 const handleCustomMouseDown = (e: React.MouseEvent) => {
@@ -3742,6 +3776,7 @@ const MUIChatHistory = () => {
                       isStreaming={isStreamingConv} hasUnreadResponse={hasUnreadResponse}
                       isRunningTask={isRunningTaskConv}
                       isGlobalByInheritanceOnly={isGlobalByInheritanceOnly}
+                      openBeadCount={openBeadCount} openWorkItemCount={openWorkItemCount}
                       conversationCount={conversationCount}
                       onEdit={handleEdit} onDelete={handleDelete} onAddChat={handleAddChat}
                       onExport={handleExportConversation} onPin={togglePinFolder}
