@@ -142,6 +142,22 @@ def find_best_match_position(context: List[str], file_lines: List[str], original
     # to avoid spurious low-overlap matches.
     min_overlap = max(context_len // 2, 1)
     search_end = max(len(file_lines) - context_len + 1, len(file_lines) - min_overlap + 1)
+
+    # Fast path: if the caller supplied the original line and the context
+    # already matches exactly there, skip the full-file fuzzy scan. This is
+    # the common case for add-only / in-place edits whose line numbers are
+    # already correct, and the scan is an O(file_size) SequenceMatcher sweep
+    # that dominates correction latency on large files. A perfect match at
+    # original_line would also win the scan (ratio 1.0, and the proximity
+    # tie-break favors original_line among equal-ratio matches), so returning
+    # it directly is behavior-preserving.
+    if original_line is not None:
+        op = original_line - 1
+        if 0 <= op and op + context_len <= len(file_lines):
+            seg = [normalize_for_matching(line.rstrip('\n\r')) for line in file_lines[op:op + context_len]]
+            if seg == norm_context:
+                return (op, 1.0)
+
     for i in range(search_end):
         segment = [normalize_for_matching(line.rstrip('\n\r')) for line in file_lines[i:i + context_len]]
         ratio = SequenceMatcher(None, norm_context, segment).ratio()

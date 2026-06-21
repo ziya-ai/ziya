@@ -255,6 +255,15 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
     diff_lines = git_diff.splitlines()
     if is_new_file_creation(diff_lines):
         try:
+            # Preprocess before creating so _recount_hunks corrects any
+            # LLM-generated hunk header counts before create_new_file reads
+            # expected_lines from them.  Without this, the warning fires on
+            # almost every new-file diff because the LLM count is unreliable.
+            preprocessed, _ = preprocess_diff(git_diff)
+            if preprocessed != git_diff:
+                logger.info("diff_preprocessor: new-file diff sanitized before creation")
+                git_diff = preprocessed
+                diff_lines = git_diff.splitlines()
             create_new_file(git_diff, user_codebase_dir)
             cleanup_patch_artifacts(user_codebase_dir, file_path)
             
@@ -675,14 +684,19 @@ def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_dif
                 pipeline.result.hunks[i].hunk_data = corrected_hunk
         
         # Check if all hunks are already applied before attempting to apply
+        from ..validation.validators import detect_malformed_state
+        _precheck_file_normalized = [normalize_line_for_comparison(l) for l in file_lines]
         all_already_applied = True
         for hunk in corrected_hunks:
             # For corrected hunks, check at the corrected position and nearby
             # Get the corrected position (1-based from hunk, convert to 0-based)
             corrected_pos = hunk.get('old_start', 1) - 1
+            _hunk_malformed = detect_malformed_state(file_lines, hunk)
             
             # Check at corrected position first
-            hunk_applied = is_hunk_already_applied(file_lines, hunk, corrected_pos)
+            hunk_applied = is_hunk_already_applied(
+                file_lines, hunk, corrected_pos,
+                _malformed=_hunk_malformed, _file_normalized=_precheck_file_normalized)
             
             # If not applied at corrected position, search nearby (within 20 lines)
             if not hunk_applied:
@@ -691,7 +705,9 @@ def apply_patch_directly(pipeline: DiffPipeline, user_codebase_dir: str, git_dif
                 end_pos = min(len(file_lines), corrected_pos + search_range)
                 
                 for pos in range(start_pos, end_pos):
-                    if is_hunk_already_applied(file_lines, hunk, pos):
+                    if is_hunk_already_applied(
+                            file_lines, hunk, pos,
+                            _malformed=_hunk_malformed, _file_normalized=_precheck_file_normalized):
                         hunk_applied = True
                         logger.info(f"Hunk #{hunk.get('number')} is already applied at position {pos} (searched near {corrected_pos})")
                         break
