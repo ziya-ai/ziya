@@ -44,6 +44,22 @@ def _check_playwright() -> bool:
     return _playwright_available
 
 
+def build_chromium_launch_args(no_sandbox: bool = False) -> list:
+    """Build the Chromium launch args for the headless renderer.
+
+    SECURITY (F-027): the Chromium sandbox is the primary defense against
+    renderer-process exploits, and this renderer processes attacker-influenced
+    SVG/HTML from model output. ``--no-sandbox`` is therefore OFF by default
+    and only added when the operator explicitly opts in via
+    ``ZIYA_CHROMIUM_NO_SANDBOX`` (needed when the sandbox cannot run, e.g.
+    running as root in a container). The caller logs a warning when it's on.
+    """
+    args = ["--disable-gpu", "--disable-dev-shm-usage"]
+    if no_sandbox:
+        args.append("--no-sandbox")
+    return args
+
+
 class DiagramRenderer:
     """Headless Chromium renderer for diagram specs."""
 
@@ -74,14 +90,19 @@ class DiagramRenderer:
         if self._browser and self._browser.is_connected():
             return
         from playwright.async_api import async_playwright
+        from app.config.env_registry import ziya_env
         self._playwright = await async_playwright().start()
+        no_sandbox = ziya_env("ZIYA_CHROMIUM_NO_SANDBOX")
+        if no_sandbox:
+            logger.warning(
+                "Headless Chromium launching with --no-sandbox "
+                "(ZIYA_CHROMIUM_NO_SANDBOX is set) — the renderer sandbox is "
+                "disabled; this weakens isolation when rendering model-supplied "
+                "SVG/HTML."
+            )
         self._browser = await self._playwright.chromium.launch(
             headless=True,
-            args=[
-                "--disable-gpu",
-                "--disable-dev-shm-usage",
-                "--no-sandbox",
-            ],
+            args=build_chromium_launch_args(no_sandbox=no_sandbox),
         )
         logger.info("Headless Chromium launched for diagram rendering")
 

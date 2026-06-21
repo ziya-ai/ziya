@@ -249,6 +249,12 @@ _VARS: List[EnvVar] = [
            "CDN diagrams render) or 'strict' (drops unsafe-eval and pins "
            "jsdelivr to specific script paths; Vega expression-eval diagrams "
            "will not render in this mode)."),
+    EnvVar("ZIYA_CHROMIUM_NO_SANDBOX", bool, False, EnvCategory.SECURITY,
+           "Launch the headless diagram-rendering Chromium with --no-sandbox. "
+           "OFF by default — the Chromium sandbox is the primary defense "
+           "against renderer-process exploits when rendering attacker-"
+           "influenced SVG/HTML. Enable only in environments where the "
+           "sandbox cannot run (e.g. running as root in a container)."),
 
     # ── Logging / Debug ───────────────────────────────────────────────────
     EnvVar("ZIYA_LOG_LEVEL", str, "INFO", EnvCategory.LOGGING,
