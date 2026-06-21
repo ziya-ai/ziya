@@ -1121,9 +1121,6 @@ def _validate_removal_content(file_lines: List[str], removed_lines: List[str], p
     normalized_removed_lines = [normalize_line_for_comparison(line) for line in removed_lines]
     
     if normalized_file_slice != normalized_removed_lines:
-        similarity = difflib.SequenceMatcher(None, 
-                                           "\n".join(normalized_file_slice), 
-                                           "\n".join(normalized_removed_lines)).ratio()
         return False
     
     return True
