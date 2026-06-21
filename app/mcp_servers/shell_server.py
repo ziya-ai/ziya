@@ -228,19 +228,14 @@ def _extract_command_substitutions(command: str) -> list:
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from app.config.shell_config import get_default_shell_config
 from app.config.write_policy import WritePolicyManager
-from app.mcp_servers.write_policy import ShellWriteChecker, _strip_heredoc_bodies
-
-# Heredoc redirection: "<<DELIM\n", "<<-DELIM\n", "<< 'DELIM'\n", '<< "DELIM"\n'.
-# Kept in lockstep with write_policy._strip_heredoc_bodies so detection and
-# stripping agree on what counts as a heredoc. A heredoc body is stdin *data*,
-# not executable commands, so a command using one must be handed to a real
-# shell (sh -c); the manual shell=False orchestrator cannot feed a body to
-# stdin and would pass "<<DELIM" plus every body line as literal argv.
-_HEREDOC_RE = re.compile(r"""<<-?\s*(?:'[^']+'|"[^"]+"|\S+)\n""", re.MULTILINE)
-
-
-def _has_heredoc(command: str) -> bool:
-    return bool(_HEREDOC_RE.search(command))
+# Heredoc detection + body-stripping live in write_policy as the single source
+# of truth.  shell_server previously kept a twin _HEREDOC_RE that had to be
+# hand-synced ("kept in lockstep"); importing the shared helper removes that
+# drift hazard.  Routing (_execute_pipeline → sh -c) and validation
+# (is_command_allowed) now both consult the same opener definition.
+from app.mcp_servers.write_policy import (
+    ShellWriteChecker, _strip_heredoc_bodies, _has_heredoc,
+)
 
 
 class ShellServer:
@@ -460,7 +455,13 @@ class ShellServer:
         (``No such file or directory: 'for'``).  Inspect the first word of
         every operator-split segment instead.
         """
-        for _operator, segment in self._split_by_shell_operators(command):
+        # Strip heredoc bodies before scanning — their content (Python if/for,
+        # prose, etc.) is not shell syntax and must not be mistaken for a
+        # compound construct.  Without this, a heredoc body containing e.g.
+        # ``if is_global:`` causes _is_compound_command to return True, which
+        # bypasses the heredoc-stripping validation path and sends every body
+        # line to the allowlist as a raw command.
+        for _operator, segment in self._split_by_shell_operators(_strip_heredoc_bodies(command)):
             words = segment.strip().split()
             if words and words[0] in _COMPOUND_STARTERS:
                 return True

@@ -296,6 +296,30 @@ class ShellWriteChecker:
         return False
 
 
+# Single source of truth for heredoc detection / body-stripping.
+#
+# A heredoc body is stdin *data*, not executable commands, so a command using
+# one must be handed to a real shell (sh -c); the manual shell=False
+# orchestrator in shell_server cannot feed a body to stdin and would pass
+# "<<DELIM" plus every body line as literal argv.  Both shell_server's routing
+# (_execute_pipeline) and validation (is_command_allowed) consult this module,
+# so detection and stripping can no longer drift out of lockstep.
+#
+# The ``[^\n]*`` before the newline tolerates trailing content on the opener
+# line — a pipe/redirect/arg after the delimiter (``cat <<EOF | grep h``,
+# ``cat <<EOF > out``).  Without it those forms weren't recognized as heredocs,
+# so they bypassed the sh -c route and their body lines were either rejected by
+# the validator or passed as literal argv by the manual orchestrator.
+_HEREDOC_OPENER_RE = re.compile(
+    r"""<<-?\s*(?:'([^']+)'|"([^"]+)"|(\S+))[^\n]*\n""",
+    re.MULTILINE,
+)
+
+
+def _has_heredoc(command: str) -> bool:
+    return bool(_HEREDOC_OPENER_RE.search(command))
+
+
 def _strip_heredoc_bodies(command: str) -> str:
     """Remove heredoc bodies so their content isn't mistaken for redirection.
 
@@ -304,20 +328,29 @@ def _strip_heredoc_bodies(command: str) -> str:
               cmd << "DELIM" ... DELIM
               cmd <<- DELIM ... DELIM   (dash variant)
     """
-    pattern = re.compile(
-        r'<<-?\s*'
-        r"""(?:'([^']+)'|"([^"]+)"|(\S+))"""
-        r'\n',
-        re.MULTILINE,
-    )
+    # Re-scan the mutated ``result`` each iteration rather than iterating
+    # ``finditer(command)`` offsets.  finditer yields positions into the
+    # ORIGINAL command, but each splice shrinks ``result`` — so from the
+    # second heredoc onward ``m.end()`` is a stale offset into the wrong
+    # string and that body is left unstripped (its body + closing delimiter
+    # then reach the allowlist validator as bogus command lines, e.g. a bare
+    # ``EOF`` that gets rejected as a disallowed command).  A running cursor
+    # over ``result`` keeps open/close offsets consistent so every heredoc
+    # body is removed.
     result = command
-    for m in pattern.finditer(command):
+    search_from = 0
+    while True:
+        m = _HEREDOC_OPENER_RE.search(result, search_from)
+        if not m:
+            break
         delim = m.group(1) or m.group(2) or m.group(3)
         body_start = m.end()
         end_pattern = re.compile(r'^' + re.escape(delim) + r'\s*$', re.MULTILINE)
         end_match = end_pattern.search(result, body_start)
-        if end_match:
-            result = result[:body_start] + result[end_match.end():]
+        if not end_match:
+            break  # unterminated heredoc — leave the remainder intact
+        result = result[:body_start] + result[end_match.end():]
+        search_from = body_start
     return result
 
 
