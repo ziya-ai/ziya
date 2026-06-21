@@ -751,10 +751,70 @@ export const StreamedContent: React.FC<{}> = () => {
 
         window.addEventListener('retryContextError', handleRetryContextError as EventListener);
 
+        // Handle stream-interruption auto-retry.  Fired by chatApi when a
+        // stream read error occurs (network drop, OS sleep, etc.).  Strips the
+        // partial-content sentinel message and re-issues the last request so
+        // the user doesn't have to intervene.
+        const handleRetryStreamInterruption = async (event: CustomEvent) => {
+            console.log('🔄 RETRY_STREAM: Handler invoked with detail:', event.detail);
+            const { conversationId: retryConversationId } = event.detail;
+
+            if (retryConversationId !== currentConversationId) {
+                console.log('Stream interruption retry for different conversation, ignoring');
+                return;
+            }
+
+            console.log('Auto-retrying after stream interruption for conversation:', retryConversationId);
+
+            // Strip the sentinel partial-content message so it doesn't pollute
+            // the context sent to the model on retry.
+            setConversations(prev => prev.map(conv => {
+                if (conv.id !== retryConversationId) return conv;
+                const msgs = [...conv.messages];
+                for (let i = msgs.length - 1; i >= 0; i--) {
+                    if (msgs[i].role === 'assistant' &&
+                        typeof msgs[i].content === 'string' &&
+                        msgs[i].content.includes('stream-interruption-sentinel')) {
+                        msgs.splice(i, 1);
+                        break;
+                    }
+                }
+                return { ...conv, messages: msgs, _version: Date.now() };
+            }));
+
+            try {
+                const lastHumanMessage = currentMessages
+                    .filter(msg => msg.role === 'human' && !msg.muted)
+                    .pop();
+
+                if (!lastHumanMessage) {
+                    console.error('No human message found to auto-retry stream interruption');
+                    return;
+                }
+
+                const messagesToSend = currentMessages
+                    .filter(msg => !msg.muted && !(msg.role === 'assistant' && typeof msg.content === 'string' && msg.content.includes('stream-interruption-sentinel')));
+
+                addStreamingConversation(retryConversationId);
+
+                await send({
+                    messages: messagesToSend,
+                    question: lastHumanMessage.content,
+                    isStreamingToCurrentConversation: true,
+                    includeReasoning: true,
+                });
+            } catch (error) {
+                console.error('Auto-retry after stream interruption failed:', error);
+            }
+        };
+
+        window.addEventListener('retryStreamInterruption', handleRetryStreamInterruption as EventListener);
+
         return () => {
             document.removeEventListener('preservedContent', handlePreservedContent as EventListener);
             window.removeEventListener('retryAuthError', handleRetryAuthError as EventListener);
             window.removeEventListener('retryContextError', handleRetryContextError as EventListener);
+            window.removeEventListener('retryStreamInterruption', handleRetryStreamInterruption as EventListener);
         };
     }, [
         currentConversationId,

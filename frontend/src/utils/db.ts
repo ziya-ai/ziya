@@ -921,7 +921,7 @@ class ConversationDB implements DB {
         };
 
         if (navigator.locks) {
-            return navigator.locks.request('ziya-db-read', () => readFn());
+            return navigator.locks.request('ziya-db-read', { mode: 'shared' }, () => readFn());
         }
         return readFn();
     }
@@ -1033,7 +1033,7 @@ class ConversationDB implements DB {
         }
 
         if (navigator.locks) {
-            return navigator.locks.request('ziya-db-read', async _lock => {
+            return navigator.locks.request('ziya-db-read', { mode: 'shared' }, async _lock => {
                 return this._getConversationsWithLock();
             });
         }
@@ -1179,7 +1179,7 @@ class ConversationDB implements DB {
                 });
             };
             if (navigator.locks) {
-                await navigator.locks.request('ziya-db-read', () => refreshFn());
+                await navigator.locks.request('ziya-db-read', { mode: 'shared' }, () => refreshFn());
             } else {
                 await refreshFn();
             }
@@ -1224,7 +1224,7 @@ class ConversationDB implements DB {
         };
 
         const shells = navigator.locks
-            ? await navigator.locks.request('ziya-db-read', () => readFn())
+            ? await navigator.locks.request('ziya-db-read', { mode: 'shared' }, () => readFn())
             : await readFn();
         this.shellCache = new Map(shells.map(s => [s.id, s]));
         this.shellCacheTs = Date.now();
@@ -1274,7 +1274,7 @@ class ConversationDB implements DB {
 
     async exportConversations(): Promise<string> {
         if (navigator.locks) {
-            return navigator.locks.request('ziya-db-read', async _lock => {
+            return navigator.locks.request('ziya-db-read', { mode: 'shared' }, async _lock => {
                 return this._exportConversations();
             });
         }
