@@ -65,6 +65,8 @@ All Ziya configuration environment variables use the `ZIYA_` prefix. This docume
 | `ZIYA_MAX_TOOLS_PER_ROUND` | int | `5` | — | Maximum tool calls the model may make in a single round |
 | `ZIYA_SECURE_MCP` | bool | `false` | — | Enforce strict MCP result signing and verification |
 | `ZIYA_MAX_TOOL_ITERATIONS` | int | `200` | — | Maximum agentic loop iterations per streaming response |
+| `ZIYA_MAX_TOOLS_PER_TURN` | int | `1000` | — | Per-turn circuit breaker: max tool invocations within one streaming response before further calls are refused. Resets each turn, so long conversations are never locked out. `0` disables (ASR F-010) |
+| `ZIYA_MCP_ENV_PASSTHROUGH` | str | — | — | Comma-separated allowlist of extra parent env vars to forward to MCP server subprocesses. By default credential-bearing vars (AWS_*/MIDWAY_*/TOKEN/SECRET/…) are stripped before launch (ASR F-003) |
 
 ## Features
 
@@ -103,6 +105,8 @@ All Ziya configuration environment variables use the `ZIYA_` prefix. This docume
 | `ZIYA_DISABLE_AUDIT_LOG` | bool | `false` | Disable the MCP tool audit log |
 | `ZIYA_ALLOW_ALL_ENDPOINTS` | bool | `false` | Bypass enterprise endpoint restrictions (dev/testing only) |
 | `ZIYA_RETENTION_OVERRIDE_DAYS` | number | — | Minimum retention in days — raises any plugin-enforced TTL that is shorter than this value (e.g. `30` to guarantee 30-day retention). Set to `0` or unset to disable. Fractional values like `0.5` (12 hours) are supported. |
+| `ZIYA_CSP_MODE` | str | `relaxed` | Content-Security-Policy strictness. `relaxed` allows `unsafe-inline`/`unsafe-eval` + the jsdelivr origin so Mermaid/Vega CDN diagrams render; `strict` drops `unsafe-eval` and pins jsdelivr to specific script paths (Vega expression-eval diagrams will not render). (ASR F-005) |
+| `ZIYA_CHROMIUM_NO_SANDBOX` | bool | `false` | Launch the headless diagram-rendering Chromium with `--no-sandbox`. Off by default — the sandbox is the primary defense against renderer exploits on attacker-influenced SVG/HTML. Enable only where the sandbox cannot run (e.g. root in a container). (ASR F-027) |
 
 ## Logging / Debug
 

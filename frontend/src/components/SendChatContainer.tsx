@@ -683,7 +683,10 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     setIsSendingFeedback(true);
 
     try {
-      // Add feedback message to conversation
+      // Build the feedback placeholder, but do NOT insert it until we know
+      // the WebSocket is actually ready to deliver it. Inserting it before
+      // the readiness check strands a `_feedbackStatus: 'pending'` human
+      // message in the transcript forever when delivery never happens.
       const feedbackMessage: Message = {
         role: 'human',
         content: feedbackText,
@@ -691,12 +694,11 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
         _isFeedback: true,
         _feedbackStatus: 'pending'
       };
-      addMessageToConversation(feedbackMessage, currentConversationId);
-
-      setFeedbackStatus('pending');
       // Use the global WebSocket if available
       const feedbackWebSocket = (window as any).feedbackWebSocket;
       if (feedbackWebSocket && (window as any).feedbackWebSocketReady) {
+        addMessageToConversation(feedbackMessage, currentConversationId);
+        setFeedbackStatus('pending');
         const toolId = currentToolId || 'streaming_tool';
         feedbackWebSocket.sendFeedback(toolId, feedbackText);
         console.log('🔄 FEEDBACK:', feedbackText);
@@ -717,7 +719,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       } else {
         console.error('🔄 FEEDBACK: WebSocket not ready');
         message.warning({
-          content: 'Feedback system unavailable - tools will continue without feedback',
+          content: 'Feedback system unavailable — tools will continue without feedback. Your text is preserved in the input box; resend when a response is active.',
           duration: 3,
           key: 'feedback-unavailable'
         });

@@ -8,6 +8,7 @@ import { RedoOutlined, SoundOutlined, MutedOutlined, PictureOutlined, CodeOutlin
 
 import { DocumentChip, ImageChip } from './FileChip';
 import ModelChangeNotification from './ModelChangeNotification';
+import LineageBar from './LineageBar';
 import { useSetQuestion } from '../context/QuestionContext';
 import { useFolderContext } from '../context/FolderContext';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
@@ -632,6 +633,32 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
         // Snapshot the current set for next render
         previousStreamingStateRef.current = new Set(streamingConversations);
 
+        // Resolve any feedback placeholders left in 'pending' for conversations
+        // that just finished streaming. The normal clear path is the
+        // 'feedbackDelivered' SSE event, but if a stream ends WITHOUT ever
+        // delivering the feedback, the placeholder would otherwise stay
+        // 'pending' forever. We do NOT delete it (that would lose the user's
+        // text since it was never injected into the model stream); instead we
+        // strip the feedback flags so it becomes a normal human message.
+        const finishedIds = [...previousSet].filter(id => !streamingConversations.has(id));
+        if (finishedIds.length > 0) {
+            convListRef.current?.setConversations((prev: any[]) =>
+                prev.map(conv => {
+                    if (!finishedIds.includes(conv.id)) return conv;
+                    let changed = false;
+                    const messages = conv.messages.map((msg: any) => {
+                        if (msg._isFeedback && msg._feedbackStatus === 'pending') {
+                            changed = true;
+                            const { _isFeedback, _feedbackStatus, ...rest } = msg;
+                            return rest;
+                        }
+                        return msg;
+                    });
+                    return changed ? { ...conv, messages } : conv;
+                })
+            );
+        }
+
         if (wasCurrentStreaming && !isCurrentlyStreaming) {
             console.log('✅ Current conversation finished streaming');
             // Scroll behavior handled by scrollToBottom in ChatContext
@@ -698,6 +725,12 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                 className="conversation-messages-container"
                 ref={messagesContainerRef}
             >
+                {/* Branch lineage bar — renders only on branched conversations */}
+                <LineageBar
+                    conversationId={currentConversationId}
+                    conversations={conversations}
+                    onNavigate={(id) => activeChat.loadConversation(id)}
+                />
                 {/* Raw mode indicator banner */}
                 {isRawMode && (
                     <div className="raw-mode-banner">

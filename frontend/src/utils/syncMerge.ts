@@ -22,6 +22,8 @@ export interface ServerChatSummary {
     isGlobal?: boolean;
     lastActiveAt?: number;
     messageCount?: number;
+    openBeadCount?: number;
+    openWorkItemCount?: number;
     _version?: number;
 }
 
@@ -38,6 +40,8 @@ export interface LocalShell {
     lastActiveAt?: number;
     _isShell?: boolean;
     _fullMessageCount?: number;
+    openBeadCount?: number;
+    openWorkItemCount?: number;
     _version?: number;
 }
 
@@ -191,6 +195,8 @@ export function mergeServerChat(
                     lastAccessedAt: full.lastAccessedAt || full.lastActiveAt,
                     isActive: full.isActive !== false,
                     _version: full._version || ctx.now,
+                    openBeadCount: sc.openBeadCount ?? 0,
+                    openWorkItemCount: sc.openWorkItemCount ?? 0,
                 },
             };
         }
@@ -214,6 +220,8 @@ export function mergeServerChat(
                     isActive: true,
                     isGlobal: sc.isGlobal ?? false,
                     _version: serverVersion,
+                    openBeadCount: sc.openBeadCount ?? 0,
+                    openWorkItemCount: sc.openWorkItemCount ?? 0,
                 },
             };
         }
@@ -253,6 +261,8 @@ export function mergeServerChat(
                     lastAccessedAt: merged.lastAccessedAt || merged.lastActiveAt,
                     isActive: merged.isActive !== false,
                     _version: merged._version || ctx.now,
+                    openBeadCount: sc.openBeadCount ?? 0,
+                    openWorkItemCount: sc.openWorkItemCount ?? 0,
                 },
             };
         }
@@ -275,9 +285,67 @@ export function mergeServerChat(
                 isGlobal: sc.isGlobal ?? local.isGlobal,
                 _version: serverVersion,
                 _isShell: local._isShell,
+                openBeadCount: sc.openBeadCount ?? local.openBeadCount ?? 0,
+                openWorkItemCount: sc.openWorkItemCount ?? local.openWorkItemCount ?? 0,
+            },
+        };
+    }
+
+    // Versions tie or local is newer → local wins for CONTENT.  But the
+    // open-work counts are server-derived signals recomputed fresh in the
+    // summary path (from _beads / the fallback store) and are NOT versioned:
+    // parking a bead writes the fallback store without bumping the chat
+    // record's _version, so serverVersion never exceeds localVersion and the
+    // version-newer branch above never fires.  Without this overlay the
+    // correct count is discarded on every cycle and the sidebar indicator
+    // never appears.  Overlay the counts onto the otherwise-untouched local
+    // record when they diverge; otherwise keep-local to avoid per-cycle
+    // state churn (once corrected, the counts match and this is a no-op).
+    const scBead = sc.openBeadCount ?? 0;
+    const scWork = sc.openWorkItemCount ?? 0;
+    if (scBead !== (local.openBeadCount ?? 0) || scWork !== (local.openWorkItemCount ?? 0)) {
+        return {
+            action: 'set',
+            record: {
+                ...local,
+                openBeadCount: scBead,
+                openWorkItemCount: scWork,
             },
         };
     }
 
     return { action: 'keep-local' };
+}
+
+// ---------------------------------------------------------------------------
+// Reference-reuse predicate for the post-merge React-state commit.
+// ---------------------------------------------------------------------------
+
+/**
+ * Decide whether the previous React-state object for a conversation can be
+ * reused (reference-preserved) instead of adopting the freshly merged record.
+ *
+ * This is a render-perf optimization: reusing the prev reference when nothing
+ * user-visible changed prevents a re-render cascade through the sidebar's
+ * memoized tree.  But it must compare EVERY field the sidebar renders —
+ * including the open-work counts, which are server-derived signals that change
+ * WITHOUT a _version bump (parking a bead writes the fallback bead store, not
+ * the chat record, so _version is unchanged).  A version-gated comparison
+ * therefore can't see a count change; omitting the explicit count check here
+ * reused the stale prev object and the corrected count from the merge was
+ * silently discarded — the sidebar bead/work indicator never updated.
+ *
+ * Returns true when `existing` is safe to reuse (no observable change).
+ */
+export function canReusePrevConversation(mc: any, existing: any): boolean {
+    return Boolean(existing)
+        && (mc._version || 0) <= (existing._version || 0)
+        && (mc.messages?.length || 0) <= (existing.messages?.length || 0)
+        && mc.title === existing.title
+        && mc.folderId === existing.folderId
+        && mc.isGlobal === existing.isGlobal
+        && mc.delegateMeta?.status === existing.delegateMeta?.status
+        && mc.hasUnreadResponse === existing.hasUnreadResponse
+        && (mc.openBeadCount || 0) === (existing.openBeadCount || 0)
+        && (mc.openWorkItemCount || 0) === (existing.openWorkItemCount || 0);
 }

@@ -40,6 +40,20 @@ class Bead(BaseModel):
         None,
         description="Brief note of what was being discussed when this was parked",
     )
+    # ── Branch lineage (bead-branching, see design/bead-branching.md) ──
+    # Set only on beads inherited into a fork via inherit_beads_for_seam;
+    # None on natively-created beads.  Together they form the per-bead
+    # backlink to the thread this bead was forked from — the scoping
+    # reference that makes cross-conversation completion-propagation
+    # possible (that behavior is deferred; this is the data prerequisite).
+    origin_conversation_id: Optional[str] = Field(
+        None,
+        description="Conversation this bead was forked from (None if native)",
+    )
+    origin_bead_id: Optional[str] = Field(
+        None,
+        description="Bead id in the origin conversation this descends from",
+    )
 
 
 class BeadTree(BaseModel):

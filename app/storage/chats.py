@@ -10,6 +10,8 @@ from app.utils.logging_utils import logger
 
 from .base import BaseStorage
 from ..models.chat import Chat, ChatCreate, ChatUpdate, ChatSummary, Message
+from .beads import count_open_beads_for_conversation
+from ..models.work_item import count_open_work_items
 
 # Per-file mtime cache for ChatStorage.list_summaries().
 # Keyed by absolute path string; value is
@@ -224,6 +226,8 @@ class ChatStorage(BaseStorage[Chat]):
             messages = data.get('messages') or []
             version = data.get('_version') or data.get('lastActiveAt')
             delegate_meta = data.get('delegateMeta')
+            open_beads = count_open_beads_for_conversation(data, data.get('id'))
+            open_work_items = count_open_work_items(data.get('_work_items'))
             summary = ChatSummary(
                 id=data['id'],
                 title=data.get('title') or '',
@@ -235,6 +239,8 @@ class ChatStorage(BaseStorage[Chat]):
                 createdAt=data.get('createdAt') or 0,
                 lastActiveAt=data.get('lastActiveAt') or 0,
                 delegateMeta=delegate_meta,
+                openBeadCount=open_beads,
+                openWorkItemCount=open_work_items,
                 **({'_version': version} if version else {})
             )
             _summary_cache[path_str] = (st.st_mtime, st.st_size, summary, chat_group_id)
