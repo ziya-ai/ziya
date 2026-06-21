@@ -94,6 +94,28 @@ def build_mcp_subprocess_env(
     return filtered
 
 
+def _resolve_relative_script(script: str, trusted_roots: List[str]) -> Optional[str]:
+    """Resolve a relative ``.py`` MCP server script against trusted roots only.
+
+    MCP server scripts must NEVER be resolved against the current working
+    directory or the user's workspace: a malicious repo could drop a file
+    matching a configured server-script name and have it auto-executed when
+    Ziya starts in that directory (ASR F-024). Only known package /
+    installation roots are searched.
+
+    Returns the first existing match, or None when the script is absent from
+    every trusted root. The caller MUST NOT fall back to cwd/workspace on a
+    None result — leaving the bare relative name makes the subprocess launch
+    fail cleanly instead of executing attacker-controlled code.
+    """
+    for root in trusted_roots:
+        if not root:
+            continue
+        candidate = os.path.join(root, script)
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
 @dataclass
 class MCPResource:
     """Represents an MCP resource."""
@@ -274,10 +296,12 @@ class MCPClient:
             app_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             project_root = os.path.dirname(app_dir)
             
-            # For built-in servers, check multiple possible locations for script resolution
+            # For built-in servers, check known package/installation locations
+            # for script resolution. SECURITY (F-024): os.getcwd() and the
+            # user's workspace are deliberately excluded — a malicious repo
+            # must not be able to supply an MCP server script by filename.
             possible_roots = [
-                project_root,  # Development mode
-                os.getcwd(),   # Current working directory
+                project_root,  # Development mode (package project root)
                 os.path.dirname(os.path.dirname(app_dir)),  # Installed package mode
                 os.path.dirname(app_dir)  # Package root (where mcp_servers would be alongside app/)
             ]
@@ -288,23 +312,22 @@ class MCPClient:
 
             for part in command:
                 if part.endswith('.py') and not os.path.isabs(part):
-                    # This part is a relative Python script, try to find it
-                    current_part_resolved_path = part # Default if not found in special locations
-                    found_this_part_in_roots = False
-                    # Try to find the script in possible locations
-                    for root in possible_roots:
-                        potential_path = os.path.join(root, part)
-                        if os.path.exists(potential_path):
-                            current_part_resolved_path = potential_path
-                            found_this_part_in_roots = True
-                            logger.debug(f"Found MCP server script '{part}' at: {current_part_resolved_path}")
-                            break # Found the script for this part
-                    
-                    if not found_this_part_in_roots:
-                        # If not found in special locations, construct path relative to current `working_dir`
-                        current_part_resolved_path = os.path.join(working_dir, part)
-                        logger.warning(f"MCP server script '{part}' not found in special roots, using path relative to current CWD ({working_dir}): {current_part_resolved_path}")
-                    resolved_command.append(current_part_resolved_path)
+                    # Relative .py script — resolve against trusted roots ONLY.
+                    resolved = _resolve_relative_script(part, possible_roots)
+                    if resolved is not None:
+                        logger.debug(f"Found MCP server script '{part}' at: {resolved}")
+                        resolved_command.append(resolved)
+                    else:
+                        # SECURITY (F-024): do NOT fall back to cwd/workspace.
+                        # Leave the bare name so the launch fails cleanly rather
+                        # than executing an attacker-controlled file from the repo.
+                        logger.error(
+                            f"MCP server script '{part}' not found in any trusted "
+                            f"root {possible_roots}; refusing to resolve it against "
+                            f"the workspace/cwd. Use an absolute path in the server "
+                            f"config."
+                        )
+                        resolved_command.append(part)
                 else:
                     # This part is not a relative Python script (e.g., "node", "python", or an absolute path)
                     resolved_command.append(part)
