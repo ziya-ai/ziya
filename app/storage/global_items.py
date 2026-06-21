@@ -16,6 +16,8 @@ from typing import List
 from app.utils.logging_utils import logger
 from ..models.chat import Chat, ChatSummary
 from ..models.group import ChatGroup
+from .beads import count_open_beads_for_conversation
+from ..models.work_item import count_open_work_items
 
 # Per-file mtime cache for collect_global_chat_summaries().
 # Keyed by absolute path string; value is (st_mtime, st_size, ChatSummary|None).
@@ -321,6 +323,8 @@ def collect_global_chat_summaries(
 
                 messages = data.get("messages") or []
                 version = data.get("_version") or data.get("lastActiveAt")
+                open_beads = count_open_beads_for_conversation(data, data.get("id"))
+                open_work_items = count_open_work_items(data.get("_work_items"))
                 summary = ChatSummary(
                     id=data["id"],
                     title=data.get("title") or "",
@@ -332,7 +336,19 @@ def collect_global_chat_summaries(
                     createdAt=data.get("createdAt") or 0,
                     lastActiveAt=data.get("lastActiveAt") or 0,
                     delegateMeta=data.get("delegateMeta"),
+                    openBeadCount=open_beads,
+                    openWorkItemCount=open_work_items,
                     **({"_version": version} if version else {}),
+                    # Stamp the TRUE owner projectId so the client never
+                    # re-homes a global chat under the viewing project. An
+                    # owner-less global summary is stamped with the current
+                    # project by syncMerge, then the dual-write persists a
+                    # SHADOW copy into the current project's dir, which then
+                    # shadows the real owner copy in list_chats — the substrate
+                    # that let an ASR-folder chat be demoted to root/private.
+                    # Prefer the on-disk projectId; fall back to the owning
+                    # project directory name (always correct in this scan).
+                    **({"projectId": data.get("projectId") or project_dir.name}),
                     **({"isGlobal": True}),
                 )
                 _summary_cache[path_str] = (st.st_mtime, st.st_size, own_g, grp_id, summary)

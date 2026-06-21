@@ -25,6 +25,9 @@ export interface ServerChat {
   hasUnreadResponse?: boolean;
   displayMode?: string;
   lastAccessedAt?: number | null;
+  // Derived open-work counts from the server summary path (always present, 0+).
+  openBeadCount?: number;
+  openWorkItemCount?: number;
   [key: string]: any;  // Extra fields preserved by server
 }
 

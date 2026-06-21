@@ -9,6 +9,7 @@
 import {
     shouldFetchFull,
     mergeServerChat,
+    canReusePrevConversation,
     ServerChatSummary,
     LocalShell,
     MergeDecisionCtx,
@@ -333,5 +334,194 @@ describe('mergeServerChat — local copy exists', () => {
             mergeCtx()
         );
         expect(d.action).toBe('keep-local');
+    });
+});
+
+// ── Open-work counts carried through every set branch ──────────────
+// The sidebar's bead / work-item indicators read openBeadCount /
+// openWorkItemCount off the merged record.  These are SUMMARY-only
+// synthetic fields: a full-fetched Chat (getChat) does NOT carry them, so
+// every `set` branch must source them from `sc` (the summary), never rely
+// on the `...full` spread.  Branch 4 (summary-overlay) was the gap found
+// in review — it spread `...local` and dropped the counts; a bead write
+// bumps _version onto exactly that branch, so a stale count would show.
+describe('mergeServerChat — open-work count propagation', () => {
+    it('branch 1 (server-only + full): counts come from summary, not full', () => {
+        // full has NO openBeadCount (Chat model lacks it); sc carries it.
+        const full = { id: 'conv-1', messages: [{}, {}], _version: NOW };
+        const d = mergeServerChat(
+            sc({ openBeadCount: 3, openWorkItemCount: 0 }),
+            undefined,
+            full,
+            mergeCtx()
+        );
+        expect(d.action).toBe('set');
+        expect((d as any).record.openBeadCount).toBe(3);
+        expect((d as any).record.openWorkItemCount).toBe(0);
+    });
+
+    it('branch 2 (server-only shell, no full): counts come from summary', () => {
+        const d = mergeServerChat(
+            sc({ title: 'Real chat', messageCount: 5, openBeadCount: 2, openWorkItemCount: 1 }),
+            undefined,
+            undefined,
+            mergeCtx()
+        );
+        expect(d.action).toBe('set');
+        expect((d as any).record._isShell).toBe(true);
+        expect((d as any).record.openBeadCount).toBe(2);
+        expect((d as any).record.openWorkItemCount).toBe(1);
+    });
+
+    it('branch 3 (server-newer + full): counts come from summary', () => {
+        const full = { id: 'conv-1', messages: [{}, {}, {}, {}, {}], _version: NOW };
+        const d = mergeServerChat(
+            sc({ _version: NOW, openBeadCount: 4 }),
+            local({ _version: NOW - 30_000 }),
+            full,
+            mergeCtx()
+        );
+        expect(d.action).toBe('set');
+        expect((d as any).record.openBeadCount).toBe(4);
+    });
+
+    it('branch 4 (summary-overlay, server-newer no full): counts overlaid from summary', () => {
+        // THE GAP: a bead write bumps server _version with no full fetch.
+        // The overlay spreads ...local; the count must still update from sc.
+        const d = mergeServerChat(
+            sc({ _version: NOW, openBeadCount: 5 }),
+            local({ _version: NOW - 30_000, _isShell: true, messages: [], openBeadCount: 1 }),
+            undefined,
+            mergeCtx()
+        );
+        expect(d.action).toBe('set');
+        expect((d as any).record.openBeadCount).toBe(5);   // updated, not stale 1
+    });
+
+    it('branch 4 falls back to local count when summary omits it', () => {
+        // Defensive: an older server without the field shouldn't zero a
+        // count local already knows.
+        const d = mergeServerChat(
+            sc({ _version: NOW, openBeadCount: undefined }),
+            local({ _version: NOW - 30_000, _isShell: true, messages: [], openBeadCount: 2 }),
+            undefined,
+            mergeCtx()
+        );
+        expect(d.action).toBe('set');
+        expect((d as any).record.openBeadCount).toBe(2);   // preserved
+    });
+
+    it('counts default to 0 when neither summary nor local provide them', () => {
+        const d = mergeServerChat(
+            sc({ messageCount: 5, openBeadCount: undefined, openWorkItemCount: undefined }),
+            undefined,
+            undefined,
+            mergeCtx()
+        );
+        expect((d as any).record.openBeadCount).toBe(0);
+        expect((d as any).record.openWorkItemCount).toBe(0);
+    });
+
+    // ── keep-local count overlay (THE blocker: unversioned counts) ──────
+    // Parking a bead writes the fallback store WITHOUT bumping the chat
+    // record's _version, so serverVersion never exceeds localVersion and the
+    // version-newer branches never fire — the merge falls to keep-local.
+    // The counts are server-derived and unversioned, so they must be
+    // overlaid even when local wins on content, or the indicator never shows.
+    it('keep-local overlays a diverged server bead count (version tie)', () => {
+        const d = mergeServerChat(
+            sc({ _version: NOW - 30_000, openBeadCount: 2 }),
+            local({ _version: NOW - 30_000, openBeadCount: 0 }),  // tie → keep-local path
+            undefined,
+            mergeCtx()
+        );
+        expect(d.action).toBe('set');
+        expect((d as any).record.openBeadCount).toBe(2);   // overlaid, not discarded
+    });
+
+    it('keep-local overlays when local _version is NEWER (bead unversioned)', () => {
+        const d = mergeServerChat(
+            sc({ _version: NOW - 60_000, openBeadCount: 3, openWorkItemCount: 0 }),
+            local({ _version: NOW, openBeadCount: 0 }),  // local newer → keep-local path
+            undefined,
+            mergeCtx()
+        );
+        expect(d.action).toBe('set');
+        expect((d as any).record.openBeadCount).toBe(3);
+    });
+
+    it('keep-local preserves local content fields when overlaying counts', () => {
+        const localRec = local({
+            _version: NOW, title: 'Local Title', _isShell: true,
+            messages: [], openBeadCount: 0,
+        });
+        const d = mergeServerChat(
+            sc({ _version: NOW - 30_000, title: 'Stale Server', openBeadCount: 2 }),
+            localRec,
+            undefined,
+            mergeCtx()
+        );
+        expect(d.action).toBe('set');
+        // Content stays local (local won); only the count changed.
+        expect((d as any).record.title).toBe('Local Title');
+        expect((d as any).record._isShell).toBe(true);
+        expect((d as any).record.openBeadCount).toBe(2);
+    });
+
+    it('keep-local stays keep-local when counts already agree (no churn)', () => {
+        const d = mergeServerChat(
+            sc({ _version: NOW - 30_000, openBeadCount: 2, openWorkItemCount: 0 }),
+            local({ _version: NOW - 30_000, openBeadCount: 2, openWorkItemCount: 0 }),
+            undefined,
+            mergeCtx()
+        );
+        expect(d.action).toBe('keep-local');
+    });
+});
+
+describe('canReusePrevConversation — post-merge reference reuse', () => {
+    // The final-mile bug: mergeServerChat produced the correct openBeadCount,
+    // but ChatContext's reference-preservation step reused the stale prev
+    // object because its equality check omitted the count fields.  A count
+    // changes WITHOUT a _version bump (parking a bead writes the fallback
+    // store, not the chat record), so a version-gated comparison can't see it.
+    const base = () => ({
+        id: 'conv-1', _version: 100, messages: [{}, {}], title: 'T',
+        folderId: null, isGlobal: false, delegateMeta: null,
+        hasUnreadResponse: false, openBeadCount: 0, openWorkItemCount: 0,
+    });
+
+    it('reuses prev when nothing observable changed', () => {
+        expect(canReusePrevConversation(base(), base())).toBe(true);
+    });
+
+    it('does NOT reuse when openBeadCount diverges (the headline bug)', () => {
+        const existing = base();                       // count 0 in state
+        const mc = { ...base(), openBeadCount: 2 };     // merge produced 2
+        expect(canReusePrevConversation(mc, existing)).toBe(false);
+    });
+
+    it('does NOT reuse when openWorkItemCount diverges', () => {
+        const existing = base();
+        const mc = { ...base(), openWorkItemCount: 1 };
+        expect(canReusePrevConversation(mc, existing)).toBe(false);
+    });
+
+    it('treats missing count fields as 0 (no spurious re-render)', () => {
+        const existing = base();
+        const mc = base();
+        delete (mc as any).openBeadCount;
+        delete (mc as any).openWorkItemCount;
+        expect(canReusePrevConversation(mc, existing)).toBe(true);
+    });
+
+    it('returns false when existing is undefined (new conversation)', () => {
+        expect(canReusePrevConversation(base(), undefined)).toBe(false);
+    });
+
+    it('still respects the pre-existing fields (title change blocks reuse)', () => {
+        const existing = base();
+        const mc = { ...base(), title: 'Renamed' };
+        expect(canReusePrevConversation(mc, existing)).toBe(false);
     });
 });
