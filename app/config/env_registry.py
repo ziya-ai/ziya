@@ -145,6 +145,12 @@ _VARS: List[EnvVar] = [
            "Enforce strict MCP result signing and verification."),
     EnvVar("ZIYA_MAX_TOOL_ITERATIONS", int, 200, EnvCategory.MCP,
            "Maximum agentic loop iterations per streaming response."),
+    EnvVar("ZIYA_MCP_ENV_PASSTHROUGH", str, None, EnvCategory.MCP,
+           "Comma-separated list of additional parent environment variable "
+           "names to forward to MCP server subprocesses. By default "
+           "credential-bearing vars (AWS_*, MIDWAY_*, and any name containing "
+           "TOKEN/SECRET/PASSWORD/CREDENTIAL/ACCESS_KEY/API_KEY) are stripped "
+           "before launching MCP servers, which are treated as untrusted."),
 
     # ── Features ──────────────────────────────────────────────────────────
     EnvVar("ZIYA_ENABLE_AST", bool, False, EnvCategory.FEATURES,
