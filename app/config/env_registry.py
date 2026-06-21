@@ -243,6 +243,12 @@ _VARS: List[EnvVar] = [
     EnvVar("ZIYA_STRICT_ORIGIN", bool, False, EnvCategory.SECURITY,
            "Reject state-changing HTTP requests carrying no Origin/Referer "
            "header (recommended when binding to 0.0.0.0)."),
+    EnvVar("ZIYA_CSP_MODE", str, "relaxed", EnvCategory.SECURITY,
+           "Content-Security-Policy strictness: 'relaxed' (default — allows "
+           "unsafe-inline/unsafe-eval and the jsdelivr origin so Mermaid/Vega "
+           "CDN diagrams render) or 'strict' (drops unsafe-eval and pins "
+           "jsdelivr to specific script paths; Vega expression-eval diagrams "
+           "will not render in this mode)."),
 
     # ── Logging / Debug ───────────────────────────────────────────────────
     EnvVar("ZIYA_LOG_LEVEL", str, "INFO", EnvCategory.LOGGING,
