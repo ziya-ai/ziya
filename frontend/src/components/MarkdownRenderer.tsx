@@ -15,6 +15,7 @@ import {
 } from '@ant-design/icons';
 import { loadPrismLanguage, type PrismStatic } from '../utils/prismLoader';
 import { useTheme } from '../context/ThemeContext';
+import { sanitizeModelHtml, sanitizeMathMl } from '../utils/domSanitize';
 import { detectFileOperationSyntax, renderFileOperationSafely } from '../utils/fileOperationParser';
 import { FileOperationRenderer } from './FileOperationRenderer';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
@@ -881,7 +882,8 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
                                             fontSize: '13px',
                                             lineHeight: '1.4'
                                         }}
-                                        dangerouslySetInnerHTML={{ __html: marked.parse(result.content, { breaks: true, gfm: true }) as string }}
+                                        // ASR F-026: marked v16 has no built-in sanitizer; result.content is tool output.
+                                        dangerouslySetInnerHTML={{ __html: sanitizeModelHtml(marked.parse(result.content, { breaks: true, gfm: true }) as string) }}
                                     />
                                 )}
                             </Panel>
@@ -3133,20 +3135,29 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
         }
     };
 
+    const disabledReason = isProcessing
+        ? 'Currently applying changes\u2026'
+        : (isStreaming && !diffComplete)
+            ? 'Waiting for the diff to finish streaming before it can be applied'
+            : null;
+
     return enabled ? (
         <>
-            <Button
-                onClick={handleApplyClick}
-                disabled={isProcessing || (isStreaming && !diffComplete)}
-                loading={isProcessing}
-                type={isApplied ? "default" : "primary"}
-                style={{ marginLeft: '8px', cursor: isApplied ? 'default' : undefined }}
-                id={`apply-changes-${buttonId}`}
-                icon={isApplied ? undefined : <CheckOutlined />}
-                title={isApplied ? 'Shift+click to re-apply' : 'Apply changes to file'}
-            >
-                {isApplied ? 'Applied ✓' : 'Apply Changes'}
-            </Button>
+            <Tooltip title={disabledReason ?? (isApplied ? 'Shift+click to re-apply' : 'Apply changes to file')}>
+                <span style={disabledReason ? { cursor: 'not-allowed', display: 'inline-block' } : undefined}>
+                    <Button
+                        onClick={handleApplyClick}
+                        disabled={!!disabledReason}
+                        loading={isProcessing}
+                        type={isApplied ? "default" : "primary"}
+                        style={{ marginLeft: '8px', pointerEvents: disabledReason ? 'none' : undefined, cursor: isApplied ? 'default' : undefined }}
+                        id={`apply-changes-${buttonId}`}
+                        icon={isApplied ? undefined : <CheckOutlined />}
+                    >
+                        {isApplied ? 'Applied \u2713' : 'Apply Changes'}
+                    </Button>
+                </span>
+            </Tooltip>
             {isApplied && isReversible && (
                 <Button
                     onClick={handleUndoChanges}
@@ -5086,6 +5097,9 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     // Strip event handlers and javascript: hrefs before any raw HTML render.
                     // The tag-name allowlist below only checks tag names, not attributes,
                     // so <button onclick="alert(1)"> would otherwise pass straight through.
+                    // DOMPurify (sanitizeModelHtml) is the authoritative parser-based
+                    // pass; the regex below is a cheap defense-in-depth pre-strip
+                    // (ASR F-026 — regex alone is bypassable, never the boundary).
                     const sanitizeInlineHtml = (raw: string): string => {
                         let s = raw;
                         s = s.replace(/\s*on\w+\s*=\s*"[^"]*"/gi, '');
@@ -5093,7 +5107,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         s = s.replace(/\s*on\w+\s*=\s*[^\s>]*/gi, '');
                         s = s.replace(/href\s*=\s*"javascript:[^"]*"/gi, 'href="#"');
                         s = s.replace(/href\s*=\s*'javascript:[^']*'/gi, "href='#'");
-                        return s;
+                        return sanitizeModelHtml(s);
                     };
 
                     // Check for angle-bracketed math markers first
@@ -5118,7 +5132,8 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             const mathWithNamespace = htmlContent.includes('xmlns=')
                                 ? htmlContent
                                 : htmlContent.replace('<math', '<math xmlns="http://www.w3.org/1998/Math/MathML"');
-                            return <span key={sk} dangerouslySetInnerHTML={{ __html: mathWithNamespace }} />;
+                            // ASR F-026: model-supplied MathML — sanitize (keeps MathML, strips scripts/handlers).
+                            return <span key={sk} dangerouslySetInnerHTML={{ __html: sanitizeMathMl(mathWithNamespace) }} />;
                         } catch (error) {
                             return <span key={sk}>{htmlContent}</span>;
                         }

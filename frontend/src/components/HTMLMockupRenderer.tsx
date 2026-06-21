@@ -2,13 +2,17 @@ import React, { useState, useEffect, useRef, useId } from 'react';
 import { Button, Tooltip, Modal, message } from 'antd';
 import { EyeOutlined, CodeOutlined, CopyOutlined, ExpandOutlined } from '@ant-design/icons';
 import { useTheme } from '../context/ThemeContext';
+import { sanitizeMockupHtml } from '../utils/domSanitize';
 
 interface HTMLMockupRendererProps {
     html: string;
     isStreaming?: boolean;
 }
 
-// Simple HTML sanitization - removes script tags and dangerous event handlers
+// HTML sanitization for mockups rendered in a sandboxed (allow-scripts,
+// null-origin) iframe. DOMPurify (sanitizeMockupHtml) is the authoritative
+// parser-based pass; the regex below is defense-in-depth on top of the
+// iframe sandbox (ASR F-026 — regex alone is bypassable, never the boundary).
 const sanitizeHTML = (html: string): string => {
     // Remove script tags and their content
     let sanitized = html.replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '');
@@ -26,7 +30,7 @@ const sanitizeHTML = (html: string): string => {
     sanitized = sanitized.replace(/\bconfirm\s*\(/g, 'void(');
     sanitized = sanitized.replace(/\bprompt\s*\(/g, 'void(');
 
-    return sanitized;
+    return sanitizeMockupHtml(sanitized);
 };
 
 export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, isStreaming = false }) => {
