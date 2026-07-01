@@ -1,3 +1,4 @@
+class CLIDiffApplicator:
     
     def process_response(self, response: str) -> bool:
         """

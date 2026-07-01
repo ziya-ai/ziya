@@ -1,0 +1,12 @@
+diff --git a/app/example.py b/app/example.py
+--- a/app/example.py
++++ b/app/example.py
+@@ -5,3 +5,8 @@ class C:
+        """
++        # Reset counters
++        self.applied = 0
++        self.skipped = 0
++        self.failed = 0
++
++        # Extract all diffs
+         return response
