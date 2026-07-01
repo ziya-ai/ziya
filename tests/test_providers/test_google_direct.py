@@ -58,10 +58,14 @@ def _fc_part(name: str, args: Dict[str, Any]) -> MagicMock:
 
 
 def _thought_part(text: str) -> MagicMock:
+    # Gemini represents a reasoning part with a boolean `thought` flag set
+    # True and the reasoning text in `part.text` (NOT in `thought`, which
+    # is the flag). The provider emits ThinkingDelta(content=part.text)
+    # gated on `part.thought` being truthy — see changelog 0.6.4.6.
     p = MagicMock()
-    p.text = None
+    p.text = text
     p.function_call = None
-    p.thought = text
+    p.thought = True
     return p
 
 

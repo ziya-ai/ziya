@@ -158,6 +158,13 @@ class ProviderConfig:
     # Iteration number — providers may use this for cache control strategy
     iteration: int = 0
 
+    # Arbitrary provider-request passthrough (OpenAI-compatible family seam).
+    # Providers that support it merge this into the request via the SDK's
+    # extra_body escape hatch, so vendor-specific request params (e.g.
+    # z.ai/vLLM reasoning fields) flow as DATA without per-vendor provider
+    # code.  Empty by default — no effect unless a caller populates it.
+    extra_body: Dict[str, Any] = field(default_factory=dict)
+
 
 # ---------------------------------------------------------------------------
 # Abstract provider interface

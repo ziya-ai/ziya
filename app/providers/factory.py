@@ -15,6 +15,38 @@ from app.providers.base import LLMProvider
 from app.utils.logging_utils import logger
 
 
+# Single source of truth for which endpoints can be streamed. Every endpoint
+# create_provider() can build belongs here; nothing else should enumerate
+# this set. The web /api/chat handler and any other "can we stream this?"
+# caller MUST consult is_endpoint_supported rather than re-deriving their own
+# predicate list — that duplication is exactly what silently dropped new
+# endpoints (fable5/mythos5 → 200 null pre-0.7.3.0; zai/openrouter → 500).
+_SUPPORTED_ENDPOINTS = frozenset({
+    "bedrock", "anthropic", "openai", "openrouter", "google", "zai",
+})
+
+
+def is_endpoint_supported(
+    endpoint: str,
+    model_config: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Return True if create_provider() can build a streaming provider for
+    this endpoint.
+
+    This is the authoritative routability check. It is intentionally a pure
+    membership test against the same set create_provider dispatches on, so
+    the two cannot drift: adding an endpoint to create_provider without
+    adding it here (or vice-versa) is caught by
+    tests/test_chat_endpoint_routing.py, which asserts the set matches the
+    branches in create_provider.
+
+    model_config is accepted (and currently unused) so a future endpoint
+    whose routability depends on model capabilities — not just the endpoint
+    name — can refine this without changing the call sites.
+    """
+    return endpoint in _SUPPORTED_ENDPOINTS
+
+
 def create_provider(
     endpoint: str,
     model_id: str,
@@ -126,7 +158,19 @@ def create_provider(
             base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
         )
 
+    if endpoint == "zai":
+        # z.ai (Zhipu / GLM) exposes an OpenAI-compatible chat completions API.
+        # Pay-as-you-go keys use api/paas/v4; Coding Plan subscriptions use
+        # api/coding/paas/v4. Default to pay-as-you-go; override via ZAI_BASE_URL.
+        from app.providers.openai_direct import OpenAIDirectProvider
+        return OpenAIDirectProvider(
+            model_id=model_id,
+            model_config=model_config,
+            api_key=api_key or os.getenv("ZAI_API_KEY") or os.getenv("ZHIPUAI_API_KEY"),
+            base_url=os.getenv("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4"),
+        )
+
     raise ValueError(
         f"No LLMProvider registered for endpoint '{endpoint}'. "
-        f"Supported: bedrock, anthropic, openai, openrouter, google"
+        f"Supported: bedrock, anthropic, openai, openrouter, google, zai"
     )
