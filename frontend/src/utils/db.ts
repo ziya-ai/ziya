@@ -17,6 +17,13 @@ declare global {
 const DB_ROOT_NAME = 'ZiyaDB';
 const DB_NAME_KEY = 'ZIYA_DB_NAME';
 const DB_RECOVERY_MAX = 9; // ZiyaDB_r1 … ZiyaDB_r9
+// A genuine cross-tab upgrade barrier (another tab holding an older
+// version open) can no longer be self-inflicted after the probe removal,
+// but it can still happen on a real version bump. Bound the wait so we
+// fall back to server-only mode instead of spinning forever, and key the
+// toast so repeated cycles reuse one notification rather than stacking.
+const IDB_BLOCKED_TOAST_KEY = 'idb-blocked';
+const IDB_BLOCKED_TIMEOUT_MS = 30_000;
 
 /** Return the next promoted database name (ZiyaDB → ZiyaDB_r1 → ZiyaDB_r2 …). */
 function promoteDbName(name: string): string | null {
@@ -188,222 +195,17 @@ class ConversationDB implements DB {
                 this.db = null;
             }
 
-            // First check existing version
-            console.debug('Checking existing database version');
-            const checkRequest = indexedDB.open(currentDbName);
-
+            // Open directly at the target version. The previous code opened an
+            // unversioned "probe" connection to read the stored version, called
+            // close() on it, then opened the versioned connection in the SAME
+            // task. close() is asynchronous — the probe stayed in the open-
+            // connection set — so it blocked its own versioned upgrade, surfacing
+            // as a spurious "blocked by another tab" with no other tab present.
+            // _openDatabase opens once at the target version and folds in every
+            // recovery branch the probe used to feed (downgrade via VersionError,
+            // backing-store corruption, Safari missing-store, zero-store reset).
             return await new Promise<void>((resolve, reject) => {
-                // Without this handler, an UnknownError on the backing store
-                // (e.g. Opera Air with a corrupt IDB file) leaves the Promise
-                // permanently pending, freezing all of initialization.  On
-                // UnknownError we try a promoted database name instead.
-                checkRequest.onerror = () => {
-                    const err = checkRequest.error;
-                    // Promote on any backing-store error except SecurityError.
-                    // SecurityError = IDB intentionally blocked (private mode / file://).
-                    // For all other errors: try one promotion.  If the promoted name
-                    // also fails, the entire IDB engine is broken — give up immediately
-                    // rather than exhausting all 9 slots (each attempt adds ~500ms).
-                    if (err?.name !== 'SecurityError') {
-                        const alreadyPromoted = currentDbName !== DB_ROOT_NAME;
-                        if (alreadyPromoted) {
-                            // Already on a promoted name and it also failed.
-                            // Try deleting the corrupt backing store before giving up —
-                            // a successful delete means we can reopen fresh on the same name.
-                            const nameToDelete = currentDbName;
-                            const delReq = indexedDB.deleteDatabase(nameToDelete);
-                            delReq.onsuccess = () => {
-                                console.warn(`IDB: deleted corrupt "${nameToDelete}", retrying fresh open`);
-                                persistDbName(nameToDelete); // keep using same name
-                                this._initWithLock().then(resolve).catch(reject);
-                            };
-                            delReq.onerror = () => {
-                                // Delete failed — the entire IDB engine is broken at the OS level.
-                                console.error(`IDB engine broken — could not delete "${nameToDelete}" (${err?.name ?? String(err)}). Giving up.`);
-                                this.isUnavailable = true;
-                                reject(err);
-                            };
-                            return;
-                        }
-                        const nextName = promoteDbName(currentDbName);
-                        if (nextName) {
-                            // First attempt: try deleting the corrupt root database before promoting.
-                            const nameToDelete = currentDbName;
-                            const delReq = indexedDB.deleteDatabase(nameToDelete);
-                            delReq.onsuccess = () => {
-                                console.warn(`IDB: deleted corrupt "${nameToDelete}", retrying fresh open`);
-                                currentVersion = 3;
-                                this._initWithLock().then(resolve).catch(reject);
-                            };
-                            delReq.onerror = () => {
-                                // Delete failed — promote to next name instead.
-                                console.warn(`IDB "${nameToDelete}" error (${err?.name ?? String(err)}), delete failed, promoting to "${nextName}"`);
-                                currentDbName = nextName;
-                                currentVersion = 3;
-                                persistDbName(nextName);
-                                this._initWithLock().then(resolve).catch(reject);
-                            };
-                            return;
-                        }
-                        // All recovery slots exhausted — mark permanently unavailable.
-                        console.error('IDB: all recovery slots exhausted, running in server-only mode');
-                        this.isUnavailable = true;
-                    }
-                    reject(err);
-                };
-
-                checkRequest.onsuccess = () => {
-                    const existingVersion = checkRequest.result.version;
-
-                    // Check for Safari migration issue - missing conversations store
-                    const db = checkRequest.result;
-                    const hasFolders = db.objectStoreNames.contains('folders');
-                    const hasConversations = db.objectStoreNames.contains('conversations');
-                    const hasNoStores = db.objectStoreNames.length === 0;
-
-                    // Close the check connection before proceeding
-                    checkRequest.result.close();
-
-                    if (hasFolders && !hasConversations) {
-                        console.warn('Safari migration issue detected: folders store exists but conversations store is missing');
-                        // Auto-trigger emergency recovery
-                        performEmergencyRecovery().then(() => {
-                            console.log('Recovery completed, forcing page reload');
-                            // Force reload to reinitialize everything
-                            setTimeout(() => {
-                                window.location.reload();
-                            }, 100);
-                        }).catch(err => console.error('Auto-recovery failed:', err));
-                        return;
-                    }
-
-                    // Detect corrupted DB with zero object stores — force version bump
-                    if (hasNoStores) {
-                        console.warn('Corrupted database detected: no object stores exist. Forcing version bump to recreate schema.');
-                        currentVersion = existingVersion + 1;
-                    }
-
-                    // Use existing version if it's higher
-                    if (existingVersion > currentVersion) {
-                        currentVersion = existingVersion;
-                    }
-
-                    // Log the version we're using
-                    console.debug('Database version check:', {
-                        existingVersion,
-                        usingVersion: currentVersion
-                    });
-
-                    // Now open with correct version
-                    const dbRequest = indexedDB.open(currentDbName, currentVersion);
-                    let upgradeCompleted = false;
-
-                    dbRequest.onerror = () => {
-                        console.error('Database initialization error:', dbRequest.error);
-                        this.initPromise = null;
-                        reject(dbRequest.error);
-                    };
-
-                    dbRequest.onblocked = () => {
-                        console.warn('Database opening blocked by another tab. Will retry...');
-                        const retryInit = () => {
-                            if (!this.db || !this.db.objectStoreNames.contains(STORE_NAME)) {
-                                this.initPromise = null;
-                                this.initializing = false;
-                                console.warn('Database still blocked, retrying init in 2s...');
-                                setTimeout(() => {
-                                    this._initWithLock().then(resolve).catch(reject);
-                                }, 2000);
-                            }
-                        };
-                        // Give the other tab 5s to complete its upgrade, then retry
-                        setTimeout(retryInit, 5000);
-                    };
-
-                    dbRequest.onsuccess = () => {
-                        this.db = dbRequest.result;
-
-                        this.db.onversionchange = () => {
-                            console.warn('Database version change detected, closing connection to unblock other tabs');
-                            if (this.db) {
-                                this.db.close();
-                                this.db = null;
-                                this.initPromise = null;
-                            }
-                        };
-
-                        this.db.onclose = () => {
-                            console.debug('Database connection closed');
-                            if (this.initializing && !upgradeCompleted && !this.saveInProgress) {
-                                console.warn('Database closed during initialization');
-                                this.initPromise = null;
-                            }
-                            this.db = null;
-                            this.initPromise = null;
-                        };
-
-                        this.initializing = false;
-                        console.debug('Database initialized successfully:', {
-                            name: this.db.name,
-                            version: this.db.version,
-                            stores: Array.from(this.db.objectStoreNames)
-                        });
-
-                        // Retention purge is intentionally NOT run here.
-                        // It called getConversations() (full getAll on every
-                        // record including message bodies) which held the
-                        // ziya-db-read Web Lock and starved the sidebar's
-                        // getConversationShells() call that runs right after
-                        // init resolves.  ChatContext schedules the purge
-                        // after shells are loaded and the UI is interactive.
-                        // Migrate from bulk 'current' key to per-record storage.
-                        // Must complete before callers read/write.
-                        this._migrateBulkToPerRecord().then(() => {
-                            resolve();
-                        }).catch(err => {
-                            console.warn('Migration from bulk storage failed (non-fatal):', err);
-                            resolve(); // Don't block init — old format still works
-                        });
-
-                    };
-
-                    dbRequest.onupgradeneeded = (event: IDBVersionChangeEvent) => {
-                        console.debug('Upgrading database schema from version', event.oldVersion, 'to', event.newVersion);
-                        upgradeCompleted = false;
-                        const db = (event.target as IDBOpenDBRequest).result;
-
-                        // Create stores based on what's missing, not just version
-                        if (!db.objectStoreNames.contains(STORE_NAME)) {
-                            console.debug(`Creating ${STORE_NAME} store`);
-                            db.createObjectStore(STORE_NAME);
-                        }
-
-                        if (!db.objectStoreNames.contains('folders')) {
-                            console.debug('Creating folders store');
-                            db.createObjectStore('folders', { keyPath: 'id' });
-                        }
-
-                        // Create backup store if needed
-                        if (!db.objectStoreNames.contains(BACKUP_STORE_NAME)) {
-                            console.debug(`Creating ${BACKUP_STORE_NAME} store`);
-                            db.createObjectStore(BACKUP_STORE_NAME);
-                        }
-
-                        // Add a transaction complete handler
-                        const transaction = (event.target as IDBOpenDBRequest).transaction;
-                        if (transaction) {
-                            transaction.oncomplete = () => {
-                                console.debug('Database upgrade transaction completed successfully');
-                                upgradeCompleted = true;
-                            }
-                        }
-                    };
-
-                    checkRequest.onerror = () => {
-                        console.error('Version check failed:', checkRequest.error);
-                        reject(checkRequest.error);
-                    };
-                }
+                this._openDatabase(currentVersion, false, resolve, reject);
             });
         } catch (error) {
             this.initPromise = null;
@@ -411,6 +213,223 @@ class ConversationDB implements DB {
             this.initializing = false;
             throw error;
         }
+    }
+
+    /**
+     * Open the IDB connection directly at the requested version and wire up
+     * all success / upgrade / error / blocked handling.
+     *
+     * Option (a) rewrite: there is no separate unversioned "probe" connection.
+     * The previous code opened an unversioned connection to read the version,
+     * called close() on it, then opened the versioned connection in the SAME
+     * task. close() is asynchronous (the connection only leaves the open set
+     * on a later task), so the probe blocked its own upgrade — a spurious
+     * "blocked by another tab" with no other tab present. Opening straight at
+     * the target version removes the self-block; every condition the probe
+     * used to detect is handled here after the open instead.
+     *
+     * @param version    Target version, or null to open unversioned (used for
+     *                   the rare downgrade fallback when the stored DB is newer
+     *                   than this code's target).
+     * @param storeRetry True when this is a forced reopen to recreate missing
+     *                   object stores; prevents an infinite bump/reopen loop.
+     */
+    private _openDatabase(
+        version: number | null,
+        storeRetry: boolean,
+        resolve: () => void,
+        reject: (e: any) => void,
+    ): void {
+        const dbRequest = version === null
+            ? indexedDB.open(currentDbName)
+            : indexedDB.open(currentDbName, version);
+        let upgradeCompleted = false;
+        // Guard against terminal handlers firing twice (e.g. the blocked
+        // timeout rejects, then the other tab closes and onsuccess fires late).
+        let settled = false;
+        let blockedTimer: ReturnType<typeof setTimeout> | null = null;
+
+        dbRequest.onerror = () => {
+            if (settled) return;
+            const err = dbRequest.error;
+            // Downgrade: code targets an older version than the stored DB.
+            // Reopen unversioned to adopt the existing (higher) version rather
+            // than failing with VersionError. Replaces the old probe's
+            // existingVersion-vs-currentVersion comparison.
+            if (err?.name === 'VersionError' && version !== null) {
+                console.warn('IDB: stored version newer than code target, reopening at existing version');
+                settled = true;
+                this._openDatabase(null, false, resolve, reject);
+                return;
+            }
+            // Backing-store corruption recovery (formerly the probe's onerror):
+            // promote to a recovery name or delete the corrupt store. Skip only
+            // SecurityError (IDB intentionally blocked: private mode / file://).
+            if (err?.name !== 'SecurityError') {
+                const alreadyPromoted = currentDbName !== DB_ROOT_NAME;
+                if (alreadyPromoted) {
+                    const nameToDelete = currentDbName;
+                    const delReq = indexedDB.deleteDatabase(nameToDelete);
+                    delReq.onsuccess = () => {
+                        console.warn(`IDB: deleted corrupt "${nameToDelete}", retrying fresh open`);
+                        persistDbName(nameToDelete); // keep using same name
+                        settled = true;
+                        this._initWithLock().then(resolve).catch(reject);
+                    };
+                    delReq.onerror = () => {
+                        console.error(`IDB engine broken — could not delete "${nameToDelete}" (${err?.name ?? String(err)}). Giving up.`);
+                        this.isUnavailable = true;
+                        this.initPromise = null;
+                        settled = true;
+                        reject(err);
+                    };
+                    return;
+                }
+                const nextName = promoteDbName(currentDbName);
+                if (nextName) {
+                    const nameToDelete = currentDbName;
+                    const delReq = indexedDB.deleteDatabase(nameToDelete);
+                    delReq.onsuccess = () => {
+                        console.warn(`IDB: deleted corrupt "${nameToDelete}", retrying fresh open`);
+                        currentVersion = 3;
+                        settled = true;
+                        this._initWithLock().then(resolve).catch(reject);
+                    };
+                    delReq.onerror = () => {
+                        console.warn(`IDB "${nameToDelete}" error (${err?.name ?? String(err)}), delete failed, promoting to "${nextName}"`);
+                        currentDbName = nextName;
+                        currentVersion = 3;
+                        persistDbName(nextName);
+                        settled = true;
+                        this._initWithLock().then(resolve).catch(reject);
+                    };
+                    return;
+                }
+                console.error('IDB: all recovery slots exhausted, running in server-only mode');
+                this.isUnavailable = true;
+            }
+            this.initPromise = null;
+            settled = true;
+            reject(err);
+        };
+
+        dbRequest.onblocked = () => {
+            // With the self-block removed this only fires on a genuine
+            // cross-tab upgrade barrier. The open request stays pending and
+            // fires onsuccess automatically once the other tab closes, so we
+            // just surface a toast and bound the wait.
+            console.warn('IDB open blocked by another tab; waiting for it to close…');
+            message.loading({ content: 'Waiting for another Ziya tab to finish loading…', key: IDB_BLOCKED_TOAST_KEY, duration: 0 });
+            if (blockedTimer) clearTimeout(blockedTimer);
+            blockedTimer = setTimeout(() => {
+                if (settled) return;
+                message.error({ content: 'Another Ziya tab is blocking this one from loading. Close other Ziya tabs and reload this page.', key: IDB_BLOCKED_TOAST_KEY, duration: 0 });
+                this.initPromise = null;
+                this.initializing = false;
+                settled = true;
+                reject(new Error('IDB open blocked by another tab (timeout)'));
+            }, IDB_BLOCKED_TIMEOUT_MS);
+        };
+
+        dbRequest.onupgradeneeded = (event: IDBVersionChangeEvent) => {
+            console.debug('Upgrading database schema from version', event.oldVersion, 'to', event.newVersion);
+            upgradeCompleted = false;
+            const db = (event.target as IDBOpenDBRequest).result;
+            if (!db.objectStoreNames.contains(STORE_NAME)) {
+                console.debug(`Creating ${STORE_NAME} store`);
+                db.createObjectStore(STORE_NAME);
+            }
+            if (!db.objectStoreNames.contains('folders')) {
+                console.debug('Creating folders store');
+                db.createObjectStore('folders', { keyPath: 'id' });
+            }
+            if (!db.objectStoreNames.contains(BACKUP_STORE_NAME)) {
+                console.debug(`Creating ${BACKUP_STORE_NAME} store`);
+                db.createObjectStore(BACKUP_STORE_NAME);
+            }
+            const transaction = (event.target as IDBOpenDBRequest).transaction;
+            if (transaction) {
+                transaction.oncomplete = () => {
+                    console.debug('Database upgrade transaction completed successfully');
+                    upgradeCompleted = true;
+                };
+            }
+        };
+
+        dbRequest.onsuccess = () => {
+            if (blockedTimer) { clearTimeout(blockedTimer); blockedTimer = null; }
+            if (settled) { dbRequest.result.close(); return; }
+            const db = dbRequest.result;
+            message.destroy(IDB_BLOCKED_TOAST_KEY);
+
+            const hasFolders = db.objectStoreNames.contains('folders');
+            const hasConversations = db.objectStoreNames.contains(STORE_NAME);
+
+            // Safari migration issue: folders store exists but conversations
+            // store is missing — emergency recovery + reload.
+            if (hasFolders && !hasConversations) {
+                console.warn('Safari migration issue detected: folders store exists but conversations store is missing');
+                settled = true;
+                db.close();
+                performEmergencyRecovery().then(() => {
+                    console.log('Recovery completed, forcing page reload');
+                    setTimeout(() => window.location.reload(), 100);
+                }).catch(err => console.error('Auto-recovery failed:', err));
+                return;
+            }
+
+            // Missing conversations store (corruption / zero stores) and we
+            // haven't already retried: force a version bump so onupgradeneeded
+            // recreates the schema, then reopen. storeRetry guards the loop.
+            if (!hasConversations && !storeRetry) {
+                const bumped = db.version + 1;
+                console.warn(`Conversations store missing; forcing version bump to ${bumped} to recreate schema.`);
+                settled = true;
+                db.close();
+                currentVersion = bumped;
+                this._openDatabase(bumped, true, resolve, reject);
+                return;
+            }
+
+            this.db = db;
+
+            this.db.onversionchange = () => {
+                console.warn('Database version change detected, closing connection to unblock other tabs');
+                if (this.db) {
+                    this.db.close();
+                    this.db = null;
+                    this.initPromise = null;
+                }
+            };
+
+            this.db.onclose = () => {
+                console.debug('Database connection closed');
+                if (this.initializing && !upgradeCompleted && !this.saveInProgress) {
+                    console.warn('Database closed during initialization');
+                    this.initPromise = null;
+                }
+                this.db = null;
+                this.initPromise = null;
+            };
+
+            this.initializing = false;
+            settled = true;
+            console.debug('Database initialized successfully:', {
+                name: this.db.name,
+                version: this.db.version,
+                stores: Array.from(this.db.objectStoreNames)
+            });
+
+            // Migrate from bulk 'current' key to per-record storage before
+            // callers read/write. Retention purge is deliberately deferred to
+            // ChatContext (after shells load) to avoid starving the sidebar.
+            this._migrateBulkToPerRecord().then(() => {
+                resolve();
+            }).catch(err => {
+                console.warn('Migration from bulk storage failed (non-fatal):', err);
+                resolve();
+            });
+        };
     }
 
     /**

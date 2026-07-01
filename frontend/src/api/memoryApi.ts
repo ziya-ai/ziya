@@ -299,3 +299,76 @@ export function orphanStatus(
     label: `Currently ${count} orphan${count === 1 ? '' : 's'} — auto-organize triggers at ${threshold}.`,
   };
 }
+
+/** Raw embedding-status payload from GET /api/v1/memory/embeddings/status. */
+export interface EmbeddingStatusPayload {
+  enabled?: boolean;
+  provider?: string;
+  total?: number;
+  embedded?: number;
+  missing?: number;
+}
+
+/** Derived embedding-coverage view backing the Health-tab coverage line. */
+export interface EmbeddingCoverage {
+  enabled: boolean;    // embedding provider active (not Noop)
+  degraded: boolean;   // active + some memories lack vectors → cross-linking partial
+  pct: number;         // 0-100, round-half-up; 100 when total is 0 (vacuously complete)
+  total: number;
+  embedded: number;
+  missing: number;
+  label: string;
+}
+
+/**
+ * Derive the embedding-coverage view for the Memory Browser Health tab.
+ *
+ * Embedding-centroid cross-linking can only consider memories that actually
+ * carry vectors, so a partially-backfilled embeddings.npz silently yields
+ * fewer cross-links than expected.  This surfaces that as a degraded state
+ * with a backfill hint.  Pure + exported for unit testing without rendering
+ * MemoryBrowser (and its marked/ESM render chain).
+ *
+ * Cases:
+ *   - null/undefined or enabled:false → disabled (Noop provider); cross-linking
+ *     falls back to shared-tag overlap, never degraded.
+ *   - missing omitted → derived as total - embedded.
+ *   - total === 0 → 100% (vacuously complete), not degraded.
+ *   - pct is round-half-up (Math.round on positives).
+ */
+export function embeddingCoverage(
+  status: EmbeddingStatusPayload | null | undefined,
+): EmbeddingCoverage {
+  // Disabled: no payload at all, or provider explicitly off (Noop).
+  if (!status || status.enabled === false) {
+    return {
+      enabled: false,
+      degraded: false,
+      pct: 0,
+      total: 0,
+      embedded: 0,
+      missing: 0,
+      // Single label satisfies both disabled assertions (/disabled/i and
+      // /shared-tag overlap/i) and states the real fallback behavior.
+      label: 'Embeddings disabled — cross-linking uses shared-tag overlap.',
+    };
+  }
+
+  const total = Math.max(0, status.total || 0);
+  const embedded = Math.max(0, status.embedded || 0);
+  const missing = status.missing != null ? Math.max(0, status.missing) : Math.max(0, total - embedded);
+  const pct = total === 0 ? 100 : Math.round((embedded / total) * 100);
+  const degraded = total > 0 && embedded < total;
+
+  return {
+    enabled: true,
+    degraded,
+    pct,
+    total,
+    embedded,
+    missing,
+    label: degraded
+      ? `Embeddings: partial coverage (${embedded}/${total}, ${pct}%) — Backfill to enable full cross-linking.`
+      : `Embeddings: full coverage (${embedded}/${total}).`,
+  };
+}

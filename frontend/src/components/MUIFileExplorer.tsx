@@ -1306,7 +1306,7 @@ export const MUIFileExplorer = () => {
   if ((isScanning || isInitialLoad) && (!hasLoadedData || !muiTreeData || muiTreeData.length === 0)) {
     const showSlowLoadingTip = scanProgress && scanProgress.elapsed >= 60;
     return (
-      <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 1, minHeight: '200px' }}>
+      <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', p: 1, minHeight: '200px', overflow: 'hidden' }}>
         <Box sx={{
           display: 'flex',
           flexDirection: 'column',
@@ -1338,7 +1338,7 @@ export const MUIFileExplorer = () => {
   // Show error state if scan failed and no cached data
   if (scanError && (!muiTreeData || muiTreeData.length === 0)) {
     return (
-      <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 1, minHeight: '200px' }}>
+      <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', p: 1, minHeight: '200px', overflow: 'hidden' }}>
         <Box sx={{ textAlign: 'center', py: 4 }}>
           <Typography variant="h6" color="error" gutterBottom>
             Failed to load folder structure
@@ -1363,7 +1363,7 @@ export const MUIFileExplorer = () => {
   // Show empty state if no folders loaded and not scanning
   if (!isScanning && !isInitialLoad && hasLoadedData && (!muiTreeData || muiTreeData.length === 0)) {
     return (
-      <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 1, minHeight: '200px' }}>
+      <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', p: 1, minHeight: '200px', overflow: 'hidden' }}>
         <Box sx={{ textAlign: 'center', py: 4 }}>
           <Typography variant="body1" color="text.secondary" gutterBottom>
             No files found
@@ -1386,7 +1386,7 @@ export const MUIFileExplorer = () => {
   }
 
   return (
-    <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', p: 1 }}>
+    <Box sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', p: 1, overflow: 'hidden' }}>
       <Box sx={{ mb: 1, flexShrink: 0 }}>
         <TextField
           fullWidth
@@ -1518,8 +1518,7 @@ export const MUIFileExplorer = () => {
           </Box>
         ) : (
           <Box sx={{
-            height: '100%',
-            overflowY: 'auto',
+            minHeight: 0,
             position: 'relative',
             opacity: (isScanning && muiTreeData && muiTreeData.length > 0) ? 0.7 : 1,
             pointerEvents: (isScanning && muiTreeData && muiTreeData.length > 0) ? 'none' : 'auto',

@@ -544,7 +544,7 @@ function showError(errorDetail: string, conversationId: string, addMessageToConv
         // Check if this is an authentication error that should have a retry button
         const isAuthError = errorType === 'authentication_error' || errorDetail.includes('credential') || errorDetail.includes('mwinit') || errorDetail.includes('AWS credentials');
         // Context-size errors get the same treatment: visible text + retry button, no collapsible.
-        const isContextSizeError = errorType === 'context_size_error' || errorDetail.includes('too large');
+        const isContextSizeError = errorType === 'context_size_error' || errorDetail.includes('too large') || errorDetail.includes('too long') || errorDetail.includes('tokens >') || errorDetail.includes('prompt is too');
 
         // Auth errors get a prominent, immediately-visible banner instead of the
         // generic collapsed <details> block.  Extract an actionable hint from the
@@ -2048,7 +2048,22 @@ export const sendPayload = async (
                         displayHeader = displayHeader
                             .replace(/\n/g, ' ') // Replace newlines with spaces
                             .replace(/\s+/g, ' ') // Collapse multiple spaces
+                            // A backtick in the header lands in the ````tool:…|<header>|syntax
+                            // fence info string, which CommonMark (and our fenceScanner /
+                            // marked.js) reject as an opener — inverting fence state so the
+                            // block never closes and following prose is absorbed into it.
+                            .replace(/`/g, "'")
                             .trim();
+                    }
+
+                    // Non-shell tools reach the same ````tool:…|<header>|syntax fence
+                    // info string, so a backtick in ANY tool's header (e.g. a search
+                    // query) poisons it identically. The shell branch above already
+                    // strips backticks for shell tools — this is idempotent there and
+                    // closes the non-shell result-path gap that branch's
+                    // isShellCommandTool gate left open.
+                    if (displayHeader) {
+                        displayHeader = displayHeader.replace(/`/g, "'");
                     }
 
                     // Prepare content for display
@@ -2363,6 +2378,10 @@ export const sendPayload = async (
                     displayHeader = displayHeader
                         .replace(/\n/g, ' ') // Replace newlines with spaces
                         .replace(/\s+/g, ' ') // Collapse multiple spaces
+                        // Backticks break the ````tool:…|<header>|syntax fence info string
+                        // (CommonMark forbids a backtick in an info string), inverting fence
+                        // state so trailing prose is absorbed into the tool block.
+                        .replace(/`/g, "'")
                         .trim();
 
                     // Store the enhanced header for later matching in tool_display

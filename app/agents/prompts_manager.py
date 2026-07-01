@@ -51,7 +51,7 @@ def get_extended_prompt(model_name: Optional[str] = None,
     
     # Check cache
     if cache_key in _prompt_cache:
-        logger.info(f"Using cached extended prompt for {cache_key}")
+        logger.debug(f"Using cached extended prompt for {cache_key}")
         return _prompt_cache[cache_key]
     
     logger.debug(f"Creating new extended prompt for {cache_key}")

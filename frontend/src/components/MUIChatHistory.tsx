@@ -2604,7 +2604,7 @@ const MUIChatHistory = () => {
     // Structural hash: identity, titles, folder placement, delegate status
     const sh = fnv1a();
     safeFolders.forEach(f => { sh.add(f.id || ''); sh.add(f.name || ''); sh.add(f.parentId || ''); sh.add(f.isGlobal ? 'g' : ''); sh.add(f.taskPlan?.source_conversation_id || ''); });
-    safeConversations.forEach(c => { sh.add(c.id || ''); sh.add(c.title || ''); sh.add(c.folderId || ''); sh.add(c.isActive === false ? '0' : '1'); sh.add(c.isGlobal ? 'g' : ''); sh.add(c.delegateMeta?.status || ''); sh.add(String((c as any).openBeadCount || 0)); sh.add(String((c as any).openWorkItemCount || 0)); });
+    safeConversations.forEach(c => { sh.add(c.id || ''); sh.add(c.title || ''); sh.add(c.folderId || ''); sh.add(c.isActive === false ? '0' : '1'); sh.add(c.isGlobal ? 'g' : ''); sh.add(c.delegateMeta?.status || ''); sh.add(String((c as any).openBeadCount || 0)); sh.add(String((c as any).openWorkItemCount || 0)); sh.add((c as any).branchedFrom || ''); });
     const structuralHash = sh.value();
 
     // Sort hash: activity times and pin state that only affect ordering
@@ -2933,6 +2933,30 @@ const MUIChatHistory = () => {
       };
       removeDupes(rootItems, new Set<string>());
     }
+
+    // Nest branched conversations under the conversation they branched from
+    // (bead-branching Mode 1; design/bead-branching.md).  A branch carries
+    // branchedFrom = parent conversation id.  Render it as a child of the
+    // parent's node — the same inline-children pattern delegate swarm members
+    // use (flattenVisibleNodes renders non-folder children inline, no expand
+    // affordance needed) — rather than as a flat sibling row.  This is the
+    // "as if the conversation itself is a folder" placement: a step lower in
+    // the hierarchy, directly under its origin.  If the parent isn't present
+    // in this view (filtered out / not yet synced), the branch is left at its
+    // computed position so it never disappears entirely.
+    activeConversations.forEach(conv => {
+      const parentId = (conv as any).branchedFrom;
+      if (!parentId) return;
+      const childNode = convNodeMap.get(conv.id);
+      const parentNode = convNodeMap.get(parentId);
+      if (!childNode || !parentNode || childNode === parentNode) return;
+      // Pull the branch out of wherever it currently sits (root or a folder)
+      // and attach it beneath its origin conversation node.
+      if (removeNodeFromTree(rootItems, childNode)) {
+        if (!parentNode.children) parentNode.children = [];
+        parentNode.children.push(childNode);
+      }
+    });
 
     // Build a map of source-conversation → max activity time across all
     // anchored TaskPlan folders.  This lets the parent conversation sort

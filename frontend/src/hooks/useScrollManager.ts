@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { createScrollActivityTracker } from '../utils/scrollActivity';
 
 interface ScrollManagerOptions {
     containerRef: React.RefObject<HTMLElement>;
@@ -112,6 +113,14 @@ export function useScrollManager({
         const container = containerRef.current;
         let lastScrollTop = container.scrollTop;
 
+        // Brighten the scrollbar thumb while the user is actively scrolling.
+        // A class (not :hover) is required because wheel/trackpad scrolling
+        // never places the cursor over the thumb. The tracker reverts the
+        // class ~800ms after scrolling stops. Most useful on very long
+        // conversations where the thumb shrinks toward its min-height floor
+        // and a small grey rectangle is easy to lose against the dark pane.
+        const activityTracker = createScrollActivityTracker(container);
+
         const handleScroll = () => {
             const currentScrollTop = container.scrollTop;
             const isScrollingAway = isTopToBottom 
@@ -121,12 +130,17 @@ export function useScrollManager({
             if (isStreaming && isScrollingAway) {
                 setFollowMode(false);
             }
+
+            activityTracker.notify();
             
             lastScrollTop = currentScrollTop;
         };
 
         container.addEventListener('scroll', handleScroll, { passive: true });
-        return () => container.removeEventListener('scroll', handleScroll);
+        return () => {
+            container.removeEventListener('scroll', handleScroll);
+            activityTracker.dispose();
+        };
     }, [containerRef, isStreaming, isTopToBottom]);
 
     // Auto-scroll when follow mode is active during streaming

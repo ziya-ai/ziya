@@ -154,11 +154,45 @@ div.diff-view.smaller-diff-view.diff-view-split > table.diff-table > tbody > tr 
   --header-height: 60px;
   --input-max-height: 200px;
   --input-expanded-max-height: 50vh;
+
+  /* Task Card theming — light mode (defaults).
+     The Task Card CSS references these via var(--tc-*, <dark-fallback>).
+     Defining them here is what makes light mode actually light: without
+     these definitions the hardcoded dark fallbacks render in both modes. */
+  --tc-card-bg: #ffffff;
+  --tc-card-text: #1f2328;
+  --tc-card-border: #c9d1d9;
+  --tc-card-header-bg: #f0f3f6;
+  --tc-canvas-bg: #eaeef2;
+  --tc-chip-bg: rgba(0, 0, 0, 0.04);
+  --tc-fg: #1f2328;
+  --tc-muted: #57606a;
+  --tc-accent: #0969da;
+  /* Input wells — a field visibly distinct from the card it sits on. */
+  --tc-input-bg: #ffffff;
+  --tc-input-border: #8c959f;
+  --tc-focus-ring: rgba(9, 105, 218, 0.30);
 }
 
 body.dark {
   background-color: #141414;
   color: #ffffff;
+
+  /* Task Card theming — dark mode. Values match the GitHub-dark palette
+     previously encoded as hardcoded fallbacks in the Task Card CSS. */
+  --tc-card-bg: #303a46;
+  --tc-card-text: #f0f3f6;
+  --tc-card-border: #768290;
+  --tc-card-header-bg: #39434f;
+  --tc-canvas-bg: #1c222b;
+  --tc-chip-bg: rgba(255, 255, 255, 0.06);
+  --tc-fg: #e6edf3;
+  --tc-muted: #aeb7c0;
+  --tc-accent: #2f81f7;
+  /* Input wells — deepest layer, sits below the lifted card/canvas. */
+  --tc-input-bg: #0a0e14;
+  --tc-input-border: #6e7681;
+  --tc-focus-ring: rgba(47, 129, 247, 0.35);
 }
 
 /* Auth error banner — dark mode overrides */
@@ -2011,7 +2045,7 @@ body:not(.dark) .token.attr-name {
 .dark ::-webkit-scrollbar,
 .dark .ant-list::-webkit-scrollbar,
 .dark .ant-list-items::-webkit-scrollbar {
-    widtht: 8px;
+    width: 8px;
     background-color: #1f1f1f;
 }
 .dark .diff-container::-webkit-scrollbar-track,
@@ -2029,7 +2063,7 @@ body:not(.dark) .token.attr-name {
 .dark .ant-list-items::-webkit-scrollbar-thumb,
 .dark .ant-list::-webkit-scrollbar-thumb,
 .dark .folder-tree-panel::-webkit-scrollbar-thumb {
-    background-color: #434343;
+    background-color: #6e6e6e;
     border-radius: 4px;
     border: 2px solid #1f1f1f;
     min-height: 40px;
@@ -2040,7 +2074,20 @@ body:not(.dark) .token.attr-name {
 .dark .ant-list-items::-webkit-scrollbar-thumb:hover,
 .dark .ant-list::-webkit-scrollbar-thumb:hover,
 .dark .folder-tree-panel::-webkit-scrollbar-thumb:hover {
-    background-color: #525252;
+    background-color: #8a8a8a;
+}
+
+/* Brighter thumb while actively scrolling (the .scrolling-active class is
+   toggled on .chat-container by useScrollManager, then removed ~800ms after
+   scrolling stops). On long conversations the thumb shrinks toward its
+   min-height: 40px floor; a small grey rectangle is easy to lose, so lift it
+   to near-white during active scroll. WebKit scrollbar pseudo-elements don't
+   animate, so this snaps rather than fades. */
+.dark .chat-container.scrolling-active::-webkit-scrollbar-thumb {
+    background-color: #b0b0b0;
+}
+.dark .chat-container.scrolling-active {
+    scrollbar-color: #b0b0b0 #1f1f1f;  /* Firefox */
 }
 
 /* Firefox scrollbar styles */
@@ -2050,7 +2097,7 @@ body:not(.dark) .token.attr-name {
 .dark .ant-list-items,
 .dark .ant-list,
 .dark .folder-tree-panel {
-    scrollbar-color: #434343 #1f1f1f;
+    scrollbar-color: #6e6e6e #1f1f1f;
     scrollbar-width: thin;
 }
 
@@ -2379,6 +2426,78 @@ body:not(.dark) .token.attr-name {
 @keyframes streaming-gradient {
   0% { background-position: 0% 0%; }
   100% { background-position: 40px 40px; }
+}
+
+/* Throttle retry button styling */
+.throttle-retry-button {
+  transition: all 0.2s ease;
+}
+
+.throttle-retry-button:hover {
+  background-color: #40a9ff !important;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(24, 144, 255, 0.3);
+}
+
+.throttle-retry-button:active {
+  transform: translateY(0);
+}
+
+.dark .throttle-retry-button:hover {
+  background-color: #177ddc !important;
+}
+
+.throttle-retry-button[disabled] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Throttle retry button styling */
+.throttle-retry-button {
+  transition: all 0.2s ease;
+}
+
+.throttle-retry-button:hover {
+  background-color: #40a9ff !important;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(24, 144, 255, 0.3);
+}
+
+.throttle-retry-button:active {
+  transform: translateY(0);
+}
+
+.dark .throttle-retry-button:hover {
+  background-color: #177ddc !important;
+}
+
+.throttle-retry-button[disabled] {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Throttle retry button styling */
+.throttle-retry-button {
+  transition: all 0.2s ease;
+}
+
+.throttle-retry-button:hover {
+  background-color: #40a9ff !important;
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(24, 144, 255, 0.3);
+}
+
+.throttle-retry-button:active {
+  transform: translateY(0);
+}
+
+.dark .throttle-retry-button:hover {
+  background-color: #177ddc !important;
+}
+
+.throttle-retry-button[disabled] {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 /* Throttle retry button styling */

@@ -72,10 +72,12 @@ const INLINE_CONFIG = {
         'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'caption',
         'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
         'img',
+        'button', 'details', 'summary',
     ],
     ALLOWED_ATTR: [
         'href', 'title', 'class', 'id', 'colspan', 'rowspan', 'align',
         'src', 'alt', 'width', 'height', 'style', 'lang', 'dir',
+        'data-conversation-id', 'data-throttle-wait', 'open',
     ],
     // Only http(s), mailto, and data: images — no javascript:/vbscript:.
     ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto):|data:image\/(?:png|jpe?g|gif|webp|svg\+xml);|[^a-z]|[a-z+.-]+(?:[^a-z+.\-:]|$))/i,

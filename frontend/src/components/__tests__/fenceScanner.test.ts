@@ -24,6 +24,73 @@ const BT4 = '`'.repeat(4);
 
 const kinds = (md: string) => classifyFenceLines(md).map(c => c.kind);
 
+describe('tool fence header with backtick (prose-absorption regression)', () => {
+    // The producer (chatApi.ts) emits a tool block as a fenced code block
+    // whose info string encodes the header:
+    //   ````tool:<name>|<displayHeader>|<syntax>
+    // A shell command like `sed ... | tr '`' '~'` puts a literal backtick
+    // into <displayHeader>. CommonMark forbids a backtick in a backtick-fence
+    // info string, so the opener fails to parse, the block's own closing
+    // fence is misread as an opener, and the trailing prose after the block
+    // is absorbed as that stray fence's content. The fix strips backticks
+    // from the header at both emission sites (-> apostrophe).
+    const headerWithBacktick = "🔐 Shell: sed -n '1,5p' x.py | tr '`'...";
+    const headerSafe = headerWithBacktick.replace(/`/g, "'");
+
+    // 5 lines, indices 0-4: opener / command / output / closer / prose
+    const block = (header: string) =>
+        [
+            BT4 + 'tool:mcp_run_shell_command|' + header + '|bash',
+            "$ sed -n '1,5p' x.py | tr '`' '~'",
+            'some output line',
+            BT4,
+            "I've now verified the prose after the block.",
+        ].join('\n');
+
+    it('HAZARD: a backtick in the info string absorbs trailing prose into the block', () => {
+        const cls = classifyFenceLines(block(headerWithBacktick));
+        // The opener line is rejected (backtick in info string), so no block
+        // opens there; the bare ```` at index 3 becomes the opener, and the
+        // prose at index 4 is absorbed as that fence's content.
+        expect(cls[0].kind).toBe('text');
+        expect(cls[3].kind).toBe('open');
+        expect(cls[4].kind).toBe('content');
+    });
+
+    it('FIX: backtick->apostrophe in the header opens the block and frees the prose', () => {
+        const cls = classifyFenceLines(block(headerSafe));
+        expect(cls[0].kind).toBe('open');     // real opener parses
+        expect(cls[1].kind).toBe('content');  // command line
+        expect(cls[2].kind).toBe('content');  // output line
+        expect(cls[3].kind).toBe('close');    // real close
+        expect(cls[4].kind).toBe('text');     // prose is free
+    });
+
+    it('matchFenceOpen rejects a tool info string containing a backtick', () => {
+        expect(
+            matchFenceOpen(BT4 + 'tool:mcp_run_shell_command|' + headerWithBacktick + '|bash'),
+        ).toBeNull();
+        expect(
+            matchFenceOpen(BT4 + 'tool:mcp_run_shell_command|' + headerSafe + '|bash'),
+        ).not.toBeNull();
+    });
+
+    it('non-shell tool header with a backtick poisons the fence identically', () => {
+        // The fence info string is tool-agnostic: a non-shell tool whose header
+        // echoes a backtick (e.g. a search query) breaks the opener the same
+        // way a shell command does. This is why the result-path backtick strip
+        // must be unconditional, not gated on isShellCommandTool.
+        const badHeader = '🔐 Search: `foo` results';
+        const safeHeader = badHeader.replace(/`/g, "'");
+        expect(
+            matchFenceOpen(BT4 + 'tool:mcp_WorkspaceSearch|' + badHeader + '|text'),
+        ).toBeNull();
+        expect(
+            matchFenceOpen(BT4 + 'tool:mcp_WorkspaceSearch|' + safeHeader + '|text'),
+        ).not.toBeNull();
+    });
+});
+
 describe('matchFenceOpen', () => {
     it('accepts a plain backtick fence with a language tag', () => {
         expect(matchFenceOpen(BT + 'diff')).toEqual({
