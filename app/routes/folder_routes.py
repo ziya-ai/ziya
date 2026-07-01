@@ -133,10 +133,18 @@ async def get_folder(request: FolderRequest):
         return {"error": str(e)}
 
 @router.get("/folder-progress")
-async def get_folder_progress():
+async def get_folder_progress(project_path: str = Query(None)):
     """Get current folder scanning progress."""
     from app.utils.directory_util import get_scan_progress
-    progress = get_scan_progress()
+    # Per-project progress: resolve the requested project to its absolute path
+    # and read that project's own scan slot. Concurrent scans of other projects
+    # have independent slots. Omitting project_path falls back to the current
+    # project root (preserves the legacy no-arg contract).
+    if project_path:
+        directory = os.path.abspath(project_path)
+    else:
+        directory = get_project_root()
+    progress = get_scan_progress(directory)
     
     # Only return active=True if there's actual progress to report
     if progress["active"] and not progress["progress"]:
@@ -153,12 +161,19 @@ async def get_folder_progress():
     return progress
 
 @router.post("/api/cancel-scan")
-async def cancel_folder_scan():
+async def cancel_folder_scan(project_path: str = Query(None)):
     """Cancel current folder scanning operation."""
     from app.utils.directory_util import cancel_scan
-    was_active = cancel_scan()
+    # Cancel only the requested project's scan, leaving other projects'
+    # concurrent scans running. Omitting project_path cancels the current
+    # project root's scan (preserves the legacy no-arg contract).
+    if project_path:
+        directory = os.path.abspath(project_path)
+    else:
+        directory = get_project_root()
+    was_active = cancel_scan(directory)
     if was_active:
-        logger.info("Folder scan cancellation requested")
+        logger.info(f"Folder scan cancellation requested for {directory}")
     return {"cancelled": was_active}
 
 @router.post("/api/clear-folder-cache")
