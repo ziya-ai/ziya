@@ -5,6 +5,7 @@ Uses WritePolicyManager for path approval. Adds shell-specific
 checks: in-place flags, redirection, destructive commands, interpreter heuristics.
 """
 
+import fnmatch
 import os
 import re
 import shlex
@@ -76,7 +77,12 @@ class ShellWriteChecker:
         return True, ""
 
     def _destructive(self, cmd: str) -> Tuple[bool, str]:
-        tok = _tokenize(cmd)
+        # Drop redirection operators/targets (``2>&1``, ``> log``, ``2>/dev/null``)
+        # before extracting write targets. Otherwise a redirection token gets
+        # mistaken for the destructive command's target — e.g. ``cp src dst 2>&1``
+        # validated ``2>&1`` as the cp destination and blocked it. Redirection
+        # targets are validated separately by ``_redirection``.
+        tok = _strip_redirections(_tokenize(cmd))
         if not tok or tok[0] not in self.policy.get('destructive_commands', []):
             return True, ""
         # Slice B: per-task ``shell_commands`` grant overrides the
@@ -234,8 +240,22 @@ class ShellWriteChecker:
             os.path.join(project_root, expanded) if project_root else expanded
         )
         target_norm = os.path.normpath(target_abs)
+        root_norm = os.path.normpath(project_root) if project_root else ""
+        rel = (
+            target_norm[len(root_norm):].lstrip(os.sep)
+            if root_norm and target_norm.startswith(root_norm)
+            else raw
+        )
         for entry in entries:
             try:
+                # Glob grant (CLI task write_patterns, e.g. "*.toml"): match the
+                # project-relative path and its basename, mirroring
+                # WritePolicyManager.allowed_write_patterns semantics.
+                pat = (entry.get("pattern") or "").strip()
+                if pat:
+                    if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(os.path.basename(rel), pat):
+                        return True
+                    continue
                 ep = (entry.get("path") or "").strip()
                 if not ep:
                     continue
@@ -359,6 +379,38 @@ def _tokenize(cmd: str) -> List[str]:
         return shlex.split(cmd)
     except ValueError:
         return cmd.split()
+
+
+# Matches a shell redirection operator, optionally with an attached target
+# (``2>&1``, ``&>``, ``2>/dev/null``, ``>>log`` ...). Optional leading fd digit,
+# an optional ``&``, one or two ``>``/``<``, then an optional inline target.
+_REDIR_RE = re.compile(r"^(?:\d*&?[<>]{1,2}|&>{1,2})(?:&?\d+|.*)?$")
+
+
+def _strip_redirections(tokens: List[str]) -> List[str]:
+    """Remove shell redirection operators and their targets from a token list.
+
+    ``cp src dst 2>&1`` tokenizes to ``['cp','src','dst','2>&1']``; without this
+    the trailing ``2>&1`` is mistaken for the cp destination. Redirections are
+    validated separately by ``_redirection``, so they are safe to drop here.
+    A bare operator (``>``, ``2>``) also consumes the following token, which is
+    its target file (``> out.log`` -> drop both ``>`` and ``out.log``).
+    """
+    out: List[str] = []
+    skip_next = False
+    for t in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        # Bare operator whose target is the next token.
+        if re.fullmatch(r"\d*&?[<>]{1,2}|&>{1,2}", t):
+            skip_next = True
+            continue
+        # Operator with an attached target (``2>&1``, ``2>/dev/null``, ``>>x``).
+        if _REDIR_RE.match(t) and re.match(r"^\d*&?[<>]", t):
+            continue
+        out.append(t)
+    return out
 
 
 def _extract_target(cmd: str, pos: int) -> Tuple[str, int]:
