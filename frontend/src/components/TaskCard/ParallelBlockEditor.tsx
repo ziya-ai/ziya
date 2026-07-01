@@ -9,43 +9,24 @@
 
 import React from 'react';
 import type { Block } from '../../types/task_card';
-import { BlockEditor } from './BlockEditor';
-import {
-  makeTaskBlock, makeRepeatBlock, makeParallelBlock, makeUntilBlock, makeScheduleBlock,
-} from '../../utils/taskCardBlocks';
+import { BlockBody } from './BlockBody';
+import { DragHandle } from './DragContext';
 import './task-card-editor.css';
 
 interface Props {
   block: Block;
   onChange: (next: Block) => void;
   onDelete?: () => void;
+  isRoot?: boolean;
 }
 
-export const ParallelBlockEditor: React.FC<Props> = ({ block, onChange, onDelete }) => {
+export const ParallelBlockEditor: React.FC<Props> = ({ block, onChange, onDelete, isRoot }) => {
   const update = (patch: Partial<Block>) => onChange({ ...block, ...patch });
-  const updateChild = (idx: number, child: Block) => {
-    const body = block.body.slice();
-    body[idx] = child;
-    update({ body });
-  };
-  const removeChild = (idx: number) => {
-    const body = block.body.slice();
-    body.splice(idx, 1);
-    update({ body });
-  };
-  const addChild = (kind: 'task' | 'repeat' | 'parallel' | 'until' | 'schedule') => {
-    const child =
-      kind === 'task' ? makeTaskBlock() :
-      kind === 'repeat' ? makeRepeatBlock() :
-      kind === 'parallel' ? makeParallelBlock() :
-      kind === 'until' ? makeUntilBlock() :
-      makeScheduleBlock();
-    update({ body: [...block.body, child] });
-  };
 
   return (
     <div className="tc-block tc-block-parallel">
       <div className="tc-block-header">
+        {!isRoot && <DragHandle id={block.id} />}
         <span className="tc-emoji">⚡</span>
         <input
           className="tc-name-input"
@@ -58,24 +39,13 @@ export const ParallelBlockEditor: React.FC<Props> = ({ block, onChange, onDelete
           <button className="tc-icon-btn tc-icon-btn-delete" onClick={onDelete} title="Delete">×</button>
         )}
       </div>
-      <div className="tc-block-body tc-block-body-parallel">
-        <div className="tc-sequence-label">All at once:</div>
-        {block.body.map((child, idx) => (
-          <BlockEditor
-            key={child.id}
-            block={child}
-            onChange={next => updateChild(idx, next)}
-            onDelete={() => removeChild(idx)}
-          />
-        ))}
-        <div className="tc-add-row">
-          <button className="tc-add-btn" onClick={() => addChild('task')}>+ Task</button>
-          <button className="tc-add-btn" onClick={() => addChild('repeat')}>+ Repeat</button>
-          <button className="tc-add-btn" onClick={() => addChild('parallel')}>+ Parallel</button>
-          <button className="tc-add-btn" onClick={() => addChild('until')}>+ Until</button>
-          <button className="tc-add-btn" onClick={() => addChild('schedule')}>+ Schedule</button>
-        </div>
-      </div>
+      <BlockBody
+        parentId={block.id}
+        body={block.body}
+        bodyClassName="tc-block-body-parallel"
+        sequenceLabel="All at once:"
+        onChange={body => update({ body })}
+      />
     </div>
   );
 };

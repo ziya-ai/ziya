@@ -19,6 +19,12 @@ import { listBindings } from '../services/taskBindingApi';
  */
 export const TASK_BINDING_EVENT = 'task-binding-created';
 
+// Dispatched by an inline card tile's "Edit card" backlink; App listens and
+// opens the Task Cards deck focused on detail.cardId.  Same window-event
+// pattern as TASK_BINDING_EVENT — the tile is deep under the chat tree and
+// can't reach App's deck state directly.
+export const TASK_CARD_OPEN_EVENT = 'task-card-open';
+
 export function useTaskBindings(chatId: string | undefined) {
   const { currentProject } = useProject();
   const projectId = currentProject?.id ?? '';

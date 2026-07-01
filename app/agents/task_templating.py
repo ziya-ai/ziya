@@ -14,6 +14,9 @@ Supported placeholders (Mustache-style, unescaped text only):
   {{previous.summary}}   prior iteration's artifact.summary  (propagate: last|all)
   {{previous.decisions}} prior iteration's decisions (joined newline)
   {{all.summaries}}      all prior iterations' summaries (propagate: all)
+  {{var.KEY}}            read-only run-scoped variable from a State block
+  {{sibling("block-id")}}        a named block's artifact summary (run-scoped lookup)
+  {{sibling("block-id").summary}}  / .decisions field access on that artifact
 
 Unknown placeholders are left in place verbatim so typos are visible
 to the author rather than silently producing empty strings.  Missing
@@ -27,12 +30,29 @@ The executor owns the bindings; this file owns the substitution.
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from ..models.task_card import Artifact
 
 
-_PLACEHOLDER_RE = re.compile(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_.]*)\s*\}\}")
+# Two placeholder shapes:
+#   - dotted name:        {{previous.summary}}, {{var.KEY}}, {{index}}
+#   - function call:      {{sibling("block-id")}} with optional .field suffix
+# The function form needs its own alternative because a block id can
+# contain characters (quotes, parens, hyphens) outside the dotted-name
+# class.  The whole inner expression is captured in group 1 and parsed
+# by _resolve, which dispatches on whether it looks like sibling(...).
+_PLACEHOLDER_RE = re.compile(
+    r"\{\{\s*("
+    r"sibling\(\s*['\"][^'\"]+['\"]\s*\)(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?"
+    r"|[a-zA-Z_][a-zA-Z0-9_.]*"
+    r")\s*\}\}"
+)
+
+# Parses sibling("id") or sibling('id').field → (block_id, field_or_None)
+_SIBLING_CALL_RE = re.compile(
+    r"^sibling\(\s*['\"]([^'\"]+)['\"]\s*\)(?:\.([a-zA-Z_][a-zA-Z0-9_]*))?$"
+)
 
 
 @dataclass
@@ -47,6 +67,21 @@ class IterationBindings:
     item: Any = None
     previous: Optional[Artifact] = None
     all_summaries: List[str] = field(default_factory=list)
+    # Most-recent completed sibling in the enclosing sequence (the block
+    # immediately before this one at the same depth).  Distinct from
+    # ``previous`` (prior loop iteration).  Resolves {{previous_sibling}}
+    # and {{previous_sibling.summary}} / .decisions.  None for the first
+    # sibling or outside any sequence.
+    previous_sibling: Optional[Artifact] = None
+    # Read-only run-scoped variables declared by State blocks, attached
+    # at render time by the block executor.  Resolved via {{var.NAME}}.
+    variables: Dict[str, Any] = field(default_factory=dict)
+    # Run-scoped registry of completed block artifacts, keyed by block id,
+    # attached at render time by the block executor.  Resolves the
+    # {{sibling("block-id")}} function form — an explicit by-id lookup of
+    # ANY block that has completed in this run (unlike previous_sibling,
+    # which is only the immediate prior block in the same sequence).
+    sibling_artifacts: Dict[str, Artifact] = field(default_factory=dict)
 
 
 def _render_item(item: Any, path: List[str]) -> str:
@@ -86,6 +121,26 @@ def _resolve(name: str, bindings: IterationBindings) -> Optional[str]:
     in place); returns "" for known heads whose data is not available
     on this iteration (e.g. {{previous.summary}} on iteration 0).
     """
+    # Function form {{sibling("block-id")}} / {{sibling('id').summary}}.
+    # Checked before the dotted-name split because a quoted block id may
+    # itself contain dots.  Resolves a run-scoped by-id lookup of any
+    # block that has completed (distinct from previous_sibling, which is
+    # only the immediate prior block).  A reference to a block that
+    # hasn't completed (or doesn't exist) renders empty — it's an
+    # explicit id, so empty is the honest "no result yet", matching
+    # {{previous.summary}} on iteration 0.  An unknown field on a found
+    # artifact also renders empty (parity with previous/previous_sibling).
+    sib = _SIBLING_CALL_RE.match(name)
+    if sib:
+        block_id, field_name = sib.group(1), sib.group(2)
+        art = bindings.sibling_artifacts.get(block_id)
+        if art is None:
+            return ""
+        if not field_name or field_name == "summary":
+            return art.summary or ""
+        if field_name == "decisions":
+            return "\n".join(art.decisions or [])
+        return ""
     parts = name.split(".")
     head = parts[0]
     rest = parts[1:]
@@ -105,6 +160,19 @@ def _resolve(name: str, bindings: IterationBindings) -> Optional[str]:
         if field_name == "decisions":
             return "\n".join(bindings.previous.decisions or [])
         return ""
+    if head == "previous_sibling":
+        # Prior sibling in the enclosing sequence (distinct from
+        # {{previous}}, which is the prior loop iteration).
+        if bindings.previous_sibling is None:
+            return ""
+        if not rest:
+            return bindings.previous_sibling.summary or ""
+        field_name = rest[0]
+        if field_name == "summary":
+            return bindings.previous_sibling.summary or ""
+        if field_name == "decisions":
+            return "\n".join(bindings.previous_sibling.decisions or [])
+        return ""
     if head == "all":
         if not rest:
             return ""
@@ -112,6 +180,14 @@ def _resolve(name: str, bindings: IterationBindings) -> Optional[str]:
         if field_name == "summaries":
             return "\n\n".join(bindings.all_summaries or [])
         return ""
+    if head == "var":
+        # {{var.NAME}} / {{var.NAME.sub}} — read-only run-scoped state.
+        # An unknown key is left literal (returns None) so typos surface
+        # to the author rather than silently rendering empty — matching
+        # the module's unknown-placeholder philosophy.
+        if not rest or rest[0] not in bindings.variables:
+            return None
+        return _render_item(bindings.variables.get(rest[0]), rest[1:])
     return None  # unknown head — caller preserves the literal
 
 

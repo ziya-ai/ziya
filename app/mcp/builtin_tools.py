@@ -91,6 +91,13 @@ BUILTIN_TOOL_CATEGORIES: Dict[str, Dict[str, any]] = {
         "requires_dependencies": [],
         "tools": [],
     },
+    "task_cards": {
+        "name": "Task Card Editing",
+        "description": "Read and edit saved Task Card definitions (block trees, instructions, loop conditions)",
+        "enabled_by_default": True,
+        "requires_dependencies": [],
+        "tools": [],
+    },
 }
 
 
@@ -232,6 +239,18 @@ def get_context_management_tools() -> List[Type[BaseMCPTool]]:
         return []
 
 
+def get_task_card_tools() -> List[Type[BaseMCPTool]]:
+    """Get task-card read/write tools."""
+    try:
+        from app.mcp.tools.task_card_tools import (
+            TaskCardListTool, TaskCardReadTool, TaskCardWriteTool
+        )
+        return [TaskCardListTool, TaskCardReadTool, TaskCardWriteTool]
+    except ImportError as e:
+        logger.warning(f"Could not import task card tools: {e}")
+        return []
+
+
 def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
     """Get builtin tools for a specific category."""
     tool_getters = {
@@ -246,6 +265,7 @@ def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
         "memory": get_memory_tools,
         "context_management": get_context_management_tools,
         "beads": get_bead_tools,
+        "task_cards": get_task_card_tools,
     }
 
     getter = tool_getters.get(category)
