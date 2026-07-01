@@ -675,7 +675,14 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
   const cancelScan = useCallback(async () => {
     try {
-      const response = await fetch('/api/cancel-scan', { method: 'POST' });
+      // Cancel only THIS project's scan. The backend is per-directory now, so
+      // a bare cancel would only hit whatever the server resolves as the
+      // current project root — send our explicit path to be unambiguous.
+      const projectPath = currentProjectRef.current?.path;
+      const url = projectPath
+        ? `/api/cancel-scan?project_path=${encodeURIComponent(projectPath)}`
+        : '/api/cancel-scan';
+      const response = await fetch(url, { method: 'POST' });
       if (response.ok) {
         message.info('Folder scan cancellation requested.');
       }
@@ -880,8 +887,10 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         progressIntervalRef.current = null;
       }
 
-      // Cancel the server-side scan for the old project (fire and forget)
-      fetch('/api/cancel-scan', { method: 'POST' }).catch(() => {});
+      // NOTE: We intentionally do NOT cancel the old project's server-side
+      // scan on switch. Each project scans in its own per-directory thread, so
+      // letting the old scan finish warms its cache — switching back is then
+      // instant instead of re-scanning from zero (the old cross-project thrash).
 
       // Reset scanning state so the UI isn't stuck showing old project's scan
       setIsScanning(false);

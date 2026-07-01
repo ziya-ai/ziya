@@ -28,9 +28,10 @@ _cache_lock = threading.Lock()
 # External paths explicitly added by the user (outside project root)
 _explicit_external_paths: set = set()
 
-# Background folder scan state
-_background_scan_thread = None
-_background_scan_dir = None
+# Per-directory background scan threads, keyed by absolute directory path.
+# Each project scans in its own thread with its own progress slot, so
+# switching projects no longer cancels another project's in-flight scan.
+_background_scan_threads: Dict[str, threading.Thread] = {}
 
 # Cache invalidation debouncing
 _last_cache_invalidation = 0
@@ -523,8 +524,6 @@ def get_cached_folder_structure(directory: str, ignored_patterns, max_depth: int
     Checks both this module's _folder_cache and directory_util's cache
     to avoid redundant scans. Writes results to both.
     """
-    global _background_scan_thread, _background_scan_dir
-
     from app.utils.directory_util import get_folder_structure, get_scan_progress
     import app.utils.directory_util as dir_util
 
@@ -537,18 +536,30 @@ def get_cached_folder_structure(directory: str, ignored_patterns, max_depth: int
     current_time = time.time()
     cache_age = current_time - cache_entry['timestamp']
 
-    scan_status = get_scan_progress()
+    # Read THIS directory's own scan slot. Other projects scanning concurrently
+    # have their own slots and are unaffected — switching projects no longer
+    # cancels another project's in-flight scan (that was the cross-project
+    # thrash bug: a switch killed the old scan, leaving it to re-scan from zero).
+    scan_status = get_scan_progress(directory)
     is_scanning = scan_status.get("active", False)
 
-    if is_scanning and _background_scan_dir == directory:
+    if is_scanning:
+        # Phase 1 of the scan publishes a shallow tree (everything to
+        # BFS_DEPTH_THRESHOLD, deeper dirs as expandable placeholders) into
+        # partial_tree. If it's available, serve it with _stale_and_scanning so
+        # the frontend renders breadth immediately and keeps the scanning
+        # indicator on (fetchFolders already handles this flag), instead of
+        # showing an empty tree until the full scan completes. The partial is a
+        # live reference that deepens as Phase 2 progresses.
+        partial_tree = scan_status.get("partial_tree")
+        if partial_tree:
+            logger.info(f"📂 Serving Phase-1 partial tree for in-progress scan of {directory} ({len(partial_tree)} top-level keys)")
+            result = {**partial_tree, "_stale_and_scanning": True}
+            if cache_entry['data'] and '[external]' in cache_entry['data']:
+                result.setdefault('[external]', cache_entry['data']['[external]'])
+            return result
+        # Phase 1 hasn't published yet — fall back to the empty scanning sentinel.
         return {"_scanning": True, "children": {}}
-
-    if is_scanning and _background_scan_dir != directory:
-        logger.info(f"Cancelling scan for {_background_scan_dir}, switching to {directory}")
-        from app.utils.directory_util import cancel_scan
-        cancel_scan()
-        if _background_scan_thread and _background_scan_thread.is_alive():
-            _background_scan_thread.join(timeout=2.0)
 
     # Only serve cached data if an actual project scan has completed.
     # Pre-population by add_external_path_to_cache sets data={} + [external]
@@ -587,19 +598,44 @@ def get_cached_folder_structure(directory: str, ignored_patterns, max_depth: int
             logger.error(f"Synchronous scan failed: {e}")
             return {"error": str(e)}
 
-    if _background_scan_thread is None or not _background_scan_thread.is_alive():
-        _background_scan_dir = directory
+    existing = _background_scan_threads.get(directory)
+    if existing is None or not existing.is_alive():
         def background_scan():
+            # This scan's own per-directory slot. We also mirror 'active' to the
+            # legacy global so the still-no-arg /folder-progress route keeps
+            # reporting a scan as running until step 3 points it at the per-dir
+            # slot. get_folder_structure mirrors the progress fields itself.
             from app.utils.directory_util import _scan_progress
+            slot = dir_util._progress_slot(directory)
             scan_start = time.time()
             logger.info(f"Background folder scan starting for {directory}")
-            _scan_progress["active"] = True
-            _scan_progress["start_time"] = scan_start
-            _scan_progress["last_update"] = scan_start
-            _scan_progress["progress"] = {"directories": 0, "files": 0, "elapsed": 0}
+            slot["active"] = True
+            slot["start_time"] = scan_start
+            slot["last_update"] = scan_start
+            slot["progress"] = {"directories": 0, "files": 0, "elapsed": 0}
+            _scan_progress["active"] = True  # transitional mirror for no-arg route
             try:
                 result = get_folder_structure(directory, ignored_patterns, max_depth)
                 _scan_progress["last_update"] = time.time()
+                # A *cancelled* scan (the GUI switched to another project
+                # mid-scan) or an error dict is NOT a usable tree: committing it
+                # would poison the cache with a half-built tree marked
+                # scan_complete=True, and every tab would render the truncated
+                # tree until a manual refresh. Discard those and leave
+                # scan_complete False so the next fetch re-scans.
+                #   '_cancelled' / 'cancelled' -> cancelled mid-walk / mid-estimate
+                #   'error'                     -> error dict, not a tree
+                # A *timeout* partial ('_partial'/'_timeout') is different: it IS
+                # a real tree that merely didn't reach full depth. We commit it so
+                # huge projects stay responsive; the flag rides along on the data
+                # (like the existing '_stale' sibling key) so a later pass can
+                # deepen it.
+                if isinstance(result, dict) and (
+                    result.get('_cancelled') or result.get('cancelled')
+                    or result.get('error')
+                ):
+                    logger.info(f"Background folder scan for {directory} cancelled/errored ({[k for k in ('_cancelled','cancelled','error') if result.get(k)]}); discarding partial result")
+                    return
                 # Preserve any externals pre-populated before the scan started
                 if cache_entry['data'] and '[external]' in cache_entry['data']:
                     result.setdefault('[external]', cache_entry['data']['[external]'])
@@ -616,13 +652,12 @@ def get_cached_folder_structure(directory: str, ignored_patterns, max_depth: int
             except Exception as e:
                 logger.error(f"Background folder scan error: {e}", exc_info=True)
             finally:
-                _scan_progress["active"] = False
+                slot["active"] = False
+                _scan_progress["active"] = False  # transitional mirror
 
-        if _background_scan_thread and _background_scan_thread.is_alive():
-            logger.warning("Abandoning stuck background scan thread")
-
-        _background_scan_thread = threading.Thread(target=background_scan, daemon=True)
-        _background_scan_thread.start()
+        t = threading.Thread(target=background_scan, daemon=True)
+        _background_scan_threads[directory] = t
+        t.start()
         logger.info("Started background folder scan")
 
     return {"_scanning": True, "children": {}}
