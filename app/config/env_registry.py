@@ -91,7 +91,7 @@ _VARS: List[EnvVar] = [
 
     # ── Model / Endpoint ──────────────────────────────────────────────────
     EnvVar("ZIYA_ENDPOINT", str, "bedrock", EnvCategory.MODEL,
-           "Model provider: 'bedrock', 'google', 'openai', or 'anthropic'.",
+           "Model provider: 'bedrock', 'google', 'openai', 'anthropic', or 'zai'.",
            cli_flag="--endpoint"),
     EnvVar("ZIYA_MODEL", str, None, EnvCategory.MODEL,
            "Model alias (e.g. 'sonnet4.0', 'gemini-3.1-pro').",

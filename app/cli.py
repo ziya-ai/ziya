@@ -269,20 +269,62 @@ def _remove_session_beads(session_path) -> None:
         pass
 
 
+def _print_resumed_beads(conversation_id: str) -> None:
+    """Print open (active + parked) bead labels when resuming a session.
+
+    Surfaces the task threads still in flight so a resumed session shows
+    what was being worked on — the CLI analogue of the bead chip on GUI
+    conversation-list rows.  Completed/abandoned beads are omitted; if no
+    open threads remain, nothing is printed.  Failure is non-fatal — a
+    bead-store hiccup must never block session resumption.
+    """
+    try:
+        from app.storage.beads import load_bead_tree
+        tree = load_bead_tree(conversation_id=conversation_id)
+    except Exception:
+        return
+    beads = getattr(tree, 'beads', None) or []
+    open_beads = [b for b in beads if b.status in ('active', 'parked')]
+    if not open_beads:
+        return
+    # Match the /beads command's status glyphs/colors for consistency.
+    glyphs = {
+        'active': ('\033[32m', '●'),  # green
+        'parked': ('\033[33m', '◐'),  # yellow
+    }
+    n = len(open_beads)
+    print(f"\033[1mOpen threads ({n}):\033[0m")
+    # Active first, then parked — most-relevant thread on top.
+    for b in sorted(open_beads, key=lambda x: (x.status != 'active', x.created_at)):
+        color, glyph = glyphs.get(b.status, ('\033[90m', '·'))
+        hint = f"  \033[90m({b.context_hint})\033[0m" if b.context_hint else ''
+        print(f"  {color}{glyph}\033[0m {b.content}{hint}")
+    print()
+
+
 def cleanup_old_sessions(keep_count: int = 10):
-    """Keep only the most recent sessions. Named sessions are preserved."""
+    """Keep only the most recent sessions. Named sessions and sessions with open beads are preserved."""
     global _bead_sweep_done
     session_dir = get_session_dir()
     sessions = sorted(session_dir.glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)
 
-    # Protect named sessions (have a non-null "name" field) from auto-cleanup
+    # Protect named sessions and sessions with active/parked beads from auto-cleanup
     unnamed = []
     for p in sessions:
         try:
             with open(p) as f:
-                if json.load(f).get('name'):
+                data = json.load(f)
+                if data.get('name'):
                     continue
+                sid = data.get('id') or p.stem
         except (OSError, json.JSONDecodeError, ValueError):
+            sid = p.stem
+        try:
+            from app.storage.beads import load_bead_tree
+            tree = load_bead_tree(conversation_id=f"cli_{sid}")
+            if any(b.status in ('active', 'parked') for b in (getattr(tree, 'beads', None) or [])):
+                continue
+        except Exception:
             pass
         unnamed.append(p)
     for old_session in unnamed[keep_count:]:
@@ -312,7 +354,7 @@ async def select_session() -> Optional[str]:
     
     # Load session metadata
     session_list = []
-    for session_file in sessions[:10]:  # Show last 10
+    for session_file in sessions[:50]:  # newest 50; trimmed to valid below
         try:
             with open(session_file, 'r') as f:
                 data = json.load(f)
@@ -328,6 +370,16 @@ async def select_session() -> Optional[str]:
         except (json.JSONDecodeError, OSError, KeyError, ValueError):
             continue
     
+    if not session_list:
+        print("No valid sessions found.")
+        return None
+
+    # Exclude empty sessions (nothing typed, no files attached)
+    session_list = [s for s in session_list if s['message_count'] > 0 or s['file_count'] > 0 or s.get('opening_statement')]
+
+    # Cap the menu *after* dropping empties so blank sessions don't steal slots.
+    session_list = session_list[:25]
+
     if not session_list:
         print("No valid sessions found.")
         return None
@@ -411,7 +463,26 @@ async def select_session() -> Optional[str]:
         radio_list,
     ]))
 
-    app = Application(layout=layout, key_bindings=kb, full_screen=False, mouse_support=True)
+    app = Application(layout=layout, key_bindings=kb, full_screen=False, mouse_support=False)
+    import sys, termios
+    _saved_tc = None
+    try:
+        if sys.stdin.isatty():
+            _saved_tc = termios.tcgetattr(sys.stdin.fileno())
+    except Exception:
+        pass
+
+    finally:
+        if _saved_tc is not None:
+            try:
+                termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, _saved_tc)
+            except Exception:
+                pass
+        # Flush stdout so any buffered escape sequences are cleared.
+        try:
+            sys.stdout.flush()
+        except Exception:
+            pass
 
     try:
         return await app.run_async()
@@ -604,6 +675,16 @@ COMMAND_SPEC = [
         'handler': 'cmd_goal',
     },
     {
+        'name': '/card',
+        'help': 'Run a GUI task card in-process (same engine as the deck)',
+        'usage': '/card [list | <id-or-name>]',
+        'handler': 'cmd_card',
+        'subcommands': {
+            'list': {'help': 'List available task cards'},
+            'run': {'help': 'Run a card by id or name'},
+        },
+    },
+    {
         'name': '/tune',
         'help': 'Adjust session settings',
         'usage': '/tune <key> <value>',
@@ -779,6 +860,37 @@ class CLI:
         property picks that up automatically.
         """
         return f"cli_{self._session_id}"
+
+    def _bead_prompt_segments(self):
+        """Prompt-prefix segments for the per-conversation bead indicator.
+
+        Mirrors the GUI chip (frontend BeadTree.tsx): hidden when no beads
+        exist, amber with the parked-thread count when threads are parked,
+        green with the open-thread count (active + parked, excluding
+        completed/abandoned) otherwise.  Returns a list of (style, text)
+        tuples to prepend to the prompt, or [] when there is nothing to
+        surface.  Failure is non-fatal — the prompt must never break because
+        the bead store hiccuped.
+        """
+        try:
+            from app.storage.beads import load_bead_tree
+            tree = load_bead_tree(conversation_id=self.conversation_id)
+        except Exception:
+            return []
+        beads = getattr(tree, 'beads', None) or []
+        if not beads:
+            return []
+        parked = sum(1 for b in beads if b.status == 'parked')
+        open_count = sum(1 for b in beads if b.status in ('active', 'parked'))
+        if open_count == 0:
+            return []
+        # Branch glyph + count wrapped in brackets so "[⑃2]" reads as one
+        # self-contained status badge — N open threads — then a trailing
+        # gap sets it apart from the wordmark. Amber when threads are parked
+        # (waiting on attention), green when only an active thread is live.
+        if parked > 0:
+            return [('bold yellow', f'[⑃{parked}]'), ('', '  ')]
+        return [('bold green', f'[⑃{open_count}]'), ('', '  ')]
 
     @property
     def model(self):
@@ -1297,7 +1409,10 @@ class CLI:
                             continuation_message = (
                                 f"{summary}\n\n"
                                 "If there are more changes needed or additional steps to complete, "
-                                "please continue. Otherwise, confirm that all necessary changes have been provided."
+                                "please continue. Otherwise, confirm that all necessary changes have been provided.\n\n"
+                                "Important: if your previous response described an action you intended to take "
+                                "(such as running tests or verifying results), please take that action now rather "
+                                "than just describing it again."
                             )
                         # Continue conversation with the model
                         print("\033[90m[trace] sending continuation to model\033[0m", file=sys.stderr)
@@ -1607,6 +1722,8 @@ class CLI:
             
                 elif chunk_type == 'tool_execution':
                     tool_name = chunk.get('tool_name', 'unknown')
+                    if chunk.get('is_internal'):
+                        continue
                     if md_renderer:
                         md_renderer.flush()
                     print(f"\n\033[90m⚡ {tool_name}\033[0m", flush=True)
@@ -1614,6 +1731,13 @@ class CLI:
                 elif chunk_type == 'tool_start':
                     tool_name = chunk.get('tool_name', 'unknown')
                     display_header = chunk.get('display_header', tool_name)
+                    if chunk.get('is_internal'):
+                        # Flush pending text so the hidden tool boundary doesn't
+                        # merge the pre-tool and post-tool text into one line.
+                        if md_renderer:
+                            md_renderer.flush()
+                        print(f"\033[2;90m  ↩ {tool_name}\033[0m", flush=True)
+                        continue
                     if md_renderer:
                         md_renderer.flush()
                     print(f"\n\033[36m⚙ Executing {display_header}...\033[0m", flush=True)
@@ -1622,6 +1746,8 @@ class CLI:
                     try:
                         if md_renderer:
                             md_renderer.flush()
+                        if chunk.get('is_internal'):
+                            continue
                         # Show tool result with formatting
                         tool_name = chunk.get('tool_name', 'unknown')
                         result = chunk.get('result', '') or ''
@@ -1870,9 +1996,13 @@ class CLI:
                 # keeps showing the tab activity spinner while we're idle.
                 sys.stdout.write("\033]133;D\007\033]133;A\007"); sys.stdout.flush()
                 try:
+                    prompt_segments = (
+                        self._bead_prompt_segments()
+                        + [('bold magenta', 'ℤ'), ('cyan', 'iya'), ('', ' '), ('bold cyan', '› ')]
+                    )
                     user_input = await asyncio.to_thread(
                         self.session.prompt,
-                        FormattedText([('bold magenta', 'ℤ'), ('cyan', 'iya'), ('', ' '), ('bold cyan', '› ')]),
+                        FormattedText(prompt_segments),
                         # Add context-aware completion
                         refresh_interval=0.5
                     )
@@ -2091,6 +2221,7 @@ class CLI:
         self._session_start_time = data.get('start_time', data.get('timestamp'))
         print(f"\033[32m✓ Resumed session {self._session_id}\033[0m")
         print(f"  Files: {len(self.files)}, Messages: {len(self.history)}\n")
+        _print_resumed_beads(self.conversation_id)
         return True
 
     async def cmd_shell(self, arg: str) -> bool:
@@ -2101,6 +2232,41 @@ class CLI:
     async def cmd_goal(self, arg: str) -> bool:
         """/goal <text> — run an autonomous goal."""
         await self._handle_goal_command(arg)
+        return True
+
+    async def cmd_card(self, arg: str) -> bool:
+        """/card [list | <id-or-name>] — run a GUI task card in-process.
+
+        Third terminal face of the shared task-card engine (alongside the
+        web /launch endpoint and `ziya task --card`).  Runs the card via
+        the same ``run_card`` library used by the CLI subcommand, so live
+        streaming (A) and the un-approved-scope notice (B) come along.
+
+        MCP is already initialized in this event loop by _run_async_cli, so
+        we await run_card directly — wrapping it in _run_with_mcp here would
+        re-init then tear MCP down on return, killing the chat session.
+        """
+        root = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
+        tokens = arg.split(maxsplit=1) if arg else []
+        sub = tokens[0].lower() if tokens else ""
+
+        if not sub or sub == "list":
+            from app.cli_card_runner import list_cards
+            list_cards(root)
+            return True
+
+        # `/card run <id>` and `/card <id>` are both accepted; `run` is an
+        # optional verb so the command reads naturally either way.
+        if sub == "run":
+            card_ref = tokens[1].strip() if len(tokens) > 1 else ""
+            if not card_ref:
+                print("\033[90mUsage: /card run <id-or-name>\033[0m")
+                return True
+        else:
+            card_ref = arg.strip()
+
+        from app.cli_card_runner import run_card
+        await run_card(root, card_ref, stream=True)
         return True
 
     async def cmd_tune(self, arg: str) -> bool:
@@ -3151,6 +3317,7 @@ def cmd_chat(args):
                 print(f"\033[32m✓ Resumed session from {session_data.get('timestamp', 'unknown')}\033[0m")
                 print(f"  Files: {len(files)}, Messages: {len(history)}\n")
                 
+                _print_resumed_beads(cli.conversation_id)
                 asyncio.run(_run_async_cli(cli))
                 
                 # Save session on exit (unless ephemeral)
@@ -3250,15 +3417,55 @@ def cmd_explain(args):
     asyncio.run(_run_with_mcp(cli.ask(question, stream=not args.no_stream)))
 
 
+def _task_escalation_badge(signed) -> str:
+    """Return the colored escalation/approval badge for a ``ziya task --list``
+    row. ``signed`` is None for a floor-only task (no escalation → no badge),
+    True for an approved escalation (``[⚡ signed]``), False for an unapproved
+    one (``[🔒 unsigned]``, which runs at the floor). Pure/UI-only; the
+    signed flag itself comes from the shared scope_audit walk so this view
+    cannot disagree with the runtime gate."""
+    if signed is None:
+        return ""
+    if signed:
+        return "  \033[32m[⚡ signed]\033[0m"
+    return "  \033[33m[🔒 unsigned]\033[0m"
+
+
 def cmd_task(args):
     """Handle: ziya task <name> [--list] [--show TASK]"""
     from app.task_runner import (
         load_tasks, validate_task_allow,
-        apply_task_permissions, restore_permissions,
+        apply_task_permissions, restore_permissions, resolve_task_source_file,
     )
     setup_env(args)  # needed for root dir before --list/--show early exits
     setup_env(args)
     root = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
+
+    # ── Task-card surface (library face) ──────────────────────────────
+    # A card authored/edited/tested in the GUI deck runs in-process here
+    # via the shared block_executor engine — no web server required.
+    # Escalation is gated inside execute_task_block via authorize_scope
+    # (block.id) against the SAME signed ledger the GUI writes, so a
+    # GUI-approved card is already authorized from the command line.
+    if getattr(args, 'list_cards', False):
+        # Plugins must load first: the encryption provider they register is
+        # what derives the KEK to decrypt the GUI-written project.json /
+        # card files.  Without it, reads of encrypted stores fail with
+        # "'NoneType' object has no attribute 'get_dek'".  Listing needs no
+        # auth (no model call), so initialize_plugins() alone suffices.
+        from app.plugins import initialize as initialize_plugins
+        initialize_plugins()
+        from app.cli_card_runner import list_cards
+        sys.exit(list_cards(root))
+
+    if getattr(args, 'card', None):
+        from app.cli_card_runner import run_card
+        # Full init for actual execution (setup_env already called above).
+        _init_and_authenticate(args, skip_setup_env=True)
+        rc = asyncio.run(_run_with_mcp(
+            run_card(root, args.card, stream=not args.no_stream)))
+        sys.exit(rc)
+
     tasks = load_tasks(root)
 
     # --list: print available tasks and exit
@@ -3267,11 +3474,29 @@ def cmd_task(args):
             print("No tasks defined.")
             print("Create ~/.ziya/tasks.yaml or .ziya/tasks.yaml")
             return
+        # Escalation/approval status per task (ASR F-001, surface A). Reuse the
+        # SAME audit walk ziya-approve --list uses, keyed by task name, so the
+        # --list view can't disagree with what actually runs or with the audit.
+        # collect_cli_entries returns ONLY escalating tasks (floor-only tasks
+        # carry no allow block and are absent), so a name's presence here means
+        # "escalates"; its .signed flag means "approved".
+        try:
+            from app.utils.scope_audit import collect_cli_entries
+            audit_by_name = {e.label: e.signed for e in collect_cli_entries(root)}
+        except Exception:  # noqa: BLE001 — status is advisory; never block --list
+            audit_by_name = {}
         max_name = max(len(n) for n in tasks)
         print(f"\033[1mAvailable tasks:\033[0m\n")
         for name in sorted(tasks):
             desc = tasks[name].get("description", "")
-            print(f"  \033[36m{name:<{max_name}}\033[0m  {desc}")
+            badge = _task_escalation_badge(audit_by_name.get(name))
+            print(f"  \033[36m{name:<{max_name}}\033[0m  {desc}{badge}")
+        if any(signed is False for signed in audit_by_name.values()):
+            print(f"\n\033[33m🔒 Unsigned tasks request escalated permissions "
+                  f"but run at the default floor until approved.\033[0m")
+            print(f"   Approve: \033[36msudo ziya-approve --cli-task <name> "
+                  f"--root {root}\033[0m   "
+                  f"Audit all: \033[36mziya-approve --list\033[0m")
         print(f"\nRun: ziya task <name>")
         return
 
@@ -3308,6 +3533,30 @@ def cmd_task(args):
             print(f"  • {err}", file=sys.stderr)
         sys.exit(1)
 
+    # Task-scope authorization gate (ASR F-001, design §4.2/§6). A CLI task's
+    # ``allow`` escalation takes effect only if a signed approval record matches
+    # its current hash. Unauthorized -> strip the allow block so
+    # apply_task_permissions writes NO escalation env (the task still runs, at
+    # the floor). This routes the CLI path through the SAME signed ledger as
+    # cards — the agent cannot mint an approval (root key). Gating here (intent)
+    # rather than relying on the env-signature gate avoids the merged-delta
+    # hazard: apply_task_permissions merges the task's commands with ambient
+    # ALLOW_COMMANDS, so a signature over the task's own delta would fail to
+    # verify whenever the task runs alongside any other escalation.
+    if task_def.get("allow"):
+        from app.utils.scope_approvals import cli_task_key, is_cli_task_authorized
+        src = resolve_task_source_file(task_name, root)
+        task_key = cli_task_key(str(src), task_name) if src else f"cli:?#{task_name}"
+        if not is_cli_task_authorized(task_key, task_def.get("allow")):
+            print(
+                f"\033[33m🔒 Task '{task_name}' requests escalated permissions "
+                f"that are not approved — running at the default floor.\033[0m\n"
+                f"   To approve: \033[36msudo ziya-approve --cli-task {task_name} "
+                f"--root {root}\033[0m",
+                file=sys.stderr,
+            )
+            task_def = {**task_def, "allow": None}
+
     saved_env = apply_task_permissions(task_def)
     if saved_env:
         allow = task_def.get("allow", {})
@@ -3320,6 +3569,25 @@ def cmd_task(args):
             parts.append(f"write: {', '.join(allow['write_patterns'])}")
         print(f"\033[33m⚡ Escalated permissions: {'; '.join(parts)}\033[0m", file=sys.stderr)
 
+    # Mechanism B — route the AUTHORIZED escalation through the _task_scope
+    # contextvars. apply_task_permissions (above) writes the escalation into
+    # the env, but the shell subprocess's F-004 signature gate clamps any
+    # unsigned env escalation back to the floor — and a CLI-task approval is a
+    # scope_approvals/ record, not a ZIYA_SCOPE_SIG env signature. The
+    # _task_scope envelope (built from these contextvars in tool_execution and
+    # consulted additively by the shell server AFTER the clamp) is the path
+    # that actually delivers the signed grant. task_def['allow'] is already
+    # None here when unauthorized (stripped by the gate above), so an
+    # unapproved task sets no grants and runs at the floor.
+    from app.task_runner import allow_to_task_scope
+    from app.context import (
+        set_task_shell_commands, reset_task_shell_commands,
+        set_task_writable_paths, reset_task_writable_paths,
+    )
+    _scope_cmds, _scope_writable = allow_to_task_scope(task_def.get("allow"))
+    _sc_token = set_task_shell_commands(_scope_cmds or None)
+    _wp_token = set_task_writable_paths(_scope_writable or None)
+
     try:
         # Full init for actual task execution (setup_env already called above)
         _init_and_authenticate(args, skip_setup_env=True)
@@ -3327,6 +3595,8 @@ def cmd_task(args):
         cli = CLI(files=[])  # Tasks don't use file context
         asyncio.run(_run_with_mcp(cli.ask(task_def["prompt"], stream=not args.no_stream)))
     finally:
+        reset_task_shell_commands(_sc_token)
+        reset_task_writable_paths(_wp_token)
         restore_permissions(saved_env)
 
 # ============================================================================
@@ -3449,6 +3719,10 @@ Examples:
     task_parser.add_argument('task_name', nargs='?', help='Task to run')
     task_parser.add_argument('--list', '-l', action='store_true',
                              dest='list_tasks', help='List available tasks')
+    task_parser.add_argument('--card', metavar='ID',
+                             help='Run a GUI task card by id or name (in-process)')
+    task_parser.add_argument('--list-cards', action='store_true',
+                             dest='list_cards', help='List available task cards')
     task_parser.add_argument('--show', metavar='TASK',
                              help='Show the prompt for a task')
     task_parser.set_defaults(func=cmd_task)
