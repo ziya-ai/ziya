@@ -58,6 +58,103 @@ async def get_task_card(project_id: str, card_id: str):
     return card
 
 
+def _walk_blocks(block):
+    """Depth-first walk of a card's block tree (root + nested bodies)."""
+    yield block
+    for child in (getattr(block, "body", None) or []):
+        yield from _walk_blocks(child)
+
+
+@router.get("/{card_id}/scope-status")
+async def get_card_scope_status(project_id: str, card_id: str):
+    """Per-block escalation-approval status for a card (ASR F-001).
+
+    For every block whose scope grants a privilege escalation (shell_commands
+    or writable paths), report whether a signed approval record matches its
+    CURRENT scope hash. Drives the "needs approval" banner in TaskCardEditor.
+    Blocks with no escalation (or restriction-only scopes) are omitted — they
+    run at the floor and need no approval. The signCommand is the exact
+    ``ziya-approve`` invocation that mints the missing record.
+    """
+    from app.config import scope_canonical as sc
+    from app.utils import scope_approvals as sa
+
+    card = _get_storage(project_id).get(card_id)
+    if not card:
+        raise HTTPException(status_code=404, detail="Task card not found")
+
+    blocks = []
+    staged_scopes = {}  # "project:card:block" -> {name, scope} for the signer
+    for block in _walk_blocks(card.root):
+        scope = getattr(block, "scope", None)
+        escalation = sc.task_escalation_block(scope)
+        if not escalation:
+            continue  # no privilege-bearing escalation -> nothing to approve
+        try:
+            authorized = sa.is_scope_authorized(block.id, scope)
+        except Exception as e:  # noqa: BLE001 — status must never 500 the editor
+            logger.warning(f"scope-status check failed for block {block.id}: {e}")
+            authorized = False
+        sign_command = ""
+        if not authorized:
+            sign_command = (
+                f"sudo ziya-approve --task {card_id} "
+                f"--block {block.id} --project {project_id}"
+            )
+            # Stage the DECRYPTED scope so the out-of-process signer (which runs
+            # under sudo with no plugin system / KEK and therefore cannot
+            # decrypt the card itself) can recompute the identical scope hash.
+            # Stage the full scope shape (shell_commands + paths) that
+            # task_escalation_block reads, NOT the reduced escalation block, so
+            # the signer's hash matches what the runtime gate re-derives. This
+            # cannot widen authority: the gate independently re-hashes the real
+            # card, so a stale staging just fails the match and clamps to floor.
+            staged_scopes[f"{project_id}:{card_id}:{block.id}"] = {
+                "name": getattr(block, "name", "") or "",
+                "scope": {
+                    "shell_commands": list(getattr(scope, "shell_commands", []) or []),
+                    "paths": [
+                        {"path": getattr(e, "path", None),
+                         "write": bool(getattr(e, "write", False))}
+                        for e in (getattr(scope, "paths", []) or [])
+                    ],
+                },
+            }
+        blocks.append({
+            "blockId": block.id,
+            "name": getattr(block, "name", "") or "",
+            "hasEscalation": True,
+            "authorized": bool(authorized),
+            "escalation": {k: list(v) for k, v in escalation.items()},
+            "signCommand": sign_command,
+        })
+
+    # Merge-write the staging file: replace this card's entries (drop stale ones
+    # for blocks now approved/changed), preserve other cards' staged scopes.
+    try:
+        import json as _json
+        staging_path = get_ziya_home() / "pending_task_approvals.json"
+        try:
+            existing = _json.loads(staging_path.read_text())
+            if not isinstance(existing, dict):
+                existing = {}
+        except (OSError, ValueError):
+            existing = {}
+        prefix = f"{project_id}:{card_id}:"
+        existing = {k: v for k, v in existing.items() if not k.startswith(prefix)}
+        existing.update(staged_scopes)
+        staging_path.parent.mkdir(parents=True, exist_ok=True)
+        staging_path.write_text(_json.dumps(existing, indent=2))
+    except Exception as e:  # noqa: BLE001 — staging is best-effort; never 500 the editor
+        logger.warning(f"Could not stage task scopes for signing: {e}")
+
+    return {
+        "cardId": card_id,
+        "anyUnapproved": any(not b["authorized"] for b in blocks),
+        "blocks": blocks,
+    }
+
+
 @router.post("", response_model=TaskCard, status_code=201)
 async def create_task_card(project_id: str, body: TaskCardCreate):
     return _get_storage(project_id).create(body)
@@ -102,6 +199,7 @@ async def _launch_run_for_card(
     project_id: str,
     card_id: str,
     source_conversation_id=None,
+    parameter_overrides=None,
 ) -> TaskRun:
     """Shared helper: validates the card, creates a TaskRun, seeds
     block_states, and schedules the background executor task.
@@ -174,6 +272,7 @@ async def _launch_run_for_card(
                 project_root=project_root,
                 project_id=project_id,
                 storage=run_storage,
+                overrides=dict(parameter_overrides or {}),
             )
             logger.info(f"🚀 TASK_RUN: {run_id[:8]} → execute_block start (type={block.block_type})")
             artifact = await execute_block(block, ctx)
@@ -218,6 +317,7 @@ async def launch_task_card(
     return await _launch_run_for_card(
         project_id=project_id, card_id=card_id,
         source_conversation_id=body.source_conversation_id,
+        parameter_overrides=body.parameter_overrides,
     )
 
 

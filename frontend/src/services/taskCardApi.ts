@@ -76,4 +76,28 @@ export const taskCardApi = {
       body: JSON.stringify(body),
     }));
   },
+
+  // Per-block escalation-approval status for a card (ASR F-001). Reports which
+  // blocks request shell/write escalation and whether each is signed, plus the
+  // exact `ziya-approve` command to run. Drives the "needs approval" banner.
+  async scopeStatus(
+    projectId: string, cardId: string,
+  ): Promise<CardScopeStatus> {
+    return json(await fetch(`${base(projectId)}/${cardId}/scope-status`));
+  },
 };
+
+export interface CardScopeBlockStatus {
+  blockId: string;
+  name: string;
+  hasEscalation: boolean;
+  authorized: boolean;
+  escalation: Record<string, string[]>;
+  signCommand: string;
+}
+
+export interface CardScopeStatus {
+  cardId: string;
+  anyUnapproved: boolean;
+  blocks: CardScopeBlockStatus[];
+}

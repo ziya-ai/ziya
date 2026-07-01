@@ -54,6 +54,45 @@ async def test_until_terminates_when_model_says_yes(ctx):
 
 
 @pytest.mark.asyncio
+async def test_explicit_condition_ignores_inner_self_assessment(ctx):
+    """Regression: an explicit until_condition must NOT be short-circuited
+    by the inner task's self_assessment.
+
+    The "count to 300 by 20s" card had until_condition="counter is above
+    300" wrapping a task "increase count by 20".  Each task reported
+    objective_met="true" for its OWN atomic work (it did add 20), which
+    layer 1 read as "loop done" and broke after iteration 0 — producing
+    one iteration and a final count of 1.  With the guard, layer 1 is
+    inert when a condition is set and only the model evaluator (layer 3)
+    decides termination.
+    """
+    explicit_eval_calls = []
+
+    async def eval_explicit_cond(condition, artifact):
+        explicit_eval_calls.append(condition)
+        return len(explicit_eval_calls) >= 5  # judge says "above 300" on 5th pass
+
+    async def task_always_self_done(block, **kw):
+        # Always declares its own task complete — the trap that used to
+        # collapse the loop after a single iteration.
+        return Artifact(
+            summary="added 20", failed=False,
+            self_assessment={"objective_met": "true", "rationale": "added 20"},
+        )
+
+    block = Block(
+        block_type="until", id="u", name="u",
+        until_mode="model", until_condition="counter is above 300", until_max=100,
+        body=[_task("x")],
+    )
+    with patch("app.agents.block_executor.execute_task_block", side_effect=task_always_self_done), \
+         patch("app.agents.block_executor._evaluate_until_condition_with_model",
+               side_effect=eval_explicit_cond):
+        await execute_block(block, ctx)
+    assert len(explicit_eval_calls) == 5  # ran 5 iterations, not 1
+
+
+@pytest.mark.asyncio
 async def test_until_respects_max_when_condition_never_met(ctx):
     """Condition never satisfied → loop runs until_max times then stops."""
     eval_calls = []

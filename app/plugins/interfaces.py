@@ -421,12 +421,30 @@ class EncryptionPolicy:
     # membership before deciding whether to call the encryptor.
     categories_requiring_encryption: Set[str] = field(default_factory=lambda: set())
 
+    # Categories that must NEVER be encrypted, checked BEFORE the
+    # empty-set "encrypt everything" rule below.  This is the opt-out
+    # for authored configuration that isn't sensitive — task card
+    # *definitions* (block trees, instructions, counts) are the
+    # canonical case: they're the same character as a tasks.yaml or CI
+    # config, and keeping them plaintext lets agents and humans read,
+    # diff, and version them directly.  Task *run artifacts* are NOT in
+    # this set — they can contain model output about the codebase and
+    # stay encrypted under their own (session_data) category.  A
+    # security-conscious provider can drop a category from its
+    # never-encrypt set to force encryption; the merge intersects across
+    # providers, so encryption wins if any provider demands it.
+    never_encrypted_categories: Set[str] = field(
+        default_factory=lambda: {"task_definition"})
+
     # Human-readable explanation (appears in audit logs / ASR docs).
     policy_reason: str = ""
 
     def requires_encryption(self, category: str) -> bool:
         """Check if a specific data category requires encryption."""
         if not self.enabled:
+            return False
+        # Explicit never-encrypt opt-out wins over the catch-all below.
+        if category in self.never_encrypted_categories:
             return False
         # Empty set means "encrypt everything"
         if not self.categories_requiring_encryption:

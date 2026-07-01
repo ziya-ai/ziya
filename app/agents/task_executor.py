@@ -192,6 +192,23 @@ async def execute_task_block(
             logger.debug("Stream relay push failed: %s", e)
 
     scope = block.scope or None
+    # ── Task-scope authorization gate (ASR F-001, design doc §4.2) ──────────
+    # Before any privilege-bearing grant (shell_commands / writable paths) is
+    # activated below, route the scope through the signed approval chokepoint.
+    # An escalating scope with no matching signed approval is replaced by a
+    # floor-only view (shell_commands dropped, write flags stripped) so the task
+    # still runs, just un-escalated. A non-escalating scope passes through
+    # unchanged. This is surface-agnostic: the CLI path (apply_task_permissions)
+    # consults the same store. The agent cannot mint an approval (root key).
+    if scope is not None:
+        from app.utils.scope_approvals import authorize_scope
+        _authz = authorize_scope(block.id, scope)
+        if _authz is not scope:
+            logger.warning(
+                f"🔒 TASK_EXEC: scope escalation for block {block.id!r} "
+                f"({block.name!r}) is not authorized — running at default floor"
+            )
+        scope = _authz
     scope_paths = (scope.paths if scope else []) or []
     scope_tools = set((scope.tools if scope else []) or [])
     scope_skills = (scope.skills if scope else []) or []

@@ -67,7 +67,11 @@ export interface Artifact {
 
 // ── The recursive Block type ──────────────────────────────
 
-export type BlockType = 'task' | 'repeat' | 'parallel' | 'until' | 'schedule';
+// 'group' is a neutral run-once sequential container.  It carries no
+// loop/trigger semantics and renders without visible chrome — it is the
+// invisible card-root wrapper that lets a State precede a loop without
+// entering the loop's scope.  Backend dispatches it to _execute_sequence.
+export type BlockType = 'task' | 'repeat' | 'parallel' | 'until' | 'schedule' | 'state' | 'group';
 export type RepeatMode = 'count' | 'until' | 'for_each';
 export type PropagateMode = 'none' | 'last' | 'all';
 export type UntilMode = 'model' | 'expression';
@@ -110,6 +114,20 @@ export interface Block {
   schedule_enabled?: boolean;
   schedule_catch_up?: boolean;
   schedule_max_runs?: number | null;
+
+  // State-only: read-only run-scoped variables (name -> literal).
+  // Tasks read them via {{var.NAME}} templating; nothing writes back.
+  // Placement is the reset policy — a State block inside a Repeat/Until
+  // body re-applies its literals each iteration; at top level it sets
+  // once per run.  See app/agents/block_executor.py::_execute_state.
+  state_variables?: Record<string, unknown> | null;
+
+  // State prose context — the PRIMARY, conversational form of a State
+  // block.  Freeform English givens that flow into every in-scope
+  // task's context automatically, no {{var}} templating required.
+  // ``state_variables`` is the optional formal adjunct.  Same
+  // placement-is-reset-policy.  See block_executor.py::_execute_state.
+  state_context?: string | null;
 
   // Body (Task ignores this)
   body: Block[];

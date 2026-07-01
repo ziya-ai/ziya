@@ -13,7 +13,7 @@
 import { accumulateLive, type LiveTaskState } from '../useTaskRunStream';
 
 const EMPTY: LiveTaskState = {
-  text: {}, toolCalls: [], events: [], iterations: [],
+  text: {}, toolCalls: [], events: [], iterations: [], variables: {},
 };
 
 /**
@@ -184,5 +184,109 @@ describe('accumulateLive — iteration tracking', () => {
     // Flat list still has them.
     expect(out.events.some(e => e.type === 'run_started')).toBe(true);
     expect(out.events.some(e => e.type === 'run_completed')).toBe(true);
+  });
+
+  it('seals a bare task iteration on task_finished (no iteration_completed)', () => {
+    // A top-level task block (not wrapped in Repeat/Until) emits
+    // task_finished, NOT iteration_completed.  Without the seal the
+    // auto-opened iteration would stay 'running' forever even after
+    // the run goes terminal — the "header says done, block stuck
+    // RUNNING" bug.
+    const out = applyEvents(EMPTY, [
+      { type: 'task_started', block_id: 'b1' },
+      { type: 'task_text_delta', block_id: 'b1', content: 'working' },
+      { type: 'task_finished', block_id: 'b1', ok: true, duration_ms: 900, tokens: 12 },
+    ]);
+    expect(out.iterations).toHaveLength(1);
+    expect(out.iterations[0]).toMatchObject({
+      index: 0,
+      blockId: 'b1',
+      streamText: 'working',
+      status: 'passed',
+    });
+  });
+
+  it('marks a bare task iteration failed when task_finished reports ok=false', () => {
+    const out = applyEvents(EMPTY, [
+      { type: 'task_text_delta', block_id: 'b1', content: 'tried' },
+      { type: 'task_finished', block_id: 'b1', ok: false },
+    ]);
+    expect(out.iterations[0].status).toBe('failed');
+  });
+
+  it('terminal backstop: run_completed seals any still-running iteration', () => {
+    // If a task_finished is dropped on the wire, an iteration could be
+    // left 'running' when the run goes terminal.  Nothing can still be
+    // executing under a completed run, so the backstop seals it.
+    const out = applyEvents(EMPTY, [
+      { type: 'iteration_started', block_id: 'b1', index: 0 },
+      { type: 'task_text_delta', block_id: 'b1', content: 'partial' },
+      { type: 'run_completed', run_id: 'r1', status: 'done' },
+    ]);
+    expect(out.iterations[0].status).toBe('passed');
+  });
+
+  it('terminal backstop: run_failed also seals dangling running iterations', () => {
+    const out = applyEvents(EMPTY, [
+      { type: 'iteration_started', block_id: 'b1', index: 0 },
+      { type: 'run_failed', run_id: 'r1', status: 'failed' },
+    ]);
+    expect(out.iterations[0].status).toBe('passed');
+  });
+
+  it('terminal backstop does not disturb already-sealed iterations', () => {
+    // A genuinely failed iteration that sealed itself must keep its
+    // 'failed' status — the backstop only touches 'running' buckets.
+    const out = applyEvents(EMPTY, [
+      { type: 'iteration_started', block_id: 'b1', index: 0 },
+      { type: 'iteration_completed', block_id: 'b1', index: 0, status: 'failed' },
+      { type: 'run_completed', run_id: 'r1', status: 'done' },
+    ]);
+    expect(out.iterations[0].status).toBe('failed');
+  });
+});
+
+describe('accumulateLive — state_applied variables', () => {
+  it('merges resolved values from a state_applied event', () => {
+    const out = applyEvents(EMPTY, [
+      { type: 'state_applied', block_id: 's1',
+        variables: ['target', 'region'],
+        values: { target: 'prod', region: 'us-east-1' } },
+    ]);
+    expect(out.variables).toEqual({ target: 'prod', region: 'us-east-1' });
+  });
+
+  it('last-write-wins across multiple state_applied events (loop reset)', () => {
+    const out = applyEvents(EMPTY, [
+      { type: 'state_applied', block_id: 's1', values: { retries: 0 } },
+      { type: 'state_applied', block_id: 's1', values: { retries: 0 } },
+      { type: 'state_applied', block_id: 's2', values: { target: 'prod' } },
+    ]);
+    expect(out.variables).toEqual({ retries: 0, target: 'prod' });
+  });
+
+  it('ignores a state_applied event with no values (prose-only block)', () => {
+    const out = applyEvents(EMPTY, [
+      { type: 'state_applied', block_id: 's1', has_context: true, values: {} },
+    ]);
+    expect(out.variables).toEqual({});
+  });
+
+  it('preserves non-string value types through the reducer', () => {
+    const out = applyEvents(EMPTY, [
+      { type: 'state_applied', block_id: 's1',
+        values: { count: 42, flags: ['a', 'b'], enabled: true } },
+    ]);
+    expect(out.variables).toEqual({ count: 42, flags: ['a', 'b'], enabled: true });
+  });
+
+  it('does not put state values onto the flat text/toolCalls channels', () => {
+    const out = applyEvents(EMPTY, [
+      { type: 'state_applied', block_id: 's1', values: { x: 1 } },
+    ]);
+    expect(out.text).toEqual({});
+    expect(out.toolCalls).toEqual([]);
+    // Event is still recorded on the timeline.
+    expect(out.events.some(e => e.type === 'state_applied')).toBe(true);
   });
 });

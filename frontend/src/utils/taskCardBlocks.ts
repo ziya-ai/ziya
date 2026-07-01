@@ -73,11 +73,44 @@ export const makeScheduleBlock = (name: string = 'Schedule'): Block => ({
   body: [makeTaskBlock('Scheduled action')],
 });
 
+/**
+ * State = a read-only declaration of run-scoped named variables.  A
+ * leaf (no body), like Task.  Placement encodes the reset policy: at
+ * the top of a once-running body it sets once per run; inside a
+ * Repeat/Until body it re-applies its literals each iteration.  Tasks
+ * read the values via {{var.NAME}}.  See app/agents/block_executor.py
+ * ::_execute_state.
+ */
+export const makeStateBlock = (name: string = 'Initial state'): Block => ({
+  block_type: 'state',
+  id: nextId('st'),
+  name,
+  state_context: '',
+  state_variables: {},
+  body: [],
+});
+
+/**
+ * Group = a neutral run-once sequential container.  No loop/trigger
+ * semantics: it runs its body top-to-bottom exactly once (backend
+ * dispatches it to _execute_sequence).  It is the invisible card-root
+ * wrapper — rendered without chrome — that lets a State precede a loop
+ * without entering the loop's scope, and lets operators follow a State.
+ */
+export const makeGroupBlock = (name: string = 'Steps'): Block => ({
+  block_type: 'group',
+  id: nextId('g'),
+  name,
+  body: [],
+});
+
 export const makeBlock = (type: BlockType, name?: string): Block => {
   if (type === 'repeat') return makeRepeatBlock(name);
   if (type === 'parallel') return makeParallelBlock(name);
   if (type === 'until') return makeUntilBlock(name);
   if (type === 'schedule') return makeScheduleBlock(name);
+  if (type === 'state') return makeStateBlock(name);
+  if (type === 'group') return makeGroupBlock(name);
   return makeTaskBlock(name);
 };
 
@@ -104,14 +137,26 @@ export const updateBlockById = (
 /**
  * Immutably remove a block by id. Returns null if the root itself was
  * targeted (caller must handle that case).
+ *
+ * Change-tracking is by child reference-inequality (the way
+ * updateBlockById works), NOT by immediate-body length: a removal deep
+ * in a subtree leaves the parent's direct child count unchanged, so a
+ * length-only guard would return the stale original and silently drop
+ * the rebuilt subtree.  moveBlock relies on this returning a tree that
+ * actually no longer contains the source.
  */
 export const removeBlockById = (root: Block, id: string): Block | null => {
   if (root.id === id) return null;
   if (!root.body || root.body.length === 0) return root;
+  let changed = false;
   const newBody = root.body
-    .map(child => removeBlockById(child, id))
+    .map(child => {
+      const next = removeBlockById(child, id);
+      if (next !== child) changed = true;
+      return next;
+    })
     .filter((b): b is Block => b !== null);
-  if (newBody.length === root.body.length) return root;
+  if (!changed) return root;
   return { ...root, body: newBody };
 };
 
@@ -125,3 +170,83 @@ export const appendChildBlock = (
     ...parent,
     body: [...(parent.body || []), child],
   }));
+
+/**
+ * Find a block anywhere in the tree by id. Returns null if absent.
+ */
+export const findBlockById = (root: Block, id: string): Block | null => {
+  if (root.id === id) return root;
+  for (const child of root.body ?? []) {
+    const found = findBlockById(child, id);
+    if (found) return found;
+  }
+  return null;
+};
+
+/**
+ * True when `candidateId` is `id` itself or lives anywhere inside
+ * `id`'s subtree. Used to reject moves that would create a cycle
+ * (dropping a block into its own descendant).
+ */
+export const isSelfOrDescendant = (
+  root: Block, id: string, candidateId: string,
+): boolean => {
+  const node = findBlockById(root, id);
+  if (!node) return false;
+  return findBlockById(node, candidateId) !== null;
+};
+
+/**
+ * Whether `sourceId` may be moved into `targetParentId`'s body.
+ * Rejects: moving the root, dropping into self, dropping into a Task
+ * (leaves have no body), and any move that would form a cycle.
+ */
+export const canMoveBlock = (
+  root: Block, sourceId: string, targetParentId: string,
+): boolean => {
+  if (sourceId === root.id) return false;        // root has no parent to move from
+  if (sourceId === targetParentId) return false; // can't drop a block into itself
+  const target = findBlockById(root, targetParentId);
+  if (!target) return false;
+  if (target.block_type === 'task') return false; // tasks are leaves, no body
+  if (isSelfOrDescendant(root, sourceId, targetParentId)) return false; // cycle
+  return true;
+};
+
+/**
+ * Move `sourceId` into `targetParentId`'s body, positioned immediately
+ * before `beforeId` (or appended when `beforeId` is null). Returns the
+ * SAME root reference (no-op) when the move is illegal or a no-op, so
+ * callers can cheaply detect "nothing changed".
+ *
+ * The detach-then-insert order, with the insertion point resolved by
+ * child id (not raw index) AFTER removal, makes same-parent reordering
+ * immune to index drift.
+ */
+export const moveBlock = (
+  root: Block,
+  sourceId: string,
+  targetParentId: string,
+  beforeId: string | null,
+): Block => {
+  // Dropping a block onto the gap immediately before itself is a no-op.
+  if (beforeId === sourceId) return root;
+  if (!canMoveBlock(root, sourceId, targetParentId)) return root;
+
+  const source = findBlockById(root, sourceId);
+  if (!source) return root;
+
+  const without = removeBlockById(root, sourceId);
+  if (!without) return root; // root removal — guarded above, defensive
+
+  return updateBlockById(without, targetParentId, parent => {
+    const body = parent.body ? parent.body.slice() : [];
+    let idx = body.length;
+    if (beforeId !== null) {
+      const at = body.findIndex(b => b.id === beforeId);
+      if (at >= 0) idx = at;
+    }
+    body.splice(idx, 0, source);
+    return { ...parent, body };
+  });
+};

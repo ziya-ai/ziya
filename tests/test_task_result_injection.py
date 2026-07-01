@@ -162,7 +162,10 @@ def test_terminal_done_run_injects_system_message(env_with_chat):
     assert "Used pattern A" in body
 
 
-def test_running_state_does_not_inject(env_with_chat):
+def test_running_state_injects_status_line(env_with_chat):
+    # Gap C: a running card IS surfaced so the model can answer "fix the
+    # task above" mid-execution — the exact case it was previously blind
+    # to.  No artifact yet, so the line carries status only, no summary.
     env = env_with_chat
     chat_id = "c_" + uuid.uuid4().hex[:8]
     _write_chat(env, chat_id, [{"id": "m1", "role": "human",
@@ -176,8 +179,34 @@ def test_running_state_does_not_inject(env_with_chat):
     from app.server import _inject_task_results
     _inject_task_results(history, chat_id)
 
-    # No injection — only the original message remains.
-    assert len(history) == 1
+    assert len(history) == 2
+    body = history[1]["content"]
+    assert history[1].get("role") == "system"
+    assert "Task" in body
+    assert "is running" in body
+    assert "running" in body
+    # No artifact → no Summary/Decisions lines.
+    assert "Summary:" not in body
+
+
+def test_queued_run_without_artifact_injects_without_crash(env_with_chat):
+    # A queued run has no artifact at all; the in-flight path must not
+    # assume artifact is present.
+    env = env_with_chat
+    chat_id = "c_" + uuid.uuid4().hex[:8]
+    _write_chat(env, chat_id, [{"id": "m1", "role": "human",
+                                "content": "hi", "timestamp": 1000}])
+    _write_card(env, "card_1", "Q")
+    _write_run(env, "run_1", "card_1", "queued", summary="", decisions=[])
+    _write_binding(env, chat_id, "b1", "card_1", "run_1",
+                   anchor_message_id="m1", created_at=1500)
+
+    history = [{"type": "human", "content": "hi", "_timestamp": 1000}]
+    from app.server import _inject_task_results
+    _inject_task_results(history, chat_id)
+
+    assert len(history) == 2
+    assert "is running" in history[1]["content"]
 
 
 def test_unanchored_binding_uses_chronological_splice(env_with_chat):

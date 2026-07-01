@@ -124,6 +124,7 @@ const LiveTextTab: React.FC<{
             <MarkdownRenderer
               markdown={stripAssessmentTag(content)}
               enableCodeApply={false}
+              breaks={true}
               isStreaming={true}
               isSubRender={true}
             />
@@ -182,6 +183,7 @@ const IterationSectionsView: React.FC<{
               <MarkdownRenderer
                 markdown={stripAssessmentTag(it.streamText)}
                 enableCodeApply={false}
+                breaks={true}
                 isStreaming={it.status === 'running'}
                 isSubRender={true}
               />

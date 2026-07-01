@@ -597,8 +597,12 @@ class TestUntilExitConditions:
     async def test_self_assessment_takes_priority_over_until_condition(
         self, storage, until_run,
     ):
-        """Layer A fires before Layer C: even when an until_condition
-        is set, a true self_assessment short-circuits the model call."""
+        """Explicit until_condition takes priority over the inner task's
+        self_assessment.  The sandboxed inner task only knows its own
+        atomic instruction, so its objective_met='true' describes THAT
+        task, not the loop's exit condition — trusting it would collapse
+        an N-step loop after iteration 0 (the 'count to 300 ran once'
+        bug).  When a condition is set, only the model evaluator decides."""
         block = Block(
             block_type="until", id="until-1", name="u",
             until_mode="model", until_condition="some condition",
@@ -622,6 +626,10 @@ class TestUntilExitConditions:
             ):
                 await execute_block(block, ctx)
 
-        assert evaluator_calls[0] == 0, (
-            "self_assessment=true should short-circuit the until-evaluator"
+        # With an explicit condition, the evaluator runs every iteration
+        # (self_assessment is inert); the loop runs to until_max=5 because
+        # this stub evaluator always returns False.
+        assert evaluator_calls[0] == 5, (
+            "explicit until_condition must be evaluated, not short-circuited "
+            "by the inner task's self_assessment"
         )

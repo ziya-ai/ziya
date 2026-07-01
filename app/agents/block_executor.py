@@ -25,7 +25,7 @@ import hashlib
 import logging
 import traceback
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 from ..models.task_card import Artifact, ArtifactPart, Block
@@ -69,6 +69,44 @@ class ExecutionContext:
     # nested Repeats stack so an inner iteration can still see the
     # outer {{index}} / {{item}}.  Rightmost (top) wins on conflict.
     binding_stack: List["task_templating.IterationBindings"] = field(default_factory=list)
+    # Run-scoped read-only variables declared by State blocks.  Flat
+    # namespace, last-write-wins.  Read by tasks via {{var.NAME}}
+    # templating; never written back by a task (sandbox invariant).
+    # A State block inside a loop body re-applies its literals each
+    # iteration — placement is the reset policy.
+    variables: Dict[str, Any] = field(default_factory=dict)
+    # Launch-time variable overrides (from TaskCardRun.parameter_overrides).
+    # These WIN over State-block authored values at read time: merged on
+    # top of ``variables`` whenever bindings are built, so an override
+    # survives a loop body re-applying its baseline literals each cycle.
+    # Read-only like ``variables``; never written by a task.
+    overrides: Dict[str, Any] = field(default_factory=dict)
+    # State prose context, keyed by the State block's id.  Each State
+    # block with a ``state_context`` writes its prose here; keying by
+    # block id means a State block re-executing inside a loop overwrites
+    # its own entry rather than duplicating (idempotent re-application,
+    # matching the variables reset policy).  Surfaced to every in-scope
+    # task as a standing-context preamble.  Insertion order preserved.
+    context_notes: Dict[str, str] = field(default_factory=dict)
+
+    # Sibling-result stack, one slot per active sequence depth.  Each
+    # _execute_sequence pushes a slot on entry and writes the most-recent
+    # completed sibling's artifact into it after each child runs; the
+    # next sibling reads the top slot so a task can see the prior
+    # sibling's result (prose auto-context + {{previous_sibling}}).
+    # A stack (not a scalar) so a nested sequence's siblings don't
+    # clobber the outer sequence's slot — the top is always the current
+    # depth.  None until the first sibling at a depth completes.
+    sibling_stack: List[Optional[Artifact]] = field(default_factory=list)
+
+    # Run-scoped registry of completed block artifacts, keyed by block.id.
+    # Populated in execute_block as each block returns (so it captures
+    # containers and their children, anywhere in the tree).  Backs the
+    # {{sibling("block-id")}} by-id lookup — an explicit reference to any
+    # block that has completed, unlike the positional previous_sibling.
+    # Last-write-wins: a block re-executed inside a loop body overwrites
+    # its own entry, so the lookup sees that block's most recent result.
+    artifact_registry: Dict[str, Artifact] = field(default_factory=dict)
 
     def cancel_requested(self) -> bool:
         if self.storage is None:
@@ -92,21 +130,33 @@ async def execute_block(block: Block, ctx: ExecutionContext) -> Artifact:
     """Execute any block — dispatcher over block_type."""
     if block.block_type == "task":
         effective = _apply_templating_to_task(block, ctx)
-        return await execute_task_block(
+        artifact = await execute_task_block(
             effective,
             project_root=ctx.project_root,
             project_id=ctx.project_id,
             run_id=ctx.run_id,
         )
-    if block.block_type == "repeat":
-        return await _execute_repeat(block, ctx)
-    if block.block_type == "parallel":
-        return await _execute_parallel(block, ctx)
-    if block.block_type == "until":
-        return await _execute_until(block, ctx)
-    if block.block_type == "schedule":
-        return await _execute_schedule_passthrough(block, ctx)
-    raise TaskExecutorError(f"Unknown block_type: {block.block_type!r}")
+    elif block.block_type == "repeat":
+        artifact = await _execute_repeat(block, ctx)
+    elif block.block_type == "parallel":
+        artifact = await _execute_parallel(block, ctx)
+    elif block.block_type == "until":
+        artifact = await _execute_until(block, ctx)
+    elif block.block_type == "schedule":
+        artifact = await _execute_schedule_passthrough(block, ctx)
+    elif block.block_type == "state":
+        artifact = await _execute_state(block, ctx)
+    elif block.block_type == "group":
+        artifact = await _execute_sequence(block.body, ctx)
+    else:
+        raise TaskExecutorError(f"Unknown block_type: {block.block_type!r}")
+    # Register the completed artifact by block id for {{sibling("id")}}
+    # lookups by later blocks.  Skip blocks with no id (shouldn't happen
+    # post-_assign_block_ids, but guard so a stray empty id can't clobber
+    # the registry under the "" key).  Last-write-wins for loop re-runs.
+    if block.id:
+        ctx.artifact_registry[block.id] = artifact
+    return artifact
 
 
 def _until_condition_met(
@@ -148,7 +198,7 @@ def _build_iteration_context(bindings: "task_templating.IterationBindings") -> s
 
     Returns the empty string when there's nothing useful to surface
     (e.g. parallel count-mode iterations, where bindings carry only
-    \`index\` -- not informative on its own).
+    'index' -- not informative on its own).
     """
     has_previous = bindings.previous is not None
     has_item = bindings.item is not None
@@ -176,20 +226,93 @@ def _build_iteration_context(bindings: "task_templating.IterationBindings") -> s
     return "\n".join(lines)
 
 
+def _build_state_context(ctx: "ExecutionContext") -> str:
+    """Build the standing-context preamble from State-block prose.
+
+    This is the conversational baseline: freeform givens authored in a
+    State block's ``state_context`` flow into the task here, without the
+    author needing any {{var}} templating.  Multiple State blocks'
+    notes are joined in insertion order.  Returns empty string when no
+    prose givens are active.
+    """
+    notes = [n.strip() for n in ctx.context_notes.values() if n and n.strip()]
+    if not notes:
+        return ""
+    body = "\n\n".join(notes)
+    return f"[Assumptions and context for this task -- treat these as given]\n{body}"
+
+
+def _build_sibling_context(ctx: "ExecutionContext") -> str:
+    """Build a standing-context preamble from the prior sibling's result.
+
+    Mirrors the iteration-context and State-prose auto-injection: a task
+    that follows another block in a sequence (e.g. "print the final
+    count" after an Until loop) sees the prior sibling's summary without
+    needing any {{previous_sibling}} templating.  Reads the top of the
+    sibling stack (the current sequence depth); empty when this is the
+    first sibling or there is no enclosing sequence.
+    """
+    if not ctx.sibling_stack:
+        return ""
+    prev = ctx.sibling_stack[-1]
+    if prev is None:
+        return ""
+    summary = (prev.summary or "").strip()
+    if not summary:
+        return ""
+    return (
+        "[Result of the previous step -- automatically provided]\n"
+        f"{summary}"
+    )
+
+
 def _apply_templating_to_task(block: Block, ctx: ExecutionContext) -> Block:
     """Return a shallow copy of the task block with instructions rendered
     against the innermost active iteration bindings, then prepended with
     an auto-generated iteration-context block so prior results are
     surfaced to the model without requiring explicit templating.
-    Returns the block unchanged when no Repeat/Until is active."""
-    if not ctx.binding_stack or not block.instructions:
+    Renders when either a Repeat/Until is active (iteration bindings) or
+    run-scoped State variables exist — a top-level task with no loop can
+    still reference {{var.NAME}}.  Returns the block unchanged when
+    neither applies or nothing changed."""
+    if not block.instructions:
         return block
-    bindings = ctx.binding_stack[-1]
+    sibling_prev = ctx.sibling_stack[-1] if ctx.sibling_stack else None
+    if (not ctx.binding_stack and not ctx.variables and not ctx.overrides
+            and not ctx.context_notes and sibling_prev is None
+            and not ctx.artifact_registry):
+        return block
+    base = ctx.binding_stack[-1] if ctx.binding_stack else task_templating.IterationBindings()
+    # Merge run-scoped variables with launch-time overrides (overrides
+    # win) and attach without mutating the stacked binding.  Empty merge
+    # leaves the binding untouched.
+    merged = {**ctx.variables, **ctx.overrides}
+    # Attach merged vars and the prior-sibling artifact for templating.
+    _updates = {}
+    if merged:
+        _updates["variables"] = merged
+    if sibling_prev is not None:
+        _updates["previous_sibling"] = sibling_prev
+    if ctx.artifact_registry:
+        _updates["sibling_artifacts"] = ctx.artifact_registry
+    bindings = replace(base, **_updates) if _updates else base
     rendered = task_templating.render(block.instructions, bindings)
-    context = _build_iteration_context(bindings)
-    if not context and rendered == block.instructions:
+    # Assemble preambles, prose givens first (the conversational
+    # baseline), then the auto iteration-context (loop-only).  Both are
+    # standing context the task receives without templating.
+    preambles: List[str] = []
+    state_ctx = _build_state_context(ctx)
+    if state_ctx:
+        preambles.append(state_ctx)
+    sibling_ctx = _build_sibling_context(ctx)
+    if sibling_ctx:
+        preambles.append(sibling_ctx)
+    iter_ctx = _build_iteration_context(bindings) if ctx.binding_stack else ""
+    if iter_ctx:
+        preambles.append(iter_ctx)
+    if not preambles and rendered == block.instructions:
         return block
-    final = f"{context}\n\n{rendered}" if context else rendered
+    final = "\n\n".join(preambles + [rendered]) if preambles else rendered
     return block.model_copy(update={"instructions": final})
 
 
@@ -197,14 +320,26 @@ async def _execute_sequence(
     blocks: List[Block], ctx: ExecutionContext,
 ) -> Artifact:
     """Implicit sequence: run top-to-bottom, return the last block's
-    artifact.  Cancel is checked between siblings."""
+    artifact.  Cancel is checked between siblings.
+
+    Threads each completed sibling's artifact into ctx.sibling_stack so
+    the next sibling can see it (prose auto-context + {{previous_sibling}}).
+    Pushes a fresh slot for this depth and pops it on exit so a nested
+    sequence never leaks its last sibling to the enclosing one.
+    """
     if not blocks:
         return Artifact(summary="", created_at=time.time())
     last: Optional[Artifact] = None
-    for i, child in enumerate(blocks):
-        if i > 0 and ctx.cancel_requested():
-            raise BlockExecutionCancelled()
-        last = await execute_block(child, ctx)
+    ctx.sibling_stack.append(None)
+    try:
+        for i, child in enumerate(blocks):
+            if i > 0 and ctx.cancel_requested():
+                raise BlockExecutionCancelled()
+            last = await execute_block(child, ctx)
+            # Make this sibling's result visible to the next sibling.
+            ctx.sibling_stack[-1] = last
+    finally:
+        ctx.sibling_stack.pop()
     assert last is not None
     return last
 
@@ -539,7 +674,17 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
         # The task executor parses <self_assessment objective_met="..."
         # rationale="..." /> at end of response into artifact.self_assessment.
         # For goal cards (no until_condition), this is the primary signal.
-        sa = getattr(artifact, "self_assessment", None) or {}
+        #
+        # GUARDED on `not condition` — same guard as layer 2 below.  When
+        # the user wrote an explicit until_condition ("counter is above
+        # 300"), the model-evaluated condition (layer 3) is the source of
+        # truth.  The inner task's self_assessment describes whether *its
+        # own atomic task* succeeded ("did I add 20? yes") — which is
+        # unrelated to the loop's exit — and would otherwise break the
+        # loop after iteration 0.  This was the "Until ran once, count=1"
+        # bug: a per-iteration task that always reports success collapsed
+        # an N-iteration loop into a single pass.
+        sa = {} if condition else (getattr(artifact, "self_assessment", None) or {})
         objective_met = (sa.get("objective_met") or "").strip().lower()
         rationale = (sa.get("rationale") or "").strip()
         if objective_met == "true":
@@ -615,3 +760,57 @@ async def _execute_schedule_passthrough(
         return Artifact(summary="(empty schedule block)", created_at=time.time())
     logger.info(f"schedule block {block.id} executed directly (passthrough)")
     return await _execute_sequence(block.body, ctx)
+
+
+async def _execute_state(block: Block, ctx: ExecutionContext) -> Artifact:
+    """Apply a State block's read-only variable declarations to the run.
+
+    State is a leaf: it declares run-scoped named variables (name ->
+    literal) that tasks read via {{var.NAME}} templating.  It writes
+    those literals into ``ctx.variables`` and returns a trivial artifact.
+
+    Placement is the reset policy.  A State block in a body that runs
+    once (card root wrapper, Repeat count=1, or before an inner loop)
+    sets its variables once per run.  The same block inside a Repeat /
+    Until body re-executes at the start of every iteration, re-applying
+    its authored literals — i.e. resetting those variables to baseline
+    each cycle.  Read-only: no task writes back, so the sandbox
+    invariant (only artifacts cross task boundaries) is preserved.
+
+    Note: variables set inside a loop body remain in ``ctx.variables``
+    after the loop ends (flat scope, last-write-wins).  This is benign
+    for read-only givens — downstream blocks simply see the final
+    applied value — and avoids a scoped-shadowing mechanism the
+    placement-as-policy model does not need.
+    """
+    declared = block.state_variables or {}
+    if declared:
+        ctx.variables.update(declared)
+    # Prose givens — the conversational baseline.  Keyed by block id so
+    # a State block re-executing in a loop overwrites its own note
+    # rather than duplicating (idempotent, matching the variables reset
+    # policy).  Empty/blank prose clears any prior note for this block.
+    prose = (block.state_context or "").strip()
+    if block.id:
+        if prose:
+            ctx.context_notes[block.id] = prose
+        else:
+            ctx.context_notes.pop(block.id, None)
+    names = ", ".join(sorted(declared.keys())) if declared else "(none)"
+    # Resolved values surfaced live to the running card: each declared
+    # var's effective value AFTER launch-time overrides win, so the
+    # panel shows what the run is actually operating under (not just the
+    # authored baseline).  Names-only ``variables`` kept for back-compat.
+    resolved = {k: ctx.overrides.get(k, declared[k]) for k in declared}
+    await _emit(ctx, {
+        "type": "state_applied",
+        "block_id": block.id,
+        "variables": sorted(declared.keys()),
+        "values": resolved,
+        "has_context": bool(prose),
+        "at": time.time(),
+    })
+    return Artifact(
+        summary=f"Initialized state: {names}",
+        created_at=time.time(),
+    )

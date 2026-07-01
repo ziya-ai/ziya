@@ -117,6 +117,7 @@
   overflow: hidden;
   color: var(--tc-card-text, #e0e0e0);
   font-family: inherit;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.12);
 }
 
 .tc-card-header {
@@ -179,6 +180,7 @@
 }
 .tc-block-header {
   display: flex; align-items: center; gap: 8px;
+  flex-wrap: wrap;
   padding: 8px 12px;
   border-bottom: 1px solid transparent;
 }
@@ -204,6 +206,8 @@
   padding: 0 6px;
   border-radius: 3px;
   transition: background-color 0.15s, color 0.15s;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 .tc-icon-btn-delete:hover {
   background: rgba(255, 73, 73, 0.15);
@@ -223,8 +227,8 @@
 .tc-block-task .tc-block-label { color: #4a9eff; }
 .tc-instructions {
   width: 100%; box-sizing: border-box;
-  background: var(--tc-card-header-bg, #161b22);
-  border: 1px solid var(--tc-card-border, #30363d);
+  background: var(--tc-input-bg, #0a0e14);
+  border: 1px solid var(--tc-input-border, #6e7681);
   color: inherit; font-size: 11px; padding: 6px 8px;
   border-radius: 4px; font-family: inherit;
   outline: none;
@@ -285,24 +289,94 @@
 .tc-block-label-schedule { color: #56d364; margin-left: 0; font-weight: 600; }
 .tc-block-body-schedule { padding: 10px 12px 10px 12px; }
 
+/* State block — teal (read-only run-scoped variables, a leaf) */
+.tc-block-state {
+  border-color: #2dd4bf;
+  background: linear-gradient(180deg, rgba(45,212,191,0.06), transparent 30%);
+  box-shadow: inset 3px 0 0 #2dd4bf;
+}
+.tc-block-state > .tc-block-header {
+  background: rgba(45,212,191,0.08);
+  border-bottom-color: rgba(45,212,191,0.2);
+}
+.tc-block-label-state { color: #2dd4bf; }
+.tc-block-body-state { padding: 10px 12px; }
+
+.tc-state-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+}
+.tc-state-key {
+  flex: 0 0 30%;
+  background: var(--tc-input-bg, #0a0e14);
+  border: 1px solid var(--tc-input-border, #6e7681);
+  color: inherit; padding: 3px 6px; border-radius: 3px;
+  font-size: 11px; font-family: ui-monospace, monospace; outline: none;
+}
+.tc-state-val {
+  flex: 1;
+  background: var(--tc-input-bg, #0a0e14);
+  border: 1px solid var(--tc-input-border, #6e7681);
+  color: inherit; padding: 3px 6px; border-radius: 3px;
+  font-size: 11px; font-family: ui-monospace, monospace; outline: none;
+}
+.tc-state-key:focus, .tc-state-val:focus {
+  border-color: var(--tc-accent, #2f81f7);
+  box-shadow: 0 0 0 3px var(--tc-focus-ring, rgba(47, 129, 247, 0.35));
+}
+.tc-state-eq { color: var(--tc-muted, #7d8590); font-size: 12px; }
+.tc-state-empty {
+  font-size: 11px; color: var(--tc-muted, #7d8590);
+  font-style: italic; padding: 2px 0;
+}
+.tc-state-hint {
+  font-size: 10px; color: var(--tc-muted, #7d8590);
+  margin-top: 6px; line-height: 1.4; opacity: 0.85;
+}
+
+/* State: Advanced (named variables) disclosure — keeps the formal
+   variable rows tucked away so prose stays the front door. */
+.tc-state-advanced { margin-top: 8px; }
+.tc-state-advanced > summary {
+  cursor: pointer; user-select: none;
+  font-size: 11px; color: var(--tc-muted, #7d8590);
+  padding: 2px 0;
+}
+.tc-state-advanced > summary:hover { color: var(--tc-fg, #c9d1d9); }
+.tc-state-vars-hint {
+  font-size: 10px; color: var(--tc-muted, #7d8590);
+  margin: 4px 0 6px; opacity: 0.85; line-height: 1.4;
+}
+
 .tc-sequence-label {
   font-size: 9px; text-transform: uppercase; letter-spacing: 1px;
   color: #5a6370; margin-bottom: 4px;
 }
 
 .tc-select, .tc-num-input {
-  background: var(--tc-card-header-bg, #161b22);
-  border: 1px solid var(--tc-card-border, #30363d);
+  background: var(--tc-input-bg, #0a0e14);
+  border: 1px solid var(--tc-input-border, #6e7681);
   color: inherit; padding: 2px 6px; border-radius: 3px;
   font-size: 11px; outline: none;
 }
 .tc-num-input { width: 48px; text-align: center; }
 .tc-text-input {
-  background: var(--tc-card-header-bg, #161b22);
-  border: 1px solid var(--tc-card-border, #30363d);
+  background: var(--tc-input-bg, #0a0e14);
+  border: 1px solid var(--tc-input-border, #6e7681);
   color: inherit; padding: 2px 6px; border-radius: 3px;
   font-size: 11px; outline: none;
   min-width: 180px; flex: 1;
+}
+
+/* Active field — accent border + focus ring so the editable field is obvious. */
+.tc-instructions:focus,
+.tc-select:focus,
+.tc-num-input:focus,
+.tc-text-input:focus {
+  border-color: var(--tc-accent, #2f81f7);
+  box-shadow: 0 0 0 3px var(--tc-focus-ring, rgba(47, 129, 247, 0.35));
 }
 
 /* Multiline variant — used for the Until condition.  Sits in the
@@ -382,4 +456,81 @@ textarea.tc-text-input {
 }
 .tc-template-hint-chip:disabled {
   opacity: 0.4; cursor: not-allowed;
+}
+
+/* Escalation-approval warning banner (ASR F-001). */
+.tc-scope-approval-warning {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border: 1px solid #ffd591;
+  border-left: 3px solid #fa8c16;
+  border-radius: 6px;
+  background: #fffbe6;
+  color: #613400;
+  font-size: 13px;
+}
+.tc-scope-approval-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.tc-scope-approval-body {
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+.tc-scope-approval-block {
+  margin: 6px 0;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.03);
+  border-radius: 4px;
+}
+.tc-scope-approval-block-name { font-weight: 600; }
+.tc-scope-approval-detail {
+  font-family: monospace;
+  font-size: 12px;
+  color: #874d00;
+}
+.tc-scope-approval-cmd {
+  display: block;
+  margin-top: 4px;
+  padding: 4px 6px;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  border-radius: 3px;
+  font-size: 11px;
+  word-break: break-all;
+}
+.tc-scope-approval-recheck { margin-top: 8px; }
+
+/* ── Drag-and-drop composability ─────────────────────────── */
+
+/* Grip handle on each non-root block header.  A dedicated handle
+   (rather than making the whole block draggable) keeps the block's
+   text inputs selectable. */
+.tc-drag-handle {
+  cursor: grab;
+  user-select: none;
+  color: var(--tc-muted, #7d8590);
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 4px;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+.tc-drag-handle:hover { opacity: 1; }
+.tc-drag-handle:active { cursor: grabbing; }
+
+/* Drop zone between siblings / at the end of a body.  Rendered only
+   while a droppable drag is in flight (see BlockBody.DropZone), so the
+   editor has no extra spacing at rest. */
+.tc-drop-zone {
+  height: 6px;
+  margin: 2px 0;
+  border-radius: 3px;
+  border: 1px dashed transparent;
+  transition: background 0.12s, border-color 0.12s, height 0.12s;
+}
+.tc-drop-zone-over {
+  height: 22px;
+  background: rgba(31, 111, 235, 0.12);
+  border-color: #1f6feb;
 }

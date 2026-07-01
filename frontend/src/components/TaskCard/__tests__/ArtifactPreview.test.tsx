@@ -34,7 +34,7 @@ jest.mock('../../../hooks/useTaskRunStream', () => ({
     run: null,
     error: null,
     loading: false,
-    live: { text: {}, toolCalls: [], events: [] },
+    live: { text: {}, toolCalls: [], events: [], iterations: [], variables: {} },
     clearLive: jest.fn(),
     refresh: jest.fn(),
   }),

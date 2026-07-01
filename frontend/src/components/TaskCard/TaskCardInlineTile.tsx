@@ -14,7 +14,7 @@ import { Button, Spin, Tag, Tooltip } from 'antd';
 import {
   CaretRightOutlined, CaretDownOutlined, StopOutlined,
   CheckCircleOutlined, CloseCircleOutlined, ExclamationCircleOutlined,
-  ClockCircleOutlined, ThunderboltOutlined, ReloadOutlined,
+  ClockCircleOutlined, ThunderboltOutlined, ReloadOutlined, EditOutlined,
 } from '@ant-design/icons';
 import { useProject } from '../../context/ProjectContext';
 import type { TaskBinding } from '../../types/task_binding';
@@ -22,7 +22,7 @@ import type { TaskRun, RunStatus, IterationsResponse } from '../../types/task_ru
 import type { TaskCard, Block, ArtifactPart } from '../../types/task_card';
 import { cancelTaskRun, listIterations } from '../../services/taskRunApi';
 import { createBinding, deleteBinding, launchStagedBinding } from '../../services/taskBindingApi';
-import { TASK_BINDING_EVENT } from '../../hooks/useTaskBindings';
+import { TASK_BINDING_EVENT, TASK_CARD_OPEN_EVENT } from '../../hooks/useTaskBindings';
 import { useTaskRunStream } from '../../hooks/useTaskRunStream';
 import { taskCardApi } from '../../services/taskCardApi';
 import { TaskRunInspector } from './TaskRunInspector';
@@ -397,6 +397,19 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
         <Tag color={statusColor} style={{ marginLeft: 'auto', fontSize: 10 }}>
           {run.status}
         </Tag>
+        <Tooltip title="Edit this card in the deck">
+          <button
+            className="tc-tile__edit"
+            onClick={(e) => {
+              e.stopPropagation();  // header onClick toggles expand
+              window.dispatchEvent(new CustomEvent(TASK_CARD_OPEN_EVENT, {
+                detail: { cardId: binding.card_id },
+              }));
+            }}
+          >
+            <EditOutlined />
+          </button>
+        </Tooltip>
         {isRunning && (
           <Tooltip title="Cancel run">
             <button className="tc-tile__cancel" onClick={handleCancel}>
@@ -451,6 +464,23 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
             )}
             <pre>{instructions}</pre>
           </details>
+        )}
+
+        {Object.keys(live.variables).length > 0 && (
+          <div className="tc-tile__vars">
+            <div className="tc-tile__vars-label">State variables</div>
+            <ul className="tc-tile__vars-list">
+              {Object.entries(live.variables).map(([k, v]) => (
+                <li key={k} className="tc-tile__var">
+                  <code className="tc-tile__var-name">{k}</code>
+                  <span className="tc-tile__var-eq">=</span>
+                  <code className="tc-tile__var-val">
+                    {typeof v === 'string' ? v : JSON.stringify(v)}
+                  </code>
+                </li>
+              ))}
+            </ul>
+          </div>
         )}
 
         {isRunning && (

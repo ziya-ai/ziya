@@ -6,7 +6,7 @@
  * separate component (option b) that reuses TaskCardEditor directly.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Modal, Input, Button, Tooltip, message, Empty, Popconfirm, Tag,
 } from 'antd';
@@ -18,10 +18,8 @@ import { useProject } from '../../context/ProjectContext';
 import { useChatContext } from '../../context/ChatContext';
 import type { TaskCard, Block } from '../../types/task_card';
 import { useTaskRunStream } from '../../hooks/useTaskRunStream';
-import { taskCardApi } from '../../services/taskCardApi';
-import {
-  launchTaskCard, cancelTaskRun,
-} from '../../services/taskRunApi';
+import { taskCardApi, type CardScopeStatus } from '../../services/taskCardApi';
+import { cancelTaskRun } from '../../services/taskRunApi';
 import { createBinding } from '../../services/taskBindingApi';
 import { TaskCardEditor } from './TaskCardEditor';
 
@@ -33,6 +31,9 @@ interface Props {
    *  of the last message in the chat at launch time. */
   chatId?: string;
   anchorMessageId?: string | null;
+  /** When set, the deck opens directly into this card's editor (inline
+   *  tile "Edit card" backlink).  One-shot: consumed on open. */
+  initialCardId?: string;
 }
 
 function emptyRoot(): Block {
@@ -43,10 +44,10 @@ function emptyRoot(): Block {
 }
 
 export const TaskCardsLibrary: React.FC<Props> = ({
-  visible, onClose, chatId, anchorMessageId,
+  visible, onClose, chatId, anchorMessageId, initialCardId,
 }) => {
   const { currentProject } = useProject();
-  const { addRunningTaskConversation } = useChatContext();
+  const { addRunningTaskConversation, startNewChat } = useChatContext();
   const projectId = currentProject?.id ?? '';
 
   const [cards, setCards] = useState<TaskCard[]>([]);
@@ -54,6 +55,9 @@ export const TaskCardsLibrary: React.FC<Props> = ({
   const [draft, setDraft] = useState<TaskCard | null>(null);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
+
+  // cardId -> escalation/signature status, for the deck-list badge.
+  const [scopeMap, setScopeMap] = useState<Record<string, CardScopeStatus>>({});
 
   // Active run tracking — id is seeded on launch; hook streams status.
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
@@ -66,6 +70,21 @@ export const TaskCardsLibrary: React.FC<Props> = ({
     try {
       const list = await taskCardApi.list(projectId);
       setCards(list);
+      // Fetch per-card escalation/signature status in parallel so the deck
+      // list can badge which cards carry shell/write escalation and whether
+      // it is signed. Failures are non-fatal: a card simply shows no badge.
+      const entries = await Promise.all(list.map(async (c) => {
+        try {
+          return [c.id, await taskCardApi.scopeStatus(projectId, c.id)] as const;
+        } catch {
+          return [c.id, null] as const;
+        }
+      }));
+      const next: Record<string, CardScopeStatus> = {};
+      for (const [id, st] of entries) {
+        if (st) next[id] = st;
+      }
+      setScopeMap(next);
     } catch (e) {
       message.error(`Failed to load task cards: ${String(e)}`);
     } finally {
@@ -74,6 +93,23 @@ export const TaskCardsLibrary: React.FC<Props> = ({
   }, [projectId]);
 
   useEffect(() => { if (visible) reload(); }, [visible, reload]);
+
+  // Keep the deck-list "Unsigned" badge in lock-step with the editor's own
+  // re-check: when the open editor re-fetches a card's escalation status
+  // (e.g. after you sign its scope), it calls this so scopeMap — the source
+  // for the badge — updates without a full modal reload.  Stable identity
+  // (empty deps, functional setState) so it never retriggers the editor's
+  // status-refresh effect.
+  const handleScopeStatusChange = useCallback(
+    (cardId: string, status: CardScopeStatus | null) => {
+      setScopeMap(prev => {
+        if (!status) {
+          const { [cardId]: _drop, ...rest } = prev;
+          return rest;
+        }
+        return { ...prev, [cardId]: status };
+      });
+    }, []);
 
   const loadCard = useCallback(async (id: string) => {
     if (!projectId) return;
@@ -86,6 +122,19 @@ export const TaskCardsLibrary: React.FC<Props> = ({
       message.error(`Failed to load card: ${String(e)}`);
     }
   }, [projectId]);
+
+  // One-shot deep-link: when the deck opens with an initialCardId (the inline
+  // tile "Edit card" backlink), jump straight into that card's editor.  A ref
+  // guards against re-firing — without it, closing the editor back to the
+  // list while the prop is still set would immediately reopen the card.
+  const consumedInitialId = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!visible) { consumedInitialId.current = undefined; return; }
+    if (initialCardId && consumedInitialId.current !== initialCardId) {
+      consumedInitialId.current = initialCardId;
+      loadCard(initialCardId);
+    }
+  }, [visible, initialCardId, loadCard]);
 
   const handleNew = useCallback(async () => {
     if (!projectId) return;
@@ -138,54 +187,57 @@ export const TaskCardsLibrary: React.FC<Props> = ({
     }
   }, [projectId, selectedId, reload]);
 
-  const handleLaunch = useCallback(async () => {
-    if (!projectId || !draft) return;
+  // Shared launch path: persist the draft (the binding endpoint needs a
+  // durable card to reference), bind the card to targetChatId, surface the
+  // inline tile, flag the conversation as running, and close the deck so the
+  // user lands on the conversation watching the tile.  Both launch buttons
+  // funnel through here — every launch now targets a conversation (the old
+  // unbound launchTaskCard path was removed).
+  const launchToChat = useCallback(async (targetChatId: string, anchor: string | null) => {
+    if (!draft) return;
+    await taskCardApi.update(projectId, draft.id, {
+      name: draft.name, description: draft.description,
+      root: draft.root, tags: draft.tags,
+    });
+    const resp = await createBinding(projectId, targetChatId, {
+      card_id: draft.id,
+      anchor_message_id: anchor,
+    });
+    setActiveRunId(resp.run.id);
+    // Notify the chat's useTaskBindings hook so the inline tile renders
+    // immediately — same event TaskCardLaunchButton dispatches.
+    window.dispatchEvent(new CustomEvent('task-binding-created', {
+      detail: { bindingId: resp.binding.id, runId: resp.run.id },
+    }));
+    // Gear affordance in the conversation list without waiting for the run.
+    addRunningTaskConversation(targetChatId);
+    onClose();
+  }, [projectId, draft, addRunningTaskConversation, onClose]);
+
+  const handleLaunchCurrent = useCallback(async () => {
+    if (!projectId || !draft || !chatId) return;
     try {
-      if (chatId) {
-        // Chat-bound launch: the binding endpoint needs a persisted
-        // card to reference.  Save silently so the run has something
-        // durable to point at.  (Unbound launches below skip this —
-        // they operate on the draft in-memory and don't need a save.)
-        await taskCardApi.update(projectId, draft.id, {
-          name: draft.name, description: draft.description,
-          root: draft.root, tags: draft.tags,
-        });
-        const resp = await createBinding(projectId, chatId, {
-          card_id: draft.id,
-          anchor_message_id: anchorMessageId ?? null,
-        });
-        setActiveRunId(resp.run.id);
-        // Notify the chat's useTaskBindings hook so the inline tile
-        // renders immediately.  Uses the same event name that
-        // TaskCardLaunchButton already dispatches for consistency.
-        window.dispatchEvent(new CustomEvent('task-binding-created', {
-          detail: { bindingId: resp.binding.id, runId: resp.run.id },
-        }));
-        // Bug 1 fix: mark the conversation as having a running task
-        // immediately so the conversation list shows the gear
-        // affordance without waiting for the run to complete.
-        // The reconciler in Conversation.tsx will clear this when
-        // the run reaches a terminal state (or on next navigation).
-        addRunningTaskConversation(chatId);
-        // Chat-bound: close the modal so the user sees the inline
-        // tile appear in their conversation.  The tile polls status.
-        onClose();
-        message.success('Task launched in chat');
-      } else {
-        // Unbound launch: still need a saved card for the backend to
-        // find.  TODO: support truly ephemeral one-off launches that
-        // skip the card storage entirely.
-        await taskCardApi.update(projectId, draft.id, {
-          name: draft.name, description: draft.description,
-          root: draft.root, tags: draft.tags,
-        });
-        const run = await launchTaskCard(projectId, draft.id);
-        setActiveRunId(run.id);
-      }
+      await launchToChat(chatId, anchorMessageId ?? null);
+      message.success('Task launched in current conversation');
     } catch (e) {
       message.error(`Launch failed: ${String(e)}`);
     }
-  }, [projectId, draft, chatId, anchorMessageId, onClose, addRunningTaskConversation]);
+  }, [projectId, draft, chatId, anchorMessageId, launchToChat]);
+
+  const handleLaunchNew = useCallback(async () => {
+    if (!projectId || !draft) return;
+    try {
+      // Name the new conversation after the card; startNewChat returns the
+      // id and sets it current, so the user navigates there automatically.
+      const newId = await startNewChat(null, draft.name);
+      if (!newId) { message.error('Could not create a new conversation'); return; }
+      // New chat has no messages → no anchor; the tile anchors at the top.
+      await launchToChat(newId, null);
+      message.success('Task launched in new conversation');
+    } catch (e) {
+      message.error(`Launch failed: ${String(e)}`);
+    }
+  }, [projectId, draft, startNewChat, launchToChat]);
 
   const handleCancel = useCallback(async () => {
     if (!projectId || !activeRun) return;
@@ -252,7 +304,29 @@ export const TaskCardsLibrary: React.FC<Props> = ({
                   cursor: 'pointer',
                 }}
               >
-                <div style={{ fontWeight: 500, fontSize: 13 }}>{c.name || 'Untitled'}</div>
+                <div style={{ fontWeight: 500, fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {c.name || 'Untitled'}
+                  </span>
+                  {(() => {
+                    // Escalation/signature badge: only for cards whose blocks
+                    // request shell/write escalation. Red when any block is
+                    // unsigned, green when all escalation is signed.
+                    const st = scopeMap[c.id];
+                    const escBlocks = st?.blocks.filter(b => b.hasEscalation) ?? [];
+                    if (escBlocks.length === 0) return null;
+                    const unsigned = escBlocks.filter(b => !b.authorized).length;
+                    return unsigned > 0 ? (
+                      <Tag color="red" style={{ marginInlineEnd: 0, fontSize: 10, lineHeight: '16px', padding: '0 5px' }}>
+                        Unsigned · {unsigned}
+                      </Tag>
+                    ) : (
+                      <Tag color="green" style={{ marginInlineEnd: 0, fontSize: 10, lineHeight: '16px', padding: '0 5px' }}>
+                        Signed
+                      </Tag>
+                    );
+                  })()}
+                </div>
                 <div style={{ fontSize: 11, opacity: 0.6 }}>
                   {c.root.block_type}
                   {c.is_template ? ' · template' : ''}
@@ -267,10 +341,21 @@ export const TaskCardsLibrary: React.FC<Props> = ({
           {draft ? (
             <>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
-                <Tooltip title={chatId ? 'Launches and binds to the current chat' : 'Launches unbound'}>
-                  <Button type="primary" icon={<PlayCircleOutlined />} onClick={handleLaunch}
+                <Tooltip title={chatId
+                  ? 'Launch and bind to the current conversation'
+                  : 'No current conversation — use "Launch in new conversation"'}>
+                  {/* span wrapper: Tooltip needs a non-disabled child to show on a disabled Button */}
+                  <span>
+                    <Button type="primary" icon={<PlayCircleOutlined />} onClick={handleLaunchCurrent}
+                      disabled={!chatId || activeRun?.status === 'running'}>
+                      Launch in current conversation
+                    </Button>
+                  </span>
+                </Tooltip>
+                <Tooltip title="Create a new conversation named after this card and launch the task there">
+                  <Button icon={<PlayCircleOutlined />} onClick={handleLaunchNew}
                     disabled={activeRun?.status === 'running'}>
-                    {chatId ? 'Launch in chat' : 'Launch'}
+                    Launch in new conversation
                   </Button>
                 </Tooltip>
                 {activeRun?.status === 'running' && (
@@ -286,7 +371,12 @@ export const TaskCardsLibrary: React.FC<Props> = ({
                 {activeRun?.error && <span style={{ color: '#ff4d4f', fontSize: 12 }}>{activeRun.error}</span>}
               </div>
               <div style={{ flex: 1, overflow: 'auto', border: '1px solid rgba(128,128,128,0.2)', borderRadius: 4, padding: 8 }}>
-                <TaskCardEditor card={draft} onChange={setDraft} />
+                <TaskCardEditor
+                  card={draft}
+                  onChange={setDraft}
+                  projectId={projectId}
+                  onScopeStatusChange={handleScopeStatusChange}
+                />
               </div>
             </>
           ) : (

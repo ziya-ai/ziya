@@ -9,12 +9,14 @@
  import { PermissionsDialog, PermissionEntry, PermissionsSavePayload } from '../Permissions/PermissionsDialog';
  import { DirectoryBrowserModal } from '../DirectoryBrowserModal';
 import { AutoGrowTextarea } from './AutoGrowTextarea';
+import { DragHandle } from './DragContext';
 import './task-card-editor.css';
 
 interface Props {
   block: Block;
   onChange: (next: Block) => void;
   onDelete?: () => void;
+  isRoot?: boolean;
 }
 
 const ScopeChip: React.FC<{
@@ -35,7 +37,7 @@ const removeFromScopeList = (
   scope: TaskScope, key: keyof TaskScope, value: string,
 ): TaskScope => ({ ...scope, [key]: scope[key].filter(v => v !== value) });
 
-export const TaskBlockEditor: React.FC<Props> = ({ block, onChange, onDelete }) => {
+export const TaskBlockEditor: React.FC<Props> = ({ block, onChange, onDelete, isRoot }) => {
   const scope: TaskScope = block.scope ?? { paths: [], tools: [], skills: [] };
   const { skills: availableSkills } = useProject();
   const update = (patch: Partial<Block>) => onChange({ ...block, ...patch });
@@ -85,6 +87,7 @@ export const TaskBlockEditor: React.FC<Props> = ({ block, onChange, onDelete }) 
   return (
     <div className="tc-block tc-block-task">
       <div className="tc-block-header">
+        {!isRoot && <DragHandle id={block.id} />}
         <span className="tc-emoji">{block.emoji ?? '🔵'}</span>
         <input
           className="tc-name-input"
