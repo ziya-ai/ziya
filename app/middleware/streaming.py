@@ -359,6 +359,7 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                         if callable(content):
                             content = content()
                         if content:
+                            chunk_content = content
                             if isinstance(content, dict):
                                 accumulated_content += json.dumps(content)
                                 yield f"data: {json.dumps(content)}\n\n"

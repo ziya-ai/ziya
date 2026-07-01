@@ -793,6 +793,14 @@ class BedrockProvider(LLMProvider):
             return ErrorType.CONTEXT_LIMIT
         if any(s in error_str for s in ("Read timed out", "ReadTimeoutError")) or "timeout" in lowered:
             return ErrorType.READ_TIMEOUT
+        # Connection-quality drops (flaky/unreliable networks): TLS socket severed
+        # mid-handshake or mid-stream. Transient and retriable, NOT auth failures.
+        if any(s in error_str for s in (
+            "UNEXPECTED_EOF_WHILE_READING", "EOF occurred in violation of protocol",
+            "SSL validation failed", "SSLError", "Connection reset by peer",
+            "ConnectionResetError", "Connection aborted", "Connection broken",
+            "EndpointConnectionError", "ConnectionClosedError")):
+            return ErrorType.READ_TIMEOUT
         if "InternalServerException" in error_str:
             return ErrorType.SERVER_ERROR
         if "overloaded" in lowered or "529" in error_str or "ServiceUnavailableException" in error_str:
