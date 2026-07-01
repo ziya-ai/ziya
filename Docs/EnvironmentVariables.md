@@ -28,9 +28,18 @@ All Ziya configuration environment variables use the `ZIYA_` prefix. This docume
 
 | Variable | Type | Default | CLI Flag | Description |
 |---|---|---|---|---|
-| `ZIYA_ENDPOINT` | str | `bedrock` | `--endpoint` | Model provider: `bedrock`, `google`, `openai`, or `anthropic` |
+| `ZIYA_ENDPOINT` | str | `bedrock` | `--endpoint` | Model provider: `bedrock`, `google`, `openai`, `anthropic`, or `zai` |
 | `ZIYA_MODEL` | str | — | `--model` | Model alias (e.g. `sonnet4.0`, `gemini-3.1-pro`) |
 | `ZIYA_MODEL_ID_OVERRIDE` | str | — | `--model-id` | Override the resolved model ID directly (advanced) |
+
+### Provider API keys
+
+Provider credentials are read directly from the environment (not the `ZIYA_*` namespace):
+
+| Variable | Used by | Notes |
+|---|---|---|
+| `ZAI_API_KEY` / `ZHIPUAI_API_KEY` | `--endpoint zai` | z.ai (Zhipu / GLM) API key |
+| `ZAI_BASE_URL` | `--endpoint zai` | Override the z.ai base URL. Default `https://api.z.ai/api/paas/v4` (pay-as-you-go). Use `https://api.z.ai/api/coding/paas/v4` for a Coding Plan subscription. GLM thinking mode is supported — enable it with `ZIYA_THINKING_MODE=true` (optionally `ZIYA_THINKING_EFFORT`); reasoning streams into the collapsible thinking UI |
 
 ## Model Parameters
 
@@ -44,7 +53,7 @@ All Ziya configuration environment variables use the `ZIYA_` prefix. This docume
 | `ZIYA_MAX_INPUT_TOKENS` | int | — | — | Maximum input tokens (set via frontend settings panel) |
 | `ZIYA_THINKING_MODE` | bool | `false` | — | Enable thinking/chain-of-thought mode |
 | `ZIYA_THINKING_LEVEL` | str | — | `--thinking-level` | Thinking level for Gemini 3: `low`, `medium`, `high` |
-| `ZIYA_THINKING_EFFORT` | str | — | — | Adaptive thinking effort for Claude 4.6+: `low`, `medium`, `high`, `max` |
+| `ZIYA_THINKING_EFFORT` | str | — | — | Thinking effort for Claude 4.6+ (adaptive) and OpenAI-compatible reasoning models incl. z.ai GLM (`reasoning_effort`): `low`, `medium`, `high`, `xhigh`, `max` |
 | `ZIYA_THINKING_BUDGET` | int | `16000` | — | Token budget for extended thinking (Bedrock streaming) |
 
 ## AWS

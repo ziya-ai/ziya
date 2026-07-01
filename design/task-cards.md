@@ -60,6 +60,45 @@ Stacking blocks is an implicit sequence. For concurrent execution of
 DIFFERENT blocks (not just parallel copies of the same block, which
 Repeat handles), an explicit Parallel wrapper groups them.
 
+### State (teal)
+Read-only leaf for setting up a task's **assumptions and givens**. Like
+Task, it has no body. Nothing writes back to a State block — context and
+values flow *down* into tasks exactly as instructions do, so the one
+invariant (only artifacts cross task boundaries) is preserved.
+
+A State block has two tiers, prose first:
+
+**Prose context (the baseline).** A freeform "Assumptions / Context"
+field. Whatever you write flows into every in-scope task's context
+automatically — no templating required. Most cards only need this: state
+the givens in plain English ("assume we're deploying to prod, the
+migration already ran, and the feature flag is off; don't re-verify
+those") and the task simply *knows* them, surfaced as a standing-context
+preamble the same way prior-iteration results are.
+
+**Named variables (the adjunct).** For the minority of cases wanting a
+reusable value referenced by name, declare variables (name → literal)
+read via `{{var.NAME}}` templating. Values are authored as literals
+(strings, numbers, booleans, arrays, objects); field access works for
+structured values (`{{var.config.timeout}}`). An unknown variable name
+is left verbatim in the rendered text, so typos surface to the author
+rather than silently rendering empty. Launch-time `parameter_overrides`
+win over authored values at read time.
+
+**Placement is the reset policy.** A State block at the top of a
+once-running body (the card root wrapper, or before an inner loop) sets
+its context/variables once per run. The *same* block inside a
+Repeat/Until body re-executes at the start of every iteration,
+re-applying its authored prose and literals — i.e. resetting to baseline
+each cycle. There is no separate reset knob; where you place the block is
+the semantics.
+
+**Visibility scales with formality.** Prose context is ambient — it
+shapes the task but is not surfaced on the running card. Named variables,
+when present, *are* surfaced live on the running card (showing the
+resolved values after launch-override merge), so formal state you can
+reference by name is also state you can watch.
+
 ### Composition rules
 - Any block's body can contain any other block.
 - Repeat nests freely inside Repeat.

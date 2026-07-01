@@ -2,7 +2,7 @@
 </p>
 
 <p align="center">
-<strong>Self-hosted AI workbench. Runs alongside your editor, not instead of it.</strong>
+<strong>A self-hosted AI harness for technical work — the chat UI and the coding agent in one local tool.</strong>
 </p>
 
 <p align="center">
@@ -14,7 +14,13 @@
 
 ---
 
-Ziya is a self-hosted AI workbench and research harness. It was started about two years ago to put a usable frontend on AWS Bedrock and stop fighting the AI tools available at the time — ones that auto-compacted context that mattered, made copy-pasting diffs the primary interaction, and treated visual output as a niche concern. I took it over from the original author roughly a year and a half ago, and since then it's grown into something more particular: a substrate for working out how agents, tasks, swarms, memory, and context curation should actually feel from the user's side. (Past and present contributors are listed in [CONTRIBUTORS.md](CONTRIBUTORS.md).)
+Ziya is a **self-hosted AI harness for technical work** — coding, yes, but also systems analysis, architecture, operations, and research. It runs on your own machine, points any model you bring (AWS Bedrock, Anthropic, OpenAI, Google, or local models) at your *real* material — your files, your documents, packet captures, and live systems through tools — and turns what comes back into things you can use and keep: validated diffs you apply with a click, editable diagrams rendered inline, and conversations that persist instead of evaporating.
+
+**Why it's unlike the tools you'll compare it to.** Local AI tools today split into two camps. Chat UIs (Open WebUI, LibreChat, Jan, Msty) give you a real browser interface and bring-your-own-model — but treat your machine as read-only: you upload files and chat about them, and they can show you a change but can't apply one to your actual files. Coding agents (Aider, Cline, Cursor) genuinely edit files on disk and undo via git — but they live inside a terminal or an editor, one thread at a time, with no shared visual workspace and no memory once you move on. **Ziya is the missing middle:** a browser *and* CLI workspace that acts on your real material, keeps everything you do, and lets you run many threads at once and pick any of them back up later. It brings together what you expect from a modern chat interface *and* what you expect from a coding agent, in one cohesive local harness.
+
+The rest of this README is the longer, first-person version of how it got here and what's actually in it.
+
+It started about two years ago as a way to put a usable frontend on AWS Bedrock and stop fighting the AI tools available at the time — ones that auto-compacted context that mattered, made copy-pasting diffs the primary interaction, and treated visual output as a niche concern. I took it over from the original author roughly a year and a half ago, and since then it's grown into something more particular: a substrate for working out how agents, tasks, swarms, memory, and context curation should actually feel from the user's side. (Past and present contributors are listed in [CONTRIBUTORS.md](CONTRIBUTORS.md).)
 
 It is also, separately, a perfectly good daily driver. A few hundred engineers at my employer use it that way. It does a particularly good job at technical visualization — questions that want a dependency graph, a queueing chart, a typeset derivation, a packet frame layout, or a state machine come back rendered inline rather than described in prose — and it scales to absurd amounts of retained state, so conversation histories don't have to be thrown away. They can be back-referenced, searched over, and re-included contextually at whatever scope you think is appropriate. Most chat-with-AI tools assume the conversation is ephemeral; here it's the durable artifact.
 
@@ -36,7 +42,7 @@ If you want the reasoning behind the specific choices the project makes, [Design
 
 ## What's actually in it
 
-**Diffs that apply.** Code changes come back as rendered diffs with per-hunk Apply/Undo buttons. There's a four-stage patch pipeline behind that, because LLM-produced diffs are mostly almost-correct rather than correct, and over time I built a regression suite of ~345 awkward patches to make sure new model output doesn't break old behavior. You shouldn't have to copy-paste from a chat window.
+**Diffs that apply.** Code changes come back as rendered diffs with per-hunk Apply/Undo buttons. There's a multi-stage patch pipeline behind that, because LLM-produced diffs are mostly almost-correct rather than correct, and over time I built a regression suite of ~345 awkward patches to make sure new model output doesn't break old behavior. You shouldn't have to copy-paste from a chat window.
 
 **Context you control, no auto-compaction.** You pick which files are in context from a tree, you can mute messages that went nowhere, fork to explore alternatives, drop files when you're done. I have 30+ turn sessions as my normal mode and don't see the model degradation people warn about — partly because the first messages establish the objective and a recency-weighted compactor would throw exactly those away. I'm not philosophically against automatic curation; I just haven't seen one I trust yet. Until I have, the user knows which messages still matter and the machine doesn't.
 

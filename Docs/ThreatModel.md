@@ -128,7 +128,7 @@ The **LLM is the central novel actor**. It is neither a human user nor a passive
 | # | Boundary | Controls |
 |---|---|---|
 | **TB1** | **Workstation ↔ anything off-host** | Only outbound HTTPS to LLM and remote MCP. Server binds `127.0.0.1`; no inbound listener off-loopback. |
-| **TB2** | **Ziya process ↔ subprocesses** (shell, local MCP) | Separate subprocess per server (`shell=False`). Shell allowlist + write policy. HMAC-SHA256 result signing verified on return. Tool-guard scans descriptions, fingerprints tool sets, prevents built-in shadowing. 4-layer nested timeout chain (30s/30s/120s/300s). |
+| **TB2** | **Ziya process ↔ subprocesses** (shell, local MCP) | Separate subprocess per server (`shell=False`). Shell allowlist + write policy. HMAC-SHA256 result signing verified on return. Tool-guard scans descriptions, fingerprints tool sets, prevents built-in shadowing. 4-layer nested timeout chain (30s/30s/120s/300s). **Privilege-escalation gate at subprocess spawn:** the shell runs at a fixed default floor; any widening (extra commands, interpreters, write paths) is honored only when backed by a root-signed artifact — a durable signature (`ZIYA_SCOPE_SIG`) or an ephemeral, nonce-bound session grant — and is otherwise clamped to the floor (fail-closed). The local config endpoints are unauthenticated by design; they can *request* escalation but cannot mint the signature, so they cannot grant privilege. See `MCPSecurityControls.md` §9. |
 | **TB3** | **Browser ↔ server** (loopback HTTP/SSE/WS) | Loopback-only bind; same-origin SPA; CORS locked to localhost. No auth on API because no off-host surface. |
 | **TB4** | **LLM API** (Bedrock/Anthropic/OpenAI/Gemini) | HTTPS. **Output treated as untrusted**: tool args validated against JSON schema before dispatch; response validator strips hidden characters; result sanitizer caps size and safely extracts base64 documents; results HMAC-signed so the model cannot hallucinate one. |
 | **TB5** | **Remote MCP** (third-party / enterprise) | MCP SDK `ClientSession` over StreamableHTTP/SSE. OAuth bearer. Injection scan + fingerprint rug-pull detection at connect; shadowing prevention; result signing; result sanitization. |
@@ -142,6 +142,7 @@ The **LLM is the central novel actor**. It is neither a human user nor a passive
 3. **Upstream provider trust.** Content sent to the LLM is subject to the provider's data policy.
 4. **Plugin trust.** Enterprise plugins run with full process privilege (opt-in via env var).
 5. **Browser compromise.** A malicious extension with `localhost` host permission can read streamed responses.
+6. **Bypass consent provider.** The session-grant `bypass` provider (honor escalation with no presence proof) is an explicitly-selectable, owned risk. Selecting it is itself durable root-signed config, so it cannot be enabled by an unauthenticated local caller; once enabled, ephemeral escalations require no per-grant proof. Not the default.
 
 ---
 
