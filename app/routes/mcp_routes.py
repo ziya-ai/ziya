@@ -23,6 +23,42 @@ from app.mcp.registry_manager import get_registry_manager
 router = APIRouter(prefix="/api/mcp", tags=["mcp"])
 from app.config.env_registry import ziya_env
 
+
+def _compute_signature_status(server_env: dict) -> dict:
+    """Report the escalation-signature state of a shell env block (ASR F-004).
+
+    Lets the UI show whether the current shell config carries escalations beyond
+    the default floor, and whether those are covered by a valid root signature —
+    without the frontend needing to know the floor (which is defined in Python).
+
+    Returns:
+        {
+          "hasEscalation": bool,   # any privilege-bearing field beyond floor
+          "authorized": bool,      # escalation is signed & valid (or none exists)
+          "pendingDelta": {field: [values]},  # the beyond-floor entries
+        }
+    Never raises — on any error reports a conservative "unauthorized escalation"
+    so the UI nudges toward re-signing rather than falsely showing "all signed".
+    """
+    try:
+        from app.config import scope_canonical as sc
+        scope = sc.parse_env_scope(server_env or {})
+        delta = sc.compute_delta(scope)
+        if not delta:
+            return {"hasEscalation": False, "authorized": True, "pendingDelta": {}}
+        authorized = sc.is_env_scope_authorized(server_env or {})
+        pending = {k: (v if isinstance(v, list) else [str(v)])
+                   for k, v in delta.items()}
+        return {
+            "hasEscalation": True,
+            "authorized": bool(authorized),
+            "pendingDelta": pending,
+        }
+    except Exception as e:  # noqa: BLE001 — never break config GET over this
+        logger.warning(f"signature status compute failed: {e}")
+        return {"hasEscalation": True, "authorized": False, "pendingDelta": {}}
+
+
 class MCPServerConfig(BaseModel):
     model_config = {"extra": "allow"}
     name: str
@@ -566,6 +602,20 @@ async def get_shell_config():
             # Get current server config directly from the MCP manager
             server_config = mcp_manager.server_configs.get("shell", {})
             server_env = server_config.get("env", {})
+
+            # Source-of-truth for the signature banner is the on-disk config,
+            # NOT the in-memory env. `ziya-approve` signs the file; the shell
+            # subprocess re-reads the file on restart and re-runs the
+            # escalation-signature gate against it. Computing signatureStatus
+            # from anything else (e.g. a merge with the in-memory env) lets the
+            # banner advertise an escalation the signer cannot see and the
+            # subprocess would clamp — the exact divergence this fixes. The
+            # merged view below is used ONLY to populate the displayed lists;
+            # the signature verdict is computed strictly from _file_env.
+            from app.config.shell_config import _read_mcp_config
+            _file_env = _read_mcp_config().get("mcpServers", {}).get("shell", {}).get("env", {})
+            if _file_env:
+                server_env = {**server_env, **_file_env}
             
             # Extract allowed commands from environment configuration
             # Use environment commands if present, otherwise use defaults
@@ -592,6 +642,12 @@ async def get_shell_config():
             allowed_interpreters = [p.strip() for p in server_env.get("ALLOWED_INTERPRETERS", ",".join(DEFAULT_WRITE_POLICY["allowed_interpreters"])).split(",") if p.strip()]
             always_blocked = [p.strip() for p in server_env.get("ALWAYS_BLOCKED_COMMANDS", ",".join(DEFAULT_WRITE_POLICY["always_blocked"])).split(",") if p.strip()]
 
+            # Whether an ephemeral escalation has been staged to the transient
+            # pending file (by "Apply (this session)") but not yet activated.
+            # Lets the UI rehydrate the "Apply now" affordance after a modal
+            # close/reopen, since that staging lives on disk, not in the config.
+            _pending_session = (Path.home() / ".ziya" / "pending_session_shell.json").exists()
+
             return {
                 "enabled": True,
                 "allowedCommands": allowed_commands,
@@ -602,6 +658,8 @@ async def get_shell_config():
                 "allowedWritePatterns": allowed_write_patterns,
                 "allowedInterpreters": allowed_interpreters,
                 "alwaysBlocked": always_blocked,
+                "signatureStatus": _compute_signature_status(_file_env),
+                "sessionPending": _pending_session,
             }
         else:
             # Shell server not connected, but check the actual server config
@@ -627,7 +685,204 @@ async def get_shell_config():
     except Exception as e:
         logger.error(f"Error getting shell config: {e}")
         raise HTTPException(status_code=500, detail=f"Error getting shell config: {str(e)}")
+
+# Restart the shell server, re-reading the persisted config from disk so a
+# signature written out-of-process by ziya-approve takes effect. The running
+# server's in-memory config never sees that file edit; this rebuilds the shell
+# env from the file (picking up ZIYA_SCOPE_SIG) and respawns the subprocess so
+# the escalation-signature gate re-runs against the now-signed config.
+@router.post("/shell-config/restart")
+async def restart_shell_server():
+    try:
+        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+            return {"success": False, "message": "MCP is disabled."}
+        mcp_manager = get_mcp_manager()
+        if not mcp_manager or not mcp_manager.is_initialized:
+            return {"success": False, "message": "MCP manager not initialized"}
+        from app.config.shell_config import _read_mcp_config
+        import sys as _sys
+        _shell_script = str(Path(__file__).resolve().parent.parent / "mcp_servers" / "shell_server.py")
+        file_env = _read_mcp_config().get("mcpServers", {}).get("shell", {}).get("env", {})
+        existing = dict(mcp_manager.server_configs.get("shell", {}))
+        # Restart means "re-read the signed config from disk" (per the button's
+        # contract). Rebuild env from the file ONLY — do not layer stale
+        # in-memory keys on top, or an in-memory-only escalation would be
+        # spawned and survive a restart that is supposed to discard it. The
+        # default floor is enforced inside the subprocess (not seeded here),
+        # and task-level escalations are re-applied at spawn from os.environ
+        # via ESCALATION_ENV_KEYS, so a file-only rebuild drops nothing needed.
+        file_only_env = dict(file_env)
+        shell_cfg = {
+            "command": _sys.executable,
+            "args": ["-u", _shell_script],
+            "enabled": True,
+            "builtin": True,
+            "description": "Provides shell command execution",
+            "env": file_only_env,
+        }
+        mcp_manager.server_configs["shell"] = shell_cfg
+        ok = await mcp_manager.restart_server("shell", shell_cfg)
+        mcp_manager.invalidate_tools_cache()
+        if ok:
+            return {
+                "success": True,
+                "message": "Shell server restarted; signature re-checked.",
+                "signatureStatus": _compute_signature_status(file_only_env),
+            }
+        return {"success": False, "message": "Shell server restart failed (see logs)."}
+    except Exception as e:
+        logger.error(f"Error restarting shell server: {e}")
+        raise HTTPException(status_code=500, detail=f"Error restarting shell server: {str(e)}")
  
+@router.post("/shell-config/apply-session-grant")
+async def apply_session_grant():
+    """Apply an ephemeral session grant minted by ``ziya-approve --session``.
+
+    Loads the signed grant record from disk into the manager's in-memory
+    transport state and restarts the shell subprocess so it receives the grant
+    (alongside the current session nonce) and re-verifies it at init. The
+    manager does NOT adjudicate validity — the subprocess fails closed if the
+    signature/nonce/scope_hash do not check out. The grant is void on the next
+    full server start (the nonce changes), never written to the durable config.
+    """
+    try:
+        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+            return {"success": False, "message": "MCP is disabled."}
+        mcp_manager = get_mcp_manager()
+        if not mcp_manager or not mcp_manager.is_initialized:
+            return {"success": False, "message": "MCP manager not initialized"}
+
+        record = mcp_manager.apply_session_grant("shell")
+        if record is None:
+            return {
+                "success": False,
+                "message": "No session grant found. Run `sudo ziya-approve "
+                           "--session` while the server is running to mint one.",
+            }
+
+        from app.config.shell_config import _read_mcp_config
+        import sys as _sys
+        _shell_script = str(Path(__file__).resolve().parent.parent / "mcp_servers" / "shell_server.py")
+        # Same file-only env rebuild as /restart: the grant rides the manager's
+        # separate _session_grants forwarding path (applied at spawn), NOT the
+        # config env, so durable config semantics are unchanged.
+        file_env = _read_mcp_config().get("mcpServers", {}).get("shell", {}).get("env", {})
+        shell_cfg = {
+            "command": _sys.executable,
+            "args": ["-u", _shell_script],
+            "enabled": True,
+            "builtin": True,
+            "description": "Provides shell command execution",
+            "env": dict(file_env),
+        }
+        mcp_manager.server_configs["shell"] = shell_cfg
+        ok = await mcp_manager.restart_server("shell", shell_cfg)
+        mcp_manager.invalidate_tools_cache()
+        if ok:
+            # The grant is now live in the manager's in-memory _session_grants
+            # (forwarded at every spawn for this server start), so the on-disk
+            # staging input and grant record are spent. Remove them ONLY after
+            # a confirmed successful restart, so a failed apply leaves them
+            # intact for a retry. The live authority is the in-memory grant +
+            # nonce; deleting the files does not revoke it.
+            for _spent in ("pending_session_shell.json", "session_grant_shell.json"):
+                try:
+                    (Path.home() / ".ziya" / _spent).unlink()
+                except OSError:
+                    pass
+            return {
+                "success": True,
+                "message": f"Session grant applied (provider={record.get('provider')}); "
+                           "active for this server session only.",
+                "signatureStatus": _compute_signature_status(dict(file_env)),
+            }
+        return {"success": False, "message": "Shell restart failed applying session grant (see logs)."}
+    except Exception as e:
+        logger.error(f"Error applying session grant: {e}")
+        raise HTTPException(status_code=500, detail=f"Error applying session grant: {str(e)}")
+
+@router.post("/shell-config/request-session-grant")
+async def request_session_grant(config: ShellConfig):
+    """Stage an EPHEMERAL escalation request for `ziya-approve --session`.
+
+    Writes the requested shell env to a TRANSIENT file
+    (~/.ziya/pending_session_shell.json) in the same shape as the config's
+    mcpServers.shell.env block — but NEVER touches the durable config. The
+    signer derives the delta from this file, mints a nonce-bound grant, and the
+    grant (not the config) carries the escalation values to the subprocess.
+    This is the "Apply for this session" path: nothing escalated lands on disk
+    in the config; the grant is void on the next server restart.
+
+    This endpoint only stages the request; it does not escalate anything on its
+    own (the subprocess still gates on the signed grant). It deliberately does
+    not restart the shell — the flow is: stage -> `ziya-approve --session` ->
+    "Apply now".
+    """
+    try:
+        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+            return {"success": False, "message": "MCP is disabled."}
+        mcp_manager = get_mcp_manager()
+        if not mcp_manager or not mcp_manager.is_initialized:
+            return {"success": False, "message": "MCP manager not initialized"}
+
+        # Identical env shape to update_shell_config so the signer's canonical
+        # parse_env_scope/compute_delta yields exactly the requested delta.
+        pending_env = {
+            "ALLOW_COMMANDS": ",".join(config.allowedCommands),
+            "GIT_OPERATIONS_ENABLED": "true" if config.gitOperationsEnabled else "false",
+            "SAFE_GIT_OPERATIONS": ",".join(config.safeGitOperations),
+            "COMMAND_TIMEOUT": str(config.timeout),
+            "SAFE_WRITE_PATHS": ",".join(config.safeWritePaths),
+            "ALLOWED_WRITE_PATTERNS": ",".join(config.allowedWritePatterns),
+            "ALLOWED_INTERPRETERS": ",".join(config.allowedInterpreters),
+            "ALWAYS_BLOCKED_COMMANDS": ",".join(config.alwaysBlocked),
+        }
+        pending_path = Path.home() / ".ziya" / "pending_session_shell.json"
+        pending_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(pending_path, "w") as f:
+            json.dump(pending_env, f, indent=2)
+        try:
+            os.chmod(pending_path, 0o600)
+        except OSError:
+            pass
+        return {
+            "success": True,
+            "message": "Session escalation staged. Run `sudo ziya-approve "
+                       "--session`, then click \"Apply for this session\".",
+        }
+    except Exception as e:
+        logger.error(f"Error staging session grant request: {e}")
+        raise HTTPException(status_code=500, detail=f"Error staging session request: {str(e)}")
+
+@router.post("/shell-config/discard-session-grant")
+async def discard_session_grant():
+    """Abandon a staged (but not-yet-activated) ephemeral escalation.
+
+    Removes the transient staging input and any minted-but-unapplied grant
+    record from disk. This does NOT revoke an already-applied grant: once
+    "Apply now" succeeds the authority is the in-memory grant + nonce, which a
+    full server restart voids. This only clears pending on-disk artifacts so
+    the "Apply now" affordance stops being offered for a request you dropped.
+    """
+    try:
+        if not os.environ.get("ZIYA_ENABLE_MCP", "true").lower() in ("true", "1", "yes"):
+            return {"success": False, "message": "MCP is disabled."}
+        removed = False
+        for _spent in ("pending_session_shell.json", "session_grant_shell.json"):
+            try:
+                (Path.home() / ".ziya" / _spent).unlink()
+                removed = True
+            except OSError:
+                pass
+        return {
+            "success": True,
+            "message": "Staged session escalation discarded." if removed
+                       else "No staged session escalation to discard.",
+        }
+    except Exception as e:
+        logger.error(f"Error discarding session grant: {e}")
+        raise HTTPException(status_code=500, detail=f"Error discarding session request: {str(e)}")
+
 @router.post("/shell-config")
 async def update_shell_config(config: ShellConfig):
     """
@@ -706,18 +961,72 @@ async def update_shell_config(config: ShellConfig):
                 # Update the env section with new configuration
                 if "env" not in mcp_config["mcpServers"]["shell"]:
                     mcp_config["mcpServers"]["shell"]["env"] = {}
+
+                # Snapshot the privilege-bearing fields as they currently exist on
+                # disk, BEFORE we overwrite them, so we can tell whether this save
+                # actually changes a gated field (see signature-voiding below).
+                # Iterate sc._LIST_FIELDS -- the single source of truth for which
+                # env keys are escalation-bearing -- so this cannot drift from the
+                # canonical layer that the signer and verifier use.
+                from app.config import scope_canonical as sc
+                _old_env = mcp_config["mcpServers"]["shell"]["env"]
+                _PRIV_ATTRS = {
+                    "ALLOW_COMMANDS": config.allowedCommands,
+                    "SAFE_WRITE_PATHS": config.safeWritePaths,
+                    "ALLOWED_WRITE_PATTERNS": config.allowedWritePatterns,
+                    "ALLOWED_INTERPRETERS": config.allowedInterpreters,
+                    "SAFE_GIT_OPERATIONS": config.safeGitOperations,
+                }
+                _old_priv = {k: set(filter(None, _old_env.get(k, "").split(","))) for k in sc._LIST_FIELDS}
                 
                 mcp_config["mcpServers"]["shell"]["env"]["ALLOW_COMMANDS"] = ",".join(config.allowedCommands)
                 mcp_config["mcpServers"]["shell"]["env"]["GIT_OPERATIONS_ENABLED"] = "true" if config.gitOperationsEnabled else "false"
                 mcp_config["mcpServers"]["shell"]["env"]["SAFE_GIT_OPERATIONS"] = ",".join(config.safeGitOperations)
                 mcp_config["mcpServers"]["shell"]["env"]["COMMAND_TIMEOUT"] = str(config.timeout)
+                mcp_config["mcpServers"]["shell"]["env"]["SAFE_WRITE_PATHS"] = ",".join(config.safeWritePaths)
+                mcp_config["mcpServers"]["shell"]["env"]["ALLOWED_WRITE_PATTERNS"] = ",".join(config.allowedWritePatterns)
+                mcp_config["mcpServers"]["shell"]["env"]["ALLOWED_INTERPRETERS"] = ",".join(config.allowedInterpreters)
+                mcp_config["mcpServers"]["shell"]["env"]["ALWAYS_BLOCKED_COMMANDS"] = ",".join(config.alwaysBlocked)
                 mcp_config["mcpServers"]["shell"]["enabled"] = config.enabled
+                
+                # Contract (per the shell-config modal): "editing a privileged
+                # field voids any prior approval until you re-sign." A persisted
+                # ZIYA_SCOPE_SIG covers a specific delta; if a gated field changed
+                # the old signature no longer describes this config, so drop it.
+                # Compare as sets so a pure reorder does not force a needless
+                # re-sign. Driven off sc._LIST_FIELDS for the reasons above; a
+                # gated field absent from _PRIV_ATTRS defaults to the empty set,
+                # which differs from any non-empty stored value and thus voids
+                # the signature conservatively rather than keeping a stale one.
+                _new_priv = {k: set(_PRIV_ATTRS.get(k, [])) for k in sc._LIST_FIELDS}
+                if _new_priv != _old_priv:
+                    mcp_config["mcpServers"]["shell"]["env"].pop("ZIYA_SCOPE_SIG", None)
+
+                # ASR mandate: YOLO_MODE must never be persisted to disk. This
+                # branch is a read-modify-write that otherwise preserves any
+                # pre-existing keys (e.g. ZIYA_SCOPE_SIG), so a YOLO_MODE value
+                # that ever reached the file would survive future saves. Strip
+                # it unconditionally so it can only ever live in process memory.
+                mcp_config["mcpServers"]["shell"]["env"].pop("YOLO_MODE", None)
                 
                 # Save back to file
                 with open(config_path, 'w') as f:
                     json.dump(mcp_config, f, indent=2)
                 
                 logger.info(f"Persisted shell configuration to {config_path}")
+
+                # A durable Save supersedes any pending ephemeral staging: the
+                # escalation now lives in the signed-or-clamped config path, so
+                # a leftover transient request/grant would only produce a stale
+                # "Apply now" affordance. Clear both so the two paths cannot
+                # disagree. (Does not revoke an already-applied in-memory grant;
+                # that is voided on the next server restart.)
+                for _spent in ("pending_session_shell.json", "session_grant_shell.json"):
+                    try:
+                        (config_path.parent / _spent).unlink()
+                    except OSError:
+                        pass
+
                 persist_message = f" Configuration saved to {config_path} and will persist between sessions."
                 
             except Exception as persist_error:
