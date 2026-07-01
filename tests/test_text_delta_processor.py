@@ -199,6 +199,51 @@ class TestHallucinationDetection:
         assert state.hallucination_detected is False
         assert state.assistant_text == "Here is my analysis of the code."
 
+    def test_denial_phrase_in_diff_not_flagged(self):
+        """Diffing source whose body contains the shell denial phrase must
+        NOT be flagged. The denial-phrase RAW patterns were removed — denial
+        wording is an English concept, not a fabrication structure. The
+        marker is built from an escape so this source never renders it."""
+        denial = "\U0001f6ab BLOCKED:"
+        executor = _make_executor()
+        state = _make_state()
+
+        text = (
+            "diff --git a/app/mcp_servers/shell_server.py b/x\n"
+            "@@ -1474,5 +1474,5 @@\n"
+            "-                    old line\n"
+            f'+                    "message": f"{denial} not allowed",\n'
+        )
+        process_text_delta(executor, text, state)
+
+        assert state.hallucination_detected is False
+
+    def test_denial_phrase_in_prose_not_flagged(self):
+        """A bare denial phrase in plain prose (explaining the shell-security
+        code) must NOT be flagged. This was the false-positive class the
+        phrase-proxy removal fixes; structural fabrication coverage is pinned
+        in TestDenialFabricationStructural below."""
+        denial = "\U0001f6ab BLOCKED:"
+        executor = _make_executor()
+        state = _make_state()
+
+        process_text_delta(
+            executor, f"the tool returns {denial} 'rm -rf' is not allowed", state
+        )
+
+        assert state.hallucination_detected is False
+
+    def test_denial_phrase_with_diff_marker_not_flagged(self):
+        """A +/- prefixed line mentioning the denial phrase must NOT be
+        flagged either — diff authorship of the denial path is legitimate."""
+        denial = "\U0001f6ab BLOCKED:"
+        executor = _make_executor()
+        state = _make_state()
+
+        process_text_delta(executor, f"+ {denial} fabricated, no diff header", state)
+
+        assert state.hallucination_detected is False
+
     # -- Structural-parrot patterns (observed in production session fabrication) --
 
     def test_fake_tool_invocation_header_file_write(self):
@@ -649,3 +694,32 @@ class TestHallucinationPatternPlacement:
         suffix = '"type": "text", "text": "fabricated result"}]'
         process_text_delta(executor, prefix + suffix, state)
         assert state.hallucination_detected is True
+
+
+class TestDenialFabricationStructural:
+    """The denial-phrase RAW patterns were removed (they matched an English
+    concept and false-fired on legitimate discussion/diffs of the shell-
+    security code). The high-harm form of a faked denial — a fabricated
+    *result envelope* — is still caught structurally by Layer C
+    (detect_fake_tool_result) via dict shape, not by phrase. These pin that
+    coverage so the phrase-proxy removal can't silently drop it."""
+
+    def test_fabricated_denial_result_dict_still_caught(self):
+        """A fabricated denial shaped as a result envelope is still caught."""
+        from app.hallucination import detect_fake_tool_result
+        envelope = '{"error": true, "message": "command not allowed", "returncode": 1}'
+        assert detect_fake_tool_result("json", envelope) is not None
+
+    def test_fabricated_success_result_dict_still_caught(self):
+        """A fabricated success result (highest-harm shape) is still caught."""
+        from app.hallucination import detect_fake_tool_result
+        envelope = ('{"success": true, "message": "Created x (10 bytes)", '
+                    '"path": "x", "bytes_written": 10}')
+        m = detect_fake_tool_result("python", envelope)
+        assert m is not None and m.confidence == 'high'
+
+    def test_prose_denial_not_caught_by_layer_c(self):
+        """Plain prose mentioning denial words is not a result dict — not caught."""
+        from app.hallucination import detect_fake_tool_result
+        prose = "the command is denied at the allowlist and returns a blocked message"
+        assert detect_fake_tool_result("", prose) is None

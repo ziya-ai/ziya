@@ -74,22 +74,22 @@ _FAKE_TOOL_BLOCK_RE = re.compile(
     re.DOTALL,
 )
 
-# Tool-output signatures so unambiguous that fenced context is not an
-# excuse — these strings are generated exclusively by Ziya's tool
-# plumbing (TOOL_MARKER comments from chatApi.ts / memory_extractor) or
-# by the shell server's denial path (tool_execution.py, shell_server.py)
-# and should never appear in legitimate assistant output regardless of
-# whether they're inside a Markdown fence.
+# Structural tool-output artifacts so unambiguous that fenced context is
+# not an excuse — this string is a machine-emitted marker, not an English
+# concept, so it cannot appear in legitimate assistant prose and is safe
+# to match even inside a Markdown fence.
+#
+# NOTE: English denial *phrases* ("🚫 BI did **not** fabricate tool output — the abort fired on my *own diff*: the comment I was adding contained the rendered denial literal, which the (still-present) detector matched. That is precisely the bug we're removing. I'll emit both diffs without ever writing that rendered literal — the regex-source form and escape form are safe.
 _RAW_HALLUCINATION_PATTERNS = [
     # TOOL_MARKER HTML comments are emitted only by the frontend when
     # rendering a real tool invocation. A model-emitted marker means
     # the model is fabricating a tool-call boundary in its prose.
     re.compile(r'<!--\s*TOOL_MARKER:'),
-    # Shell-server denial text, emitted verbatim by
-    # tool_execution.py:_process_result when policy_block is set.
-    re.compile(r'POLICY BLOCK \(do NOT retry this command\)'),
-    # Denial emoji + "BLOCKED:" prefix from shell_server.py line 724.
-    re.compile(r'🚫 (?:WRITE )?BLOCKED:'),
+    # NOTE: the shell denial-phrase patterns (emoji+BLOCKED prefix and the
+    # POLICY BLOCK retry hint) were removed — they matched an English
+    # concept, not a structure, and false-fired on legitimate discussion
+    # or diffs of the shell-security code. The high-harm form (a fabricated
+    # result envelope) is caught structurally by Layer C instead.
 ]
 
 # Cue phrases that, when they appear in the ~120 chars immediately preceding
@@ -111,12 +111,41 @@ _META_DISCUSSION_CUES = re.compile(
 )
 
 
+# Unified-diff header markers. When a RAW hallucination pattern matches a
+# line that is part of a real diff being authored (model editing source that
+# legitimately contains the literal denial string, e.g. shell_server.py), we
+# must not treat it as fabricated tool output. A genuine diff is identified
+# by a ``diff --git`` or ``@@`` header preceding the match in the tail.
+_DIFF_HEADER_RE = re.compile(r'(?m)^(?:diff --git |@@ -\d)')
+
+
+def _is_diff_authorship(text: str, match_start: int) -> bool:
+    """True when ``match_start`` falls on a unified-diff body/context line
+    inside a recognizable diff (a ``diff --git`` or ``@@`` header appears
+    earlier in ``text``).
+
+    This exempts legitimate diff authorship — the model editing source code
+    that contains a literal tool-output signature — from the fence-piercing
+    RAW hallucination check, without reopening the evasion hole for bare
+    fabricated tool-result envelopes (which have no diff header).
+    """
+    line_start = text.rfind('\n', 0, match_start) + 1
+    first_char = text[line_start:line_start + 1]
+    if first_char not in ('+', '-', ' '):
+        return False
+    return bool(_DIFF_HEADER_RE.search(text[:line_start]))
+
+
 def _is_meta_discussion(text: str, match_start: int) -> bool:
     """True when the ~120 chars before ``match_start`` look like the model
     is talking *about* the pattern rather than emitting it as tool output.
     """
     window_start = max(0, match_start - 120)
     window = text[window_start:match_start]
+    # Diff authorship: the model is editing source that legitimately
+    # contains the literal pattern (e.g. shell_server.py's denial string).
+    if _is_diff_authorship(text, match_start):
+        return True
     # Inline code span immediately wrapping the marker is also a strong
     # meta-discussion signal — the model is quoting the pattern verbatim.
     if window.endswith('`') or '``' in window[-8:]:

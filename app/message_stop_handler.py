@@ -17,6 +17,33 @@ from typing import Any, AsyncGenerator, Callable, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+# Stop reasons that indicate the model was genuinely cut off mid-output
+# (so an unclosed fence is a real truncation worth continuing). Anything
+# else — end_turn, stop, stop_sequence, None — means the model chose to
+# stop, in which case an `in_block=True` flag is almost always the fence
+# tracker mis-reading backticks quoted in narrative prose, not a real
+# open block. Continuing those fabricates user-invisible repeat turns.
+_CUTOFF_STOP_REASONS = frozenset({'max_tokens', 'length'})
+
+
+def should_continue_incomplete_block(in_block: bool, stop_reason) -> bool:
+    """Decide whether to auto-continue an apparently-unclosed code block.
+
+    Pure and table-testable (no I/O), mirroring _decide_no_tool_outcome
+    and _exceeds_session_ceiling. The continuation loop is only honored
+    when BOTH:
+      - the fence tracker says we're inside a block, AND
+      - the model was actually cut off (stop_reason in _CUTOFF_STOP_REASONS).
+
+    A clean stop (end_turn/stop/None) with in_block=True is treated as a
+    tracker false-positive on quoted/inline backticks and is NOT continued.
+    This is the stop-reason guard (step 1); the tracker itself is made
+    CommonMark-aware separately (step 2) so in_block stops mis-firing at
+    the source — after which this guard remains as cheap insurance.
+    """
+    return bool(in_block) and stop_reason in _CUTOFF_STOP_REASONS
+
+
 @dataclass
 class MessageStopState:
     """Mutable state bag for handle_message_stop.
@@ -134,14 +161,15 @@ async def handle_message_stop(
 
     # Embed the rewind marker before the first continuation so the
     # frontend can locate it when a rewind event references it.
-    if code_block_tracker.get('in_block'):
+    if should_continue_incomplete_block(code_block_tracker.get('in_block'), state.last_stop_reason):
         yield track_yield({
             'type': 'text',
             'content': f"",
             'timestamp': ts(),
         })
 
-    while code_block_tracker.get('in_block') and continuation_count < max_continuations:
+    while (should_continue_incomplete_block(code_block_tracker.get('in_block'), state.last_stop_reason)
+           and continuation_count < max_continuations):
         continuation_count += 1
         block_type = code_block_tracker.get('block_type', 'code')
         logger.info(
