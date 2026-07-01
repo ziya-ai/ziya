@@ -837,6 +837,53 @@ class TokenCalibrator:
         # Final fallback
         return 4.0
 
+    def get_display_ratio(
+        self, file_type: Optional[str] = None, model_family: Optional[str] = None
+    ) -> Tuple[float, str]:
+        """Return (chars_per_token, source) for size-based display estimation.
+
+        Unlike _get_chars_per_token (which returns p95 for conservative,
+        token-minimizing estimates), this returns the MEAN learned ratio.
+        The token-budget display should err toward over-counting, not
+        under-counting, so the mean is the right central tendency here.
+
+        Content-free: takes only a file extension, never reads the file.
+        This keeps the fast tree-scan path (estimate_tokens_fast) fast.
+
+        source is one of:
+          'learned_type' — mean of learned samples for this model+type
+          'release_type' — baked-in default for this model+type
+          'global'       — model-wide global ratio (learned median)
+          'fallback'     — ultimate 4.1 default
+        The caller uses source to decide whether to also apply the legacy
+        FILE_TYPE_MULTIPLIER: only for non-type-specific tiers, to avoid
+        double-compensating a ratio that already encodes type density.
+        """
+        if not model_family:
+            model_family = self._get_current_model_family()
+
+        # Tier 1: learned mean for this model+type
+        if file_type and model_family in self.stats_by_model_and_type:
+            stats = self.stats_by_model_and_type[model_family].get(file_type)
+            if stats and stats.get('sample_count', 0) > 0:
+                ratio = stats.get('mean') or stats.get('p50') or self.global_fallback
+                return max(self.MIN_CHARS_PER_TOKEN,
+                           min(ratio, self.MAX_CHARS_PER_TOKEN)), 'learned_type'
+
+        # Tier 2: release default for this model+type
+        if file_type and model_family in self.release_defaults:
+            if file_type in self.release_defaults[model_family]:
+                return self.release_defaults[model_family][file_type], 'release_type'
+
+        # Tier 3: model-wide global (learned median)
+        if model_family in self.global_by_model:
+            return max(self.MIN_CHARS_PER_TOKEN,
+                       min(self.global_by_model[model_family],
+                           self.MAX_CHARS_PER_TOKEN)), 'global'
+
+        # Tier 4: ultimate fallback
+        return self.global_fallback, 'fallback'
+
 # Global singleton
 _calibrator_instance = None
 _calibrator_lock = threading.Lock()

@@ -251,6 +251,44 @@ class StreamingToolExecutor:
             normalized = normalized.lstrip('$_')
         return normalized
 
+    def _normalize_sequential_thinking_args(self, actual_tool_name: str, args: dict) -> dict:
+        """Auto-fill sequentialthinking's bookkeeping numbers when omitted.
+
+        The sequential-thinking MCP tool's schema requires thoughtNumber and
+        totalThoughts, but several models (notably GLM) routinely send only
+        'thought' + 'nextThoughtNeeded'. Those numbers are pure bookkeeping
+        the server echoes back — re-prompting the model to restate the same
+        thought just to add them burns a full provider round-trip per
+        thinking step (observed looping for dozens of iterations). Synthesize
+        sane defaults instead: a monotonic per-turn thoughtNumber (tracked on
+        the executor instance) and a totalThoughts that never trails it. A
+        model-supplied value always wins via setdefault.
+
+        Scoped to sequentialthinking only — other tools' required params can
+        be semantically load-bearing (a shell 'command', a line 'offset'),
+        so they must still fail loudly rather than be silently defaulted.
+        """
+        if actual_tool_name != 'sequentialthinking' or not isinstance(args, dict):
+            return args
+        if 'thoughtNumber' in args and 'totalThoughts' in args:
+            return args
+        n = getattr(self, '_seq_thought_counter', 0) + 1
+        self._seq_thought_counter = n
+        args.setdefault('thoughtNumber', n)
+        # totalThoughts is the model's running estimate; default it to at
+        # least the current number so the "current <= total" intuition holds
+        # whether thoughtNumber was provided or synthesized.
+        args.setdefault('totalThoughts', max(n, args.get('thoughtNumber', n)))
+        # nextThoughtNeeded is also schema-required; if the model called the
+        # tool at all it is mid-reasoning, so default True.
+        args.setdefault('nextThoughtNeeded', True)
+        logger.debug(
+            f"🧠 SEQ_THINKING_DEFAULTS: filled bookkeeping params "
+            f"(thoughtNumber={args['thoughtNumber']}, "
+            f"totalThoughts={args['totalThoughts']})"
+        )
+        return args
+
     def _decode_chunk_bytes(self, chunk_bytes):
         """
         Safely decode chunk bytes to string for json.loads().
@@ -528,6 +566,183 @@ class StreamingToolExecutor:
             # No structured content found, return the entire text
             return text.strip()
 
+    # Phrases that announce intent to act ("Let me check X before writing…").
+    # Promoted to a class constant so the pure decider below and the live
+    # loop reference one source of truth (was a method-scope local).
+    # Consecutive-stall cap for non-prefill incomplete-code-block
+    # continuation. A round counts as a "stall" only when it makes no
+    # progress (no new fence transitions AND below the big-output bar);
+    # the caller resets the counter on progress, so genuine multi-round
+    # block completion is effectively unbounded — only a wedged-open
+    # fence with no output for this many rounds gives up.
+    _BLOCK_CONTINUE_STALL_CAP = 5
+    # Consecutive-stall cap for non-prefill intent continuation. Like the
+    # block-continue cap, this bounds only *unproductive* intent re-prompts:
+    # the caller resets the counter whenever tools executed since the last
+    # intent-continue (real progress), so intent → work → intent → work is
+    # unbounded, while intent → intent → intent with no work between gives
+    # up after this many consecutive no-progress rounds.
+    _INTENT_CONTINUE_STALL_CAP = 3
+    _INTENT_PHRASES = (
+        'let me check', 'let me look', 'let me examine',
+        'let me search', 'let me verify', 'let me read',
+        'let me review', 'let me see', 'let me inspect',
+        'let me explore', 'let me first', 'let me dig',
+        "i'll check", "i'll look", "i'll examine",
+        "i'll search", "i'll verify", "i'll read",
+        "i'll review", "i'll inspect",
+        "before writing", "before i write",
+        "before creating", "before i create",
+        "first, let me", "first let me",
+        "i need to read", "i need to check",
+    )
+
+    def _decide_no_tool_outcome(
+        self, *, assistant_text: str, supports_prefill: bool,
+        tools_executed: bool, last_stop_reason, iteration: int,
+        max_iterations: int, continuation_happened: bool,
+        code_block_open: bool, blocked_tools: int,
+        prev_is_tool_result: bool, textonly_grace_used: int,
+        empty_completion_retry_used: int, block_continue_stalls: int = 0,
+        intent_stalls: int = 0,
+    ) -> tuple:
+        """Pure decision for an iteration where no tool executed.
+
+        Returns ``(verdict, reason, probe)`` with NO side effects — the
+        caller performs the yield/append/counter-increment based on the
+        verdict.  This is a 1:1 transcription of the inline ladder (see
+        .ziya/continuation_decision_map.md); behavior changes are NOT made
+        here — they land in a separate diff so each verdict flip is visible.
+
+        verdict ∈ {
+          'end'                      — yield stream_end + break
+          'continue'                 — plain continue
+          'spend_textonly_continue'  — textonly_grace_used += 1; continue
+          'inject_max_tokens'        — append assistant + continuation user; continue
+          'nudge'                    — textonly_grace_used += 1; append nudge text
+                                       block to conversation[-1]; continue
+          'spend_empty_retry'        — empty_completion_retry_used += 1; continue
+          'block_continue'           — non-prefill: append assistant + "finish the
+                                       code block" user turn; caller manages the
+                                       progress-reset stall counter; continue
+        }
+        probe is None or ``(branch, says_continue, decider)`` for _grace_probe.
+        """
+        # Runaway loop guard
+        if blocked_tools >= 3:
+            return ('end', 'runaway_loop', None)
+
+        if assistant_text.strip():
+            # (a) Non-prefill gate — decided by stop_reason==max_tokens ONLY.
+            if not supports_prefill and not tools_executed:
+                if last_stop_reason == 'max_tokens' and iteration < max_iterations - 1:
+                    return ('inject_max_tokens', 'max_tokens_continue', None)
+                # Bug-① sibling: a non-prefill model cut off mid-code-block on
+                # a CLEAN stop is unreachable by branch (c)'s code_block_open
+                # check below (this gate returns first). An unclosed fence is
+                # objective evidence of truncation, so inject a follow-through
+                # to finish the block. Bounded by the consecutive-stall cap;
+                # the caller resets that counter on progress (new fence
+                # transitions or large output), so a genuine multi-round diff
+                # is effectively unbounded while a wedged-open fence gives up.
+                _clean_stop_blk = last_stop_reason in ('end_turn', 'stop', 'stop_sequence', None)
+                if (code_block_open and _clean_stop_blk
+                        and block_continue_stalls < self._BLOCK_CONTINUE_STALL_CAP):
+                    return ('block_continue', 'no_prefill_block_continue',
+                            ('NO_PREFILL_BLOCK', True, 'open_fence'))
+                # Bug ① fix: a non-prefill model that announces intent to act
+                # ("Let me run the test first…") and stops on a CLEAN end_turn
+                # was previously cut off here — the intent-aware branches (b)/(e)
+                # below are unreachable for non-prefill models because this gate
+                # returns first. If the text shows intent, the stop is clean
+                # (not a cutoff), and the textonly grace budget allows, grant a
+                # continuation via the same inject mechanism so the announced
+                # work actually runs. Bounded by textonly_grace_used to prevent
+                # an intent-narration loop. NOT gated on iteration==0: a model
+                # that announces intent, does a long productive tool cycle, then
+                # announces more intent must be allowed to continue. The
+                # intent_stalls counter (reset by the caller on tool progress)
+                # bounds only CONSECUTIVE no-progress intents, so genuine
+                # intent→work→intent is unbounded while a pure narration loop
+                # still gives up.
+                _clean_stop = last_stop_reason in ('end_turn', 'stop', 'stop_sequence', None)
+                _has_intent = any(p in assistant_text.lower() for p in self._INTENT_PHRASES)
+                # A response that ENDS by asking the user a question is
+                # explicitly handing the turn back, not announcing an action
+                # it's about to take. The intent phrases ("let me check…",
+                # "I'll write…") read identically in both cases, so the
+                # trailing question mark is the only content-free signal that
+                # separates "I will do X once you answer" (yield — must NOT
+                # re-prompt) from "I am about to do X now" (continue). This is
+                # purely subtractive: it only suppresses the inject, never adds
+                # one, so worst case we decline to auto-continue a genuine
+                # "let me check X?" — where letting the user answer is correct.
+                _yields_to_user = assistant_text.rstrip().endswith('?')
+                if (_clean_stop and _has_intent and not _yields_to_user
+                        and intent_stalls < self._INTENT_CONTINUE_STALL_CAP):
+                    return ('inject_intent_continue', 'no_prefill_intent_continue',
+                            ('NO_PREFILL_INTENT', True, 'phrase'))
+                return ('end', 'no_prefill_end',
+                        ('NO_PREFILL_INTENT', False, 'phrase_yields' if _yields_to_user else 'phrase'))
+
+            # (b) Short stable response (iter>=1, <50 chars) — intent phrase.
+            if iteration >= 1 and len(assistant_text.strip()) < 50:
+                has_intent = any(p in assistant_text.lower() for p in self._INTENT_PHRASES)
+                probe = ('SHORT_INTENT', has_intent, 'phrase')
+                if has_intent and textonly_grace_used < 3:
+                    return ('spend_textonly_continue', 'short_intent_grace', probe)
+                return ('end', 'short_stable', probe)
+
+            # (c) Incomplete code block still open.
+            if code_block_open:
+                return ('continue', 'incomplete_block', None)
+
+            # (d) A continuation just happened.
+            if continuation_happened:
+                return ('continue', 'continuation_complete', None)
+
+            # (e) Substantial commentary after last block — intent phrase.
+            text_after_last_block = self._get_text_after_last_structured_content(assistant_text)
+            word_count_after_block = len(text_after_last_block.split()) if text_after_last_block else 0
+            if (word_count_after_block >= 20 and
+                    text_after_last_block.rstrip().endswith(('.', '!', '?'))):
+                has_intent = any(p in assistant_text.lower() for p in self._INTENT_PHRASES)
+                probe = ('TEXTONLY', has_intent, 'phrase')
+                if (not tools_executed and has_intent
+                        and textonly_grace_used < 1 and iteration == 0):
+                    return ('spend_textonly_continue', 'textonly_grace', probe)
+                return ('end', 'complete_response', probe)
+
+            # (f) Heuristic: text shape suggests more is coming.
+            text_end = assistant_text[-200:].strip()
+            suggests_continuation = (
+                text_end.endswith((':')) or
+                assistant_text.endswith('```') or
+                (word_count_after_block < 20 and
+                 not text_after_last_block.rstrip().endswith(('.', '!', '?')))
+            )
+            if suggests_continuation and iteration < 2:
+                return ('continue', 'suggests_continuation', None)
+            return ('end', 'stream_end', None)
+
+        # No text below this point.
+        if iteration >= 100:
+            return ('end', 'max_iterations', None)
+
+        # (g)/(h) No text, no tools.
+        # Option A: gate the empty-after-tools nudge on stop_reason. A clean
+        # end_turn/stop/None means the model signaled "done" — nudge at most
+        # ONCE then respect it; only a genuine cutoff (max_tokens/length)
+        # keeps the up-to-3 recovery budget. Mirrors the live ladder.
+        _is_cutoff = last_stop_reason in ('max_tokens', 'length')
+        _empty_cap = 3 if _is_cutoff else 1
+        if prev_is_tool_result and textonly_grace_used < _empty_cap:
+            return ('nudge', 'empty_after_tools_retry',
+                    ('EMPTY_AFTER_TOOLS', True, 'stop_reason_gated'))
+        if not prev_is_tool_result and empty_completion_retry_used < 2:
+            return ('spend_empty_retry', 'empty_completion_retry', None)
+        return ('end', 'no_activity', None)
+
     # Patterns indicating the model is narrating tool execution in prose
     # rather than using the tool_use API. Checked OUTSIDE code fences only.
     _FABRICATION_PATTERNS = [
@@ -693,6 +908,11 @@ class StreamingToolExecutor:
         actual_tool_name = self._normalize_tool_name(tool_name)
         if actual_tool_name == 'run_shell_command':
             try:
+                # The _task_scope envelope is built centrally in
+                # MCPManager.call_tool from the task contextvars when the target
+                # is the shell server, so every dispatch path (including this
+                # text-fence one) carries an active task grant without each
+                # path having to construct it. See manager.call_tool.
                 result = await mcp_manager.call_tool('run_shell_command', {'command': command.strip()})
 
                 if isinstance(result, dict) and 'content' in result:
@@ -949,7 +1169,22 @@ class StreamingToolExecutor:
         elif self.model_config and self.model_config.get('supports_thinking'):
             thinking_on = ziya_env("ZIYA_THINKING_MODE")
             if thinking_on:
+                # Non-adaptive thinking models (e.g. z.ai GLM, DeepSeek R1).
+                # This branch previously read thinking_on/budget but never
+                # built a ThinkingConfig, so config.thinking stayed None and
+                # the model never actually thought. Build it, threading the
+                # canonical effort level (shared with the adaptive branch and
+                # the Claude effort UI) so OpenAI-compatible providers can map
+                # it to reasoning_effort.
+                effort = ziya_env(
+                    "ZIYA_THINKING_EFFORT",
+                    default=self.model_config.get('thinking_effort_default', 'high'),
+                )
                 budget = ziya_env("ZIYA_THINKING_BUDGET")
+                thinking = ThinkingConfig(
+                    enabled=True, mode="enabled",
+                    effort=effort, budget_tokens=budget,
+                )
 
         # Per-request overrides from active skill modelOverrides
         temp_override = getattr(self, 'temperature_override', None)
@@ -1128,66 +1363,37 @@ class StreamingToolExecutor:
         # Unknown type — treat as non-empty to avoid dropping real data.
         return False
 
+    @staticmethod
+    def _count_conversation_chars(conversation: List[Dict[str, Any]]) -> int:
+        """Best-effort character count of a conversation, for debug logging.
 
-    def _should_continue_or_end_stream(self, assistant_text, tools_executed, iteration,
-                                        code_block_tracker, continuation_happened,
-                                        last_stop_reason, blocked_tools_count):
-        """Determine whether to continue iterating or end the stream.
-        
-        Returns:
-            str: 'continue', 'end', or 'end_no_prefill'
+        Tolerant of malformed entries: a message whose ``content`` key is
+        present but ``None`` (an empty / coalesced turn, or a malformed
+        record) coerces to an empty block list instead of raising
+        ``'NoneType' object is not iterable``. ``dict.get('content', [])``
+        only returns the default when the key is ABSENT — a present-but-None
+        value returns None, which the prior inline generator then tried to
+        iterate. Non-dict messages and non-dict content blocks are skipped.
         """
-        if tools_executed:
-            return 'continue'
-        
-        if blocked_tools_count >= 3:
-            logger.warning(f"🔍 RUNAWAY_LOOP_DETECTED: {blocked_tools_count} tools blocked, ending stream")
-            return 'end'
-        
-        if not assistant_text.strip():
-            if iteration >= 100:
-                return 'end'
-            return 'end'  # No tools, no text — done
-        
-        # For non-prefill models, check if we need special handling
-        supports_prefill = self.model_config.get('supports_assistant_prefill', True)
-        if not supports_prefill and not tools_executed:
-            if last_stop_reason == 'max_tokens' and iteration < 199:
-                return 'continue_no_prefill'  # Inject continuation prompt
-            return 'end_no_prefill'
-        
-        # Short stable responses at iteration >= 1 indicate completion
-        if iteration >= 1 and len(assistant_text.strip()) < 50:
-            return 'end'
-        
-        # Still in an incomplete code block — must continue
-        if code_block_tracker.get('in_block'):
-            return 'continue'
-        
-        # Continuation just happened — let model respond naturally
-        if continuation_happened:
-            return 'continue'
-        
-        # Check if there's substantial commentary after last structured content
-        text_after_last_block = self._get_text_after_last_structured_content(assistant_text)
-        word_count = len(text_after_last_block.split()) if text_after_last_block else 0
-        
-        # 20+ words ending with punctuation = complete
-        if word_count >= 20 and text_after_last_block.rstrip().endswith(('.', '!', '?')):
-            return 'end'
-        
-        # Check for continuation hints
-        text_end = assistant_text[-200:].strip()
-        suggests_continuation = (
-            text_end.endswith(':') or
-            assistant_text.endswith('\x60\x60\x60') or
-            (word_count < 20 and not text_after_last_block.rstrip().endswith(('.', '!', '?')))
-        )
-        
-        if suggests_continuation and iteration < 2:
-            return 'continue'
-        
-        return 'end'
+        total = 0
+        for msg in conversation:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get('content')
+            if isinstance(content, str):
+                total += len(content)
+                continue
+            for b in (content or []):
+                if not isinstance(b, dict):
+                    continue
+                btype = b.get('type')
+                if btype == 'text':
+                    total += len(b.get('text', ''))
+                elif btype == 'tool_result' and isinstance(b.get('content'), str):
+                    total += len(b.get('content', ''))
+                elif btype == 'tool_use':
+                    total += len(json.dumps(b.get('input', {})))
+        return total
 
     def _classify_and_handle_error(self, error, error_str, iteration, tool_results,
                                     throttle_state, inter_tool_delay, iteration_usages,
@@ -1210,7 +1416,13 @@ class StreamingToolExecutor:
             "ThrottlingException", "Too many tokens", "Too many requests", "Rate exceeded"])
         is_read_timeout = any(ind in error_str for ind in [
             "Read timed out", "ReadTimeoutError", "Read timeout", "request timed out",
-            "read operation timed out", "ConnectionResetError", "Connection reset by peer"])
+            "read operation timed out", "ConnectionResetError", "Connection reset by peer",
+            # Connection-quality drops (flaky/unreliable networks): the TLS socket
+            # is severed mid-handshake or mid-stream. These are transient and
+            # retriable, NOT auth/credential failures.
+            "UNEXPECTED_EOF_WHILE_READING", "EOF occurred in violation of protocol",
+            "SSL validation failed", "SSLError", "Connection aborted",
+            "Connection broken", "EndpointConnectionError", "ConnectionClosedError"])
         is_transient = any(ind in error_str for ind in [
             "internalServerException", "ServiceUnavailableException",
             "The system encountered an unexpected error"])
@@ -1423,7 +1635,7 @@ class StreamingToolExecutor:
                 has_calibration = False
 
             estimated_tokens = 0
-            estimation_method = "naive (4.0 chars/token)"
+            estimation_method = "naive (4.0 chars/token)"  # overwritten below once family is known
             estimation_model_family = None
 
             if has_calibration:
@@ -1440,35 +1652,72 @@ class StreamingToolExecutor:
                     logger.warning(f"📊 ESTIMATE-FAMILY: Failed to get model family: {e}")
                     estimation_model_family = 'claude'
 
-            # Estimate tokens from conversation messages
+            # Reflect the ratio source actually used by the estimate below.
+            # The per-message/content estimators call calibrator.estimate_tokens
+            # when has_calibration is set, which uses the learned ratio for this
+            # model family when one exists. Label accordingly so the diagnostic
+            # stops always claiming "naive" even on calibrated runs.
+            if has_calibration and calibrator and estimation_model_family in getattr(calibrator, 'global_by_model', {}):
+                _learned = calibrator.global_by_model[estimation_model_family]
+                estimation_method = f"calibrated ({_learned:.2f} chars/token, {estimation_model_family})"
+            elif has_calibration:
+                estimation_method = "calibrated (release defaults)"
+
+            # Estimate tokens from conversation messages — bucketed so the
+            # estimate-vs-actual comparison below can attribute any gap to a
+            # specific component (chat history vs system_content vs baseline)
+            # rather than reporting one lumped number that hides the culprit.
+            conversation_tokens = 0
             for msg in conversation:
-                estimated_tokens += self._estimate_message_tokens(
+                conversation_tokens += self._estimate_message_tokens(
                     msg, calibrator, has_calibration, estimation_model_family
                 )
 
             # Include system content
+            system_tokens = 0
             if system_content:
-                estimated_tokens += self._estimate_content_tokens(
+                system_tokens = self._estimate_content_tokens(
                     system_content, calibrator, has_calibration, estimation_model_family
                 )
 
             # Add baseline overhead
+            baseline_overhead = 0
             if has_calibration and estimation_model_family:
                 try:
                     baseline_overhead = calibrator.get_baseline_overhead(model_family=estimation_model_family)
-                    if baseline_overhead > 0:
-                        estimated_tokens += baseline_overhead
+                    baseline_overhead = baseline_overhead if baseline_overhead > 0 else 0
                 except (KeyError, AttributeError, TypeError):
-                    pass
+                    baseline_overhead = 0
+
+            estimated_tokens = conversation_tokens + system_tokens + baseline_overhead
 
             # Compare to actual
             cache_written = iteration_usage.cache_write_tokens
             actual_tokens = (fresh + cache_written) if cache_written > 0 else total_input
             error_pct = (abs(estimated_tokens - actual_tokens) / actual_tokens * 100) if actual_tokens > 0 else 0
 
-            logger.debug(
-                f"📊 Calibration: estimated={estimated_tokens:,} actual={actual_tokens:,} "
-                f"error=±{error_pct:.1f}% ({estimation_method}, fresh={fresh:,} cached={cached:,})"
+            # Raw character volume the estimator was handed, so a future
+            # capture can tell apart "estimator saw fewer chars" (content
+            # assembly gap) from "estimator mis-rated chars->tokens"
+            # (calibration). system_content may be a str or list-of-blocks.
+            if isinstance(system_content, str):
+                system_chars = len(system_content)
+            elif isinstance(system_content, list):
+                system_chars = sum(len(b.get('text', '')) for b in system_content if isinstance(b, dict))
+            else:
+                system_chars = 0
+            conv_chars = sum(len(str(m.get('content', ''))) for m in conversation)
+
+            # INFO so the gap is collectable without enabling debug. Signed
+            # delta (est - actual): negative = we under-counted (the symptom).
+            logger.info(
+                f"📊 ESTIMATE_ACCURACY: est={estimated_tokens:,} actual={actual_tokens:,} "
+                f"delta={estimated_tokens - actual_tokens:+,} (±{error_pct:.1f}%) | "
+                f"buckets: conv={conversation_tokens:,} system={system_tokens:,} "
+                f"baseline={baseline_overhead:,} | "
+                f"chars: conv={conv_chars:,} system={system_chars:,} | "
+                f"actual_parts: fresh={fresh:,} cached={cached:,} cache_write={cache_written:,} "
+                f"({estimation_method})"
             )
         except (ImportError, KeyError, AttributeError, ValueError, ZeroDivisionError) as e:
             logger.debug(f"Error in accuracy tracking: {e}")
@@ -1561,16 +1810,26 @@ class StreamingToolExecutor:
             model_config = ModelManager.get_model_config(endpoint, model_name)
             model_family = model_config.get('family', 'default')
 
-            # Derive file-only tokens by proportional character attribution.
-            # Use total_input (actual Bedrock token count for entire request)
-            # and estimate file content's share of total input characters.
+            # The true input cost includes tokens written to the prompt cache.
+            # Bedrock reports cache-written tokens in cache_write_tokens, NOT in
+            # input_tokens, so total_input (= input + cache_read) undercounts a
+            # fresh first turn where the large codebase context is cache-written.
+            # Left unaccounted, the chars/token ratio inflates (e.g. 18.6) and
+            # the calibrator rejects the sample as implausible, so it never
+            # learns and every downstream estimate keeps undercounting. Mirror
+            # _track_estimation_accuracy and fold cache_write back in.
+            cache_written = iteration_usage.cache_write_tokens
+            effective_input = (total_input + cache_written) if cache_written > 0 else total_input
+
+            # Derive file-only tokens by proportional character attribution:
+            # estimate file content's share of total input characters.
             file_chars = sum(len(c) for c in file_contents.values())
             system_chars = len(system_content or '')
             conversation_chars = sum(
                 len(str(m.get('content', ''))) for m in conversation
             )
             total_input_chars = max(1, system_chars + conversation_chars)
-            file_only_tokens = max(1, int(total_input * (file_chars / total_input_chars)))
+            file_only_tokens = max(1, int(effective_input * (file_chars / total_input_chars)))
 
             calibrator.record_actual_usage(
                 conversation_id=conversation_id,
@@ -1808,24 +2067,6 @@ class StreamingToolExecutor:
         # to actually run. Bounded to avoid infinite text-only loops when the
         # model legitimately has nothing more to do.
         textonly_grace_used = 0
-        # Phrases that announce intent to act ("Let me check X before writing…").
-        # Used by both text-only grace branches below to distinguish a response
-        # that promises work it hasn't done yet (continue) from one that has
-        # actually finished (end). Defined once at method scope so the two call
-        # sites can never drift apart.
-        _intent_phrases = (
-            'let me check', 'let me look', 'let me examine',
-            'let me search', 'let me verify', 'let me read',
-            'let me review', 'let me see', 'let me inspect',
-            'let me explore', 'let me first', 'let me dig',
-            "i'll check", "i'll look", "i'll examine",
-            "i'll search", "i'll verify", "i'll read",
-            "i'll review", "i'll inspect",
-            "before writing", "before i write",
-            "before creating", "before i create",
-            "first, let me", "first let me",
-            "i need to read", "i need to check",
-        )
 
         def _grace_probe(branch: str, *, says_continue: bool, decider: str = "phrase"):
             # Instrumentation only — does NOT influence the decision. Logs what
@@ -1857,6 +2098,23 @@ class StreamingToolExecutor:
         # on the first turn after a normal user message — a transient provider
         # hiccup that otherwise surfaces as an "errored" empty bubble in the UI.
         empty_completion_retry_used = 0
+        # Non-prefill incomplete-code-block continuation (step 2). The stall
+        # counter bounds only *unproductive* rounds: it resets to 0 whenever a
+        # round makes progress (new fence transitions vs. the prior round, OR a
+        # large output), so a genuine multi-round diff is effectively unbounded
+        # while a wedged-open fence with no output gives up after the cap.
+        # prev_fence_transitions snapshots the tracker's monotonic counter at
+        # the previous block_continue round to detect per-round progress.
+        block_continue_stalls = 0
+        prev_fence_transitions = 0
+        _BLOCK_CONTINUE_BIG_OUTPUT = 8000  # chars; large round = progress hedge
+        # Non-prefill intent continuation (reset-on-progress). intent_stalls
+        # counts CONSECUTIVE intent-continues with no tool work between them;
+        # tools_since_intent_continue is the progress signal that resets it.
+        # This lets intent → work → intent → work continue unbounded while a
+        # pure narration loop (intent → intent → intent) gives up at the cap.
+        intent_stalls = 0
+        tools_since_intent_continue = False
         for iteration in range(max_iterations):
             logger.debug(f"🔍 ITERATION_START: Beginning iteration {iteration}")
             # Check for user-requested cancellation before making a new LLM call.
@@ -2147,19 +2405,7 @@ class StreamingToolExecutor:
 
             logger.debug(f"🔍 REQUEST_DEBUG: Iteration {iteration}, provider={self.provider.provider_name}")
             logger.debug(f"   Messages: {len(conversation)}, max_tokens: {provider_config.max_output_tokens}")
-            total_chars = sum(
-                len(msg.get('content', '')) if isinstance(msg.get('content'), str)
-                else sum(
-                    len(b.get('text', '')) if b.get('type') == 'text'
-                    else len(b.get('content', '')) if b.get('type') == 'tool_result' and isinstance(b.get('content'), str)
-                    else len(json.dumps(b.get('input', {}))) if b.get('type') == 'tool_use'
-                    else 0
-                    for b in msg.get('content', [])
-                    if isinstance(b, dict)
-                )
-                for msg in conversation
-                if isinstance(msg, dict)
-            )
+            total_chars = self._count_conversation_chars(conversation)
             logger.debug(f"   Total conversation size: {total_chars:,} chars across {len(conversation)} messages")
 
             try:
@@ -2193,6 +2439,10 @@ class StreamingToolExecutor:
                 code_block_tracker = {
                     'in_block': False,
                     'block_type': None,
+                    # Monotonic count of fence transitions (open / close /
+                    # implicit close+reopen). Used as a one-directional reset
+                    # signal for the non-prefill block-continuation stall cap.
+                    'fence_transitions': 0,
                     'accumulated_content': ''
                 }
                 
@@ -2659,6 +2909,12 @@ Please retry the tool call with complete, valid JSON parameters."""
                                 # Detect empty tool calls for tools that require arguments
                                                 
                                 actual_tool_name = self._normalize_tool_name(tool_name)
+                                # Auto-fill sequentialthinking's bookkeeping
+                                # numbers when the model omits them, so the
+                                # call proceeds instead of being bounced back
+                                # through schema validation (wasting a turn to
+                                # restate the same thought).
+                                args = self._normalize_sequential_thinking_args(actual_tool_name, args)
                                 
                                 # Generic schema-based validation
                                 tool_schema = None
@@ -3149,6 +3405,12 @@ Please retry the tool call with valid JSON. Ensure:
 
                 # Continue to next iteration if tools were executed
                 if tools_executed_this_iteration:
+                    # Tools ran this iteration → progress signal for the
+                    # intent-stall counter. The next intent-continue (if any)
+                    # resets intent_stalls instead of counting toward the
+                    # narration-loop cap, so genuine intent→work→intent→work
+                    # is unbounded while intent→intent→intent gives up.
+                    tools_since_intent_continue = True
                     # Warn about consecutive empty tool calls but don't break
                     if consecutive_empty_tool_calls >= 5:
                         logger.warning(f"🔍 EMPTY_TOOL_WARNING: {consecutive_empty_tool_calls} consecutive empty tool calls detected")
@@ -3272,116 +3534,114 @@ Please retry the tool call with valid JSON. Ensure:
                         logger.warning(f"🔍 RUNAWAY_LOOP_DETECTED: {blocked_tools_this_iteration} tools blocked in iteration {iteration}, ending stream")
                         yield {'type': 'stream_end'}
                         break
-                    
                     # No tools executed - check if we should end the stream
                     if assistant_text.strip():
-                        # For models that don't support assistant prefill (e.g. Opus 4 via Bedrock),
-                        # continuing to the next iteration would fail because the conversation ends
-                        # with an assistant message and no tool results to add a user message.
-                        # End the stream gracefully instead of attempting another API call.
+                        # Delegate the text-present continue-vs-end decision to
+                        # the pure _decide_no_tool_outcome decider (characterized
+                        # by tests/test_decide_no_tool_outcome.py). The caller
+                        # owns all side effects below based on the verdict.
                         supports_prefill = self.model_config.get('supports_assistant_prefill', True)
-                        if not supports_prefill and not tools_executed_this_iteration:
-                            if last_stop_reason == 'max_tokens' and iteration < max_iterations - 1:
-                                # Model was cut off mid-response — inject a user
-                                # message so the non-prefill model can continue.
-                                logger.info(
-                                    f"🔄 MAX_TOKENS_CONTINUE: Model hit max_tokens on non-prefill model, "
-                                    f"injecting continuation prompt (iteration {iteration})"
-                                )
-                                conversation.append({
-                                    "role": "assistant",
-                                    "content": assistant_text
-                                })
-                                conversation.append({
-                                    "role": "user",
-                                    "content": "[System: Your previous response was cut off due to length limits. Continue exactly where you left off.]"
-                                })
-                                continue
-                            else:
-                                logger.info(
-                                    f"🛑 NO_PREFILL_END: Model doesn't support prefill, "
-                                    f"ending stream after text-only response (continuation={continuation_happened}, stop_reason={last_stop_reason})"
-                                )
-                                yield {'type': 'stream_end'}
-                                break
-
-                        # CRITICAL: Detect stable short responses to prevent infinite loops
-                        # If the response is very short (< 50 chars) and we're repeating iterations
-                        # with identical output, it's a stable completion - end the stream
-                        if iteration >= 1 and len(assistant_text.strip()) < 50:
-                            _has_intent = any(p in assistant_text.lower() for p in _intent_phrases)
-                            _grace_probe("SHORT_INTENT", says_continue=_has_intent)
-                            if _has_intent and textonly_grace_used < 3:
-                                textonly_grace_used += 1
-                                logger.info(
-                                    f"🔄 SHORT_INTENT_GRACE: Short response ({len(assistant_text)} chars) "
-                                    f"contains tool intent, granting continuation "
-                                    f"(iteration={iteration}, grace={textonly_grace_used}/3)"
-                                )
-                                continue
-                            logger.debug(f"🔍 SHORT_STABLE_RESPONSE: Detected short response ({len(assistant_text)} chars) at iteration {iteration}, ending stream")
-                            yield {'type': 'stream_end'}
-                            break
-                        
-                        # FIRST: Check if code block is still incomplete - if so, continue
-                        if code_block_tracker.get('in_block'):
-                            logger.debug(f"🔍 INCOMPLETE_BLOCK_REMAINING: Code block still open, continuing to next iteration")
-                            continue
-                        
-                        # If continuation just happened, always do another iteration
-                        # to let the model respond/continue naturally
-                        if continuation_happened:
-                            logger.debug(f"🔍 CONTINUATION_COMPLETE: Continuation finished, continuing to next iteration")
-                            continue
-                        
-                        # Check if there's already substantial commentary after the last tool/diff/code block
-                        text_after_last_block = self._get_text_after_last_structured_content(assistant_text)
-                        word_count_after_block = len(text_after_last_block.split()) if text_after_last_block else 0
-                        
-                        # If we have 20+ words after the last block and it ends
-                        # properly, the old heuristic declared the response
-                        # complete. That misfires when the model produced only
-                        # narration of intent ("Let me check X before writing…")
-                        # without executing any tools — the sentence ends in a
-                        # period but the work hasn't started. Prefer granting
-                        # one extra continuation cycle over cutting the model
-                        # off mid-plan. Bounded by textonly_grace_used so a
-                        # legitimately-complete short text reply still ends.
-                        if (word_count_after_block >= 20 and 
-                            text_after_last_block.rstrip().endswith(('.', '!', '?'))):
-                            _grace_probe(
-                                "TEXTONLY",
-                                says_continue=any(p in assistant_text.lower() for p in _intent_phrases),
-                            )
-                            if (not tools_executed_this_iteration
-                                    and any(p in assistant_text.lower() for p in _intent_phrases)
-                                    and textonly_grace_used < 1
-                                    and iteration == 0):
-                                textonly_grace_used += 1
-                                logger.info(
-                                    f"🔄 TEXTONLY_GRACE: Text-only iteration with "
-                                    f"{word_count_after_block} words and no tools; "
-                                    f"granting one continuation cycle (used={textonly_grace_used})"
-                                )
-                                continue
-                            logger.debug(f"🔍 COMPLETE_RESPONSE: Found {word_count_after_block} words after last block, ending stream: '{text_after_last_block[-50:]}'")
-                            yield {'type': 'stream_end'}
-                            break
-                        
-                        # Otherwise check if we should continue
-                        text_end = assistant_text[-200:].strip()
-                        suggests_continuation = (
-                            text_end.endswith((':')) or  # About to make tool call  
-                            assistant_text.endswith('```') or  # Just finished code block - might add explanation
-                            (word_count_after_block < 20 and not text_after_last_block.rstrip().endswith(('.', '!', '?')))
+                        _verdict, _reason, _probe = self._decide_no_tool_outcome(
+                            assistant_text=assistant_text,
+                            supports_prefill=supports_prefill,
+                            tools_executed=tools_executed_this_iteration,
+                            last_stop_reason=last_stop_reason,
+                            iteration=iteration,
+                            max_iterations=max_iterations,
+                            continuation_happened=continuation_happened,
+                            code_block_open=bool(code_block_tracker.get('in_block')),
+                            blocked_tools=blocked_tools_this_iteration,
+                            prev_is_tool_result=False,
+                            textonly_grace_used=textonly_grace_used,
+                            empty_completion_retry_used=empty_completion_retry_used,
+                            block_continue_stalls=block_continue_stalls,
+                            intent_stalls=intent_stalls,
                         )
-                        
-                        if suggests_continuation and iteration < 2:
-                            logger.debug(f"🔍 CONTINUE_RESPONSE: Only {word_count_after_block} words after last block, continuing: '{text_after_last_block[-30:] if text_after_last_block else text_end}'")
+                        if _probe:
+                            _grace_probe(_probe[0], says_continue=_probe[1], decider=_probe[2])
+
+                        if _verdict == 'inject_max_tokens':
+                            logger.info(
+                                f"🔄 MAX_TOKENS_CONTINUE: Model hit max_tokens on non-prefill model, "
+                                f"injecting continuation prompt (iteration {iteration})"
+                            )
+                            conversation.append({"role": "assistant", "content": assistant_text})
+                            conversation.append({
+                                "role": "user",
+                                "content": "[System: Your previous response was cut off due to length limits. Continue exactly where you left off.]"
+                            })
                             continue
-                        else:
-                            logger.debug(f"🔍 STREAM_END: Model produced text without tools, ending stream")
-                            # Log final metrics
+                        if _verdict == 'inject_intent_continue':
+                            # Reset-on-progress: if tools ran since the last
+                            # intent-continue, this is genuine intent→work→intent
+                            # (reset the stall counter); otherwise it's a
+                            # consecutive no-progress intent (count it toward the
+                            # cap). Clear the progress flag for the next round.
+                            if tools_since_intent_continue:
+                                intent_stalls = 0
+                            else:
+                                intent_stalls += 1
+                            tools_since_intent_continue = False
+                            logger.info(
+                                f"🔄 NO_PREFILL_INTENT_CONTINUE: non-prefill model announced "
+                                f"intent on clean stop; injecting follow-through prompt "
+                                f"(iteration={iteration}, intent_stalls={intent_stalls}/"
+                                f"{self._INTENT_CONTINUE_STALL_CAP})"
+                            )
+                            conversation.append({"role": "assistant", "content": assistant_text})
+                            conversation.append({
+                                "role": "user",
+                                "content": "[System: You described an action you intend to take but have not taken it yet. Proceed now — either call the tool you described, or if no action is actually needed, give your final answer.]"
+                            })
+                            continue
+                        if _verdict == 'block_continue':
+                            # Non-prefill model cut off mid-code-block on a clean
+                            # stop. Reset the stall counter on PROGRESS (new fence
+                            # transitions since the last block_continue round, OR
+                            # a large round) so genuine multi-round completion is
+                            # unbounded; otherwise count it as a stall. The decider
+                            # already enforced the cap, so reaching here means we
+                            # continue this round.
+                            _now_transitions = code_block_tracker.get('fence_transitions', 0)
+                            _made_progress = (
+                                _now_transitions > prev_fence_transitions
+                                or len(assistant_text) >= _BLOCK_CONTINUE_BIG_OUTPUT
+                            )
+                            if _made_progress:
+                                block_continue_stalls = 0
+                            else:
+                                block_continue_stalls += 1
+                            prev_fence_transitions = _now_transitions
+                            logger.info(
+                                f"🔄 NO_PREFILL_BLOCK_CONTINUE: open fence on clean stop; "
+                                f"injecting block-completion prompt (iteration={iteration}, "
+                                f"progress={_made_progress}, stalls={block_continue_stalls}/"
+                                f"{self._BLOCK_CONTINUE_STALL_CAP}, transitions={_now_transitions})"
+                            )
+                            conversation.append({"role": "assistant", "content": assistant_text})
+                            conversation.append({
+                                "role": "user",
+                                "content": "[System: Your previous response was cut off in the middle of a code block. Continue exactly where you left off and finish the code block — do not restart it.]"
+                            })
+                            continue
+                        if _verdict == 'spend_textonly_continue':
+                            textonly_grace_used += 1
+                            logger.info(
+                                f"🔄 {_reason.upper()}: granting continuation "
+                                f"(iteration={iteration}, grace={textonly_grace_used})"
+                            )
+                            continue
+                        if _verdict == 'continue':
+                            logger.debug(f"🔍 CONTINUE: {_reason} (iteration={iteration})")
+                            continue
+                        # _verdict == 'end'
+                        if _reason == 'no_prefill_end':
+                            logger.info(
+                                f"🛑 NO_PREFILL_END: Model doesn't support prefill, ending stream "
+                                f"after text-only response (continuation={continuation_happened}, "
+                                f"stop_reason={last_stop_reason})"
+                            )
+                        elif _reason == 'stream_end':
                             logger.info(
                                 f"\n📊 Final stream metrics: "
                                 f"events={stream_metrics['events_sent']}, "
@@ -3391,17 +3651,17 @@ Please retry the tool call with valid JSON. Ensure:
                                 f"max={max(stream_metrics['chunk_sizes']) if stream_metrics['chunk_sizes'] else 0}, "
                                 f"duration={time.time()-stream_metrics['start_time']:.2f}s\n"
                             )
-                            yield {'type': 'stream_end'}
-                            break
-                    elif iteration >= 100:  # Safety: end after reaching max iterations
-                        logger.debug(f"🔍 MAX_ITERATIONS: Reached maximum iterations ({iteration}), ending stream")
+                        else:
+                            logger.debug(f"🔍 STREAM_END ({_reason}): ending stream (iteration={iteration})")
                         yield {'type': 'stream_end'}
                         break
                     else:
-                        # No tools and no text. If the previous conversation
-                        # turn was tool results, the model likely hit a transient
-                        # empty-response condition (no usage metrics, zero tokens).
-                        # Retry once with a nudge rather than silently ending.
+                        # No text, no tools. Route through the SAME pure decider
+                        # used by the text branch above — it owns the iteration
+                        # safety cap, the Option A empty-after-tools nudge, and
+                        # the empty-completion retry. The caller performs the
+                        # side effects per returned verdict. (iteration>=100 is
+                        # folded in: the decider returns ('end','max_iterations').)
                         _prev_is_tool_result = (
                             len(conversation) >= 1 and
                             isinstance(conversation[-1].get('content'), list) and
@@ -3411,16 +3671,30 @@ Please retry the tool call with valid JSON. Ensure:
                                 if isinstance(b, dict)
                             )
                         )
-                        if _prev_is_tool_result and textonly_grace_used < 3:
+                        _verdict, _reason, _probe = self._decide_no_tool_outcome(
+                            assistant_text=assistant_text,
+                            supports_prefill=self.model_config.get('supports_assistant_prefill', True),
+                            tools_executed=tools_executed_this_iteration,
+                            last_stop_reason=last_stop_reason,
+                            iteration=iteration,
+                            max_iterations=max_iterations,
+                            continuation_happened=continuation_happened,
+                            code_block_open=bool(code_block_tracker.get('in_block')),
+                            blocked_tools=blocked_tools_this_iteration,
+                            prev_is_tool_result=_prev_is_tool_result,
+                            textonly_grace_used=textonly_grace_used,
+                            empty_completion_retry_used=empty_completion_retry_used,
+                        )
+                        if _probe:
+                            _grace_probe(_probe[0], says_continue=_probe[1], decider=_probe[2])
+
+                        if _verdict == 'nudge':
                             textonly_grace_used += 1
-                            # Symptom-A probe: the decider is structural
-                            # (_prev_is_tool_result), which always nudges. This
-                            # surfaces how often we nudge a turn the model ended
-                            # (end_turn → over-nudge) vs. a real cutoff.
-                            _grace_probe("EMPTY_AFTER_TOOLS", says_continue=True, decider="prev_is_tool_result")
+                            _empty_cap = 3 if last_stop_reason in ('max_tokens', 'length') else 1
                             logger.info(
                                 f"🔄 EMPTY_AFTER_TOOLS_RETRY: Model returned nothing after tool results "
-                                f"(iteration={iteration}, grace={textonly_grace_used}/3). Nudging."
+                                f"(iteration={iteration}, grace={textonly_grace_used}/{_empty_cap}, "
+                                f"stop_reason={last_stop_reason!r}). Nudging."
                             )
                             # Append the nudge as a text block INSIDE the existing
                             # tool_result user turn, not as a new user message.
@@ -3432,25 +3706,32 @@ Please retry the tool call with valid JSON. Ensure:
                             # empty-response loop it is trying to break.
                             conversation[-1]["content"].append({
                                 "type": "text",
-                                "text": "[System: Please continue — analyze the tool results above and proceed with your task.]",
+                                "text": (
+                                    "[System: You did not provide an answer after a series of tool "
+                                    "calls, which usually indicates you did not synthesize an answer "
+                                    "from the tool results above. Would you like to continue with "
+                                    "additional tool calls, or present a summary of your findings to "
+                                    "the user?]"
+                                ),
                             })
                             continue
-                        if not _prev_is_tool_result and empty_completion_retry_used < 2:
-                            # Transient empty completion (no text, no tools) after a
-                            # normal user message — typically a provider hiccup that
-                            # otherwise surfaces as an "errored" empty bubble in the UI.
-                            # The last conversation message is still the user's question
-                            # (no empty assistant turn was appended), so a bare retry
-                            # re-issues the identical request without creating two
-                            # consecutive user messages.
+                        if _verdict == 'spend_empty_retry':
+                            # Transient empty completion after a normal user
+                            # message — a bare retry re-issues the identical
+                            # request without creating two consecutive user turns.
                             empty_completion_retry_used += 1
                             logger.info(
                                 f"🔄 EMPTY_COMPLETION_RETRY: Model returned nothing after a normal "
                                 f"user message (iteration={iteration}, "
-                                f"retry={empty_completion_retry_used}/2). Re-issuing request."
+                                f"retry={empty_completion_retry_used}/2, "
+                                f"stop_reason={last_stop_reason!r}). Re-issuing request."
                             )
                             continue
-                        logger.debug(f"🔍 NO_ACTIVITY: No tools or text in iteration {iteration}, ending stream")
+                        # _verdict == 'end' (no_activity or max_iterations)
+                        if _reason == 'max_iterations':
+                            logger.debug(f"🔍 MAX_ITERATIONS: Reached maximum iterations ({iteration}), ending stream")
+                        else:
+                            logger.debug(f"🔍 NO_ACTIVITY: No tools or text in iteration {iteration}, ending stream")
                         yield {'type': 'stream_end'}
                         break
                 
@@ -3705,6 +3986,17 @@ Please retry the tool call with valid JSON. Ensure:
                 lang_or_type = stripped[backtick_count:].strip()
                 
                 if lang_or_type:
+                    # 2a-narrow: an info string containing a space is almost
+                    # certainly prose that happens to start a line with the
+                    # fence marker (a wrapped sentence, or the model quoting
+                    # ```diff to discuss it), NOT a real opener — genuine
+                    # info strings are single tokens (python, diff, tsx).
+                    # Suppress the spurious open ONLY when not already in a
+                    # block, so the in-block close/reopen recovery heuristics
+                    # below are untouched. The step-1 stop-reason gate
+                    # backstops the rare malformed same-line-content fence.
+                    if ' ' in lang_or_type and not tracker['in_block']:
+                        continue
                     # Inside an open fence, a lang-tagged fence line with
                     # FEWER backticks than the opener is content, not a new
                     # opener (CommonMark). Without this check, a wide fence
@@ -3734,11 +4026,13 @@ Please retry the tool call with valid JSON. Ensure:
                         tracker['block_type'] = None
                         tracker['backtick_count'] = backtick_count
                         tracker['accumulated_content'] = line + '\n'
+                        tracker['fence_transitions'] = tracker.get('fence_transitions', 0) + 1
                         continue
                     tracker['in_block'] = True
                     tracker['block_type'] = lang_or_type
                     tracker['backtick_count'] = backtick_count
                     tracker['accumulated_content'] = line + '\n'
+                    tracker['fence_transitions'] = tracker.get('fence_transitions', 0) + 1
                     logger.debug(f"🔍 TRACKER: Opened {lang_or_type} block ({backtick_count} backticks)")
                 elif tracker['in_block']:
                     # No language specifier and we're in a block - closing fence candidate.
@@ -3748,6 +4042,7 @@ Please retry the tool call with valid JSON. Ensure:
                     tracker['in_block'] = False
                     tracker['block_type'] = None
                     tracker['backtick_count'] = 0
+                    tracker['fence_transitions'] = tracker.get('fence_transitions', 0) + 1
                     logger.debug(f"🔍 TRACKER: Closed block ({backtick_count} backticks)")
                 else:
                     # No language specifier and not currently in a block —
@@ -3761,6 +4056,7 @@ Please retry the tool call with valid JSON. Ensure:
                     tracker['block_type'] = None  # untyped
                     tracker['backtick_count'] = backtick_count
                     tracker['accumulated_content'] = line + '\n'
+                    tracker['fence_transitions'] = tracker.get('fence_transitions', 0) + 1
                     logger.debug(
                         f"🔍 TRACKER: Opened untyped bare fence "
                         f"({backtick_count} backticks)"
