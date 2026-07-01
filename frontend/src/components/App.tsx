@@ -29,6 +29,7 @@ import { loadFormatters } from '../utils/mcpFormatterLoader';
 import { useConfig } from '../context/ConfigContext'
 import { ServerStatusBanner } from './ServerStatusBanner';
 import { useScrollManager } from '../hooks/useScrollManager';
+import { TASK_CARD_OPEN_EVENT } from '../hooks/useTaskBindings';
 import { ScrollIndicator } from './ScrollIndicator';
 import { lazyWithRetry } from '../utils/lazyWithRetry';
 import Conversation from "./Conversation";
@@ -146,6 +147,10 @@ export const App: React.FC = () => {
     const [showMCPRegistry, setShowMCPRegistry] = useState(false);
     const [showExportModal, setShowExportModal] = useState(false);
     const [showTaskCards, setShowTaskCards] = useState(false);
+    // Card to focus when the deck opens via an inline tile's "Edit card"
+    // backlink (TASK_CARD_OPEN_EVENT).  Cleared on close so a later manual
+    // deck-open starts at the list, not the last-edited card.
+    const [taskCardInitialId, setTaskCardInitialId] = useState<string | undefined>(undefined);
     const [showMemoryBrowser, setShowMemoryBrowser] = useState(false);
     const [mcpEnabled, setMcpEnabled] = useState(false);
 
@@ -316,6 +321,18 @@ export const App: React.FC = () => {
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
+    }, []);
+
+    // Inline card tile "Edit card" backlink → open the deck on that card.
+    useEffect(() => {
+        const onOpenCard = (e: Event) => {
+            const cardId = (e as CustomEvent).detail?.cardId;
+            if (!cardId) return;
+            setTaskCardInitialId(cardId);
+            setShowTaskCards(true);
+        };
+        window.addEventListener(TASK_CARD_OPEN_EVENT, onOpenCard);
+        return () => window.removeEventListener(TASK_CARD_OPEN_EVENT, onOpenCard);
     }, []);
 
     const { isDarkMode, toggleTheme, themeAlgorithm } = useTheme();
@@ -556,6 +573,7 @@ export const App: React.FC = () => {
                                 {showMCPStatus && <MCPStatusModal
                                     visible={showMCPStatus}
                                     onClose={() => setShowMCPStatus(false)}
+                                    onOpenShellConfig={handleOpenShellConfig}
                                 />}
                                 {showMCPRegistry && <MCPRegistryModal
                                     visible={showMCPRegistry}
@@ -578,7 +596,8 @@ export const App: React.FC = () => {
                     {showTaskCards && <Suspense fallback={null}>
                         <TaskCardsLibrary
                             visible={showTaskCards}
-                            onClose={() => setShowTaskCards(false)}
+                            onClose={() => { setShowTaskCards(false); setTaskCardInitialId(undefined); }}
+                            initialCardId={taskCardInitialId}
                             chatId={currentConversationId || undefined}
                             anchorMessageId={
                                 currentMessages.length > 0

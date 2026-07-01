@@ -122,9 +122,9 @@ const isVegaLiteDefinitionComplete = (definition: string): boolean => {
 
     // Vega v5 uses `marks` (array) not `mark` — check accordingly
     if (parsed.$schema && typeof parsed.$schema === 'string' &&
-        parsed.$schema.includes('/vega/') && !parsed.$schema.includes('/vega-lite/')) {
+      parsed.$schema.includes('/vega/') && !parsed.$schema.includes('/vega-lite/')) {
       return Array.isArray(parsed.marks) && parsed.marks.length > 0 &&
-             Array.isArray(parsed.data) && parsed.data.length > 0;
+        Array.isArray(parsed.data) && parsed.data.length > 0;
     }
 
     // Check for required Vega-Lite properties.  Data can live in the top
@@ -449,13 +449,13 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       // Detect Vega-only transforms that Vega-Lite will silently ignore.
       // If found, return the spec unmodified — running our preprocessing on a spec
-  // Vega v5 specs must bypass all Vega-Lite transforms — they use marks/signals/data
-  // at the top level and vega-embed renders them natively via the $schema URL.
-  if (spec.$schema && typeof spec.$schema === 'string' &&
-      spec.$schema.includes('/vega/') && !spec.$schema.includes('/vega-lite/')) {
-    console.log('🔧 VEGA-PREPROCESS: Vega v5 spec — skipping Vega-Lite preprocessing');
-    return spec;
-  }
+      // Vega v5 specs must bypass all Vega-Lite transforms — they use marks/signals/data
+      // at the top level and vega-embed renders them natively via the $schema URL.
+      if (spec.$schema && typeof spec.$schema === 'string' &&
+        spec.$schema.includes('/vega/') && !spec.$schema.includes('/vega-lite/')) {
+        console.log('🔧 VEGA-PREPROCESS: Vega v5 spec — skipping Vega-Lite preprocessing');
+        return spec;
+      }
 
       // whose data pipeline will be dropped causes cascading destruction of encodings.
       const vegaOnlyTransforms = [
@@ -1747,8 +1747,8 @@ export const vegaLitePlugin: D3RenderPlugin = {
         ['color', 'fill', 'stroke'].forEach(channel => {
           const channelSpec = encoding[channel];
           if (channelSpec?.scale?.scheme &&
-              typeof channelSpec.scale.scheme === 'string' &&
-              channelSpec.scale.scheme.startsWith('#')) {
+            typeof channelSpec.scale.scheme === 'string' &&
+            channelSpec.scale.scheme.startsWith('#')) {
             console.log(`🔧 ARC-COLOR-FIX: Converting invalid hex scheme "${channelSpec.scale.scheme}" to color range in ${channel} channel`);
             const hexColor = channelSpec.scale.scheme;
             delete channelSpec.scale.scheme;
@@ -4711,25 +4711,25 @@ export const vegaLitePlugin: D3RenderPlugin = {
             if (resizeRafId !== null) return;
             resizeRafId = requestAnimationFrame(() => {
               resizeRafId = null;
-            for (const entry of entries) {
-              const actualHeight = entry.contentRect.height;
-              const actualWidth = entry.contentRect.width;
+              for (const entry of entries) {
+                const actualHeight = entry.contentRect.height;
+                const actualWidth = entry.contentRect.width;
 
-              // Update parent containers
-              let parent = container.parentElement;
-              while (parent && (parent.classList.contains('d3-container') || parent.classList.contains('vega-lite-container'))) {
-                const parentElement = parent as HTMLElement;
-                const currentHeight = parentElement.getBoundingClientRect().height;
+                // Update parent containers
+                let parent = container.parentElement;
+                while (parent && (parent.classList.contains('d3-container') || parent.classList.contains('vega-lite-container'))) {
+                  const parentElement = parent as HTMLElement;
+                  const currentHeight = parentElement.getBoundingClientRect().height;
 
-                if (currentHeight < actualHeight + 40) {
-                  parentElement.style.height = `${actualHeight + 40}px`;
-                  parentElement.style.minHeight = `${actualHeight + 40}px`;
-                  parentElement.style.overflow = 'visible';
+                  if (currentHeight < actualHeight + 40) {
+                    parentElement.style.height = `${actualHeight + 40}px`;
+                    parentElement.style.minHeight = `${actualHeight + 40}px`;
+                    parentElement.style.overflow = 'visible';
+                  }
+
+                  parent = parent.parentElement;
                 }
-
-                parent = parent.parentElement;
               }
-            }
             });
           });
 
@@ -5122,6 +5122,7 @@ ${svgData}`;
       // Add Source button
       let showingSource = false;
       const originalVegaContainer = vegaContainer;
+      const originalContent = vegaContainer?.innerHTML || '';
       const sourceButton = document.createElement('button');
       sourceButton.innerHTML = showingSource ? '🎨 View' : '📝 Source';
       sourceButton.className = 'diagram-action-button vega-lite-source-button';

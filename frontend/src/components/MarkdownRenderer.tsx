@@ -1478,11 +1478,14 @@ export const chainHeaderlessContinuationDiffs = (blockTexts: string[]): string[]
         // Merge this continuation hunk into the headed block so the result is
         // one diff with multiple hunks rather than N separate diffs. Set this
         // block to '' so the call site can absorb (skip) its render slot.
-        if (startsWithValidHunkHeader) {
-            // Clean hunk with a valid @@ header — append directly.
+        if (startsWithValidHunkHeader || startsWithAt) {
+            // Block already carries an @@ line — numeric (validated at apply
+            // time) or a section hint (filled by synthesizeMissingHunkHeaders
+            // later). Append directly; prepending a bare "@@" placeholder here
+            // would inject a spurious empty hunk before the existing @@ line.
             result[lastHeadedIdx] = result[lastHeadedIdx].trimEnd() + '\n' + text;
         } else {
-            // Pure-add bare body — needs a placeholder @@ before the body
+            // Pure-add bare body with NO @@ at all — prepend a placeholder @@
             // so synthesizeMissingHunkHeaders() can fill in real line counts.
             result[lastHeadedIdx] = result[lastHeadedIdx].trimEnd() + '\n@@\n' + text;
         }
@@ -1761,7 +1764,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
     const [parseError, setParseError] = useState<boolean>(false);
     const [fallbackHighlighted, setFallbackHighlighted] = useState<string | null>(null);
     const lastValidDiffRef = useRef<string | null>(null);
-    const { isStreaming: isGlobalStreaming } = useStreamingContext();
+    const { isStreaming: isGlobalStreaming, streamingConversations, currentConversationId } = useStreamingContext();
     const [instanceHunkStatusMap, setInstanceHunkStatusMap] = useState<Map<string, HunkStatus>>(new Map());
     const [statusUpdateCounter, setStatusUpdateCounter] = useState<number>(0);
     const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -2088,14 +2091,6 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                 <colgroup>
                     {viewType === 'split' ? (
                         <>
-                            {showLineNumbers && <col
-                                className="diff-gutter-col"
-                                style={{ width: '50px', minWidth: '50px' }}
-                            />}
-                            <col
-                                className="diff-code-col"
-                                style={{ width: 'calc(50% - 50px)' }}
-                            />
                             {showLineNumbers && <col
                                 className="diff-gutter-col"
                                 style={{ width: '50px', minWidth: '50px' }}
@@ -2541,7 +2536,12 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                     fileIndex={fileIndex}
                                     diffElementId={elementId}
                                     filePath={file.type === 'delete' ? file.oldPath : (file.newPath || file.oldPath)}
-                                    isStreaming={isGlobalStreaming}
+                                    // Gate on THIS conversation's streaming state, not the
+                                    // global isStreaming boolean. The global boolean can
+                                    // desync from streamingConversations and stay stuck true
+                                    // (empty Set + isStreaming===true), permanently greying
+                                    // the Apply button across turns. The Set is authoritative.
+                                    isStreaming={streamingConversations.has(currentConversationId)}
                                     setHunkStatuses={setInstanceHunkStatusMap}
                                     enabled={window.enableCodeApply === 'true'}
                                 />
@@ -2695,8 +2695,10 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
 
 /**
  * Check if a diff is complete and ready for application
+ *
+ * Exported for unit testing (see __tests__/applyButtonStreamingGate.test.ts).
  */
-const isDiffComplete = (diffContent: string, isStreaming: boolean): boolean => {
+export const isDiffComplete = (diffContent: string, isStreaming: boolean): boolean => {
     if (!diffContent || !diffContent.trim()) return false;
 
     // If not streaming, assume diff is complete
@@ -4014,7 +4016,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
                 style={{
                     padding: '16px',
                     borderRadius: '6px',
-                whiteSpace: 'pre',
+                    whiteSpace: 'pre',
                     overflow: 'auto',
                     visibility: 'visible',
                     backgroundColor: isDarkMode ? '#1f1f1f' : '#f6f8fa',
@@ -4753,6 +4755,9 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                     // Strip tool block fence markers if present in content
                     let toolContent = tokenWithText.text || '';
+                    // Remove zero-width space escaping from nested code blocks
+                    toolContent = toolContent.replace(/`​`​`/g, '```');
+
                     const fenceMatch = toolContent.match(/^\n*```tool:[^\n]+\n([\s\S]*?)```\n*$/);
                     if (fenceMatch) {
                         toolContent = fenceMatch[1];
@@ -5029,8 +5034,11 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     }
 
                     // Match format: <!-- TOOL_BLOCK_START:toolName|displayHeader|toolId -->
-                    // The displayHeader may contain | characters, so we capture until |toolu_ (tool_id prefix)
-                    const HTMLtoolBlockMatch = tokenWithText.text.match(/<!-- TOOL_BLOCK_START:(mcp_\w+)\|(.+?)\|toolu_[^>]+ -->\s*([\s\S]*?)\s*<!-- TOOL_BLOCK_END:\1\|toolu_[^>]+ -->/);
+                    // The displayHeader may contain | characters. The tool_id is the final
+                    // |-delimited segment before " -->"; it is provider-specific (toolu_… for
+                    // Bedrock/Anthropic, call_… for OpenAI/z.ai) and never contains |, > or whitespace.
+                    // Matching [^|>\s]+ for the id forces all header pipes into the displayHeader capture.
+                    const HTMLtoolBlockMatch = tokenWithText.text.match(/<!-- TOOL_BLOCK_START:(mcp_\w+)\|(.+?)\|[^|>\s]+ -->\s*([\s\S]*?)\s*<!-- TOOL_BLOCK_END:\1\|[^|>\s]+ -->/);
                     if (HTMLtoolBlockMatch) {
                         const [, toolName, displayHeader, toolContent] = HTMLtoolBlockMatch;
 
@@ -5064,6 +5072,25 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         );
                     }
 
+                    // CRITICAL: Check for math expressions FIRST before any other HTML processing
+                    const htmlContent = tokenWithText.text;
+
+                    // Check for KATEX/LATEX math expressions
+                    if (htmlContent.includes('MATH_DISPLAY:')) {
+                        const mathMatch = htmlContent.match(/MATH_DISPLAY:([^<]*)/s);
+                        if (mathMatch) {
+                            console.log('🔍 MATH_DISPLAY extraction:', {
+                                htmlContent: htmlContent.substring(0, 200),
+                                extractedMath: mathMatch[1]
+                            });
+                            return <MathRenderer key={index} math={mathMatch[1]} displayMode={true} />;
+                        }
+                    }
+                    if (htmlContent.includes('MATH_INLINE:')) {
+                        const mathMatch = htmlContent.match(/MATH_INLINE:([^<]*)/s);
+                        if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={false} />;
+                    }
+
                     // Handle thinking blocks - check for thinking-data tags
                     if (tokenWithText.text.includes('thinking-wrapper') || tokenWithText.text.match(/<thinking-data>([\s\S]*?)<\/thinking-data>/)) {
                         console.log('🤔 Detected thinking-data tag in HTML token:', tokenWithText.text.substring(0, 100));
@@ -5091,8 +5118,6 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         'thinking-data'
 
                     ];
-
-                    const htmlContent = tokenWithText.text;
 
                     // Strip event handlers and javascript: hrefs before any raw HTML render.
                     // The tag-name allowlist below only checks tag names, not attributes,
@@ -5449,6 +5474,10 @@ interface MarkdownRendererProps {
     enableCodeApply: boolean;
     forceRender?: boolean;
     isSubRender?: boolean; // Add flag to prevent infinite recursion
+    // When true, a single newline becomes a hard <br> (GFM breaks).  Default
+    // false preserves CommonMark semantics for the shared chat renderer; the
+    // task-card inspector opts in so streamed prose keeps its line breaks.
+    breaks?: boolean;
     onOpenShellConfig?: () => void;
     role?: 'human' | 'assistant' | 'system';
 }
@@ -5743,7 +5772,7 @@ function _installThrottleObserver(scanFn: () => void) {
     });
 }
 
-export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false, forceRender = false, isSubRender = false, onOpenShellConfig, role }) => {
+export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false, forceRender = false, isSubRender = false, breaks = false, onOpenShellConfig, role }) => {
     const { isDarkMode } = useTheme();
     const containerRef = useRef<HTMLDivElement>(null);
 
@@ -5811,8 +5840,11 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 processedMarkdown = processedMarkdown.replace(/<!-- TOOL_MARKER:[^>]+ -->\n?/g, '');
 
                 // Format: <!-- TOOL_BLOCK_START:toolName|displayHeader|toolId -->
-                // The displayHeader may contain | characters, so we capture until |toolu_ (tool_id prefix)
-                const toolBlockRegex = /<!-- TOOL_BLOCK_START:(mcp_\w+)\|(.+?)\|toolu_[^>]+ -->\s*([\s\S]*?)\s*<!-- TOOL_BLOCK_END:\1\|toolu_[^>]+ -->/g;
+                // The displayHeader may contain | characters. The tool_id is the final
+                // |-delimited segment before " -->"; it is provider-specific (toolu_… for
+                // Bedrock/Anthropic, call_… for OpenAI/z.ai) and never contains |, > or whitespace.
+                // Matching [^|>\s]+ for the id forces all header pipes into the displayHeader capture.
+                const toolBlockRegex = /<!-- TOOL_BLOCK_START:(mcp_\w+)\|(.+?)\|[^|>\s]+ -->\s*([\s\S]*?)\s*<!-- TOOL_BLOCK_END:\1\|[^|>\s]+ -->/g;
                 const toolBlocks: Array<{ match: string, toolName: string, displayHeader: string, content: string }> = [];
                 const convertedBlocks = new Set<string>(); // Track which blocks were converted
 
@@ -5917,623 +5949,643 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // Fix: Code fence directly concatenated to text with no newline at all
             // e.g. "some text:```vega-lite" → "some text:\n\n```vega-lite"
             // LLMs sometimes omit the newline before a code fence entirely
-            processedMarkdown = applyOutsideFences(processedMarkdown, (s) =>
-                s.replace(/([^\n`])(`{3,}[a-zA-Z][a-zA-Z0-9_-]*)(?=\s|$)/g, '$1\n\n$2')
-            );
+            processedMarkdown = processedMarkdown.replace(/([^\n\`])(\`{3,}[a-zA-Z][a-zA-Z0-9_-]*)(?=\s|$)/g, '$1\n\n$2');
 
-            // Split JSON-spec blocks (plotly, vega-lite, …) whose fence was
-            // never closed after the JSON value, so trailing prose — or an
-            // entire second fenced block — got swallowed as block content.
-            // Closes the fence at the first balanced JSON boundary and
-            // re-emits the remainder as ordinary markdown. Streaming
-            // (unterminated) blocks are left untouched.
-            processedMarkdown = splitJsonSpecTrailingContent(processedMarkdown);
+    // Split JSON-spec blocks (plotly, vega-lite, …) whose fence was
+    // never closed after the JSON value, so trailing prose — or an
+    // entire second fenced block — got swallowed as block content.
+    // Closes the fence at the first balanced JSON boundary and
+    // re-emits the remainder as ordinary markdown. Streaming
+    // (unterminated) blocks are left untouched.
+    processedMarkdown = splitJsonSpecTrailingContent(processedMarkdown);
 
-            // Strip bare code fences that wrap markdown prose instead of code,
-            // via the shared CommonMark-aware scanner (fenceScanner.ts).  The
-            // former inline implementation detected lang-tagged openers with
-            // a single-char negative class, which accepted the tail of a
-            // wrapped inline-code span as a real opener; stripBareProseFences
-            // uses matchFenceOpen, which rejects backtick-in-info-string openers.
-            processedMarkdown = stripBareProseFences(processedMarkdown);
+    // Strip bare code fences that wrap markdown prose instead of code,
+    // via the shared CommonMark-aware scanner (fenceScanner.ts).  The
+    // former inline implementation detected lang-tagged openers with
+    // a single-char negative class, which accepted the tail of a
+    // wrapped inline-code span as a real opener; stripBareProseFences
+    // uses matchFenceOpen, which rejects backtick-in-info-string openers.
+    processedMarkdown = stripBareProseFences(processedMarkdown);
 
-            // Pre-process tool calls to handle both <n> and <name> formats
-            const toolCallMatch = parseToolCall(processedMarkdown);
-            if (toolCallMatch) {
-                // Replace the tool call with a formatted display version
-                const formattedToolCall = formatToolCallForDisplay(toolCallMatch);
-                processedMarkdown = processedMarkdown.replace(
-                    /<TOOL_SENTINEL>[\s\S]*?<\/TOOL_SENTINEL>/,
-                    formattedToolCall
-                );
-            } else if (externalStreaming && processedMarkdown.includes('<TOOL_SENTINEL>')) {
-                // During streaming, if we have an incomplete tool call, don't try to parse it yet
-                // This prevents showing malformed content while the tool call is being streamed
-                const incompleteToolMatch = processedMarkdown.match(/<TOOL_SENTINEL>[\s\S]*$/);
-                if (incompleteToolMatch && !processedMarkdown.includes('</TOOL_SENTINEL>')) {
-                    // Remove the incomplete tool call from display until it's complete
-                    processedMarkdown = processedMarkdown.replace(/<TOOL_SENTINEL>[\s\S]*$/, '');
-                    // Add a placeholder to show tool execution is starting
-                    processedMarkdown += '\n\n🔧 Preparing tool execution...\n';
-                }
-            }
-
-            // Pre-process thinking content to extract and handle separately (only once)
-            if (!thinkingRenderedRef.current) {
-                const thinkingMatch = parseThinkingContent(processedMarkdown);
-                if (thinkingMatch) {
-                    // Store thinking content in ref IMMEDIATELY
-                    thinkingContentRef.current = thinkingMatch.content;
-                    thinkingRenderedRef.current = true;
-                    // Remove thinking tags from main content
-                    processedMarkdown = removeThinkingTags(processedMarkdown);
-                    // Add simple marker at the beginning
-                    processedMarkdown = `THINKING_MARKER\n\n${processedMarkdown}`;
-                } else if (externalStreaming) {
-                    // During streaming, an unclosed <thinking-data> or <thinking> opening
-                    // tag has no closing counterpart yet, so parseThinkingContent returns
-                    // null. Strip the raw tag and partial content from the rendered output
-                    // and accumulate in thinkingContentRef so the ThinkingBlock shows live
-                    // progress instead of leaking raw tags into the chat bubble.
-                    const partialMatch =
-                        processedMarkdown.match(/<thinking-data>([\s\S]*)$/) ||
-                        processedMarkdown.match(/<thinking>([\s\S]*)$/);
-                    if (partialMatch) {
-                        thinkingContentRef.current = partialMatch[1];
-                        processedMarkdown = processedMarkdown
-                            .replace(/<thinking-data>[\s\S]*$/, '')
-                            .replace(/<thinking>[\s\S]*$/, '');
-                        processedMarkdown = `THINKING_MARKER\n\n${processedMarkdown}`;
-                    }
-                }
-            } else {
-                // Remove thinking tags from subsequent renders
-                processedMarkdown = removeThinkingTags(processedMarkdown);
-            }
-
-            // Escape backticks inside diff code blocks before markdown parsing
-            // This prevents backticks in diff content from being interpreted as fence delimiters
-
-            // IMPORTANT: Extract and protect math blocks BEFORE fence escaping
-            // Store them temporarily and restore after fence processing
-            const mathBlocks: { placeholder: string; content: string }[] = [];
-            let mathCounter = 0;
-
-
-            //
-            // Why iterative approach: The old regex /<span class="diff-rewind-marker" data-marker="DIFF_START_MARKER: 34" style="display:none;"></span>
-
-            // contains backticks because non-greedy *? matches the FIRST ``` even if inside content.
-            // Per CommonMark spec, a closing fence must be at line start with >= opening fence length.
-
-            // Extract display math ($...$) before fence processing.
-            // Base64-encode the content so that markdown escape processing
-            // cannot corrupt LaTeX characters like \\ (row separators in
-            // matrices/aligned environments) or & (column separators).
-            // The encoded content is stored in a data attribute and decoded
-            // in the 'html' token handler below.
-
-            // Unwrap ```markdown fences — the content should be rendered as
-            // markdown, not displayed as a literal code block.
-            processedMarkdown = processedMarkdown.replace(
-                /```markdown\s*\n([\s\S]*?)\n\s*```/g, '\n\n$1\n\n');
-            // Split by code fences first so we don't replace $$ inside them.
-            // Odd-indexed segments are code blocks; only process even segments.
-            {
-                // First, convert ```latex/```math fences that contain $$...$$ into
-                // display math. Models often wrap KaTeX in these fences; we need
-                // to extract and render them as math, not as code blocks.
-                processedMarkdown = processedMarkdown.replace(
-                    /```(?:latex|math)\s*\n\s*\$\$([\s\S]*?)\$\$\s*\n\s*```/g,
-                    (_match, innerContent) => {
-                        const encoded = btoa(unescape(encodeURIComponent(innerContent.trim())));
-                        return `\n\n<div class="math-display-encoded" data-math="${encoded}"></div>\n\n`;
-                    }
-                );
-
-                // Also handle ```latex/```math fences without $$ delimiters —
-                // models sometimes emit raw LaTeX without wrapping in $$.
-                processedMarkdown = processedMarkdown.replace(
-                    /```(?:latex|math)\s*\n([\s\S]*?)\n\s*```/g,
-                    (_match, innerContent) => {
-                        const encoded = btoa(unescape(encodeURIComponent(innerContent.trim())));
-                        return `\n\n<div class="math-display-encoded" data-math="${encoded}"></div>\n\n`;
-                    }
-                );
-
-                // Now split remaining content by code fences for standalone $$ replacement
-                const mathFenceParts = processedMarkdown.split(/(```[^\n]*\n[\s\S]*?```)/g);
-                processedMarkdown = mathFenceParts.map((part, idx) => {
-                    if (idx % 2 === 1 && part.startsWith('```')) {
-                        return part; // code fence — leave untouched
-                    }
-                    return part.replace(/\$\$([\s\S]*?)\$\$/g, (_match, innerContent) => {
-                        const encoded = btoa(unescape(encodeURIComponent(innerContent.trim())));
-                        return `\n\n<div class="math-display-encoded" data-math="${encoded}"></div>\n\n`;
-                    });
-                }).join('');
-            }
-
-            // Extract inline math ($...$) before fence processing
-            // Use negative lookbehind/lookahead to avoid matching $$ delimiters
-            // Split by code fences so we don't extract $...$ from inside them.
-            {
-                const inlineFenceParts = processedMarkdown.split(/(```[^\n]*\n[\s\S]*?```)/g);
-                processedMarkdown = inlineFenceParts.map((part, idx) => {
-                    if (idx % 2 === 1 && part.startsWith('```')) {
-                        return part; // code fence — leave untouched
-                    }
-                    return part.replace(/(?<!\$)\$(?!\$)((?:(?!\$).)+?)\$(?!\$)/g, (match, content) => {
-                        const placeholder = `__MATH_INLINE_${mathCounter}__`;
-                        mathBlocks.push({ placeholder, content: match });
-                        mathCounter++;
-                        return placeholder;
-                    });
-                }).join('');
-            }
-
-            // Now run fence escaping (won't affect math since it's been extracted)
-
-            // Escape nested backtick fences inside backtick code blocks via the
-            // shared CommonMark-aware scanner (fenceScanner.ts). The previous
-            // private line-walker had no concept of tilde fences or the
-            // backtick-in-info-string rule, so a `~~~`-wrapped diff whose body
-            // contained a ``` run — or an inline-code-span tail beginning with
-            // ``` — corrupted fence state and broke mid-diff rendering.
-            processedMarkdown = escapeNestedBacktickFences(processedMarkdown);
-
-            // Restore math blocks after fence escaping
-            for (const { placeholder, content } of mathBlocks) {
-                processedMarkdown = processedMarkdown.replace(placeholder, content);
-            }
-
-            // Now math processing will work normally on the restored $$...$$ and $...$ delimiters
-
-            // First check if this is a diff or code block that shouldn't have math processing
-            const isDiff = processedMarkdown.includes('diff --git') ||
-                (processedMarkdown.includes('```diff') && processedMarkdown.includes('+++')) ||
-                (processedMarkdown.match(/^---\s+\S+/m) && processedMarkdown.match(/^\+\+\+\s+\S+/m)) ||
-                // Skip processing for content containing tool sentinels or template variables
-                // TODO: Get actual sentinel values from backend instead of hardcoding
-                processedMarkdown.includes('<TOOL_SENTINEL>') ||
-                processedMarkdown.includes('</TOOL_SENTINEL>');
-
-            // Check for template variables separately, but exclude LaTeX commands
-            const hasTemplateVars = !processedMarkdown.includes('\\') && /\{[A-Z_][A-Z_0-9]*\}/g.test(processedMarkdown);
-
-            // Only process math expressions if this doesn't look like a diff
-            if (!isDiff && !hasTemplateVars) {
-                try {
-                    // Split the markdown into code blocks and non-code blocks
-                    const segments = processedMarkdown.split(/(```[^\n]*\n[\s\S]*?```)/g);
-
-                    // Process each segment separately
-                    processedMarkdown = segments.map((segment, index) => {
-                        // Skip math processing for code blocks (odd indices in the split)
-                        if (index % 2 === 1 && segment.startsWith('```')) {
-                            return segment;
-                        }
-
-                        // Process math only in non-code segments
-                        let processed = segment;
-
-                        try {
-                            // Handle display math $$...$$
-                            processed = processed.replace(
-                                /\$\$([\s\S]+?)\$\$/g,
-                                '\n<div class="math-display-block">MATH_DISPLAY:$1</div>\n'
-                            );
-
-                            // Handle inline math $...$ — classifier + KaTeX-adjacency
-                            // match regex live in inlineMathClassifier.ts (unit-tested).
-                            processed = processInlineMath(processed);
-                        } catch (mathError) {
-                            console.debug('Math processing error (handled):', mathError);
-                            // Return original segment if math processing fails
-                            return segment;
-                        }
-
-                        return processed;
-                    }).join('');
-                } catch (mathProcessingError) {
-                    console.debug('Math segment processing error (handled):', mathProcessingError);
-                    // Continue without math processing if there's an error
-                }
-            }
-
-            // Pre-process MathML blocks to prevent fragmentation
-            const mathMLRegex = /<math[^>]*>[\s\S]*?<\/math>/gi;
-            const mathMLBlocks = processedMarkdown.match(mathMLRegex);
-
-            if (mathMLBlocks) {
-                mathMLBlocks.forEach((mathBlock, _index) => {
-                    // Add namespace if missing and wrap in a way that preserves it as a single token
-                    const mathWithNamespace = mathBlock.includes('xmlns=')
-                        ? mathBlock
-                        : mathBlock.replace('<math', '<math xmlns="http://www.w3.org/1998/Math/MathML"');
-
-                    // Replace with a placeholder that won't be fragmented
-                    processedMarkdown = processedMarkdown.replace(mathBlock, `<div class="mathml-block">${mathWithNamespace}</div>`);
-                });
-            }
-
-            // Defensive fix: Reabsorb content that leaked outside a closing code fence.
-            // LLMs sometimes miscount braces and close the fence too early, producing:
-            //   ```           <-- fence close (premature)
-            //   });           <-- leaked content (code, or even a stray word)
-            //   ```diff       <-- next code block's opening fence
-            //
-            // If not caught, leaked content corrupts the fence-open/close tracker,
-            // causing ALL subsequent code fences to be escaped as &#96; entities.
-            //
-            // Two passes:
-            // 1. Mid-message: leaked content between a closing fence and the next opening fence
-            // 2. End-of-string: leaked content after the last closing fence
-
-            // Pass 1: Mid-message — short orphaned content between consecutive fences
-            processedMarkdown = processedMarkdown.replace(
-                // (?<!`) lookbehind prevents matching ``` inside longer fences
-                // like ```` (4-backtick tool blocks). Without this, the regex
-                // splits ```` fences and incorrectly reabsorbs legitimate text.
-                /(?<!`)```([ \t]*\n)((?:[^\n]{0,80}\n){1,5})((?<!`)```[a-zA-Z])/g,
-                (_match, _nl, leaked, nextFence) => {
-                    const trimmed = leaked.trim();
-                    if (!trimmed || trimmed.length > 120) return _match;
-                    // Legitimate prose between code blocks has blank-line separation.
-                    // Check _nl+leaked because the blank line's first \n can land in
-                    // group 1 (after ```), making the \n\n invisible to group 2 alone.
-                    if ((_nl + leaked).includes('\n\n')) return _match;
-                    // If the captured "leak" contains a fence marker, the regex matched
-                    // across a code-block boundary — not an actual leak. Leave it alone.
-                    if (leaked.includes('```')) return _match;
-                    console.debug('🔧 Fence fix (mid): reabsorbed leaked content:', trimmed);
-                    return trimmed + '\n```\n\n' + nextFence;
-                }
-            );
-
-            // Pass 2: End-of-string — short orphaned content after last closing fence
-            // Restrict the regex to a small tail window to avoid catastrophic
-            // backtracking on long markdown.  The pattern
-            //   (?:[^\n]{0,80}\n?){1,5}
-            // with no start anchor and a `$` end anchor is O(N · 2^k) on
-            // strings that don't match — observed at 13s on a 113KB message.
-            // The leak guard caps content at 120 chars, so a 1000-char tail
-            // window is more than enough to find any real leak (5 lines × 80
-            // chars + fence = ~410 chars worst case).
-            {
-                const TAIL_LEN = 1000;
-                const tailStart = Math.max(0, processedMarkdown.length - TAIL_LEN);
-                const tail = processedMarkdown.slice(tailStart);
-                // (?<!`) lookbehind prevents matching ``` inside longer fences
-                // like ```` (4-backtick tool blocks).
-                const tailRe = /(?<!`)```([ \t]*\n)((?:[^\n]{0,80}\n?){1,5})$/;
-                const m = tail.match(tailRe);
-                if (m && typeof m.index === 'number') {
-                    const newline = m[1];
-                    const leaked = m[2];
-                    const trimmed = leaked.trim();
-                    const tooLong = !trimmed || trimmed.length > 120;
-                    const hasBlankLine = (newline + leaked).includes('\n\n');
-                    const hasInnerFence = leaked.includes('```');
-                    if (!tooLong && !hasBlankLine && !hasInnerFence) {
-                        console.debug('🔧 Fence fix (tail): reabsorbed leaked content:', trimmed);
-                        processedMarkdown =
-                            processedMarkdown.slice(0, tailStart) +
-                            tail.slice(0, m.index) +
-                            trimmed + '\n```';
-                    }
-                }
-            }
-
-            // Fix code fences with invalid language tags.
-            // LLMs sometimes produce fences like 
-            // ```unmount. or ```after where
-            // a stray word ends up as the "language" identifier.  marked.js
-            // treats any text after ``` on the same line as a language tag,
-            // which swallows all subsequent content into a bogus code block.
-            //
-            // Valid language tags are short alphanumeric identifiers, optionally
-            // with hyphens/colons (e.g. "diff", "vega-lite", "tool:mcp_xyz").
-            // Anything containing periods at the end, spaces, or unreasonable
-            // length is not a real language — strip it so the content isn't lost.
-            processedMarkdown = processedMarkdown.replace(
-                /^(`{3,})([^\n`]+)$/gm,
-                (_match, backticks, langTag) => {
-                    const trimmed = langTag.trim();
-                    if (!trimmed) return _match;
-                    // Tool fences (tool:mcp_xxx|Header|syntax) are our own format —
-                    // always valid regardless of spaces/emoji in the display header.
-                    if (trimmed.startsWith('tool:')) return _match;
-
-                    // Allow legitimate patterns: alphanumeric, hyphens, underscores,
-                    // colons (tool:), pipes (tool labels), dots (draw.io)
-                    const isValidLangTag = /^[a-zA-Z][a-zA-Z0-9._:|\-]*$/.test(trimmed)
-                        && trimmed.length <= 60
-                        && !/\.\s*$/.test(trimmed)   // rejects "unmount."
-                        && !/\s/.test(trimmed);        // rejects "Skip GC when..."
-                    if (isValidLangTag) return _match;
-                    // Invalid tag — push the text into the code block body
-                    // instead of letting marked treat it as a language
-                    console.debug('🔧 Fence lang fix: stripped invalid language tag:', trimmed);
-                    return backticks + '\n' + trimmed;
-                }
-            );
-
-
-            const lexedTokens = marked.lexer(processedMarkdown, markedOptions);
-            // Debug: capture what reaches the lexer when a vega/vega-lite block is present.
-            // Remove after root cause is confirmed.
-            if (processedMarkdown.includes('$schema') &&
-                (processedMarkdown.includes('```vega') || processedMarkdown.includes('```vegalite'))) {
-                const fenceEnd = processedMarkdown.lastIndexOf('```');
-                console.log('[VEGA_DEBUG] chars before last fence (last 120):',
-                    JSON.stringify(processedMarkdown.slice(Math.max(0, fenceEnd - 120), fenceEnd + 3)));
-            }
-
-            return lexedTokens as (Tokens.Generic | TokenWithText)[] || [];
-        } catch (error) {
-            // Don't create fallback code blocks for empty content
-            if (!markdown || markdown.trim() === '') {
-                return [];
-            }
-            console.error("Error lexing markdown:", error);
-            // Fallback to rendering the raw markdown in a code block on error
-            return [{ type: 'code', lang: 'text', text: markdown }] as TokenWithText[];
+    // Pre-process tool calls to handle both <n> and <name> formats
+    const toolCallMatch = parseToolCall(processedMarkdown);
+    if (toolCallMatch) {
+        // Replace the tool call with a formatted display version
+        const formattedToolCall = formatToolCallForDisplay(toolCallMatch);
+        processedMarkdown = processedMarkdown.replace(
+            /<TOOL_SENTINEL>[\s\S]*?<\/TOOL_SENTINEL>/,
+            formattedToolCall
+        );
+    } else if (externalStreaming && processedMarkdown.includes('<TOOL_SENTINEL>')) {
+        // During streaming, if we have an incomplete tool call, don't try to parse it yet
+        // This prevents showing malformed content while the tool call is being streamed
+        const incompleteToolMatch = processedMarkdown.match(/<TOOL_SENTINEL>[\s\S]*$/);
+        if (incompleteToolMatch && !processedMarkdown.includes('</TOOL_SENTINEL>')) {
+            // Remove the incomplete tool call from display until it's complete
+            processedMarkdown = processedMarkdown.replace(/<TOOL_SENTINEL>[\s\S]*$/, '');
+            // Add a placeholder to show tool execution is starting
+            processedMarkdown += '\n\n🔧 Preparing tool execution...\n';
         }
-    }, [markdown, externalStreaming]);
+    }
 
-    // Cleanup timeout on unmount
-    useEffect(() => {
-        return () => clearTimeout(parseTimeoutRef.current);
-    }, []);
+    // Pre-process thinking content to extract and handle separately (only once)
+    if (!thinkingRenderedRef.current) {
+        const thinkingMatch = parseThinkingContent(processedMarkdown);
+        if (thinkingMatch) {
+            // Store thinking content in ref IMMEDIATELY
+            thinkingContentRef.current = thinkingMatch.content;
+            thinkingRenderedRef.current = true;
+            // Remove thinking tags from main content
+            processedMarkdown = removeThinkingTags(processedMarkdown);
+            // Add simple marker at the beginning
+            processedMarkdown = `THINKING_MARKER\n\n${processedMarkdown}`;
+        } else if (externalStreaming) {
+            // During streaming, an unclosed <thinking-data> or <thinking> opening
+            // tag has no closing counterpart yet, so parseThinkingContent returns
+            // null. Strip the raw tag and partial content from the rendered output
+            // and accumulate in thinkingContentRef so the ThinkingBlock shows live
+            // progress instead of leaking raw tags into the chat bubble.
+            const partialMatch =
+                processedMarkdown.match(/<thinking-data>([\s\S]*)$/) ||
+                processedMarkdown.match(/<thinking>([\s\S]*)$/);
+            if (partialMatch) {
+                thinkingContentRef.current = partialMatch[1];
+                processedMarkdown = processedMarkdown
+                    .replace(/<thinking-data>[\s\S]*$/, '')
+                    .replace(/<thinking>[\s\S]*$/, '');
+                processedMarkdown = `THINKING_MARKER\n\n${processedMarkdown}`;
+            }
+        }
+    } else {
+        // Remove thinking tags from subsequent renders
+        processedMarkdown = removeThinkingTags(processedMarkdown);
+    }
 
-    // Update tokens state when the memoized tokens change
-    useEffect(() => {
-        if (lexedTokens.length > 0) {
-            previousTokensRef.current = lexedTokens;
+    // Escape backticks inside diff code blocks before markdown parsing
+    // This prevents backticks in diff content from being interpreted as fence delimiters
 
-            if (externalStreaming) {
-                // Throttle display updates during streaming to ~5fps
-                clearTimeout(parseTimeoutRef.current);
-                parseTimeoutRef.current = setTimeout(() => {
-                    setDisplayTokens(prev =>
-                        prev.length === lexedTokens.length && prev.every((t, i) => t === lexedTokens[i]) ? prev : lexedTokens
+    // IMPORTANT: Extract and protect math blocks BEFORE fence escaping
+    // Store them temporarily and restore after fence processing
+    const mathBlocks: { placeholder: string; content: string }[] = [];
+    let mathCounter = 0;
+
+
+    //
+    // Why iterative approach: The old regex /<span class="diff-rewind-marker" data-marker="DIFF_START_MARKER: 34" style="display:none;"></span>
+
+    // contains backticks because non-greedy *? matches the FIRST ``` even if inside content.
+    // Per CommonMark spec, a closing fence must be at line start with >= opening fence length.
+
+    // Extract display math ($...$) before fence processing.
+    // Base64-encode the content so that markdown escape processing
+    // cannot corrupt LaTeX characters like \\ (row separators in
+    // matrices/aligned environments) or & (column separators).
+    // The encoded content is stored in a data attribute and decoded
+    // in the 'html' token handler below.
+
+    // Unwrap ```markdown fences — the content should be rendered as
+    // markdown, not displayed as a literal code block.
+    processedMarkdown = processedMarkdown.replace(
+        /```markdown\s*\n([\s\S]*?)\n\s*```/g, '\n\n$1\n\n');
+    // Split by code fences first so we don't replace $$ inside them.
+    // Odd-indexed segments are code blocks; only process even segments.
+    {
+        // First, convert ```latex/```math fences that contain $$...$$ into
+        // display math. Models often wrap KaTeX in these fences; we need
+        // to extract and render them as math, not as code blocks.
+        processedMarkdown = processedMarkdown.replace(
+            /```(?:latex|math)\s*\n\s*\$\$([\s\S]*?)\$\$\s*\n\s*```/g,
+            (_match, innerContent) => {
+                const encoded = btoa(unescape(encodeURIComponent(innerContent.trim())));
+                return `\n\n<div class="math-display-encoded" data-math="${encoded}"></div>\n\n`;
+            }
+        );
+
+        // Also handle ```latex/```math fences without $$ delimiters —
+        // models sometimes emit raw LaTeX without wrapping in $$.
+        processedMarkdown = processedMarkdown.replace(
+            /```(?:latex|math)\s*\n([\s\S]*?)\n\s*```/g,
+            (_match, innerContent) => {
+                const encoded = btoa(unescape(encodeURIComponent(innerContent.trim())));
+                return `\n\n<div class="math-display-encoded" data-math="${encoded}"></div>\n\n`;
+            }
+        );
+
+        // Now split remaining content by code fences for standalone $$ replacement
+        const mathFenceParts = processedMarkdown.split(/(```[^\n]*\n[\s\S]*?```)/g);
+        processedMarkdown = mathFenceParts.map((part, idx) => {
+            if (idx % 2 === 1 && part.startsWith('```')) {
+                return part; // code fence — leave untouched
+            }
+            return part.replace(/\$\$([\s\S]*?)\$\$/g, (_match, innerContent) => {
+                const encoded = btoa(unescape(encodeURIComponent(innerContent.trim())));
+                return `\n\n<div class="math-display-encoded" data-math="${encoded}"></div>\n\n`;
+            });
+        }).join('');
+    }
+
+    // Extract inline math ($...$) before fence processing
+    // Use negative lookbehind/lookahead to avoid matching $$ delimiters
+    // Split by code fences so we don't extract $...$ from inside them.
+    {
+        const inlineFenceParts = processedMarkdown.split(/(```[^\n]*\n[\s\S]*?```)/g);
+        processedMarkdown = inlineFenceParts.map((part, idx) => {
+            if (idx % 2 === 1 && part.startsWith('```')) {
+                return part; // code fence — leave untouched
+            }
+            return part.replace(/(?<!\$)\$(?!\$)((?:(?!\$).)+?)\$(?!\$)/g, (match, content) => {
+                const placeholder = `__MATH_INLINE_${mathCounter}__`;
+                mathBlocks.push({ placeholder, content: match });
+                mathCounter++;
+                return placeholder;
+            });
+        }).join('');
+    }
+
+    // Now run fence escaping (won't affect math since it's been extracted)
+
+    // Escape nested backtick fences inside backtick code blocks via the
+    // shared CommonMark-aware scanner (fenceScanner.ts). The previous
+    // private line-walker had no concept of tilde fences or the
+    // backtick-in-info-string rule, so a `~~~`-wrapped diff whose body
+    // contained a ``` run — or an inline-code-span tail beginning with
+    // ``` — corrupted fence state and broke mid-diff rendering.
+    processedMarkdown = escapeNestedBacktickFences(processedMarkdown);
+
+    // Restore math blocks after fence escaping
+    for (const { placeholder, content } of mathBlocks) {
+        processedMarkdown = processedMarkdown.replace(placeholder, content);
+    }
+
+    // Now math processing will work normally on the restored $$...$$ and $...$ delimiters
+
+    // First check if this is a diff or code block that shouldn't have math processing
+    const isDiff = processedMarkdown.includes('diff --git') ||
+        (processedMarkdown.includes('```diff') && processedMarkdown.includes('+++')) ||
+        (processedMarkdown.match(/^---\s+\S+/m) && processedMarkdown.match(/^\+\+\+\s+\S+/m)) ||
+        // Skip processing for content containing tool sentinels or template variables
+        // TODO: Get actual sentinel values from backend instead of hardcoding
+        processedMarkdown.includes('<TOOL_SENTINEL>') ||
+        processedMarkdown.includes('</TOOL_SENTINEL>');
+
+    // Check for template variables separately, but exclude LaTeX commands
+    const hasTemplateVars = !processedMarkdown.includes('\\') && /\{[A-Z_][A-Z_0-9]*\}/g.test(processedMarkdown);
+
+    // Only process math expressions if this doesn't look like a diff
+    if (!isDiff && !hasTemplateVars) {
+        try {
+            // Split the markdown into code blocks and non-code blocks
+            const segments = processedMarkdown.split(/(```[^\n]*\n[\s\S]*?```)/g);
+
+            // Process each segment separately
+            processedMarkdown = segments.map((segment, index) => {
+                // Skip math processing for code blocks (odd indices in the split)
+                if (index % 2 === 1 && segment.startsWith('```')) {
+                    return segment;
+                }
+
+                console.log('📐 Processing math in segment:', {
+                    segmentPreview: segment.substring(0, 100),
+                    hasMathbf: segment.includes('mathbf'),
+                    hasDisplayMath: segment.includes('$$')
+                });
+
+                // Process math only in non-code segments
+                let processed = segment;
+
+                try {
+                    // Handle display math $$...$$
+                    const beforeReplace = processed;
+                    processed = processed.replace(
+                        /\$\$([\s\S]+?)\$\$/g,
+                        (match, captured) => {
+                            console.log('📐 DISPLAY MATH REPLACEMENT:', { match: match.substring(0, 100), captured: captured.substring(0, 100), hasMathbf: captured.includes('mathbf') });
+                            return '\n<div class="math-display-block">MATH_DISPLAY:' + captured + '</div>\n';
+                        }
                     );
-                }, 200);
-            } else {
-                // Immediate update when not streaming (final render)
+                    console.log('📐 After display math replace:', { changed: beforeReplace !== processed, processedPreview: processed.substring(0, 200) });
+
+                    // Handle inline math $...$ — classifier + KaTeX-adjacency
+                    // match regex live in inlineMathClassifier.ts (unit-tested).
+                    processed = processInlineMath(processed);
+                } catch (mathError) {
+                    console.debug('Math processing error (handled):', mathError);
+                    // Return original segment if math processing fails
+                    return segment;
+                }
+
+                return processed;
+            }).join('');
+        } catch (mathProcessingError) {
+            console.debug('Math segment processing error (handled):', mathProcessingError);
+            // Continue without math processing if there's an error
+        }
+    }
+
+    // Pre-process MathML blocks to prevent fragmentation
+    const mathMLRegex = /<math[^>]*>[\s\S]*?<\/math>/gi;
+    const mathMLBlocks = processedMarkdown.match(mathMLRegex);
+
+    if (mathMLBlocks) {
+        mathMLBlocks.forEach((mathBlock, _index) => {
+            // Add namespace if missing and wrap in a way that preserves it as a single token
+            const mathWithNamespace = mathBlock.includes('xmlns=')
+                ? mathBlock
+                : mathBlock.replace('<math', '<math xmlns="http://www.w3.org/1998/Math/MathML"');
+
+            // Replace with a placeholder that won't be fragmented
+            processedMarkdown = processedMarkdown.replace(mathBlock, `<div class="mathml-block">${mathWithNamespace}</div>`);
+        });
+    }
+
+    // Defensive fix: Reabsorb content that leaked outside a closing code fence.
+    // LLMs sometimes miscount braces and close the fence too early, producing:
+    //   ```           <-- fence close (premature)
+    //   });           <-- leaked content (code, or even a stray word)
+    //   ```diff       <-- next code block's opening fence
+    //
+    // If not caught, leaked content corrupts the fence-open/close tracker,
+    // causing ALL subsequent code fences to be escaped as &#96; entities.
+    //
+    // Two passes:
+    // 1. Mid-message: leaked content between a closing fence and the next opening fence
+    // 2. End-of-string: leaked content after the last closing fence
+
+    // Pass 1: Mid-message — short orphaned content between consecutive fences
+    processedMarkdown = processedMarkdown.replace(
+        // (?<!`) lookbehind prevents matching ``` inside longer fences
+        // like ```` (4-backtick tool blocks). Without this, the regex
+        // splits ```` fences and incorrectly reabsorbs legitimate text.
+        /(?<!`)```([ \t]*\n)((?:[^\n]{0,80}\n){1,5})((?<!`)```[a-zA-Z])/g,
+        (_match, _nl, leaked, nextFence) => {
+            const trimmed = leaked.trim();
+            if (!trimmed || trimmed.length > 120) return _match;
+            // Legitimate prose between code blocks has blank-line separation.
+            // Check _nl+leaked because the blank line's first \n can land in
+            // group 1 (after ```), making the \n\n invisible to group 2 alone.
+            if ((_nl + leaked).includes('\n\n')) return _match;
+            // If the captured "leak" contains a fence marker, the regex matched
+            // across a code-block boundary — not an actual leak. Leave it alone.
+            if (leaked.includes('```')) return _match;
+            console.debug('🔧 Fence fix (mid): reabsorbed leaked content:', trimmed);
+            return trimmed + '\n```\n\n' + nextFence;
+        }
+    );
+
+    // Pass 2: End-of-string — short orphaned content after last closing fence
+    // Restrict the regex to a small tail window to avoid catastrophic
+    // backtracking on long markdown.  The pattern
+    //   (?:[^\n]{0,80}\n?){1,5}
+    // with no start anchor and a `$` end anchor is O(N · 2^k) on
+    // strings that don't match — observed at 13s on a 113KB message.
+    // The leak guard caps content at 120 chars, so a 1000-char tail
+    // window is more than enough to find any real leak (5 lines × 80
+    // chars + fence = ~410 chars worst case).
+    {
+        const TAIL_LEN = 1000;
+        const tailStart = Math.max(0, processedMarkdown.length - TAIL_LEN);
+        const tail = processedMarkdown.slice(tailStart);
+        // (?<!`) lookbehind prevents matching ``` inside longer fences
+        // like ```` (4-backtick tool blocks).
+        const tailRe = /(?<!`)```([ \t]*\n)((?:[^\n]{0,80}\n?){1,5})$/;
+        const m = tail.match(tailRe);
+        if (m && typeof m.index === 'number') {
+            const newline = m[1];
+            const leaked = m[2];
+            const trimmed = leaked.trim();
+            const tooLong = !trimmed || trimmed.length > 120;
+            const hasBlankLine = (newline + leaked).includes('\n\n');
+            const hasInnerFence = leaked.includes('```');
+            if (!tooLong && !hasBlankLine && !hasInnerFence) {
+                console.debug('🔧 Fence fix (tail): reabsorbed leaked content:', trimmed);
+                processedMarkdown =
+                    processedMarkdown.slice(0, tailStart) +
+                    tail.slice(0, m.index) +
+                    trimmed + '\n```';
+            }
+        }
+    }
+
+    // Fix code fences with invalid language tags.
+    // LLMs sometimes produce fences like 
+    // ```unmount. or ```after where
+    // a stray word ends up as the "language" identifier.  marked.js
+    // treats any text after ``` on the same line as a language tag,
+    // which swallows all subsequent content into a bogus code block.
+    //
+    // Valid language tags are short alphanumeric identifiers, optionally
+    // with hyphens/colons (e.g. "diff", "vega-lite", "tool:mcp_xyz").
+    // Anything containing periods at the end, spaces, or unreasonable
+    // length is not a real language — strip it so the content isn't lost.
+    processedMarkdown = processedMarkdown.replace(
+        /^(`{3,})([^\n`]+)$/gm,
+        (_match, backticks, langTag) => {
+            const trimmed = langTag.trim();
+            if (!trimmed) return _match;
+            // Tool fences (tool:mcp_xxx|Header|syntax) are our own format —
+            // always valid regardless of spaces/emoji in the display header.
+            if (trimmed.startsWith('tool:')) return _match;
+
+            // Allow legitimate patterns: alphanumeric, hyphens, underscores,
+            // colons (tool:), pipes (tool labels), dots (draw.io)
+            const isValidLangTag = /^[a-zA-Z][a-zA-Z0-9._:|\-]*$/.test(trimmed)
+                && trimmed.length <= 60
+                && !/\.\s*$/.test(trimmed)   // rejects "unmount."
+                && !/\s/.test(trimmed);        // rejects "Skip GC when..."
+            if (isValidLangTag) return _match;
+            // Invalid tag — push the text into the code block body
+            // instead of letting marked treat it as a language
+            console.debug('🔧 Fence lang fix: stripped invalid language tag:', trimmed);
+            return backticks + '\n' + trimmed;
+        }
+    );
+
+
+    const lexedTokens = marked.lexer(processedMarkdown, { ...markedOptions, breaks });
+    // Debug: capture what reaches the lexer when a vega/vega-lite block is present.
+    // Remove after root cause is confirmed.
+    if (processedMarkdown.includes('$schema') &&
+        (processedMarkdown.includes('```vega') || processedMarkdown.includes('```vegalite'))) {
+        const fenceEnd = processedMarkdown.lastIndexOf('```');
+        console.log('[VEGA_DEBUG] chars before last fence (last 120):',
+            JSON.stringify(processedMarkdown.slice(Math.max(0, fenceEnd - 120), fenceEnd + 3)));
+    }
+
+    return lexedTokens as (Tokens.Generic | TokenWithText)[] || [];
+} catch (error) {
+    // Don't create fallback code blocks for empty content
+    if (!markdown || markdown.trim() === '') {
+        return [];
+    }
+    console.error("Error lexing markdown:", error);
+    // Fallback to rendering the raw markdown in a code block on error
+    return [{ type: 'code', lang: 'text', text: markdown }] as TokenWithText[];
+}
+    }, [markdown, externalStreaming, breaks]);
+
+// Cleanup timeout on unmount
+useEffect(() => {
+    return () => clearTimeout(parseTimeoutRef.current);
+}, []);
+
+// Update tokens state when the memoized tokens change
+useEffect(() => {
+    if (lexedTokens.length > 0) {
+        previousTokensRef.current = lexedTokens;
+
+        if (externalStreaming) {
+            // Throttle display updates during streaming to ~5fps
+            clearTimeout(parseTimeoutRef.current);
+            parseTimeoutRef.current = setTimeout(() => {
                 setDisplayTokens(prev =>
                     prev.length === lexedTokens.length && prev.every((t, i) => t === lexedTokens[i]) ? prev : lexedTokens
                 );
+            }, 200);
+        } else {
+            // Immediate update when not streaming (final render)
+            setDisplayTokens(prev =>
+                prev.length === lexedTokens.length && prev.every((t, i) => t === lexedTokens[i]) ? prev : lexedTokens
+            );
+        }
+    }
+}, [lexedTokens, externalStreaming]);
+
+// Only memoize the rendered content when not streaming or when streaming completes
+const renderedContent = useMemo(() => {
+    return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender, externalStreaming, thinkingContentRef, onOpenShellConfig);
+}, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender]); // Use forceRender to trigger re-renders
+
+// Attach event listeners to throttle retry buttons after render
+const { currentConversationId, currentMessages,
+    addStreamingConversation, throttlingRecoveryData,
+    setThrottlingRecoveryData } = useActiveChat();
+const { send } = useSendPayload();
+
+// Track attached handlers to prevent duplicates
+const attachedHandlersRef = useRef<Set<Element>>(new Set());
+// Track if we've done initial scan
+const hasScannedInitiallyRef = useRef(false);
+
+// Separate function to attach handler with proper closure
+const attachThrottleRetryHandler = useCallback((button: HTMLButtonElement) => {
+    const conversationId = button.getAttribute('data-conversation-id');
+    const throttleWait = button.getAttribute('data-throttle-wait');
+
+    if (!conversationId) return;
+
+    console.log(`✅ Attaching throttle retry handler to button for conversation: ${conversationId}`);
+
+    // Mark as attached immediately to prevent duplicates
+    button.dataset.handlerAttached = 'true';
+    attachedHandlersRef.current.add(button);
+
+    const handleClick = async () => {
+        console.log('🔄 RETRY: User clicked retry button after throttling');
+
+        // Disable button and show loading state
+        button.disabled = true;
+        const originalText = button.textContent;
+
+        // Enforce the server-suggested wait before retrying.
+        // Immediate retry after a rate-limit will usually be throttled again.
+        const waitSeconds = parseInt(throttleWait || '0', 10);
+        if (waitSeconds > 0) {
+            for (let remaining = waitSeconds; remaining > 0; remaining--) {
+                button.textContent = `⏳ Retry in ${remaining}s`;
+                await new Promise(resolve => setTimeout(resolve, 1000));
             }
         }
-    }, [lexedTokens, externalStreaming]);
 
-    // Only memoize the rendered content when not streaming or when streaming completes
-    const renderedContent = useMemo(() => {
-        return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender, externalStreaming, thinkingContentRef, onOpenShellConfig);
-    }, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender]); // Use forceRender to trigger re-renders
+        button.textContent = '⏳ Retrying...';
 
-    // Attach event listeners to throttle retry buttons after render
-    const { currentConversationId, currentMessages,
-        addStreamingConversation, throttlingRecoveryData,
-        setThrottlingRecoveryData } = useActiveChat();
-    const { send } = useSendPayload();
+        try {
+            // Get the throttling recovery data for this conversation
+            const recoveryData = throttlingRecoveryData.get(conversationId);
 
-    // Track attached handlers to prevent duplicates
-    const attachedHandlersRef = useRef<Set<Element>>(new Set());
-    // Track if we've done initial scan
-    const hasScannedInitiallyRef = useRef(false);
+            // Build message history including partial response if available
+            const messagesForRetry = [...currentMessages.filter(msg => !msg.muted)];
 
-    // Separate function to attach handler with proper closure
-    const attachThrottleRetryHandler = useCallback((button: HTMLButtonElement) => {
-        const conversationId = button.getAttribute('data-conversation-id');
-        const throttleWait = button.getAttribute('data-throttle-wait');
+            // If we have recovery data with partial content, include it
+            if (recoveryData?.partialContent && recoveryData.partialContent.trim()) {
+                messagesForRetry.push({
+                    role: 'assistant',
+                    content: recoveryData.partialContent,
+                    _timestamp: Date.now()
+                });
+                console.log('🔄 RETRY: Including partial response from recovery data:',
+                    recoveryData.partialContent.length, 'characters');
+            }
 
-        if (!conversationId) return;
-
-        console.log(`✅ Attaching throttle retry handler to button for conversation: ${conversationId}`);
-
-        // Mark as attached immediately to prevent duplicates
-        button.dataset.handlerAttached = 'true';
-        attachedHandlersRef.current.add(button);
-
-        const handleClick = async () => {
-            console.log('🔄 RETRY: User clicked retry button after throttling');
-
-            // Disable button and show loading state
-            button.disabled = true;
-            const originalText = button.textContent;
-            button.textContent = '⏳ Retrying...';
-
-            try {
-                // Get the throttling recovery data for this conversation
-                const recoveryData = throttlingRecoveryData.get(conversationId);
-
-                // Build message history including partial response if available
-                const messagesForRetry = [...currentMessages.filter(msg => !msg.muted)];
-
-                // If we have recovery data with partial content, include it
-                if (recoveryData?.partialContent && recoveryData.partialContent.trim()) {
+            // If we have tool results, add them
+            if (recoveryData?.toolResults && recoveryData.toolResults.length > 0) {
+                console.log('📦 RETRY: Including', recoveryData.toolResults.length, 'tool results');
+                recoveryData.toolResults.forEach((toolResult, index) => {
                     messagesForRetry.push({
                         role: 'assistant',
-                        content: recoveryData.partialContent,
-                        _timestamp: Date.now()
+                        content: `Tool execution result ${index + 1}:\n\`\`\`tool:result\n${toolResult}\n\`\`\``,
+                        _timestamp: Date.now(),
+                        _isToolResult: true
                     });
-                    console.log('🔄 RETRY: Including partial response from recovery data:',
-                        recoveryData.partialContent.length, 'characters');
-                }
-
-                // If we have tool results, add them
-                if (recoveryData?.toolResults && recoveryData.toolResults.length > 0) {
-                    console.log('📦 RETRY: Including', recoveryData.toolResults.length, 'tool results');
-                    recoveryData.toolResults.forEach((toolResult, index) => {
-                        messagesForRetry.push({
-                            role: 'assistant',
-                            content: `Tool execution result ${index + 1}:\n\`\`\`tool:result\n${toolResult}\n\`\`\``,
-                            _timestamp: Date.now(),
-                            _isToolResult: true
-                        });
-                    });
-                }
-
-                // Get the last user message as the question to continue with
-                const lastUserMessage = messagesForRetry.filter(msg => msg.role === 'human').pop();
-
-                if (!lastUserMessage) {
-                    message.error('No message to retry');
-                    button.disabled = false;
-                    button.textContent = originalText;
-                    return;
-                }
-
-                // Start the retry
-                addStreamingConversation(conversationId);
-                await send({
-                    messages: messagesForRetry,
-                    question: lastUserMessage.content,
-                    conversationId,
                 });
+            }
 
-                const next = new Map(throttlingRecoveryData);
-                next.delete(conversationId);
-                setThrottlingRecoveryData(next);
+            // Get the last user message as the question to continue with
+            const lastUserMessage = messagesForRetry.filter(msg => msg.role === 'human').pop();
 
-                message.success({
-                    content: 'Retrying request...',
-                    duration: 2
-                });
-            } catch (error) {
-                console.error('Retry failed:', error);
-                message.error('Failed to retry request');
+            if (!lastUserMessage) {
+                message.error('No message to retry');
                 button.disabled = false;
                 button.textContent = originalText;
+                return;
             }
-        };
 
-        button.addEventListener('click', handleClick);
-    }, [currentMessages, throttlingRecoveryData,
-        addStreamingConversation, setThrottlingRecoveryData, send]);
+            // Start the retry
+            addStreamingConversation(conversationId);
+            await send({
+                messages: messagesForRetry,
+                question: lastUserMessage.content,
+                conversationId,
+            });
 
-    // Attach handler to auth-error retry buttons
-    const attachAuthRetryHandler = useCallback((button: HTMLButtonElement) => {
-        const conversationId = button.getAttribute('data-conversation-id');
-        if (!conversationId) return;
+            const next = new Map(throttlingRecoveryData);
+            next.delete(conversationId);
+            setThrottlingRecoveryData(next);
 
-        console.log(`✅ Attaching auth retry handler to button for conversation: ${conversationId}`);
-        button.dataset.handlerAttached = 'true';
-        attachedHandlersRef.current.add(button);
-
-        const handleClick = () => {
-            console.log('🔄 Auth error retry button clicked for conversation:', conversationId);
-            button.textContent = '🔄 Retrying...';
-            button.disabled = true;
-            button.style.opacity = '0.6';
-            button.style.cursor = 'not-allowed';
-
-            window.dispatchEvent(new CustomEvent('retryAuthError', {
-                detail: { conversationId }
-            }));
-        };
-
-        button.addEventListener('click', handleClick);
-    }, []);
-
-    // Attach handler to context-error retry buttons.  Same pattern as
-    // auth-retry: dispatch a window event that StreamedContent listens for,
-    // so the resend runs inside the component tree where `send` and conversation
-    // state are accessible.
-    const attachContextRetryHandler = useCallback((button: HTMLButtonElement) => {
-        const conversationId = button.getAttribute('data-conversation-id');
-        if (!conversationId) return;
-
-        console.log(`✅ Attaching context retry handler to button for conversation: ${conversationId}`);
-        button.dataset.handlerAttached = 'true';
-        attachedHandlersRef.current.add(button);
-
-        const handleClick = () => {
-            console.log('🔄 Context error retry button clicked for conversation:', conversationId);
-            button.textContent = '🔄 Retrying...';
-            button.disabled = true;
-            button.style.opacity = '0.6';
-            button.style.cursor = 'not-allowed';
-
-            window.dispatchEvent(new CustomEvent('retryContextError', {
-                detail: { conversationId }
-            }));
-        };
-
-        button.addEventListener('click', handleClick);
-    }, []);
-
-    // Helper to attach handlers to all buttons
-    const scanAndAttachHandlers = useCallback(() => {
-        const allButtons = document.querySelectorAll('.throttle-retry-button');
-        allButtons.forEach(button => {
-            if (!(button as HTMLButtonElement).dataset.handlerAttached) {
-                attachThrottleRetryHandler(button as HTMLButtonElement);
-            }
-        });
-
-        // Also scan for auth-error retry buttons
-        const authButtons = document.querySelectorAll('.auth-error-retry-button');
-        authButtons.forEach(button => {
-            if (!(button as HTMLButtonElement).dataset.handlerAttached) {
-                attachAuthRetryHandler(button as HTMLButtonElement);
-            }
-        });
-
-        // Also scan for context-error retry buttons
-        const contextButtons = document.querySelectorAll('.context-error-retry-button');
-        contextButtons.forEach(button => {
-            if (!(button as HTMLButtonElement).dataset.handlerAttached) {
-                attachContextRetryHandler(button as HTMLButtonElement);
-            }
-        });
-
-        // Prune stale DOM references that are no longer in the document.
-        // Elements removed from the DOM stay in the Set and prevent GC
-        // of their closures and associated DOM trees.
-        for (const el of attachedHandlersRef.current) {
-            if (!document.body.contains(el)) {
-                attachedHandlersRef.current.delete(el);
-            }
+            message.success({
+                content: 'Retrying request...',
+                duration: 2
+            });
+        } catch (error) {
+            console.error('Retry failed:', error);
+            message.error('Failed to retry request');
+            button.disabled = false;
+            button.textContent = originalText;
         }
+    };
 
-        // Mark that we've done at least one scan
-        hasScannedInitiallyRef.current = true;
-    }, [attachThrottleRetryHandler, attachAuthRetryHandler, attachContextRetryHandler]);
+    button.addEventListener('click', handleClick);
+}, [currentMessages, throttlingRecoveryData,
+    addStreamingConversation, setThrottlingRecoveryData, send]);
 
-    // Setup MutationObserver to watch for dynamically added throttle buttons
-    useLayoutEffect(() => {
-        // Shared singleton handles MutationObserver + throttle event listeners
-        _installThrottleObserver(scanAndAttachHandlers);
+// Attach handler to auth-error retry buttons
+const attachAuthRetryHandler = useCallback((button: HTMLButtonElement) => {
+    const conversationId = button.getAttribute('data-conversation-id');
+    if (!conversationId) return;
 
-        // Recovery data listener remains per-instance (writes to component state)
-        const handleThrottlingRecoveryData = (event: CustomEvent) => {
-            const { conversationId, toolResults, partialContent } = event.detail;
-            if (conversationId && toolResults) {
-                console.log('📦 RECOVERY_DATA: Storing tool results for conversation:', conversationId);
-                const next = new Map(throttlingRecoveryData);
-                next.set(conversationId, { toolResults, partialContent });
-                setThrottlingRecoveryData(next);
-            }
-        };
-        document.addEventListener('throttlingRecoveryData', handleThrottlingRecoveryData as EventListener);
+    console.log(`✅ Attaching auth retry handler to button for conversation: ${conversationId}`);
+    button.dataset.handlerAttached = 'true';
+    attachedHandlersRef.current.add(button);
 
-        const initialScanTimer = setTimeout(scanAndAttachHandlers, 200);
+    const handleClick = () => {
+        console.log('🔄 Auth error retry button clicked for conversation:', conversationId);
+        button.textContent = '🔄 Retrying...';
+        button.disabled = true;
+        button.style.opacity = '0.6';
+        button.style.cursor = 'not-allowed';
 
-        return () => {
-            clearTimeout(initialScanTimer);
-            document.removeEventListener('throttlingRecoveryData', handleThrottlingRecoveryData as EventListener);
-            attachedHandlersRef.current.clear();
-        };
-    }, [currentConversationId]);
+        window.dispatchEvent(new CustomEvent('retryAuthError', {
+            detail: { conversationId }
+        }));
+    };
 
-    const isMultiFileDiff = markdown?.includes('diff --git') && markdown.split('diff --git').length > 2;
-    return isMultiFileDiff && !isSubRender && displayTokens.length === 1 && displayTokens[0].type === 'code' && (displayTokens[0] as TokenWithText).lang === 'diff' ?
-        renderMultiFileDiff(displayTokens[0] as TokenWithText, 0, enableCodeApply, isDarkMode, onOpenShellConfig) :
-        <div ref={containerRef}>{renderedContent}</div>;
+    button.addEventListener('click', handleClick);
+}, []);
+
+// Attach handler to context-error retry buttons.  Same pattern as
+// auth-retry: dispatch a window event that StreamedContent listens for,
+// so the resend runs inside the component tree where `send` and conversation
+// state are accessible.
+const attachContextRetryHandler = useCallback((button: HTMLButtonElement) => {
+    const conversationId = button.getAttribute('data-conversation-id');
+    if (!conversationId) return;
+
+    console.log(`✅ Attaching context retry handler to button for conversation: ${conversationId}`);
+    button.dataset.handlerAttached = 'true';
+    attachedHandlersRef.current.add(button);
+
+    const handleClick = () => {
+        console.log('🔄 Context error retry button clicked for conversation:', conversationId);
+        button.textContent = '🔄 Retrying...';
+        button.disabled = true;
+        button.style.opacity = '0.6';
+        button.style.cursor = 'not-allowed';
+
+        window.dispatchEvent(new CustomEvent('retryContextError', {
+            detail: { conversationId }
+        }));
+    };
+
+    button.addEventListener('click', handleClick);
+}, []);
+
+// Helper to attach handlers to all buttons
+const scanAndAttachHandlers = useCallback(() => {
+    const allButtons = document.querySelectorAll('.throttle-retry-button');
+    allButtons.forEach(button => {
+        if (!(button as HTMLButtonElement).dataset.handlerAttached) {
+            attachThrottleRetryHandler(button as HTMLButtonElement);
+        }
+    });
+
+    // Also scan for auth-error retry buttons
+    const authButtons = document.querySelectorAll('.auth-error-retry-button');
+    authButtons.forEach(button => {
+        if (!(button as HTMLButtonElement).dataset.handlerAttached) {
+            attachAuthRetryHandler(button as HTMLButtonElement);
+        }
+    });
+
+    // Also scan for context-error retry buttons
+    const contextButtons = document.querySelectorAll('.context-error-retry-button');
+    contextButtons.forEach(button => {
+        if (!(button as HTMLButtonElement).dataset.handlerAttached) {
+            attachContextRetryHandler(button as HTMLButtonElement);
+        }
+    });
+
+    // Prune stale DOM references that are no longer in the document.
+    // Elements removed from the DOM stay in the Set and prevent GC
+    // of their closures and associated DOM trees.
+    for (const el of attachedHandlersRef.current) {
+        if (!document.body.contains(el)) {
+            attachedHandlersRef.current.delete(el);
+        }
+    }
+
+    // Mark that we've done at least one scan
+    hasScannedInitiallyRef.current = true;
+}, [attachThrottleRetryHandler, attachAuthRetryHandler, attachContextRetryHandler]);
+
+// Setup MutationObserver to watch for dynamically added throttle buttons
+useLayoutEffect(() => {
+    // Shared singleton handles MutationObserver + throttle event listeners
+    _installThrottleObserver(scanAndAttachHandlers);
+
+    // Recovery data listener remains per-instance (writes to component state)
+    const handleThrottlingRecoveryData = (event: CustomEvent) => {
+        const { conversationId, toolResults, partialContent } = event.detail;
+        if (conversationId && toolResults) {
+            console.log('📦 RECOVERY_DATA: Storing tool results for conversation:', conversationId);
+            const next = new Map(throttlingRecoveryData);
+            next.set(conversationId, { toolResults, partialContent });
+            setThrottlingRecoveryData(next);
+        }
+    };
+    document.addEventListener('throttlingRecoveryData', handleThrottlingRecoveryData as EventListener);
+
+    const initialScanTimer = setTimeout(scanAndAttachHandlers, 200);
+
+    return () => {
+        clearTimeout(initialScanTimer);
+        document.removeEventListener('throttlingRecoveryData', handleThrottlingRecoveryData as EventListener);
+        attachedHandlersRef.current.clear();
+    };
+}, [currentConversationId]);
+
+const isMultiFileDiff = markdown?.includes('diff --git') && markdown.split('diff --git').length > 2;
+return isMultiFileDiff && !isSubRender && displayTokens.length === 1 && displayTokens[0].type === 'code' && (displayTokens[0] as TokenWithText).lang === 'diff' ?
+    renderMultiFileDiff(displayTokens[0] as TokenWithText, 0, enableCodeApply, isDarkMode, onOpenShellConfig) :
+    <div ref={containerRef}>{renderedContent}</div>;
 }, (prevProps, nextProps) => prevProps.markdown === nextProps.markdown && prevProps.enableCodeApply === nextProps.enableCodeApply && prevProps.role === nextProps.role);
 // Note: forceRender prop is intentionally not included in the memo comparison to ensure re-rendering during streaming
 

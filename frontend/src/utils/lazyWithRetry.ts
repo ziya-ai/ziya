@@ -14,6 +14,25 @@ function wait(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+/**
+ * Reload bypassing the HTTP cache for the HTML document.  A plain
+ * window.location.reload() may serve a cached index.html / main.js that
+ * still references a chunk hash deleted by the latest build, so the same
+ * dead chunk is requested again and the reload is wasted.  Appending a
+ * one-time cache-bust query param forces a distinct URL → cache miss on
+ * the document → fresh bundle hashes.
+ */
+function hardReload(): void {
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set('_cb', String(Date.now()));
+    window.location.replace(url.toString());
+  } catch {
+    // URL API unavailable or replace blocked — fall back to a plain reload.
+    window.location.reload();
+  }
+}
+
 async function retryImport<T extends React.ComponentType<any>>(
   factory: () => Promise<{ default: T }>,
   retries: number,
@@ -43,7 +62,7 @@ async function retryImport<T extends React.ComponentType<any>>(
         if (!sessionStorage.getItem(RELOAD_FLAG)) {
           sessionStorage.setItem(RELOAD_FLAG, '1');
           sessionStorage.setItem(RELOAD_FLAG_TS, String(Date.now()));
-          window.location.reload();
+          hardReload();
           // Never-settling promise prevents React rendering the error
           // boundary during the brief window before the page unloads.
           return new Promise(() => {});
