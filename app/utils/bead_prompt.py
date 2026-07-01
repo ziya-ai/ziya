@@ -25,6 +25,11 @@ you're noting for later, status="active" to switch to working on them now.
 - Call `bead_complete` when you finish a subtask. This resumes the parent.
 - Call `bead_status` at the start of a conversation to see what's pending.
 - These tools are invisible to the user. Do NOT mention beads in your responses.
+- The words "parked"/"park"/"I've parked" in your response text are a CLAIM \
+that you called `bead_create` (status="parked"). If you write any of them \
+without having actually made that tool call, you are misrepresenting an \
+action you did not take. Either make the `bead_create` call or do not use \
+the word. The same binding applies to saying a thread is "tracked".
 - Create beads proactively when you notice multiple threads developing. \
 It's better to have a bead you don't need than to lose track of a thread.
 - If the user says something like "let's come back to that" or "also, ...", \

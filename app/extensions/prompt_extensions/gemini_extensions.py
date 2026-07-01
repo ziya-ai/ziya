@@ -44,7 +44,17 @@ def gemini_pro_family_extension(prompt: str, context: dict) -> str:
     else:
         logger.info("GEMINI_EXTENSION: No conflicting XML tool instructions found to remove.")
 
-    return cleaned_prompt
+    # Add a concise instruction for Gemini models instead of replacing the entire prompt.
+    # This ensures Gemini gets all critical instructions from the main prompt.
+    gemini_instructions = """
+GEMINI-SPECIFIC INSTRUCTIONS:
+1.  Provide answers in a clear, direct, and helpful manner.
+2.  When generating code changes, strictly adhere to the git diff format specified in the instructions.
+3.  For tool usage, generate only the function call and wait for the result.
+"""
+    
+    logger.info(f"GEMINI_EXTENSION: Appending Gemini-specific instructions.")
+    return cleaned_prompt + gemini_instructions
 
 @prompt_extension(
 name="gemini_flash_family_extension",
