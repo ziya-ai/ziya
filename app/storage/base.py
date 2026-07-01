@@ -132,6 +132,14 @@ class BaseStorage(ABC, Generic[T]):
         parent = filepath.parent.name.lower()
         if parent == "chats" or name.endswith("chat.json"):
             return "conversation_data"
+        # Task card *definitions* are authored config, not sensitive
+        # content — they default to plaintext via the never-encrypt
+        # opt-out (see EncryptionPolicy.never_encrypted_categories).
+        # Task *runs* deliberately fall through to session_data below
+        # and stay encrypted (their artifacts can hold model output
+        # about the codebase).
+        if parent == "task_cards":
+            return "task_definition"
         if "skill" in name or parent == "skills":
             return "session_data"
         if "context" in name or parent == "contexts":

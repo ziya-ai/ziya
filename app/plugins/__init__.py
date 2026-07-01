@@ -495,6 +495,15 @@ def get_effective_encryption_policy() -> EncryptionPolicy:
     for _, p in active_policies:
         all_categories.update(p.categories_requiring_encryption)
 
+    # never-encrypt is intersected, not unioned: a category stays
+    # never-encrypted only if EVERY active provider agrees.  This honors
+    # "most restrictive wins" — if any provider omits task_definition
+    # from its never-encrypt set, those files are encrypted.  Providers
+    # that don't set the field inherit the {"task_definition"} default
+    # (see EncryptionPolicy), so the common case is plaintext defs.
+    never_sets = [set(p.never_encrypted_categories) for _, p in active_policies]
+    never_encrypted = set.intersection(*never_sets) if never_sets else set()
+
     return EncryptionPolicy(
         enabled=enabled,
         kek_source=kek_source,
@@ -502,6 +511,7 @@ def get_effective_encryption_policy() -> EncryptionPolicy:
         dek_rotation_interval=min(dek_intervals) if dek_intervals else None,
         kek_rotation_interval=min(kek_intervals) if kek_intervals else None,
         categories_requiring_encryption=all_categories,
+        never_encrypted_categories=never_encrypted,
         policy_reason="; ".join(reasons) if reasons else "merged from providers",
     )
 

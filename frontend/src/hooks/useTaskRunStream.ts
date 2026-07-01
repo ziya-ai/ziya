@@ -59,9 +59,16 @@ export interface LiveTaskState {
     tokens?: number;
     signature?: string;
   }>;
+  /**
+   * Resolved run-scoped variables surfaced by State blocks via the
+   * ``state_applied`` event (values after launch-override merge).
+   * Last-write-wins across events so the panel shows the current set.
+   * Names-only — prose context is ambient and intentionally NOT here.
+   */
+  variables: Record<string, unknown>;
 }
 
-const EMPTY_LIVE: LiveTaskState = { text: {}, toolCalls: [], events: [], iterations: [] };
+const EMPTY_LIVE: LiveTaskState = { text: {}, toolCalls: [], events: [], iterations: [], variables: {} };
 const MAX_EVENTS = 500;       // hard cap so a long run can't unbound memory
 const MAX_TOOL_CALLS = 200;
 /**
@@ -249,6 +256,22 @@ export function useTaskRunStream(
      const blockId = typeof e.block_id === 'string' ? e.block_id : undefined;
      const isRunScope = !blockId && (type === 'run_started' || type === 'run_completed');
 
+    // Terminal backstop: once the run completes/fails/cancels, NOTHING
+    // can still be executing.  Seal every still-'running' iteration so
+    // the Live tab can never show a RUNNING block under a done run
+    // (covers dropped task_finished events, parallel-iteration races,
+    // and cancellation where no per-iteration terminal event fires).
+    // 'passed' is the neutral seal — a genuinely failed task already
+    // sealed itself via task_finished(ok=false)/iteration_completed
+    // above; this only catches buckets left dangling.
+    if (type === 'run_completed' || type === 'run_failed') {
+      const sealed = iterations.some(it => it.status === 'running');
+      if (sealed) {
+        iterations = iterations.map(it =>
+          it.status === 'running' ? { ...it, status: 'passed' } : it);
+      }
+    }
+
      const findIterIdx = (predicate: (it: LiveTaskState['iterations'][number]) => boolean): number =>
        iterations.findIndex(predicate);
 
@@ -290,6 +313,35 @@ export function useTaskRunStream(
              }
            : it);
        }
+     } else if (type === 'task_finished' && blockId) {
+       // A bare task block (not wrapped in Repeat/Until) emits
+       // task_finished, NOT iteration_completed — the latter is only
+       // emitted by the loop executors.  Without sealing here, an
+       // auto-opened iteration for an unwrapped top-level task stays
+       // 'running' forever even though the run goes terminal (the
+       // "header says done, block stuck RUNNING" bug).  Seal the
+       // matching running iteration using the task's own ok flag.
+       const status: 'passed' | 'failed' = e.ok === false ? 'failed' : 'passed';
+       const durationMs = typeof e.duration_ms === 'number' ? e.duration_ms : undefined;
+       const tokens = typeof e.tokens === 'number' ? e.tokens : undefined;
+       let target = -1;
+       for (let i = iterations.length - 1; i >= 0; i--) {
+         if (iterations[i].blockId === blockId && iterations[i].status === 'running') {
+           target = i; break;
+         }
+       }
+       if (target >= 0) {
+         iterations = iterations.map((it, i) => i === target
+           ? {
+               ...it, status,
+               durationMs: it.durationMs ?? durationMs,
+               tokens: it.tokens ?? tokens,
+               events: [...it.events, e as any],
+             }
+           : it);
+       }
+       // No running bucket → task_finished without a prior open
+       // iteration; the timeline already recorded it via `events`.
      } else if (blockId && !isRunScope) {
        // Block-scoped event — route to the current (last running)
        // iteration of that block, opening a synthetic iteration 0 if
@@ -337,7 +389,15 @@ export function useTaskRunStream(
         : [...prev.toolCalls, call];
     }
 
-     return { text, toolCalls, events, iterations };
+    // state_applied: merge resolved variable values (last-write-wins)
+    // so the running card shows the current run-scoped set.  Prose
+    // context is ambient and deliberately not surfaced here.
+    let variables = prev.variables;
+    if (type === 'state_applied' && e.values && typeof e.values === 'object') {
+      variables = { ...prev.variables, ...(e.values as Record<string, unknown>) };
+    }
+
+     return { text, toolCalls, events, iterations, variables };
   });
 }
 

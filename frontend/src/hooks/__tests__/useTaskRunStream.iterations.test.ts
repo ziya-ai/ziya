@@ -20,7 +20,7 @@
 
 import { accumulateLive, type LiveTaskState } from '../useTaskRunStream';
 
-const EMPTY: LiveTaskState = { text: {}, toolCalls: [], events: [], iterations: [] };
+const EMPTY: LiveTaskState = { text: {}, toolCalls: [], events: [], iterations: [], variables: {} };
 
 /** Drive the reducer synchronously and return the final state. */
 function reduce(events: ReadonlyArray<unknown>): LiveTaskState {

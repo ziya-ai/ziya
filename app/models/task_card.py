@@ -133,11 +133,20 @@ class Block(BaseModel):
     #   until    — loop until a model-evaluated yes/no condition holds
     #              (separate from repeat's substring-based until — this
     #              one runs an evaluator sub-call on each iteration)
+    #   group    — neutral run-once sequential container.  Runs its body
+    #              top-to-bottom exactly once (the explicit form of the
+    #              implicit-sequence rule).  Carries no loop/trigger
+    #              semantics; used as the invisible card-root wrapper so
+    #              a State can precede a loop without entering its scope.
     #   schedule — recurring trigger decorator (interval / at /
     #              daily_at / cron).  Does NOT execute its body on its
     #              own; the in-process scheduler dispatches each fire as
     #              an independent TaskRun rooted at the body.
-    block_type: Literal["task", "repeat", "parallel", "until", "schedule"]
+    #   state    — read-only declaration of run-scoped named variables
+    #              (name -> literal).  A leaf like task.  Placement is
+    #              the reset policy: in a once-running body it sets once;
+    #              inside a Repeat/Until body it re-applies each cycle.
+    block_type: Literal["task", "repeat", "parallel", "until", "schedule", "state", "group"]
     id: str = ""
     name: str = ""
 
@@ -177,6 +186,26 @@ class Block(BaseModel):
     schedule_enabled: bool = True
     schedule_catch_up: bool = True                # run-once-on-recovery
     schedule_max_runs: Optional[int] = None       # None = unlimited
+
+    # State-only fields.  A read-only map of run-scoped named variables
+    # (name -> literal value).  Tasks read them via {{var.NAME}}
+    # templating; nothing writes back (read-only preserves the sandbox
+    # invariant — only artifacts cross task boundaries).  Placement is
+    # the reset policy: a State block in a once-running body applies once
+    # per run; the same block inside a Repeat/Until body re-applies its
+    # literals at the start of every iteration, resetting to baseline.
+    # See app/agents/block_executor.py::_execute_state.
+    state_variables: Optional[Dict[str, Any]] = None
+
+    # State prose context — the PRIMARY, conversational form of a State
+    # block.  Freeform English givens ("assume prod, migration already
+    # ran, flag is off") that flow into every in-scope task's context
+    # automatically — no {{var}} templating required.  Surfaced as a
+    # standing-context preamble, mirroring how prior-iteration results
+    # are surfaced.  ``state_variables`` is the optional formal adjunct
+    # for values you want to reference by name; this prose field is the
+    # baseline most cards use.  Same placement-is-reset-policy as vars.
+    state_context: Optional[str] = None
 
     # Body — used by repeat / parallel / until / schedule (Task ignores)
     body: List["Block"] = []
