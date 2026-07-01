@@ -86,6 +86,28 @@ class PythonHandler(LanguageHandler):
         if not misleading or total < 2:
             return orig_line, orig_msg
 
+        # For an unterminated TRIPLE-quoted string the most reliable signal is
+        # the delimiter count itself: scan for the line that opens the last
+        # unbalanced '"""' / "'''". Prefix bisection is unreliable here because a
+        # short prefix can fail to parse for an UNRELATED reason (e.g. a lone
+        # 'class C:' fails with "expected an indented block"), which makes the
+        # bisect wrongly blame line 1. The delimiter scan points at the actual
+        # opening delimiter instead.
+        if "unterminated triple-quoted string" in orig_msg.lower():
+            delim_line = cls._find_unbalanced_triple_quote(lines)
+            if delim_line is not None:
+                # Trust the delimiter scan and skip the prefix bisect entirely.
+                # The bisect is precisely what mis-blames an innocent earlier line
+                # (e.g. 'class C:') for an unterminated string, so it must not run
+                # in this case even when the scan agrees with the parser's line.
+                hint = (
+                    f"{orig_msg} (the unbalanced triple-quote delimiter opens at "
+                    f"line {delim_line}: {lines[delim_line-1].strip()!r}. The string "
+                    f"was likely bisected by a diff that inserted or dropped a line "
+                    f"inside it.)"
+                )
+                return delim_line, hint
+
         # Bisect: find the smallest prefix that still fails to parse. That
         # prefix's last statement is almost certainly the real culprit.
         lo, hi = 1, total
@@ -103,9 +125,46 @@ class PythonHandler(LanguageHandler):
                 break
 
         if culprit != orig_line and culprit < orig_line:
-            hint = f"{orig_msg} (parser recovery pointed at line {orig_line}; likely real issue near line {culprit}: {lines[culprit-1].strip()!r})"
+            # "likely" is honest: the bisect can land on a structurally valid line
+            # that precedes the real imbalance, so flag the attribution as a hint
+            # rather than a definitive location.
+            hint = (
+                f"{orig_msg} (parser recovery pointed at line {orig_line}; "
+                f"likely real issue near line {culprit}: {lines[culprit-1].strip()!r} "
+                f"— attribution is heuristic and may be off by a few lines)"
+            )
             return culprit, hint
         return orig_line, orig_msg
+
+    @staticmethod
+    def _find_unbalanced_triple_quote(lines: List[str]) -> Optional[int]:
+        """
+        Return the 1-based line number that opens the last unbalanced triple-quote
+        delimiter, or None if the count is balanced. Counts '\"\"\"' and \"'''\"
+        occurrences across the file; whichever has an odd total identifies an
+        unterminated string, and the line carrying its final occurrence is the
+        opener that was left dangling. This is a lightweight lexical scan, not a
+        full tokenizer, but it is reliable for the common "diff bisected a
+        docstring" failure mode.
+        """
+        last_double = None
+        last_single = None
+        count_double = 0
+        count_single = 0
+        for idx, line in enumerate(lines, 1):
+            d = line.count('"""')
+            s = line.count("'''")
+            if d:
+                count_double += d
+                last_double = idx
+            if s:
+                count_single += s
+                last_single = idx
+        if count_double % 2 == 1:
+            return last_double
+        if count_single % 2 == 1:
+            return last_single
+        return None
 
     @classmethod
     def _check_common_issues(cls, original_content: str, modified_content: str) -> List[str]:

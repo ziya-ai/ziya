@@ -25,8 +25,17 @@ def _render_failure_diagnostics(failures: list) -> str:
         confidence = details.get("confidence")
         hunk_num = details.get("hunk_number") or details.get("hunk") or i
         line = f"  Hunk #{hunk_num}: {msg}"
+        # confidence may arrive as a float (0.0–1.0), a numeric string, or a
+        # non-numeric token ('N/A', 'low') depending on which pipeline stage
+        # produced the failure. Only percent-format a real number — a bare
+        # `{confidence:.0%}` on a str raises "Unknown format code 'f' for
+        # object of type 'str'" and crashes the failure reporter itself,
+        # masking the actual hunk-mismatch message.
         if confidence is not None:
-            line += f" (confidence: {confidence:.0%})"
+            try:
+                line += f" (confidence: {float(confidence):.0%})"
+            except (TypeError, ValueError):
+                line += f" (confidence: {confidence})"
         parts.append(line)
     header = f"Failed to apply ({len(failures)} hunk{'s' if len(failures) != 1 else ''} unmatched):"
     return "\n".join([header] + parts)
@@ -200,14 +209,23 @@ class CLIDiffApplicator:
                 i += 1
                 content_lines = []
                 # Collect until matching closing fence (same or more backticks, nothing else)
+                closed = False
                 while i < len(lines):
                     close_stripped = lines[i].strip()
                     if re.match(r'^`{' + str(fence_len) + r',}\s*$', close_stripped):
+                        closed = True
                         break
                     content_lines.append(lines[i])
                     i += 1
                 end_pos = sum(len(l) + 1 for l in lines[:i + 1])
                 diff_content = '\n'.join(content_lines).strip()
+                # An unterminated diff fence (no closing ```) means the stream
+                # was truncated mid-emission. The collector above ran to EOF and
+                # swallowed all trailing prose into the diff body. Rather than
+                # capture runaway content, trim the partial block back to its
+                # diff-shaped lines so following prose is not consumed.
+                if diff_content and not closed:
+                    diff_content = self._trim_to_diff_shape(content_lines)
                 if diff_content:
                     diffs.append(DiffBlock(content=diff_content, start_pos=start_pos, end_pos=end_pos))
             i += 1
@@ -229,6 +247,36 @@ class CLIDiffApplicator:
 
         logger.debug(f"Extracted {len(diffs)} diff blocks from response")
         return diffs
+
+    @staticmethod
+    def _trim_to_diff_shape(content_lines: List[str]) -> str:
+        """Trim a runaway (unterminated-fence) diff body to its leading
+        diff-shaped run.
+
+        When a diff fence is never closed (truncated stream), the collector
+        swallows trailing prose. This keeps only the contiguous leading
+        lines that look like a unified diff (header lines, hunk headers, and
+        body lines), stopping at the first line that breaks the diff shape.
+        """
+        kept: List[str] = []
+        seen_hunk = False
+        for ln in content_lines:
+            if re.match(r'^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@', ln):
+                seen_hunk = True
+                kept.append(ln)
+                continue
+            if not seen_hunk:
+                if ln.startswith(('diff --git ', '--- ', '+++ ', 'index ',
+                                  'new file mode', 'deleted file mode',
+                                  'similarity index', 'rename ')):
+                    kept.append(ln)
+                    continue
+                break
+            if ln.startswith(('+', '-', ' ', '\\')):
+                kept.append(ln)
+                continue
+            break
+        return '\n'.join(kept).strip()
 
     @staticmethod
     def _extract_bare_unified_diff(

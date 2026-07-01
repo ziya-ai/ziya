@@ -30,7 +30,7 @@ def _normalize_for_idempotency(line: str) -> str:
     normalized = normalize_line_for_comparison(line)
     # Undo escaped backticks. This is safe on already-unescaped input
     # (which contains no backslash-backtick sequences).
-    return normalized.replace('\`', '`')
+    return normalized.replace('\\' + '`', '`')
 
 def _strip_trailing_line_comment(normalized_line: str) -> str:
     """
@@ -356,6 +356,93 @@ def apply_surgical_changes(original_lines: List[str], hunk: Dict[str, Any], posi
     return result_lines
 
 
+def _added_lines_straddle_context(hunk: Dict[str, Any]) -> bool:
+    """True when the hunk's added lines are split by an intervening context line.
+
+    Detected from new_lines_is_addition: an addition run, then a context line,
+    then another addition run. In that shape the added lines are NOT a single
+    contiguous block — each run belongs at a different file location relative to
+    the context lines between them — so a flatten-at-one-point insertion would
+    misplace the later run (e.g. a trailing 'return None' that belongs after an
+    'except:' context line gets bunched into the 'try:' body instead).
+    """
+    flags = hunk.get('new_lines_is_addition') or []
+    seen_add = False
+    seen_ctx_after_add = False
+    for is_add in flags:
+        if is_add:
+            if seen_ctx_after_add:
+                return True  # addition AFTER a context line that followed an addition
+            seen_add = True
+        elif seen_add:
+            seen_ctx_after_add = True
+    return False
+
+
+def _apply_changes_by_structure(original_lines: List[str], hunk: Dict[str, Any], position: int) -> Optional[List[str]]:
+    """Content-anchored application that honors new_lines structure.
+
+    Used when the diff's context lines byte-differ from the file (so positional
+    application is unsafe) AND the added lines straddle a context boundary (so
+    flattening them at a single point would misplace a run). Walks new_lines via
+    new_lines_is_addition: every context line is located in the file by content
+    (anchoring the rebuild to real file positions, never modifying context), and
+    each added line is emitted in its structural position relative to those
+    anchors. Returns the rebuilt file, or None if the structure can't be
+    confidently mapped (caller then falls back to existing behavior).
+    """
+    new_lines = hunk.get('new_lines') or []
+    flags = hunk.get('new_lines_is_addition') or []
+    if not new_lines or len(flags) != len(new_lines):
+        return None
+
+    # Locate every context line in the file, in order, starting near position.
+    # Context anchors must be found as a strictly increasing sequence so the
+    # rebuilt region maps onto a real, contiguous span of the file.
+    search_start = max(0, position - 20)
+    search_end = min(len(original_lines), position + 80)
+    ctx_norm_to_find = [
+        normalize_line_for_comparison(l) for l, is_add in zip(new_lines, flags) if not is_add
+    ]
+    if not ctx_norm_to_find:
+        return None  # no context anchors — not safe to rebuild this way
+
+    ctx_file_idx: List[int] = []
+    cursor = search_start
+    for norm in ctx_norm_to_find:
+        found = -1
+        for i in range(cursor, search_end):
+            if normalize_line_for_comparison(original_lines[i]) == norm:
+                found = i
+                break
+        if found == -1:
+            return None  # a context anchor is missing — bail to caller's fallback
+        ctx_file_idx.append(found)
+        cursor = found + 1
+
+    region_start = ctx_file_idx[0]
+    region_end = ctx_file_idx[-1] + 1  # inclusive of last context line
+
+    ending = '\n'
+    if region_start < len(original_lines):
+        anchor = original_lines[region_start]
+        ending = anchor[len(anchor.rstrip()):] or '\n'
+
+    # Rebuild the region: context lines preserved verbatim from the file (so we
+    # never "fix" the file's own context), added lines taken from the diff.
+    rebuilt: List[str] = []
+    ctx_i = 0
+    for line, is_add in zip(new_lines, flags):
+        if is_add:
+            rebuilt.append(line.rstrip() + ending)
+        else:
+            rebuilt.append(original_lines[ctx_file_idx[ctx_i]])
+            ctx_i += 1
+
+    result = original_lines[:region_start] + rebuilt + original_lines[region_end:]
+    return result
+
+
 def apply_surgical_changes_by_content(original_lines: List[str], hunk: Dict[str, Any], position: int) -> List[str]:
     """
     Apply changes by finding removed lines by content, not position.
@@ -367,6 +454,18 @@ def apply_surgical_changes_by_content(original_lines: List[str], hunk: Dict[str,
     
     if not removed_lines or not added_lines:
         return original_lines
+
+    # When the added lines straddle a context boundary (an addition run, a
+    # context line, then another addition run — e.g. a trailing 'return None'
+    # that belongs after an 'except:' context line), the flatten-at-one-point
+    # logic below would dump every added line at the first removal position,
+    # bunching the later run into the wrong block. Use a structure-aware rebuild
+    # that anchors on the file's real context-line positions instead. Falls
+    # through to the original behavior if the structure can't be mapped.
+    if _added_lines_straddle_context(hunk):
+        structured = _apply_changes_by_structure(original_lines, hunk, position)
+        if structured is not None and structured != original_lines:
+            return structured
     
     # Find each removed line in the file by content
     removed_norm = [normalize_line_for_comparison(l) for l in removed_lines]
@@ -1069,9 +1168,17 @@ def apply_diff_with_difflib_hybrid_forced(
             
             # Use fuzzy matching to find the best position
             
+            # The diff header's new-side start encodes cumulative-deletion
+            # drift: after earlier hunks delete lines, this hunk's true
+            # location sits near new_start-1, which can fall outside the
+            # radius around the (under-counted) initial position. Pass it as
+            # a secondary search center so a perfect match there is found
+            # without the expensive full-file fallback. Defensive .get: not
+            # every corrected/synthetic hunk carries new_start.
+            secondary_pos = (h['new_start'] - 1) if h.get('new_start') else None
             fuzzy_best_pos, fuzzy_best_ratio = find_best_chunk_position(
                 normalized_final_lines_fuzzy, normalized_old_block_fuzzy,
-                fuzzy_initial_pos_search
+                fuzzy_initial_pos_search, secondary_pos=secondary_pos
             )
             
             # Store fuzzy ratio in hunk for later use
@@ -1652,14 +1759,73 @@ def apply_diff_with_difflib_hybrid_forced(
                 insert_pos = remove_pos
                 end_remove_pos = remove_pos + actual_remove_count
             else:
+                # Duplicate-trailing-line guard (low-information anchor fix).
+                #
+                # A common malformed-diff shape emits, as '+' additions, a trailing
+                # run of lines that are byte-identical to lines already present in
+                # the file (e.g. the author re-states an existing '# Extract all
+                # diffs' line, or a closing '"""', as an added line). The generic
+                # context_before search below then anchors on a low-information
+                # duplicate line (a bare '"""' that occurs twice, a blank line, a
+                # lone brace) and the gap-removal loop deletes the real lines in
+                # between to "reach" context_after — silently dropping content from
+                # what is supposed to be a pure addition, and frequently bisecting a
+                # multi-line string so language validation (correctly) rejects the
+                # result as an unterminated literal.
+                #
+                # If the tail of added_lines already exists as a contiguous block in
+                # the file, treat that block as the anchor: insert only the
+                # genuinely-new prefix immediately BEFORE it and remove nothing.
+                _dup_added = h['added_lines']
+                _norm_added = [normalize_line_for_comparison(l) for l in _dup_added]
+                _file_norm = [
+                    normalize_line_for_comparison(l.rstrip('\r\n'))
+                    for l in final_lines_with_endings
+                ]
+                # Only treat a trailing duplicate run as an anchor when it sits at
+                # the expected insertion point (remove_pos + len(old_block)). The
+                # search window is deliberately tight: a duplicate run that matches
+                # far downstream is almost certainly a coincidental match of
+                # legitimate context that the normal context_before path will place
+                # correctly. Firing on a distant match would hijack a working case
+                # (and the normal path handles ordinary trailing context fine).
+                _expected_ins = remove_pos + len(old_block)
+                _dup_lo = max(0, _expected_ins - 2)
+                _dup_hi = _expected_ins + 2
+                _dup_handled = False
+                for _k in range(len(_norm_added), 0, -1):
+                    _suffix = _norm_added[len(_norm_added) - _k:]
+                    if not any(s.strip() for s in _suffix):
+                        continue  # an all-blank suffix is not a meaningful anchor
+                    _found_at = -1
+                    _hi = min(_dup_hi, len(_file_norm) - _k)
+                    for _fi in range(_dup_lo, _hi + 1):
+                        if _file_norm[_fi:_fi + _k] == _suffix:
+                            _found_at = _fi
+                            break
+                    if _found_at != -1:
+                        _prefix = _dup_added[:len(_dup_added) - _k]
+                        if _prefix and any(p.strip() for p in _prefix):
+                            insert_pos = _found_at
+                            end_remove_pos = _found_at  # pure addition: remove nothing
+                            new_lines_with_endings = [p + dominant_ending for p in _prefix]
+                            _dup_handled = True
+                            logger.debug(
+                                f"Hunk #{hunk_idx}: Duplicate trailing run of {_k} line(s) "
+                                f"already in file at {_found_at} (expected insertion "
+                                f"{_expected_ins}); inserting {len(_prefix)} new line(s) "
+                                f"before it, removing none")
+                        break
+
                 # Context doesn't match or no positional info - find insertion point based on surrounding context
                 added_lines_only = h['added_lines']
-                new_lines_with_endings = [line + dominant_ending for line in added_lines_only]
+                new_lines_with_endings = [line + dominant_ending for line in added_lines_only] if not _dup_handled else new_lines_with_endings
                 
                 # Find the context line BEFORE the addition in new_lines
                 context_before = None
                 context_after = None
-                for i, (line, is_add) in enumerate(zip(h['new_lines'], new_lines_is_addition)):
+                if not _dup_handled:
+                  for i, (line, is_add) in enumerate(zip(h['new_lines'], new_lines_is_addition)):
                     if is_add:
                         # Found first added line - context_before is the previous non-added line
                         if i > 0:
@@ -1673,9 +1839,10 @@ def apply_diff_with_difflib_hybrid_forced(
                 
                 # Find insertion point by locating context_before in the file
                 # Start searching from remove_pos to avoid finding wrong matches earlier in file
-                insert_pos = remove_pos + len(old_block)  # Default to end of context
-                actual_remove_count = 0
-                if context_before:
+                if not _dup_handled:
+                  insert_pos = remove_pos + len(old_block)  # Default to end of context
+                  actual_remove_count = 0
+                  if context_before:
                     context_before_norm = normalize_line_for_comparison(context_before)
                     # Search starting from remove_pos, not from beginning of file
                     search_start = max(0, remove_pos - 5)  # Allow small buffer for off-by-one
@@ -1683,7 +1850,12 @@ def apply_diff_with_difflib_hybrid_forced(
                         if normalize_line_for_comparison(final_lines_with_endings[i]) == context_before_norm:
                             # Found context_before - insert after it
                             insert_pos = i + 1
-                            # Count empty lines between context_before and context_after that should be removed
+                            # Collapse only BLANK lines between context_before and
+                            # context_after. A pure addition (removed_lines == 0)
+                            # must never delete non-blank content, so stop at the
+                            # first non-blank line rather than chasing context_after
+                            # past real code (which would drop content and could
+                            # bisect a multi-line string).
                             if context_after:
                                 context_after_norm = normalize_line_for_comparison(context_after)
                                 check_pos = insert_pos
@@ -1692,11 +1864,13 @@ def apply_diff_with_difflib_hybrid_forced(
                                     if normalize_line_for_comparison(check_line) == context_after_norm:
                                         actual_remove_count = check_pos - insert_pos
                                         break
+                                    if check_line.strip():
+                                        break  # never delete non-blank content in a pure addition
                                     check_pos += 1
                             logger.debug(f"Hunk #{hunk_idx}: Found context_before at {i}, inserting at {insert_pos}, removing {actual_remove_count} lines")
                             break
                 
-                end_remove_pos = insert_pos + actual_remove_count
+                  end_remove_pos = insert_pos + actual_remove_count
             
             # Check for duplicate content before skipping duplicate check
             added_lines_only = h.get('added_lines', [])

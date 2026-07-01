@@ -26,6 +26,52 @@ def test_clean_fence_extracted(applicator):
     assert len(diffs) == 1
     assert diffs[0].file_path == "foo.py"
 
+def test_unterminated_fence_does_not_swallow_trailing_prose(applicator):
+    """A
+
+    body to the diff-shaped lines and NOT consume the prose that follows."""
+    response = (
+        "```diff\n"
+        "diff --git a/foo.py b/foo.py\n"
+        "--- a/foo.py\n"
+        "+++ b/foo.py\n"
+        "@@ -1,1 +1,1 @@\n"
+        "-old\n"
+        "+new\n"
+        "\n"
+        "My diagnosis is complete. This trailing prose must not be "
+        "swallowed into the diff body.\n"
+        "Another paragraph of explanation here.\n"
+    )
+    diffs = applicator.extract_diffs(response)
+    assert len(diffs) == 1
+    assert "My diagnosis is complete" not in diffs[0].content
+    assert "Another paragraph" not in diffs[0].content
+    assert "+new" in diffs[0].content
+    assert diffs[0].file_path == "foo.py"
+
+
+def test_unterminated_fence_pure_prose_after_header(applicator):
+    """If the unterminated fence breaks before any hunk body and is followed
+    by prose, only the diff headers are kept (prose is dropped)."""
+    response = (
+        "```diff\n"
+        "diff --git a/foo.py b/foo.py\n"
+        "--- a/foo.py\n"
+        "+++ b/foo.py\n"
+        "Sorry, the stream cut off and this is explanatory prose.\n"
+    )
+    diffs = applicator.extract_diffs(response)
+    # No hunk body survived the trim; whatever remains must not contain prose.
+    if diffs:
+        assert "explanatory prose" not in diffs[0].content
+
+
+def test_closed_fence_unaffected_by_trim(applicator):
+    """A properly closed fence must be untouched by the trim path."""
+    diffs = applicator.extract_diffs(CLEAN_DIFF)
+    assert len(diffs) == 1
+    assert "+new line" in diffs[0].content
 
 def test_fence_with_language_specifier_extracted(applicator):
     """```diff python (trailing junk after the tag) is still an intended

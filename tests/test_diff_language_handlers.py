@@ -69,6 +69,44 @@ Some lines might be repeated.
         handler = LanguageHandlerRegistry.get_handler(self.text_file)
         self.assertEqual(handler, GenericTextHandler)
     
+    def test_unterminated_triple_quote_attribution(self):
+        """An unterminated triple-quoted string (e.g. a docstring bisected by a
+        bad diff) must be attributed to the line that opens the dangling '\"\"\"',
+        NOT to an innocent earlier line such as 'class C:' that the prefix-bisect
+        heuristic would otherwise blame."""
+        import ast
+        broken = (
+            "class C:\n"
+            "    def process(self, response):\n"
+            '        """\n'
+            "        Process the response.\n"
+            "        # Reset counters\n"
+            "        self.applied = 0\n"
+            "\n"
+            "        # Extract all diffs\n"
+            "        return response\n"
+        )
+        try:
+            ast.parse(broken)
+            self.fail("expected SyntaxError for bisected docstring")
+        except SyntaxError as e:
+            line, msg = PythonHandler._refine_syntax_error(broken, e)
+            self.assertEqual(line, 3, "should point at the opening triple-quote line")
+            self.assertNotIn("class C", msg, "must not blame the innocent class line")
+            self.assertIn("triple-quote", msg.lower())
+
+    def test_genuine_chase_forward_still_resolved(self):
+        """A real unterminated string deep in an otherwise-valid file (parser
+        detects at EOF) should still resolve to the actual opening delimiter."""
+        import ast
+        body = "x = 1\n" * 50 + 's = """unterminated here\n' + "more = 2\n" * 50
+        try:
+            ast.parse(body)
+            self.fail("expected SyntaxError")
+        except SyntaxError as e:
+            line, _ = PythonHandler._refine_syntax_error(body, e)
+            self.assertIn('"""', body.splitlines()[line - 1])
+
     def test_python_handler(self):
         """Test Python handler functionality."""
         self.assertTrue(PythonHandler.can_handle(self.python_file))

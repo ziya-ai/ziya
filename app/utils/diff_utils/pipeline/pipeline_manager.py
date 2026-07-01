@@ -126,8 +126,32 @@ def _run_language_validation(pipeline: "DiffPipeline", file_path: str, original_
         # Language validation must never crash the pipeline.
         logger.warning(f"Language validation skipped (error): {_lang_exc}")
 
+def clean_duplicate_headers(diff_content: str) -> str:
+    """
+    Clean up duplicate header lines in a diff that can cause 'trailing garbage' errors.
+    
+    Args:
+        diff_content: The diff content to clean
+        
+    Returns:
+        The cleaned diff content
+    """
+    lines = diff_content.splitlines()
+    cleaned_lines = []
+    seen_headers = set()
+    
+    for line in lines:
+        # Skip duplicate +++ or --- lines
+        if line.startswith('+++ ') or line.startswith('--- '):
+            if line in seen_headers:
+                continue
+            seen_headers.add(line)
+        
+        cleaned_lines.append(line)
+    
+    return '\n'.join(cleaned_lines)
 
-def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str] = None, skip_already_applied_check: bool = False) -> Dict[str, Any]:
+def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str] = None, skip_already_applied_check: bool = False, user_codebase_dir: Optional[str] = None) -> Dict[str, Any]:
     """
     Apply a git diff using a structured pipeline approach.
     
@@ -144,6 +168,11 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
         file_path: Path to the target file
         request_id: (Optional) request ID for tracking
         skip_already_applied_check: If True, skip the "already applied" detection (useful for reverse diffs)
+        user_codebase_dir: (Optional) authoritative project root resolved by the
+            caller (e.g. from the request body's projectRoot). When provided this
+            overrides the request-scoped ContextVar / ZIYA_USER_CODEBASE_DIR env
+            fallback, which can point at a different tree (e.g. the server's launch
+            directory) and cause files to be written to the wrong root.
         
     Returns:
         A dictionary with the result of the pipeline
@@ -217,12 +246,15 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
             logger.debug(f"Available diff targets: {[extract_target_file_from_diff(d) for d in individual_diffs]}")
     
     # Get the base directory
-    # Prefer request-scoped ContextVar (async-safe for concurrent requests)
-    try:
-        from app.context import get_project_root_or_none
-        user_codebase_dir = get_project_root_or_none() or os.environ.get("ZIYA_USER_CODEBASE_DIR")
-    except ImportError:
-        user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+    # Prefer the root the caller resolved (request body projectRoot). Only fall
+    # back to the request-scoped ContextVar / env when the caller didn't supply
+    # one, since those can resolve to a different tree than the active project.
+    if not user_codebase_dir:
+        try:
+            from app.context import get_project_root_or_none
+            user_codebase_dir = get_project_root_or_none() or os.environ.get("ZIYA_USER_CODEBASE_DIR")
+        except ImportError:
+            user_codebase_dir = os.environ.get("ZIYA_USER_CODEBASE_DIR")
     if not user_codebase_dir:
         error = "ZIYA_USER_CODEBASE_DIR environment variable is not set"
         logger.error(error)
@@ -2135,15 +2167,37 @@ def run_difflib_stage(pipeline: DiffPipeline, file_path: str, git_diff: str, ori
                         found_applied_at_any_pos = True
                         pipeline_hunk_id = hunk_id_mapping.get(i, hunk.get('number', i))
                         
-                        if merged_hunk_mapping and (i-1) in merged_hunk_mapping:
-                            update_merged_hunk_status(pipeline, merged_hunk_mapping, i-1, HunkStatus.ALREADY_APPLIED, PipelineStage.DIFFLIB)
+                        # CRITICAL: If a previous stage (system_patch / git_apply) already
+                        # wrote this hunk's change, the full-file search now finds the hunk's
+                        # new_lines present in the MODIFIED file. That is a SUCCESS by an
+                        # earlier stage, not an "already applied" no-op against the original.
+                        # Marking it ALREADY_APPLIED here adds it to skip_hunks and drops it
+                        # from the change set — which, in a multi-hunk diff over identical
+                        # adjacent blocks, silently loses the edit. Mirror the file_was_modified
+                        # guard the distinctive-block branch above already uses.
+                        if file_was_modified:
+                            if merged_hunk_mapping and (i-1) in merged_hunk_mapping:
+                                update_merged_hunk_status(pipeline, merged_hunk_mapping, i-1, HunkStatus.SUCCEEDED, PipelineStage.DIFFLIB)
+                            else:
+                                hunk_confidence = pipeline.result.hunks[pipeline_hunk_id].hunk_data.get('correction_confidence', 0.0)
+                                pipeline.update_hunk_status(
+                                    hunk_id=pipeline_hunk_id,
+                                    stage=PipelineStage.DIFFLIB,
+                                    status=HunkStatus.SUCCEEDED,
+                                    confidence=hunk_confidence
+                                )
+                            logger.info(f"Hunk #{i} (original ID #{pipeline_hunk_id}) was applied by a previous stage (found via full file search)")
                         else:
-                            pipeline.update_hunk_status(
-                                hunk_id=pipeline_hunk_id,
-                                stage=PipelineStage.DIFFLIB,
-                                status=HunkStatus.ALREADY_APPLIED
-                            )
-                        logger.info(f"Hunk #{i} (original ID #{pipeline_hunk_id}) is already applied at position {pos} (found via full file search)")
+                            already_applied_hunks.append(pipeline_hunk_id)
+                            if merged_hunk_mapping and (i-1) in merged_hunk_mapping:
+                                update_merged_hunk_status(pipeline, merged_hunk_mapping, i-1, HunkStatus.ALREADY_APPLIED, PipelineStage.DIFFLIB)
+                            else:
+                                pipeline.update_hunk_status(
+                                    hunk_id=pipeline_hunk_id,
+                                    stage=PipelineStage.DIFFLIB,
+                                    status=HunkStatus.ALREADY_APPLIED
+                                )
+                            logger.info(f"Hunk #{i} (original ID #{pipeline_hunk_id}) is already applied at position {pos} (found via full file search)")
                         break
             
             if not found_applied_at_any_pos:
