@@ -99,6 +99,116 @@ The timeout applies uniformly to all tool execution paths: direct server calls, 
 
 Per-server and per-tool permissions can be set to `enabled` or `disabled`, giving users control over which MCP servers and tools are active.
 
+### 9. Shell Privilege Escalation Gate
+
+**Modules:** `app/mcp/shell_server.py` (`ShellServer.__init__`, `is_env_scope_authorized`, `strip_escalations`), `app/utils/ziya_approve.py` (`ziya-approve` CLI), `app/routes/mcp_routes.py` (`/shell-config`).
+
+The shell server runs at a fixed **default floor** of privilege (a baseline set of
+allowed commands, interpreters, and write paths). Any configuration that widens
+privilege beyond that floor — additional `ALLOW_COMMANDS`, extra
+`ALLOWED_INTERPRETERS`, broader write paths — is an **escalation** and is honored
+only when backed by a valid root-minted Ed25519 signature (`ZIYA_SCOPE_SIG`) in
+`~/.ziya/mcp_config.json`, produced out-of-process by `sudo ziya-approve`.
+
+**The gate sits at subprocess spawn, not at the HTTP boundary.** When the shell
+subprocess starts, `ShellServer.__init__` calls `is_env_scope_authorized(os.environ)`:
+
+- If the signature verifies against the exact delta-from-floor of the spawn env,
+  the escalation is honored.
+- Otherwise `strip_escalations` clamps the env back to the floor — fail-closed.
+
+Every privileged read afterward (command allow-list, interpreters, write policy,
+git operations) consults the clamped scope, never raw `os.environ`.
+
+**Why this is safe even though the local `/shell-config` endpoints are
+unauthenticated.** The endpoints are untrusted by design. The threat model
+assumes a local caller can POST arbitrary config (or simply edit
+`mcp_config.json` directly) — neither yields privilege. An HTTP caller can
+*request* an escalation, but:
+
+1. The HTTP path cannot manufacture a `ZIYA_SCOPE_SIG`; only `sudo ziya-approve`
+   (gated by the root key, outside the HTTP boundary) can.
+2. Applying a config always **respawns** the subprocess via `restart_server`;
+   it never mutates a running process's privileges in place. The respawn
+   unconditionally re-runs the spawn gate against whatever env it is handed.
+3. An unsigned escalation therefore spawns, fails verification, and is clamped
+   to the floor — it never becomes executable.
+
+A signing endpoint callable from the web UX was explicitly rejected: because the
+local endpoints are unauthenticated, such an endpoint would be a **signing
+oracle**, letting any local process or CSRF'd browser tab mint signatures and
+collapsing the root-key gate. Authority must originate outside the HTTP boundary.
+
+**Two acceptance paths: durable and ephemeral.** "Ephemeral" (how long a grant
+lives) and "unsigned" (whether an escalation is honored) are orthogonal. Every
+honored escalation — durable or ephemeral — must trace to a trust anchor; the
+only thing that varies is the *lifetime of the signed artifact*. The spawn gate
+honors a delta if it is backed by **either**:
+
+1. **Durable signature** (`ZIYA_SCOPE_SIG` in `~/.ziya/mcp_config.json`, minted
+   by `sudo ziya-approve`). Persists across restarts until the config changes.
+   Surfaced in the UI as **Save** + `sudo ziya-approve` + restart.
+
+2. **Session grant** (`ZIYA_SESSION_GRANT`, minted by `sudo ziya-approve
+   --session`, bound to a per-server-start nonce `ZIYA_SESSION_NONCE`). The
+   ephemeral *runtime-consent* tier: alive only for the current server start,
+   automatically void on the next cold start (the nonce rotates), and **never
+   written to the durable config**. Surfaced as **Apply (this session)** +
+   `sudo ziya-approve --session` + **Apply now**.
+
+There is still no ephemeral-*unsigned* escalation: the session grant is itself a
+root-signed artifact, so the gate's invariant ("honored ⇒ signed by a trust
+anchor") is preserved. The session grant carries its own escalation *delta*; the
+manager injects those values into the spawn env and the subprocess re-derives the
+delta and re-verifies the signature over it. If the (untrusted) manager injected
+anything beyond what was signed, the re-derived delta would be a superset, the
+signature would not match, and the env clamps to the floor — so injection cannot
+widen scope. This is why the ephemeral path needs no durable config write at all.
+
+**Ephemerality without an on-disk lifecycle.** The server-start nonce is minted
+in `MCPManager.__init__` and held in the long-lived manager process. A grant
+bound to nonce *N* survives a *shell-subprocess* restart (how the grant is
+applied) but is dead the instant a *server* restart mints nonce *N+1*. "This
+session only, gone on cold start" is therefore a nonce comparison, not a
+session-file with expiry/teardown to get wrong. Transient staging files
+(`pending_session_shell.json`, `session_grant_shell.json`) are cleared on
+successful apply, on explicit discard, and on a superseding durable Save.
+
+**The provider seam (pluggable trust anchors).** A session grant is honored only
+if signed by a key the subprocess trusts. The grant record carries a `provider`
+field; verification dispatches to that provider's anchor. This makes the consent
+*mechanism* pluggable without changing the gate:
+
+| Provider | Trust anchor | Friction | Availability |
+|---|---|---|---|
+| `os-credential` (default) | root Ed25519 key (sudo) | one credential prompt | everywhere, incl. pip-installed / headless / remote |
+| `biometric` (future) | Secure-Enclave key | Touch ID tap | requires a signed `.app` bundle (not pip) |
+| `remote-reauth` (future) | identity-provider key | SSO / re-auth | cloud dev desktops |
+| `bypass` | none (honor record unconditionally) | zero | explicit, owned risk |
+
+The default provider is "lighter **artifact**, same **proof**": the grant
+auto-expires and never touches the durable config, but it is still gated by the
+same root credential prompt. Cheaper *proof* requires a provider that installs a
+different anchor. **Which providers the subprocess accepts is itself durable
+root-signed config** — it is the subprocess's trust-anchor list. Flipping to the
+`bypass` provider is adding a "trust everyone" anchor, so it must require the root
+key; otherwise an unauthenticated local caller could simply select `bypass` and
+re-open the escalation hole. Provider *selection* lives at the durable-trust tier;
+only the per-session *grant* flows through the lightweight path.
+
+**Task-card scope approvals are a separate, durable-only path.** Signing a task
+card's scope (`ziya-approve --task/--block`, `--cli-task`) uses a different store
+(`~/.ziya/scope_approvals/`, keyed by `task_id` + `scope_hash`) and a different
+runtime gate (`scope_approvals.is_scope_authorized`, enforced in the task
+executor). It shares only the root key and canonical encoding with the shell
+gate. Task-card approvals are deliberately durable-only — they bind to a stable
+`scope_hash`, not a server-start nonce — and have no ephemeral equivalent.
+
+The signature-status banner is computed strictly from the on-disk config (the
+bytes `ziya-approve` signs and the subprocess re-verifies), never from a merged
+in-memory view, so the UI can never advertise an escalation the signer cannot see
+or the subprocess would clamp.
+
 ## ATC Self-Scan
 
 The test suite `tests/test_atc_self_scan.py` performs an equivalent scan to the ATC CLI against all internal tools:

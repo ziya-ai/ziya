@@ -108,6 +108,35 @@ something risky without asking. The trust model in Ziya inverts that. Safe
 operations are trusted from the start; less safe ones can be approved globally,
 or per-project, per-conversation, or per-file, with reasonable inheritance.
 
+### Privilege Has Tiers, But Always a Trust Anchor
+
+The same instinct shows up in how the shell tool grants extra privilege. The
+shell runs at a safe default floor; widening it (a new command, a new
+interpreter like `perl`, a broader write path) is an escalation. I wanted the
+common, low-stakes case — "let me use `perl` for this one debugging session" — to
+be low-friction, without that convenience becoming a hole.
+
+The resolution is two ideas that are usually conflated but are actually
+orthogonal: **how long a grant lasts** (durable vs ephemeral) and **whether it's
+authorized** (signed vs unsigned). I refuse to ship the unsigned variant in any
+form — a grant a background process or the model could give itself is not a
+feature, it's the vulnerability. But an *ephemeral, signed* grant is perfectly
+coherent: you deliberately approve `perl` for this session, sign it with your OS
+credentials, and it evaporates on the next restart with nothing left in your
+config. Permanent access uses the same gate with a durable signature.
+
+The load-bearing rule is: **every honored escalation traces to a trust anchor.**
+The gate lives at subprocess spawn, not at the (unauthenticated, loopback) HTTP
+layer — so the web UI can *request* privilege but can never *mint* it. And the
+consent mechanism itself is pluggable: the default is an OS-credential prompt
+that works everywhere including headless and remote, but an enterprise with a
+signed app bundle can wire Touch ID, a remote-desktop fleet can wire SSO
+re-auth, and a shop that accepts the risk can choose a bypass — each by *signing
+that choice*, never by defeating the gate. An earlier "apply for this session"
+button skipped the signature entirely; cutting it and rebuilding it as a signed,
+nonce-scoped grant is exactly the "frustrated by tools that don't ask, terrified
+by tools that don't either" instinct applied to privilege.
+
 ### Hallucinated Tool Results Are Dishonest
 
 Hallucinated tool results are corrosive to extended workflows. As I often have dozens of turns in my exchanges, the risk of having a
