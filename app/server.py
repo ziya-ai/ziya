@@ -118,9 +118,11 @@ def _inject_task_results(processed_chat_history: List, conversation_id: str) -> 
     chat) are placed using \`created_at\` relative to message
     \`_timestamp\` values when available, falling back to head-of-list.
 
-    Only terminal runs (done / failed / cancelled) are injected;
-    in-flight runs have nothing useful to say yet and would otherwise
-    be re-injected on every subsequent message in this chat.
+    Both terminal (done / failed / cancelled) and in-flight (running /
+    queued) runs are injected.  In-flight runs are surfaced so the model
+    can answer "fix the task above" mid-execution — the exact case where
+    it was previously blind to a card it had just launched.  They re-inject
+    each turn while running, which is acceptable for the short status line.
     """
     if not conversation_id:
         return
@@ -181,14 +183,17 @@ def _inject_task_results(processed_chat_history: List, conversation_id: str) -> 
             run = None
         if not run:
             continue
-        # Only terminal runs contribute durable context.
-        if run.status not in ("done", "failed", "cancelled"):
-            continue
+        # Inject terminal AND in-flight runs.  A running/queued card is
+        # exactly the case the model needs to see when the user asks
+        # "fix the task above" mid-execution — skipping it was why the
+        # model reported being blind to a card it had just launched.
+        is_terminal = run.status in ("done", "failed", "cancelled")
         artifact = getattr(run, 'artifact', None)
-        if not artifact:
-            continue
-        summary = (getattr(artifact, 'summary', None) or "").strip()
-        decisions = list(getattr(artifact, 'decisions', None) or [])
+        # In-flight runs legitimately have no artifact yet; a terminal
+        # run without one is degenerate (crashed before set_artifact)
+        # but still worth a one-line status note.
+        summary = (getattr(artifact, 'summary', None) or "").strip() if artifact else ""
+        decisions = list(getattr(artifact, 'decisions', None) or []) if artifact else []
         # Card name (best-effort; missing card → fall back to id)
         card_name = binding.card_id
         try:
@@ -198,7 +203,8 @@ def _inject_task_results(processed_chat_history: List, conversation_id: str) -> 
         except Exception as e:
             logger.debug("Card name lookup failed for %s: %s", binding.card_id, e)
 
-        body_lines = [f'[Task Card "{card_name}" completed — status: {run.status}]']
+        verb = "completed" if is_terminal else "is running"
+        body_lines = [f'[Task Card "{card_name}" {verb} — status: {run.status}]']
         if summary:
             body_lines.append(f"Summary: {summary}")
         if decisions:
@@ -1014,23 +1020,18 @@ async def chat_endpoint(request: Request):
         # Check current model to determine routing
         current_model = ModelManager.get_model_alias()
         logger.debug(f"🔍 CHAT_ENDPOINT: current_model={current_model}")
-        # Route on the model family from config, not just alias substrings —
-        # aliases like "fable5"/"mythos5" are claude-family but contain none
-        # of the legacy name fragments.
-        model_cfg = ModelManager.get_model_config(ziya_env("ZIYA_ENDPOINT"), current_model) if current_model else {}
-        is_bedrock_claude = bool(current_model) and (model_cfg.get("family") == "claude" or 'claude' in current_model.lower() or 'sonnet' in current_model.lower() or 'opus' in current_model.lower() or 'haiku' in current_model.lower())
-        is_bedrock_nova = current_model and 'nova' in current_model.lower()
-        is_bedrock_deepseek = current_model and 'deepseek' in current_model.lower()
-        # Check wrapper_class from model config — model names like "glm-4.7"
-        # don't contain "openai" but use the OpenAIBedrock wrapper.
-        is_bedrock_openai = model_cfg.get("wrapper_class") == "OpenAIBedrock"
-        is_google_model = current_model and ('gemini' in current_model.lower() or 'google' in current_model.lower())
-        is_openai_direct = ziya_env("ZIYA_ENDPOINT") == "openai"
-        is_anthropic_direct = ziya_env("ZIYA_ENDPOINT") == "anthropic"
-        # Check if direct streaming is enabled globally - use direct streaming by default for Bedrock models like 0.3.1
-        use_direct_streaming = is_bedrock_claude or is_bedrock_nova or is_bedrock_deepseek or is_bedrock_openai or is_google_model or is_openai_direct or is_anthropic_direct
-        
-        logger.debug(f"🔍 CHAT_ENDPOINT: Current model = {current_model}, is_bedrock_claude = {is_bedrock_claude}, is_openai_direct = {is_openai_direct}")
+        # Routability is owned by the provider factory — the single source of
+        # truth for which endpoints can be streamed. Do NOT re-derive a local
+        # predicate list here; that duplication is what silently dropped new
+        # endpoints (fable5/mythos5, zai, openrouter). A model streams iff the
+        # factory can build a provider for its endpoint.
+        _endpoint = ziya_env("ZIYA_ENDPOINT")
+        model_cfg = ModelManager.get_model_config(_endpoint, current_model) if current_model else {}
+        from app.providers.factory import is_endpoint_supported
+        use_direct_streaming = is_endpoint_supported(_endpoint, model_cfg)
+        logger.debug(
+            f"🔍 CHAT_ENDPOINT: model={current_model}, endpoint={_endpoint}, "
+            f"streamable={use_direct_streaming}")
         
         if use_direct_streaming:
             # Use direct streaming for Bedrock Claude and Nova models

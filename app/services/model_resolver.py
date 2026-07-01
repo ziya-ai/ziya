@@ -139,7 +139,7 @@ async def call_service_model(
         return await _call_bedrock(config, system_prompt, user_message, max_tokens, temperature)
     elif ep == "google":
         return await _call_google(config, system_prompt, user_message, max_tokens, temperature)
-    elif ep in ("openai", "anthropic"):
+    elif ep in ("openai", "anthropic", "zai"):
         return await _call_openai_compatible(config, system_prompt, user_message, max_tokens, temperature)
     else:
         logger.warning(f"ServiceModelResolver: unknown endpoint '{ep}', falling back to bedrock")
@@ -230,7 +230,15 @@ async def _call_openai_compatible(config, system_prompt, user_message, max_token
     try:
         import asyncio
         from openai import OpenAI
-        client = OpenAI()  # Uses OPENAI_API_KEY / ANTHROPIC_API_KEY from env
+        # z.ai (Zhipu / GLM) is OpenAI-compatible but needs an explicit key
+        # and base URL. OpenAI / Anthropic-direct read their keys from env.
+        if config.get("endpoint") == "zai":
+            client = OpenAI(
+                api_key=os.environ.get("ZAI_API_KEY") or os.environ.get("ZHIPUAI_API_KEY"),
+                base_url=os.environ.get("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4"),
+            )
+        else:
+            client = OpenAI()  # Uses OPENAI_API_KEY / ANTHROPIC_API_KEY from env
         response = await asyncio.to_thread(
             client.chat.completions.create,
             model=config["model_id"],

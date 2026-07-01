@@ -208,7 +208,7 @@ class TestEventDispatch:
 
 class TestErrorType:
     def test_all_variants(self):
-        expected = {"THROTTLE", "CONTEXT_LIMIT", "READ_TIMEOUT", "OVERLOADED", "AUTH", "UNKNOWN"}
+        expected = {"THROTTLE", "CONTEXT_LIMIT", "READ_TIMEOUT", "OVERLOADED", "AUTH", "SERVER_ERROR", "UNKNOWN"}
         actual = {e.name for e in ErrorType}
         assert actual == expected
 

@@ -644,6 +644,9 @@ class ModelManager:
             elif endpoint == "openai":
                 logger.info("Using OpenAI authentication flow only")
                 model = cls._initialize_openai_model(model_config)
+            elif endpoint == "zai":
+                logger.info("Using z.ai authentication flow only")
+                model = cls._initialize_zai_model(model_config)
             elif endpoint == "anthropic":
                 logger.info("Using Anthropic authentication flow only")
                 model = cls._initialize_anthropic_model(model_config)
@@ -1229,6 +1232,79 @@ class ModelManager:
             "OpenAI credentials not found. Please set OPENAI_API_KEY:\n"
             "  export OPENAI_API_KEY=sk-...\n"
             "Or set OPENAI_BASE_URL for a compatible local server."
+        )
+
+    @classmethod
+    def _initialize_zai_model(cls, model_config: Dict[str, Any]):
+        """
+        Initialize a z.ai (Zhipu / GLM) model.
+
+        z.ai exposes an OpenAI-compatible chat completions API, so we reuse
+        the DirectOpenAIModel wrapper, pointing it at z.ai's base URL and key.
+
+        Args:
+            model_config: Model configuration dict
+
+        Returns:
+            DirectOpenAIModel: The initialized model
+        """
+        from app.agents.wrappers.openai_direct import DirectOpenAIModel
+
+        gc.collect()
+        logger.info("Initializing z.ai model with OpenAI-compatible API")
+
+        # Load .env if present
+        try:
+            dotenv_path = find_dotenv()
+            if dotenv_path:
+                load_dotenv(dotenv_path)
+        except ImportError:
+            pass
+
+        model_id = model_config.get("model_id")
+        temperature = model_config.get("temperature", 0.6)
+        max_output_tokens = model_config.get("max_output_tokens", 32768)
+
+        # Apply environment overrides
+        settings = cls.get_model_settings(model_config)
+        if "temperature" in settings:
+            temperature = settings["temperature"]
+        if "max_output_tokens" in settings:
+            max_output_tokens = settings["max_output_tokens"]
+
+        cls._check_zai_credentials()
+
+        # Pay-as-you-go keys use api/paas/v4; Coding Plan subscriptions use
+        # api/coding/paas/v4. Default to pay-as-you-go; override via ZAI_BASE_URL.
+        api_key = os.environ.get("ZAI_API_KEY") or os.environ.get("ZHIPUAI_API_KEY")
+        base_url = os.environ.get("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4")
+
+        logger.info(
+            f"Initializing z.ai model: {model_id} "
+            f"(temp={temperature}, max_output_tokens={max_output_tokens}, base_url={base_url})"
+        )
+
+        model = DirectOpenAIModel(
+            model_name=model_id,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            api_key=api_key,
+            base_url=base_url,
+        )
+        return model
+
+    @classmethod
+    def _check_zai_credentials(cls) -> None:
+        """Check that a z.ai API key is available."""
+        api_key = os.environ.get("ZAI_API_KEY") or os.environ.get("ZHIPUAI_API_KEY")
+        if api_key and api_key.strip():
+            logger.info("z.ai API key found in environment variables")
+            return
+        raise ValueError(
+            "z.ai credentials not found. Please set ZAI_API_KEY:\n"
+            "  export ZAI_API_KEY=...\n"
+            "Get a key at https://z.ai. If you have a Coding Plan subscription,\n"
+            "also set: export ZAI_BASE_URL=https://api.z.ai/api/coding/paas/v4"
         )
 
     @classmethod
