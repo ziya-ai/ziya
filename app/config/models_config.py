@@ -13,7 +13,8 @@ DEFAULT_MODELS = {
     "bedrock": "sonnet4.6",
     "google": "gemini-3.1-pro",
     "openai": "gpt-5.5",
-    "anthropic": "claude-sonnet-4-6"
+    "anthropic": "claude-sonnet-4-6",
+    "zai": "glm-5.2"
 }
 
 # Model aliases — short names that resolve to canonical model keys.
@@ -39,6 +40,9 @@ MODEL_ALIASES: dict[str, dict[str, str]] = {
         "sonnet": "claude-sonnet-4-6",
         "opus": "claude-opus-4-8",
     },
+    "zai": {
+        "glm": "glm-5.2",
+    },
 }
 
 # Lightweight models used for background tasks (memory extraction,
@@ -52,6 +56,7 @@ DEFAULT_SERVICE_MODELS = {
     "google": "gemini-2.0-flash-lite",
     "openai": "gpt-5.5-mini",
     "anthropic": "claude-haiku-4-5-20251001",
+    "zai": "glm-4.6",
 }
 
 # Category-specific overrides.  Memory extraction needs a model that
@@ -235,6 +240,31 @@ MODEL_FAMILIES = {
         },
         "token_limit": 128000
     },
+    "zai-glm": {
+        # z.ai direct API (OpenAI-compatible). Distinct from the Bedrock
+        # "glm" family above, which routes through the OpenAIBedrock wrapper
+        # and caps output at 8K. The direct API supports much larger output.
+        "supported_parameters": ["temperature", "top_p", "max_tokens"],
+        "parameter_ranges": {
+            "temperature": {"min": 0.0, "max": 1.0, "default": 0.6},
+            "top_p": {"min": 0.0, "max": 1.0, "default": 0.95},
+            "max_tokens": {"min": 1, "max": 131072, "default": 4096}
+        },
+        "native_function_calling": True,
+        "token_limit": 1000000,
+        # Reasoning: z.ai's OpenAI-compatible API enables thinking via the
+        # top-level {"thinking": {"type": "enabled"}} request envelope and
+        # accepts reasoning_effort; reasoning streams back on
+        # delta.reasoning_content (handled generically by OpenAIDirectProvider).
+        # The effort value set matches the Claude effort UI, so the existing
+        # ZIYA_THINKING_EFFORT plumbing applies. Activate with ZIYA_THINKING_MODE.
+        "supports_thinking": True,
+        "supports_reasoning_effort": True,
+        "reasoning_request": {"thinking": {"type": "enabled"}},
+        "thinking_effort_default": "high",
+        "supported_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
+        "token_limit": 1000000
+    },
     "openai-gpt": {
         "supported_parameters": ["temperature", "top_p", "max_tokens"],
         "parameter_ranges": {
@@ -289,6 +319,17 @@ ENDPOINT_DEFAULTS = {
             "temperature": {"min": 0.0, "max": 2.0, "default": 0.3},
             "top_p": {"min": 0.0, "max": 1.0, "default": 1.0},
             "max_tokens": {"min": 1, "max": 128000, "default": 4096}
+        }
+    },
+    "zai": {
+        "token_limit": 1000000,
+        "max_output_tokens": 131072,
+        "default_max_output_tokens": 32768,
+        "supported_parameters": ["temperature", "top_p", "max_tokens"],
+        "parameter_ranges": {
+            "temperature": {"min": 0.0, "max": 1.0, "default": 0.6},
+            "top_p": {"min": 0.0, "max": 1.0, "default": 0.95},
+            "max_tokens": {"min": 1, "max": 131072, "default": 4096}
         }
     },
 }
@@ -1243,6 +1284,26 @@ MODEL_CONFIGS = {
             "preview": True,
             "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
+    },
+    "zai": {
+        "glm-5.2": {
+            "model_id": "glm-5.2",
+            "family": "zai-glm",
+            "token_limit": 1000000,
+            "max_output_tokens": 131072,
+            "default_max_output_tokens": 32768,
+            "supports_thinking": True,
+            "native_function_calling": True,
+        },
+        "glm-4.6": {
+            "model_id": "glm-4.6",
+            "family": "zai-glm",
+            "token_limit": 200000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32768,
+            "supports_thinking": True,
+            "native_function_calling": True,
+        },
     }
 }
 
@@ -1656,6 +1717,7 @@ _VALID_MODEL_CONFIG_KEYS = frozenset({
     "parameter_mappings", "parameter_ranges", "parent", "preferred_region",
     "preferred_regions", "preview", "region", "region_restricted",
     "region_router_class", "requires_provider_data_share",
+    "reasoning_request", "supports_reasoning_effort",
     "service_name", "stop_sequences", "supports_cache", "supported_efforts",
     "supported_parameters", "supports_adaptive_thinking",
     "supports_assistant_prefill", "supports_context_caching",
@@ -1672,6 +1734,7 @@ _VALID_FAMILY_KEYS = frozenset({
     "family", "inference_parameters", "max_output_tokens", "model_id",
     "native_function_calling", "parameter_mappings", "parent",
     "preferred_region", "stop_sequences", "supported_efforts",
+    "reasoning_request", "supports_reasoning_effort",
     "supported_parameters", "supports_adaptive_thinking",
     "supports_assistant_prefill", "supports_context_caching",
     "supports_extended_context", "supports_function_calling",

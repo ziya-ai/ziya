@@ -206,7 +206,7 @@ class TestFactoryRouting:
         assert isinstance(provider, NovaBedrockProvider)
 
     @patch("app.providers.bedrock_client_cache.get_persistent_bedrock_client")
-    def test_deepseek_routes_to_converse_provider(self, mock_client):
+    def test_deepseek_routes_to_openai_bedrock_provider(self, mock_client):
         mock_client.return_value = MagicMock()
         from app.providers.factory import create_provider
         provider = create_provider(
@@ -215,8 +215,11 @@ class TestFactoryRouting:
             model_config={"family": "deepseek", "wrapper_class": "OpenAIBedrock"},
             aws_profile="test", region="us-west-2",
         )
-        from app.providers.nova_bedrock import NovaBedrockProvider
-        assert isinstance(provider, NovaBedrockProvider)
+        # wrapper_class "OpenAIBedrock" routes to OpenAIBedrockProvider
+        # (added 0.6.4.7) — DeepSeek speaks the OpenAI Chat Completions
+        # wire format, not the Converse API.
+        from app.providers.openai_bedrock import OpenAIBedrockProvider
+        assert isinstance(provider, OpenAIBedrockProvider)
 
     @patch("app.providers.bedrock_client_cache.get_persistent_bedrock_client")
     def test_qwen_routes_to_converse_provider(self, mock_client):
@@ -232,7 +235,7 @@ class TestFactoryRouting:
         assert isinstance(provider, NovaBedrockProvider)
 
     @patch("app.providers.bedrock_client_cache.get_persistent_bedrock_client")
-    def test_openai_gpt_routes_to_converse_provider(self, mock_client):
+    def test_openai_gpt_routes_to_openai_bedrock_provider(self, mock_client):
         mock_client.return_value = MagicMock()
         from app.providers.factory import create_provider
         provider = create_provider(
@@ -241,8 +244,9 @@ class TestFactoryRouting:
             model_config={"family": "oss_openai_gpt", "wrapper_class": "OpenAIBedrock"},
             aws_profile="test", region="us-west-2",
         )
-        from app.providers.nova_bedrock import NovaBedrockProvider
-        assert isinstance(provider, NovaBedrockProvider)
+        # wrapper_class "OpenAIBedrock" routes to OpenAIBedrockProvider.
+        from app.providers.openai_bedrock import OpenAIBedrockProvider
+        assert isinstance(provider, OpenAIBedrockProvider)
 
     @patch("app.providers.bedrock_client_cache.get_persistent_bedrock_client")
     def test_claude_still_routes_to_bedrock_provider(self, mock_client):

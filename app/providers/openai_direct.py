@@ -26,6 +26,7 @@ from app.providers.base import (
     StreamEnd,
     StreamEvent,
     TextDelta,
+    ThinkingDelta,
     ToolUseEnd,
     ToolUseInput,
     ToolUseStart,
@@ -255,6 +256,29 @@ class OpenAIDirectProvider(LLMProvider):
                 for t in tools
             ]
             kwargs["tool_choice"] = "auto"
+
+        # Reasoning-request seam for the OpenAI-compatible family.
+        # The vendor's thinking-enable envelope (e.g. z.ai's
+        # {"thinking": {"type": "enabled"}}) is declared in model_config as
+        # DATA and merged via the SDK's extra_body escape hatch — there is no
+        # per-vendor branching in this provider. The canonical effort level
+        # (ThinkingConfig.effort, shared with the Claude effort UI) maps to
+        # the standard-ish `reasoning_effort` key when the model opts in via
+        # `supports_reasoning_effort`.  New compatible vendors are added by
+        # config alone, not by editing this provider.
+        extra_body: Dict[str, Any] = {}
+        if config.thinking and config.thinking.enabled:
+            envelope = self.model_config.get("reasoning_request")
+            if isinstance(envelope, dict):
+                extra_body.update(envelope)
+            if self.model_config.get("supports_reasoning_effort"):
+                extra_body["reasoning_effort"] = config.thinking.effort
+        # Raw passthrough for any other vendor-specific request params.
+        if config.extra_body:
+            extra_body.update(config.extra_body)
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+
         return kwargs
 
     # ------------------------------------------------------------------
@@ -263,23 +287,40 @@ class OpenAIDirectProvider(LLMProvider):
 
     async def _do_stream(self, request_kwargs: Dict[str, Any]) -> AsyncGenerator[StreamEvent, None]:
         active_tool_calls: Dict[int, Dict[str, Any]] = {}
+        latest_usage = None
+        final_stop_reason = "end_turn"
 
         stream = await self.client.chat.completions.create(**request_kwargs)
 
         async for chunk in stream:
+            # Capture usage from ANY chunk that carries it, not just the
+            # trailing choiceless one. OpenAI sends it on a final choiceless
+            # chunk, but OpenAI-compatible endpoints (e.g. z.ai GLM) attach
+            # it to a chunk that also has choices. Reading it only inside the
+            # `not chunk.choices` branch missed every such case, so usage
+            # telemetry never reached the orchestrator — the "no usage
+            # metrics captured" warning on every iteration.
+            if getattr(chunk, "usage", None):
+                latest_usage = chunk.usage
+
             if not chunk.choices:
-                if chunk.usage:
-                    u = chunk.usage
-                    details = getattr(u, "prompt_tokens_details", None)
-                    yield UsageEvent(
-                        input_tokens=getattr(u, "prompt_tokens", 0),
-                        output_tokens=getattr(u, "completion_tokens", 0),
-                        cache_read_tokens=getattr(details, "cached_tokens", 0) if details else 0,
-                    )
                 continue
 
             choice = chunk.choices[0]
             delta = choice.delta
+
+            # Reasoning / chain-of-thought channel. z.ai (GLM) streams it
+            # under \`reasoning_content\`; OpenRouter uses \`reasoning\`. The
+            # OpenAI SDK exposes both as plain delta attributes when present.
+            # Surfaced as ThinkingDelta so the orchestrator wraps it in a
+            # <thinking-data> collapsible block (same path as Bedrock/Anthropic
+            # thinking models). No-op for plain OpenAI deltas, which carry
+            # neither attribute — so this is safe for all three endpoints
+            # (OpenAI direct, OpenRouter, zai) sharing this provider.
+            if delta:
+                reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                if reasoning:
+                    yield ThinkingDelta(content=reasoning)
 
             if delta and delta.content:
                 yield TextDelta(content=delta.content)
@@ -308,7 +349,28 @@ class OpenAIDirectProvider(LLMProvider):
                         parsed = {}
                     yield ToolUseEnd(id=tc["id"], name=tc["name"], input=parsed, index=idx)
                 active_tool_calls.clear()
-                yield StreamEnd(stop_reason=choice.finish_reason)
+                # Record the stop reason but DEFER StreamEnd to after the
+                # loop. The usage chunk frequently arrives AFTER this
+                # finish_reason chunk, and the orchestrator stops consuming
+                # the instant it sees StreamEnd (it converts to message_stop
+                # and breaks, which aclose()s this generator). Yielding
+                # StreamEnd here would abandon the trailing usage chunk and
+                # drop token telemetry.
+                final_stop_reason = choice.finish_reason
+
+        # Stream drained — emit usage (if any) BEFORE StreamEnd so the
+        # orchestrator's _handle_usage_event records it. Covers OpenAI
+        # (trailing choiceless usage chunk) and OpenAI-compatible endpoints
+        # like z.ai GLM that attach usage to a chunk with choices or omit it.
+        if latest_usage is not None:
+            u = latest_usage
+            details = getattr(u, "prompt_tokens_details", None)
+            yield UsageEvent(
+                input_tokens=getattr(u, "prompt_tokens", 0),
+                output_tokens=getattr(u, "completion_tokens", 0),
+                cache_read_tokens=getattr(details, "cached_tokens", 0) if details else 0,
+            )
+        yield StreamEnd(stop_reason=final_stop_reason)
 
     @staticmethod
     def _classify_error(error_str: str) -> ErrorType:
