@@ -20,7 +20,37 @@ from app.utils.gitignore_parser import parse_gitignore_patterns
 _folder_cache: Dict[str, Dict[str, Any]] = {}
 
 # Global progress tracking
-_scan_progress = {"active": False, "progress": {}, "cancelled": False, "start_time": 0, "last_update": 0, "estimated_total": 0}
+_scan_progress = {"active": False, "progress": {}, "cancelled": False, "start_time": 0, "last_update": 0, "estimated_total": 0, "partial_tree": None}
+
+# Per-directory scan-progress slots. Concurrent scans of different projects no
+# longer share one progress record: each directory gets its own slot here.
+# directory=None on the accessors selects the legacy global slot above,
+# preserving every existing no-arg caller's behavior unchanged.
+_scan_progress_by_dir: Dict[str, Dict[str, Any]] = {}
+
+
+def _new_progress_slot() -> Dict[str, Any]:
+    """A fresh, fully-initialized scan-progress record."""
+    return {"active": False, "progress": {}, "cancelled": False,
+            "start_time": 0, "last_update": 0, "estimated_total": 0,
+            "partial_tree": None}
+
+
+def _progress_slot(directory: Optional[str] = None) -> Dict[str, Any]:
+    """Return the mutable progress dict for `directory`.
+
+    directory=None selects the legacy global slot (`_scan_progress`), so all
+    existing no-arg callers are unchanged. A non-None directory returns its
+    per-directory slot, creating one on first use. This is the single point
+    that maps a directory to its scan state for the per-project model.
+    """
+    if directory is None:
+        return _scan_progress
+    slot = _scan_progress_by_dir.get(directory)
+    if slot is None:
+        slot = _new_progress_slot()
+        _scan_progress_by_dir[directory] = slot
+    return slot
 
 # Add new globals for background scanning
 _scan_thread: Optional[threading.Thread] = None
@@ -518,8 +548,14 @@ def detect_large_directory_and_warn(directory: str) -> None:
         print("   Or use: --include-only <path> to scan specific directories", file=sys.stderr)
         print("="*70 + "\n", file=sys.stderr)
 
-def estimate_directory_count(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int = 3) -> int:
-    """Quick estimate of total directories to scan (only go 3 levels deep for estimate)."""
+def estimate_directory_count(directory: str, ignored_patterns: List[Tuple[str, str]], max_depth: int = 3, progress: Optional[Dict[str, Any]] = None) -> int:
+    """Quick estimate of total directories to scan (only go 3 levels deep for estimate).
+
+    `progress` is the scan-progress slot whose 'cancelled' flag aborts the
+    estimate early; None selects the legacy global slot so existing callers
+    are unchanged.
+    """
+    _progress = progress if progress is not None else _scan_progress
     should_ignore_fn = parse_gitignore_patterns(ignored_patterns)
     count = 0
     # Estimation is depth-limited (2 levels) + count-capped (1000 dirs); the
@@ -540,7 +576,7 @@ def estimate_directory_count(directory: str, ignored_patterns: List[Tuple[str, s
         if time.time() > _estimate_deadline:
             return 0
 
-        if _scan_progress.get("cancelled"):
+        if _progress.get("cancelled"):
             return 0
         
         nonlocal count
@@ -622,12 +658,27 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     
     # Update global progress
     global _scan_progress
+    # Per-directory progress slot for this scan. Writes below are mirrored to
+    # the legacy global so existing no-arg readers (folder_service serving, the
+    # routes) and cancel_scan() stay byte-identical until step 2 flips them to
+    # the per-dir slot. directory is this function's own first parameter.
+    progress = _progress_slot(directory)
+    progress["cancelled"] = False
     _scan_progress["cancelled"] = False
-    _scan_progress["start_time"] = time.time()
-    _scan_progress["last_update"] = time.time()
+    # Drop any partial tree from a previous scan so a poll during this scan's
+    # startup can't be served a stale project's shallow tree.
+    progress["partial_tree"] = None
+    _scan_progress["partial_tree"] = None
+    _now = time.time()
+    progress["start_time"] = _now
+    progress["last_update"] = _now
+    _scan_progress["start_time"] = _now
+    _scan_progress["last_update"] = _now
     
     # Check for early cancellation before expensive operations
-    if _scan_progress.get("cancelled"):
+    # Transitional: honor this scan's per-dir slot OR the legacy global, so both
+    # cancel_scan(directory) and the legacy no-arg cancel_scan() take effect.
+    if progress.get("cancelled") or _scan_progress.get("cancelled"):
         logger.info("Scan cancelled before starting")
         return {"error": "Scan cancelled by user", "cancelled": True}
     
@@ -642,11 +693,12 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
             logger.debug("Skipping estimation for home directory (too large)")
             estimated_total = 0
         else:
-            estimated_total = estimate_directory_count(directory, ignored_patterns)
+            estimated_total = estimate_directory_count(directory, ignored_patterns, progress=progress)
         
         # Check cancellation after estimation
-        if _scan_progress.get("cancelled"):
+        if progress.get("cancelled") or _scan_progress.get("cancelled"):
             logger.info("Scan cancelled during estimation")
+            progress["active"] = False
             _scan_progress["active"] = False
             return {"error": "Scan cancelled by user", "cancelled": True}
         
@@ -654,6 +706,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
         logger.warning(f"Failed to estimate directory count: {e}")
         estimated_total = 0
     
+    progress["estimated_total"] = estimated_total
     _scan_progress["estimated_total"] = estimated_total
     logger.debug(f"Estimated ~{estimated_total} directories to scan" if estimated_total > 0 else "Starting scan without estimate (will show raw counts)")
     # Set a maximum time limit for scanning. Default 120s accommodates large
@@ -715,7 +768,8 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
 
         dir_start_time = time.time()
 
-        if _scan_progress.get("cancelled"):
+        if progress.get("cancelled") or _scan_progress.get("cancelled"):
+            progress["active"] = False
             _scan_progress["active"] = False
             return {'token_count': 0, 'cancelled': True}
 
@@ -734,12 +788,16 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
 
         nonlocal last_progress_time
         scan_stats['directories_scanned'] += 1
-        _scan_progress["progress"] = {
+        _prog = {
             "directories": scan_stats['directories_scanned'],
             "files": scan_stats['files_processed'],
             "elapsed": int(elapsed)
         }
-        _scan_progress["last_update"] = time.time()
+        progress["progress"] = _prog
+        _scan_progress["progress"] = _prog
+        _pt = time.time()
+        progress["last_update"] = _pt
+        _scan_progress["last_update"] = _pt
 
         result = {'token_count': 0, 'children': {}}
         total_tokens = 0
@@ -777,7 +835,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
 
         for de in entries:
             entry = de.name
-            if _scan_progress.get("cancelled"):
+            if progress.get("cancelled") or _scan_progress.get("cancelled"):
                 break
 
             current_time = time.time()
@@ -876,11 +934,20 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     # Phase 1: BFS — scan everything up to BFS_DEPTH_THRESHOLD
     root_result = process_dir_bfs(directory, 1)
 
+    # Publish the Phase-1 shallow tree (everything to BFS_DEPTH_THRESHOLD, with
+    # deeper dirs present as expandable placeholders) so a concurrent poll can
+    # render breadth immediately instead of waiting for Phase 2 to finish. This
+    # is a LIVE reference: as Phase 2 fills placeholders below, the served tree
+    # progressively deepens. Read-only access during mutation is benign.
+    _children = root_result.get('children', {})
+    progress["partial_tree"] = _children
+    _scan_progress["partial_tree"] = _children
+
     # Phase 2: Process deferred deep directories (breadth-first order)
     if deferred_dirs:
         logger.info(f"📂 BFS Phase 2: Processing {len(deferred_dirs)} deferred deep directories")
     while deferred_dirs:
-        if _scan_progress.get("cancelled"):
+        if progress.get("cancelled") or _scan_progress.get("cancelled"):
             break
         elapsed = time.time() - scan_stats['start_time']
         if elapsed > max_scan_time * 2:
@@ -976,7 +1043,11 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
                 logger.info(f"Added external path {ext_path} as {basename} with {ext_result['token_count']} tokens")
     
     # Mark scanning as complete
+    progress["active"] = False
     _scan_progress["active"] = False
+    # Scan finished; the authoritative tree is now cached by the caller.
+    progress["partial_tree"] = None
+    _scan_progress["partial_tree"] = None
     
     # Return just the children of the root to match expected format
     # Clear visited directories after scan
@@ -1015,7 +1086,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
         }
     
     # Check if cancelled
-    if _scan_progress.get("cancelled"):
+    if progress.get("cancelled") or _scan_progress.get("cancelled"):
         return {
             **result,
             '_cancelled': True
@@ -1110,15 +1181,29 @@ def estimate_tokens_fast(file_path: str) -> int:
                   '.der', '.pem', '.stl', '.obj', '.fbx', '.blend'}:  # Binary 3D formats only
             return 0
         
-        # Estimate tokens based on file size and type
-        # Use floating point division for better accuracy, especially on small files
-        # Base assumption: ~4.1 characters per token (validated from testing)
-        base_chars_per_token = 4.1  # Updated based on validation testing
-        estimated_tokens = file_size / base_chars_per_token
-        
-        # Apply file type multiplier
-        multiplier = get_file_type_multiplier(file_path)
-        return int(estimated_tokens * multiplier)
+        # Size-based estimate using the calibrator's LEARNED chars/token ratio
+        # for this model+file-type, so the file-tree display tracks the same
+        # calibration that learns from real API responses. Content-free: uses
+        # only the extension, never reads the file (keeps the scan fast).
+        #
+        # The legacy FILE_TYPE_MULTIPLIER is a per-type fudge factor; applying
+        # it on top of a learned per-type ratio would double-compensate. So we
+        # apply the multiplier ONLY when the ratio is NOT type-specific
+        # (global/fallback tiers) — preserving today's behavior for file types
+        # the calibrator hasn't learned yet.
+        try:
+            calibrator = get_token_calibrator()
+            chars_per_token, source = calibrator.get_display_ratio(ext)
+        except Exception:
+            chars_per_token, source = 4.1, 'fallback'
+        if chars_per_token <= 0:
+            chars_per_token = 4.1
+            source = 'fallback'
+
+        estimated_tokens = file_size / chars_per_token
+        if source in ('global', 'fallback'):
+            estimated_tokens *= get_file_type_multiplier(file_path)
+        return int(estimated_tokens)
     except (OSError, IOError):
         return 0
 
@@ -1395,39 +1480,24 @@ def get_accurate_token_count(file_path: str) -> int:
         logger.debug(f"Error counting tokens in {file_path}: {e}")
         return 0
 
-def get_scan_progress():
-    """Get current scan progress."""
-    return _scan_progress.copy()
+def get_scan_progress(directory=None):
+    """Get current scan progress.
 
-def cancel_scan():
-    """Cancel current scan operation."""
-    global _scan_progress
-    _scan_progress["cancelled"] = True
-    return _scan_progress["active"]
+    directory=None returns the legacy global slot (unchanged behavior); a
+    directory returns that project's per-scan progress.
+    """
+    return _progress_slot(directory).copy()
 
-def is_scan_healthy() -> bool:
-    """Check if the current scan is healthy (making progress and not stuck)."""
-    global _scan_progress, _scan_thread
-    
-    if not _scan_thread or not _scan_thread.is_alive():
-        return False
-        
-    current_time = time.time()
-    start_time = _scan_progress.get("start_time", 0)
-    last_update = _scan_progress.get("last_update", 0)
-    
-    # Give new scans at least 10 seconds before considering them unhealthy
-    # This prevents premature cancellation of scans that just started
-    if start_time > 0 and (current_time - start_time) < 10:
-        return True  # Too early to judge health
-    
-    # Consider scan unhealthy if:
-    # 1. Running for more than 5 minutes (300 seconds)
-    # 2. No progress update in the last 2 minutes (120 seconds)
-    if start_time == 0:
-        return True  # No start time recorded, assume healthy
-        
-    return (current_time - start_time < 300) and (current_time - last_update < 120)
+def cancel_scan(directory=None):
+    """Cancel a scan operation.
+
+    directory=None cancels the legacy global slot (unchanged behavior); a
+    directory cancels only that project's scan. Returns whether that slot was
+    active at cancel time.
+    """
+    slot = _progress_slot(directory)
+    slot["cancelled"] = True
+    return slot["active"]
 
 def get_basic_folder_structure(directory: str) -> Dict[str, Any]:
     """
