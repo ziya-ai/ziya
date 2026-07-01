@@ -57,6 +57,14 @@ JSON works too (`tasks.json`):
 
 If the same task name exists in multiple sources, the higher-priority source wins completely (no field-level merging). Project-local tasks override global tasks of the same name.
 
+### Privilege Escalation (`allow`) and Approval
+
+By default a task runs with the same restricted shell/write policy as
+interactive `ziya chat` — the "default floor". A task that needs more (a
+release task that must `git push`, write `CHANGELOG.md`, run `gh`) declares the
+extra privilege in an `allow` block:
+
+
 ## How Tasks Execute
 
 When you run `ziya task release`, Ziya:
@@ -110,6 +118,9 @@ ziya task release
 ziya task <name>          Run the named task
 ziya task --list          List all available tasks
 ziya task --show <name>   Print the task's prompt without running it
+
+ziya-approve --list              Audit every escalating task (signed/unsigned)
+sudo ziya-approve --cli-task <name> [--root <dir>]   Approve a CLI task's escalation
 ```
 
 All standard Ziya flags work with tasks: `--profile`, `--model`, `--no-stream`, etc.
