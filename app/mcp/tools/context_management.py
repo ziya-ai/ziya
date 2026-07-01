@@ -108,7 +108,7 @@ def _resolve_chat_for_request(_kwargs: Dict[str, Any]) -> Dict[str, Any]:
 
 def _validate_relative_path(path_str: str, project_root: str) -> Path:
     """
-    Resolve \`path_str\` relative to the project root with traversal
+    Resolve 'path_str' relative to the project root with traversal
     rejection.  Permits absolute paths under safe-write-paths.
     """
     return _resolve_and_validate(

@@ -124,7 +124,7 @@ export const isValidCheckedKey = (key: string): boolean => {
     if (key.startsWith('[external]')) return true;
     // Reject characters that don't appear in real file paths.  Whitespace
     // and shell metacharacters are the highest-confidence corruption signal.
-    if (/[)(;{}!@#$%^&*+=<>?\s",]/.test(key)) return false;
+    if (/[)(;{}!@#$%^&*+=<>?|\s",]/.test(key)) return false;
     // Trailing slashes (e.g. 'frontend/src/') aren't valid file keys —
     // they correspond to no leaf in the tree.  Strip-and-test elsewhere
     // if the caller wants to keep the path; here we just reject.

@@ -14,7 +14,7 @@ start pays one full scan; subsequent lookups are O(1).
 
 Thread-safety: the index dict is read/written from FastAPI workers.
 For CPython we rely on the GIL: dict get/set is atomic and the worst
-race is a stale entry, which \`_resolve_path()\` self-heals by
+race is a stale entry, which '_resolve_path()' self-heals by
 re-scanning if the cached file is gone.
 """
 from __future__ import annotations

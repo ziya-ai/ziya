@@ -81,7 +81,11 @@ interface ChatContext {
     addMessageToConversation: (message: Message, targetConversationId: string, isNonCurrentConversation?: boolean) => void;
     currentMessages: Message[];
     loadConversation: (id: string) => void;
-    startNewChat: (specificFolderId?: string | null) => Promise<void>;
+    // initialTitle: seed the conversation title instead of the 'New
+    // Conversation' placeholder (used by "launch card in new conversation"
+    // to name the chat after the card).  Returns the new conversation id so
+    // callers can immediately bind/navigate to it.
+    startNewChat: (specificFolderId?: string | null, initialTitle?: string) => Promise<string | undefined>;
     // Create a new conversation that lives only in React state for the
     // current UX session. Never written to IndexedDB or pushed to the
     // server. See promoteEphemeralToRetained for converting later.
@@ -134,16 +138,25 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const { currentProject } = useProject();
     const { isServerReachable } = useServerStatus();
     const renderCount = useRef(0);
-    const [isStreaming, setIsStreaming] = useState(false);
     const [streamedContentMap, setStreamedContentMap] = useState(() => new Map<string, string>());
     const [reasoningContentMap, setReasoningContentMap] = useState(() => new Map<string, string>());
     const [isTopToBottom, setIsTopToBottom] = useState<boolean>(() => {
         try { return JSON.parse(localStorage.getItem('ZIYA_TOP_DOWN_MODE') || 'true'); } catch { return true; }
     });
-    const [isStreamingAny, setIsStreamingAny] = useState(false);
     const [processingStates, setProcessingStates] = useState(() => new Map<string, ConversationProcessingState>());
     const [conversations, setConversations] = useState<Conversation[]>([]);
     const [streamingConversations, setStreamingConversations] = useState<Set<string>>(() => new Set());
+    // isStreaming / isStreamingAny are DERIVED from streamingConversations, the
+    // single source of truth. Previously they were independent useState booleans
+    // written directly by external callers (chatApi, StreamedContent, etc.); a
+    // missed setIsStreaming(false) left the boolean stuck true while the Set was
+    // empty, permanently greying the diff Apply button across turns. Deriving
+    // them removes that desync class entirely. setIsStreaming is kept as a no-op
+    // shim so the external call sites still compile — their real effect is the
+    // add/removeStreamingConversation Set mutation they already perform.
+    const isStreaming = streamingConversations.size > 0;
+    const isStreamingAny = streamingConversations.size > 0;
+    const setIsStreaming: Dispatch<SetStateAction<boolean>> = useCallback(() => {}, []);
     const [runningTaskConversations, setRunningTaskConversations] = useState<Set<string>>(() => new Set());
     const [isLoadingConversation, setIsLoadingConversation] = useState(false);
     const [isProjectSwitching, setIsProjectSwitching] = useState(false);
@@ -418,8 +431,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
             console.log('Adding to streaming set:', { id, currentSet: Array.from(prev) });
             next.add(id);
             setStreamedContentMap(prev => new Map(prev).set(id, ''));
-            setIsStreaming(true);
-            setIsStreamingAny(true);
             return next;
         });
         updateProcessingState(id, 'sending');
@@ -453,11 +464,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
             }
 
             next.delete(id);
-
-            // Update global streaming state based on remaining conversations
-            const stillStreaming = next.size > 0;
-            setIsStreaming(stillStreaming);
-            setIsStreamingAny(stillStreaming);
 
             return next;
         });
@@ -1235,7 +1241,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const attemptDatabaseRecoveryRef = useRef<() => Promise<void>>(() => Promise.resolve());
     const initializeWithRecoveryRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
-    const startNewChat = useCallback(async (specificFolderId?: string | null) => {
+    const startNewChat = useCallback(async (specificFolderId?: string | null, initialTitle?: string) => {
         // Only attempt recovery if not in cooldown period
         const now = Date.now();
         const timeSinceLastRecovery = now - lastRecoveryAttempt.current;
@@ -1295,7 +1301,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             const newConversation: Conversation = {
                 id: newId,
-                title: 'New Conversation',
+                title: initialTitle || 'New Conversation',
                 projectId: currentProject?.id,
                 messages: [],
                 folderId: targetFolderId,
@@ -1353,6 +1359,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     }
                 }, 2000);
             }
+            return newId;
         } catch (error) {
             console.error('Failed to create new conversation:', error);
         }
@@ -2593,7 +2600,20 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     const savedId = loadProjectConversationId(projectId);
                     const savedExists = savedId && projectShells.some(c => c.id === savedId);
                     let activeId: string | null = null;
-                    if (savedExists) {
+                    // If the user is currently viewing a global conversation,
+                    // it survives the project switch unchanged — it's already
+                    // present in projectShells (the filter includes effectively-
+                    // global chats), so keep it selected and don't relocate.
+                    // Without this, the preload yanked focus to a project-local
+                    // conversation before section 7's belongsToNewProject check
+                    // could spare it.
+                    const curId = currentConversationRef.current;
+                    const curShell = curId ? projectShells.find(c => c.id === curId) : undefined;
+                    const curIsGlobal = !!curShell &&
+                        (curShell.isGlobal || conversationIsEffectivelyGlobal(curShell, folders));
+                    if (curIsGlobal) {
+                        activeId = curId;
+                    } else if (savedExists) {
                         setCurrentConversationId(savedId!);
                         setTabState('ZIYA_CURRENT_CONVERSATION_ID', savedId!);
                         activeId = savedId!;
@@ -3298,6 +3318,17 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         let nDone = 0;
                         let nFailed = 0;
                         let nEmpty = 0;
+                        // Surface progress for large hydration batches. On a cold
+                        // load with hundreds of shells this loop can run for
+                        // 10s+ while the sidebar is partially populated; without
+                        // any indicator the UI looks frozen. Keyed so repeated
+                        // sync cycles update the same toast rather than stacking.
+                        const HYDRATION_TOAST_THRESHOLD = 100;
+                        const showHydrationToast = hydrationTargets.length >= HYDRATION_TOAST_THRESHOLD;
+                        const HYDRATION_TOAST_KEY = 'sync-hydration';
+                        if (showHydrationToast) {
+                            message.loading({ content: `Loading ${hydrationTargets.length} conversations…`, key: HYDRATION_TOAST_KEY, duration: 0 });
+                        }
                         const processBulk = async () => {
                             // Run chunks in parallel — each chunk is one HTTP
                             // request so the lock-contention issue doesn't apply
@@ -3347,8 +3378,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                 }
                             }));
                             console.log(`⏱️ SYNC[${projectId.substring(0, 8)}]: bulk hydration complete in ${(performance.now() - tHydrateStart).toFixed(0)}ms (${nDone} ok, ${nEmpty} empty, ${nFailed} failed)`);
+                            if (showHydrationToast) {
+                                if (isStale()) {
+                                    message.destroy(HYDRATION_TOAST_KEY);
+                                } else {
+                                    message.success({ content: `Loaded ${nDone} conversations`, key: HYDRATION_TOAST_KEY, duration: 2 });
+                                }
+                            }
                         };
-                        processBulk();
+                        processBulk().catch(err => {
+                            console.warn('Bulk hydration failed:', err);
+                            if (showHydrationToast) message.destroy(HYDRATION_TOAST_KEY);
+                        });
                     }
 
                     // Server-side garbage collection of stale empty-shell chats.

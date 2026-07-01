@@ -23,7 +23,10 @@ export interface ActiveChatContextValue {
   addMessageToConversation: (message: Message, targetConversationId: string, isNonCurrentConversation?: boolean) => void;
   loadConversation: (id: string) => void;
   loadConversationAndScrollToMessage: (conversationId: string, messageIndex: number) => Promise<void>;
-  startNewChat: (specificFolderId?: string | null) => Promise<void>;
+  // initialTitle: seed the conversation title (used by "launch card in
+  // new conversation" to name the chat after the card).  Returns the new
+  // conversation id so callers can immediately bind/navigate to it.
+  startNewChat: (specificFolderId?: string | null, initialTitle?: string) => Promise<string | undefined>;
   // Create a new conversation that lives only in React state for the
   // current UX session. Never written to IndexedDB or pushed to the
   // server. See promoteEphemeralToRetained for converting later.

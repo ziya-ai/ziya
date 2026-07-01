@@ -601,6 +601,19 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
 
     const displayMessages = isTopToBottom ? windowedMessages : [...windowedMessages].reverse();
 
+    // Diagnostic: log whenever the last human message is missing during streaming
+    if (process.env.NODE_ENV === 'development' && streamingConversations.has(currentConversationId)) {
+        const hasHumanMsg = currentMessages.some(m => m.role === 'human');
+        const lastMsg = currentMessages[currentMessages.length - 1];
+        if (!hasHumanMsg || lastMsg?.role !== 'human') {
+            console.warn('🔍 DIAG: streaming but no terminal human message in currentMessages', {
+                msgCount: currentMessages.length,
+                roles: currentMessages.map(m => m.role),
+                convId: currentConversationId?.slice(0, 8),
+            });
+        }
+    }
+
     // Keep track of rendered messages for performance monitoring  
     const renderedCountRef = useRef(0);
     const renderedSystemMessagesRef = useRef<Set<string>>(new Set());

@@ -93,9 +93,45 @@ describe('Project switch conversation selection', () => {
                 src.indexOf('// 7. Update current conversation'),
                 src.indexOf('// 8. Sync folders')
             );
-            expect(section7).toContain('isActualProjectSwitch');
-            // Should NOT unconditionally set currentConversationId
-            expect(section7).not.toMatch(/^\s*setCurrentConversationId\(/m);
+            // Section 7 is gated behind the in-sync switch flag (thisIsSwitch,
+            // identical definition to isActualProjectSwitch) so periodic polls
+            // never relocate the active conversation.
+            expect(section7).toContain('thisIsSwitch');
+            // Every setCurrentConversationId call in section 7 must appear AFTER
+            // the `if (thisIsSwitch)` guard — i.e. relocation is conditional on
+            // an actual switch, never run unconditionally on a periodic poll.
+            const guardPos = section7.indexOf('if (thisIsSwitch)');
+            expect(guardPos).toBeGreaterThanOrEqual(0);
+            const firstSet = section7.indexOf('setCurrentConversationId(');
+            // Either there is no relocation call at all, or the first one is
+            // inside (after) the switch guard.
+            expect(firstSet === -1 || firstSet > guardPos).toBe(true);
+        });
+    });
+
+    describe('preload keeps a global conversation in focus on switch', () => {
+        // The preload block (which runs before section 7) selects the active
+        // conversation for the new project from local IDB.  When the user is
+        // viewing a global conversation it must NOT relocate — the global chat
+        // is present in projectShells and should stay selected, so the user
+        // "stays right where they are" across a project switch.
+        let preloadSection: string;
+        beforeAll(() => {
+            preloadSection = src.slice(
+                src.indexOf('// Select the appropriate conversation for the new project.'),
+                src.indexOf('// Hydrate the active conversation')
+            );
+        });
+
+        it('detects whether the current conversation is global', () => {
+            expect(preloadSection).toContain('curIsGlobal');
+            expect(preloadSection).toMatch(/conversationIsEffectivelyGlobal/);
+        });
+
+        it('keeps the current global conversation selected (no setCurrentConversationId)', () => {
+            // The global branch only assigns activeId; it must not call
+            // setCurrentConversationId, which would re-render/yank focus.
+            expect(preloadSection).toMatch(/if\s*\(curIsGlobal\)\s*\{\s*activeId\s*=\s*curId;/);
         });
     });
 });

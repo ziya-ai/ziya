@@ -1,7 +1,15 @@
 /**
  * Tests for chainHeaderlessContinuationDiffs() — the helper that associates
  * headerless continuation ```diff blocks with the file of the most recent
- * "headed" diff block, so each parses standalone and gets its own Apply button.
+ * "headed" diff block.
+ *
+ * CONTRACT (as of commit 655eb72 "chain continuation diffs with valid hunk
+ * headers unconditionally"): a chainable continuation is MERGED into the
+ * preceding headed block, producing a single multi-hunk diff per file rather
+ * than N standalone diffs. The merged continuation's own array slot is set to
+ * '' so the render call site absorbs (skips) it. (The earlier 434a324 contract
+ * synthesized standalone "diff --git" headers per continuation; that was
+ * superseded by the merge approach — this suite pins the merge contract.)
  *
  * Reproduces the real-world failure: an assistant emits one diff with bare
  * "--- a/SKILL.md" / "+++ b/SKILL.md" headers (no "diff --git" line), followed
@@ -9,10 +17,13 @@
  * lines (no "@@" marker). Before the fix, those follow-on blocks were never
  * associated with SKILL.md and rendered as inert raw text.
  *
- * Also pins the pure-add GATE: a continuation block that contains removals
- * ("-") or substantive context (" ") lines asserts what the target file
- * currently holds. That assertion can't be verified in the synchronous render
- * pass, so such blocks are intentionally NOT chained (left unchanged).
+ * Also pins:
+ *  - the pure-add GATE: a continuation containing removals ("-") or substantive
+ *    context (" ") lines asserts what the target file currently holds, which
+ *    can't be verified in the synchronous render pass, so it is NOT chained.
+ *  - the "@@"-hint placeholder fix: a continuation already starting with an
+ *    "@@" line (numeric OR section-hint) is appended directly — NO bare "@@"
+ *    placeholder is prepended (which would inject a spurious empty hunk).
  */
 
 // ``marked`` is ESM-only and the CRA jest transform won't process it.
@@ -55,37 +66,38 @@ const pureAddWithAt =
     '+IMPORTANT: an incorrect cast returns EMPTY STRING silently.\n';
 
 describe('chainHeaderlessContinuationDiffs', () => {
-    it('anchors bare-body pure-add continuations to the preceding ---/+++ file', () => {
+    it('merges a bare-body pure-add continuation into the preceding ---/+++ block', () => {
         const [head, cont] = chainHeaderlessContinuationDiffs([
             headedBareUnified,
             pureAddBareBody,
         ]);
 
-        // The headed block is self-sufficient and must be returned unchanged.
-        expect(head).toBe(headedBareUnified);
+        // The continuation is absorbed: its own slot becomes ''.
+        expect(cont).toBe('');
 
-        // The continuation must gain synthesized headers pointing at SKILL.md.
-        expect(cont).toContain('diff --git a/SKILL.md b/SKILL.md');
-        expect(cont).toContain('--- a/SKILL.md');
-        expect(cont).toContain('+++ b/SKILL.md');
-        // A placeholder "@@" is prepended for bare bodies (real counts are
-        // filled later by synthesizeMissingHunkHeaders()).
-        expect(cont).toContain('\n@@\n');
-        // Original body is preserved at the tail.
-        expect(cont.endsWith(pureAddBareBody)).toBe(true);
+        // The headed block now carries the original content...
+        expect(head).toContain('--- a/SKILL.md');
+        expect(head).toContain('+++ b/SKILL.md');
+        expect(head).toContain('@@ Key Rules');
+        expect(head).toContain('+- New rule line');
+        // ...plus the merged continuation body, separated by a placeholder "@@"
+        // (the bare body had no @@; synthesizeMissingHunkHeaders fills it later).
+        expect(head).toContain('\n@@\n');
+        expect(head.endsWith(pureAddBareBody)).toBe(true);
     });
 
-    it('anchors "@@"-led pure-add continuations without adding a placeholder @@', () => {
-        const [, cont] = chainHeaderlessContinuationDiffs([
+    it('merges an "@@"-hint continuation WITHOUT prepending a bare "@@" placeholder', () => {
+        const [head, cont] = chainHeaderlessContinuationDiffs([
             headedBareUnified,
             pureAddWithAt,
         ]);
-        expect(cont).toContain('diff --git a/SKILL.md b/SKILL.md');
-        expect(cont).toContain('--- a/SKILL.md');
-        expect(cont).toContain('+++ b/SKILL.md');
-        // The block already had its own "@@" line; no extra placeholder added.
-        expect(cont).toContain('@@ Value Types');
-        expect(cont).not.toContain('\n@@\n@@ Value Types');
+
+        expect(cont).toBe('');
+        expect(head).toContain('@@ Value Types');
+        expect(head).toContain('+IMPORTANT: an incorrect cast returns EMPTY STRING silently.');
+        // The block already had its own "@@" line; no spurious empty-hunk
+        // placeholder is injected before it.
+        expect(head).not.toContain('\n@@\n@@ Value Types');
     });
 
     it('chains the full SKILL.md sequence: one headed block + four pure-add follow-ons', () => {
@@ -97,16 +109,22 @@ describe('chainHeaderlessContinuationDiffs', () => {
         ];
         const result = chainHeaderlessContinuationDiffs([headedBareUnified, ...followOns]);
 
-        // Head unchanged.
-        expect(result[0]).toBe(headedBareUnified);
-        // Every follow-on now resolves to SKILL.md.
+        // Every follow-on is absorbed into the headed block (its slot is '').
         for (let i = 1; i < result.length; i++) {
-            expect(result[i]).toContain('diff --git a/SKILL.md b/SKILL.md');
-            expect(result[i]).toContain('+++ b/SKILL.md');
+            expect(result[i]).toBe('');
         }
+        // The single merged head block contains the headers once and every
+        // follow-on body.
+        const head = result[0];
+        expect(head).toContain('+++ b/SKILL.md');
+        expect(head).toContain('+- Follow-on rule one');
+        expect(head).toContain('+### Step 0');
+        expect(head).toContain('@@ Dimensions');
+        expect(head).toContain('+  WARNING: pin the merlin dimension.');
+        expect(head).toContain('+- Always discover the EXACT metric name.');
     });
 
-    it('seeds the path from a "diff --git" header too (prefers the b/ path)', () => {
+    it('merges into a "diff --git"-headed block (path seeded from the header)', () => {
         const headedGit =
             'diff --git a/foo/Bar.ts b/foo/Bar.ts\n' +
             '--- a/foo/Bar.ts\n' +
@@ -114,23 +132,44 @@ describe('chainHeaderlessContinuationDiffs', () => {
             '@@ -1,1 +1,2 @@\n' +
             ' line\n' +
             '+added\n';
-        const [, cont] = chainHeaderlessContinuationDiffs([
+        const [head, cont] = chainHeaderlessContinuationDiffs([
             headedGit,
             '+another added line\n',
         ]);
-        expect(cont).toContain('diff --git a/foo/Bar.ts b/foo/Bar.ts');
+        expect(cont).toBe('');
+        expect(head).toContain('diff --git a/foo/Bar.ts b/foo/Bar.ts');
+        expect(head).toContain('+another added line');
+    });
+
+    it('merges a continuation carrying a VALID numeric @@ header directly (no placeholder)', () => {
+        // A continuation with a real numeric range is chained unconditionally
+        // (apply-time validation covers correctness), appended without a
+        // placeholder "@@".
+        const headedGit =
+            'diff --git a/foo/Bar.ts b/foo/Bar.ts\n' +
+            '--- a/foo/Bar.ts\n' +
+            '+++ b/foo/Bar.ts\n' +
+            '@@ -1,1 +1,2 @@\n' +
+            ' line\n' +
+            '+added\n';
+        const numericCont = '@@ -10,2 +11,3 @@\n ctx\n-old\n+new\n';
+        const [head, cont] = chainHeaderlessContinuationDiffs([headedGit, numericCont]);
+        expect(cont).toBe('');
+        expect(head).toContain('@@ -10,2 +11,3 @@');
+        // Appended directly — no bare "@@" placeholder before the numeric header.
+        expect(head).not.toContain('\n@@\n@@ -10,2 +11,3 @@');
     });
 
     describe('pure-add gate', () => {
         it('does NOT chain a continuation containing removal lines', () => {
             const withRemoval = '-old removed line\n+new line\n';
-            const [, cont] = chainHeaderlessContinuationDiffs([
+            const [head, cont] = chainHeaderlessContinuationDiffs([
                 headedBareUnified,
                 withRemoval,
             ]);
-            // Unverifiable file assumption → left unchanged, no synthesized headers.
+            // Unverifiable file assumption → left unchanged, not merged.
             expect(cont).toBe(withRemoval);
-            expect(cont).not.toContain('diff --git');
+            expect(head).toBe(headedBareUnified);
         });
 
         it('does NOT chain a continuation containing context lines', () => {
@@ -138,12 +177,12 @@ describe('chainHeaderlessContinuationDiffs', () => {
                 '@@ Some Section\n' +
                 ' existing context line\n' +
                 '+added line\n';
-            const [, cont] = chainHeaderlessContinuationDiffs([
+            const [head, cont] = chainHeaderlessContinuationDiffs([
                 headedBareUnified,
                 withContext,
             ]);
             expect(cont).toBe(withContext);
-            expect(cont).not.toContain('diff --git');
+            expect(head).toBe(headedBareUnified);
         });
     });
 
@@ -179,12 +218,19 @@ describe('chainHeaderlessContinuationDiffs', () => {
             ' x\n' +
             '+y\n';
         const result = chainHeaderlessContinuationDiffs([
-            headedBareUnified,      // anchors to SKILL.md
-            '+add to skill\n',      // → SKILL.md
-            headedSecond,           // re-anchors to Other.md
-            '+add to other\n',      // → Other.md
+            headedBareUnified,      // anchors to SKILL.md   (idx 0)
+            '+add to skill\n',      // → merged into idx 0
+            headedSecond,           // re-anchors to Other.md (idx 2)
+            '+add to other\n',      // → merged into idx 2
         ]);
-        expect(result[1]).toContain('+++ b/SKILL.md');
-        expect(result[3]).toContain('+++ b/Other.md');
+        // Continuations are absorbed into their respective headed blocks.
+        expect(result[1]).toBe('');
+        expect(result[3]).toBe('');
+        // First headed block owns SKILL.md + its continuation.
+        expect(result[0]).toContain('+++ b/SKILL.md');
+        expect(result[0]).toContain('+add to skill');
+        // Second headed block owns Other.md + its continuation.
+        expect(result[2]).toContain('+++ b/Other.md');
+        expect(result[2]).toContain('+add to other');
     });
 });

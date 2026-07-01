@@ -1084,7 +1084,21 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
             {/* Per-conversation bead (task-tree) indicator */}
             {currentConversationId && (
               <div style={{ display: 'flex', alignItems: 'center' }}>
-                <BeadTree conversationId={currentConversationId} />
+                <BeadTree
+                  conversationId={currentConversationId}
+                  onResume={(suggestedMessage) => {
+                    // Resume happens *inside* this conversation: drop the
+                    // server-suggested "Let's go back to: …" message into the
+                    // composer (focused, not auto-sent) so the model picks the
+                    // thread back up on the user's next send.  Mirrors the
+                    // continue-button pattern elsewhere in this component.
+                    if (editorRef.current) {
+                      editorRef.current.textContent = suggestedMessage;
+                      editorRef.current.focus();
+                    }
+                    setInputValue(suggestedMessage);
+                  }}
+                />
               </div>
             )}
             {/* Attach file button (images need vision; documents always work) */}
