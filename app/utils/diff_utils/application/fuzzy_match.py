@@ -39,7 +39,8 @@ def find_best_chunk_position(
     file_lines: List[str], 
     chunk_lines: List[str], 
     expected_pos: int,
-    new_lines: List[str] = None
+    new_lines: List[str] = None,
+    secondary_pos: int = None
 ) -> Tuple[Optional[int], float]:
     """
     Find the best position in file_lines to apply chunk_lines.
@@ -207,7 +208,49 @@ def find_best_chunk_position(
         return best_ratio
     
     # Search for the best match within the search radius
-    for pos in range(start_pos, end_pos):
+    # Secondary-center fast path. The diff header's new-side start (passed as
+    # secondary_pos = new_start-1) already encodes cumulative-deletion drift:
+    # once earlier hunks delete lines, a later hunk's true location sits at
+    # new_start-1, which can fall outside the radius around the (often
+    # under-counted) expected_pos. Probe a distance-ordered window around
+    # secondary_pos for an EXACT line-for-line match before the primary scan.
+    # The test is plain list equality (O(span), short-circuits on the first
+    # differing line) -- NOT calculate_enhanced_similarity -- so it adds only
+    # trivial cost to paths that don't match here (e.g. expected-to-fail
+    # hunks, which previously paid a full extra enhanced-similarity sweep),
+    # while letting a drifted-but-identical hunk skip the ~100-position
+    # enhanced-similarity primary scan and the full-file fallback entirely.
+    # list == is equivalent to enhanced_similarity == 1.0 (Strategy 1 returns
+    # 1.0 iff the line lists are equal), so this matches the same positions
+    # the full machinery would resolve to 1.0, just far cheaper. Only an exact
+    # match short-circuits; anything else falls through to the unchanged scan,
+    # so matching is never weakened. The full corpus A/B gates the one
+    # behavioral edge: a block matching exactly both in the primary window and
+    # at secondary_pos resolves here to the header position.
+    if secondary_pos is not None and chunk_lines:
+        clen = len(chunk_lines)
+        s_start = max(0, secondary_pos - search_radius)
+        s_end = min(len(file_lines) - clen + 1, secondary_pos + search_radius)
+        for pos in sorted(range(s_start, s_end), key=lambda p: (abs(p - secondary_pos), p)):
+            if file_lines[pos:pos + clen] == chunk_lines:
+                logger.debug(f"Secondary-center fast path: exact match at {pos} (secondary_pos={secondary_pos})")
+                return pos, 1.0
+
+    # Scan positions ordered by distance from expected_pos (closest first),
+    # ties broken toward the lower position. When several positions match
+    # equally well, the one nearest the diff's stated @@ location wins --
+    # which is what the header intends. The previous low-to-high scan instead
+    # returned the lowest matching position; under cumulative-deletion drift
+    # (each applied hunk shifts later hunks earlier than their header claims)
+    # the true target sits below expected_pos, so the old order had to grind
+    # through every non-matching position before reaching it, and any match
+    # past the radius fell into the expensive full-file fallback. Distance
+    # order finds the perfect match immediately and breaks. This changes the
+    # selected position only when positions TIE at the max ratio within radius.
+    ordered_positions = (sorted(range(start_pos, end_pos),
+                                key=lambda p: (abs(p - expected_pos), p))
+                         if expected_pos is not None else range(start_pos, end_pos))
+    for pos in ordered_positions:
         # Make sure we don't go out of bounds
         if pos + len(chunk_lines) > len(file_lines):
             continue

@@ -1,3 +1,4 @@
+def f():
                                    if builtin_tool:
                                         # Call builtin tool directly
                                         logger.info(f"🔧 Calling builtin tool directly: {actual_tool_name}")

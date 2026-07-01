@@ -19,6 +19,63 @@ _HUNK_HEADER_RE = re.compile(r'^@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@(.*)$')
 _DIFF_GIT_RE = re.compile(r'^diff --git ')
 
 
+def _synthesize_missing_hunk_headers(diff_text: str) -> str:
+    """Repair bare / context-anchored hunk headers that lack a numeric range.
+
+    A diff whose hunk header is a bare ``@@`` or ``@@ def foo`` (no
+    ``-old,count +new,count`` range) parses to zero hunks downstream, so the
+    pipeline reports "parsed to zero hunks". In the GUI this is repaired by the
+    frontend's synthesizeMissingHunkHeaders(); in CLI mode that step never runs,
+    so the bare header reaches the backend raw. This is the backend port of that
+    logic: it emits a 1-based placeholder range with body-derived line counts
+    and a ``ZIYA_NOPOS`` sentinel so the parser (synthesized_pos flag) and
+    applier (MAX_OFFSET bypass) locate the hunk purely by context. The exact
+    counts are not load-bearing: with ZIYA_NOPOS the applier matches by context
+    and ignores the offset, and ``_recount_hunks`` runs afterward anyway. Any
+    section hint after the ``@@`` is preserved as the locator.
+    """
+    lines = diff_text.split('\n')
+    # Fast path: nothing to do unless some @@ line fails the numeric pattern.
+    if not any(l.startswith('@@') and not _HUNK_HEADER_RE.match(l) for l in lines):
+        return diff_text
+
+    out: List[str] = []
+    for i, line in enumerate(lines):
+        if line.startswith('@@') and not _HUNK_HEADER_RE.match(line):
+            # Pull any section hint out of the bare "@@ ... [@@]" marker.
+            hint = re.sub(r'@@.*$', '', re.sub(r'^@@+', '', line)).strip()
+            old_count = 0
+            new_count = 0
+            for j in range(i + 1, len(lines)):
+                b = lines[j]
+                if b.startswith('@@') or b.startswith('diff --git'):
+                    break
+                # Trailing newline artifact from split() — ignore.
+                if b == '' and j == len(lines) - 1:
+                    continue
+                marker = b[:1]
+                if marker == '+':
+                    new_count += 1
+                elif marker == '-':
+                    old_count += 1
+                elif b.startswith('\\'):
+                    pass  # "\ No newline" — counts for neither
+                else:
+                    old_count += 1
+                    new_count += 1  # context (incl. blank lines)
+            out.append(
+                f'@@ -1,{old_count} +1,{new_count} @@ ZIYA_NOPOS'
+                + (f' {hint}' if hint else '')
+            )
+            logger.info(
+                "diff_preprocessor: synthesized ZIYA_NOPOS header for bare hunk"
+                " (hint=%r, -1,%d +1,%d)", hint, old_count, new_count
+            )
+        else:
+            out.append(line)
+    return '\n'.join(out)
+
+
 def preprocess_diff(diff_text: str, original_file_lines: Optional[List[str]] = None) -> tuple:
     """Run all preprocessing passes on *diff_text*.
 
@@ -26,6 +83,9 @@ def preprocess_diff(diff_text: str, original_file_lines: Optional[List[str]] = N
     additive-to-replace conversion was applied (body lines changed, not
     just header recounting).
     """
+    # Pass 0: synthesize numeric placeholder headers for bare "@@" hunks so the
+    # downstream parser sees a parseable range instead of yielding zero hunks.
+    diff_text = _synthesize_missing_hunk_headers(diff_text)
     result, converted = _additive_to_replace(diff_text, original_file_lines)
     result = _recount_hunks(result)
     return result, converted
@@ -202,10 +262,23 @@ def _recount_hunks(diff_text: str) -> str:
             i += 1
         body = lines[body_start:i]
 
+        # A diff that ends with a trailing newline yields a final '' element
+        # from split('\n').  When this hunk runs to the end of the diff, that
+        # '' is a split artifact, not a real context line — counting it inflates
+        # old_count/new_count by 1 and produces a header git apply rejects when
+        # the hunk has no trailing context to absorb the offset (e.g. a pure
+        # replacement).  Exclude it from the count while leaving it in `body`
+        # so the re-joined output keeps its trailing newline.
+        count_body = (
+            body[:-1]
+            if (i == len(lines) and body and body[-1] == '')
+            else body
+        )
+
         ctx = 0
         rem = 0
         add = 0
-        for bline in body:
+        for bline in count_body:
             if bline.startswith('-'):
                 rem += 1
             elif bline.startswith('+'):

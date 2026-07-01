@@ -1,0 +1,5 @@
+{
+    "target_file": "app/example.py",
+    "description": "Inserting a block whose last added line ('# Extract all diffs') is byte-identical to a line already present further down in the file. The difflib matcher classifies the added duplicate line as 'equal' to the existing one and silently drops it (along with neighbours), producing 'Line delta mismatch ... got N (inserted=M, removed=K)' with removed>0 even though the diff removes nothing. The collapse bisects the docstring's triple-quote region, so language_validation correctly rejects the result with an 'unterminated triple-quoted string literal' error whose parser-recovery line attribution points at an unrelated valid line. This is the unified low-information/duplicate-line anchoring failure behind the mcp_routes.py shell-config/restart insertion incident; the fix is robust anchoring (do not match an inserted line as 'equal' to a distant duplicate), NOT relaxing the syntax validator.",
+    "date_added": "2026-06-25"
+}

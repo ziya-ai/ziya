@@ -145,7 +145,13 @@ async def apply_changes(request: Request):
             target_diff = individual_diffs[0]
 
         # Run in thread pool to avoid blocking the event loop and allow parallel processing
-        result = await run_in_threadpool(apply_diff_pipeline, validated.diff, file_path, request_id)
+        # Pass the route-resolved user_codebase_dir explicitly so the pipeline writes
+        # to the active project root (request body projectRoot) rather than re-deriving
+        # it from the ContextVar / env, which can point at the server's launch tree.
+        result = await run_in_threadpool(
+            apply_diff_pipeline, validated.diff, file_path, request_id,
+            user_codebase_dir=user_codebase_dir,
+        )
         
         # Check the result status and return appropriate response
         status_code = 200 # Default to OK

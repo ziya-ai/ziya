@@ -168,6 +168,20 @@ def validate_diff_with_full_pipeline(
                     already_applied=result["already_applied_hunks"],
                     hunk_details=result["hunk_details"]
                 )
+            elif result["status"] == "error" and result["total_hunks"] == 0:
+                # Zero-hunks early-return path (e.g. bare "@@" header): the
+                # pipeline bailed before building hunk objects, so failed_hunks
+                # is empty and format_model_feedback would never run. The real
+                # diagnostic ("parsed to zero hunks ... expected '@@ -n,m +n,m @@'")
+                # lives in the pipeline's `error` field — surface it as
+                # model_feedback so the regeneration prompt actually tells the
+                # model what was wrong, instead of an empty Problem section.
+                result["model_feedback"] = (
+                    pipeline_result.get("error")
+                    or "Diff could not be parsed into any hunks — the hunk "
+                       "header is malformed or missing. Each hunk must start "
+                       "with '@@ -<old_start>,<old_count> +<new_start>,<new_count> @@'."
+                )
                 
                 # Generate recommendation
                 if result["status"] == "partial":

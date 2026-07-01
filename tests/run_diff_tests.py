@@ -706,6 +706,14 @@ class DiffRegressionTest(unittest.TestCase):
         """Test fuzzy insertion into a blank line without preservation or annotation"""
         self.run_diff_test('MRE_context_empty_line')
 
+    def test_MRE_duplicate_trailing_line_drop(self):
+        """Inserted block whose last added line duplicates an existing line must not
+        be collapsed into that line (low-information/duplicate-line anchoring bug).
+        Currently fails: the matcher drops the duplicate, bisecting a triple-quoted
+        string and tripping language_validation. The validator is correct to reject;
+        the bug is upstream in anchoring."""
+        self.run_diff_test('MRE_duplicate_trailing_line_drop')
+
     def test_MRE_css_padding_real_file(self):
         """Test case for CSS padding property incorrectly marked as already applied using real file"""
         test_case = 'MRE_css_padding_real_file'
@@ -1011,13 +1019,16 @@ class DiffRegressionTest(unittest.TestCase):
                 
                 # For already applied cases, verify:
                 # 1. Content didn't change
-                # 2. Reported status is success (not error)
+                # 2. Reported status is a non-error no-op. The pipeline reports the
+                #    dedicated 'already_applied' status when every hunk is already
+                #    present (see DiffPipeline.determine_final_status); 'success' is
+                #    also accepted for the degenerate no-op case.
                 # 3. changes_written flag is False
                 # 4. At least one hunk is reported as already_applied
                 self.assertTrue(content_unchanged, 
                                f"Content changed for {case_name} but shouldn't have")
-                self.assertEqual(result_dict['status'], 'success', 
-                               f"Reported status should be success for {case_name}, got {result_dict['status']}")
+                self.assertIn(result_dict['status'], ('already_applied', 'success'), 
+                             f"Reported status should be already_applied/success for {case_name}, got {result_dict['status']}")
                 self.assertFalse(result_dict.get('changes_written', True), 
                                f"changes_written should be False for {case_name}")
                 self.assertTrue(len(result_dict.get('already_applied', [])) > 0, 
@@ -1077,9 +1088,13 @@ class DiffRegressionTest(unittest.TestCase):
                 self.assertEqual(modified_content, second_content, 
                                f"Content changed after second application for {case_name}")
                 
-                # Verify second application reported success with changes_written=False
-                self.assertEqual(second_result['status'], 'success', 
-                               f"Second application should report success for {case_name}")
+                # Verify second application reported a non-error no-op with
+                # changes_written=False. Re-applying an already-applied diff yields
+                # the dedicated 'already_applied' status (see
+                # DiffPipeline.determine_final_status); 'success' is also accepted
+                # for the degenerate no-op case.
+                self.assertIn(second_result['status'], ('already_applied', 'success'), 
+                             f"Second application should report already_applied/success for {case_name}, got {second_result['status']}")
                 self.assertFalse(second_result.get('changes_written', True), 
                                 f"Second application should have changes_written=False for {case_name}")
                 self.assertTrue(len(second_result['details']['already_applied']) > 0, 

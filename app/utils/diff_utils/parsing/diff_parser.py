@@ -39,11 +39,6 @@ def unescape_backticks_from_llm(text: str) -> str:
                     == [l.replace(_esc, _bt) for l in new_lines]):
                 return text
 
-    # Special case: \\`\\`\\`${variable} pattern in template literals should be unescaped
-    # This handles markdown code blocks within template literals
-    if '\\`\\`\\`${' in text:
-        return text.replace('\\`', '`')
-    
     # Check if we have multiple consecutive escaped backticks (e.g., \\`\\`\\`)
     # This pattern indicates literal backticks in code, not LLM escaping
     if '\\`\\`' in text:
