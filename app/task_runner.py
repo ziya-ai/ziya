@@ -12,6 +12,7 @@ See Docs/CLITasks.md for the `allow` field specification.
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -67,6 +68,24 @@ def load_tasks(root: str = None) -> Dict[str, Any]:
     return tasks
 
 
+def resolve_task_source_file(name: str, root: str = None) -> Optional[Path]:
+    """Return the tasks file that *defines* ``name``, honoring load_tasks order.
+
+    ``load_tasks`` merges builtin < global < project and discards provenance, but
+    the scope-approval store must key a CLI task on the realpath of the file that
+    actually defined it (project overrides global). This recomputes that with the
+    same precedence: the project-local file wins if it defines the task, else the
+    global file if it does. Returns None for builtin-only tasks (they carry no
+    ``allow`` block, so they never need an approval) or unknown names.
+    """
+    project_root = Path(root) if root else Path.cwd()
+    local_file = _find_task_file(project_root / ".ziya")
+    if local_file and name in (_load_file(local_file) or {}):
+        return local_file
+    global_file = _find_task_file(Path.home() / ".ziya")
+    if global_file and name in (_load_file(global_file) or {}):
+        return global_file
+    return None
 def validate_task_allow(task_def: Dict[str, Any]) -> list[str]:
     """Validate the ``allow`` block of a task definition.
 
@@ -154,3 +173,43 @@ def restore_permissions(saved_env: dict[str, str | None]) -> None:
             os.environ.pop(key, None)
         else:
             os.environ[key] = prev
+
+
+def allow_to_task_scope(allow: Any) -> tuple[list[str], list[dict]]:
+    """Project a CLI task ``allow`` block onto the ``_task_scope`` grant shape.
+
+    Returns ``(shell_command_grants, writable_entries)`` for
+    ``set_task_shell_commands`` / ``set_task_writable_paths`` respectively:
+
+      • shell_command_grants — each ``commands`` entry as a literal first-token
+        grant (so ``git`` grants any ``git`` subcommand), plus one ``re:`` grant
+        per ``git_operations`` entry (``re:^git\\s+<op>(\\s|$)``) so a task that
+        lists git ops *without* bare ``git`` is still scoped to exactly those.
+      • writable_entries — each ``write_patterns`` glob as a ``{"pattern": ...}``
+        entry (matched with fnmatch on both the project-relative path and its
+        basename, mirroring WritePolicyManager.allowed_write_patterns).
+
+    This is the half that lets a signed CLI-task approval actually reach the
+    shell subprocess: the env path (``apply_task_permissions``) is clamped back
+    to the floor by the F-004 signature gate, but the ``_task_scope`` envelope is
+    consulted additively *after* that clamp and is never subject to it.
+    ``always_blocked`` commands are dropped here too (defense in depth — the
+    shell server re-enforces that ceiling regardless).
+    """
+    if not allow or not isinstance(allow, dict):
+        return [], []
+    cmds: list[str] = []
+    for c in (allow.get("commands") or []):
+        c = str(c).strip()
+        if c and c not in ALWAYS_BLOCKED:
+            cmds.append(c)
+    for op in (allow.get("git_operations") or []):
+        op = str(op).strip()
+        if op:
+            cmds.append(r"re:^git\s+" + re.escape(op) + r"(\s|$)")
+    writable: list[dict] = []
+    for pat in (allow.get("write_patterns") or []):
+        pat = str(pat).strip()
+        if pat:
+            writable.append({"pattern": pat})
+    return cmds, writable

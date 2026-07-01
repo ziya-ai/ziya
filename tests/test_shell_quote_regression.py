@@ -130,6 +130,15 @@ class TestExtractCommandSubstitutions:
     def test_literal_paren_in_sed_not_substitution(self):
         assert _extract_command_substitutions("sed 's/)/X/' f") == []
 
+    def test_arithmetic_expansion_not_substitution(self):
+        # $((expr)) is arithmetic expansion, not command substitution.
+        # The body should never be extracted or validated as a command.
+        assert _extract_command_substitutions('sed -n "$((ln-1)),$((ln+2))p" f') == []
+
+    def test_arithmetic_expansion_mixed_with_real_substitution(self):
+        # A real $(...) beside a $((arith)) — only the command sub is returned.
+        assert _extract_command_substitutions('echo $((x+1)) $(date)') == ['date']
+
 
 class TestBacktickValidationGapClosed:
     """End-to-end: backtick substitutions are now validated (was a gap)."""

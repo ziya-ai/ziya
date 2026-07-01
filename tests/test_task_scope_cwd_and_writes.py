@@ -29,6 +29,48 @@ def _task(instructions: str = "do it", **scope_kwargs) -> Block:
     )
 
 
+def _authorize_block(block, tmp_path, monkeypatch):
+    """Sign + store an approval record for *block*'s scope (ASR F-001 gate).
+
+    execute_task_block now routes escalating scopes (writable paths /
+    shell_commands) through the signed-approval chokepoint and strips them to
+    the floor when no matching approval exists. Tests that assert a grant
+    *activates* must therefore authorize it first — mirroring a real
+    ``sudo ziya-approve``. Generates a throwaway root keypair, points the
+    verifier + approval store at temp dirs, and writes a signed record keyed by
+    the block id for the block's current scope hash.
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from app.config import scope_canonical as sc
+    from app.utils import scope_approvals as sa
+    import time as _time
+
+    priv_p = tmp_path / "approve_ed25519"
+    pub_p = tmp_path / "approve_ed25519.pub"
+    key = Ed25519PrivateKey.generate()
+    priv_p.write_bytes(key.private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption()))
+    pub_p.write_bytes(key.public_key().public_bytes(
+        serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH))
+    monkeypatch.setenv("ZIYA_APPROVE_PRIVKEY", str(priv_p))
+    monkeypatch.setenv("ZIYA_APPROVE_PUBKEY", str(pub_p))
+    monkeypatch.setenv("ZIYA_SCOPE_APPROVALS_DIR", str(tmp_path / "approvals"))
+
+    scope_hash = sc.task_scope_hash(block.scope)
+    if not scope_hash:
+        return  # nothing to authorize
+    now = int(_time.time())
+    sa.save_record({
+        "task_id": block.id,
+        "scope_hash": scope_hash,
+        "approved_by": "test",
+        "approved_at": now,
+        "signature": sc.sign_approval_record(block.id, scope_hash, "test", now),
+    })
+
+
 class _FakeExecutor:
     """Captures the messages and project_root passed to the model and
     yields a single text chunk plus stream_end so the executor returns."""
@@ -236,12 +278,15 @@ class TestCheckTaskScopeWrite:
 
     @pytest.mark.asyncio
     async def test_executor_activates_grant_during_task(
-        self, fake_executor, tmp_path,
+        self, fake_executor, tmp_path, monkeypatch,
     ):
         """End-to-end: while the task is running, the helper returns
         True for paths inside the granted directory and False for
         unrelated paths.  After the task finishes, the contextvar is
-        cleared."""
+        cleared.
+
+        The writable-path grant is an escalation, so it activates only with a
+        signed approval (ASR F-001); _authorize_block writes one first."""
         from app.mcp.tools.fileio import _check_task_scope_write
         from app.context import get_task_writable_paths
 
@@ -260,6 +305,7 @@ class TestCheckTaskScopeWrite:
         block = _task(paths=[
             ScopeEntry(path="out", is_dir=True, read=True, write=True),
         ])
+        _authorize_block(block, tmp_path, monkeypatch)
         await task_executor.execute_task_block(block, project_root=str(tmp_path))
 
         assert captured["inside_grant"] is True
@@ -430,9 +476,12 @@ class TestExecutorActivatesReadGrant:
         assert get_task_readable_paths() is None
 
     @pytest.mark.asyncio
-    async def test_write_implies_read(self, fake_executor, tmp_path):
+    async def test_write_implies_read(self, fake_executor, tmp_path, monkeypatch):
         """A write-only grant should still appear in the read list so
-        the model can read back what it just wrote."""
+        the model can read back what it just wrote.
+
+        The write grant is an escalation, so it activates only with a signed
+        approval (ASR F-001); _authorize_block writes one first."""
         from app.context import get_task_readable_paths
         captured = {}
         def _write_implies_read_hook(messages, project_root):
@@ -441,6 +490,7 @@ class TestExecutorActivatesReadGrant:
         block = _task(paths=[
             ScopeEntry(path="out", is_dir=True, read=False, write=True),
         ])
+        _authorize_block(block, tmp_path, monkeypatch)
         await task_executor.execute_task_block(
             block, project_root=str(tmp_path),
         )

@@ -1480,6 +1480,17 @@ class MCPClient:
                 "code": -32603
             }
             
+    # Routing/side-channel keys that legitimately ride along on tool arguments
+    # but are not part of any tool's JSON schema. The manager strips most of
+    # these before dispatch, but _task_scope is intentionally forwarded to the
+    # shell server (it's the additive task-grant envelope), and the shell server
+    # pops it itself. Treating these as "unknown parameters" produces a
+    # misleading warning on every escalated call, so the validator recognizes
+    # and passes them through silently.
+    _KNOWN_ROUTING_KEYS = frozenset({
+        "_task_scope", "_workspace_path", "conversation_id",
+    })
+
     def _validate_and_convert_arguments(self, arguments: Dict[str, Any], schema: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Validate and convert argument types based on tool schema."""
         validation_errors = []
@@ -1553,8 +1564,11 @@ class MCPClient:
         # Validate and convert each argument
         for key, value in arguments.items():
             if key not in properties:
-                # Allow extra fields but warn
-                logger.warning(f"Unknown parameter: {key}")
+                # Allow extra fields. Known routing/side-channel keys (e.g.
+                # _task_scope forwarded to the shell server) pass through
+                # silently; anything else warns since it may be a model error.
+                if key not in self._KNOWN_ROUTING_KEYS:
+                    logger.warning(f"Unknown parameter: {key}")
                 validated[key] = value
                 continue
                 
@@ -1623,7 +1637,15 @@ class MCPClient:
         try:
             validated, warnings = validate_input_constraints(validated, schema, tool_name)
             for w in warnings:
-                logger.warning(f"Input validation warning: {w}")
+                # DEBUG, not WARNING: these are advisory dangerous-pattern
+                # matches, never blocking — any genuine constraint violation
+                # raises ResponseValidationError instead and is handled below.
+                # The backtick command-substitution heuristic false-fires on
+                # backtick-wrapped code identifiers in freeform prose fields
+                # (e.g. sequentialthinking's `thought`), producing per-step
+                # log noise. Real shell-arg injection is enforced separately
+                # at the shell-server allowlist layer.
+                logger.debug(f"Input validation advisory: {w}")
         except ResponseValidationError as exc:
             return {"__validation_error__": True, "message": str(exc)}
 

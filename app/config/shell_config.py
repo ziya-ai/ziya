@@ -83,7 +83,7 @@ def _get_merged_shell_config() -> dict:
 
 def get_base_shell_config():
     """Get the unmodified base shell config (without plugin additions)."""
-    return DEFAULT_SHELL_CONFIG.copy()
+    return copy.deepcopy(DEFAULT_SHELL_CONFIG)
 
 
 # ---------------------------------------------------------------------------

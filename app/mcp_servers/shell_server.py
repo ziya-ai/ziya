@@ -149,6 +149,21 @@ def _find_substitution_spans(command: str) -> list:
         if not in_sq and ch == '$' and i + 1 < n and command[i + 1] == '(':
             depth = 0
             j = i + 1  # positioned at '('
+            # $((expr)) is arithmetic expansion, not command substitution.
+            # Skip the whole token without recording a span so the body
+            # (e.g. "ln-1" from "$((ln-1))") is never validated as a command.
+            if i + 2 < n and command[i + 2] == '(':
+                while j < n:
+                    c = command[j]
+                    if c == '(':
+                        depth += 1
+                    elif c == ')':
+                        depth -= 1
+                        if depth == 0:
+                            break
+                    j += 1
+                i = j + 1
+                continue
             start_body = i + 2
             s_sq = s_dq = False
             while j < n:
@@ -228,6 +243,7 @@ def _extract_command_substitutions(command: str) -> list:
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from app.config.shell_config import get_default_shell_config
 from app.config.write_policy import WritePolicyManager
+from app.config.scope_canonical import is_env_scope_authorized, strip_escalations
 # Heredoc detection + body-stripping live in write_policy as the single source
 # of truth.  shell_server previously kept a twin _HEREDOC_RE that had to be
 # hand-synced ("kept in lockstep"); importing the shared helper removes that
@@ -243,9 +259,30 @@ class ShellServer:
     
     def __init__(self):
         self.request_id = 0
-        
+
+        # ── Escalation-config integrity gate (ASR F-004 / F-007) ──────────────
+        # Every privilege-bearing value this server trusts (ALLOW_COMMANDS, the
+        # write-policy fields, SAFE_GIT_OPERATIONS, YOLO_MODE) arrives via the
+        # process environment.  Before trusting ANY of it, verify that any
+        # escalation BEYOND the built-in floor carries a valid root-minted
+        # Ed25519 signature (ZIYA_SCOPE_SIG).  If it does not, clamp the env back
+        # to the floor so unsigned escalations simply do not take effect.  An
+        # empty delta (config at/within the floor, incl. narrowing) needs no
+        # signature and passes through unchanged — keeping the shell-config /
+        # write-policy GUIs live for everyday edits.  All later reads in this
+        # __init__ use self._scope_env, never os.environ directly.
+        if is_env_scope_authorized(os.environ):
+            self._scope_env = dict(os.environ)
+        else:
+            print(
+                "🔒 SCOPE_GATE: unsigned/invalid escalation in environment — "
+                "falling back to default policy floor",
+                file=sys.stderr,
+            )
+            self._scope_env = strip_escalations(os.environ)
+
         # Yolo mode — bypass command allowlist (except always_blocked)
-        self.yolo_mode = os.environ.get('YOLO_MODE', 'false').lower() in ('true', '1', 'yes')
+        self.yolo_mode = self._scope_env.get('YOLO_MODE', 'false').lower() in ('true', '1', 'yes')
 
         # Use centralized configuration (merged with plugin provider additions)
         self._effective_config = get_default_shell_config()
@@ -253,7 +290,7 @@ class ShellServer:
 
         # Write policy
         self.wp_manager = WritePolicyManager()
-        self.wp_manager.merge_env_overrides(dict(os.environ))
+        self.wp_manager.merge_env_overrides(self._scope_env)
         self.write_checker = ShellWriteChecker(self.wp_manager)
 
         # Get configuration from environment
@@ -272,7 +309,7 @@ class ShellServer:
         }
         
         # Get additional allowed commands from environment (legacy support)
-        env_commands = os.environ.get('ALLOW_COMMANDS', '').split(',')
+        env_commands = self._scope_env.get('ALLOW_COMMANDS', '').split(',')
         env_commands = [cmd.strip() for cmd in env_commands if cmd.strip()]
         
         # Add environment commands to allowed commands list
@@ -299,7 +336,7 @@ class ShellServer:
 
         # Add git operations if enabled
         if self.git_operations_enabled:
-            safe_git_ops = os.environ.get('SAFE_GIT_OPERATIONS', 'status,log,show,diff,branch,remote,ls-files,blame').split(',')
+            safe_git_ops = self._scope_env.get('SAFE_GIT_OPERATIONS', 'status,log,show,diff,branch,remote,ls-files,blame').split(',')
             safe_git_ops = [op.strip() for op in safe_git_ops if op.strip()]
             
             self.git_patterns = {
@@ -1091,6 +1128,21 @@ class ShellServer:
             if not segment_allowed:
                 print(f"Segment '{cmd_segment}' did not match any allowed patterns", file=sys.stderr)
                 first_word = cmd_segment.strip().split()[0] if cmd_segment.strip() else cmd_segment
+                # Slice B: a per-task ``shell_commands`` grant is additive over
+                # the base allowlist and is consulted ONLY here, after the base
+                # patterns have already declined the segment. Guarded so it can
+                # never grant an ``always_blocked`` command (sudo/vi/etc.): the
+                # first token (and its basename) must be outside that ceiling.
+                # The write checker re-enforces always_blocked / redirection /
+                # destructive rules afterward as defense-in-depth, so this only
+                # widens the allowlist, never the hard ceilings.
+                always_blocked = self.wp_manager.policy.get('always_blocked', [])
+                first_basename = os.path.basename(first_word) if first_word else ''
+                if (first_word not in always_blocked
+                        and first_basename not in always_blocked
+                        and self.write_checker._task_scope_grants_command(cmd_segment)):
+                    print(f"Segment '{cmd_segment}' allowed by task-scope grant", file=sys.stderr)
+                    continue
                 # Defense-in-depth: never surface a meta-pattern key as if
                 # it were a command name.  If the model somehow sent the
                 # literal string ``piped_commands`` (or any other internal
@@ -1451,25 +1503,28 @@ class ShellServer:
                         }
                     }
                 
-                # Check if command is allowed
-                allowed, denial_reason = self.is_command_allowed(command)
-                if not allowed:
-                    return {
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "error": {
-                            "code": -32602,
-                            "message": f"🚫 BLOCKED: {denial_reason}\n\n" +
-                                     f"📋 Allowed commands: {self.get_allowed_commands_description()}\n\n" +
-                                     f"💡 Tip: You can configure allowed commands in the Shell Configuration settings."
-                        }
-                    }
-                
-                # Write policy check (after allowlist, before execution).
-                # Apply per-call task scope (additive grant) for the
-                # duration of the check, then clear it.
+                # Apply the per-call task scope (additive grant) for BOTH the
+                # allowlist check and the write check. The allowlist gate runs
+                # first, so it must see the grant — otherwise a task-granted
+                # command absent from the base allowlist is denied here before
+                # the grant is ever consulted. Clear the scope in finally.
                 self.write_checker.set_task_scope(task_scope)
                 try:
+                    # Check if command is allowed
+                    allowed, denial_reason = self.is_command_allowed(command)
+                    if not allowed:
+                        return {
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "error": {
+                                "code": -32602,
+                                "message": f"🚫 BLOCKED: {denial_reason}\n\n" +
+                                         f"📋 Allowed commands: {self.get_allowed_commands_description()}\n\n" +
+                                         f"💡 Tip: You can configure allowed commands in the Shell Configuration settings."
+                            }
+                        }
+
+                    # Write policy check (after allowlist, before execution).
                     write_ok, write_reason = (True, "") if self.yolo_mode else self.write_checker.check(
                         command, self._split_by_shell_operators
                     )

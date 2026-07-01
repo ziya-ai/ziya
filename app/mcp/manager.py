@@ -7,6 +7,7 @@ import os
 import sys
 import re
 import json
+import secrets
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 
@@ -22,6 +23,36 @@ import time
 DEFAULT_TOOL_TIMEOUT = 120
 # Buffer added on top of a tool's own timeout so inner layers fire first.
 TOOL_TIMEOUT_BUFFER = 15
+
+
+def build_task_scope_envelope() -> Optional[Dict[str, Any]]:
+    """Build the shell ``_task_scope`` grant envelope from the active task
+    contextvars, or None when no task grant is active (ASR F-001).
+
+    Centralizing this makes escalation delivery path-independent: any caller
+    reaching ``call_tool`` for the shell server while a task grant is active
+    gets the envelope without having to construct it. Returns None when no
+    writable/readable/shell grant is set, so normal non-task calls add nothing.
+    Never raises — an envelope-build failure must not block dispatch.
+    """
+    try:
+        from app.context import (
+            get_task_writable_paths, get_task_readable_paths,
+            get_task_shell_commands, get_project_root,
+        )
+        twp = get_task_writable_paths()
+        trp = get_task_readable_paths()
+        tsc = get_task_shell_commands()
+        if not (twp or trp or tsc):
+            return None
+        return {
+            "writable": twp or [],
+            "readable": trp or [],
+            "shell_commands": list(tsc) if tsc else [],
+            "project_root": get_project_root() or "",
+        }
+    except Exception:  # noqa: BLE001 — never block dispatch on envelope build
+        return None
 
 
 def _resolve_bearer_token(server_name: str, auth_config: Dict[str, Any]) -> str:
@@ -108,6 +139,32 @@ class MCPManager:
         # machine speed. Reset at the start of every turn (see
         # stream_with_tools), so long conversations are never locked out.
         self._turn_tool_counts: Dict[str, int] = {}  # conversation_id -> calls this turn    
+
+        # ── Ephemeral runtime-consent tier ────────────────────────────────
+        # A per-server-start nonce binds session grants to THIS manager
+        # process. The manager outlives shell-subprocess restarts but dies on
+        # a full server restart, so a grant bound to this nonce survives the
+        # shell restart that applies it yet is automatically void on the next
+        # cold start — ephemerality with no on-disk lifecycle to expire.
+        # The nonce is written to ~/.ziya/.session_nonce so the out-of-process
+        # signer (`ziya-approve --session`) can bind a grant to it; it is NOT a
+        # secret (knowing it does not help forge a grant — that still needs the
+        # trust-anchor key), only fresh-per-start.
+        self._session_nonce: str = secrets.token_hex(16)
+        # server_name -> raw JSON session-grant record, forwarded to the
+        # subprocess env at (re)spawn. In-memory only; cleared on manager exit.
+        self._session_grants: Dict[str, str] = {}
+        try:
+            _nonce_path = Path.home() / ".ziya" / ".session_nonce"
+            _nonce_path.parent.mkdir(parents=True, exist_ok=True)
+            _nonce_path.write_text(self._session_nonce)
+            try:
+                os.chmod(_nonce_path, 0o600)
+            except OSError:
+                pass
+        except OSError as e:
+            logger.warning(f"Could not write session nonce file: {e}")
+
     def _get_builtin_server_definitions(self) -> Dict[str, Dict[str, Any]]:
         """Defines configurations for built-in MCP servers."""
         builtin_servers = {}
@@ -132,6 +189,19 @@ class MCPManager:
                 "description": "Provides shell command execution",
                 "builtin": True
             }
+            logger.info(f"Found built-in MCP server package at: {package_dir}")
+        except ImportError:
+            logger.error("Built-in MCP server package 'app.mcp_servers' not found. Built-in servers will be unavailable.")
+        except Exception as e:
+            
+            # PCAP Analysis builtin server (disabled by default)
+            builtin_servers["pcap_analysis"] = {
+                "command": ["internal"],  # Special marker for direct MCP tools
+                "enabled": False,  # Disabled by default
+                "description": "PCAP analysis and network protocol correlation tools",
+                "builtin": True
+            }
+            
             logger.info(f"Found built-in MCP server package at: {package_dir}")
         except ImportError:
             logger.error("Built-in MCP server package 'app.mcp_servers' not found. Built-in servers will be unavailable.")
@@ -210,6 +280,57 @@ class MCPManager:
             logger.debug("No MCP config file found in standard locations")
         else:
             logger.debug(f"Config path unchanged: {self.config_path}")
+
+    def _apply_escalation_overlay(self, server_env: Dict[str, str], server_name: str) -> None:
+        """Overlay escalation env onto a subprocess spawn env, in place.
+
+        This MUST run on every code path that spawns a server subprocess
+        (both ``initialize`` and the workspace-scoped spawn in
+        ``_get_or_create_workspace_client``), or escalations silently fail to
+        reach the subprocess that actually runs commands. It is factored out
+        precisely so the two spawn paths cannot drift apart.
+
+        Three layers, in order:
+          1. ESCALATION_ENV_KEYS from os.environ (task-scope sig + values, so a
+             task's signature reaches the subprocess paired with the exact
+             escalation values it authorizes).
+          2. The current session nonce - the manager is the authority for it,
+             so it wins over any stale inherited ZIYA_SESSION_NONCE.
+          3. A held session grant (if any) plus its escalation delta injected
+             into the spawn env, so the escalated values (e.g.
+             ALLOWED_INTERPRETERS=...,perl) reach the subprocess FROM THE GRANT,
+             never from the durable config. This is what makes an ephemeral
+             grant work with a clean config file.
+
+        The manager does NOT adjudicate: it injects the delta the grant claims,
+        then the subprocess re-derives the delta from this env and re-verifies
+        the grant signature over it (is_env_scope_authorized ->
+        verify_session_grant). If the injected values produced a delta wider
+        than what was signed, verification fails and the subprocess clamps to
+        the floor, so injection cannot widen scope. Per-key SET (not union
+        with config) keeps the re-derived delta equal to the signed delta; the
+        floor is still unioned in by WritePolicyManager.merge_env_overrides.
+        """
+        from app.config.scope_canonical import (
+            ESCALATION_ENV_KEYS, SESSION_NONCE_ENV_KEY, SESSION_GRANT_ENV_KEY,
+        )
+        for key in ESCALATION_ENV_KEYS:
+            if key in os.environ:
+                server_env[key] = os.environ[key]
+
+        server_env[SESSION_NONCE_ENV_KEY] = self._session_nonce
+        _grant = self._session_grants.get(server_name)
+        if _grant:
+            server_env[SESSION_GRANT_ENV_KEY] = _grant
+            try:
+                _delta = json.loads(_grant).get("delta", {})
+            except (ValueError, TypeError, json.JSONDecodeError):
+                _delta = {}
+            for _k, _v in (_delta.items() if isinstance(_delta, dict) else []):
+                if _k == "YOLO_MODE":
+                    server_env["YOLO_MODE"] = "true" if _v else "false"
+                elif isinstance(_v, list):
+                    server_env[_k] = ",".join(str(x) for x in _v)
 
     async def initialize(self) -> bool:
         """
@@ -357,10 +478,12 @@ class MCPManager:
                 
                 # Task-level permission escalations (set by apply_task_permissions
                 # in cmd_task) must win over persisted server config values.
-                _ESCALATION_KEYS = ("ALLOW_COMMANDS", "SAFE_GIT_OPERATIONS", "ALLOWED_WRITE_PATTERNS", "YOLO_MODE")
-                for key in _ESCALATION_KEYS:
-                    if key in os.environ:
-                        server_env[key] = os.environ[key]
+                # The authoritative key set lives in scope_canonical so the
+                # parent (here), the verifier (shell_server), and the signer
+                # (ziya-approve) cannot drift. It includes ZIYA_SCOPE_SIG so a
+                # task's signature reaches the subprocess paired with the exact
+                # escalation values it authorizes.
+                self._apply_escalation_overlay(server_env, server_name)
 
                 # Verify server command exists
                 command = server_config.get("command")
@@ -595,6 +718,38 @@ class MCPManager:
         self.is_initialized = False
         logger.info("MCP Manager shutdown complete")
     
+    def apply_session_grant(self, server_name: str) -> Optional[Dict[str, Any]]:
+        """Load a signed session grant from disk into in-memory transport state.
+
+        Reads ~/.ziya/session_grant_<server>.json (written out-of-process by
+        ``ziya-approve --session``) and stashes the raw record so it is
+        forwarded into the subprocess env at the next (re)spawn, alongside the
+        current session nonce. Returns the parsed record on success, or None
+        when no grant file is present or it is unreadable/malformed.
+
+        Validity is deliberately NOT adjudicated here: the manager is an
+        unauthenticated transport, so it must not be the authority. The
+        subprocess re-verifies the grant against the trust anchor (root key for
+        the default provider) at init and fails closed if the signature, nonce,
+        or scope_hash does not check out. The manager merely carries it.
+        """
+        grant_path = Path.home() / ".ziya" / f"session_grant_{server_name}.json"
+        try:
+            raw = grant_path.read_text()
+        except OSError:
+            return None
+        try:
+            record = json.loads(raw)
+        except (ValueError, json.JSONDecodeError):
+            logger.warning(f"Malformed session grant file ignored: {grant_path}")
+            return None
+        self._session_grants[server_name] = raw
+        logger.info(
+            f"Loaded session grant for '{server_name}' "
+            f"(provider={record.get('provider')}, granted_by={record.get('granted_by')})"
+        )
+        return record
+
     async def restart_server(self, server_name: str, new_config: Optional[Dict[str, Any]] = None) -> bool:
         """
         Restart a specific MCP server with optional new configuration.
@@ -611,6 +766,30 @@ class MCPManager:
             if server_name in self.clients:
                 await self.clients[server_name].disconnect()
                 del self.clients[server_name]
+
+            # CRITICAL: workspace-scoped servers (e.g. the shell server) keep
+            # their live subprocesses in workspace_scoped_clients, NOT in
+            # self.clients. A restart that only tore down self.clients left the
+            # per-workspace subprocesses running with their original env — so a
+            # restart reported success while stale config (e.g. a pre-signature
+            # allowlist, or an escalation that should now be clamped) kept
+            # serving tool calls until the subprocess happened to respawn. Tear
+            # them down here so the next tool call respawns a fresh subprocess
+            # that re-reads its env and re-runs the escalation-signature gate.
+            workspace_instances = self.workspace_scoped_clients.pop(server_name, {})
+            for instance_key, ws_client in workspace_instances.items():
+                try:
+                    await ws_client.disconnect()
+                    logger.info(
+                        f"Tore down workspace-scoped instance {server_name}"
+                        f"@{instance_key} on restart"
+                    )
+                except (OSError, RuntimeError, asyncio.TimeoutError) as e:
+                    logger.warning(
+                        f"Error disconnecting workspace instance "
+                        f"{server_name}@{instance_key}: {e}"
+                    )
+            self._workspace_instance_last_used.pop(server_name, None)
             
             # Load current config or use provided config
             if new_config:
@@ -1267,6 +1446,12 @@ class MCPManager:
         workspace_config = server_config.copy()
         workspace_env = workspace_config.get("env", {}).copy()
         workspace_env["ZIYA_USER_CODEBASE_DIR"] = workspace_path
+        # The shell server is workspace-scoped, so THIS is the spawn path that
+        # actually runs commands — it must get the same escalation overlay as
+        # initialize(), or task-scope sigs and ephemeral session grants never
+        # reach the running subprocess (the durable config rides through via
+        # the env copy above, but grants live in _session_grants, not config).
+        self._apply_escalation_overlay(workspace_env, server_name)
         workspace_config["env"] = workspace_env
         workspace_config["name"] = f"{server_name}@{os.path.basename(workspace_path)}"
         
@@ -1437,6 +1622,18 @@ class MCPManager:
         # every other server so they never see keys they don't
         # understand.  Slice B will extend the same envelope.
         task_scope = arguments.get('_task_scope') if isinstance(arguments, dict) else None
+
+        # Centralized envelope construction (ASR F-001). The structured
+        # dispatch path (tool_execution.execute_single_tool) attaches
+        # ``_task_scope`` explicitly, but other paths — the text-fence
+        # "fake tool" dispatch, and any future caller — reach call_tool
+        # without it. Rather than require every path to remember, build the
+        # envelope HERE from the task contextvars whenever it wasn't supplied.
+        # This makes escalation delivery path-independent: any shell call made
+        # while a task grant is active carries the grant. An explicitly-passed
+        # envelope wins (callers may override); we only fill the gap.
+        if task_scope is None:
+            task_scope = build_task_scope_envelope()
         
         # Strip routing metadata so MCP servers only see real tool parameters.
         # This is what makes the approach universal: external servers never

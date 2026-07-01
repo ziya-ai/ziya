@@ -19,6 +19,7 @@ Security:
     self-correct.
 """
 
+import fnmatch
 import os
 import time
 from pathlib import Path
@@ -58,12 +59,12 @@ def _resolve_and_validate(relative_path: str, workspace_path: str, allowed_absol
         raise ValueError(f"path traversal ('..') is not allowed: {cleaned}")
 
     base = Path(workspace_path).resolve()
-    resolved = (base / cleaned).resolve()
-
-    # Final containment check — allow absolute paths whose resolved form
-    # falls under one of the explicitly allowed prefixes (e.g. /tmp/).
+    # Check containment on the lexical (pre-symlink-resolution) path so that
+    # symlinks inside the project that point outside it are still accessible.
+    # The symlink's presence inside the project tree is sufficient authority.
+    lexical = (base / cleaned)
     try:
-        resolved.relative_to(base)
+        lexical.relative_to(base)
     except ValueError:
         if allowed_absolute_prefixes and os.path.isabs(cleaned):
             resolved = Path(cleaned).resolve()
@@ -73,7 +74,8 @@ def _resolve_and_validate(relative_path: str, workspace_path: str, allowed_absol
             f"resolved path escapes project root: {resolved} is not under {base}"
         )
 
-    return resolved
+    # Resolve symlinks for the actual I/O path, now that containment is confirmed.
+    return lexical.resolve()
 
 
 def _is_under_allowed_prefix(resolved: Path, prefixes: list) -> bool:
@@ -159,8 +161,19 @@ def _check_task_scope_write(relative_path: str, project_root: str) -> bool:
     target_abs = expanded if os.path.isabs(expanded) else os.path.join(project_root, expanded)
     target_norm = os.path.normpath(target_abs)
     root_norm = os.path.normpath(project_root)
+    rel = (
+        target_norm[len(root_norm):].lstrip(os.sep)
+        if target_norm.startswith(root_norm) else raw
+    )
     for entry in entries:
         try:
+            # Glob grant (CLI task write_patterns) — match project-relative path
+            # and basename, mirroring WritePolicyManager.allowed_write_patterns.
+            pat = (entry.get("pattern") or "").strip()
+            if pat:
+                if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(os.path.basename(rel), pat):
+                    return True
+                continue
             ep = (entry.get("path") or "").strip()
             if not ep:
                 continue
