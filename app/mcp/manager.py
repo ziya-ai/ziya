@@ -888,14 +888,28 @@ class MCPManager:
                     _perms = get_permissions_manager().get_permissions()
                     _srv_perms = _perms.get('servers', {}).get(server_name, {})
                     _default_perm = _perms.get('defaults', {}).get('tool', 'enabled')
+                    _clean_tools = []
                     for tool in client.tools:
                         _tool_perm = _srv_perms.get('tools', {}).get(
                             tool.name, {}
                         ).get('permission', _default_perm)
                         if _tool_perm == 'disabled':
+                            _clean_tools.append(tool)  # inert (never sent to agent), keep as-is
                             continue
-                        for w in scan_tool_description(tool.name, tool.description):
-                            logger.warning(f"⚠️  TOOL POISONING: {w}")
+                        _warnings = list(scan_tool_description(tool.name, tool.description))
+                        if _warnings:
+                            # Block, don't just log (CWE-94): a poisoned description
+                            # injected verbatim into the system prompt carries the
+                            # same authority as Ziya's own instructions. Removing the
+                            # tool from client.tools ensures get_all_tools() never
+                            # returns it, so it reaches no prompt path.
+                            logger.error(
+                                f"🚫 Blocking tool '{tool.name}' from server "
+                                f"'{server_name}': " + "; ".join(_warnings)
+                            )
+                        else:
+                            _clean_tools.append(tool)
+                    client.tools = _clean_tools
             else:
                 logger.error(f"Failed to connect to MCP server: {server_name}")
                 
