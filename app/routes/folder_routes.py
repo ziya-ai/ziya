@@ -227,7 +227,25 @@ async def get_file(request: FileRequest):
 async def save_file(request: FileContentRequest):
     """Save content to a file."""
     try:
-        with open(request.file_path, 'w') as f:
+        # Gate through the same write policy the MCP fileio tool enforces.
+        # Without this the endpoint is an unauthenticated arbitrary-file-write
+        # primitive: a local process (or a prompt-injected agent tool call) can
+        # POST {"file_path": "../../../.ssh/authorized_keys", ...} and bypass
+        # WritePolicyManager entirely (CWE-22). realpath resolves ".." and
+        # symlinks to a canonical path before the policy check.
+        from ..config.write_policy import get_write_policy_manager
+        resolved_path = os.path.realpath(os.path.abspath(request.file_path))
+        try:
+            project_root = get_project_root() or ""
+        except Exception:
+            project_root = ziya_env("ZIYA_USER_CODEBASE_DIR") or ""
+        allowed, reason = get_write_policy_manager().is_direct_write_allowed(
+            resolved_path, project_root, file_exists=os.path.exists(resolved_path)
+        )
+        if not allowed:
+            logger.warning(f"/save blocked by write policy: {resolved_path} ({reason})")
+            return JSONResponse(status_code=403, content={"error": "Write to this path is not permitted by policy"})
+        with open(resolved_path, 'w') as f:
             f.write(request.content)
         return {"success": True}
     except Exception as e:
