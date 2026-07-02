@@ -271,3 +271,86 @@ class TestSymlinkResolution:
     def test_resolved_var_tmp_allowed(self, pm, project_root):
         resolved = os.path.realpath("/var/tmp")
         assert pm.is_write_allowed(f"{resolved}/output.log", project_root)
+
+
+# ── PenPal #55 (CWE-22): normalize before containment checks ───────
+#
+# _check_path previously compared raw, un-normalized strings against
+# safe-path entries. A traversal sequence that starts with an allowed
+# prefix (e.g. ".ziya/../../../etc/cron.d/x") string-prefix-matched
+# ".ziya/" while resolving OUTSIDE project_root once a shell or open()
+# call later collapsed the "..". These tests target the exact bypass
+# shape from the report, not just outcomes that also happen to be
+# blocked by other logic.
+
+class TestNormalizedContainment:
+
+    def test_safe_path_traversal_via_relative_prefix_blocked(self, pm, project_root):
+        """'.ziya/../../../etc/cron.d/x' starts with the safe '.ziya/'
+        prefix as a raw string, but normalizes to a path far outside
+        project_root. Must be blocked."""
+        assert not pm.is_write_allowed(".ziya/../../../etc/cron.d/x", project_root)
+
+    def test_safe_path_traversal_single_level_blocked(self, pm, project_root):
+        """A single '..' that still resolves outside .ziya/ must also
+        be blocked (not just deep traversals)."""
+        assert not pm.is_write_allowed(".ziya/../outside.txt", project_root)
+
+    def test_safe_path_traversal_resolving_back_inside_allowed(self, pm, project_root):
+        """A traversal that resolves back to a location still inside
+        .ziya/ is legitimately safe and must remain allowed — the fix
+        must not be overly strict."""
+        assert pm.is_write_allowed(".ziya/sub/../notes.md", project_root)
+
+    def test_absolute_safe_path_traversal_blocked(self, pm, project_root):
+        """Same bypass shape against an absolute safe_write_paths entry
+        (/tmp/) rather than a project-relative one."""
+        assert not pm.is_write_allowed("/tmp/../etc/passwd", project_root)
+
+    def test_sibling_directory_prefix_not_treated_as_safe(self, pm, project_root):
+        """A path under a sibling directory whose name is a prefix of an
+        allowed absolute path (e.g. '/tmp-evil/x' vs safe '/tmp/') must
+        not be treated as inside the safe path."""
+        assert not pm.is_write_allowed("/tmp-evil/x", project_root)
+
+    def test_project_relative_sibling_prefix_not_matched(self, pm, project_root):
+        """A project-relative safe entry (e.g. 'design/') must require an
+        os.sep boundary — 'design-secrets/x' must not match 'design/'."""
+        pm._policy["safe_write_paths"] = [".ziya/", "design/"]
+        assert not pm.is_write_allowed("design-secrets/x", project_root)
+        assert pm.is_write_allowed("design/notes.md", project_root)
+
+
+class TestIsWithinProjectSiblingBypass:
+    """_is_within_project backs direct_write_mode's project-containment
+    check. A sibling directory whose name is a prefix of project_root
+    (e.g. '/proj-backup' vs root '/proj') must not be treated as
+    'within' the project — this is the CVE-class the fix closed."""
+
+    def test_sibling_prefix_directory_not_within_project(self, pm, project_root):
+        sibling = project_root + "-backup"
+        assert not pm._is_within_project(f"{sibling}/secret.txt", project_root)
+
+    def test_actual_subdirectory_is_within_project(self, pm, project_root):
+        assert pm._is_within_project("src/main.py", project_root)
+
+    def test_project_root_itself_is_within_project(self, pm, project_root):
+        assert pm._is_within_project(".", project_root)
+
+    def test_traversal_out_of_project_not_within(self, pm, project_root):
+        assert not pm._is_within_project("../../etc/passwd", project_root)
+
+    def test_direct_write_mode_all_files_respects_sibling_fix(self, pm, project_root):
+        """End-to-end: with direct_write_mode='all_files', a sibling dir
+        that string-prefix-matches project_root must still be rejected
+        by is_direct_write_allowed."""
+        pm._policy["direct_write_mode"] = "all_files"
+        sibling = project_root + "-backup"
+        allowed, _ = pm.is_direct_write_allowed(f"{sibling}/secret.txt", project_root)
+        assert not allowed
+
+    def test_direct_write_mode_all_files_allows_real_subpath(self, pm, project_root):
+        pm._policy["direct_write_mode"] = "all_files"
+        allowed, _ = pm.is_direct_write_allowed("src/new_file.py", project_root)
+        assert allowed
+
