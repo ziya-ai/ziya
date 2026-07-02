@@ -86,6 +86,17 @@ def create_new_file(git_diff: str, base_dir: str) -> None:
             
         # Extract the file path from the diff --git line
         full_path = os.path.join(base_dir, file_path)
+        # Containment check (CWE-22/94): file_path came verbatim from a diff
+        # header the caller does not otherwise validate at this depth — a
+        # "+++ b/../../../etc/cron.d/x" header reaches this, the true write
+        # sink, from three different upstream extraction sites. Kept as an
+        # inline check (no import from app.routes/app.services) to preserve
+        # this module's layering.
+        _resolved_base = os.path.abspath(base_dir)
+        _resolved_full = os.path.abspath(full_path)
+        if not (_resolved_full == _resolved_base
+                or _resolved_full.startswith(_resolved_base + os.sep)):
+            raise ValueError(f"Path traversal detected: diff target '{file_path}' escapes base directory")
         logger.debug(f"Creating file at path: {file_path}")
 
         # Create directory if it doesn't exist
