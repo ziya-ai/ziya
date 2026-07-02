@@ -5,6 +5,7 @@ import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 import { rerouteSkipEdges, shouldRerouteEdges } from './mermaidEdgeRerouter';
 import { getZoomScript, getDownloadSvgScript } from '../../utils/popupScriptUtils';
 import { hexToRgb, enhanceSVGVisibility } from '../../utils/colorUtils';
+import { escapeHtml } from '../../utils/htmlSanitize';
 
 // Add mermaid to window for TypeScript
 declare global {
@@ -1088,7 +1089,7 @@ ${svgData}`;
                         border-radius: 4px;
                         overflow: auto;
                         color: ${isDarkMode ? '#e6e6e6' : '#24292e'};
-                    "><code>${spec.definition}</code></pre>`;
+                    "><code>${escapeHtml(spec.definition ?? '')}</code></pre>`;
             } else {
                 // Restore cached state
                 wrapper.innerHTML = cachedSVG;
@@ -1181,10 +1182,10 @@ ${svgData}`;
                 <div class="mermaid-error">
                     <strong>${errorTitle}:</strong>
                     <p>${errorMessage}</p>
-                    <pre>${error.message || 'Unknown error'}</pre>
+                    <pre>${escapeHtml(error.message || 'Unknown error')}</pre>
                     <details>
                         <summary>Show Definition</summary>
-                        <pre><code>${spec.definition}</code></pre>
+                        <pre><code>${escapeHtml(spec.definition ?? '')}</code></pre>
                     </details>
                 </div>
                 `;
@@ -1239,7 +1240,7 @@ ${svgData}`;
                             border-radius: 4px;
                             overflow: auto;
                             color: ${isDarkMode ? '#e6e6e6' : '#24292e'};
-                        "><code>${spec.definition}</code></pre>`;
+                        "><code>${escapeHtml(spec.definition ?? '')}</code></pre>`;
 
                     // Add back button
                     const backButton = document.createElement('button');
