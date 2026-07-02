@@ -38,6 +38,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -48,6 +50,119 @@ from typing import Any, Dict, Optional, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from app.config import scope_canonical as sc  # noqa: E402
+
+
+def _provision(force: bool) -> int:
+    """One-time, per-machine root setup: generate the Ed25519 approval keypair
+    and the locked-down sudoers entry that gates ``ziya-approve`` (ASR
+    F-004/F-007, design §4.0/§5). Pure-Python so it ships with the console entry
+    point and needs no path-dependent file on toolbox/pip installs.
+
+    After this runs:
+        /etc/ziya/approve_ed25519        root:root 0600  (private — signer only)
+        /etc/ziya/approve_ed25519.pub    root:root 0644  (public  — verifier)
+        /etc/sudoers.d/ziya-approve      0440            (timestamp_timeout=0)
+    """
+    if os.geteuid() != 0:
+        sys.stderr.write("--provision must run as root: sudo ziya-approve --provision\n")
+        return 2
+
+    real_user = os.environ.get("SUDO_USER")
+    if not real_user:
+        sys.stderr.write(
+            "Could not determine the invoking user (SUDO_USER unset). "
+            "Re-run with: sudo ziya-approve --provision\n"
+        )
+        return 2
+
+    priv = Path(sc.private_key_path())
+    pub = Path(sc.public_key_path())
+    key_dir = priv.parent
+    key_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(key_dir, 0o755)
+
+    if priv.exists() and not force:
+        sys.stdout.write(
+            f"Keypair already present at {priv} (use --force to regenerate). "
+            f"Leaving as-is.\n"
+        )
+    else:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives import serialization
+        key = Ed25519PrivateKey.generate()
+        priv_bytes = key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+        pub_bytes = key.public_key().public_bytes(
+            serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH,
+        )
+        # Write private key 0600 from creation (never briefly world-readable).
+        fd = os.open(str(priv), os.O_CREAT | os.O_TRUNC | os.O_WRONLY, 0o600)
+        try:
+            os.write(fd, priv_bytes)
+        finally:
+            os.close(fd)
+        pub.write_bytes(pub_bytes + b"\n")
+
+    import grp
+    try:
+        root_grp = grp.getgrgid(0).gr_name
+    except KeyError:
+        root_grp = "wheel"
+    for p, mode in ((priv, 0o600), (pub, 0o644)):
+        shutil.chown(str(p), user="root", group=root_grp)
+        os.chmod(p, mode)
+    if os.stat(priv).st_mode & 0o077:
+        sys.stderr.write(f"ERROR: {priv} is not owner-only after chmod; aborting.\n")
+        return 2
+    sys.stdout.write(f"  private: {priv} (0600 root:{root_grp})\n")
+    sys.stdout.write(f"  public:  {pub} (0644 root:{root_grp})\n")
+
+    # sudoers entry: gate ziya-approve, force re-auth every invocation
+    # (timestamp_timeout=0 → no cached credential an agent-timed call could
+    # ride). No NOPASSWD: the password / Touch-ID prompt IS the human gate.
+    approve_bin = shutil.which("ziya-approve")
+    if approve_bin:
+        cmnd = approve_bin
+    else:
+        pybin = shutil.which("python3") or sys.executable
+        cmnd = f"{pybin} -m app.utils.ziya_approve"
+    sudoers_body = (
+        "# Ziya escalation approval — re-auth every invocation (no cached "
+        "timestamp).\n"
+        "# Managed by `ziya-approve --provision`. Do not edit by hand.\n"
+        "Defaults!ZIYA_APPROVE timestamp_timeout=0\n"
+        f"Cmnd_Alias ZIYA_APPROVE = {cmnd}\n"
+        f"{real_user} ALL=(root) ZIYA_APPROVE\n"
+    )
+    sudoers_path = Path("/etc/sudoers.d/ziya-approve")
+    import tempfile
+    tmp = tempfile.NamedTemporaryFile("w", delete=False, suffix=".sudoers")
+    try:
+        tmp.write(sudoers_body)
+        tmp.close()
+        # Validate before installing — a malformed sudoers file locks out sudo.
+        chk = subprocess.run(["visudo", "-cf", tmp.name], capture_output=True)
+        if chk.returncode != 0:
+            sys.stderr.write(
+                "ERROR: generated sudoers entry failed visudo validation; "
+                "NOT installing.\n" + chk.stderr.decode("utf-8", "replace")
+            )
+            return 2
+        shutil.copy(tmp.name, str(sudoers_path))
+        os.chmod(sudoers_path, 0o440)
+        shutil.chown(str(sudoers_path), user="root", group=root_grp)
+    finally:
+        os.unlink(tmp.name)
+    sys.stdout.write(f"  sudoers: {sudoers_path} (validated, timestamp_timeout=0)\n")
+    sys.stdout.write(
+        "\nProvisioning complete. Approve escalations with:  sudo ziya-approve\n"
+        "The Ziya agent (normal user) cannot read the private key and cannot "
+        "run sudo to effect.\n"
+    )
+    return 0
 
 
 def _mcp_config_path() -> Path:
@@ -250,7 +365,7 @@ def _approve_session(config_path: Path, provider: str, assume_yes: bool) -> int:
     except FileNotFoundError:
         sys.stderr.write(
             f"Private key not found at {sc.private_key_path()}. "
-            f"Run the provisioning script (scripts/provision_approve_key.sh) first.\n"
+            f"Run 'sudo ziya-approve --provision' first.\n"
         )
         return 2
     except Exception as e:  # noqa: BLE001 — surface any key/sign failure clearly
@@ -466,7 +581,7 @@ def _approve_task(project_id: str, card_id: str, block_id: str,
     except FileNotFoundError:
         sys.stderr.write(
             f"Private key not found at {sc.private_key_path()}. "
-            f"Run the provisioning script (scripts/provision_approve_key.sh) first.\n"
+            f"Run 'sudo ziya-approve --provision' first.\n"
         )
         return 2
     except Exception as e:  # noqa: BLE001 — surface any key/sign failure clearly
@@ -565,7 +680,7 @@ def _approve_cli_task(task_name: str, root: Optional[str],
     except FileNotFoundError:
         sys.stderr.write(
             f"Private key not found at {sc.private_key_path()}. "
-            f"Run the provisioning script (scripts/provision_approve_key.sh) first.\n"
+            f"Run 'sudo ziya-approve --provision' first.\n"
         )
         return 2
     except Exception as e:  # noqa: BLE001
@@ -716,6 +831,16 @@ def main(argv: Optional[list] = None) -> int:
         description="Sign the pending shell-config escalation (root-gated).",
     )
     parser.add_argument(
+        "--provision", action="store_true",
+        help="One-time root setup: generate the /etc/ziya approval keypair and "
+             "the locked-down sudoers entry. Run as: sudo ziya-approve --provision.",
+    )
+    parser.add_argument(
+        "--force", action="store_true",
+        help="With --provision, regenerate the keypair (voids all existing "
+             "approvals until re-signed).",
+    )
+    parser.add_argument(
         "--list", action="store_true", dest="list_audit",
         help="Audit every escalating task (cards + tasks.yaml) and show its "
              "signed/unsigned status. Read-only; no key required. Exit 1 if "
@@ -774,6 +899,10 @@ def main(argv: Optional[list] = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # Root provisioning — no key/config needed; must run before signing paths.
+    if args.provision:
+        return _provision(args.force)
+
     # Read-only audit mode — no signing, no key, no sudo required. Routed first
     # so it never touches the config/key paths the signing modes need.
     if args.list_audit:
@@ -830,7 +959,7 @@ def main(argv: Optional[list] = None) -> int:
     except FileNotFoundError:
         sys.stderr.write(
             f"Private key not found at {sc.private_key_path()}. "
-            f"Run the provisioning script (scripts/provision_approve_key.sh) first.\n"
+            f"Run 'sudo ziya-approve --provision' first.\n"
         )
         return 2
     except Exception as e:  # noqa: BLE001 — surface any key/sign failure clearly
