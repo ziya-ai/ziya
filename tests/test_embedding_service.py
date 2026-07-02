@@ -167,3 +167,86 @@ class TestBedrockProvider:
         provider = BedrockTitanProvider()
         assert provider.embed_text("") is None
         assert provider.embed_text("   ") is None
+
+
+# ── PenPal #159 (CWE-502): pickle RCE via allow_pickle=True ────────
+#
+# _ensure_loaded() previously called np.load(..., allow_pickle=True) on
+# a cleartext .npz derived entirely from user/attacker-controlled input
+# (a planted file at ~/.ziya/memory/embeddings.npz, or a widened
+# ZIYA_HOME). A pickled object's __reduce__ executes during np.load,
+# BEFORE the surrounding except Exception can react. The fix switches
+# to allow_pickle=False and dtype=str on save so no cache ever needs
+# pickle to round-trip. These tests prove the actual exploit payload
+# from the report cannot execute, not just that behavior changed.
+
+class TestPickleRCEClosed:
+    def test_malicious_pickle_payload_never_executes(self, tmp_path):
+        """Recreate the report's PoC: a pickled __reduce__ gadget that
+        would call os.system on load. Must not execute, and must not
+        propagate an exception past _ensure_loaded (self-heals to an
+        empty cache instead, matching normal 'corrupt cache' handling)."""
+        import io as _io
+        marker = tmp_path / "PWNED"
+
+        class Exploit:
+            def __reduce__(self):
+                # Would touch disk if pickle were ever deserialized during load.
+                return (_touch_marker, (str(marker),))
+
+        buf = _io.BytesIO()
+        np.savez(buf, ids=np.array([Exploit()], dtype=object),
+                  vectors=np.zeros((1, 8), dtype=np.float32))
+        (tmp_path / "embeddings.npz").write_bytes(buf.getvalue())
+
+        cache = EmbeddingCache(tmp_path, dim=8)
+        # Triggers _ensure_loaded via any public read path.
+        result = cache.get("m_1")
+
+        assert not marker.exists(), "pickle payload executed — CWE-502 regression"
+        # Corrupt/rejected cache degrades to empty rather than raising.
+        assert result is None
+        assert cache.count == 0
+
+    def test_load_rejects_object_dtype_ids_without_crashing(self, tmp_path):
+        """A pre-existing legacy cache saved with the old dtype=object
+        format (no pickle payload, just plain strings) must not crash
+        the caller — allow_pickle=False rejects it, and the cache
+        self-heals to empty so the store rebuilds transparently."""
+        import io as _io
+        buf = _io.BytesIO()
+        np.savez(buf, ids=np.array(["m_legacy"], dtype=object),
+                  vectors=np.zeros((1, 8), dtype=np.float32))
+        (tmp_path / "embeddings.npz").write_bytes(buf.getvalue())
+
+        cache = EmbeddingCache(tmp_path, dim=8)
+        assert cache.get("m_legacy") is None
+        assert cache.count == 0
+
+    def test_new_cache_saved_with_dtype_str_round_trips(self, tmp_path):
+        """flush()/reload with the new dtype=str format must work
+        end-to-end with allow_pickle=False on the read side — this is
+        the migration path every fresh cache now takes."""
+        cache1 = EmbeddingCache(tmp_path, dim=8)
+        vec = _random_vec()
+        cache1.put("m_new", vec)
+        cache1.flush()
+
+        # Saved bytes must not require pickle to load.
+        raw = (tmp_path / "embeddings.npz").read_bytes()
+        import io as _io
+        data = np.load(_io.BytesIO(raw), allow_pickle=False)
+        assert list(data["ids"]) == ["m_new"] or list(data["ids"])[0] == "m_new"
+
+        cache2 = EmbeddingCache(tmp_path, dim=8)
+        retrieved = cache2.get("m_new")
+        assert retrieved is not None
+        np.testing.assert_array_almost_equal(retrieved, vec)
+
+
+def _touch_marker(path: str) -> None:
+    """Side-effect helper for TestPickleRCEClosed — writes a marker file
+    if invoked. Used to prove a pickle reduction did/didn't execute."""
+    with open(path, "w") as f:
+        f.write("pwned")
+
