@@ -1499,8 +1499,16 @@ def get_combined_docs_from_files(files, conversation_id: str = "default") -> str
     except ImportError:
         user_codebase_dir = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
     for file_path in files:
-        from app.utils.file_utils import resolve_external_path, EXTERNAL_PREFIX
-        full_path = resolve_external_path(file_path, user_codebase_dir)
+        from app.utils.file_utils import resolve_external_path, EXTERNAL_PREFIX, ExternalPathNotAllowed
+        try:
+            full_path = resolve_external_path(file_path, user_codebase_dir)
+        except ExternalPathNotAllowed as e:
+            # resolve_external_path now rejects [external] paths that aren't on
+            # the user-approved allowlist (CWE-22/200 fix). Skip this one file
+            # rather than aborting the whole batch — a stale/removed allowlist
+            # entry should degrade to "file unavailable", not a hard error.
+            logger.warning(f"Skipping unapproved external path {file_path}: {e}")
+            continue
         
         # For external paths, use the resolved absolute path as the display key
         display_path = file_path
@@ -1571,10 +1579,16 @@ def extract_file_paths_from_input(x) -> List[str]:
     except ImportError:
         user_codebase_dir = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
     
-    from app.utils.file_utils import resolve_external_path
+    from app.utils.file_utils import resolve_external_path, ExternalPathNotAllowed
     file_paths = []
     for file_path in files:
-        full_path = resolve_external_path(file_path, user_codebase_dir)
+        try:
+            full_path = resolve_external_path(file_path, user_codebase_dir)
+        except ExternalPathNotAllowed as e:
+            # Skip files whose [external] path fell off the allowlist rather
+            # than letting one unapproved entry crash cache-tracking for all.
+            logger.warning(f"Skipping unapproved external path {file_path}: {e}")
+            continue
         if os.path.exists(full_path) and not os.path.isdir(full_path):
             file_paths.append(full_path)
     
@@ -1684,7 +1698,7 @@ def extract_codebase(x):
                 _root = get_project_root()
             except ImportError:
                 _root = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
-            from app.utils.file_utils import resolve_external_path
+            from app.utils.file_utils import resolve_external_path, ExternalPathNotAllowed
             full_path = resolve_external_path(file_path, _root)
             if os.path.isdir(full_path):
                 logger.debug(f"Skipping directory: {file_path}")
@@ -1701,6 +1715,9 @@ def extract_codebase(x):
                 logger.debug(f"Successfully loaded {file_path} with {lines} lines")
             else:
                 logger.warning(f"Failed to read content from {file_path}")
+        except ExternalPathNotAllowed as e:
+            logger.warning(f"Skipping unapproved external path {file_path}: {e}")
+            continue
         except (OSError, UnicodeDecodeError, PermissionError) as e:
             logger.error(f"Error reading file {file_path}: {str(e)}")
             continue
