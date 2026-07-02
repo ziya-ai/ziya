@@ -13,6 +13,7 @@ to ~100K before needing an index (HNSW/IVF).
 """
 
 import json
+import io
 import os
 import time
 import threading
@@ -142,7 +143,24 @@ class EmbeddingCache:
             return
         if self._file.exists():
             try:
-                data = np.load(self._file, allow_pickle=True)
+                # ALE: the on-disk file may be an encrypted envelope wrapping the
+                # npz bytes (embeddings derive from Critical/Restricted memory
+                # content). Decrypt when the ALE magic is present; a legacy
+                # cleartext .npz lacks the magic and loads directly.
+                raw = self._file.read_bytes()
+                from app.utils.encryption import is_encrypted, get_encryptor
+                if is_encrypted(raw):
+                    raw = get_encryptor().decrypt(raw)
+                # allow_pickle=False is mandatory: a cleartext .npz planted by a
+                # local attacker (or a world-writable ~/.ziya/memory) carries no
+                # ALE magic, so is_encrypted() is False and the bytes are loaded
+                # verbatim. allow_pickle=True would execute arbitrary Python from
+                # a pickle reduction during load, before this try/except can react
+                # (CWE-502). IDs are now saved as dtype=str (see flush), which
+                # NumPy serializes natively, so pickle is never needed. A legacy
+                # dtype=object cache fails to load here and is transparently
+                # rebuilt by the caller — acceptable for a derived cache.
+                data = np.load(io.BytesIO(raw), allow_pickle=False)
                 self._ids = list(data["ids"])
                 self._vectors = data["vectors"].astype(np.float32)
                 self._id_to_idx = {mid: i for i, mid in enumerate(self._ids)}
@@ -227,10 +245,27 @@ class EmbeddingCache:
                 return
             try:
                 self._file.parent.mkdir(parents=True, exist_ok=True)
-                tmp = self._file.with_suffix(".tmp.npz")
-                np.savez(tmp,
-                         ids=np.array(self._ids, dtype=object),
+                # Serialize the npz to an in-memory buffer, then write through
+                # ALE. Embedding vectors are a lossy derivative of Critical/
+                # Restricted memory content, so they get the same at-rest
+                # protection as memories.json (category "session_data"). When
+                # ALE is disabled, encrypt() returns the bytes unchanged, so a
+                # plain loadable .npz is written (backward compatible).
+                buf = io.BytesIO()
+                np.savez(buf,
+                         # dtype=str stores IDs as a native fixed-width Unicode
+                         # array (<U…) that NumPy serializes without pickle, so
+                         # the cache can be loaded with allow_pickle=False. IDs
+                         # are plain strings, so no object dtype is needed.
+                         ids=np.array(self._ids, dtype=str),
                          vectors=self._vectors)
+                payload = buf.getvalue()
+                from app.utils.encryption import get_encryptor
+                enc = get_encryptor()
+                if enc.is_enabled("session_data"):
+                    payload = enc.encrypt(payload, "session_data")
+                tmp = self._file.with_suffix(".tmp.npz")
+                tmp.write_bytes(payload)
                 tmp.rename(self._file)
                 self._dirty = False
                 logger.debug(f"Flushed {len(self._ids)} embeddings to disk")
