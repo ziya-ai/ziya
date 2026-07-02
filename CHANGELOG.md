@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 ### Fixed
+- **YOLO mode now enforces `always_blocked` by basename, closing an absolute-path `sudo`/`su` bypass (ASR follow-up, F-001/F-004)** (`app/mcp_servers/shell_server.py`, `tests/test_yolo_always_blocked.py`). YOLO mode bypasses the command allowlist, so the hardcoded `always_blocked` list (sudo, su, systemctl, vi, …) is the only remaining floor. The normal-mode path already matched both the first word *and* its basename against that list, but the YOLO-mode path matched the literal first word only — so `/usr/bin/sudo …` (absolute path) was not recognized as `sudo` and slipped through. On an Amazon dev host (`NOPASSWD: ALL`), a YOLO-session agent could therefore reach `sudo <venv>/ziya-approve --provision` and mint escalation signatures. The YOLO scan now also checks `os.path.basename(first_word)`, matching normal-mode rigor, across every operator- and newline-separated segment. Defense-in-depth (a user enabling YOLO is opting into "run anything" for that session); the durable concern it removes is a *signed approval record* — which outlives the YOLO session and applies to later non-YOLO runs — being mintable from within a YOLO session. Unsigned `YOLO_MODE` is still stripped to the floor by the F-004 scope gate, so the agent cannot self-enter YOLO. 9 tests added; the full shell suite (139 tests) passes unchanged.
 
 ### Changed
 
