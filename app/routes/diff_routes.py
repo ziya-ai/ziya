@@ -101,21 +101,22 @@ async def apply_changes(request: Request):
         # Prioritize extracting the file path from the diff content itself
         extracted_path = extract_target_file_from_diff(validated.diff)
 
-        if extracted_path:
-            file_path = os.path.join(user_codebase_dir, extracted_path)
-            logger.info(f"Extracted target file from diff: {extracted_path}")
-        elif validated.filePath:
-            # Fallback to using the provided filePath if extraction fails
-            file_path = os.path.join(user_codebase_dir, validated.filePath)
-            logger.info(f"Using provided file path: {validated.filePath}")
-
-            # Resolve the absolute path and verify it is within an allowed root
-            resolved_path = os.path.abspath(file_path)
-            if not is_path_explicitly_allowed(resolved_path, user_codebase_dir):
-                logger.error(f"Attempt to access file outside codebase directory: {resolved_path}")
-                raise ValueError("Invalid file path specified")
-        else:
+        # Path validation used to run only on the validated.filePath fallback
+        # branch; the diff-extracted path (attacker-controlled via a crafted
+        # "+++ b/../../.." header) reached apply_diff_pipeline unchecked
+        # (CWE-94/22). Both sources now resolve through the same check.
+        raw_path = extracted_path or validated.filePath
+        if not raw_path:
             raise ValueError("Could not determine target file path from diff or request")
+        if extracted_path:
+            logger.info(f"Extracted target file from diff: {extracted_path}")
+        else:
+            logger.info(f"Using provided file path: {validated.filePath}")
+        file_path = os.path.join(user_codebase_dir, raw_path)
+        resolved_path = os.path.abspath(file_path)
+        if not is_path_explicitly_allowed(resolved_path, user_codebase_dir):
+            logger.error(f"Attempt to access file outside codebase directory: {resolved_path}")
+            raise ValueError("Invalid file path specified")
 
         # Extract individual diffs if multiple are present
         individual_diffs = split_combined_diff(validated.diff)
@@ -334,7 +335,13 @@ async def validate_files(request: Request):
         existing_files = []
         for file_path in files:
             full_path = os.path.join(user_codebase_dir, file_path)
-            if os.path.exists(full_path) and os.path.isfile(full_path):
+            resolved_path = os.path.abspath(full_path)
+            # Containment check before the existence test (CWE-22): without
+            # this, a "../../.ssh/id_rsa"-style path let a caller use the
+            # boolean response as a file-existence oracle for arbitrary
+            # filesystem locations outside the codebase directory.
+            if (is_path_explicitly_allowed(resolved_path, user_codebase_dir)
+                    and os.path.exists(resolved_path) and os.path.isfile(resolved_path)):
                 existing_files.append(file_path)
         
         return {"existingFiles": existing_files}
