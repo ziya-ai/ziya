@@ -8,6 +8,11 @@ from app.utils.document_extractor import is_document_file, extract_document_text
 
 EXTERNAL_PREFIX = '[external]'
 
+class ExternalPathNotAllowed(ValueError):
+    """Raised when an [external] path is not on the user-approved allowlist."""
+    pass
+
+
 def resolve_external_path(file_path: str, base_dir: str) -> str:
     """Resolve a file path that may carry the [external] prefix.
 
@@ -22,7 +27,23 @@ def resolve_external_path(file_path: str, base_dir: str) -> str:
         real = s[len(EXTERNAL_PREFIX):]
         if real and not real.startswith('/'):
             real = '/' + real
-        return real
+        # Containment gate (CWE-22/200): an [external] path is only honored if
+        # it (or an ancestor) was explicitly approved via /api/add-explicit-paths.
+        # Without this, /api/chat could be handed "[external]/etc/passwd" or
+        # "[external]~/.aws/credentials" and read any file the process can reach.
+        resolved = os.path.realpath(os.path.abspath(real))
+        try:
+            from app.services.folder_service import _explicit_external_paths
+            approved = list(_explicit_external_paths)
+        except Exception:
+            approved = []
+        for allowed in approved:
+            allowed_norm = os.path.realpath(os.path.abspath(allowed))
+            if resolved == allowed_norm or resolved.startswith(allowed_norm + os.sep):
+                return real
+        raise ExternalPathNotAllowed(
+            f"External path not on the approved allowlist: {real}"
+        )
     return os.path.join(base_dir, s)
 
 BINARY_EXTENSIONS = {
