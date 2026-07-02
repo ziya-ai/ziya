@@ -1,6 +1,7 @@
 import { D3RenderPlugin } from '../../types/d3';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
+import { escapeHtml } from '../../utils/htmlSanitize';
 
 export interface D2Spec {
     type: 'd2';
@@ -600,7 +601,7 @@ nodeGroups.append('text')
                     color: ${isDarkMode ? '#ff7875' : '#cf1322'};
                 ">
                     <strong>D2 Rendering Error:</strong>
-                    <pre style="margin: 10px 0; white-space: pre-wrap;">${error instanceof Error ? error.message : 'Unknown error'}</pre>
+                    <pre style="margin: 10px 0; white-space: pre-wrap;">${escapeHtml(error instanceof Error ? error.message : 'Unknown error')}</pre>
                     <details style="margin-top: 10px;">
                         <summary style="cursor: pointer; font-weight: bold;">Show D2 Definition</summary>
                         <pre style="
@@ -610,7 +611,7 @@ nodeGroups.append('text')
                             border-radius: 4px;
                             overflow-x: auto;
                             white-space: pre-wrap;
-                        "><code>${spec.definition}</code></pre>
+                        "><code>${escapeHtml(spec.definition ?? '')}</code></pre>
                     </details>
                 </div>
             `;

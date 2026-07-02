@@ -4,6 +4,7 @@ import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 import { enhanceSVGVisibility, isLightBackground } from '../../utils/colorUtils';
 import { zoomIn, zoomOut, resetZoom, storeOriginalViewBox } from '../../utils/zoomUtils';
 import { downloadSvg } from '../../utils/svgUtils';
+import { escapeHtml } from '../../utils/htmlSanitize';
 import { getZoomScript, getDownloadSvgScript } from '../../utils/popupScriptUtils';
 
 export interface GraphvizSpec {
@@ -659,7 +660,7 @@ ${svgData}`;
                                 fontFamily: 'Monaco, Menlo, \"Ubuntu Mono\", monospace';
                                 maxHeight: '500px';
                                 overflow: 'auto'
-                            "><code>${spec.definition}</code></pre>
+                            "><code>${escapeHtml(spec.definition ?? '')}</code></pre>
                         </div>
                     `;
                 } else {
@@ -688,10 +689,10 @@ ${svgData}`;
                 container.innerHTML = `
                 <div class="graphviz-error">
                     <strong>Graphviz Error:</strong>
-                    <pre>${error instanceof Error ? error.message : 'Unknown error'}</pre>
+                    <pre>${escapeHtml(error instanceof Error ? error.message : 'Unknown error')}</pre>
                     <details>
                         <summary>Show Definition</summary>
-                        <pre><code>${spec.definition}</code></pre>
+                        <pre><code>${escapeHtml(spec.definition ?? '')}</code></pre>
                     </details>
                 </div>
             `;
