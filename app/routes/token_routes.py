@@ -162,10 +162,18 @@ async def get_accurate_token_counts(request: AccurateTokenCountRequest) -> Dict[
         if not user_codebase_dir:
             raise ValueError("ZIYA_USER_CODEBASE_DIR not set")
         
-        from app.utils.file_utils import resolve_external_path
+        from app.utils.file_utils import resolve_external_path, ExternalPathNotAllowed
         results = {}
         for file_path in request.file_paths:
-            full_path = resolve_external_path(file_path, user_codebase_dir)
+            try:
+                full_path = resolve_external_path(file_path, user_codebase_dir)
+            except ExternalPathNotAllowed as e:
+                # Unapproved [external] path (CWE-22/200 fix) — report the
+                # same "not found" shape the client already handles, rather
+                # than a raw 500 that aborts the whole batch.
+                logger.warning(f"Skipping unapproved external path {file_path}: {e}")
+                results[file_path] = {"accurate_count": 0, "error": "File not found"}
+                continue
             if os.path.exists(full_path) and os.path.isfile(full_path):
                 accurate_count = get_accurate_token_count(full_path)
                 # Get the estimated count for comparison

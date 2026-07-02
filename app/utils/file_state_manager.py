@@ -383,8 +383,15 @@ class FileStateManager:
             logger.debug(f"File {file_path} not in conversation {conversation_id}, skipping refresh")
             return False
         
-        from app.utils.file_utils import resolve_external_path
-        full_path = resolve_external_path(file_path, base_dir)
+        from app.utils.file_utils import resolve_external_path, ExternalPathNotAllowed
+        try:
+            full_path = resolve_external_path(file_path, base_dir)
+        except ExternalPathNotAllowed as e:
+            # An [external] path that has fallen off the approved allowlist
+            # (CWE-22/200 fix) simply can't be refreshed — treat like any
+            # other unreadable-from-disk case rather than raising.
+            logger.warning(f"Cannot refresh unapproved external path {file_path}: {e}")
+            return False
         
         # Use read_file_content which handles documents, images, etc.
         disk_content = read_file_content(full_path)
