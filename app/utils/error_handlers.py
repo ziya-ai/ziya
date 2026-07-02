@@ -4,6 +4,7 @@ This module provides consistent error handling across all endpoints.
 """
 
 import json
+import re
 from typing import Dict, Any, Tuple, Optional, AsyncIterator, Callable, List
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.requests import Request
@@ -262,3 +263,34 @@ def is_critical_error(error_message: str) -> bool:
             "Resource has been exhausted",
         ]
     )
+
+
+# ---------------------------------------------------------------------------
+# Client-facing error message sanitization (ASR: Protect Against Data Leakage)
+# ---------------------------------------------------------------------------
+# Stack traces are already never sent to the client (they are log-only). This
+# closes the residual where a bare exception *message* returned to the client
+# could still carry an internal filesystem path (disclosing machine layout /
+# username) or run unbounded. Collapses absolute paths of 3+ segments to their
+# last two components, then bounds the length.
+_ABS_PATH_RE = re.compile(r'(?<![:/\w])(?:/[\w.+\-]+){3,}/?')
+
+
+def _collapse_abs_path(match: "re.Match") -> str:
+    parts = [p for p in match.group(0).split('/') if p]
+    return '.../' + '/'.join(parts[-2:]) if len(parts) >= 2 else match.group(0)
+
+
+def sanitize_client_error(message: Any, max_len: int = 300) -> str:
+    """Redact internal filesystem paths and bound an exception message's length
+    before returning it to the client.
+
+    Use at every site that would otherwise send a raw ``str(e)`` to the
+    frontend. Server-side logs still receive the full, unredacted message.
+    """
+    if not isinstance(message, str):
+        message = str(message)
+    message = _ABS_PATH_RE.sub(_collapse_abs_path, message)
+    if len(message) > max_len:
+        message = message[:max_len] + '…'
+    return message

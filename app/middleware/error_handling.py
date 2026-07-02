@@ -12,6 +12,7 @@ from starlette.types import ASGIApp
 from h11._util import LocalProtocolError
 
 from app.utils.logging_utils import logger
+from app.utils.error_handlers import sanitize_client_error
 
 class ErrorHandlingMiddleware(BaseHTTPMiddleware):
     """Middleware for handling errors."""
@@ -54,7 +55,7 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
                     
                     error_msg = {
                         "error": "stream_error",
-                        "detail": str(e),
+                        "detail": sanitize_client_error(e),
                         "status_code": 500
                     }
                     
@@ -75,7 +76,7 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
                     yield "data: [DONE]\n\n"
                 
                 response = StreamingResponse(
-                    error_stream(str(e)),
+                    error_stream(sanitize_client_error(e)),
                     media_type="text/event-stream",
                     status_code=500
                 )
@@ -94,7 +95,7 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
                     status_code=500,
                     content={
                         "error": "server_error",
-                        "detail": str(e),
+                        "detail": sanitize_client_error(e),
                         "status_code": 500
                     }
                 )

@@ -44,7 +44,7 @@ from app.config.env_registry import ziya_env
 from app.utils.error_handlers import (
     create_json_response, create_sse_error_response, 
     is_streaming_request, ValidationError, handle_request_exception,
-    handle_streaming_error
+    handle_streaming_error, sanitize_client_error
 )
 from app.utils.diff_utils import apply_diff_pipeline
 from app.utils.diff_utils.pipeline.reverse_pipeline import apply_reverse_diff_pipeline
@@ -1156,7 +1156,7 @@ async def chat_endpoint(request: Request):
     except Exception as e:  # Intentionally broad: top-level HTTP error handler
         # Ensures clients always get a JSON error response, never a bare 500
         logger.error(f"Error in chat_endpoint: {str(e)}")
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"error": sanitize_client_error(e)}, status_code=500)
 
 # Add CORS middleware
 app.add_middleware(
@@ -1381,7 +1381,7 @@ async def _keepalive_wrapper(async_gen, interval: float = 15.0):
         except Exception as exc:  # Intentionally broad: wraps entire SSE stream
             # Any unhandled error must produce a client-visible error event, not a silent drop
             logger.error(f"_keepalive_wrapper: stream_chunks raised: {exc!r}", exc_info=True)
-            yield f"data: {json.dumps({'error': str(exc), 'error_type': 'stream_error'})}\n\n"
+            yield f"data: {json.dumps({'error': sanitize_client_error(exc), 'error_type': 'stream_error'})}\n\n"
             yield "data: {\"type\": \"stream_end\"}\n\n"
             break
 
@@ -1786,7 +1786,7 @@ async def stream_chunks(body):
                     return
                 # No content streamed yet — return error to client
                 logger.warning(f"🚀 DIRECT_STREAMING: {ve} (pre-stream)")
-                yield f"data: {json.dumps({'error': f'Model initialization error: {str(ve)[:200]}', 'error_type': 'ValueError'})}\n\n"
+                yield f"data: {json.dumps({'error': f'Model initialization error: {sanitize_client_error(ve, max_len=200)}', 'error_type': 'ValueError'})}\n\n"
                 yield f"data: {json.dumps({'done': True})}\n\n"
                 return
             except Exception as e:  # Intentionally broad: STE can raise API/auth/config errors
@@ -1816,7 +1816,7 @@ async def stream_chunks(body):
                     return
                 
                 # Generic error - always send to frontend
-                yield f"data: {json.dumps({'error': f'Error: {str(e)[:200]}', 'error_type': type(e).__name__})}\n\n"
+                yield f"data: {json.dumps({'error': f'Error: {sanitize_client_error(e, max_len=200)}', 'error_type': type(e).__name__})}\n\n"
                 return
         
         # No question provided — nothing to stream
