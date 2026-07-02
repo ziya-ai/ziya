@@ -38,10 +38,26 @@ from app.utils.logging_utils import logger
 
 
 def _store_dir() -> Path:
-    """The approval-record directory. Honors ZIYA_SCOPE_APPROVALS_DIR for tests."""
+    """The approval-record directory. Honors ZIYA_SCOPE_APPROVALS_DIR for tests.
+
+    Must resolve to the SAME directory whether called from the running server
+    (normal user, reads via is_scope_authorized) or from the ``ziya-approve``
+    signer (root via sudo, writes via save_record) — otherwise a signed record
+    is written under root's HOME and the server never finds it, so the card
+    shows "Unsigned" forever regardless of how many times it's signed. Honor
+    SUDO_USER the same way ziya_approve.py's _mcp_config_path/_resolve_card do,
+    so a sudo-elevated caller still targets the invoking user's ~/.ziya.
+    """
     override = os.environ.get("ZIYA_SCOPE_APPROVALS_DIR")
     if override:
         return Path(override)
+    sudo_user = os.environ.get("SUDO_USER")
+    if sudo_user:
+        import pwd
+        try:
+            return Path(pwd.getpwnam(sudo_user).pw_dir) / ".ziya" / "scope_approvals"
+        except KeyError:
+            pass
     return Path.home() / ".ziya" / "scope_approvals"
 
 
@@ -76,6 +92,41 @@ def save_record(record: Dict[str, Any]) -> Path:
     return path
 
 
+def _within_policy_bound(record: Dict[str, Any]) -> bool:
+    """True iff *record* satisfies the enterprise approval-TTL policy.
+
+    No policy bound (None) -> always True (open-source default; approvals may
+    be unbounded, preserving prior behavior). When an enterprise provider
+    declares a bound, the record MUST carry a signed ``expires_at`` and its
+    granted lifetime (``expires_at - approved_at``) must not exceed the bound.
+    Fail-closed on a missing expiry or malformed values.
+
+    The temporal check (expiry in the past) lives in
+    ``scope_canonical.verify_approval_record``; this adds the *policy* ceiling.
+    """
+    try:
+        from app.plugins import get_max_approval_ttl
+        max_ttl = get_max_approval_ttl()
+    except Exception:
+        max_ttl = None
+    if max_ttl is None:
+        return True
+    exp = record.get("expires_at")
+    if exp is None:
+        logger.info("🔒 SCOPE_AUTHZ: approval is unbounded but policy requires "
+                    f"expiry within {max_ttl}s — escalation denied")
+        return False
+    try:
+        lifetime = int(exp) - int(record["approved_at"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if lifetime > max_ttl:
+        logger.info(f"🔒 SCOPE_AUTHZ: approval lifetime {lifetime}s exceeds "
+                    f"policy bound {max_ttl}s — escalation denied")
+        return False
+    return True
+
+
 def is_scope_authorized(task_id: str, scope: Any,
                         public_key_path: Optional[str] = None) -> bool:
     """True iff *scope*'s escalation is authorized for *task_id*.
@@ -106,6 +157,8 @@ def is_scope_authorized(task_id: str, scope: Any,
                        f"failed signature verification — escalation denied")
         return False
 
+    if not _within_policy_bound(record):
+        return False
     return True
 
 
@@ -156,6 +209,41 @@ def authorize_scope(task_id: str, scope: Any,
     return _UnauthorizedScope(scope)
 
 
+def write_approval_policy_breadcrumb() -> None:
+    """Drop the enterprise approval-TTL bound where the out-of-process,
+    plugin-less ``ziya-approve`` signer can read it (UX only).
+
+    The signer runs as root under sudo and cannot load the plugin system, so it
+    cannot call get_max_approval_ttl() itself. This writes the resolved bound
+    into ``~/.ziya/.approval_max_ttl`` (0600) so the signer can auto-stamp a
+    compliant expires_at instead of the operator guessing --ttl-days.
+
+    Security does NOT depend on this file: is_scope_authorized /
+    is_cli_task_authorized enforce the bound server-side and fail-closed
+    regardless of what the signer stamps. A stale or absent breadcrumb only
+    means the signer stamps nothing → the gate denies (safe). Call AFTER plugin
+    initialization.
+    """
+    from app.utils.paths import get_ziya_home
+    try:
+        from app.plugins import get_max_approval_ttl
+        max_ttl = get_max_approval_ttl()
+    except Exception:
+        return
+    path = get_ziya_home() / ".approval_max_ttl"
+    try:
+        if max_ttl is not None:
+            path.write_text(str(int(max_ttl)))
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+        elif path.exists():
+            path.unlink()  # policy relaxed — clear stale bound
+    except OSError as e:
+        logger.debug(f"Could not write approval policy breadcrumb: {e}")
+
+
 # ── CLI-task (tasks.yaml) authorization ───────────────────────────────────────
 # CLI tasks escalate via an ``allow`` block (commands / git_operations /
 # write_patterns) keyed by name within a tasks.yaml file, NOT via a card scope.
@@ -203,5 +291,7 @@ def is_cli_task_authorized(task_key: str, allow: Any,
     if not sc.verify_approval_record(record, public_key_path):
         logger.warning(f"🔒 SCOPE_AUTHZ: approval record for CLI task {task_key!r} "
                        f"failed signature verification — escalation denied")
+        return False
+    if not _within_policy_bound(record):
         return False
     return True

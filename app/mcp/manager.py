@@ -165,6 +165,29 @@ class MCPManager:
         except OSError as e:
             logger.warning(f"Could not write session nonce file: {e}")
 
+        # Drop the enterprise approval-TTL bound where the out-of-process,
+        # plugin-less `ziya-approve` signer can read it. Same rationale as the
+        # nonce: root's HOME is useless under sudo, so the signer reaches back
+        # into the invoking user's ~/.ziya. Security does NOT depend on this
+        # file — scope_approvals enforces the bound server-side and fail-closed;
+        # this only lets the signer auto-stamp a compliant expires_at instead of
+        # the operator having to guess --ttl-days. Written here (plugins are
+        # initialized before the server/manager start in app.main).
+        try:
+            from app.plugins import get_max_approval_ttl
+            _max_ttl = get_max_approval_ttl()
+            _policy_path = Path.home() / ".ziya" / ".approval_max_ttl"
+            if _max_ttl is not None:
+                _policy_path.write_text(str(int(_max_ttl)))
+                try:
+                    os.chmod(_policy_path, 0o600)
+                except OSError:
+                    pass
+            elif _policy_path.exists():
+                _policy_path.unlink()  # policy relaxed — clear stale bound
+        except Exception as e:
+            logger.debug(f"Could not write approval policy breadcrumb: {e}")
+
     def _get_builtin_server_definitions(self) -> Dict[str, Dict[str, Any]]:
         """Defines configurations for built-in MCP servers."""
         builtin_servers = {}

@@ -227,6 +227,29 @@ def get_allowed_endpoints() -> Optional[List[str]]:
         result &= set(r)
     return sorted(result)
 
+def get_max_approval_ttl() -> Optional[int]:
+    """
+    Resolve the effective maximum approval-record TTL (seconds) across all
+    active config providers.
+
+    Returns the most restrictive (smallest) positive bound any provider
+    declares, or None when no provider declares one (approvals unbounded —
+    the open-source default).
+    """
+    bounds = []
+    for provider in get_active_config_providers():
+        try:
+            if not hasattr(provider, 'get_max_approval_ttl'):
+                continue
+            ttl = provider.get_max_approval_ttl()
+            if ttl is not None and int(ttl) > 0:
+                bounds.append(int(ttl))
+        except Exception as e:
+            logger.warning(f"Error getting max approval TTL from {getattr(provider, 'provider_id', '?')}: {e}")
+    if not bounds:
+        return None
+    return min(bounds)
+
 def get_shell_config_additions() -> dict:
     """
     Collect shell config additions from all active shell config providers.

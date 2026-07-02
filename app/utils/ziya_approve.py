@@ -187,6 +187,39 @@ def _mcp_config_path() -> Path:
     return Path.home() / ".ziya" / "mcp_config.json"
 
 
+def _read_policy_max_ttl() -> Optional[int]:
+    """Read the enterprise approval-TTL bound (seconds) the server dropped for
+    the signer, or None if unbounded/absent.
+
+    Uses the same invoking-user resolution as _mcp_config_path (root's HOME is
+    useless under sudo). UX breadcrumb only — scope_approvals enforces the bound
+    server-side and fail-closed regardless of what the signer stamps.
+    """
+    try:
+        path = _mcp_config_path().parent / ".approval_max_ttl"
+        raw = path.read_text().strip()
+        return int(raw) if raw else None
+    except (OSError, ValueError):
+        return None
+
+
+def _resolve_expires_at(approved_at: int,
+                        ttl_days: Optional[float]) -> Optional[int]:
+    """Compute the signed expires_at for an approval, or None for unbounded.
+
+    Precedence: an explicit --ttl-days and the server policy bound are both
+    honored; when both are present the most restrictive (soonest) wins. When
+    neither is present the approval is unbounded — the open-source default,
+    preserving prior behavior.
+    """
+    explicit = int(ttl_days * 86400) if ttl_days is not None else None
+    policy = _read_policy_max_ttl()
+    candidates = [t for t in (explicit, policy) if t is not None and t > 0]
+    if not candidates:
+        return None
+    return int(approved_at) + min(candidates)
+
+
 def _read_config(path: Path) -> Dict[str, Any]:
     if path.exists():
         with open(path) as f:
@@ -522,7 +555,7 @@ def _resolve_staged_block(project_id: str, card_id: str, block_id: str):
 
 
 def _approve_task(project_id: str, card_id: str, block_id: str,
-                  assume_yes: bool) -> int:
+                  assume_yes: bool, ttl_days: Optional[float] = None) -> int:
     """Sign a task-scope approval record for one block of a card.
 
     Mirrors the shell-config flow: preview the escalation, require the genuine
@@ -570,8 +603,10 @@ def _approve_task(project_id: str, card_id: str, block_id: str,
 
     approved_by = os.environ.get("SUDO_USER") or os.environ.get("USER") or "unknown"
     approved_at = int(time.time())
+    expires_at = _resolve_expires_at(approved_at, ttl_days)
     try:
-        sig = sc.sign_approval_record(block_id, scope_hash, approved_by, approved_at)
+        sig = sc.sign_approval_record(block_id, scope_hash, approved_by,
+                                      approved_at, expires_at=expires_at)
     except PermissionError:
         sys.stderr.write(
             f"PermissionError reading the private key ({sc.private_key_path()}). "
@@ -595,6 +630,8 @@ def _approve_task(project_id: str, card_id: str, block_id: str,
         "approved_at": approved_at,
         "signature": sig,
     }
+    if expires_at is not None:
+        record["expires_at"] = expires_at
     path = sa.save_record(record)
     sys.stdout.write(
         f"\n✓ Signed. Approval record written to {path}.\n"
@@ -618,7 +655,7 @@ def _render_cli_allow(allow: Dict[str, Any]) -> str:
 
 
 def _approve_cli_task(task_name: str, root: Optional[str],
-                      assume_yes: bool) -> int:
+                      assume_yes: bool, ttl_days: Optional[float] = None) -> int:
     """Sign an approval record for a CLI (tasks.yaml) task's ``allow`` block.
 
     Mirrors the card flow but for the CLI surface: resolves the tasks file that
@@ -669,8 +706,10 @@ def _approve_cli_task(task_name: str, root: Optional[str],
 
     approved_by = os.environ.get("SUDO_USER") or os.environ.get("USER") or "unknown"
     approved_at = int(time.time())
+    expires_at = _resolve_expires_at(approved_at, ttl_days)
     try:
-        sig = sc.sign_approval_record(task_key, scope_hash, approved_by, approved_at)
+        sig = sc.sign_approval_record(task_key, scope_hash, approved_by,
+                                      approved_at, expires_at=expires_at)
     except PermissionError:
         sys.stderr.write(
             f"PermissionError reading the private key ({sc.private_key_path()}). "
@@ -694,6 +733,8 @@ def _approve_cli_task(task_name: str, root: Optional[str],
         "approved_at": approved_at,
         "signature": sig,
     }
+    if expires_at is not None:
+        record["expires_at"] = expires_at
     path = sa.save_record(record)
     sys.stdout.write(
         f"\n✓ Signed. Approval record written to {path}.\n"
@@ -858,6 +899,14 @@ def main(argv: Optional[list] = None) -> int:
         "--yes", action="store_true",
         help="Skip the interactive confirmation (still requires the private key).",
     )
+    parser.add_argument(
+        "--ttl-days", type=float, default=None, dest="ttl_days",
+        help="Approval lifetime in days. The signed record carries an "
+             "expires_at; the runtime gate denies it once expired. If omitted, "
+             "the enterprise policy bound (if any) is auto-applied; with no "
+             "policy and no --ttl-days the approval is unbounded (OSS default). "
+             "When both are present the more restrictive wins.",
+    )
     # Task-scope approval mode (ASR F-001). When --task/--block are given, sign a
     # task-scope approval record instead of the shell-config env delta.
     parser.add_argument(
@@ -910,7 +959,7 @@ def main(argv: Optional[list] = None) -> int:
 
     # Route to CLI-task approval when --cli-task is supplied.
     if args.cli_task:
-        return _approve_cli_task(args.cli_task, args.root, args.yes)
+        return _approve_cli_task(args.cli_task, args.root, args.yes, args.ttl_days)
 
     # Route to task-scope approval when --task/--block are supplied.
     if args.task or args.block:
@@ -919,7 +968,8 @@ def main(argv: Optional[list] = None) -> int:
                 "--task mode requires --task, --block, and --project together.\n"
             )
             return 2
-        return _approve_task(args.project, args.task, args.block, args.yes)
+        return _approve_task(args.project, args.task, args.block, args.yes,
+                             args.ttl_days)
 
     config_path = Path(args.config) if args.config else _mcp_config_path()
 

@@ -85,6 +85,20 @@ class ConfigProvider(ABC):
         """
         return None
 
+    def get_max_approval_ttl(self) -> Optional[int]:
+        """
+        Return the maximum lifetime, in seconds, of a signed task-scope
+        approval record in this deployment.
+
+        Return None (default) for no policy bound — approvals may be unbounded
+        (the open-source default). Return a positive integer to require every
+        approval to expire within that many seconds of being signed; the
+        runtime gate then rejects any approval that is unbounded or whose
+        granted lifetime exceeds the bound. When multiple providers declare a
+        bound, the most restrictive (smallest) value wins.
+        """
+        return None
+
 
 class ShellConfigProvider(ABC):
     """

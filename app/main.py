@@ -682,6 +682,17 @@ def main():
             print(f"   Allowed endpoints: {', '.join(allowed)}\n")
             sys.exit(1)
     
+    # Publish the enterprise approval-TTL bound for the out-of-process signer.
+    # ziya-approve runs as root under sudo and cannot load plugins, so it cannot
+    # query get_max_approval_ttl() itself. This drop is UX only — the approval
+    # gate (app.utils.scope_approvals) enforces the bound server-side and
+    # fail-closed regardless of what the signer stamps.
+    try:
+        from app.utils.scope_approvals import write_approval_policy_breadcrumb
+        write_approval_policy_breadcrumb()
+    except Exception as e:
+        logger.debug(f"Could not publish approval-TTL breadcrumb: {e}")
+
     # Handle info flag - print system info and exit immediately
     if args.info:
         print_info(args)

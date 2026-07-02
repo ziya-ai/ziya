@@ -530,21 +530,34 @@ def task_scope_hash(scope: Any) -> str:
 
 
 def _approval_record_message(task_id: str, scope_hash: str,
-                             approved_by: str, approved_at: int) -> bytes:
-    """Canonical bytes signed/verified for an approval record."""
-    return canonical({
+                             approved_by: str, approved_at: int,
+                             expires_at: Optional[int] = None) -> bytes:
+    """Canonical bytes signed/verified for an approval record.
+
+    ``expires_at`` is folded into the signed payload ONLY when present, so
+    records minted before expiry existed (no ``expires_at`` field) reconstruct
+    byte-identical bytes and still verify. Because the field is inside the
+    signed message, a tamperer cannot add, strip, or extend an expiry without
+    invalidating the signature.
+    """
+    payload: Dict[str, Any] = {
         "task_id": task_id,
         "scope_hash": scope_hash,
         "approved_by": approved_by,
         "approved_at": approved_at,
-    })
+    }
+    if expires_at is not None:
+        payload["expires_at"] = int(expires_at)
+    return canonical(payload)
 
 
 def sign_approval_record(task_id: str, scope_hash: str, approved_by: str,
-                         approved_at: int, private_key=None) -> str:
+                         approved_at: int, private_key=None,
+                         expires_at: Optional[int] = None) -> str:
     """Return the base64 Ed25519 signature over an approval record."""
     key = private_key if private_key is not None else load_private_key()
-    msg = _approval_record_message(task_id, scope_hash, approved_by, approved_at)
+    msg = _approval_record_message(task_id, scope_hash, approved_by,
+                                   approved_at, expires_at)
     return base64.b64encode(key.sign(msg)).decode("ascii")
 
 
@@ -556,13 +569,18 @@ def verify_approval_record(record: Dict[str, Any],
     The caller must SEPARATELY check that record['scope_hash'] matches the
     task's CURRENT scope hash (a valid record for an old hash must not authorize
     a widened scope — that check lives in scope_approvals.is_scope_authorized).
+
+    If the record carries a signed ``expires_at``, it is enforced here: an
+    otherwise-valid signature whose expiry is in the past -> False.
     """
     from cryptography.exceptions import InvalidSignature
+    exp = record.get("expires_at")
     try:
         sig_b64 = record["signature"]
         msg = _approval_record_message(
             record["task_id"], record["scope_hash"],
             record["approved_by"], int(record["approved_at"]),
+            int(exp) if exp is not None else None,
         )
     except (KeyError, TypeError, ValueError):
         return False
@@ -571,8 +589,13 @@ def verify_approval_record(record: Dict[str, Any],
         return False
     try:
         key.verify(base64.b64decode(sig_b64), msg)
-        return True
     except InvalidSignature:
         return False
     except Exception:
         return False
+    # Signature is valid — now enforce the signed expiry (fail-closed).
+    if exp is not None:
+        import time
+        if time.time() > int(exp):
+            return False
+    return True
