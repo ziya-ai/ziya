@@ -66,6 +66,11 @@ export const DiagramRenderPage: React.FC = () => {
     // Accept specs via postMessage (used by Playwright)
     useEffect(() => {
         const handleMessage = (event: MessageEvent) => {
+            // Only accept specs from the same (localhost) origin as Ziya itself.
+            // The Playwright renderer posts from window.location.origin, so this
+            // is always true for legitimate callers and false for a malicious
+            // cross-origin page that opened this route via window.open (CWE-345).
+            if (event.origin !== window.location.origin) return;
             if (event.data?.type === 'render-diagram' && event.data.spec) {
                 applySpec(event.data.spec as DiagramSpec);
             }
