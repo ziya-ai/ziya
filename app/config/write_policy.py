@@ -297,14 +297,26 @@ class WritePolicyManager:
             if not os.path.isabs(expanded)
             else expanded
         )
-        return os.path.normpath(resolved).startswith(os.path.normpath(project_root))
+        # Require an os.sep boundary so a sibling dir whose name is a prefix of
+        # the root (e.g. "/proj-backup" vs root "/proj") is not treated as
+        # inside it. normpath collapses any ".." before the comparison.
+        resolved_norm = os.path.normpath(resolved)
+        root_norm = os.path.normpath(project_root)
+        return resolved_norm == root_norm or resolved_norm.startswith(root_norm + os.sep)
 
     def _check_path(self, target_path: str, project_root: str) -> bool:
         if not target_path:
             return False
         raw = target_path.strip().strip("'\"")
         expanded = os.path.expanduser(raw)
-        resolved = os.path.join(project_root, expanded) if (project_root and not os.path.isabs(expanded)) else expanded
+        # normpath collapses ".." BEFORE any containment check. Without this a
+        # target like ".ziya/../../../etc/cron.d/x" string-prefix-matches an
+        # allowed ".ziya/" path yet resolves outside project_root at execution
+        # time (the shell/open() later resolves the "..") — CWE-22 sandbox
+        # escape. The comparisons below all use this normalized form.
+        resolved = os.path.normpath(
+            os.path.join(project_root, expanded) if (project_root and not os.path.isabs(expanded)) else expanded
+        )
 
         for safe in self._policy.get('safe_write_paths', []):
             if safe.startswith('/'):
@@ -314,15 +326,18 @@ class WritePolicyManager:
                 if resolved.startswith(safe_resolved + os.sep) or resolved == safe_resolved:
                     return True
                 # Also check the literal (non-resolved) form for non-symlink cases
-                if resolved.startswith(safe) or resolved == safe.rstrip('/'):
+                _safe_lit = os.path.normpath(safe.rstrip('/'))
+                if resolved == _safe_lit or resolved.startswith(_safe_lit + os.sep):
                     return True
             else:
                 if project_root:
-                    abs_safe = os.path.join(project_root, safe)
-                    if resolved.startswith(abs_safe) or resolved == abs_safe.rstrip('/'):
+                    abs_safe = os.path.normpath(os.path.join(project_root, safe.rstrip('/')))
+                    if resolved == abs_safe or resolved.startswith(abs_safe + os.sep):
                         return True
-                if raw.startswith(safe) or raw == safe.rstrip('/'):
-                    return True
+                # The former "raw.startswith(safe)" fallback is removed: it
+                # compared the un-normalized raw string, so ".ziya/../../etc"
+                # matched a ".ziya" safe entry. All callers supply project_root,
+                # so the normalized project-relative check above is sufficient.
 
         rel = resolved[len(project_root):].lstrip(os.sep) if (project_root and resolved.startswith(project_root)) else raw
         for raw_pattern in self._policy.get('allowed_write_patterns', []):
