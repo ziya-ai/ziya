@@ -1029,7 +1029,9 @@ class ShellServer:
             # have its second segment scanned, not hidden behind the newline.
             for token in re.split(r'\s*[|;&\n]+\s*', command):
                 first_word = token.strip().split()[0] if token.strip() else ''
-                if first_word in always_blocked:
+                import os as _os
+                first_basename = _os.path.basename(first_word) if first_word else ''
+                if first_word in always_blocked or first_basename in always_blocked:
                     print(f"YOLO mode: '{first_word}' is in always_blocked list", file=sys.stderr)
                     return False, f"'{first_word}' is in the always-blocked list"
             print(f"YOLO mode: allowing '{command[:80]}'", file=sys.stderr)
