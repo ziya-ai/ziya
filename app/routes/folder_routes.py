@@ -219,9 +219,13 @@ async def get_file(request: FileRequest):
         with open(request.file_path, 'r') as f:
             content = f.read()
         return {"content": content}
-    except Exception as e:
+    except (PermissionError, FileNotFoundError, IsADirectoryError, OSError) as e:
+        # Return a fixed message rather than the raw OS exception: the
+        # distinct wording for "no such file", "permission denied", and
+        # "is a directory" turns this endpoint into a filesystem-existence
+        # oracle for any path the caller can guess [PenPal #98, CWE-200].
         logger.error(f"Error in get_file: {e}")
-        return {"error": str(e)}
+        return {"error": "Unable to read file."}
 
 @router.post("/save")
 async def save_file(request: FileContentRequest):
@@ -248,9 +252,9 @@ async def save_file(request: FileContentRequest):
         with open(resolved_path, 'w') as f:
             f.write(request.content)
         return {"success": True}
-    except Exception as e:
+    except (PermissionError, FileNotFoundError, IsADirectoryError, OSError) as e:
         logger.error(f"Error in save_file: {e}")
-        return {"error": str(e)}
+        return {"error": "Unable to write file."}
 
 @router.get('/api/default-included-folders')
 async def get_default_included_folders():
