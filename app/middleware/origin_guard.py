@@ -22,6 +22,7 @@ import re
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+from starlette.websockets import WebSocket
 from starlette.responses import JSONResponse
 
 from app.utils.logging_utils import logger
@@ -32,6 +33,26 @@ _LOOPBACK_ORIGIN = re.compile(
     r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$", re.IGNORECASE
 )
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def is_websocket_origin_allowed(websocket: WebSocket) -> bool:
+    """Apply the same Origin/Referer policy as OriginGuardMiddleware to a
+    WebSocket connection.
+
+    Starlette's BaseHTTPMiddleware only runs against the ``http`` ASGI
+    scope — WebSocket upgrade requests use the ``websocket`` scope and
+    bypass OriginGuardMiddleware entirely, regardless of registration
+    order. Every ``@app.websocket(...)`` handler must call this
+    explicitly, immediately after accept(), or reject before accepting
+    [PenPal #157, CWE-94 (browser-reachable half of the finding)].
+    """
+    candidate = websocket.headers.get("origin") or websocket.headers.get("referer")
+    if candidate is None:
+        strict = os.environ.get("ZIYA_STRICT_ORIGIN", "").lower() in (
+            "1", "true", "yes",
+        )
+        return not strict
+    return bool(_LOOPBACK_ORIGIN.match(candidate))
 
 
 class OriginGuardMiddleware(BaseHTTPMiddleware):

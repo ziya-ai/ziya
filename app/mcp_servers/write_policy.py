@@ -122,6 +122,21 @@ class ShellWriteChecker:
         if not tok or tok[0] not in self.policy.get('allowed_interpreters', []):
             return True, ""
         s = cmd.strip()
+
+        # Process-spawning check runs unconditionally, before any safe-pattern
+        # short-circuit. interpreter_safe_patterns (e.g. the blanket
+        # ``python3 -c`` match) only certifies the *shape* of the invocation,
+        # not what the interpreted code does — a one-liner that spawns a
+        # process via os.system/subprocess(shell=True)/eval/exec never
+        # touches the filesystem, so script_write_indicators never fires,
+        # letting an allowlisted interpreter become a full shell escape
+        # [PenPal #157, CWE-94]. Same task-scope and redirection handling as
+        # the write-indicator path below, for consistency.
+        for pat in self.policy.get('script_process_indicators', []):
+            if re.search(pat, cmd):
+                if self._task_scope_grants_command(cmd):
+                    return self._redirection(cmd)
+                return False, f"Script appears to spawn a process (matched: {pat}). Use an allowlisted command directly instead."
         
         # Check if command matches a safe pattern
         matched_safe_pattern = False
@@ -199,7 +214,7 @@ class ShellWriteChecker:
                     i += 1
                     if i < ln and command[i] == '>':
                         i += 1
-                    while i < ln and command[i] == ' ':
+                    while i < ln and command[i] in ' \t':
                         i += 1
                     if i < ln:
                         target, end = _extract_target(command, i)
@@ -422,7 +437,7 @@ def _extract_target(cmd: str, pos: int) -> Tuple[str, int]:
         if pos < len(cmd):
             pos += 1  # skip closing quote
     else:
-        while pos < len(cmd) and cmd[pos] not in ' \t;|&':
+        while pos < len(cmd) and cmd[pos] not in ' \t\r\n;|&':
             target += cmd[pos]; pos += 1
     return target, pos
 
