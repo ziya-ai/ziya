@@ -1089,6 +1089,28 @@ async def update_shell_config(config: ShellConfig):
         logger.error(f"Error updating shell config: {e}")
         raise HTTPException(status_code=500, detail=f"Error updating shell config: {str(e)}")
 
+class ServerReauthorizeRequest(BaseModel):
+    model_config = {"extra": "allow"}
+    server_name: str
+
+@router.post("/reauthorize-server")
+async def reauthorize_server(request: ServerReauthorizeRequest):
+    """
+    Clear a rug-pull quarantine for a server (CWE-345) and accept its
+    current tool definitions as the new approved baseline. Explicit,
+    human-initiated action — this endpoint is the only way to lift
+    quarantine once tool definitions have changed unexpectedly.
+    """
+    try:
+        mcp_manager = get_mcp_manager()
+        if not mcp_manager.is_initialized:
+            return {"success": False, "message": "MCP manager not initialized"}
+        result = mcp_manager.reauthorize_server(request.server_name)
+        return result
+    except Exception as e:
+        logger.error(f"Error reauthorizing server {request.server_name}: {e}")
+        raise HTTPException(status_code=500, detail=f"Error reauthorizing server: {str(e)}")
+
 @router.post("/toggle-server")
 async def toggle_server(request: ServerToggleRequest):
     """

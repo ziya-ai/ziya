@@ -128,8 +128,16 @@ class MCPManager:
         self._failed_server_ttl: float = 300  # seconds before a failed server becomes eligible for retry
         self._reconnection_failures: Dict[str, int] = {}  # server_name → consecutive failure count
         
-        # Tool definition fingerprints for rug-pull detection (ATC mitigation)
+        # Tool definition fingerprints for rug-pull detection (ATC mitigation).
+        # Loaded from disk so the human-approved baseline survives restarts —
+        # otherwise a rug-pull between the last restart and this one is never
+        # detected (old_fp is None on first connect, so no comparison runs).
         self._tool_fingerprints: Dict[str, str] = {}
+        self._fingerprint_store_path = Path.home() / ".ziya" / "mcp_tool_fingerprints.json"
+        self._load_persisted_fingerprints()
+        # server_name -> True while quarantined pending re-authorization.
+        # Quarantined servers' tools are excluded from get_all_tools()/call_tool().
+        self._quarantined_servers: set = set()
 
         self.tool_timeout: float = float(os.environ.get("ZIYA_TOOL_TIMEOUT", DEFAULT_TOOL_TIMEOUT))
 
@@ -297,6 +305,37 @@ class MCPManager:
             "search_paths": getattr(self, 'config_search_paths', []),
             "config_error": self.config_error,
         }
+
+    def _load_persisted_fingerprints(self) -> None:
+        """Load the human-approved tool-fingerprint baseline from disk.
+
+        Missing/unreadable/corrupt file is treated as "no baseline yet" —
+        every server's first fingerprint this run simply becomes its
+        baseline, matching pre-persistence behavior. Never raises.
+        """
+        try:
+            if self._fingerprint_store_path.exists():
+                with open(self._fingerprint_store_path, 'r') as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    self._tool_fingerprints = {
+                        k: v for k, v in data.items() if isinstance(v, str)
+                    }
+                    logger.debug(
+                        f"Loaded {len(self._tool_fingerprints)} persisted tool "
+                        f"fingerprint(s) from {self._fingerprint_store_path}"
+                    )
+        except (json.JSONDecodeError, OSError, ValueError) as e:
+            logger.warning(f"Could not load persisted tool fingerprints: {e}")
+
+    def _save_persisted_fingerprints(self) -> None:
+        """Persist the current approved fingerprint baseline. Never raises."""
+        try:
+            self._fingerprint_store_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._fingerprint_store_path, 'w') as f:
+                json.dump(self._tool_fingerprints, f, indent=2)
+        except OSError as e:
+            logger.warning(f"Could not persist tool fingerprints: {e}")
 
     def refresh_config_path(self):
         """Re-search for config files and update the config path."""
@@ -856,6 +895,42 @@ class MCPManager:
             logger.error(f"Error restarting server {server_name}: {str(e)}")
             return False
 
+    def reauthorize_server(self, server_name: str) -> Dict[str, Any]:
+        """Clear a rug-pull quarantine and accept the server's current tool
+        definitions as the new approved baseline (CWE-345 re-authorization).
+
+        This is an explicit, human-initiated action — there is no automatic
+        re-authorization path. Re-scans descriptions for prompt-injection
+        content before lifting quarantine, since the mutated definitions
+        that triggered quarantine were never checked by the connect-time
+        scan (that only runs when quarantine is NOT applied).
+        """
+        if server_name not in self._quarantined_servers:
+            return {"success": False, "message": f"Server '{server_name}' is not quarantined"}
+        client = self.clients.get(server_name)
+        if not client:
+            return {"success": False, "message": f"Server '{server_name}' has no active connection"}
+        _warnings_by_tool = {
+            t.name: list(scan_tool_description(t.name, t.description)) for t in client.tools
+        }
+        _flagged = {name: w for name, w in _warnings_by_tool.items() if w}
+        if _flagged:
+            return {
+                "success": False,
+                "message": f"Re-authorization refused: {len(_flagged)} tool(s) still trip the injection scan",
+                "flagged_tools": _flagged,
+            }
+        new_fp = fingerprint_tools([
+            {"name": t.name, "description": t.description, "inputSchema": t.inputSchema}
+            for t in client.tools
+        ])
+        self._tool_fingerprints[server_name] = new_fp
+        self._save_persisted_fingerprints()
+        self._quarantined_servers.discard(server_name)
+        self.invalidate_tools_cache()
+        logger.info(f"Server '{server_name}' re-authorized; new fingerprint baseline accepted")
+        return {"success": True, "message": f"Server '{server_name}' re-authorized"}
+
     async def _connect_server(self, server_name: str, client: MCPClient) -> bool:
         """Connect to a single MCP server."""
         try:
@@ -866,27 +941,46 @@ class MCPManager:
             if success:
                 logger.debug(f"Connected to MCP server: {server_name}")
 
-                # Fingerprint tool definitions for rug-pull detection
+                is_builtin = self.server_configs.get(server_name, {}).get("builtin", False)
+                is_trusted = self.server_configs.get(server_name, {}).get("trusted", False)
+
+                # Fingerprint tool definitions for rug-pull detection (CWE-345).
+                # A mismatch against the persisted, human-approved baseline is
+                # a hard quarantine, not a log line: the prior behavior always
+                # overwrote the baseline with the new (possibly attacker-
+                # mutated) fingerprint and let the tools through unchanged, so
+                # detection never actually stopped anything. Builtin/trusted
+                # servers are exempt — their fingerprint legitimately changes
+                # across Ziya version upgrades and quarantining them would
+                # break core functionality (e.g. the "shell" server).
                 tool_dicts = [
                     {"name": t.name, "description": t.description, "inputSchema": t.inputSchema}
                     for t in client.tools
                 ]
                 new_fp = fingerprint_tools(tool_dicts)
                 old_fp = self._tool_fingerprints.get(server_name)
-                if old_fp is not None:
+                if old_fp is not None and old_fp != new_fp and not is_builtin and not is_trusted:
                     warning = check_fingerprint_change(server_name, old_fp, new_fp)
-                    if warning:
-                        logger.warning(f"⚠️  SECURITY: {warning}")
-                self._tool_fingerprints[server_name] = new_fp
+                    logger.error(
+                        f"🚫 SECURITY: {warning} — quarantining '{server_name}' "
+                        f"tools pending re-authorization (see "
+                        f"reauthorize_server())."
+                    )
+                    self._quarantined_servers.add(server_name)
+                    # Do NOT overwrite the stored baseline — keep the last
+                    # known-good fingerprint so the discrepancy is preserved
+                    # for audit and re-authorization compares against it.
+                else:
+                    self._tool_fingerprints[server_name] = new_fp
+                    self._save_persisted_fingerprints()
+                    self._quarantined_servers.discard(server_name)
 
                 # Scan external tool descriptions for prompt injection
-                is_builtin = self.server_configs.get(server_name, {}).get("builtin", False)
-                is_trusted = self.server_configs.get(server_name, {}).get("trusted", False)
                 if is_trusted:
                     logger.debug(
                         f"Skipping tool-poisoning scan for trusted server '{server_name}'"
                     )
-                if not is_builtin and not is_trusted:
+                if not is_builtin and not is_trusted and server_name not in self._quarantined_servers:
                     # Disabled tools never reach the agent context (filtered in
                     # enhanced_tools), so a poisoned description is inert. Skip
                     # scanning them to avoid noisy connect-time warnings.
@@ -975,6 +1069,12 @@ class MCPManager:
             
             logger.debug(f"MCP_MANAGER.get_all_tools: Server '{server_name}' - connected: {client.is_connected}, enabled: {is_enabled}")
             
+            if server_name in self._quarantined_servers:
+                # CWE-345: tools whose definitions changed since the last
+                # human-approved connection are withheld from every prompt
+                # path until reauthorize_server() is called.
+                logger.warning(f"MCP_MANAGER.get_all_tools: Server '{server_name}' is quarantined (rug-pull detected), excluding its tools")
+                continue
             if client.is_connected and is_enabled:
                 client_tools = client.tools
                 is_builtin = server_config.get("builtin", False)
@@ -1640,6 +1740,18 @@ class MCPManager:
                 tool_server = srv_name
                 break
         
+        # CWE-345: refuse execution for a quarantined server's tools even if
+        # a caller reaches call_tool() directly (bypassing get_all_tools()'s
+        # filtering) — e.g. a stale tool reference the agent already holds
+        # from before quarantine was applied this session.
+        if tool_server and tool_server in self._quarantined_servers:
+            logger.error(f"🚫 Refusing to execute '{internal_tool_name}': server '{tool_server}' is quarantined (rug-pull detected)")
+            return {
+                "error": True,
+                "message": f"Tool '{internal_tool_name}' is unavailable: server '{tool_server}'s tool definitions changed unexpectedly and require re-authorization. See MCP Server Settings.",
+                "code": -32001,
+            }
+
         # Check permissions if we found the server
         if tool_server:
             server_perms = permissions.get('servers', {}).get(tool_server, {})
@@ -1943,7 +2055,8 @@ class MCPManager:
                     "tools": len(client.tools),
                     "prompts": len(client.prompts),
                     "capabilities": client.capabilities,
-                    "builtin": is_builtin
+                    "builtin": is_builtin,
+                    "quarantined": server_name in self._quarantined_servers,
                 }
             else:
                 # Server is configured but not in clients (failed to start or never started)
