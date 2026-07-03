@@ -42,6 +42,7 @@ from app.models.chat import ChatCreate
 from app.models.context import ContextCreate
 from app.models.group import ChatGroup, ChatGroupCreate, ChatGroupUpdate
 from app.utils.logging_utils import logger
+from app.mcp.response_validator import sanitize_text
 from app.agents.compaction_engine import CompactionEngine
 from app.agents import delegate_stream_relay
 from app.config.env_registry import ziya_env
@@ -1001,7 +1002,22 @@ class DelegateManager:
     def _build_delegate_messages(
         self, plan_id: str, spec: DelegateSpec
     ) -> List[Dict[str, Any]]:
-        """Build initial messages including upstream crystal context."""
+        """Build initial messages including upstream crystal context.
+
+        CWE-345 (indirect prompt injection): spec.name/scope/files can
+        originate from a ``delegate-tasks`` fenced block that a compromised/
+        adversarial document caused the model to reproduce verbatim, rather
+        than from the model's own deliberate orchestration — only structural
+        JSON validation is applied client-side (DelegateLaunchButton.tsx) and
+        server-side (LaunchDelegatesRequest), neither of which inspects
+        content. Sanitizing here — the single point where every delegate
+        spec (initial launch AND rescue-continuation, since rescue builds a
+        new DelegateSpec that flows back through this same method) becomes
+        LLM instruction text — covers both entry paths without duplicating
+        the call at each spec-construction site.
+        """
+        safe_name = sanitize_text(spec.name)
+        safe_scope = sanitize_text(spec.scope)
         parts: List[str] = []
 
         # Provide a dedicated scratch directory for this delegate
@@ -1042,8 +1058,8 @@ class DelegateManager:
             )
 
         parts.append(
-            f"Your task: {spec.name}\n\n"
-            f"Scope: {spec.scope}\n\n"
+            f"Your task: {safe_name}\n\n"
+            f"Scope: {safe_scope}\n\n"
             "Work within the files listed in your context.\n\n"
             "## Scratch Directory\n"
             f"Your dedicated scratch space is `{scratch_path}/`. "
