@@ -55,6 +55,7 @@ from app.middleware.project_context import ProjectContextMiddleware
 from app.utils.context_enhancer import initialize_ast_if_enabled
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.middleware.continuation import ContinuationMiddleware
+from app.middleware.origin_guard import is_websocket_origin_allowed
 
 # PCAP analysis utilities
 from app.utils.pcap_analyzer import analyze_pcap_file, is_pcap_supported
@@ -840,6 +841,12 @@ _logging.getLogger("urllib3.connectionpool").setLevel(_logging.ERROR)
 
 @app.websocket("/ws/feedback/{conversation_id}")
 async def feedback_websocket(websocket: WebSocket, conversation_id: str):
+    # WebSocket upgrades bypass OriginGuardMiddleware entirely (it only
+    # runs on the http ASGI scope) — check explicitly before accept()
+    # [PenPal #157, CWE-94].
+    if not is_websocket_origin_allowed(websocket):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     logger.debug(f"🔄 FEEDBACK: WebSocket connected for conversation {conversation_id}")
     
@@ -910,6 +917,9 @@ async def feedback_websocket(websocket: WebSocket, conversation_id: str):
 async def file_tree_websocket(websocket: WebSocket):
     """WebSocket endpoint for real-time file tree update notifications."""
     logger.debug("🔄 FILE_TREE: WebSocket connection attempt")
+    if not is_websocket_origin_allowed(websocket):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     active_file_tree_connections.add(websocket)
     logger.debug("🔄 FILE_TREE: WebSocket connected")
@@ -946,6 +956,9 @@ async def delegate_stream_websocket(websocket: WebSocket, conversation_id: str):
     DelegateManager pushes chunks via delegate_stream_relay.push(), which
     this endpoint relays to the connected client in real time.
     """
+    if not is_websocket_origin_allowed(websocket):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     logger.debug(f"📡 DELEGATE_STREAM: WebSocket connected for {conversation_id[:8]}")
 
@@ -973,6 +986,9 @@ async def task_run_stream_websocket(websocket: WebSocket, run_id: str):
     transient; GET /task-runs/{run_id} is the source of truth for
     reconnecting clients.  See design/task-cards.md §Live observation.
     """
+    if not is_websocket_origin_allowed(websocket):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     logger.debug(f"📡 TASK_RUN: WebSocket connected for {run_id[:8]}")
 
