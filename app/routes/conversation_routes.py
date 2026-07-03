@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 from app.utils.logging_utils import logger
+from app.utils.json_storage import read_json_file, write_json_file
 from app.context import get_project_root
 
 router = APIRouter(prefix="/api/conversations", tags=["conversations"])
@@ -88,21 +89,17 @@ async def create_folder(request: CreateFolderRequest) -> FolderResponse:
         # Ensure .ziya directory exists
         os.makedirs(os.path.dirname(folders_file), exist_ok=True)
         
-        # Load existing folders
-        folders = []
-        if os.path.exists(folders_file):
-            try:
-                with open(folders_file, 'r', encoding='utf-8') as f:
-                    folders = json.load(f)
-            except (json.JSONDecodeError, FileNotFoundError):
-                folders = []
+        # Load existing folders. Uses the encryption-aware helper so
+        # folders.json (which carries systemInstructions — often
+        # sensitive project context) honors ALE the same way every
+        # other storage write does [PenPal #143, CWE-311].
+        folders = read_json_file(folders_file) or []
         
         # Add new folder
         folders.append(folder_data)
         
         # Save updated folders
-        with open(folders_file, 'w', encoding='utf-8') as f:
-            json.dump(folders, f, indent=2, ensure_ascii=False)
+        write_json_file(folders_file, folders)
         
         logger.info(f"Created folder '{request.name}' with ID {folder_id}")
         
@@ -160,21 +157,14 @@ async def create_conversation(request: CreateConversationRequest) -> Conversatio
         # Ensure .ziya directory exists
         os.makedirs(os.path.dirname(conversations_file), exist_ok=True)
         
-        # Load existing conversations
-        conversations = []
-        if os.path.exists(conversations_file):
-            try:
-                with open(conversations_file, 'r', encoding='utf-8') as f:
-                    conversations = json.load(f)
-            except (json.JSONDecodeError, FileNotFoundError):
-                conversations = []
+        # Load existing conversations (encryption-aware; see create_folder above)
+        conversations = read_json_file(conversations_file) or []
         
         # Add new conversation
         conversations.append(conversation_data)
         
         # Save updated conversations
-        with open(conversations_file, 'w', encoding='utf-8') as f:
-            json.dump(conversations, f, indent=2, ensure_ascii=False)
+        write_json_file(conversations_file, conversations)
         
         logger.info(f"Created conversation '{request.title}' with ID {conversation_id}")
         
@@ -200,11 +190,9 @@ async def move_conversation(request: MoveConversationRequest) -> Dict[str, Any]:
         conversations_file = os.path.join(user_codebase_dir, ".ziya", "conversations.json")
         
         # Load existing conversations
-        if not os.path.exists(conversations_file):
+        conversations = read_json_file(conversations_file)
+        if conversations is None:
             raise HTTPException(status_code=404, detail="No conversations found")
-        
-        with open(conversations_file, 'r', encoding='utf-8') as f:
-            conversations = json.load(f)
         
         # Find and update the conversation
         conversation_found = False
@@ -219,8 +207,7 @@ async def move_conversation(request: MoveConversationRequest) -> Dict[str, Any]:
             raise HTTPException(status_code=404, detail=f"Conversation {request.conversation_id} not found")
         
         # Save updated conversations
-        with open(conversations_file, 'w', encoding='utf-8') as f:
-            json.dump(conversations, f, indent=2, ensure_ascii=False)
+        write_json_file(conversations_file, conversations)
         
         logger.info(f"Moved conversation {request.conversation_id} to folder {request.target_folder_id}")
         
