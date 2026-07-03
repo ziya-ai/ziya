@@ -309,7 +309,18 @@ class ChatStorage(BaseStorage[Chat]):
         
         update_dict = data.model_dump(exclude_unset=True)
         for key, value in update_dict.items():
-            setattr(chat, key, value)
+            # CWE-20: this closes the actual exploitable gap — ChatUpdate
+            # carried extra="allow" (fixed separately in app/models/chat.py)
+            # so model_dump(exclude_unset=True) could contain ANY client-
+            # supplied key, and this bare setattr wrote it straight onto the
+            # persisted Chat object (itself also extra="allow", for
+            # legitimate round-tripping of unknown frontend fields on READ —
+            # which made the object receptive to exactly this kind of
+            # unconstrained write). Restricting to ChatUpdate's own declared
+            # fields is the actual fix; removing extra="allow" is belt-and-
+            # suspenders against the model changing again in the future.
+            if key in type(data).model_fields:
+                setattr(chat, key, value)
         chat.lastActiveAt = int(time.time() * 1000)
         d = chat.model_dump()
         d["_version"] = int(time.time() * 1000)
