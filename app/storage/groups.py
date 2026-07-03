@@ -78,7 +78,14 @@ class ChatGroupStorage:
             if group.id == group_id:
                 update_dict = data.model_dump(exclude_unset=True)
                 for key, value in update_dict.items():
-                    setattr(group, key, value)
+                    # CWE-20 defense-in-depth: only ever set fields the
+                    # update request model (ChatGroupUpdate) itself
+                    # declares, regardless of what extra-fields policy
+                    # either model carries. Guards against a future edit to
+                    # either model silently becoming an arbitrary-attribute-
+                    # write primitive here.
+                    if key in type(data).model_fields:
+                        setattr(group, key, value)
                 groups_file.groups[i] = group
                 self._write_groups_file(groups_file)
                 return group
