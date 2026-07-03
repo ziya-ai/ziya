@@ -313,3 +313,58 @@ class TestPipeChains:
     def test_pipe_to_destructive_blocked(self, checker):
         ok, reason = checker.check("echo data | sudo tee /etc/hosts", _pipe_split)
         assert not ok
+
+
+# ── PenPal #157 regression: process-spawn escape via allowlisted interpreter ──
+
+class TestInterpreterProcessSpawnEscape:
+    """
+    ``python3 -c`` unconditionally matched interpreter_safe_patterns, and
+    the only follow-up check was script_write_indicators — which never
+    looks for process-spawning calls (os.system, subprocess with
+    shell=True, eval/exec, __import__("os")). A one-liner that spawns a
+    process but writes no files bypassed the shell command allowlist
+    entirely. These must now all be blocked regardless of the -c safe
+    pattern match.
+    """
+
+    def test_os_system_blocked(self, checker):
+        ok, reason = checker.check(
+            'python3 -c \'import os; os.system("id")\'',
+            _simple_split
+        )
+        assert not ok
+        assert "spawn" in reason.lower()
+
+    def test_os_popen_blocked(self, checker):
+        ok, reason = checker.check(
+            'python3 -c \'import os; os.popen("id").read()\'',
+            _simple_split
+        )
+        assert not ok
+
+    def test_subprocess_shell_true_blocked(self, checker):
+        ok, reason = checker.check(
+            'python3 -c \'import subprocess; subprocess.run("id", shell=True)\'',
+            _simple_split
+        )
+        assert not ok
+
+    def test_eval_blocked(self, checker):
+        ok, reason = checker.check(
+            "python3 -c 'eval(\"__import__(\\\"os\\\").system(\\\"id\\\")\")'",
+            _simple_split
+        )
+        assert not ok
+
+    def test_exec_blocked(self, checker):
+        ok, reason = checker.check(
+            "python3 -c 'exec(\"import os; os.system(\\\"id\\\")\")'",
+            _simple_split
+        )
+        assert not ok
+
+    def test_legitimate_inline_print_still_allowed(self, checker):
+        """Sanity: the fix must not regress the ordinary safe-pattern case."""
+        ok, reason = checker.check("python3 -c 'print(2+2)'", _simple_split)
+        assert ok

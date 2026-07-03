@@ -65,6 +65,23 @@ DEFAULT_WRITE_POLICY = {
         r"pathlib.*\.\s*(write_text|write_bytes|unlink|mkdir|rename|rmdir)",
         r"subprocess\.\s*(run|call|Popen).*\b(rm|mv|cp|sed\s+-i)\b",
     ],
+    # Process-spawning indicators inside an allowlisted interpreter's inline
+    # code (``python3 -c ...``). These are checked independently of
+    # script_write_indicators: a one-liner that writes no files but spawns
+    # an arbitrary process (os.system, subprocess with shell=True, eval/exec)
+    # bypasses the shell command allowlist entirely, since the allowlist only
+    # gates the outer ``python3`` invocation, not what the interpreted code
+    # itself executes [PenPal #157, CWE-94].
+    "script_process_indicators": [
+        r"os\.\s*system\s*\(",
+        r"os\.\s*popen\s*\(",
+        r"os\.\s*exec[lv]?p?e?\s*\(",
+        r"subprocess\.[A-Za-z_]+\([^)]*shell\s*=\s*True",
+        r"pty\.\s*spawn\s*\(",
+        r"\bexec\s*\(",
+        r"\beval\s*\(",
+        r"__import__\s*\(\s*['\"]os['\"]\s*\)",
+    ],
 }
 
 
