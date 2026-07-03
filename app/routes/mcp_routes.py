@@ -1129,11 +1129,24 @@ async def toggle_server(request: ServerToggleRequest):
         # Add debug logging
         logger.info(f"Toggle server request: {request.server_name} -> {request.enabled}")
         logger.info(f"MCP manager initialized: {mcp_manager.is_initialized}")
-        logger.info(f"Available server configs: {list(mcp_manager.server_configs.keys()) if mcp_manager.server_configs else 'None'}")
-        logger.info(f"Server config for {request.server_name}: {mcp_manager.server_configs.get(request.server_name) if mcp_manager.server_configs else 'None'}")
-        
+
         if not mcp_manager.is_initialized:
             return {"success": False, "message": "MCP manager not initialized"}
+
+        logger.info(f"Available server configs: {list(mcp_manager.server_configs.keys()) if mcp_manager.server_configs else 'None'}")
+        # Redact the "auth" subtree before logging: server_configs is
+        # populated verbatim from mcp_config.json, which may carry an
+        # inline bearer token under config["auth"]["token"]. Logging the
+        # raw dict at INFO level persists that token into any captured
+        # stdout/log storage on every toggle call [PenPal #145, CWE-532].
+        raw_config = mcp_manager.server_configs.get(request.server_name)
+        if raw_config:
+            safe_config = {k: v for k, v in raw_config.items() if k != "auth"}
+            if "auth" in raw_config:
+                safe_config["auth"] = "<redacted>"
+        else:
+            safe_config = None
+        logger.info(f"Server config for {request.server_name}: {safe_config}")
         
         # Update the server config
         if request.server_name in mcp_manager.server_configs:
