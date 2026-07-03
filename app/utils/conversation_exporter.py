@@ -629,22 +629,61 @@ def _embed_diagrams_in_html(
     
     return html
 
+def _escape_html_text(s: str) -> str:
+    """Escape a plain-text segment for safe embedding in HTML."""
+    return (
+        s.replace('&', '&amp;')
+         .replace('<', '&lt;')
+         .replace('>', '&gt;')
+         .replace('"', '&quot;')
+    )
+
+
+# Schemes that execute script in a browser context when used as a link href
+# (javascript:, vbscript:, data: with an html/svg payload). Blocked outright
+# rather than allowlisted, since legitimate exported links are http(s)/mailto.
+_DANGEROUS_LINK_SCHEME_RE = re.compile(r'^\s*(javascript|vbscript|data):', re.IGNORECASE)
+
+
 def _markdown_to_html_basic(markdown: str) -> str:
-    """Basic markdown to HTML conversion."""
+    """Basic markdown to HTML conversion.
+
+    CWE-79: this function embeds unsanitized, LLM/user-authored conversation
+    text into an HTML document that is later opened in a browser (paste
+    services, direct file open). Everything outside of fenced/inline code
+    (escaped separately, below) is HTML-escaped BEFORE any markdown->tag
+    conversion runs, so raw HTML (`<img onerror=...>`, `<script>`, etc.)
+    appearing in prose is neutralized rather than passed through verbatim.
+    Code/inline code are extracted to placeholders first so escaping the
+    rest of the string can't double-escape their already-escaped content.
+    """
     html = markdown
+    code_blocks: List[str] = []
     
-    # Convert code blocks
+    # Extract fenced code blocks to placeholders (escaped once, here).
     def convert_code_block(match):
         lang = match.group(1) or 'text'
         code = match.group(2)
-        # Escape HTML in code
         code = code.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        return f'<pre><code class="language-{lang}">{code}</code></pre>'
+        code_blocks.append(f'<pre><code class="language-{lang}">{code}</code></pre>')
+        return f'\x00CODEBLOCK{len(code_blocks) - 1}\x00'
     
     html = re.sub(r'```(\w+)?\n(.*?)```', convert_code_block, html, flags=re.DOTALL)
     
-    # Convert inline code
-    html = re.sub(r'`([^`]+)`', r'<code>\1</code>', html)
+    # Extract inline code to placeholders (escaped once, here).
+    inline_code: List[str] = []
+
+    def convert_inline_code(match):
+        inline_code.append(f'<code>{_escape_html_text(match.group(1))}</code>')
+        return f'\x00INLINECODE{len(inline_code) - 1}\x00'
+
+    html = re.sub(r'`([^`]+)`', convert_inline_code, html)
+    
+    # Escape all remaining prose before generating any real HTML tags below —
+    # this is the fix: previously the input reached <strong>/<a>/<h1>/<p>
+    # generation completely unescaped, so raw HTML in prose (or a javascript:
+    # link target) was emitted into the exported document verbatim.
+    html = _escape_html_text(html)
     
     # Convert bold
     html = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', html)
@@ -652,8 +691,20 @@ def _markdown_to_html_basic(markdown: str) -> str:
     # Convert italic
     html = re.sub(r'\*([^*]+)\*', r'<em>\1</em>', html)
     
-    # Convert links
-    html = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', html)
+    # Convert links — reject javascript:/vbscript:/data: hrefs; the label and
+    # href were already HTML-escaped above, so unescape just the href for the
+    # scheme check (comparing against the escaped form would miss variants).
+    def convert_link(match):
+        label, href = match.group(1), match.group(2)
+        raw_href = (
+            href.replace('&amp;', '&').replace('&lt;', '<')
+                .replace('&gt;', '>').replace('&quot;', '"')
+        )
+        if _DANGEROUS_LINK_SCHEME_RE.match(raw_href):
+            return f'{label} ({href})'
+        return f'<a href="{href}" rel="noopener noreferrer">{label}</a>'
+
+    html = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', convert_link, html)
     
     # Convert headers
     html = re.sub(r'^### (.*?)$', r'<h3>\1</h3>', html, flags=re.MULTILINE)
@@ -668,6 +719,12 @@ def _markdown_to_html_basic(markdown: str) -> str:
         else p + '\n' 
         for p in paragraphs
     )
+    
+    # Restore code blocks / inline code now that escaping/conversion is done.
+    for i, block in enumerate(code_blocks):
+        html = html.replace(f'\x00CODEBLOCK{i}\x00', block)
+    for i, block in enumerate(inline_code):
+        html = html.replace(f'\x00INLINECODE{i}\x00', block)
     
     return html
 
