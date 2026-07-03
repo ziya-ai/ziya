@@ -2096,6 +2096,53 @@ class DelegateManager:
 
 _instances: Dict[str, DelegateManager] = {}
 
+_instance_last_used: Dict[str, float] = {}
+
+# CWE-400: project_id is a client-supplied URL path parameter (app/api/
+# delegates.py) with no validation that it corresponds to a real, existing
+# project (get_project_dir() is a pure string join) — a client repeatedly
+# hitting a delegate endpoint with distinct arbitrary project_id values grows
+# this cache without bound, one DelegateManager (with its own asyncio state
+# and locks) per distinct value. Bounded the same way FileStateManager
+# bounds its per-conversation cache: a hard cap plus an idle TTL, evicting
+# oldest-by-last-use first.
+_MAX_DELEGATE_MANAGER_INSTANCES = 50
+_DELEGATE_MANAGER_IDLE_TTL_SECONDS = 3600  # 1 hour
+
+
+def _has_running_plan(mgr: DelegateManager) -> bool:
+    """True if mgr has any plan whose status is 'running' — such a manager
+    must never be evicted, its asyncio Tasks hold live references."""
+    return any(getattr(p, "status", None) == "running" for p in mgr._plans.values())
+
+
+def _evict_stale_delegate_managers() -> None:
+    """Evict delegate-manager instances over the cap or past the idle TTL.
+
+    Called on every get_delegate_manager() so the cache self-bounds without
+    a background task.
+    """
+    now = time.time()
+    for pid in list(_instances.keys()):
+        mgr = _instances.get(pid)
+        if mgr is not None and _has_running_plan(mgr):
+            continue
+        last = _instance_last_used.get(pid, 0)
+        if (now - last) > _DELEGATE_MANAGER_IDLE_TTL_SECONDS:
+            _instances.pop(pid, None)
+            _instance_last_used.pop(pid, None)
+
+    overflow = len(_instances) - _MAX_DELEGATE_MANAGER_INSTANCES
+    if overflow > 0:
+        evictable_ids = sorted(
+            (pid for pid in _instances if not _has_running_plan(_instances[pid])),
+            key=lambda pid: _instance_last_used.get(pid, 0),
+        )
+        for pid in evictable_ids[:overflow]:
+            _instances.pop(pid, None)
+            _instance_last_used.pop(pid, None)
+
+
 def get_delegate_manager(
     project_id: str = "",
     project_dir: Optional[Path] = None,
@@ -2104,6 +2151,7 @@ def get_delegate_manager(
     """Get or create a DelegateManager for the given project."""
     if not project_id:
         raise ValueError("get_delegate_manager requires a project_id when no instances exist")
+    _instance_last_used[project_id] = time.time()
     if project_id not in _instances:
         if not project_dir:
             from app.utils.paths import get_project_dir
@@ -2111,8 +2159,15 @@ def get_delegate_manager(
         mgr = DelegateManager(project_id, project_dir, **kwargs)
         mgr.rehydrate()
         _instances[project_id] = mgr
+    # Evict AFTER insertion so the just-added entry is included in the
+    # overflow calculation -- evicting before insertion let the cache
+    # settle one entry above the cap under continuous growth (eviction
+    # always saw len == cap, i.e. "not yet over", right before the new
+    # entry pushed it to cap + 1).
+    _evict_stale_delegate_managers()
     return _instances[project_id]
 
 def reset_delegate_manager() -> None:
     """Reset the singleton (for testing)."""
     _instances.clear()
+    _instance_last_used.clear()
