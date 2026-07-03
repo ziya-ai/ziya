@@ -208,7 +208,13 @@ class ProjectStorage(BaseStorage[Project]):
             elif key == 'path' and value is not None:
                 project.path = _normalize_path(value) if value else ""
             else:
-                setattr(project, key, value)
+                # CWE-20 defense-in-depth: only ever set fields the update
+                # request model (ProjectUpdate) itself declares, regardless
+                # of what extra-fields policy either model carries. Guards
+                # against a future edit to either model silently becoming an
+                # arbitrary-attribute-write primitive here.
+                if key in type(data).model_fields:
+                    setattr(project, key, value)
         
         project.lastAccessedAt = int(time.time() * 1000)
         self._write_json(self._project_file(project_id), project.model_dump())

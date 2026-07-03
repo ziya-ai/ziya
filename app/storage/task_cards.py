@@ -88,7 +88,13 @@ class TaskCardStorage(BaseStorage[TaskCard]):
             _assign_block_ids(update_dict["root"])
             update_dict["root"] = Block(**update_dict["root"])
         for key, value in update_dict.items():
-            setattr(card, key, value)
+            # CWE-20 defense-in-depth: only ever set fields the update
+            # request model (TaskCardUpdate) itself declares, regardless of
+            # what extra-fields policy either model carries. Guards against
+            # a future edit to either model (e.g. adding extra="allow")
+            # silently becoming an arbitrary-attribute-write primitive here.
+            if key in type(data).model_fields:
+                setattr(card, key, value)
         card.updated_at = int(time.time() * 1000)
         self._write_json(self._card_file(card_id), card.model_dump())
         return card
