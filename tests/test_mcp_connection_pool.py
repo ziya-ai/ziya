@@ -63,7 +63,14 @@ class TestConnectionPoolCallTool:
 
     @pytest.mark.asyncio
     async def test_call_tool_unknown_server(self):
-        """Calling tool on unknown server should raise or return error."""
+        """Calling tool on unknown server should raise or return None/error.
+
+        MCPManager.call_tool() returns None when a tool isn't found on any
+        connected server (see its docstring) — this is not itself a bug,
+        so an uninitialized/unconfigured manager returning None here is the
+        documented degrade-gracefully contract, not a crash to assert against
+        [regression guard for PenPal #120 fix: manager.py pre-initializes
+        server_configs to {} instead of raising AttributeError]."""
         pool = ConnectionPool()
-        with pytest.raises(Exception):
-            await pool.call_tool("nonexistent_server", "some_tool", {})
+        result = await pool.call_tool("nonexistent_server", "some_tool", {})
+        assert result is None
