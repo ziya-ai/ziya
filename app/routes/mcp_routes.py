@@ -13,6 +13,7 @@ from dataclasses import asdict
 
 from app.mcp.manager import get_mcp_manager
 from app.utils.logging_utils import logger
+from app.utils.json_storage import read_json_file, write_json_file
 from app.config.shell_config import DEFAULT_SHELL_CONFIG, get_default_shell_config
 from app.config.write_policy import DEFAULT_WRITE_POLICY, get_write_policy_manager
 from app.mcp.permissions import get_permissions_manager
@@ -2008,12 +2009,11 @@ class FavoritesRequest(BaseModel):
 @router.post("/registry/favorites")
 async def update_favorites(request: FavoritesRequest):
     """Update user's favorite services."""
-    # Store in user config (for now, in a simple JSON file)
+    # Store in user config, encryption-aware [PenPal #143, CWE-311].
     config_path = Path.home() / ".ziya" / "registry_favorites.json"
     config_path.parent.mkdir(exist_ok=True)
     
-    with open(config_path, 'w') as f:
-        json.dump({'favorites': request.favorites}, f)
+    write_json_file(config_path, {'favorites': request.favorites})
     
     return {'success': True, 'favorites': request.favorites}
 
@@ -2022,9 +2022,8 @@ async def get_favorites():
     """Get user's favorite services."""
     config_path = Path.home() / ".ziya" / "registry_favorites.json"
     
-    if config_path.exists():
-        with open(config_path, 'r') as f:
-            data = json.load(f)
-            return {'favorites': data.get('favorites', [])}
+    data = read_json_file(config_path)
+    if data is not None:
+        return {'favorites': data.get('favorites', [])}
     
     return {'favorites': []}
