@@ -96,6 +96,12 @@ class MCPManager:
         self.config_path = config_path or self._find_config_file()
         self.clients: Dict[str, MCPClient] = {}
         
+        # Populated by initialize(); pre-set to {} so any access before
+        # initialize() completes (e.g. a request racing the background
+        # init task) sees an empty dict instead of raising AttributeError
+        # [PenPal #120, CWE-476].
+        self.server_configs: Dict[str, Any] = {}
+        
         # Persisted enable/disable overrides that survive reinitialize.
         # Set by toggle_server, checked during initialize.
         self._server_enabled_overrides: Dict[str, bool] = {}
