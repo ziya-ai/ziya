@@ -36,6 +36,12 @@ def _cache_dir() -> Path:
     home = Path(os.environ.get("ZIYA_HOME", Path.home() / ".ziya"))
     d = home / "ast_cache"
     d.mkdir(parents=True, exist_ok=True)
+    # Restrict to owner-only; cache entries carry absolute file paths and
+    # full parsed AST structure for the project [PenPal #106, CWE-200].
+    try:
+        os.chmod(d, 0o700)
+    except OSError:
+        pass
     return d
 
 
@@ -81,6 +87,10 @@ def save_cache(project_root: str, file_entries: Dict[str, Any]) -> None:
         start = time.monotonic()
         with gzip.open(path, "wt", encoding="utf-8", compresslevel=3) as f:
             json.dump(payload, f, separators=(",", ":"))
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
         elapsed = time.monotonic() - start
         size_kb = path.stat().st_size / 1024
         logger.info(
