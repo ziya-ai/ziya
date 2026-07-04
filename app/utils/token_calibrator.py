@@ -72,6 +72,13 @@ class TokenCalibrator:
             # This allows learning to accumulate across CLI and web usage
             cache_dir = os.path.expanduser("~/.ziya")
             os.makedirs(cache_dir, exist_ok=True)
+            # Restrict to owner-only; calibration data carries absolute
+            # file paths for every file the project has processed
+            # [PenPal #106, CWE-200].
+            try:
+                os.chmod(cache_dir, 0o700)
+            except OSError:
+                pass
             self.cache_file = os.path.join(cache_dir, 'token_calibration.json')
             
         # Create lock file for safe concurrent access
@@ -183,6 +190,12 @@ class TokenCalibrator:
                 
                 # Atomic rename (prevents partial reads)
                 os.replace(temp_file, self.cache_file)
+                # os.replace() does not carry chmod from the temp file's
+                # umask-derived permissions; explicitly restrict here.
+                try:
+                    os.chmod(self.cache_file, 0o600)
+                except OSError:
+                    pass
                 self.has_unsaved_data = False
                 
             logger.debug(f"📊 Saved calibration data to {self.cache_file}")

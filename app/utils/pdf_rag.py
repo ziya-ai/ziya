@@ -519,6 +519,12 @@ class PdfIndex:
                 return existing
 
             cache_dir.mkdir(parents=True, exist_ok=True)
+            # Restrict to owner-only; the cache stores full extracted page
+            # text and document metadata [PenPal #106, CWE-200].
+            try:
+                os.chmod(cache_dir, 0o700)
+            except OSError:
+                pass
 
             outline, doc_meta, page_count_hint = _extract_native_outline(path)
             pages = _extract_pages_text(path, page_count_hint=page_count_hint)
@@ -584,6 +590,10 @@ class PdfIndex:
             if existing is not None:
                 return existing
             cache_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                os.chmod(cache_dir, 0o700)
+            except OSError:
+                pass
 
             outline, doc_meta, page_count_hint = _extract_native_outline(path)
             if page_count_hint <= 0:
