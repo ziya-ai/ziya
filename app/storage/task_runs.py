@@ -225,23 +225,26 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         """Persist the full Artifact for a single iteration to disk.
         Each iteration file is small (~10KB typical), scales linearly
         with retained iterations (failures + first 50 passes per
-        Repeat).  See design/task-cards.md §Iteration result storage."""
+        Repeat).  See design/task-cards.md §Iteration result storage.
+
+        Uses the encryption-aware _write_json() helper (same as every
+        other TaskRunStorage write) so iteration artifacts fall under
+        the "session_data" ALE category instead of being written as
+        plaintext JSON [PenPal #43, CWE-311]."""
         path = self._iteration_file(run_id, block_id, index)
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as f:
-            json.dump(artifact.model_dump(), f, default=str)
+        self._write_json(path, artifact.model_dump(mode="json"))
 
     def read_iteration_artifact(
         self, run_id: str, block_id: str, index: int,
     ) -> Optional[Artifact]:
         path = self._iteration_file(run_id, block_id, index)
-        if not path.exists():
-            return None
         try:
-            with path.open("r", encoding="utf-8") as f:
-                data = json.load(f)
+            data = self._read_json(path)
+            if data is None:
+                return None
             return Artifact(**data)
-        except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+        except (TypeError, ValueError) as e:
             logger.warning(f"Could not read iteration artifact {path}: {e}")
             return None
 
