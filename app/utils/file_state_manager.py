@@ -102,7 +102,14 @@ class FileStateManager:
             # Evict before saving to prevent the on-disk file from growing unboundedly
             self._evict_stale_conversations()
 
-            os.makedirs(os.path.dirname(self.state_file), exist_ok=True)
+            state_dir = os.path.dirname(self.state_file)
+            os.makedirs(state_dir, exist_ok=True)
+            # Restrict to owner-only; file_states.json holds full source
+            # file contents across sessions [PenPal #106, CWE-200].
+            try:
+                os.chmod(state_dir, 0o700)
+            except OSError:
+                pass
             data = {}
 
             # Build the data dict (existing logic unchanged)
@@ -142,6 +149,10 @@ class FileStateManager:
                 else:
                     with open(self.state_file, 'w') as f:
                         f.write(plaintext.decode("utf-8"))
+                try:
+                    os.chmod(self.state_file, 0o600)
+                except OSError:
+                    pass
 
             logger.debug(f"Saved file states for {len(data)} conversations")
         except Exception as e:
