@@ -826,6 +826,18 @@ class MCPClient:
                 resp_id = msg.get("id")
                 if resp_id is None:
                     continue  # notification / log — nothing to route on
+                if not isinstance(resp_id, int):
+                    # A non-integer id (list, dict, str, float) is either a
+                    # non-conformant or malicious server response. Using it
+                    # as a dict key would either raise TypeError (unhashable
+                    # types like list/dict) or silently fail to match the
+                    # int-keyed self._pending table, orphaning the request
+                    # until it times out [PenPal #107, CWE-843].
+                    logger.debug(
+                        f"Dropping MCP response with non-integer id "
+                        f"type={type(resp_id).__name__} value={resp_id!r}"
+                    )
+                    continue
                 fut = self._pending.pop(resp_id, None)
                 if fut is not None and not fut.done():
                     fut.set_result(msg)
@@ -833,7 +845,7 @@ class MCPClient:
                     self._buffer_response(resp_id, msg)
         except asyncio.CancelledError:
             raise
-        except (OSError, RuntimeError, ConnectionError) as e:
+        except (OSError, RuntimeError, ConnectionError, TypeError) as e:
             logger.debug(
                 f"MCP reader loop ended for "
                 f"{self.server_config.get('name', 'unknown')}: {e}"
