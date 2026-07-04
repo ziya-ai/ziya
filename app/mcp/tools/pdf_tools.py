@@ -21,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from app.mcp.tools.base import BaseMCPTool
 from app.utils.logging_utils import logger
-from app.mcp.tools.fileio import _resolve_and_validate, _get_project_root, _get_safe_write_paths
+from app.mcp.tools.fileio import _resolve_and_validate, _get_project_root, _get_safe_write_paths, _get_task_readable_prefixes
 
 
 # --------------------------------------------------------------------------- #
@@ -32,13 +32,12 @@ def _load_index(path_arg: str, kwargs: Dict[str, Any]):
     """
     Resolve *path_arg* and return a PdfIndex, or an error dict.
 
-    Accepts both project-relative paths and absolute paths.  Relative
-    paths are resolved against the project root with the standard
-    traversal-safe validator.  Absolute paths are accepted when they
-    resolve to an existing PDF — this allows the model to reference
-    large reference PDFs that may live outside the project tree
-    (e.g. /Volumes/Ref/spec.pdf) and were previously tagged via the
-    upload endpoint.
+    Accepts both project-relative and absolute paths.  Both are routed
+    through the same traversal-safe validator used by FileReadTool, with
+    absolute paths gated to the safe-write and task-readable prefix
+    allowlists.  This closes an authorization bypass where an absolute
+    path was previously accepted purely on existence + .pdf extension,
+    with no directory-boundary check [PenPal #68, CWE-200].
     """
     from app.utils.pdf_rag import PdfIndex
     project_root = _get_project_root(kwargs)
@@ -46,19 +45,17 @@ def _load_index(path_arg: str, kwargs: Dict[str, Any]):
     if not path_str:
         return None, {"error": True, "message": "path must not be empty"}
 
-    if os.path.isabs(path_str):
-        resolved = Path(path_str).resolve()
-        # Absolute path is accepted as long as the file actually exists.
-        if not resolved.exists():
-            return None, {"error": True, "message": f"File not found: {path_arg}"}
-    else:
-        try:
-            resolved = _resolve_and_validate(
-                path_str, project_root,
-                allowed_absolute_prefixes=_get_safe_write_paths(),
-            )
-        except ValueError as e:
-            return None, {"error": True, "message": str(e)}
+    allowed_prefixes = _get_safe_write_paths() + _get_task_readable_prefixes()
+    try:
+        resolved = _resolve_and_validate(
+            path_str, project_root,
+            allowed_absolute_prefixes=allowed_prefixes,
+        )
+    except ValueError:
+        return None, {
+            "error": True,
+            "message": f"Path '{path_arg}' is outside the allowed directories.",
+        }
 
     if not resolved.is_file():
         return None, {"error": True, "message": f"Not a file: {path_arg}"}
