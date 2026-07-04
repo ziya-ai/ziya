@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from .base import BaseStorage
+from ..utils.paths import validate_relative_path
 from ..models.task_binding import TaskBinding
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,15 @@ class TaskBindingStorage(BaseStorage[TaskBinding]):
         super().__init__(self.chats_dir)
 
     def _bindings_file(self, chat_id: str) -> Path:
-        return self.chats_dir / f"{chat_id}.bindings.json"
+        # chat_id arrives verbatim from the URL path segment. Without this
+        # containment check, a chat_id like "../../other_project/target"
+        # resolves outside self.chats_dir, allowing arbitrary read/write/
+        # delete of any *.bindings.json file the process can reach
+        # [PenPal #105, CWE-22].
+        filename = f"{chat_id}.bindings.json"
+        if not validate_relative_path(str(self.chats_dir), filename):
+            raise ValueError(f"Invalid chat_id: path traversal detected in {chat_id!r}")
+        return self.chats_dir / filename
 
 
     def _read_json_list(self, filepath):
