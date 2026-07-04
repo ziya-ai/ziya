@@ -147,7 +147,13 @@ def fingerprint_tools(tools: List[Dict[str, Any]]) -> str:
         sorted(
             [{"name": t.get("name"), "description": t.get("description"),
               "inputSchema": t.get("inputSchema")} for t in tools],
-            key=lambda x: x.get("name", ""),
+            # `.get("name", "")` only substitutes the default when the key
+            # is absent — a tool dict with an explicit {"name": None, ...}
+            # still yields None here, and sorting a mix of None/str keys
+            # raises TypeError, silently aborting fingerprinting and
+            # disabling rug-pull detection for that server [PenPal #118,
+            # CWE-476]. `or ""` normalizes both cases to a comparable str.
+            key=lambda x: x.get("name") or "",
         ),
         sort_keys=True,
     )
