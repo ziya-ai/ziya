@@ -98,6 +98,18 @@ ESCALATION_ENV_KEYS = _LIST_FIELDS + (
 SESSION_NONCE_ENV_KEY = "ZIYA_SESSION_NONCE"
 SESSION_GRANT_ENV_KEY = "ZIYA_SESSION_GRANT"
 
+# Provider name for grants minted IN-PROCESS by the interactive CLI. Its trust
+# anchor is NOT the root signing key but a per-manager-process ephemeral key
+# (generated at manager init, never written to disk). That key is unreadable to
+# the agent for the same reason the GUI's key is unreadable without sudo — here
+# by process isolation rather than file perms: the model runs inside the shell
+# subprocess and cannot read the parent CLI's memory. The mint call lives only
+# in the TTY-stdin `/shell` handler, so "a human typed it" is the gate.
+EPHEMERAL_PROVIDER = "cli-ephemeral"
+# base64 raw-32-byte Ed25519 PUBLIC half, injected by the manager at spawn so
+# the subprocess can verify cli-ephemeral grants. The agent cannot set it.
+EPHEMERAL_PUBKEY_ENV_KEY = "ZIYA_EPHEMERAL_PUBKEY"
+
 
 def _floor() -> Dict[str, set]:
     """The default privilege floor, derived from the canonical config sources.
@@ -205,6 +217,26 @@ def _load_public_key(path: Optional[str] = None):
     return None
 
 
+def _load_ephemeral_public_key(pubkey_b64: Optional[str]):
+    """Load an Ed25519 public key from a base64 raw-32-byte string.
+
+    Used to verify ``cli-ephemeral`` session grants against the per-process key
+    the manager injects at spawn. Returns None on any parse failure -> caller
+    fails closed. Deliberately narrow (no file/PEM/SSH forms): the ephemeral
+    pubkey only ever travels as base64 raw bytes in one env var.
+    """
+    if not pubkey_b64:
+        return None
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    try:
+        raw = base64.b64decode(pubkey_b64.strip(), validate=True)
+    except Exception:
+        return None
+    if len(raw) != 32:
+        return None
+    return Ed25519PublicKey.from_public_bytes(raw)
+
+
 def verify_delta_signature(
     delta: Dict[str, Any],
     sig_b64: Optional[str],
@@ -308,6 +340,7 @@ def is_env_scope_authorized(
         env.get(SESSION_GRANT_ENV_KEY, ""),
         env.get(SESSION_NONCE_ENV_KEY, ""),
         public_key_path,
+        env.get(EPHEMERAL_PUBKEY_ENV_KEY, ""),
     )
 
 
@@ -443,15 +476,18 @@ def sign_session_grant(nonce: str, delta: Dict[str, Any], provider: str,
 
 def verify_session_grant(delta: Dict[str, Any], grant_json: Optional[str],
                          current_nonce: Optional[str],
-                         public_key_path: Optional[str] = None) -> bool:
+                         public_key_path: Optional[str] = None,
+                         ephemeral_pubkey_b64: Optional[str] = None) -> bool:
     """True iff `grant_json` is a valid session grant for `delta` this session.
 
     Empty delta -> True (nothing to authorize). Otherwise ALL must hold:
     parseable record, nonce matches `current_nonce`, scope_hash matches the
     delta, and the signature verifies against the trusted key. Any failure or
     a blank nonce -> False (fail-closed). The default provider's trust anchor
-    is the root public key; provider-specific anchors are a future extension
-    keyed off record['provider'].
+    is the root public key. The ``cli-ephemeral`` provider instead verifies
+    against ``ephemeral_pubkey_b64`` (the manager's per-process key), so a grant
+    minted in-process by the interactive CLI is honored without the root key,
+    while a stale (wrong nonce) or forged (wrong key) grant still fails closed.
     """
     if not delta:
         return True
@@ -472,7 +508,10 @@ def verify_session_grant(delta: Dict[str, Any], grant_json: Optional[str],
         return False
     if scope_hash != session_grant_scope_hash(delta):
         return False
-    key = _load_public_key(public_key_path)
+    if provider == EPHEMERAL_PROVIDER:
+        key = _load_ephemeral_public_key(ephemeral_pubkey_b64)
+    else:
+        key = _load_public_key(public_key_path)
     if key is None:
         return False
     msg = _session_grant_message(nonce, scope_hash, provider, granted_by, granted_at)
@@ -496,33 +535,47 @@ def verify_session_grant(delta: Dict[str, Any], grant_json: Optional[str],
 # escalations) and readable paths are advisory (F-006), so neither is hashed —
 # editing them must not churn an approval.
 
-def task_escalation_block(scope: Any) -> Dict[str, Any]:
-    """Extract the privilege-bearing fields from a TaskScope-like object.
+def task_escalation_block(*scopes: Any) -> Dict[str, Any]:
+    """Extract the privilege-bearing fields from one or more TaskScope-like
+    objects, unioned.
 
-    Returns {} when the scope grants no escalation (no shell_commands, no
-    writable paths) — an empty block means "no approval needed; runs at floor".
+    Callers pass the FULL effective hierarchy — deck scope, card scope,
+    every ancestor block's scope, and the target block's own scope — so
+    the escalation reported/signed/hashed matches exactly what
+    ``app.agents.block_executor.ExecutionContext.effective_scope`` grants
+    at run time.  A single scope still works (backward compatible).
+    ``None`` entries are skipped.
+
+    Returns {} when the union grants no escalation (no shell_commands, no
+    writable paths anywhere in the chain) — an empty block means "no
+    approval needed; runs at floor".
     Duck-typed (getattr) so it works on the pydantic TaskScope without importing
-    the model here (keeps this module dependency-light and import-cycle-free).
+    the model here (keeps this module dependency-light and import-cycle-free) —
+    and, just as importantly, works on the SimpleNamespace-wrapped scopes the
+    out-of-process signer and compliance audit build without pydantic.
     """
-    if scope is None:
-        return {}
-    shell_cmds = sorted(set(getattr(scope, "shell_commands", []) or []))
-    writable = sorted({
-        getattr(e, "path", None)
-        for e in (getattr(scope, "paths", []) or [])
-        if getattr(e, "write", False) and getattr(e, "path", None)
-    })
+    shell_cmds: set = set()
+    writable: set = set()
+    for scope in scopes:
+        if scope is None:
+            continue
+        shell_cmds.update(getattr(scope, "shell_commands", []) or [])
+        for e in (getattr(scope, "paths", []) or []):
+            path = getattr(e, "path", None)
+            if path and getattr(e, "write", False):
+                writable.add(path)
     block: Dict[str, Any] = {}
     if shell_cmds:
-        block["shell_commands"] = shell_cmds
+        block["shell_commands"] = sorted(shell_cmds)
     if writable:
-        block["writable_paths"] = writable
+        block["writable_paths"] = sorted(writable)
     return block
 
 
-def task_scope_hash(scope: Any) -> str:
-    """SHA-256 over the canonical task escalation block. "" when no escalation."""
-    block = task_escalation_block(scope)
+def task_scope_hash(*scopes: Any) -> str:
+    """SHA-256 over the canonical task escalation block for one or more
+    scope layers (see ``task_escalation_block``). "" when no escalation."""
+    block = task_escalation_block(*scopes)
     if not block:
         return ""
     import hashlib
