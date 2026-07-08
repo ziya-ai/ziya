@@ -100,13 +100,18 @@ def get_session_dir() -> Path:
     return session_dir
 
 
-def save_session(cli: 'CLI', name: Optional[str] = None, *, cleanup: bool = True) -> str:
+def save_session(cli: 'CLI', name: Optional[str] = None, *, cleanup: bool = True,
+                 fork: bool = False) -> str:
     """Save current session and return session ID.
 
     If the CLI already has a _session_id (from resume or a prior save),
     that same file is updated in place (checkpoint semantics). Otherwise
     a new timestamp-based id is generated, optionally suffixed with a
     user-supplied name.
+
+    With fork=True a new id is always generated and the CLI's live
+    _session_id/_session_name are left untouched: the write is a frozen
+    snapshot that can be resumed later to fork the conversation.
     """
     session_dir = get_session_dir()
     
@@ -121,9 +126,16 @@ def save_session(cli: 'CLI', name: Optional[str] = None, *, cleanup: bool = True
     start_time = getattr(cli, '_session_start_time', None) or datetime.now().isoformat()
 
     # Determine session id / filename
-    existing_id = getattr(cli, '_session_id', None)
-    # Resolve the friendly name: explicit arg wins, else keep prior name
-    resolved_name = name if name is not None else getattr(cli, '_session_name', None)
+    if fork:
+        # Snapshots always get a fresh id, and only carry a name if one is
+        # explicitly given — inheriting the live session's name would make
+        # /resume <name> ambiguous between the live session and the fork.
+        existing_id = None
+        resolved_name = name
+    else:
+        existing_id = getattr(cli, '_session_id', None)
+        # Resolve the friendly name: explicit arg wins, else keep prior name
+        resolved_name = name if name is not None else getattr(cli, '_session_name', None)
 
     if existing_id:
         session_id = existing_id
@@ -151,9 +163,10 @@ def save_session(cli: 'CLI', name: Optional[str] = None, *, cleanup: bool = True
     with open(session_file, 'w') as f:
         json.dump(session_data, f, indent=2)
 
-    # Remember id/name on the CLI for subsequent checkpoints
-    cli._session_id = session_id
-    cli._session_name = resolved_name
+    if not fork:
+        # Remember id/name on the CLI for subsequent checkpoints
+        cli._session_id = session_id
+        cli._session_name = resolved_name
 
     if cleanup:
         # Cleanup old sessions (keep last 10) — but preserve named sessions
@@ -721,7 +734,7 @@ COMMAND_SPEC = [
     },
     {
         'name': '/save',
-        'help': 'Checkpoint the current session without exiting',
+        'help': 'Save a forkable snapshot of the session (always a new id)',
         'usage': '/save [name]',
         'completion': 'session',
         'arg_hint': 'session name',
@@ -1267,7 +1280,11 @@ class CLI:
             print(f"\033[90m[trace] model call attempt={attempt}\033[0m", file=sys.stderr)
             
             response = await self._run_with_tools_from_messages(messages, stream)
-            print(f"\033[90m[trace] model returned, len={len(response)}, has_diff={bool(re.search(r'^`{3,}diff\\s*$', response, re.MULTILINE))}\033[0m", file=sys.stderr)
+            # Compute has_diff BEFORE the f-string: a backslash inside an
+            # f-string expression part is a SyntaxError on Python 3.11 (allowed
+            # only in 3.12+), and the toolbox venv is 3.11.
+            _diff_re = re.search(r'^`{3,}diff\s*$', response, re.MULTILINE)
+            print(f"\033[90m[trace] model returned, len={len(response)}, has_diff={bool(_diff_re)}\033[0m", file=sys.stderr)
             
             # If no diffs, we're done
             if '```diff' not in response:
@@ -1991,10 +2008,14 @@ class CLI:
         while True:
             try:
                 # Use prompt_toolkit for rich input
-                # OSC 133;D then 133;A tells iTerm2 that any prior command has
-                # finished and a new prompt is starting.  Without this, iTerm
-                # keeps showing the tab activity spinner while we're idle.
-                sys.stdout.write("\033]133;D\007\033]133;A\007"); sys.stdout.flush()
+                # OSC 133;D (prior command finished), 133;A (new prompt
+                # starting), then 133;B (prompt finished / awaiting input)
+                # tells the terminal we are genuinely idle. Without the
+                # trailing 133;B, terminals that track the FinalTerm/iTerm2
+                # shell-integration state machine never see the transition
+                # into "awaiting input" and keep showing the busy/spinner
+                # indicator on the tab even though nothing is running.
+                sys.stdout.write("\033]133;D\007\033]133;A\007\033]133;B\007"); sys.stdout.flush()
                 try:
                     prompt_segments = (
                         self._bead_prompt_segments()
@@ -2003,8 +2024,12 @@ class CLI:
                     user_input = await asyncio.to_thread(
                         self.session.prompt,
                         FormattedText(prompt_segments),
-                        # Add context-aware completion
-                        refresh_interval=0.5
+                        # Note: no refresh_interval here. prompt_segments is a
+                        # static list computed once above, not a callable, so
+                        # periodic redraws would repaint identical content on
+                        # a timer. That constant stdout activity is enough to
+                        # keep re-triggering iTerm2's inactive-tab "activity"
+                        # spinner even while genuinely idle at the prompt.
                     )
                     user_input = user_input.strip()
                 except KeyboardInterrupt:
@@ -2175,17 +2200,23 @@ class CLI:
         except Exception as e:
             print(f"\033[31mSave failed: {e}\033[0m")
             return True  # don't exit on a failed save
-        label = name or session_id
+        # save_session resolves the effective name (explicit arg wins, else
+        # the session's prior name) and stores it on self._session_name —
+        # use that so a bare /suspend of a named session shows its name.
+        label = self._session_name or session_id
         print(f"\033[32m✓ Session saved: {label}\033[0m")
-        resume_arg = name or session_id
+        resume_arg = self._session_name or session_id
         print(f"\033[90mResume with: ziya chat --resume {resume_arg}\033[0m")
         return False
 
     async def cmd_save(self, arg: str) -> bool:
-        """/save [name] — checkpoint session without exiting."""
+        """/save [name] — save a forkable snapshot (new id) without exiting."""
         try:
-            session_id = save_session(self, arg.strip() or None)
-            print(f"\033[32m✓ Session saved: {session_id}\033[0m")
+            name = arg.strip() or None
+            session_id = save_session(self, name, fork=True)
+            label = name or session_id
+            print(f"\033[32m✓ Snapshot saved: {label}\033[0m")
+            print(f"\033[90mFork it later with: /resume {label}\033[0m")
         except Exception as e:
             print(f"\033[31mSave failed: {e}\033[0m")
         return True
@@ -2207,6 +2238,36 @@ class CLI:
         except FileNotFoundError as e:
             print(f"\033[33m{e}\033[0m")
             return True
+        # Visibility: show exactly which file was loaded and how fresh it is,
+        # so a stale twin (same logical session saved under two filenames,
+        # e.g. an id-named file and a name-named file from different builds)
+        # is detectable at resume time instead of surfacing later as a
+        # mysterious gap in the restored conversation.
+        session_file = get_session_dir() / f"{session_id}.json"
+        loaded_name = data.get('name')
+        last_update = data.get('last_update_time', data.get('timestamp', 'unknown'))
+        print(f"\033[90m  Loaded: {session_file.name}"
+              f" (name: {loaded_name or '—'}, last update: {last_update},"
+              f" {len(data.get('history', []))} messages)\033[0m")
+        # Twin detection: another session file claiming the same name or id.
+        try:
+            for p in get_session_dir().glob('*.json'):
+                if p.stem == session_id:
+                    continue
+                try:
+                    with open(p) as f:
+                        other = json.load(f)
+                except (OSError, json.JSONDecodeError, ValueError):
+                    continue
+                if (loaded_name and (other.get('name') == loaded_name
+                                     or other.get('id') == loaded_name)) \
+                        or other.get('id') == session_id:
+                    print(f"\033[33m  ⚠ Twin session file: {p.name} "
+                          f"(last update: {other.get('last_update_time', '?')}, "
+                          f"{len(other.get('history', []))} messages) — "
+                          f"if the resumed session looks stale, try that one.\033[0m")
+        except Exception:
+            pass  # visibility only — never block a resume
         # Checkpoint the current session before switching away so its
         # history isn't lost (auto-checkpoint may not have run yet).
         if self.history and not getattr(self, '_ephemeral', False):
@@ -2776,9 +2837,21 @@ class CLI:
                 if self._session_timeout is not None:
                     env["COMMAND_TIMEOUT"] = str(self._session_timeout)
                 shell_cfg["env"] = env
+                # Mint an in-process ephemeral grant authorizing whatever in
+                # `env` exceeds the built-in floor. This call is reachable ONLY
+                # from the TTY-stdin /shell handler, so the human keystroke is
+                # the trust anchor — no root key, no signing ceremony. Without
+                # it the subprocess's scope gate would silently clamp beyond-
+                # floor commands back to the floor (the npm/npx/craco symptom).
+                granted = mcp_manager.mint_shell_session_grant("shell", env)
                 ok = await mcp_manager.restart_server("shell", shell_cfg)
                 if ok:
-                    print("\033[32m✓ Shell server restarted — changes are live.\033[0m")
+                    if granted:
+                        n = sum(len(v) for v in granted.values())
+                        print("\033[32m✓ Shell server restarted — changes are live "
+                              f"(authorized {n} command(s) beyond the default floor).\033[0m")
+                    else:
+                        print("\033[32m✓ Shell server restarted — changes are live.\033[0m")
                     return
             print("\033[2mRestart Ziya session for changes to take effect.\033[0m")
         except (ImportError, OSError, RuntimeError, asyncio.TimeoutError) as e:

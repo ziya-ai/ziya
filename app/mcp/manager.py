@@ -7,6 +7,7 @@ import os
 import sys
 import re
 import json
+import base64
 import secrets
 from typing import Dict, List, Optional, Any
 from pathlib import Path
@@ -168,6 +169,18 @@ class MCPManager:
         # server_name -> raw JSON session-grant record, forwarded to the
         # subprocess env at (re)spawn. In-memory only; cleared on manager exit.
         self._session_grants: Dict[str, str] = {}
+        # Per-process ephemeral Ed25519 key for CLI-minted grants. The private
+        # half NEVER leaves this process's memory (no disk, no env); only the
+        # base64 public half is injected into subprocess spawns so they can
+        # verify `cli-ephemeral` grants. This is the CLI analog of the GUI's
+        # sudo-unreadable key: unreadable to the agent by process isolation
+        # rather than file perms. Regenerated each manager start, so grants are
+        # inherently void on the next cold start (matches the nonce lifecycle).
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        self._ephemeral_privkey = Ed25519PrivateKey.generate()
+        self._ephemeral_pubkey_b64: str = base64.b64encode(
+            self._ephemeral_privkey.public_key().public_bytes_raw()
+        ).decode("ascii")
         try:
             _nonce_path = Path.home() / ".ziya" / ".session_nonce"
             _nonce_path.parent.mkdir(parents=True, exist_ok=True)
@@ -381,12 +394,18 @@ class MCPManager:
         """
         from app.config.scope_canonical import (
             ESCALATION_ENV_KEYS, SESSION_NONCE_ENV_KEY, SESSION_GRANT_ENV_KEY,
+            EPHEMERAL_PUBKEY_ENV_KEY,
         )
         for key in ESCALATION_ENV_KEYS:
             if key in os.environ:
                 server_env[key] = os.environ[key]
 
         server_env[SESSION_NONCE_ENV_KEY] = self._session_nonce
+        # Inject the per-process ephemeral PUBLIC key so the subprocess can
+        # verify cli-ephemeral grants. The private half never leaves memory;
+        # the agent cannot forge a grant that verifies against this, and a
+        # replayed grant fails on the nonce above.
+        server_env[EPHEMERAL_PUBKEY_ENV_KEY] = self._ephemeral_pubkey_b64
         _grant = self._session_grants.get(server_name)
         if _grant:
             server_env[SESSION_GRANT_ENV_KEY] = _grant
@@ -419,6 +438,25 @@ class MCPManager:
         # Load configuration
         server_configs = self.builtin_server_definitions.copy()
         logger.debug(f"Initialized with {len(server_configs)} built-in server definitions.")
+
+        # Merge servers contributed by active config providers (e.g. an
+        # enterprise plugin's get_defaults()['mcp']). This lets a deployment
+        # ship an MCP server as a first-class default — connected
+        # automatically when its command is on PATH, silently skipped via the
+        # existing shutil.which() check below when it isn't — without ever
+        # requiring the user to open or edit an mcp_config.json. Community
+        # config providers supply no 'mcp' key, so this is a no-op there.
+        try:
+            from app.plugins import get_active_config_providers
+            for provider in get_active_config_providers():
+                mcp_defaults = provider.get_defaults().get("mcp", {})
+                provider_servers = mcp_defaults.get("server_configs", {})
+                for name in mcp_defaults.get("default_servers", []):
+                    if name in provider_servers and name not in server_configs:
+                        server_configs[name] = {**provider_servers[name], "builtin": False}
+                        logger.debug(f"Merged provider-contributed MCP server: '{name}'")
+        except Exception as e:
+            logger.warning(f"Error merging provider-contributed MCP servers: {e}")
 
         if self.config_path and os.path.exists(self.config_path):
             logger.debug(f"Loading user MCP configuration from: {self.config_path}")
@@ -817,6 +855,47 @@ class MCPManager:
             f"(provider={record.get('provider')}, granted_by={record.get('granted_by')})"
         )
         return record
+
+    def mint_shell_session_grant(
+        self, server_name: str, requested_env: Dict[str, str]
+    ) -> Optional[Dict[str, Any]]:
+        """Mint an in-process ``cli-ephemeral`` grant for `requested_env`.
+
+        Called ONLY from the interactive CLI's TTY-stdin ``/shell`` handler —
+        never from the model path — so "a human typed it" is the trust anchor.
+        The delta is derived exactly as the subprocess will re-derive it
+        (parse_env_scope -> compute_delta), so the signed scope_hash matches
+        byte-for-byte. Signing uses the per-process ephemeral key whose private
+        half never leaves this process; the subprocess verifies against the
+        public half injected at spawn.
+
+        Returns the escalation delta that was granted, or None when
+        `requested_env` is within the floor (no grant needed — any prior grant
+        for this server is cleared so it reverts cleanly to the floor).
+        """
+        from app.config.scope_canonical import (
+            parse_env_scope, compute_delta, sign_session_grant, EPHEMERAL_PROVIDER,
+        )
+        delta = compute_delta(parse_env_scope(requested_env))
+        if not delta:
+            # Requested set is within the floor: drop any stale grant so the
+            # next spawn carries no escalation and lands exactly on the floor.
+            self._session_grants.pop(server_name, None)
+            return None
+        record = sign_session_grant(
+            self._session_nonce,
+            delta,
+            EPHEMERAL_PROVIDER,
+            granted_by=f"cli:{os.environ.get('USER') or os.environ.get('USERNAME') or 'local'}",
+            granted_at=int(time.time()),
+            private_key=self._ephemeral_privkey,
+        )
+        self._session_grants[server_name] = json.dumps(record)
+        logger.info(
+            f"Minted cli-ephemeral session grant for '{server_name}' "
+            f"(delta keys={sorted(delta.keys())})"
+        )
+        return delta
 
     async def restart_server(self, server_name: str, new_config: Optional[Dict[str, Any]] = None) -> bool:
         """
