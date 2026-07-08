@@ -36,12 +36,36 @@ Changed your mind before signing? Click **Discard**. Decided you want it
 permanently after all? Use **Save** instead — that supersedes the session
 request.
 
+## The interactive CLI (`ziya chat`): `/shell add`
+
+The `ziya chat` CLI has a **third**, signing-free path for session-only grants,
+because it has no sudo-unreadable key to sign with and a ceremony on every
+`/shell add` would be intolerable. When you type `/shell add <command>` at the
+CLI prompt, the change takes effect immediately — no `ziya-approve`, no banner.
+
+This is safe for the CLI specifically because the trust anchor is different:
+
+- The grant is signed by a **per-process ephemeral key** that lives only in the
+  CLI's memory (never disk, never env), so the agent cannot read it to forge a
+  grant. It is regenerated every start, so grants are void on the next launch.
+- The mint call is reachable **only** from the TTY-stdin `/shell` handler, never
+  from the model. So "a human typed it at this terminal" is the gate, replacing
+  the signature.
+
+The provider name for these grants is `cli-ephemeral`. See
+`Docs/MCPSecurityControls.md` §9 for the full rationale and residual-risk
+analysis (ASR F-004/F-007). This path is **CLI-only** — the web UI still
+requires `sudo ziya-approve` as described above.
+
 ## Why you have to sign at all
 
 Privilege widening is gated so that *nothing* — not the model, not a background
-process, not the web UI — can quietly grant itself more shell access. Every
-escalation, durable or ephemeral, has to be signed with your OS credentials.
-The ephemeral tier makes that grant *temporary*; it does not make it *unsigned*.
+process, not the web UI — can quietly grant itself more shell access. In the
+**web UI**, every escalation (durable or ephemeral) must be signed with your OS
+credentials; the ephemeral tier makes that grant *temporary*, not *unsigned*.
+In the **interactive CLI**, the equivalent anchor is process-isolation secrecy
+plus the human-only mint path (see `/shell add` above) rather than a signature —
+the model still cannot grant itself access, but a human at the TTY does not sign.
 
 For the security rationale, see `Docs/ThreatModel.md` and
 `Docs/MCPSecurityControls.md` §9. For how the consent mechanism can be swapped

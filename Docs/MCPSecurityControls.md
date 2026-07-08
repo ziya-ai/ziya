@@ -184,17 +184,50 @@ field; verification dispatches to that provider's anchor. This makes the consent
 | `os-credential` (default) | root Ed25519 key (sudo) | one credential prompt | everywhere, incl. pip-installed / headless / remote |
 | `biometric` (future) | Secure-Enclave key | Touch ID tap | requires a signed `.app` bundle (not pip) |
 | `remote-reauth` (future) | identity-provider key | SSO / re-auth | cloud dev desktops |
+| `cli-ephemeral` | per-process in-memory Ed25519 key (generated at `MCPManager.__init__`, never on disk); mint call reachable only from the interactive `/shell` TTY-stdin handler | zero (a human keystroke *is* the gate) | the `ziya chat` CLI only — not the web UI |
 | `bypass` | none (honor record unconditionally) | zero | explicit, owned risk |
 
 The default provider is "lighter **artifact**, same **proof**": the grant
 auto-expires and never touches the durable config, but it is still gated by the
 same root credential prompt. Cheaper *proof* requires a provider that installs a
 different anchor. **Which providers the subprocess accepts is itself durable
-root-signed config** — it is the subprocess's trust-anchor list. Flipping to the
+root-signed config** (with one deliberate exception — `cli-ephemeral`, below) —
+it is the subprocess's trust-anchor list. Flipping to the
 `bypass` provider is adding a "trust everyone" anchor, so it must require the root
 key; otherwise an unauthenticated local caller could simply select `bypass` and
 re-open the escalation hole. Provider *selection* lives at the durable-trust tier;
 only the per-session *grant* flows through the lightweight path.
+
+### `cli-ephemeral`: a deliberate deviation for the interactive CLI (ASR F-004/F-007)
+
+The `cli-ephemeral` provider is accepted by the subprocess **unconditionally** —
+it is *not* behind the root-signed accepted-provider gate described above. This
+is a conscious deviation from the "provider selection is durable-signed config"
+rule, made because the interactive `ziya chat` CLI has no sudo-unreadable key
+and we do not want a signing ceremony on every `/shell add`. It is safe only
+because two properties replace the root anchor, and it is scoped to the CLI
+alone (the web UI never mints or accepts `cli-ephemeral`):
+
+1. **Process-isolation secrecy (the anchor).** The signing key is an Ed25519
+   keypair generated in `MCPManager.__init__`, held only in the CLI process's
+   memory, and never written to disk or env. Only the base64 *public* half is
+   injected into the shell subprocess at spawn (`ZIYA_EPHEMERAL_PUBKEY`). The
+   agent runs *inside* the sandboxed subprocess and cannot read the parent CLI's
+   heap — so it cannot obtain the private key. This is the CLI analog of the
+   GUI's sudo-unreadable key: unreadable by process isolation rather than file
+   perms.
+2. **Mint-path provenance (the gate).** `mint_shell_session_grant` is called
+   only from `_restart_shell_server` ← `cmd_shell` ← prompt_toolkit TTY stdin.
+   No model-output path reaches it (verified: `ask()` never calls the REPL
+   command parser). "A human typed `/shell add`" is therefore observable at the
+   mint site even though the subprocess cannot observe it directly.
+
+**Residual risk (owned):** any local actor able to set the subprocess's env or
+call `restart_server` in-process could mint a grant — but such an actor already
+has user-level code execution and would bypass the MCP gate entirely by running
+the command directly. The gate exists to stop the in-band model, which
+structurally cannot reach the mint path. Replay is bound by the server-start
+nonce; forgery fails signature against the per-process public key.
 
 **Task-card scope approvals are a separate, durable-only path.** Signing a task
 card's scope (`ziya-approve --task/--block`, `--cli-task`) uses a different store
