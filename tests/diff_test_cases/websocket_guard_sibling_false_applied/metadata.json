@@ -1,0 +1,5 @@
+{
+    "target_file": "test_file.py",
+    "description": "Adding an origin-check guard (if/await close/return) to a new websocket handler is falsely reported as already applied because the identical 3-line guard block already exists verbatim in two earlier sibling handlers (feedback_websocket, file_tree_websocket) within the ~50-line context-free fallback search window used by _check_pure_addition_already_applied. The pipeline must insert the guard into delegate_stream_websocket, not skip it as a false-positive duplicate.",
+    "expected_to_fail": false
+}
