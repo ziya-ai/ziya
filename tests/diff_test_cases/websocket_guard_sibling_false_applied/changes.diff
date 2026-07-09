@@ -1,0 +1,13 @@
+diff --git a/test_file.py b/test_file.py
+--- a/test_file.py
++++ b/test_file.py
+@@ -60,6 +60,9 @@ async def delegate_stream_websocket(websocket: WebSocket, conversation_id: str
+     DelegateManager pushes chunks via delegate_stream_relay.push(), which
+     this endpoint relays to the connected client in real time.
+     """
++    if not is_websocket_origin_allowed(websocket):
++        await websocket.close(code=1008)
++        return
+     await websocket.accept()
+     logger.debug(f"DELEGATE_STREAM: WebSocket connected for {conversation_id[:8]}")
+ 
