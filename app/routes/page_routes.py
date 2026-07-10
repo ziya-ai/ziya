@@ -4,6 +4,7 @@ Page/UI routes (HTML pages, favicon, etc).
 Extracted from server.py during Phase 3b refactoring.
 """
 import os
+import html
 import logging
 
 from fastapi import APIRouter, Request
@@ -196,7 +197,7 @@ async def debug_page_old(request: Request):
         html_parts.extend([
             '            <div class="info-card">',
             '                <h3>Directories</h3>',
-            f'                <div class="info-row"><span class="info-label">Root Directory:</span><span class="info-value"><code>{ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()}</code></span></div>',
+            f'                <div class="info-row"><span class="info-label">Root Directory:</span><span class="info-value"><code>{html.escape(ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd())}</code></span></div>',
             f'                <div class="info-row"><span class="info-label">Working Directory:</span><span class="info-value"><code>{os.getcwd()}</code></span></div>',
             '            </div>',
             '        </div>',
@@ -206,7 +207,7 @@ async def debug_page_old(request: Request):
         html_parts.extend([
             '        <h2>💻 Client Information</h2>',
             '        <div class="info-card">',
-            f'            <div class="info-row"><span class="info-label">User Agent:</span><span class="info-value">{request.headers.get("user-agent", "Unknown")}</span></div>',
+            f'            <div class="info-row"><span class="info-label">User Agent:</span><span class="info-value">{html.escape(request.headers.get("user-agent", "Unknown"))}</span></div>',
             f'            <div class="info-row"><span class="info-label">Remote Address:</span><span class="info-value">{request.client.host if request.client else "Unknown"}</span></div>',
             '        </div>',
         ])
@@ -415,7 +416,7 @@ async def debug_page_old(request: Request):
                 display_value = value[:8] + '...' if len(value) > 8 else '***'
             else:
                 display_value = value
-            html_parts.append(f'            <div class="env-var"><span class="env-key">{key}</span>=<span class="env-value">{display_value}</span></div>')
+            html_parts.append(f'            <div class="env-var"><span class="env-key">{html.escape(key)}</span>=<span class="env-value">{html.escape(str(display_value))}</span></div>')
         
         html_parts.extend([
             '        </div>',
