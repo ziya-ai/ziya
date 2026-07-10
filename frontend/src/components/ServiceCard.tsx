@@ -16,6 +16,7 @@ import {
     ToolOutlined, ExperimentOutlined, WarningOutlined, GithubOutlined, StarOutlined,
     ClockCircleOutlined, EyeOutlined, HeartOutlined, HeartFilled,
 } from '@ant-design/icons';
+import { safeOpenExternal } from '../utils/safeExternalUrl';
 
 const { Text, Paragraph } = Typography;
 
@@ -136,13 +137,13 @@ const ServiceCard: React.FC<ServiceCardProps> = ({
         !isBuiltin && service.repositoryUrl && (
             <Tooltip title="View Repository" key="repo">
                 <Button icon={<GithubOutlined />}
-                    onClick={() => window.open(service.repositoryUrl, '_blank')} />
+                    onClick={() => safeOpenExternal(service.repositoryUrl)} />
             </Tooltip>
         ),
         !isBuiltin && service.securityReviewLink && (
             <Tooltip title="Security Review" key="security">
                 <Button icon={<SafetyCertificateOutlined />}
-                    onClick={() => window.open(service.securityReviewLink, '_blank')} />
+                    onClick={() => safeOpenExternal(service.securityReviewLink)} />
             </Tooltip>
         ),
         showUninstall && isInstalled && !isBuiltin && service.serverName && onUninstall && (
