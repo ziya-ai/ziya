@@ -134,12 +134,12 @@ async def cluster_memories(
     if not memories:
         return []
 
+    from app.memory.prompt import encode_memory_for_prompt
     mem_lines = []
     for m in memories:
-        tags = ", ".join(m.get("tags", []))
         mem_lines.append(
-            f"[{m['id']}] ({m.get('layer', '?')}) {m.get('content', '')}"
-            + (f"  tags: {tags}" if tags else "")
+            f"[{m['id']}] ({m.get('layer', '?')}) "
+            + encode_memory_for_prompt(m.get('content', ''), m.get('tags', []))
         )
 
     user_msg = "MEMORIES TO ORGANIZE:\n" + "\n".join(mem_lines)
@@ -199,8 +199,10 @@ async def extract_relations(
     if len(memories) < 2:
         return []
 
+    from app.memory.prompt import encode_memory_for_prompt
     mem_lines = [
-        f"[{m['id']}] ({m.get('layer', '?')}) {m.get('content', '')}"
+        f"[{m['id']}] ({m.get('layer', '?')}) "
+        + encode_memory_for_prompt(m.get('content', ''), m.get('tags', []))
         for m in memories
     ]
     user_msg = "MEMORIES:\n" + "\n".join(mem_lines)
@@ -266,11 +268,12 @@ async def cleanup_corpus(store) -> Dict[str, Any]:
 
     for i in range(0, len(mem_dicts), CLEANUP_BATCH_SIZE):
         batch = mem_dicts[i:i + CLEANUP_BATCH_SIZE]
+        from app.memory.prompt import encode_memory_for_prompt
         mem_lines = [
             f"[{m['id']}] ({m.get('layer', '?')}) created={m.get('created', '?')} "
-            f"last_accessed={m.get('last_accessed', '?')} importance={m.get('importance', 0.5):.2f}\n"
-            f"  {m.get('content', '')}\n"
-            f"  tags: {', '.join(m.get('tags', []))}"
+            f"last_accessed={m.get('last_accessed', '?')} "
+            f"importance={m.get('importance', 0.5):.2f}\n"
+            f"  {encode_memory_for_prompt(m.get('content', ''), m.get('tags', []))}"
             for m in batch
         ]
         user_msg = "MEMORIES TO REVIEW:\n\n" + "\n\n".join(mem_lines)
