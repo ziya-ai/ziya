@@ -121,8 +121,26 @@ def _try_patch_reverse(diff_content: str, file_path: str, current_content: str, 
     
     temp_dir = tempfile.mkdtemp()
     try:
-        # Create the directory structure from the diff
-        target_file = os.path.join(temp_dir, diff_path)
+        # The ``--- a/<path>`` header is attacker-influenced and is a
+        # DIFFERENT header than the one the /api/unapply-changes route
+        # validated (that route checks the ``+++ b/`` target). A diff with a
+        # benign ``+++ b/`` but a malicious ``--- a/../../../etc/x`` (or an
+        # absolute ``--- a//etc/x``, which os.path.join would honor by
+        # discarding temp_dir) would otherwise create directories and write
+        # file content outside temp_dir, and let ``patch -R`` act on
+        # out-of-tree files [PenPal #79, CWE-22]. Contain diff_path to
+        # temp_dir before any filesystem op.
+        target_file = os.path.normpath(os.path.join(temp_dir, diff_path))
+        temp_dir_real = os.path.realpath(temp_dir)
+        target_real = os.path.realpath(target_file)
+        if target_real != temp_dir_real and not target_real.startswith(
+            temp_dir_real + os.sep
+        ):
+            logger.warning(
+                "Refusing reverse-patch: diff '--- a/' path %r escapes the "
+                "temp sandbox", diff_path,
+            )
+            return {'success': False}
         os.makedirs(os.path.dirname(target_file), exist_ok=True)
         
         # Copy current file content to the temp location
