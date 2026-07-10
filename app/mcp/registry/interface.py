@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Any, AsyncGenerator
 from enum import Enum
+from urllib.parse import urlparse
 
 
 class ServiceStatus(Enum):
@@ -77,6 +78,26 @@ class RegistryServiceInfo:
             self.tags = []
         if self.provider_metadata is None:
             self.provider_metadata = {}
+        # Registry-provider-supplied URLs flow to the UI and are handed to
+        # window.open() / anchor hrefs. A malicious provider entry with a
+        # `javascript:`/`data:`/`vbscript:` URL becomes stored XSS the moment
+        # the user clicks the corresponding button. Null out any non-http(s)
+        # URL here as defense-in-depth alongside the frontend scheme guard
+        # [PenPal #90, CWE-200/CWE-79].
+        for _attr in (
+            "homepage_url", "repository_url",
+            "security_review_url", "documentation_url",
+        ):
+            _val = getattr(self, _attr, None)
+            if _val is not None and not self._is_http_url(_val):
+                setattr(self, _attr, None)
+
+    @staticmethod
+    def _is_http_url(value: Any) -> bool:
+        if not isinstance(value, str):
+            return False
+        scheme = urlparse(value.strip()).scheme.lower()
+        return scheme in ("http", "https")
 
 
 @dataclass
