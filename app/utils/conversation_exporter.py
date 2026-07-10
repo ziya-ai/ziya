@@ -610,16 +610,16 @@ def _embed_diagrams_in_html(
             width = diagram.get('width', 600)
             height = diagram.get('height', 400)
             
-            # For SVG, we can embed inline for better quality
-            if diagram.get('type') == 'svg' and ',' in data_uri:
-                try:
-                    svg_base64 = data_uri.split(',')[1]
-                    svg_content = base64.b64decode(svg_base64).decode('utf-8')
-                    return f'<div class="visualization">{svg_content}</div>'
-                except Exception as e:
-                    pass
-            
-            # Fallback: use img tag with data URI
+            # Always embed via <img src="data:image/svg+xml;base64,...">.
+            # CWE-79 (PenPal #116): the SVG bytes come from the headless
+            # renderer applied to model-authored diagram specs (indirect
+            # prompt-injection reachable), so inlining the decoded SVG into
+            # the DOM (<div>{svg}</div>) let a <script>/on* handler in it
+            # execute the moment the exported HTML was opened. Loading the SVG
+            # via <img> is script-inert by browser design, preserves vector
+            # quality, and matches the PNG path below — no bypassable SVG
+            # sanitizer needed. viz_type is a fixed-allowlist capture and the
+            # data-URI body is pure base64, so both are safe in the tag.
             return f'<div class="visualization"><img src="{data_uri}" alt="{viz_type} diagram" width="{width}" height="{height}"/></div>'
         else:
             # No captured diagram, show source with warning
