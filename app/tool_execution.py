@@ -440,6 +440,47 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
 _URL_ARG_KEYS = ('url', 'uri', 'link', 'href', 'source_url')
 
 
+# SSRF hardening (PenPal #76/#126, CWE-918). This is the one outbound-fetch
+# site that fires automatically (not an explicit agent tool call) AND that
+# followed redirects — so a spec/doc-injected URL that starts at a public
+# host could be 302-bounced to an internal target (IMDS, loopback) after the
+# PDF-signature gate had already passed. The finding is blind (the response
+# is discarded unless it parses as a PDF) and the report notes the agent's
+# by-design fetch/curl tools already reach internal URLs directly, so the
+# heavy post-DNS-resolution allowlist is disproportionate here. What IS
+# incremental — and cheap to remove — is the silent redirect hop and a
+# direct literal-IP internal fetch; both are closed below.
+import ipaddress as _ipaddress
+from urllib.parse import urlparse as _urlparse
+
+_SSRF_BLOCKED_NETWORKS = [
+    _ipaddress.ip_network("127.0.0.0/8"),
+    _ipaddress.ip_network("::1/128"),
+    _ipaddress.ip_network("169.254.0.0/16"),   # link-local / EC2 IMDS
+    _ipaddress.ip_network("fe80::/10"),
+    _ipaddress.ip_network("10.0.0.0/8"),
+    _ipaddress.ip_network("172.16.0.0/12"),
+    _ipaddress.ip_network("192.168.0.0/16"),
+    _ipaddress.ip_network("fc00::/7"),          # ULA
+]
+
+
+def _url_host_is_blocked_literal_ip(url: str) -> bool:
+    """True if *url*'s host is a literal IP in a loopback/link-local/private
+    range. Literal-IP only (no DNS resolution) — a cheap guard against the
+    direct ``http://169.254.169.254/`` form; hostnames are intentionally not
+    resolved here (see the module note above on why full DNS-rebind defense
+    is out of scope for this blind, no-incremental-capability sink)."""
+    host = (_urlparse(url).hostname or "").strip()
+    if not host:
+        return False
+    try:
+        ip = _ipaddress.ip_address(host)
+    except ValueError:
+        return False  # not a literal IP — a hostname; not blocked here
+    return any(ip in net for net in _SSRF_BLOCKED_NETWORKS)
+
+
 def _extract_url_from_args(args: dict) -> Optional[str]:
     """Return the first URL-like string in args, or None."""
     if not isinstance(args, dict):
@@ -477,9 +518,18 @@ async def _maybe_extract_fetched_pdf(result_text: str, args: dict) -> str:
     if not url:
         return result_text
 
+    # Refuse a direct literal-IP fetch to an internal range (IMDS/loopback/
+    # RFC-1918) — cheap, no DNS round-trip. See _url_host_is_blocked_literal_ip.
+    if _url_host_is_blocked_literal_ip(url):
+        logger.warning(f"📄 FETCH_PDF: refusing internal-range URL {url}")
+        return result_text
+
     try:
         import httpx
-        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+        # follow_redirects=False: the incremental SSRF risk here is our code
+        # silently chasing a 302 to an internal target after the PDF gate
+        # passed. A legitimate PDF URL resolves in one hop.
+        async with httpx.AsyncClient(follow_redirects=False, timeout=30.0) as client:
             resp = await client.get(
                 url, headers={'User-Agent': 'Mozilla/5.0 (compatible; Ziya)'}
             )
