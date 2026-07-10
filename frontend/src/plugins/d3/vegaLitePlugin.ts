@@ -1,5 +1,47 @@
 import { type EmbedOptions } from 'vega-embed';
 
+// SSRF hardening (PenPal #83, CWE-918). A Vega-Lite spec's `data.url`
+// makes Vega's default loader issue an HTTP fetch. This plugin also drives
+// the SERVER-SIDE headless-Chromium renderer (app/services/diagram_renderer.py
+// via the /render harness), which then screenshots the result back to the
+// LLM — so a prompt-injected spec (`{"data":{"url":"http://localhost:PORT/
+// api/debug/mcp-state"},"mark":"text"}`) turns the renderer into a read-only
+// window onto any loopback endpoint (conversation history, file tree, MCP
+// state), since CORS allows all loopback origins and the harness itself runs
+// at localhost:PORT. The renderer works EXCLUSIVELY with inline data (no
+// first-party spec uses data.url), so the loader below refuses every fetch
+// outright. This is deliberately stronger than a same-origin allowlist: the
+// exfil target is same-origin with the harness, so a host/port check would
+// not stop it.
+let _restrictedVegaLoaderPromise: Promise<any> | null = null;
+
+async function getRestrictedVegaLoader(): Promise<any> {
+  if (_restrictedVegaLoaderPromise === null) {
+    _restrictedVegaLoaderPromise = (async () => {
+      const vega: any = await import('vega');
+      const loader = vega.loader();
+      const blocked = (uri: string) => {
+        const msg = `Vega loader: external data fetch blocked (data.url is not permitted): ${uri}`;
+        console.warn(msg);
+        return Promise.reject(new Error(msg));
+      };
+      // Refuse both the network load and the URL-sanitize step Vega runs
+      // before loading, so no data.url (same-origin or not) is ever fetched.
+      loader.load = (uri: string) => blocked(uri);
+      loader.sanitize = (uri: string) => blocked(uri);
+      return loader;
+    })().catch((e) => {
+      // If vega fails to import, fall back to null; embedOptions omits the
+      // loader and Vega uses its default — but data.url is still stripped at
+      // preprocess time (see stripExternalDataUrls), so no fetch occurs.
+      console.warn('Could not build restricted Vega loader:', e);
+      _restrictedVegaLoaderPromise = null;
+      return null;
+    });
+  }
+  return _restrictedVegaLoaderPromise;
+}
+
 import { D3RenderPlugin } from '../../types/d3';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
@@ -92,6 +134,35 @@ function sanitizeSpec(obj: any): any {
     return newObj;
   }
   return obj;
+}
+
+// SSRF hardening (PenPal #83): recursively remove any `data.url` from a
+// spec before it reaches vegaEmbed, at every nesting level (top-level,
+// layer[], vconcat/hconcat/concat[], facet spec, named datasets). A
+// url-bearing data object is replaced with an empty inline dataset so the
+// spec still parses; the renderer never supports external data, so this
+// is loss-free for legitimate diagrams. Belt-and-suspenders alongside the
+// restricted loader: this guarantees no fetch even on a vegaEmbed path
+// that never received the loader (e.g. the popup CDN re-render).
+function stripExternalDataUrls(obj: any): number {
+  let stripped = 0;
+  const walk = (node: any) => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+      return;
+    }
+    if (node.data && typeof node.data === 'object' && !Array.isArray(node.data)
+        && typeof node.data.url === 'string') {
+      node.data = { values: [] };
+      stripped += 1;
+    }
+    for (const key in node) {
+      if (Object.prototype.hasOwnProperty.call(node, key)) walk(node[key]);
+    }
+  };
+  walk(obj);
+  return stripped;
 }
 
 // Helper to check if a Vega-Lite definition is complete
@@ -1827,7 +1898,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       const yFields = spec.layer.map((layer: any) =>
         layer.encoding?.y?.field || topLevelYField
       ).filter(Boolean);
-      const uniqueYFields = [...new Set(yFields)];
+      const uniqueYFields: string[] = [...new Set(yFields)] as string[];
 
       const hasLogScale = spec.layer.some((layer: any) => layer.encoding?.y?.scale?.type === 'log');
       const hasLinearScale = spec.layer.some((layer: any) => !layer.encoding?.y?.scale?.type || layer.encoding?.y?.scale?.type === 'linear');
@@ -4479,6 +4550,8 @@ export const vegaLitePlugin: D3RenderPlugin = {
         theme: isDarkMode ? 'dark' : 'excel',
         renderer: 'svg' as const, // Use SVG for better scaling with complex layouts
         scaleFactor: 1,
+        // SSRF hardening (PenPal #83): refuse all external data fetches.
+        loader: await getRestrictedVegaLoader(),
         // Don't override width/height in embed options if they're set in the spec
         ...((!vegaSpec.width || vegaSpec.width === 0) && { width: availableWidth }),
         ...((!vegaSpec.height || vegaSpec.height === 0) && { height: availableHeight * 0.6 }),
@@ -4526,6 +4599,14 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // This removes any non-plain-object properties that might be causing issues.
       const finalSpec = JSON.parse(JSON.stringify(sanitizedSpec));
 
+      // SSRF hardening (PenPal #83): strip any data.url before embedding so
+      // no fetch is issued even if a downstream vegaEmbed path lacks the
+      // restricted loader. Loss-free — the renderer only supports inline data.
+      const _strippedUrls = stripExternalDataUrls(finalSpec);
+      if (_strippedUrls > 0) {
+        console.warn(`Vega-Lite: stripped ${_strippedUrls} external data.url reference(s) (not permitted)`);
+      }
+
       // Make finalSpec available globally for debugging
       (window as any).__lastVegaSpec = finalSpec;
 
@@ -4561,9 +4642,6 @@ export const vegaLitePlugin: D3RenderPlugin = {
           // For specs with transforms (like violin plots), skip field validation
           // as fields may be generated by the transform
           console.log('Spec uses transforms, skipping field validation');
-        } else if (finalSpec.data?.url) {
-          // For specs with external data, skip field validation
-          console.log('Spec uses external data, skipping field validation');
         } else {
           console.log('Skipping field validation for this spec type');
         }
@@ -4584,7 +4662,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       // Add timeout to detect hanging renders
       const embedPromise = vegaEmbed(renderContainer, embedSpec, embedOptions);
-      const timeoutPromise = new Promise((_, reject) =>
+      const timeoutPromise = new Promise<never>((_, reject) =>
         setTimeout(() => reject(new Error('Vega-Lite render timeout after 15 seconds')), 15000)
       );
 
