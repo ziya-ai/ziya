@@ -186,10 +186,10 @@ async def synthesize_node(node, store) -> Optional[str]:
     if not memories:
         return None
 
+    from app.memory.prompt import encode_memory_for_prompt
     mem_lines = []
     for m in memories:
-        tag_str = f" [{', '.join(m.tags)}]" if m.tags else ""
-        mem_lines.append(f"- ({m.layer}){tag_str} {m.content}")
+        mem_lines.append(f"- ({m.layer}) {encode_memory_for_prompt(m.content, m.tags)}")
     user_msg = (
         f"DOMAIN: {node.handle}\n\n"
         f"MEMORIES:\n" + "\n".join(mem_lines)
@@ -294,8 +294,9 @@ async def detect_staleness(node, store) -> List[str]:
     if not context_memories:
         return []
 
-    cand_lines = [f"- [{m.id}] ({m.layer}) {m.content}" for m in candidates]
-    ctx_lines = [f"- ({m.layer}) {m.content}" for m in context_memories]
+    from app.memory.prompt import encode_memory_for_prompt
+    cand_lines = [f"- [{m.id}] ({m.layer}) {encode_memory_for_prompt(m.content, m.tags)}" for m in candidates]
+    ctx_lines = [f"- ({m.layer}) {encode_memory_for_prompt(m.content, m.tags)}" for m in context_memories]
     user_msg = (
         f"DOMAIN: {node.handle}\n\n"
         f"CANDIDATES (judge each):\n" + "\n".join(cand_lines) + "\n\n"
