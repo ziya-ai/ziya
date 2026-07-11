@@ -10,6 +10,14 @@ from app.utils.logging_utils import logger
 from ..core.exceptions import PatchApplicationError
 from ..core.utils import normalize_escapes
 
+# CWE-119 (PenPal #108): a hunk header's line count is attacker-controllable
+# (it comes straight from the `@@ -s,COUNT +s,COUNT @@` header). A value far
+# larger than any real source file is malformed or hostile and, left
+# unclamped, feeds out-of-bounds slice arithmetic in the applier. No real
+# diff hunk spans anywhere near this many lines, so clamping is loss-free
+# for legitimate input.
+_MAX_HUNK_LINE_COUNT = 1_000_000
+
 def unescape_backticks_from_llm(text: str) -> str:
     """Unescape backticks that were escaped for LLM context.
     
@@ -226,6 +234,13 @@ def parse_unified_diff(diff_content: str) -> List[Dict[str, Any]]:
             if match:
                 old_start = int(match.group(1))
                 old_count = int(match.group(2))
+                # CWE-119 (PenPal #108) defense-in-depth: a hunk header count
+                # far larger than any real file is malformed/hostile and can
+                # drive out-of-bounds slice math downstream. Clamp it to a
+                # plausible ceiling rather than trusting the header verbatim.
+                if old_count > _MAX_HUNK_LINE_COUNT:
+                    logger.warning(f"Clamping implausible old_count {old_count} to {_MAX_HUNK_LINE_COUNT}")
+                    old_count = _MAX_HUNK_LINE_COUNT
                 new_start = int(match.group(3))
                 new_count = int(match.group(4))
                 
@@ -331,6 +346,9 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
 
                 # Use default of 1 for count if not specified
                 old_count = int(match.group(2)) if match.group(2) else 1
+                if old_count > _MAX_HUNK_LINE_COUNT:
+                    logger.warning(f"Clamping implausible old_count {old_count} to {_MAX_HUNK_LINE_COUNT}")
+                    old_count = _MAX_HUNK_LINE_COUNT
 
                 new_start = int(match.group(3))
                 new_count = int(match.group(4)) if match.group(4) else 1
