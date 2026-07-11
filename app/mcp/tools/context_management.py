@@ -27,6 +27,7 @@ Frontend live-sync:
 """
 
 import os
+import stat
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -217,13 +218,41 @@ class ContextAddFileTool(BaseMCPTool):
         truncated = False
         size_bytes = 0
         try:
-            size_bytes = resolved.stat().st_size
-            if size_bytes > _MAX_INLINE_BYTES:
-                with resolved.open("r", encoding="utf-8", errors="replace") as f:
-                    inline_content = f.read(_MAX_INLINE_BYTES)
-                truncated = True
-            else:
-                inline_content = resolved.read_text(encoding="utf-8", errors="replace")
+            # CWE-367 (PenPal #89): open the final component with O_NOFOLLOW and
+            # read through the resulting fd, so the check and the read operate on
+            # the exact same inode. `resolved` is already fully .resolve()'d by
+            # _resolve_and_validate (legitimate symlinks — e.g. an in-project
+            # `public -> checkout` link — are dereferenced to their real target
+            # at validation), so O_NOFOLLOW only rejects a symlink swapped into
+            # the final component AFTER validation — exactly the TOCTOU a
+            # same-user process could race into the _write_json window above to
+            # pull an out-of-scope file's contents into model context. fstat on
+            # the open fd is immune to concurrent path manipulation.
+            try:
+                fd = os.open(resolved, os.O_RDONLY | os.O_NOFOLLOW)
+            except OSError as oe:
+                # ELOOP: final component is (now) a symlink — reject the read.
+                logger.warning(
+                    f"context_add_file: refusing symlinked/changed path for "
+                    f"{rel_path}: {oe}"
+                )
+                fd = None
+            if fd is not None:
+                try:
+                    st = os.fstat(fd)
+                    if stat.S_ISREG(st.st_mode):
+                        size_bytes = st.st_size
+                        truncated = size_bytes > _MAX_INLINE_BYTES
+                        with os.fdopen(fd, "r", encoding="utf-8",
+                                       errors="replace") as f:
+                            inline_content = f.read(_MAX_INLINE_BYTES)
+                        fd = None  # fdopen's context manager closed it
+                finally:
+                    if fd is not None:
+                        try:
+                            os.close(fd)
+                        except OSError:
+                            pass
         except Exception as e:
             logger.warning(f"context_add_file: inline read failed for {rel_path}: {e}")
             inline_content = None
