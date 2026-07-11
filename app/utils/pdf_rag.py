@@ -499,6 +499,15 @@ class PdfIndex:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except Exception:
             return None
+        # CWE-476 (PenPal #127): json.loads() can legally return a non-dict
+        # (null/int/string) — from a truncated/partial cache write or a
+        # planted file — and self.meta is consumed as a dict throughout
+        # (page_count/total_tokens/is_light, build_stub), which would raise
+        # AttributeError. Treat a non-dict as a cache miss so the index
+        # cleanly rebuilds instead of crashing every PDF tool call.
+        if not isinstance(meta, dict):
+            logger.warning(f"PDF cache meta.json for {path} is not an object; ignoring (will rebuild)")
+            return None
         return cls(path=path, cache_dir=cache_dir, meta=meta)
 
     @classmethod
@@ -746,7 +755,12 @@ class PdfIndex:
         bm25_path = self.cache_dir / "bm25.json"
         if bm25_path.is_file():
             try:
-                return json.loads(bm25_path.read_text(encoding="utf-8"))
+                cached = json.loads(bm25_path.read_text(encoding="utf-8"))
+                # CWE-476 (PenPal #127): a non-dict (null/truncated write)
+                # would crash search()'s `index.get("n_docs")`. Only accept a
+                # dict; otherwise fall through and rebuild the index.
+                if isinstance(cached, dict):
+                    return cached
             except Exception:
                 pass
         documents = self._load_pages_tokenised()
