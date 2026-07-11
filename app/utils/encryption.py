@@ -492,6 +492,26 @@ class DataEncryptor:
             # Not encrypted — return as-is (plaintext backward compatibility)
             return envelope
 
+        # CWE-476 (PenPal #148): the input IS an encrypted envelope (magic
+        # matched), but if encryption is disabled or key material never
+        # initialized (ZIYA_ENCRYPTION_KEY unset / KEK provider failed),
+        # self._keyring / self._kek are None. Dereferencing self._keyring
+        # below raised a bare AttributeError that every caller's broad
+        # `except` swallows — so a genuinely-encrypted file read back as
+        # None/[] and its data silently vanished. Raise a controlled,
+        # descriptive error instead (mirrors encrypt()'s is_enabled guard,
+        # and the "DEK not found"/"decryption failed" ValueErrors this same
+        # method already raises for other unreadable-file conditions). This
+        # is placed AFTER the MAGIC check so plaintext passthrough — reading
+        # an unencrypted file while encryption is disabled — still works.
+        if self._keyring is None or self._kek is None:
+            raise ValueError(
+                "Cannot decrypt an encrypted file: encryption is disabled or "
+                "key material is unavailable. Set ZIYA_ENCRYPTION_KEY (or make "
+                "the KEK provider reachable) to read data written while "
+                "encryption was enabled."
+            )
+
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
         offset = len(MAGIC)
