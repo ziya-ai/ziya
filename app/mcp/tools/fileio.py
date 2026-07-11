@@ -20,6 +20,7 @@ Security:
 """
 
 import fnmatch
+import re
 import os
 import time
 from pathlib import Path
@@ -557,6 +558,19 @@ class FileListTool(BaseMCPTool):
         pattern: Optional[str] = kwargs.get("pattern")
         max_entries: int = kwargs.get("max_entries", 200)
 
+        # CWE-22 (PenPal #86): `path` is containment-checked by
+        # _resolve_and_validate, but `pattern` is passed straight to
+        # Path.glob(), which traverses `..` on Python < 3.13 — so a pattern
+        # like "../../../etc/*" escapes the validated base, and the result
+        # loop's symlink-recovery fallback then surfaces the out-of-tree
+        # entries (name + size) as an enumeration oracle. Reject any `..`
+        # path *component* in the pattern (split on both separators so it's
+        # platform-independent; a filename such as "a..b" is not a component
+        # and is left alone).
+        if pattern and ".." in re.split(r"[/\\]", pattern):
+            return {"error": True,
+                    "message": "glob pattern may not contain '..' path segments"}
+
         try:
             resolved = _resolve_and_validate(path_str, project_root, allowed_absolute_prefixes=_get_safe_write_paths())
         except ValueError as e:
@@ -586,7 +600,17 @@ class FileListTool(BaseMCPTool):
             try:
                 rel = entry.relative_to(base)
             except ValueError:
-                continue
+                # entry isn't under the project root at all — this happens
+                # when the listed directory is itself reached via a symlink
+                # that points outside the project (e.g. public -> ziya
+                # checkout). The containment check in _resolve_and_validate
+                # already authorized this via the symlink; express the
+                # entry relative to the resolved listing dir instead of
+                # dropping it, so it isn't silently hidden from results.
+                try:
+                    rel = Path(path_str) / entry.relative_to(resolved)
+                except ValueError:
+                    rel = entry.name
 
             if entry.is_dir():
                 results.append(f"  {rel}/")
