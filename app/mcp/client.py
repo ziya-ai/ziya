@@ -267,13 +267,39 @@ class MCPClient:
                                 # Return early - no point trying to start with no executable
                                 return False
                             
-                            for file in files:
-                                file_path = os.path.join(installation_path, file)
-                                if os.path.isfile(file_path) and os.access(file_path, os.X_OK):
-                                    command = [file_path]
-                                    logger.debug(f"Found executable for registry service: {command}")
-                                    self.logs.append(f"INFO: Found executable: {command}")
-                                    break
+                            # CWE-434 (PenPal #46): symmetric with the _CANONICAL
+                            # guard on the Python branch above. Do NOT blindly run
+                            # the first execute-bit file — an actor who drops a
+                            # binary into the install dir would otherwise get it
+                            # auto-launched (with the user's AWS creds in scope) on
+                            # next start. Require a canonical executable base name;
+                            # fall back to a lone executable only when unambiguous.
+                            _CANONICAL_EXEC = ("server", "main", "run", "start")
+                            execs = [
+                                f for f in files
+                                if os.path.isfile(os.path.join(installation_path, f))
+                                and os.access(os.path.join(installation_path, f), os.X_OK)
+                            ]
+                            by_base = {os.path.splitext(f)[0].lower(): f for f in execs}
+                            chosen = next(
+                                (by_base[c] for c in _CANONICAL_EXEC if c in by_base), None
+                            )
+                            if chosen is None and len(execs) == 1:
+                                chosen = execs[0]
+                            if chosen is None:
+                                logger.error(
+                                    f"MCP server '{self.server_config.get('name', 'unknown')}': "
+                                    f"no canonical executable ({', '.join(_CANONICAL_EXEC)}) "
+                                    f"among {execs or 'none'}; refusing to guess. "
+                                    f"Set an explicit 'command' in the server config."
+                                )
+                                self.logs.append(
+                                    "ERROR: ambiguous executable — set explicit 'command'"
+                                )
+                                return False
+                            command = [os.path.join(installation_path, chosen)]
+                            logger.debug(f"Found executable for registry service: {command}")
+                            self.logs.append(f"INFO: Found executable: {command}")
                         except (OSError, PermissionError) as e:
                             logger.error(f"Error listing installation directory: {e}")
                             self.logs.append(f"ERROR: Cannot list directory: {e}")
