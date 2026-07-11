@@ -1968,6 +1968,14 @@ def apply_diff_with_difflib_hybrid_forced(
                 fuzzy_ratio = h.get('fuzzy_ratio', 1.0)
                 if fuzzy_ratio < 0.96:
                     remove_pos -= truncation
+                    # CWE-119 (PenPal #108): floor at 0. A crafted hunk header
+                    # can inflate old_count (→ a huge `truncation`), driving
+                    # remove_pos deeply negative; `insert_pos = remove_pos`
+                    # below then wraps the slice from the END of the file and
+                    # silently overwrites the wrong region while logging a
+                    # normal apply. Mirror the max(0, ...) guard used
+                    # elsewhere in this file (e.g. the strict/context paths).
+                    remove_pos = max(0, remove_pos)
                     actual_remove_count = old_count_from_header
                     logger.info(f"Hunk #{hunk_idx}: Adjusted position by -{truncation} due to truncation (ratio={fuzzy_ratio:.3f})")
             
