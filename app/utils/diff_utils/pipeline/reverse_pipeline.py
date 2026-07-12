@@ -14,6 +14,7 @@ from typing import Dict, Any, List, Optional
 from ..core.diff_reverser import reverse_diff
 from ..parsing.diff_parser import parse_unified_diff_exact_plus
 from .pipeline_manager import apply_diff_pipeline
+from ..file_ops.file_lock import diff_file_lock
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +38,22 @@ def apply_reverse_diff_pipeline(diff_content: str, file_path: str, expected_cont
         Dictionary with status and details
     """
     logger.info("Starting reverse diff pipeline...")
-    
+
+    # PenPal #124 [CWE-667]: hold a per-file lock across the ENTIRE
+    # read-modify-write cycle. The route dispatches this via
+    # run_in_threadpool, so concurrent /api/unapply-changes requests on the
+    # same file would otherwise interleave their read (line below) with each
+    # other's writes and silently clobber the developer's source file. The
+    # lock is reentrant on this thread, so Stage 4's nested
+    # apply_diff_pipeline call (which takes the same lock) does not deadlock.
+    with diff_file_lock(file_path):
+        return _apply_reverse_diff_pipeline_locked(
+            diff_content, file_path, expected_content
+        )
+
+
+def _apply_reverse_diff_pipeline_locked(diff_content: str, file_path: str, expected_content: Optional[str] = None) -> Dict[str, Any]:
+    """Body of apply_reverse_diff_pipeline; runs with the per-file lock held."""
     # Read current file content
     with open(file_path, 'r', encoding='utf-8') as f:
         current_content = f.read()

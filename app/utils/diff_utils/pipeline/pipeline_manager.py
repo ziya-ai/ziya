@@ -15,6 +15,7 @@ from typing import Dict, List, Any, Optional, Tuple
 
 from app.utils.logging_utils import logger
 from ..core.exceptions import PatchApplicationError
+from ..file_ops.file_lock import diff_file_lock
 from ..parsing.diff_parser import parse_unified_diff_exact_plus, extract_target_file_from_diff, split_combined_diff
 from ..parsing.diff_preprocessor import preprocess_diff
 from ..validation.validators import is_new_file_creation, is_file_deletion, is_hunk_already_applied, normalize_line_for_comparison
@@ -152,6 +153,26 @@ def clean_duplicate_headers(diff_content: str) -> str:
     return '\n'.join(cleaned_lines)
 
 def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str] = None, skip_already_applied_check: bool = False, user_codebase_dir: Optional[str] = None) -> Dict[str, Any]:
+    """Thin lock-acquiring wrapper around the diff-application pipeline.
+
+    PenPal #124 [CWE-667]: /api/apply-changes dispatches this via
+    run_in_threadpool, so concurrent requests against the same file run the
+    unlocked read-modify-write cycle on separate threads (even under the
+    default single-worker uvicorn) and the last writer silently clobbers the
+    first. Hold a per-file lock across the whole pipeline. The lock is
+    reentrant on this thread (is_singleton), so the reverse pipeline's
+    Stage 4, which calls back into this function on the same thread and file,
+    re-enters rather than self-deadlocking.
+    """
+    with diff_file_lock(file_path):
+        return _apply_diff_pipeline_locked(
+            git_diff, file_path, request_id=request_id,
+            skip_already_applied_check=skip_already_applied_check,
+            user_codebase_dir=user_codebase_dir,
+        )
+
+
+def _apply_diff_pipeline_locked(git_diff: str, file_path: str, request_id: Optional[str] = None, skip_already_applied_check: bool = False, user_codebase_dir: Optional[str] = None) -> Dict[str, Any]:
     """
     Apply a git diff using a structured pipeline approach.
     
