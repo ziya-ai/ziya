@@ -40,6 +40,59 @@ def _tokenize(text: str) -> List[str]:
     return [w for w in words if len(w) > 2 and w not in _STOP_WORDS]
 
 
+import functools as _functools_144
+import hashlib as _hashlib_144
+import os as _os_144
+import tempfile as _tempfile_144
+from contextlib import contextmanager as _contextmanager_144
+
+try:
+    from filelock import FileLock as _FileLock_144
+except ImportError:  # pragma: no cover
+    _FileLock_144 = None
+
+_MEMORY_LOCK_DIR_144 = _os_144.path.join(_tempfile_144.gettempdir(), "ziya_memory_locks")
+_MEMORY_LOCK_TIMEOUT_144 = 10
+
+
+def _memory_file_lock_144(data_file):
+    """PenPal #144 [CWE-667]: reentrant, cross-process per-file lock guarding a
+    MemoryStorage read-modify-write. Without it, two concurrent writers under
+    ``uvicorn --workers N`` (or an ``await``-yielding background ``reorganize``
+    task interleaving with request handlers) each read the same _memories.json
+    snapshot and the last write silently discards the others. Keyed on the data
+    file's realpath (hashed into the temp dir — no project-tree clutter);
+    is_singleton=True gives thread-local reentrancy so any same-file RMW nested
+    in another re-enters instead of self-deadlocking."""
+    if _FileLock_144 is None:
+        @_contextmanager_144
+        def _noop():
+            yield
+        return _noop()
+    try:
+        _os_144.makedirs(_MEMORY_LOCK_DIR_144, exist_ok=True)
+    except OSError:
+        pass
+    key = _hashlib_144.sha256(_os_144.path.realpath(str(data_file)).encode("utf-8")).hexdigest()[:16]
+    return _FileLock_144(
+        _os_144.path.join(_MEMORY_LOCK_DIR_144, key + ".lock"),
+        timeout=_MEMORY_LOCK_TIMEOUT_144,
+        is_singleton=True,
+    )
+
+
+def _rmw_locked(file_attr):
+    """Decorator: hold the reentrant per-file lock for ``getattr(self, file_attr)``
+    across the whole decorated read-modify-write method."""
+    def deco(fn):
+        @_functools_144.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            with _memory_file_lock_144(getattr(self, file_attr)):
+                return fn(self, *args, **kwargs)
+        return wrapper
+    return deco
+
+
 class MemoryStorage:
     """File-based memory store under ~/.ziya/memory/."""
 
@@ -161,6 +214,7 @@ class MemoryStorage:
                 return Memory(**m)
         return None
 
+    @_rmw_locked('_memories_file')
     def save(self, memory: Memory) -> Memory:
         """Create or update a memory in the flat store."""
         memories = self._load_memories()
@@ -185,6 +239,7 @@ class MemoryStorage:
 
         return memory
 
+    @_rmw_locked('_memories_file')
     def save_many(self, memories: List[Memory]) -> None:
         """Persist multiple memories in a single file rewrite.
 
@@ -216,6 +271,7 @@ class MemoryStorage:
         except Exception as e:
             logger.debug(f"Batch embedding refresh failed (non-fatal): {e}")
 
+    @_rmw_locked('_memories_file')
     def delete(self, memory_id: str) -> bool:
         memories = self._load_memories()
         before = len(memories)
@@ -367,12 +423,14 @@ class MemoryStorage:
             return []
         return [MemoryProposal(**p) for p in data]
 
+    @_rmw_locked('_proposals_file')
     def add_proposal(self, proposal: MemoryProposal) -> MemoryProposal:
         proposals = self._read_json(self._proposals_file) or []
         proposals.append(proposal.model_dump())
         self._write_json(self._proposals_file, proposals)
         return proposal
 
+    @_rmw_locked('_proposals_file')
     def approve_proposal(self, proposal_id: str) -> Optional[Memory]:
         """Move a proposal to the flat store as an active memory."""
         proposals = self._read_json(self._proposals_file) or []
@@ -394,6 +452,7 @@ class MemoryStorage:
         )
         return self.save(memory)
 
+    @_rmw_locked('_proposals_file')
     def dismiss_proposal(self, proposal_id: str) -> bool:
         proposals = self._read_json(self._proposals_file) or []
         before = len(proposals)
