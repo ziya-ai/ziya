@@ -100,6 +100,59 @@ def get_available_models(endpoint: Optional[str] = None):
         logger.error(f"Error getting available models: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get('/api/model-tiers')
+def get_model_tiers(endpoint: Optional[str] = None):
+    """List the portable model tiers and what each resolves to on an endpoint.
+
+    Powers the Task Card / delegate model-tier picker: the six portable
+    rungs (xsmall … frontier) plus, for the given endpoint, the concrete
+    model name each currently resolves to via resolve_tier_model. A tier
+    with no exactly-tagged model still resolves (to the nearest defined
+    rung) — ``exact`` flags whether the resolution came from a model
+    literally tagged with that tier or from the nearest-rung fallback, so
+    the UI can distinguish "small = nova-lite" from "medium ≈ sonnet5".
+    """
+    endpoint = endpoint or os.environ.get("ZIYA_ENDPOINT", "bedrock")
+
+    # PenPal #123 [CWE-200]: clamp a caller-supplied endpoint to the
+    # enterprise allowlist, mirroring get_available_models / set_model. This
+    # read route accepts an ?endpoint= param, so without the clamp a caller
+    # could enumerate the tier->model resolution for a policy-forbidden
+    # endpoint. Community builds return None (no restriction) so this is a
+    # no-op there; ZIYA_ALLOW_ALL_ENDPOINTS=1 bypasses for dev/testing.
+    if os.environ.get("ZIYA_ALLOW_ALL_ENDPOINTS") != "1":
+        try:
+            from app.plugins import get_allowed_endpoints
+            allowed_endpoints = get_allowed_endpoints()
+            if allowed_endpoints is not None and endpoint not in allowed_endpoints:
+                logger.warning(f"Endpoint '{endpoint}' not in policy list {allowed_endpoints}, using first allowed")
+                endpoint = allowed_endpoints[0]
+        except (ImportError, RuntimeError, OSError):
+            pass  # Plugin system unavailable
+    try:
+        from app.config.models_config import (
+            MODEL_TIER_NAMES, resolve_tier_model, MODEL_CONFIGS,
+        )
+        endpoint_models = MODEL_CONFIGS.get(endpoint, {})
+        # tier -> first model literally tagged with it (exact match).
+        tagged: Dict[str, str] = {}
+        for name, cfg in endpoint_models.items():
+            t = cfg.get("tier")
+            if t and t not in tagged:
+                tagged[t] = name
+        tiers = []
+        for tier in MODEL_TIER_NAMES:
+            resolved = resolve_tier_model(endpoint, tier)
+            tiers.append({
+                "tier": tier,
+                "resolved_model": resolved,
+                "exact": tier in tagged,
+            })
+        return {"endpoint": endpoint, "tiers": tiers}
+    except Exception as e:
+        logger.error(f"Error getting model tiers: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get('/api/config')
 def get_config():
     """Get application configuration for frontend."""
