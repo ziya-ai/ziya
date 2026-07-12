@@ -109,13 +109,25 @@ class Keyring:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         data = {"keys": [w.to_dict() for w in self._entries.values()]}
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2))
-        tmp.rename(self.path)
-        # Restrict permissions — keyring is sensitive material
+        # PenPal #134 [CWE-200]: create the temp file 0o600 ATOMICALLY rather
+        # than write_text()+chmod. The old pattern left the wrapped-DEK keyring
+        # world-readable (0o644 under the default umask) in the window between
+        # the write and the chmod — a local reader could grab it there. os.open
+        # with mode 0o600 + fchmod (umask-independent) means the file is never
+        # group/world-readable at any instant.
+        payload = json.dumps(data, indent=2).encode("utf-8")
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
-            os.chmod(self.path, 0o600)
-        except OSError:
-            pass
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(payload)
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
+        os.replace(str(tmp), str(self.path))
 
     def _backup(self):
         """Create a timestamped backup of the keyring before mutations."""
@@ -384,11 +396,21 @@ class DataEncryptor:
             return path.read_bytes()
         salt = os.urandom(16)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(salt)
+        # PenPal #134 [CWE-200]: write the salt 0o600 atomically (see
+        # Keyring._save). Though the salt is less sensitive than a wrapped DEK,
+        # it is still per-install secret material used in KEK derivation, and
+        # the write-then-chmod window exposed it world-readable identically.
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         try:
-            os.chmod(path, 0o600)
-        except OSError:
-            pass
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "wb") as f:
+                f.write(salt)
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
         logger.info("🔑 Generated per-install passphrase salt")
         return salt
 
