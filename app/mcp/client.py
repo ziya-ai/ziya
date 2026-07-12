@@ -969,6 +969,17 @@ class MCPClient:
             request_json = json.dumps(request) + "\n"
             write_start = time.time()
             async with self._write_lock:
+                # PenPal #125 [CWE-416]: the liveness check above happens
+                # BEFORE this lock is awaited; `async with` is a yield point,
+                # so a concurrent disconnect() (which nulls self.process
+                # WITHOUT holding _write_lock) can run in between. Re-check
+                # under the lock so we fail with a handled ConnectionError
+                # instead of an uncaught AttributeError on None.stdin.
+                if not self.process or not self.process.stdin:
+                    self._pending.pop(req_id, None)
+                    raise ConnectionError(
+                        "MCP process was closed before the request could be sent"
+                    )
                 self.process.stdin.write(request_json.encode('utf-8'))
                 await self.process.stdin.drain()
             write_time = time.time() - write_start
@@ -985,7 +996,14 @@ class MCPClient:
                     response = self._response_buffer.pop(req_id)
                     logger.debug(f"🔍 MCP_TIMING: Read from buffer took {(time.time()-read_start)*1000:.1f}ms")
                     if "error" in response:
+                        # PenPal #132 [CWE-476]: a non-conformant/malicious MCP
+                        # server can send "error": null (or a string/int/list);
+                        # error_info.get() then raises AttributeError, which no
+                        # handler in _send_request or call_tool catches -> uncaught
+                        # crash of the coroutine. Coerce any non-dict error to {}.
                         error_info = response['error']
+                        if not isinstance(error_info, dict):
+                            error_info = {}
                         error_code = error_info.get("code", -1)
                         error_message = str(error_info.get("message", "Unknown error"))
                         logger.error(f"MCP server error (from buffer): {error_info}")
@@ -1056,7 +1074,12 @@ class MCPClient:
                 return create_error_response(f"Error reading from MCP server: {str(e)}")
 
             if "error" in response:
+                # PenPal #132 [CWE-476]: guard against a non-dict "error" field
+                # (null/str/int/list) from a non-conformant server; see the
+                # buffered path above. Uncaught AttributeError otherwise.
                 error_info = response['error']
+                if not isinstance(error_info, dict):
+                    error_info = {}
                 error_code = error_info.get("code", -1)
                 error_message = str(error_info.get("message", "Unknown error"))
                 
