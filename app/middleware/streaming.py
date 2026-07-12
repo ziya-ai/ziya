@@ -28,8 +28,10 @@ except ImportError:
 class StreamingMiddleware(BaseHTTPMiddleware):
     """Middleware for handling streaming responses."""
     
-    # Class-level variables for repetition detection
-    _recent_lines = []
+    # Repetition-detection threshold (read-only constant). The per-stream
+    # sliding window lives as a LOCAL in safe_stream() — NOT shared class
+    # state — so concurrent SSE streams can't clobber each other's window
+    # [PenPal #130, CWE-667].
     _max_repetitions = 10
     
     def __init__(self, app: ASGIApp):
@@ -77,8 +79,9 @@ class StreamingMiddleware(BaseHTTPMiddleware):
         Yields:
             Processed chunks as SSE data
         """
-        # Reset repetition detection state for this stream
-        self._recent_lines = []
+        # Per-stream repetition window (local, not shared class state) so
+        # concurrent streams are isolated [PenPal #130].
+        recent_lines: list = []
         content_buffer = ""  # Initialize buffer
         accumulated_content = ""
         accumulated_chunks = []  # Track all chunks for better preservation
@@ -380,13 +383,13 @@ class StreamingMiddleware(BaseHTTPMiddleware):
                         lines = str_chunk.split('\n')
                         for line in lines:
                             if line.strip():  # Only track non-empty lines
-                                self._recent_lines.append(line)
+                                recent_lines.append(line)
                                 # Keep only recent lines
-                                if len(self._recent_lines) > 100:
-                                    self._recent_lines.pop(0)
+                                if len(recent_lines) > 100:
+                                    recent_lines.pop(0)
                         
                         # Check if any line repeats too many times
-                        if any(self._recent_lines.count(line) > self._max_repetitions for line in set(self._recent_lines)):
+                        if any(recent_lines.count(line) > self._max_repetitions for line in set(recent_lines)):
                             logger.warning("Detected repetitive content in stream, interrupting")
                             # Send warning message
                             warning_msg = {
