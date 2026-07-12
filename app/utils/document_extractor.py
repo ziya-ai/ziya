@@ -8,6 +8,7 @@ so they can be meaningfully included in the context for the LLM.
 import os
 import io
 import base64
+import threading
 from typing import Optional, Dict, Any, List
 import logging
 from functools import lru_cache
@@ -41,6 +42,15 @@ _AVAILABLE_LIBRARIES = {
 # Key: (file_path, mtime), Value: extracted text
 _DOCUMENT_CACHE: Dict[tuple, str] = {}
 _CACHE_MAX_SIZE = 100  # Maximum number of documents to cache
+# PenPal #131/#149 [CWE-667]: _DOCUMENT_CACHE is mutated from >1 real
+# thread — the background TokenCalculation thread and the async request
+# path both call extract_document_text(). The check-evict-insert below is
+# a straight-line sequence with no natural yield, so it is GIL-safe in
+# practice today; this lock closes the window in principle (two threads
+# selecting the same `oldest` key -> double `del` -> KeyError) and future-
+# proofs against a yield being introduced. Held only around the O(1) dict
+# ops, never across the slow extraction, so it does not serialize I/O.
+_DOCUMENT_CACHE_LOCK = threading.Lock()
 
 def _check_libraries():
     """Check which document processing libraries are available."""
@@ -542,9 +552,10 @@ def extract_document_text(file_path: str) -> Optional[str]:
         cache_key = (file_path, mtime)
         
         # Check if we have cached content
-        if cache_key in _DOCUMENT_CACHE:
-            logger.debug(f"Returning cached content for: {file_path}")
-            return _DOCUMENT_CACHE[cache_key]
+        with _DOCUMENT_CACHE_LOCK:
+            if cache_key in _DOCUMENT_CACHE:
+                logger.debug(f"Returning cached content for: {file_path}")
+                return _DOCUMENT_CACHE[cache_key]
     except OSError as e:
         logger.warning(f"Could not get mtime for {file_path}: {e}")
         # Continue without caching
@@ -555,13 +566,17 @@ def extract_document_text(file_path: str) -> Optional[str]:
     # Cache the result if extraction was successful
     if extracted_text is not None and 'cache_key' in locals():
         # Implement simple LRU by clearing oldest entries if cache is full
-        if len(_DOCUMENT_CACHE) >= _CACHE_MAX_SIZE:
-            # Remove oldest entry (first item in dict)
-            oldest_key = next(iter(_DOCUMENT_CACHE))
-            del _DOCUMENT_CACHE[oldest_key]
-            logger.debug(f"Cache full, removed oldest entry: {oldest_key[0]}")
-        
-        _DOCUMENT_CACHE[cache_key] = extracted_text
+        with _DOCUMENT_CACHE_LOCK:
+            if len(_DOCUMENT_CACHE) >= _CACHE_MAX_SIZE:
+                # Remove oldest entry (first item in dict). Guard against a
+                # concurrent evictor having already emptied/rotated it.
+                try:
+                    oldest_key = next(iter(_DOCUMENT_CACHE))
+                    del _DOCUMENT_CACHE[oldest_key]
+                    logger.debug(f"Cache full, removed oldest entry: {oldest_key[0]}")
+                except (StopIteration, KeyError):
+                    pass
+            _DOCUMENT_CACHE[cache_key] = extracted_text
         logger.debug(f"Cached extracted content for: {file_path} (cache size: {len(_DOCUMENT_CACHE)})")
     
     return extracted_text
