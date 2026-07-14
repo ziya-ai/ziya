@@ -120,6 +120,42 @@ def scan_tool_description(tool_name: str, description: str) -> List[str]:
     return warnings
 
 
+# Warnings that are advisory heuristics — they flag a description for human
+# review but are NOT evidence of a detected injection, so they must never by
+# themselves block a tool or refuse re-authorization. Currently just the
+# length heuristic: a legitimately verbose tool description (e.g. one that
+# documents many sub-commands) trips the >4000-char check without carrying any
+# actual injected instruction. Everything else the scanner emits (a concrete
+# injection-pattern match, mixed-script/homoglyph obfuscation) is BLOCKING.
+_ADVISORY_SIGNATURES: Tuple[str, ...] = (
+    "is unusually long",
+)
+
+
+def is_advisory_warning(warning: str) -> bool:
+    """True if *warning* is a soft, review-only heuristic (never blocking).
+
+    Used to distinguish "flag for review" noise from a genuine injection
+    signal so the length heuristic can no longer, on its own, quarantine a
+    tool or make re-authorization impossible.
+    """
+    return any(sig in warning for sig in _ADVISORY_SIGNATURES)
+
+
+def classify_warnings(warnings: List[str]) -> Tuple[List[str], List[str]]:
+    """Split scanner warnings into ``(blocking, advisory)``.
+
+    ``blocking`` warnings gate a tool (drop at connect time, refuse
+    re-authorization unless forced); ``advisory`` warnings are logged for
+    review but let the tool through.
+    """
+    blocking: List[str] = []
+    advisory: List[str] = []
+    for w in warnings:
+        (advisory if is_advisory_warning(w) else blocking).append(w)
+    return blocking, advisory
+
+
 def detect_shadowing(
     builtin_tool_names: Set[str],
     external_tool_name: str,

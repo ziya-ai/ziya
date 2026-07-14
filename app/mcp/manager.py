@@ -16,7 +16,7 @@ from app.mcp.client import MCPClient, MCPResource, MCPTool, MCPPrompt # Assuming
 from app.config.env_registry import ziya_env
 from app.utils.logging_utils import logger
 from app.mcp.dynamic_tools import get_dynamic_loader
-from app.mcp.tool_guard import scan_tool_description, detect_shadowing, fingerprint_tools, check_fingerprint_change
+from app.mcp.tool_guard import scan_tool_description, detect_shadowing, fingerprint_tools, check_fingerprint_change, classify_warnings
 import time
 
 # Default timeout (seconds) for individual MCP tool executions when no
@@ -136,6 +136,21 @@ class MCPManager:
         self._tool_fingerprints: Dict[str, str] = {}
         self._fingerprint_store_path = Path.home() / ".ziya" / "mcp_tool_fingerprints.json"
         self._load_persisted_fingerprints()
+        # Persistent, fingerprint-bound force-accept records: server_name ->
+        # the exact tool fingerprint a human explicitly accepted via
+        # force-reauthorization (accepting a blocking injection-pattern match).
+        # A force decision therefore SURVIVES restart — the connect-time
+        # poisoning scan keeps a blocking tool when the current fingerprint
+        # still equals the accepted one. This is strictly narrower than
+        # marking the server "trusted" (which disables scanning entirely,
+        # forever): the acceptance is bound to the specific descriptions the
+        # human reviewed, so if the definitions mutate again the fingerprint
+        # no longer matches, the record no longer applies, and the scan
+        # (and rug-pull quarantine) re-engage automatically — the override
+        # self-revokes on any later change.
+        self._force_accepted_fingerprints: Dict[str, str] = {}
+        self._force_accept_store_path = Path.home() / ".ziya" / "mcp_force_accepts.json"
+        self._load_persisted_force_accepts()
         # server_name -> True while quarantined pending re-authorization.
         # Quarantined servers' tools are excluded from get_all_tools()/call_tool().
         self._quarantined_servers: set = set()
@@ -358,6 +373,43 @@ class MCPManager:
             os.replace(_tmp_fp, self._fingerprint_store_path)
         except OSError as e:
             logger.warning(f"Could not persist tool fingerprints: {e}")
+
+    def _load_persisted_force_accepts(self) -> None:
+        """Load fingerprint-bound force-accept records from disk.
+
+        Missing/unreadable/corrupt file is treated as "no force-accepts yet".
+        Never raises. Same tolerance semantics as the fingerprint baseline.
+        """
+        try:
+            if self._force_accept_store_path.exists():
+                with open(self._force_accept_store_path, 'r') as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    self._force_accepted_fingerprints = {
+                        k: v for k, v in data.items() if isinstance(v, str)
+                    }
+                    logger.debug(
+                        f"Loaded {len(self._force_accepted_fingerprints)} persisted "
+                        f"force-accept record(s) from {self._force_accept_store_path}"
+                    )
+        except (json.JSONDecodeError, OSError, ValueError) as e:
+            logger.warning(f"Could not load persisted force-accepts: {e}")
+
+    def _save_persisted_force_accepts(self) -> None:
+        """Persist the force-accept records atomically. Never raises.
+
+        Same temp+rename pattern as _save_persisted_fingerprints so a
+        concurrent reader never observes a torn file (which would silently
+        drop a human's persistent override).
+        """
+        try:
+            self._force_accept_store_path.parent.mkdir(parents=True, exist_ok=True)
+            _tmp = self._force_accept_store_path.with_suffix('.json.tmp')
+            with open(_tmp, 'w') as f:
+                json.dump(self._force_accepted_fingerprints, f, indent=2)
+            os.replace(_tmp, self._force_accept_store_path)
+        except OSError as e:
+            logger.warning(f"Could not persist force-accepts: {e}")
 
     def refresh_config_path(self):
         """Re-search for config files and update the config path."""
@@ -983,7 +1035,7 @@ class MCPManager:
             logger.error(f"Error restarting server {server_name}: {str(e)}")
             return False
 
-    def reauthorize_server(self, server_name: str) -> Dict[str, Any]:
+    def reauthorize_server(self, server_name: str, force: bool = False) -> Dict[str, Any]:
         """Clear a rug-pull quarantine and accept the server's current tool
         definitions as the new approved baseline (CWE-345 re-authorization).
 
@@ -992,32 +1044,111 @@ class MCPManager:
         content before lifting quarantine, since the mutated definitions
         that triggered quarantine were never checked by the connect-time
         scan (that only runs when quarantine is NOT applied).
+
+        Scanner warnings are classified (see tool_guard.classify_warnings):
+        - advisory (e.g. an unusually long description) NEVER blocks — the
+          tool is accepted and the advisory is logged for the record.
+        - blocking (a concrete injection-pattern / homoglyph match) refuses
+          re-authorization UNLESS ``force`` is set, in which case the human
+          has explicitly reviewed and accepted the flagged descriptions.
+          A forced acceptance is session-scoped: on the next server restart
+          the connect-time poisoning scan re-drops blocking-pattern tools
+          for a non-trusted server, so persistent trust requires marking the
+          server ``trusted`` in mcp_config.json.
         """
         if server_name not in self._quarantined_servers:
+            logger.info(f"Re-authorization of '{server_name}' skipped: not quarantined")
             return {"success": False, "message": f"Server '{server_name}' is not quarantined"}
         client = self.clients.get(server_name)
         if not client:
+            logger.warning(f"Re-authorization of '{server_name}' failed: no active connection")
             return {"success": False, "message": f"Server '{server_name}' has no active connection"}
-        _warnings_by_tool = {
-            t.name: list(scan_tool_description(t.name, t.description)) for t in client.tools
-        }
-        _flagged = {name: w for name, w in _warnings_by_tool.items() if w}
-        if _flagged:
+
+        # Classify each tool's warnings. Advisory-only tools pass; a tool
+        # with any blocking warning gates the whole server unless forced.
+        _blocking_by_tool: Dict[str, List[str]] = {}
+        _advisory_by_tool: Dict[str, List[str]] = {}
+        for t in client.tools:
+            _blk, _adv = classify_warnings(scan_tool_description(t.name, t.description))
+            if _blk:
+                _blocking_by_tool[t.name] = _blk
+            if _adv:
+                _advisory_by_tool[t.name] = _adv
+
+        if _blocking_by_tool and not force:
+            logger.warning(
+                f"🚫 Re-authorization of '{server_name}' REFUSED: "
+                f"{len(_blocking_by_tool)} tool(s) still match an injection "
+                f"pattern {list(_blocking_by_tool.keys())}; advisory-only: "
+                f"{list(_advisory_by_tool.keys())}. User may re-authorize with "
+                f"force=true after reviewing the flagged descriptions."
+            )
             return {
                 "success": False,
-                "message": f"Re-authorization refused: {len(_flagged)} tool(s) still trip the injection scan",
-                "flagged_tools": _flagged,
+                "message": (
+                    f"Re-authorization refused: {len(_blocking_by_tool)} tool(s) "
+                    f"still match an injection pattern. Review the flagged "
+                    f"descriptions below; if you trust this server, re-authorize "
+                    f"anyway to override."
+                ),
+                "blocking_tools": _blocking_by_tool,
+                "advisory_tools": _advisory_by_tool,
+                "can_force": True,
             }
+
+        if force and _blocking_by_tool:
+            logger.warning(
+                f"⚠️  Re-authorization of '{server_name}' FORCED by user despite "
+                f"{len(_blocking_by_tool)} blocking warning(s): {_blocking_by_tool}. "
+                f"This override is session-scoped (see docstring)."
+            )
+        if _advisory_by_tool:
+            logger.info(
+                f"Re-authorization of '{server_name}': accepting "
+                f"{len(_advisory_by_tool)} tool(s) with advisory-only warnings: "
+                f"{list(_advisory_by_tool.keys())}"
+            )
+
         new_fp = fingerprint_tools([
             {"name": t.name, "description": t.description, "inputSchema": t.inputSchema}
             for t in client.tools
         ])
         self._tool_fingerprints[server_name] = new_fp
         self._save_persisted_fingerprints()
+        # Persist (or clear) the fingerprint-bound force-accept so the
+        # decision survives restart. When the human forced past a blocking
+        # injection-pattern match, record THIS fingerprint as accepted; the
+        # connect-time scan will keep those blocking tools as long as the
+        # fingerprint is unchanged, and auto-revoke if the descriptions mutate
+        # again. On a clean (non-forced) re-auth, drop any prior force-accept
+        # so we never keep honoring an override for descriptions that are no
+        # longer blocking.
+        if force and _blocking_by_tool:
+            self._force_accepted_fingerprints[server_name] = new_fp
+            self._save_persisted_force_accepts()
+            logger.info(
+                f"🔏 Persisted fingerprint-bound force-accept for '{server_name}' "
+                f"(fp={new_fp[:12]}…); override survives restart until the tool "
+                f"definitions change again"
+            )
+        elif self._force_accepted_fingerprints.pop(server_name, None) is not None:
+            self._save_persisted_force_accepts()
+            logger.info(
+                f"Cleared prior force-accept for '{server_name}' (clean re-auth)"
+            )
         self._quarantined_servers.discard(server_name)
         self.invalidate_tools_cache()
-        logger.info(f"Server '{server_name}' re-authorized; new fingerprint baseline accepted")
-        return {"success": True, "message": f"Server '{server_name}' re-authorized"}
+        logger.info(
+            f"✅ Server '{server_name}' re-authorized "
+            f"({'forced' if (force and _blocking_by_tool) else 'clean'}); "
+            f"new fingerprint baseline accepted, quarantine lifted"
+        )
+        return {
+            "success": True,
+            "message": f"Server '{server_name}' re-authorized",
+            "forced": bool(force and _blocking_by_tool),
+            "advisory_tools": _advisory_by_tool,
+        }
 
     async def _connect_server(self, server_name: str, client: MCPClient) -> bool:
         """Connect to a single MCP server."""
@@ -1047,7 +1178,16 @@ class MCPManager:
                 ]
                 new_fp = fingerprint_tools(tool_dicts)
                 old_fp = self._tool_fingerprints.get(server_name)
-                if old_fp is not None and old_fp != new_fp and not is_builtin and not is_trusted:
+                # A persistent, fingerprint-bound force-accept (human explicitly
+                # accepted THESE descriptions) suppresses re-quarantine as long
+                # as the fingerprint is unchanged. If the definitions mutated
+                # since the accept, the fingerprint differs, the accept no
+                # longer applies, and quarantine engages normally.
+                _force_ok = (
+                    self._force_accepted_fingerprints.get(server_name) == new_fp
+                )
+                if (old_fp is not None and old_fp != new_fp
+                        and not is_builtin and not is_trusted and not _force_ok):
                     warning = check_fingerprint_change(server_name, old_fp, new_fp)
                     logger.error(
                         f"🚫 SECURITY: {warning} — quarantining '{server_name}' "
@@ -1069,6 +1209,13 @@ class MCPManager:
                         f"Skipping tool-poisoning scan for trusted server '{server_name}'"
                     )
                 if not is_builtin and not is_trusted and server_name not in self._quarantined_servers:
+                    # Persistent force-accept: if the human explicitly accepted
+                    # this exact fingerprint, blocking-pattern tools are kept
+                    # (logged as force-kept) rather than dropped — this is what
+                    # makes a force-reauthorization durable across restarts.
+                    _force_kept = (
+                        self._force_accepted_fingerprints.get(server_name) == new_fp
+                    )
                     # Disabled tools never reach the agent context (filtered in
                     # enhanced_tools), so a poisoned description is inert. Skip
                     # scanning them to avoid noisy connect-time warnings.
@@ -1084,8 +1231,29 @@ class MCPManager:
                         if _tool_perm == 'disabled':
                             _clean_tools.append(tool)  # inert (never sent to agent), keep as-is
                             continue
-                        _warnings = list(scan_tool_description(tool.name, tool.description))
-                        if _warnings:
+                        _blk, _adv = classify_warnings(
+                            scan_tool_description(tool.name, tool.description)
+                        )
+                        # Advisory warnings (e.g. unusually long description) are
+                        # review-only heuristics, not a detected injection — log
+                        # them but keep the tool. Only a concrete pattern match
+                        # blocks.
+                        if _adv:
+                            logger.warning(
+                                f"⚠️  Advisory (tool kept) '{tool.name}' from "
+                                f"server '{server_name}': " + "; ".join(_adv)
+                            )
+                        if _blk and _force_kept:
+                            # Human accepted this exact fingerprint via
+                            # force-reauthorization; honor it durably.
+                            logger.warning(
+                                f"🔏 Force-kept '{tool.name}' from server "
+                                f"'{server_name}' despite blocking warning "
+                                f"(persistent force-accept, fingerprint match): "
+                                + "; ".join(_blk)
+                            )
+                            _clean_tools.append(tool)
+                        elif _blk:
                             # Block, don't just log (CWE-94): a poisoned description
                             # injected verbatim into the system prompt carries the
                             # same authority as Ziya's own instructions. Removing the
@@ -1093,7 +1261,7 @@ class MCPManager:
                             # returns it, so it reaches no prompt path.
                             logger.error(
                                 f"🚫 Blocking tool '{tool.name}' from server "
-                                f"'{server_name}': " + "; ".join(_warnings)
+                                f"'{server_name}': " + "; ".join(_blk)
                             )
                         else:
                             _clean_tools.append(tool)
