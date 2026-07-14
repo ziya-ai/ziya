@@ -1324,6 +1324,37 @@ async def get_mcp_server_details(server_name: str):
 # MCP REGISTRY ROUTES
 # ============================================================================
 
+async def _get_provider_stats(provider_id: str, provider) -> Dict[str, Any]:
+    """Fetch a single provider's service count with timeout/error handling.
+
+    Extracted so /registry/providers can fetch all providers concurrently
+    instead of paying each provider's timeout sequentially.
+
+    Returns {'count': int, 'error': Optional[str]}. The error message (when
+    present) is surfaced to the frontend so a provider outage shows *why* it
+    failed (e.g. "CLI not available. Install with: ...") instead of just an
+    opaque zero count.
+    """
+    try:
+        logger.info(f"Fetching services from provider {provider_id}...")
+        services_result = await asyncio.wait_for(
+            provider.list_services(max_results=1000),
+            timeout=30.0
+        )
+        service_count = len(services_result['services'])
+        logger.info(f"Provider {provider_id} successfully returned {service_count} services")
+        return {'count': service_count, 'error': None}
+    except asyncio.TimeoutError:
+        logger.warning(f"Provider {provider_id} timed out after 30 seconds")
+        return {'count': 0, 'error': f"Provider '{provider_id}' timed out after 30 seconds"}
+    except Exception as e:
+        logger.error(f"Provider {provider_id} failed: {type(e).__name__}: {e}")
+        # Only log full traceback for unexpected errors, not network issues
+        if not any(keyword in str(e).lower() for keyword in ['timeout', 'connection', 'network', 'unreachable']):
+            logger.exception(f"Unexpected error from provider {provider_id}:")
+        return {'count': 0, 'error': str(e)}
+
+
 @router.get("/registry/providers")
 async def get_registry_providers():
     """Get list of available registry providers."""
@@ -1341,45 +1372,33 @@ async def get_registry_providers():
         # For now, assume all are enabled
         enabled_providers = set()  # This would come from a config file
         
-        providers = []
+        # Resolve providers first, then fetch all their stats concurrently
+        # instead of paying each provider's up-to-30s timeout sequentially.
+        resolved = [
+            (provider_id, registry.get_provider(provider_id))
+            for provider_id in provider_ids
+        ]
+        resolved = [(pid, p) for pid, p in resolved if p is not None]
         
-        for provider_id in provider_ids:
-            provider = registry.get_provider(provider_id)
-            if provider:
-                # Calculate basic stats with timeout and better error handling
-                try:
-                    logger.info(f"Fetching services from provider {provider_id}...")
-                    
-                    # Add timeout to prevent hanging requests
-                    services_result = await asyncio.wait_for(
-                        provider.list_services(max_results=1000), 
-                        timeout=30.0
-                    )
-                    service_count = len(services_result['services'])
-                    logger.info(f"Provider {provider_id} successfully returned {service_count} services")
-                    
-                except asyncio.TimeoutError:
-                    logger.warning(f"Provider {provider_id} timed out after 30 seconds")
-                    service_count = 0
-                except Exception as e:
-                    logger.error(f"Provider {provider_id} failed: {type(e).__name__}: {e}")
-                    # Only log full traceback for unexpected errors, not network issues
-                    if not any(keyword in str(e).lower() for keyword in ['timeout', 'connection', 'network', 'unreachable']):
-                        logger.exception(f"Unexpected error from provider {provider_id}:")
-                    service_count = 0
-                
-                providers.append({
-                    'id': provider.identifier,
-                    'name': provider.name,
-                    'isInternal': provider.is_internal,
-                    'supportsSearch': provider.supports_search,
-                    'enabled': provider_id not in enabled_providers if enabled_providers else True,
-                    'stats': {
-                        'totalServices': service_count,
-                        'lastError': service_count == 0,  # Flag providers that failed
-                        'lastFetched': datetime.now().isoformat()
-                    }
-                })
+        provider_stats = await asyncio.gather(
+            *(_get_provider_stats(pid, p) for pid, p in resolved)
+        )
+        
+        providers = []
+        for (provider_id, provider), stat in zip(resolved, provider_stats):
+            providers.append({
+                'id': provider.identifier,
+                'name': provider.name,
+                'isInternal': provider.is_internal,
+                'supportsSearch': provider.supports_search,
+                'enabled': provider_id not in enabled_providers if enabled_providers else True,
+                'stats': {
+                    'totalServices': stat['count'],
+                    'lastError': stat['error'] is not None,
+                    'errorMessage': stat['error'],
+                    'lastFetched': datetime.now().isoformat()
+                }
+            })
         
         return {'providers': providers}
         
