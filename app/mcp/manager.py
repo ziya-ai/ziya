@@ -345,8 +345,17 @@ class MCPManager:
         """Persist the current approved fingerprint baseline. Never raises."""
         try:
             self._fingerprint_store_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self._fingerprint_store_path, 'w') as f:
+            # CWE-667 (atomic-write family, cf. PenPal #134/#143): write via
+            # a temp file + atomic rename so a concurrent reader (another worker
+            # under uvicorn --workers N) can never observe a half-written or
+            # truncated fingerprint baseline — a torn read would silently
+            # disable rug-pull detection for that server. NOTE: this is NOT
+            # PenPal #131 (that finding is the MCPManager singleton lifecycle
+            # lock races in toggle/initialize/shutdown, still unaddressed).
+            _tmp_fp = self._fingerprint_store_path.with_suffix('.json.tmp')
+            with open(_tmp_fp, 'w') as f:
                 json.dump(self._tool_fingerprints, f, indent=2)
+            os.replace(_tmp_fp, self._fingerprint_store_path)
         except OSError as e:
             logger.warning(f"Could not persist tool fingerprints: {e}")
 
