@@ -18,6 +18,7 @@ from app.utils.logging_utils import logger
 from app.mcp.dynamic_tools import get_dynamic_loader
 from app.mcp.tool_guard import scan_tool_description, detect_shadowing, fingerprint_tools, check_fingerprint_change, classify_warnings
 import time
+from app.context import get_project_root_or_none
 
 # Default timeout (seconds) for individual MCP tool executions when no
 # tool-specific timeout is provided.  Override via ZIYA_TOOL_TIMEOUT.
@@ -2025,8 +2026,15 @@ class MCPManager:
         # Check for repetitive calls (conversation-aware)
         conversation_id = arguments.get('conversation_id') if isinstance(arguments, dict) else None
         
-        # Extract workspace path if provided
-        workspace_path = arguments.get('_workspace_path')
+        # Extract workspace path if provided. Not every caller path injects
+        # ``_workspace_path`` explicitly (e.g. ConnectionPool.call_tool(),
+        # used by SecureMCPTool/the legacy LangChain agent chain, never sets
+        # it). Fall back to the request-scoped project_root ContextVar
+        # (set by ProjectContextMiddleware/server.py on every request from
+        # the X-Project-Root header) so workspace-scoped routing below is
+        # always correct regardless of which tool-invocation path is live,
+        # rather than silently defaulting to the server's startup cwd.
+        workspace_path = arguments.get('_workspace_path') or get_project_root_or_none()
         # ``_task_scope`` is only meaningful to the shell server today
         # (it is the additive write-grant envelope for Task Cards).
         # Preserve it on the way to the shell server, strip it for
