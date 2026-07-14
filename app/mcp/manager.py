@@ -480,6 +480,55 @@ class MCPManager:
                     server_env["YOLO_MODE"] = "true" if _v else "false"
                 elif isinstance(_v, list):
                     server_env[_k] = ",".join(str(x) for x in _v)
+        # Unconflate file_write and shell write policy: forward the project's
+        # unsigned writePolicy to the shell via the non-gated
+        # ZIYA_PROJECT_WRITE_PATHS channel. See _apply_project_write_paths.
+        self._apply_project_write_paths(server_env, server_name)
+
+    def _apply_project_write_paths(self, server_env: Dict[str, str], server_name: str) -> None:
+        """Set ZIYA_PROJECT_WRITE_PATHS on the shell spawn env from the decrypted
+        project writePolicy — or delete it. Never trusts an inbound value.
+
+        Multi-project safety: the main process serves several workspaces, so we
+        must NOT read (or mutate) the shared get_write_policy_manager() singleton
+        — it is loaded for whatever project last touched it. We resolve the
+        policy in a THROWAWAY WritePolicyManager instance keyed to THIS spawn's
+        workspace root, so concurrent shell spawns for different projects never
+        bleed each other's paths.
+        """
+        from app.config.scope_canonical import PROJECT_WRITE_PATHS_ENV_KEY
+        # Always clear any inbound (possibly config-forged) value first so a
+        # value hand-written into mcp_config.json can never survive to the
+        # subprocess. Only the shell server receives the channel.
+        server_env.pop(PROJECT_WRITE_PATHS_ENV_KEY, None)
+        if server_name != "shell":
+            return
+        project_root = (
+            server_env.get("ZIYA_USER_CODEBASE_DIR")
+            or os.environ.get("ZIYA_USER_CODEBASE_DIR")
+            or ""
+        )
+        if not project_root:
+            return
+        try:
+            from app.config.write_policy import WritePolicyManager
+            # Throwaway instance — decrypts project.json for THIS root here in
+            # the trusted parent (which holds the KEK) without disturbing the
+            # shared singleton other projects rely on.
+            pm = WritePolicyManager()
+            pm._ensure_loaded_for_root(project_root)
+            policy = pm.get_effective_policy() or {}
+        except Exception as _e:  # noqa: BLE001 — never block spawn on policy read
+            logger.debug(f"project write-path injection skipped: {_e}")
+            return
+        entries: List[str] = []
+        entries.extend(policy.get("safe_write_paths") or [])
+        entries.extend(policy.get("allowed_write_patterns") or [])
+        # De-dup, preserve order.
+        seen: set = set()
+        deduped = [e for e in entries if e and not (e in seen or seen.add(e))]
+        if deduped:
+            server_env[PROJECT_WRITE_PATHS_ENV_KEY] = ",".join(deduped)
 
     async def initialize(self) -> bool:
         """
