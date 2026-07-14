@@ -37,6 +37,7 @@ interface MCPServer {
     capabilities: any;
     builtin?: boolean;
     enabled?: boolean;
+    quarantined?: boolean;
     is_ondemand?: boolean;
     tool_details?: Array<{
         name: string;
@@ -144,6 +145,7 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
     const [loading, setLoading] = useState(false);
     const [showRegistry, setShowRegistry] = useState(false);
     const [toggling, setToggling] = useState<Record<string, boolean>>({});
+    const [reauthorizing, setReauthorizing] = useState<Record<string, boolean>>({});
     const [permissions, setPermissions] = useState<MCPPermissions | null>(null);
     const [expandedKeys, setExpandedKeys] = useState<string[]>([]);
     const [serverDetails, setServerDetails] = useState<Record<string, ServerDetails>>({});
@@ -224,6 +226,96 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
             console.error('Failed to reinitialize MCP:', error);
         } finally {
             setLoading(false);
+        }
+    };
+
+    // Lift a rug-pull quarantine: accept the server's current tool
+    // definitions as the new approved baseline. The backend re-scans the
+    // new descriptions for injection content and refuses if any still
+    // trip the scan, so this is a trust decision the user makes explicitly
+    // — not an automatic recovery.
+    //
+    // Two-phase: a first (non-forced) attempt surfaces the backend's
+    // blocking/advisory reasons in a modal; if the user confirms, a second
+    // forced attempt overrides the blocking injection-pattern matches.
+    const reauthorizeServer = async (serverName: string, force = false) => {
+        setReauthorizing(prev => ({ ...prev, [serverName]: true }));
+        try {
+            const response = await fetch('/api/mcp/reauthorize-server', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ server_name: serverName, force }),
+            });
+            const result = await response.json().catch(() => ({}));
+            if (response.ok && result.success) {
+                const advisoryNames = Object.keys(result.advisory_tools || {});
+                message.success(
+                    (result.forced
+                        ? `Force re-authorized ${serverName} (blocking warnings overridden)`
+                        : result.message || `Re-authorized ${serverName}`) +
+                    (advisoryNames.length
+                        ? ` — ${advisoryNames.length} advisory-only warning(s) accepted`
+                        : '')
+                );
+                await fetchMCPStatus();
+                window.dispatchEvent(new Event('mcpStatusChanged'));
+            } else if (result.can_force) {
+                // Blocking injection-pattern matches remain. Surface the
+                // per-tool reasons and let the user explicitly override.
+                const blocking = result.blocking_tools || {};
+                const advisory = result.advisory_tools || {};
+                Modal.confirm({
+                    title: `Re-authorize ${serverName} anyway?`,
+                    icon: <WarningOutlined style={{ color: '#faad14' }} />,
+                    width: 620,
+                    content: (
+                        <div>
+                            <p style={{ marginBottom: 8 }}>
+                                {result.message}
+                            </p>
+                            <div style={{ fontWeight: 600, color: '#cf1322' }}>
+                                Blocking (injection-pattern match):
+                            </div>
+                            <ul style={{ marginTop: 4 }}>
+                                {Object.entries(blocking).map(([tool, warns]: [string, any]) => (
+                                    <li key={tool}>
+                                        <b>{tool}</b>
+                                        <ul>{(warns as string[]).map((w, i) => <li key={i}>{w}</li>)}</ul>
+                                    </li>
+                                ))}
+                            </ul>
+                            {Object.keys(advisory).length > 0 && (
+                                <>
+                                    <div style={{ fontWeight: 600, color: '#8c6b00' }}>
+                                        Advisory only (accepted automatically):
+                                    </div>
+                                    <ul style={{ marginTop: 4 }}>
+                                        {Object.entries(advisory).map(([tool, warns]: [string, any]) => (
+                                            <li key={tool}><b>{tool}</b>: {(warns as string[]).join('; ')}</li>
+                                        ))}
+                                    </ul>
+                                </>
+                            )}
+                            <p style={{ marginTop: 8, fontSize: 12, color: '#888' }}>
+                                Only override if you have reviewed these descriptions and trust this server.
+                                The override lasts until the next server restart.
+                            </p>
+                        </div>
+                    ),
+                    okText: 'Re-authorize anyway',
+                    okButtonProps: { danger: true },
+                    cancelText: 'Cancel',
+                    onOk: () => reauthorizeServer(serverName, true),
+                });
+            } else {
+                // Non-overridable error — surface the backend's reason.
+                message.error(result.message || 'Re-authorization refused');
+            }
+        } catch (error) {
+            message.error('Failed to re-authorize server');
+            console.error('Reauthorize error:', error);
+        } finally {
+            setReauthorizing(prev => ({ ...prev, [serverName]: false }));
         }
     };
 
@@ -933,6 +1025,22 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                     {isEnabled ? (server.connected ? 'Connected' : 'Disconnected') : 'Disabled'}
                                                 </Tag>
                                                 <span>{getServerDisplayName(name)}</span>
+                                                {server.quarantined && (
+                                                    <>
+                                                        <Tooltip title="This server's tool definitions changed since they were last approved (possible rug-pull). Its tools are excluded until you re-authorize.">
+                                                            <Tag color="volcano" icon={<WarningOutlined />}>Quarantined</Tag>
+                                                        </Tooltip>
+                                                        <Button
+                                                            size="small"
+                                                            danger
+                                                            icon={<ReloadOutlined />}
+                                                            loading={reauthorizing[name]}
+                                                            onClick={(e) => { e.stopPropagation(); reauthorizeServer(name); }}
+                                                        >
+                                                            Re-authorize
+                                                        </Button>
+                                                    </>
+                                                )}
                                                 {server.builtin && <Tag color="blue">built-in</Tag>}
                                                 {status.server_configs?.[name]?.url && (
                                                     <Tag color="geekblue" icon={<CloudOutlined />}>

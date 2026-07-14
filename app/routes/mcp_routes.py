@@ -1093,6 +1093,9 @@ async def update_shell_config(config: ShellConfig):
 class ServerReauthorizeRequest(BaseModel):
     model_config = {"extra": "allow"}
     server_name: str
+    # When true, the human has reviewed the flagged descriptions and accepts
+    # them despite a blocking injection-pattern match (session-scoped override).
+    force: bool = False
 
 @router.post("/reauthorize-server")
 async def reauthorize_server(request: ServerReauthorizeRequest):
@@ -1106,7 +1109,7 @@ async def reauthorize_server(request: ServerReauthorizeRequest):
         mcp_manager = get_mcp_manager()
         if not mcp_manager.is_initialized:
             return {"success": False, "message": "MCP manager not initialized"}
-        result = mcp_manager.reauthorize_server(request.server_name)
+        result = mcp_manager.reauthorize_server(request.server_name, force=request.force)
         return result
     except Exception as e:
         logger.error(f"Error reauthorizing server {request.server_name}: {e}")
