@@ -56,8 +56,32 @@ export function rtfToHtml(rtf: string): string {
   while (i < body.length) {
     const ch = body[i];
 
-    // Skip nested groups we don't understand
-    if (ch === '{') { i++; continue; }
+    // PenPal #115 [CWE-200]: a destination/metadata group ({\*..}, {\info..},
+    // {\author..} etc.) may contain NESTED groups, which the header-stripping
+    // regex (bounded by [^{}]*) cannot remove. Previously this loop stepped
+    // over the '{' without skipping the group body, so the inner text (author,
+    // company, comments) fell through to the plain-text collector and leaked
+    // into the rendered preview. Detect a metadata/destination group and skip
+    // its ENTIRE contents by brace depth.
+    if (ch === '{') {
+      const dest = body.substring(i + 1).match(/^\\\*|^\\(?:info|author|company|title|subject|operator|manager|category|keywords|comment|doccomm|generator|creatim|revtim|printim|buptim|hlinkbase|userprops|xmlns)\b/i);
+      if (dest) {
+        // Consume through the matching close brace (depth-tracked).
+        let depth = 1;
+        i++;
+        while (i < body.length && depth > 0) {
+          if (body[i] === '{') depth++;
+          else if (body[i] === '}') depth--;
+          else if (body[i] === '\\' && (body[i + 1] === '{' || body[i + 1] === '}' || body[i + 1] === '\\')) {
+            i++; // escaped brace/backslash — not a group delimiter
+          }
+          i++;
+        }
+        continue;
+      }
+      // Non-metadata group: step in (its text is real content), as before.
+      i++; continue;
+    }
     if (ch === '}') { i++; continue; }
 
     if (ch === '\\') {
