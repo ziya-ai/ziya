@@ -1613,7 +1613,20 @@ class MCPManager:
         coerced = {}
         for key, value in arguments.items():
             if key in tool_schema['properties']:
-                expected_type = tool_schema['properties'][key].get('type')
+                prop = tool_schema['properties'][key]
+                expected_type = prop.get('type')
+                # Optional/union params (e.g. Optional[Dict]) generate an
+                # "anyOf": [{"type": "object"}, {"type": "null"}] with no
+                # top-level "type", so the coercion branches below never
+                # fired. Recover the non-null member type so a JSON-string
+                # object/array still coerces on the MCP-client tool path.
+                if expected_type is None and isinstance(prop.get('anyOf'), list):
+                    _member_types = [
+                        m.get('type') for m in prop['anyOf']
+                        if isinstance(m, dict) and m.get('type') not in (None, 'null')
+                    ]
+                    if len(set(_member_types)) == 1:
+                        expected_type = _member_types[0]
                 if expected_type == 'number' and isinstance(value, str):
                     try:
                         coerced[key] = int(value) if '.' not in value else float(value)
