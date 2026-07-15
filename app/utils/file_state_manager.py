@@ -99,8 +99,24 @@ class FileStateManager:
     def _save_state(self):
         """Save file states to disk."""
         try:
-            # Evict before saving to prevent the on-disk file from growing unboundedly
-            self._evict_stale_conversations()
+            # PenPal #142 [CWE-667]: snapshot the shared dicts under the lock
+            # before iterating them. The build loops below previously iterated
+            # self.conversation_states / self.conversation_diffs unlocked while
+            # the file-watcher observer thread could mutate them concurrently
+            # → "RuntimeError: dict changed size during iteration". Eviction
+            # (which also mutates the dicts) now runs inside the same lock, and
+            # the build operates on the private snapshots. The write keeps its
+            # own lock acquisition below (self._lock is non-reentrant; no caller
+            # of _save_state holds it, so there is no self-deadlock).
+            with self._lock:
+                # Evict before saving to prevent the on-disk file growing unboundedly
+                self._evict_stale_conversations()
+                states_snapshot = {
+                    cid: dict(files) for cid, files in self.conversation_states.items()
+                }
+                diffs_snapshot = {
+                    cid: list(diffs) for cid, diffs in self.conversation_diffs.items()
+                }
 
             state_dir = os.path.dirname(self.state_file)
             os.makedirs(state_dir, exist_ok=True)
@@ -113,7 +129,7 @@ class FileStateManager:
             data = {}
 
             # Build the data dict (existing logic unchanged)
-            for conv_id, files in self.conversation_states.items():
+            for conv_id, files in states_snapshot.items():
                 # Skip temporary precision_ conversations
                 if conv_id.startswith('precision_'):
                     continue
@@ -131,7 +147,7 @@ class FileStateManager:
                     }
             
             # Save diff history per conversation
-            for conv_id, diffs in self.conversation_diffs.items():
+            for conv_id, diffs in diffs_snapshot.items():
                 if conv_id.startswith('precision_'):
                     continue
                 if conv_id in data:

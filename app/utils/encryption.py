@@ -164,8 +164,12 @@ class Keyring:
 
     def rotate_active(self, new_wrapped: WrappedDEK):
         """Mark existing active DEK as decrypt-only, set new one active."""
-        self._backup()
         with self._lock:
+            # PenPal #147 [CWE-667]: _backup() copies the on-disk keyring; it
+            # must run under the same lock as the mutate+_save() below, or a
+            # concurrent rotate/rewrap can back up a torn file (or read
+            # _entries mid-mutation). Keep backup+mutate+save atomic.
+            self._backup()
             for w in self._entries.values():
                 if w.status == "active":
                     w.status = "decrypt-only"
@@ -175,11 +179,12 @@ class Keyring:
 
     def rewrap_all(self, old_kek: bytes, new_kek: bytes, new_kek_id: str):
         """Re-wrap all DEKs with a new KEK (KEK rotation)."""
-        self._backup()
         _ensure_cryptography()
         from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
         with self._lock:
+            # PenPal #147 [CWE-667]: backup under the lock (see rotate_active).
+            self._backup()
             for w in self._entries.values():
                 if w.status == "retired":
                     continue
