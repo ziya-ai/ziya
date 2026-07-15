@@ -187,16 +187,65 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
 
         if builtin_tool:
             logger.info(f"🔧 Calling builtin tool directly: {ctx.actual_tool_name}")
-            if ctx.project_root:
-                ctx.args['_workspace_path'] = ctx.project_root
-            if ctx.conversation_id:
-                ctx.args['conversation_id'] = ctx.conversation_id
-            if task_scope_payload is not None:
-                ctx.args['_task_scope'] = task_scope_payload
-            result = await asyncio.wait_for(
-                builtin_tool.tool_instance.execute(**ctx.args),
-                timeout=TOOL_EXEC_TIMEOUT,
-            )
+            # Builtin tools bypass MCPManager.call_tool() entirely (they're
+            # invoked directly on tool_instance below), so the anti-loop
+            # circuit breakers that call_tool() applies to external tools
+            # — the per-turn ceiling and the identical-call blocker — never
+            # ran for this path. That let a builtin tool (e.g.
+            # context_add_file) retry an unrecoverable error indefinitely
+            # within a single turn. Apply the same two guards here.
+            if ctx.mcp_manager is not None:
+                if ctx.mcp_manager._exceeds_turn_ceiling(ctx.conversation_id):
+                    result = {
+                        "error": True,
+                        "message": (
+                            f"Tool call refused: this turn reached the per-turn "
+                            f"tool-call ceiling ({ctx.mcp_manager._turn_limit()}). "
+                            f"Send a new message to continue, or raise "
+                            f"ZIYA_MAX_TOOLS_PER_TURN."
+                        ),
+                        "code": -32001,
+                    }
+                elif ctx.mcp_manager._is_repetitive_call(ctx.actual_tool_name, ctx.args, ctx.conversation_id):
+                    result = {
+                        "error": True,
+                        "message": (
+                            f"Tool call blocked: {ctx.actual_tool_name} has been "
+                            f"called repeatedly with similar arguments. Please try "
+                            f"a different approach or check if the previous "
+                            f"results contain what you need."
+                        ),
+                        "code": -32001,
+                    }
+                else:
+                    result = None
+            else:
+                result = None
+            if result is not None:
+                # Blocked by a circuit breaker above: skip the actual
+                # execute() call, but DO NOT return early here — this
+                # function is an async generator that still needs to run
+                # the verification/audit-log/yield pipeline below so the
+                # model actually receives a tool_result event explaining
+                # why the call was refused. Returning early left the
+                # generator exhausted with no result ever yielded back.
+                if not isinstance(result, dict):
+                    result = {"content": [{"type": "text", "text": str(result)}]}
+            else:
+                if ctx.project_root:
+                    ctx.args['_workspace_path'] = ctx.project_root
+                if ctx.conversation_id:
+                    ctx.args['conversation_id'] = ctx.conversation_id
+                if task_scope_payload is not None:
+                    ctx.args['_task_scope'] = task_scope_payload
+                # Normalize JSON-string object/array args for builtins (they
+                # bypass the MCP manager's normalize/coerce path).
+                from app.mcp.tools.base import coerce_json_string_args
+                ctx.args = coerce_json_string_args(builtin_tool.tool_instance, ctx.args)
+                result = await asyncio.wait_for(
+                    builtin_tool.tool_instance.execute(**ctx.args),
+                    timeout=TOOL_EXEC_TIMEOUT,
+                )
             # Sign builtin results (external tools are signed in MCPClient)
             if result and not isinstance(result, dict):
                 result = {"content": [{"type": "text", "text": str(result)}]}

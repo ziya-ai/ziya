@@ -10,6 +10,7 @@ This module provides secure wrappers around MCP tools that:
 """
 
 import asyncio
+import contextvars
 import time
 import json
 import re
@@ -23,6 +24,7 @@ from pathlib import Path
 
 from langchain_classic.tools import BaseTool
 from app.utils.logging_utils import logger
+from app.mcp.tools.base import coerce_json_string_args
 from app.utils.file_utils import read_file_content
 
 # Constants for enhanced triggers
@@ -256,6 +258,10 @@ class DirectMCPTool(BaseTool):
         logger.debug(f"🔧 DirectMCPTool._run called for {self.tool_instance.name}")
         logger.debug(f"🔧 Arguments: {kwargs}")
         logger.debug(f"🔧 Tool instance: {self.tool_instance}")
+        # Some MCP transports re-stringify nested object/array args (e.g.
+        # task_card_write.root as a JSON string); builtins bypass the
+        # manager's normalize/coerce path, so normalize here at the boundary.
+        kwargs = coerce_json_string_args(self.tool_instance, kwargs)
         
         # Run the async execute method
         try:
@@ -263,8 +269,15 @@ class DirectMCPTool(BaseTool):
             if loop.is_running():
                 # Already in async context, create a task
                 import concurrent.futures
+                # Copy the current context so request-scoped ContextVars
+                # (e.g. conversation_id, project_root set in
+                # stream_with_tools) propagate into the worker thread.  A
+                # plain ThreadPoolExecutor worker does NOT inherit them,
+                # which otherwise makes context/bead/task-card tools fail
+                # with "no conversation_id is set in the request context".
+                ctx = contextvars.copy_context()
                 with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, self.tool_instance.execute(**kwargs))
+                    future = executor.submit(ctx.run, asyncio.run, self.tool_instance.execute(**kwargs))
                     result = future.result(timeout=30)
                     logger.debug(f"🔧 Got result from ThreadPoolExecutor: {type(result)}")
             else:
@@ -321,6 +334,7 @@ class DirectMCPTool(BaseTool):
     async def _arun(self, **kwargs) -> str:
         """Run the tool asynchronously."""
         try:
+            kwargs = coerce_json_string_args(self.tool_instance, kwargs)
             # Execute the tool
             result = await self.tool_instance.execute(**kwargs)
             

@@ -2285,6 +2285,11 @@ class MCPManager:
                         logger.debug(f"Permission check skipped for builtin {internal_tool_name}: {_perm_err}")
                     logger.debug(f"🔍 MCP_MANAGER: Dispatching builtin tool: {internal_tool_name}")
                     try:
+                        # builtin_map values are raw tool instances (carry
+                        # .InputSchema); normalize JSON-string object/array
+                        # args the transport may have re-stringified.
+                        from app.mcp.tools.base import coerce_json_string_args
+                        arguments = coerce_json_string_args(builtin_map[internal_tool_name], arguments)
                         result = await builtin_map[internal_tool_name].execute(**arguments)
                         # Normalize to the {"content": [{"type":"text","text":...}]} shape
                         # that wrappers' _extract_text_from_mcp_result expects.
