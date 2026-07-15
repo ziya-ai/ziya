@@ -706,6 +706,20 @@ class PdfIndex:
 
     def read_pages(self, start_page: int, end_page: int) -> List[Dict[str, Any]]:
         """Return page records for [start_page, end_page] inclusive (1-based)."""
+        # PenPal #117 [CWE-667]: ensure_full() unlinks pages.jsonl/meta.json
+        # under the per-key _BUILD_LOCKS before rebuilding, so a concurrent
+        # read here can hit a half-deleted cache (FileNotFoundError) or read a
+        # torn file. Take the SAME per-key lock so a read and a promotion never
+        # overlap. read_pages does not call ensure_full/build, so the
+        # (non-reentrant) lock cannot self-deadlock.
+        key, _ = _cache_key_for(self.path)
+        with _BUILD_LOCKS_MUTEX:
+            lock = _BUILD_LOCKS.setdefault(key, threading.Lock())
+        with lock:
+            return self._read_pages_locked(start_page, end_page)
+
+    def _read_pages_locked(self, start_page: int, end_page: int) -> List[Dict[str, Any]]:
+        """Body of read_pages. MUST hold the per-key _BUILD_LOCKS entry."""
         if start_page < 1:
             start_page = 1
         if end_page < start_page:
