@@ -82,7 +82,11 @@ class PCAPAnalysisTool(BaseMCPTool):
             logger.info(f"Analyzing PCAP file: {input_data.pcap_path}")
             result = analyze_pcap_file(
                 input_data.pcap_path,
-                operation=input_data.operation
+                operation=input_data.operation,
+                # PenPal #64 contract fix: max_packets was advertised in the
+                # InputSchema but never forwarded — the tool silently ignored
+                # a value the caller supplied. Thread it through so it's honored.
+                max_packets=input_data.max_packets,
             )
             
             if "error" in result:
