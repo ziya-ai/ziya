@@ -136,6 +136,18 @@ class MCPManager:
         # detected (old_fp is None on first connect, so no comparison runs).
         self._tool_fingerprints: Dict[str, str] = {}
         self._fingerprint_store_path = Path.home() / ".ziya" / "mcp_tool_fingerprints.json"
+        # PenPal #131 [CWE-667]: serialize the singleton's lifecycle mutators
+        # (initialize / shutdown / restart_server / the detached
+        # _cleanup_stuck_external_servers background task) so concurrent
+        # callers — e.g. two overlapping POST /api/mcp/initialize requests, or
+        # a reinitialize racing the periodic cleanup task — cannot interleave
+        # read-modify-write on self.clients / self.is_initialized (double
+        # shutdown+init, or 'dict changed size during iteration' when cleanup
+        # walks self.clients while shutdown() clears it). Created lazily: the
+        # manager is constructed by the sync get_mcp_manager() which may run
+        # before any event loop exists, and an asyncio.Lock binds to the
+        # running loop at creation time.
+        self._lifecycle_lock: Optional[asyncio.Lock] = None
         self._load_persisted_fingerprints()
         # Persistent, fingerprint-bound force-accept records: server_name ->
         # the exact tool fingerprint a human explicitly accepted via
@@ -530,7 +542,20 @@ class MCPManager:
         if deduped:
             server_env[PROJECT_WRITE_PATHS_ENV_KEY] = ",".join(deduped)
 
+    def _get_lifecycle_lock(self) -> asyncio.Lock:
+        """Return the process-wide lifecycle lock, creating it lazily on the
+        first async caller (bound to the then-running event loop). PenPal #131.
+        """
+        if self._lifecycle_lock is None:
+            self._lifecycle_lock = asyncio.Lock()
+        return self._lifecycle_lock
+
     async def initialize(self) -> bool:
+        """Acquire the lifecycle lock, then run initialization. PenPal #131."""
+        async with self._get_lifecycle_lock():
+            return await self._initialize_locked()
+
+    async def _initialize_locked(self) -> bool:
         """
         Initialize the MCP manager and connect to configured servers.
         
@@ -836,6 +861,13 @@ class MCPManager:
             return False
     
     async def _cleanup_stuck_external_servers(self):
+        """Acquire the lifecycle lock so the detached cleanup task never walks
+        self.clients while shutdown() clears it (RuntimeError: dict changed
+        size during iteration). PenPal #131 [CWE-667]."""
+        async with self._get_lifecycle_lock():
+            await self._cleanup_stuck_external_servers_locked()
+
+    async def _cleanup_stuck_external_servers_locked(self):
         """Cleanup external servers that may be stuck or unresponsive."""
         for server_name, client in self.clients.items():
             server_config = self.server_configs.get(server_name, {})
@@ -916,6 +948,11 @@ class MCPManager:
         return True
     
     async def shutdown(self):
+        """Acquire the lifecycle lock, then tear down all connections. PenPal #131."""
+        async with self._get_lifecycle_lock():
+            await self._shutdown_locked()
+
+    async def _shutdown_locked(self):
         """Shutdown all MCP connections."""
         disconnect_tasks = []
         for client in self.clients.values():
@@ -1009,6 +1046,11 @@ class MCPManager:
         return delta
 
     async def restart_server(self, server_name: str, new_config: Optional[Dict[str, Any]] = None) -> bool:
+        """Acquire the lifecycle lock, then restart one server. PenPal #131."""
+        async with self._get_lifecycle_lock():
+            return await self._restart_server_locked(server_name, new_config)
+
+    async def _restart_server_locked(self, server_name: str, new_config: Optional[Dict[str, Any]] = None) -> bool:
         """
         Restart a specific MCP server with optional new configuration.
         
