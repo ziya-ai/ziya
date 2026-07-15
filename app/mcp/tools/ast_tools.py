@@ -30,8 +30,15 @@ def _get_query_engine(file_path: Optional[str] = None):
     enhancer = _get_enhancer()
     if enhancer is None:
         return None
-    key = file_path if file_path and file_path in enhancer.query_engines else "project"
-    return enhancer.query_engines.get(key)
+    # PenPal #136 [CWE-667]: process_codebase() rebuilds enhancer.query_engines
+    # on a background reindex thread while these tool entry points read it.
+    # Snapshot the dict reference under the shared _enhancer_lock so a read
+    # sees a consistent mapping rather than one mutating mid-access.
+    from app.utils.ast_parser.integration import _enhancer_lock
+    with _enhancer_lock:
+        engines = enhancer.query_engines
+        key = file_path if file_path and file_path in engines else "project"
+        return engines.get(key)
 
 
 def _format_symbol(node) -> str:

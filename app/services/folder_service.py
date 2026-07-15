@@ -529,10 +529,15 @@ def get_cached_folder_structure(directory: str, ignored_patterns, max_depth: int
 
     directory = os.path.abspath(directory)
 
-    if directory not in _folder_cache:
-        _folder_cache[directory] = {'timestamp': 0, 'data': None, 'scan_complete': False}
-
-    cache_entry = _folder_cache[directory]
+    # PenPal #146 [CWE-667]: every other accessor of _folder_cache takes
+    # _cache_lock, but this reader initialized its slot unlocked — two
+    # concurrent first-time reads of the same directory raced the
+    # check-then-set. Guard just the slot init (not the scan below, which must
+    # not hold the lock). setdefault makes the RMW atomic under the lock.
+    with _cache_lock:
+        cache_entry = _folder_cache.setdefault(
+            directory, {'timestamp': 0, 'data': None, 'scan_complete': False}
+        )
     current_time = time.time()
     cache_age = current_time - cache_entry['timestamp']
 
