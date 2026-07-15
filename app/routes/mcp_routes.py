@@ -1152,48 +1152,11 @@ async def toggle_server(request: ServerToggleRequest):
             safe_config = None
         logger.info(f"Server config for {request.server_name}: {safe_config}")
         
-        # Update the server config
-        if request.server_name in mcp_manager.server_configs:
-            mcp_manager.server_configs[request.server_name]["enabled"] = request.enabled
-            logger.info(f"Updated {request.server_name} server enabled state to: {request.enabled}")
-        
-        # Persist the override so reinitialize doesn't undo this toggle
-        mcp_manager._server_enabled_overrides[request.server_name] = request.enabled
-
-        # Ensure shell server config exists
-        if request.server_name == "shell" and request.server_name not in mcp_manager.server_configs:
-            logger.warning("Shell server config missing, creating default config")
-            mcp_manager.server_configs["shell"] = mcp_manager.builtin_server_definitions.get("shell", {})
-        
-        if request.enabled:
-            # Restart the server with current configuration
-            server_config = mcp_manager.server_configs.get(request.server_name)
-            if server_config:
-                success = await mcp_manager.restart_server(request.server_name, server_config)
-                message = f"{request.server_name} server enabled and restarted" if success else f"Failed to restart {request.server_name} server"
-                
-                # Invalidate tools cache to ensure fresh tool list with newly enabled server tools
-                if success:
-                    mcp_manager.invalidate_tools_cache()
-            else:
-                message = f"No configuration found for {request.server_name} server"
-        else:
-            # Disable server by disconnecting it
-            if request.server_name in mcp_manager.clients:
-                await mcp_manager.clients[request.server_name].disconnect()
-                del mcp_manager.clients[request.server_name]
-                logger.info(f"{request.server_name} server disabled")
-            
-            # Update server config to mark as disabled
-            if request.server_name in mcp_manager.server_configs:
-                mcp_manager.server_configs[request.server_name]["enabled"] = False
-            
-            # Invalidate tools cache to ensure fresh tool list without disabled server tools
-            mcp_manager.invalidate_tools_cache()
-            
-            message = f"{request.server_name} server disabled"
-        
-        return {"success": True, "message": message}
+        # PenPal #131 [CWE-667] Race 1: perform the enable/disable RMW as a
+        # single locked operation in the manager, rather than mutating
+        # server_configs / _server_enabled_overrides / clients unlocked here.
+        result = await mcp_manager.set_server_enabled(request.server_name, request.enabled)
+        return result
         
     except Exception as e:
         logger.error(f"Error toggling server {request.server_name}: {e}")
