@@ -2186,6 +2186,19 @@ class MCPManager:
         # always correct regardless of which tool-invocation path is live,
         # rather than silently defaulting to the server's startup cwd.
         workspace_path = arguments.get('_workspace_path') or get_project_root_or_none()
+        # CLI/chat mode has no HTTP layer, so ProjectContextMiddleware never
+        # runs and the request-scoped ContextVar above is always None. That
+        # skips the workspace-scoped routing block below, sending shell calls
+        # to the global client whose subprocess cwd was frozen at startup —
+        # which is why /cd (which updates ZIYA_USER_CODEBASE_DIR + chdir +
+        # tears down old-root subprocesses) never actually re-roots the shell.
+        # Fall back to the env var in non-server modes: there is a single
+        # user and no concurrent-request isolation to protect, and the env
+        # var is kept current by CLIChat._switch_root on every /cd. Server
+        # mode intentionally keeps None so concurrent tabs on different
+        # projects never misroute to a stale or shared root.
+        if workspace_path is None and os.environ.get('ZIYA_MODE', 'server') != 'server':
+            workspace_path = os.environ.get('ZIYA_USER_CODEBASE_DIR')
         # ``_task_scope`` is only meaningful to the shell server today
         # (it is the additive write-grant envelope for Task Cards).
         # Preserve it on the way to the shell server, strip it for
