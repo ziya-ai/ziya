@@ -1127,6 +1127,53 @@ class MCPManager:
             logger.error(f"Error restarting server {server_name}: {str(e)}")
             return False
 
+    async def set_server_enabled(self, server_name: str, enabled: bool) -> Dict[str, Any]:
+        """Enable or disable a server as a single locked read-modify-write.
+
+        PenPal #131 [CWE-667] Race 1: the toggle route previously mutated
+        self.server_configs / self._server_enabled_overrides / self.clients
+        directly and unlocked, so two concurrent toggles (or a toggle racing
+        shutdown(), which clears self.clients) could interleave — a disable
+        doing ``del self.clients[name]`` after another path already removed it
+        raises KeyError, and the config dicts could be left inconsistent.
+
+        The whole RMW now runs under the process-wide lifecycle lock, and
+        calls the ``_locked`` internals (never the public wrappers, which
+        re-acquire the non-reentrant asyncio.Lock and would deadlock).
+        """
+        async with self._get_lifecycle_lock():
+            if server_name == "shell" and server_name not in self.server_configs:
+                self.server_configs["shell"] = self.builtin_server_definitions.get("shell", {})
+            if server_name in self.server_configs:
+                self.server_configs[server_name]["enabled"] = enabled
+            # Persist the override so a later reinitialize doesn't undo it.
+            self._server_enabled_overrides[server_name] = enabled
+
+            if enabled:
+                server_config = self.server_configs.get(server_name)
+                if not server_config:
+                    return {"success": False,
+                            "message": f"No configuration found for {server_name} server"}
+                success = await self._restart_server_locked(server_name, server_config)
+                self.invalidate_tools_cache()
+                return {
+                    "success": success,
+                    "message": (f"{server_name} server enabled and restarted"
+                                if success else f"Failed to restart {server_name} server"),
+                }
+            else:
+                # Idempotent disconnect: pop (not del) so a concurrent disable
+                # that already removed the client cannot raise KeyError.
+                client = self.clients.pop(server_name, None)
+                if client is not None:
+                    try:
+                        await client.disconnect()
+                    except (OSError, RuntimeError, asyncio.TimeoutError) as e:
+                        logger.warning(f"Error disconnecting {server_name} on disable: {e}")
+                    logger.info(f"{server_name} server disabled")
+                self.invalidate_tools_cache()
+                return {"success": True, "message": f"{server_name} server disabled"}
+
     def reauthorize_server(self, server_name: str, force: bool = False) -> Dict[str, Any]:
         """Clear a rug-pull quarantine and accept the server's current tool
         definitions as the new approved baseline (CWE-345 re-authorization).
