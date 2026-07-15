@@ -46,7 +46,10 @@ function parseSpecFromHash(): DiagramSpec | null {
 }
 
 export const DiagramRenderPage: React.FC = () => {
-    const containerRef = useRef<HTMLDivElement>(null);
+    const containerRef = useRef<HTMLDivElement | null>(null);
+    // PenPal #93 [CWE-401]: hold the active MutationObserver so unmount can
+    // disconnect it — otherwise an unmount mid-render orphans the observer.
+    const observerRef = useRef<MutationObserver | null>(null);
     const [spec, setSpec] = useState<DiagramSpec | null>(null);
     const [status, setStatus] = useState<RenderStatus>('idle');
     const [diag, setDiag] = useState<{ elapsedMs: number; lastEvent: string }>({ elapsedMs: 0, lastEvent: 'init' });
@@ -124,6 +127,7 @@ export const DiagramRenderPage: React.FC = () => {
         const safetyTimeoutMs = Math.max(1000, spec?.renderTimeoutMs ?? 30000);
 
         const observer = new MutationObserver(() => {
+            // (stored in observerRef below so unmount can disconnect it)
             const hasSvg = node.querySelector('svg');
             const hasCanvas = node.querySelector('canvas');
             const hasImage = node.querySelector('img');
@@ -152,6 +156,10 @@ export const DiagramRenderPage: React.FC = () => {
             }
         });
 
+        // PenPal #93 [CWE-401]: track the live observer so the unmount effect
+        // can disconnect it if the component unmounts before the complete/
+        // timeout paths fire (both of which also disconnect).
+        observerRef.current = observer;
         observer.observe(node, { childList: true, subtree: true, attributes: true });
 
         // Safety timeout — configurable via spec.renderTimeoutMs (default 30s).
@@ -185,6 +193,12 @@ export const DiagramRenderPage: React.FC = () => {
     useEffect(() => {
         return () => {
             if (renderTimeoutRef.current) clearTimeout(renderTimeoutRef.current);
+            // PenPal #93 [CWE-401]: disconnect an observer still live at
+            // unmount (render neither completed nor timed out yet).
+            if (observerRef.current) {
+                observerRef.current.disconnect();
+                observerRef.current = null;
+            }
         };
     }, []);
 
