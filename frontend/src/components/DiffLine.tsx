@@ -25,6 +25,18 @@ interface DiffLineProps {
 const whitespaceCache = new Map<string, string>();
 const WHITESPACE_CACHE_MAX = 5000;
 
+// PenPal #137 (CWE-400): Prism.highlight() tokenizes a whole line eagerly, and
+// its cost grows super-linearly on pathological input — a single very long
+// diff line (minified JS/CSS, an embedded data URI, a giant one-line JSON) can
+// block the main thread for seconds. Above this length we skip syntax
+// highlighting and render the line via the plain whitespace-visualized path
+// (still correct + escaped, just uncolored).
+export const MAX_HIGHLIGHT_LINE_LENGTH = 5000;
+
+/** True when a line is too long to syntax-highlight without a UI freeze. */
+export const shouldSkipHighlight = (code: string): boolean =>
+    code.length > MAX_HIGHLIGHT_LINE_LENGTH;
+
 export const DiffLine = React.memo(({
     content,
     language,
@@ -180,14 +192,29 @@ export const DiffLine = React.memo(({
                     code = content.slice(1);  // Remove just the marker
                 }
 
+                // PenPal #137: bypass Prism for pathologically long lines —
+                // tokenizing them freezes the main thread. Render the line
+                // plain (whitespace-visualized + escaped) instead of colored.
+                if (shouldSkipHighlight(code)) {
+                    const rendered = `<span class="token-line">${visualizeWhitespace(code)}</span>`;
+                    if (contentRef.current && rendered !== lastGoodRenderRef.current) {
+                        lastGoodRenderRef.current = rendered;
+                        contentRef.current.innerHTML = rendered;
+                    }
+                    if (rendered !== highlighted) {
+                        setHighlighted(rendered);
+                    }
+                    setIsLoading(false);
+                    return;
+                }
+
                 // Highlight the code with Prism
                 const grammar = window.Prism.languages[language] || window.Prism.languages.plaintext;
                 let highlightedCode = window.Prism.highlight(code, grammar, language);
 
-                // Apply whitespace visualization after syntax highlighting
-                highlightedCode = visualizeWhitespace(highlightedCode);
-
                 if (highlightedCode.includes('<span class="token')) {
+                    // Apply whitespace visualization after syntax highlighting
+                    highlightedCode = visualizeWhitespace(highlightedCode);
                     if (contentRef.current) {
                         contentRef.current.innerHTML = highlightedCode;
                         lastGoodRenderRef.current = highlightedCode;
@@ -196,24 +223,16 @@ export const DiffLine = React.memo(({
                     return;
                 }
 
-                // If highlighting failed or produced no tokens, fallback to escaping
-                const escapedCode = code.replace(/[<>]/g, c => ({
-                    '<': '&lt;',
-                    '>': '&gt;'
-                })[c] || c);
-                const rendered = `${escapedCode}`;
+                // No tokens produced (e.g. plaintext fallback). Prism.highlight
+                // already HTML-encodes '&' and '<' in its output, so feeding it
+                // to visualizeWhitespace (which escapes again via escapeHtml)
+                // would double-escape and render a literal "&lt;". Escape the
+                // raw code exactly once via visualizeWhitespace instead.
+                const rendered = `<span class="token-line">${visualizeWhitespace(code)}</span>`;
                 if (contentRef.current && rendered !== lastGoodRenderRef.current) {
                     lastGoodRenderRef.current = rendered;
-                    setHighlighted(visualizeWhitespace(rendered));
+                    setHighlighted(rendered);
                     contentRef.current.innerHTML = rendered;
-                }
-
-                // Wrap the highlighted code in a span to preserve Prism classes
-                highlightedCode = `<span class="token-line">${highlightedCode}</span>`;
-
-                if (contentRef.current) {
-                    contentRef.current.innerHTML = highlightedCode;
-                    lastGoodRenderRef.current = highlightedCode;
                 }
                 setIsLoading(false);
             } catch (error) {
