@@ -11,17 +11,23 @@ import os
 import re
 import glob
 import time
+import signal
 import shlex
 from typing import Dict, Any, Optional
 
 # Shell keywords that begin compound constructs requiring a shell interpreter
-_COMPOUND_STARTERS = frozenset({'for', 'while', 'until', 'if', 'case', 'select'})
+# '{' begins a brace group ({ cmd; }); it is only ever a standalone first
+# token in group syntax (brace expansion like {a,b} or ${VAR} never appears
+# as a bare first word), so routing it to the compound-body validator is safe.
+_COMPOUND_STARTERS = frozenset({'for', 'while', 'until', 'if', 'case', 'select', '{'})
 
 # All shell keywords (structural tokens that are never standalone executables)
 _SHELL_KEYWORDS = frozenset({
     'for', 'while', 'until', 'if', 'then', 'else', 'elif', 'fi',
     'do', 'done', 'case', 'esac', 'in', 'select',
     'function', 'return', 'break', 'continue',
+    # Brace-group delimiters — grouped commands: { cmd1; cmd2; }
+    '{', '}',
 })
 
 # Environment-variable assignments that may legitimately appear as a
@@ -59,6 +65,57 @@ def _clean_child_env(extra: dict | None = None) -> dict:
     if extra:
         env.update(extra)
     return env
+
+
+def _popen_group(argv: list, timeout: float, cwd: Optional[str],
+                 env: Optional[dict] = None, input_data: Optional[str] = None,
+                 stdout=subprocess.PIPE, stderr=subprocess.PIPE) -> subprocess.CompletedProcess:
+    """Run *argv* in its own process group, killing the whole group on timeout.
+
+    This server is a single-threaded request loop: while a command runs,
+    no other request is serviced.  ``subprocess.run`` blocks until the
+    stdout/stderr pipes reach EOF — and on timeout it kills only the
+    direct child, then drains the pipes with a ``communicate()`` that has
+    NO timeout.  A grandchild (backgrounded process, or anything spawned
+    by the child) inherits the pipe write-ends, survives the kill, and
+    wedges that drain — and therefore the whole server — until it happens
+    to exit.  Running the child in a new session lets us kill the entire
+    process group on timeout so the pipes close and the server recovers
+    immediately.
+    """
+    proc = subprocess.Popen(
+        argv,
+        # stdin=DEVNULL unless we're feeding pipe data: our stdin is the
+        # parent's JSON-RPC pipe and must never leak to children.
+        stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
+        stdout=stdout,
+        stderr=stderr,
+        text=True,
+        env=env if env is not None else _clean_child_env(),
+        cwd=cwd,
+        start_new_session=True,
+    )
+    try:
+        out, err = proc.communicate(input=input_data, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            # Group already gone, or a setuid grandchild we can't signal.
+            pass
+        try:
+            # Reap the child and drain pipes; with the group dead this
+            # returns promptly.  Bounded as a last-resort safety net.
+            proc.communicate(timeout=5)
+        except Exception:
+            proc.kill()
+        raise
+    return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
+
+
+def _run_sh_group(command: str, timeout: float, cwd: Optional[str]) -> subprocess.CompletedProcess:
+    """Run *command* via ``sh -c`` in its own process group (see _popen_group)."""
+    return _popen_group(['sh', '-c', command], timeout, cwd)
 
 
 def _consume_assignment_with_subst(segment: str) -> str | None:
@@ -299,6 +356,13 @@ class ShellServer:
         
         # Hard ceiling for model-requested timeouts (matches TOOL_EXEC_TIMEOUT in streaming_tool_executor)
         self.max_timeout = int(os.environ.get('MAX_COMMAND_TIMEOUT', '300'))
+
+        # Hard ceiling on captured command output returned to the caller.
+        # communicate() buffers a child's entire stdout/stderr in memory, and
+        # that text is then handed to the model context — a command emitting
+        # hundreds of MB (a runaway `cat`/`find`, a huge log) would bloat both.
+        # Bound the *returned* output (head+tail kept) with an explicit marker.
+        self.max_output_bytes = int(os.environ.get('ZIYA_MAX_SHELL_OUTPUT_BYTES', str(512 * 1024)))
         
         # Default pattern for commands: command name followed by optional arguments
         self.default_command_pattern = r"^{cmd}(\s+.*)?$"
@@ -336,7 +400,7 @@ class ShellServer:
 
         # Add git operations if enabled
         if self.git_operations_enabled:
-            safe_git_ops = self._scope_env.get('SAFE_GIT_OPERATIONS', 'status,log,show,diff,branch,remote,ls-files,blame').split(',')
+            safe_git_ops = self._scope_env.get('SAFE_GIT_OPERATIONS', 'status,log,show,diff,branch,remote,ls-files,blame,cat-file,check-ignore').split(',')
             safe_git_ops = [op.strip() for op in safe_git_ops if op.strip()]
             
             self.git_patterns = {
@@ -350,10 +414,13 @@ class ShellServer:
                 'ls-files': r'^git\s+ls-files(\s+.*)?$',
                 'ls-tree': r'^git\s+ls-tree(\s+.*)?$',
                 'blame': r'^git\s+blame(\s+.*)?$',
+                'cat-file': r'^git\s+cat-file(\s+.*)?$',
+                'check-ignore': r'^git\s+check-ignore(\s+.*)?$',
                 'tag': r'^git\s+tag(\s+(?!-[dD]|--delete).*)?$',  # Allow tag listing, not deletion
                 'stash list': r'^git\s+stash\s+list(\s+.*)?$',
                 'reflog': r'^git\s+reflog(\s+.*)?$',
                 'rev-parse': r'^git\s+rev-parse(\s+.*)?$',
+                'rev-list': r'^git\s+rev-list(\s+.*)?$',
                 'describe': r'^git\s+describe(\s+.*)?$',
                 'shortlog': r'^git\s+shortlog(\s+.*)?$',
                 'whatchanged': r'^git\s+whatchanged(\s+.*)?$',
@@ -570,14 +637,15 @@ class ShellServer:
     def _extract_redirections(args: list) -> tuple:
         """Extract shell-style redirections from tokenized args.
 
-        Returns (cleaned_args, subprocess_kwargs) where subprocess_kwargs
-        contains stdout/stderr overrides for subprocess.run().
+        Returns (cleaned_args, redir_spec).  redir_spec maps 'stdout' /
+        'stderr' to either a subprocess constant (STDOUT / DEVNULL) or a
+        ('file', path, mode) tuple for plain-file targets; the caller
+        opens the file, resolving relative paths against the segment cwd.
 
-        Supported redirections:
-          2>&1           -> stderr=subprocess.STDOUT
-          2>/dev/null    -> stderr=subprocess.DEVNULL
-          >/dev/null     -> stdout=subprocess.DEVNULL
-          1>/dev/null    -> stdout=subprocess.DEVNULL
+        Supported forms (fused ``>target`` or split ``> target``):
+          2>&1                        -> stderr=subprocess.STDOUT
+          [1|2]>/dev/null             -> DEVNULL
+          [1|2]> file, [1|2]>> file   -> ('file', path, 'w'|'a')
         """
         cleaned = []
         kwargs = {}
@@ -588,25 +656,32 @@ class ShellServer:
                 skip_next = False
                 continue
 
-            # 2>&1  (may appear as one token or shlex may keep it as-is)
-            if arg == '2>&1':
-                kwargs['stderr'] = subprocess.STDOUT
-            # 2>/dev/null  — single token
-            elif arg == '2>/dev/null':
-                kwargs['stderr'] = subprocess.DEVNULL
-            # 2> /dev/null — split across two tokens
-            elif arg == '2>' and i + 1 < len(args) and args[i + 1] == '/dev/null':
-                kwargs['stderr'] = subprocess.DEVNULL
-                skip_next = True
-            # >/dev/null or 1>/dev/null — single token
-            elif arg in ('>/dev/null', '1>/dev/null'):
-                kwargs['stdout'] = subprocess.DEVNULL
-            # > /dev/null or 1> /dev/null — split across two tokens
-            elif arg in ('>', '1>') and i + 1 < len(args) and args[i + 1] == '/dev/null':
-                kwargs['stdout'] = subprocess.DEVNULL
-                skip_next = True
-            else:
+            m = re.match(r'^([12]?)(>>|>)(.*)$', arg)
+            if not m:
                 cleaned.append(arg)
+                continue
+
+            fd, op, target = m.group(1) or '1', m.group(2), m.group(3)
+            if not target:
+                if i + 1 >= len(args):
+                    # Trailing bare redirection with no target — literal
+                    cleaned.append(arg)
+                    continue
+                target = args[i + 1]
+                skip_next = True
+
+            key = 'stdout' if fd == '1' else 'stderr'
+            if target.startswith('&'):
+                if fd == '2' and op == '>' and target == '&1':
+                    kwargs['stderr'] = subprocess.STDOUT
+                else:
+                    # Unsupported fd-dup form (e.g. >&2) — pass through
+                    cleaned.append(arg)
+                continue
+            if target == '/dev/null':
+                kwargs[key] = subprocess.DEVNULL
+            else:
+                kwargs[key] = ('file', target, 'a' if op == '>>' else 'w')
 
         return cleaned, kwargs
 
@@ -622,11 +697,13 @@ class ShellServer:
             if not args:
                 return ""
             try:
-                r = subprocess.run(
-                    args, shell=False, capture_output=True, text=True,
-                    timeout=timeout,
+                # _popen_group: stdin=DEVNULL (protocol-pipe protection) and
+                # a dedicated process group so a grandchild can't hold the
+                # capture pipes — and the server — hostage past the timeout.
+                r = _popen_group(
+                    args, timeout,
+                    cwd if cwd and os.path.isdir(cwd) else None,
                     env=_clean_child_env(extra_env),
-                    cwd=cwd if cwd and os.path.isdir(cwd) else None,
                 )
                 return r.stdout.rstrip("\n")
             except Exception as exc:
@@ -695,16 +772,15 @@ class ShellServer:
 
         # Compound shell constructs (for/while/if/case/select) require a
         # shell interpreter — they aren't standalone executables.
+        # stdin=DEVNULL on both sh -c routes below: our stdin is the MCP
+        # JSON-RPC pipe. Without it, any construct that reads stdin (e.g. a
+        # ``while read`` loop) steals and corrupts the protocol stream,
+        # wedging every concurrent call until the child exits.
+        # _run_sh_group also isolates the shell in its own process group
+        # so a timed-out grandchild cannot hold the pipes (and the server)
+        # hostage past the timeout.
         if self._is_compound_command(command):
-            return subprocess.run(
-                ['sh', '-c', command],
-                shell=False,
-                env=_clean_child_env(),
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=effective_cwd,
-            )
+            return _run_sh_group(command, timeout, effective_cwd)
 
         # Heredoc redirection (cmd <<EOF ... EOF) also requires a real
         # shell: the manual orchestrator below runs each segment with
@@ -714,16 +790,10 @@ class ShellServer:
         # command to sh -c does not widen the executable surface — and
         # is_command_allowed has already validated every command segment
         # (with bodies stripped) before we reach here.
+        # (Heredoc bodies are fed by sh from the -c string itself, so the
+        # outer process never needs our stdin — DEVNULL is safe.)
         if _has_heredoc(command):
-            return subprocess.run(
-                ['sh', '-c', command],
-                shell=False,
-                env=_clean_child_env(),
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                cwd=effective_cwd,
-            )
+            return _run_sh_group(command, timeout, effective_cwd)
 
         last_result = None
         accumulated_stdout = ""
@@ -790,28 +860,61 @@ class ShellServer:
             if operator == "|" and last_result:
                 stdin_data = last_result.stdout
 
-            # Build subprocess kwargs, letting explicit redirections override defaults
-            run_kwargs = dict(
-                shell=False, capture_output=False, text=True,
-                timeout=timeout, cwd=effective_cwd, input=stdin_data,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                env=_clean_child_env(),
-            )
-            # Merge any peeled env assignments onto the parent env for
-            # this segment only.  Each segment in the pipeline gets its
-            # own merged copy — assignments do not leak across segments.
-            if segment_env:
-                run_kwargs['env'] = _clean_child_env(segment_env)
-            run_kwargs.update(redir_kwargs)
+            # Open plain-file redirection targets (('file', path, mode)
+            # specs from _extract_redirections).  Targets were already
+            # validated by the write-policy layer at request time.
+            open_files = []
 
-            last_result = subprocess.run(
-                args, **run_kwargs,
-            )
+            def _resolve_redir(spec):
+                if isinstance(spec, tuple) and spec[0] == 'file':
+                    path = os.path.expanduser(spec[1])
+                    if not os.path.isabs(path) and effective_cwd:
+                        path = os.path.join(effective_cwd, path)
+                    handle = open(path, spec[2])
+                    open_files.append(handle)
+                    return handle
+                return spec
+
+            try:
+                stdout_target = _resolve_redir(redir_kwargs.get('stdout', subprocess.PIPE))
+                stderr_target = _resolve_redir(redir_kwargs.get('stderr', subprocess.PIPE))
+            except OSError as exc:
+                for handle in open_files:
+                    handle.close()
+                last_result = subprocess.CompletedProcess(
+                    args=args, returncode=1, stdout='',
+                    stderr=f'cannot open redirection target: {exc}\n',
+                )
+                accumulated_stderr += last_result.stderr
+                continue
+
+            # _popen_group: stdin=DEVNULL unless piping (protocol-pipe
+            # protection) and a dedicated process group so a grandchild
+            # can't hold the pipes — and the server — hostage past the
+            # timeout.  Segments with VAR=value prefixes get their own
+            # merged env copy; assignments don't leak across segments.
+            # Explicit redirections override the PIPE defaults.
+            try:
+                last_result = _popen_group(
+                    args, timeout, effective_cwd,
+                    env=_clean_child_env(segment_env) if segment_env else None,
+                    input_data=stdin_data,
+                    stdout=stdout_target,
+                    stderr=stderr_target,
+                )
+            finally:
+                for handle in open_files:
+                    handle.close()
 
             # Check if the next segment will pipe from this one
             next_is_pipe = (idx + 1 < len(segments) and segments[idx + 1][0] == "|")
-            if operator == "|" or next_is_pipe:
-                # In a pipe, only keep stderr; stdout feeds the next stage
+            if next_is_pipe:
+                # A middle/first stage of a pipe: its stdout feeds the next
+                # stage via stdin_data, not the caller. Only keep stderr.
+                # (A segment whose *own* operator is "|" but whose next
+                # segment does NOT continue the pipe is the pipe's FINAL
+                # stage -- its stdout is real, final output and must be
+                # captured below, not withheld.)
                 accumulated_stderr += last_result.stderr or ""
             else:
                 accumulated_stdout += last_result.stdout or ""
@@ -823,14 +926,34 @@ class ShellServer:
                 stdout="", stderr="No executable segments",
             )
 
-        # For pipes, the final stage's stdout is the pipeline output
-        if any(op == "|" for op, _ in segments):
-            accumulated_stdout += last_result.stdout or ""
-
         return subprocess.CompletedProcess(
             args=command, returncode=last_result.returncode,
-            stdout=accumulated_stdout, stderr=accumulated_stderr,
+            stdout=self._bound_output(accumulated_stdout),
+            stderr=self._bound_output(accumulated_stderr),
         )
+
+    def _bound_output(self, text: str) -> str:
+        """Cap captured output at ``max_output_bytes``, preserving the head and
+        tail with a truncation marker in between.
+
+        communicate() has already buffered the full child output in memory by
+        the time we get here, so this does not prevent a child from producing
+        huge output — it bounds what is *returned* to the caller (and thence to
+        the model context), which is the resource that actually matters. Head
+        and tail are both kept because the start (what ran) and end (the result
+        / error) are the diagnostically useful parts. Measured in UTF-8 bytes so
+        the bound is independent of multibyte content.
+        """
+        limit = self.max_output_bytes
+        if limit <= 0:
+            return text
+        encoded = text.encode("utf-8", errors="replace")
+        if len(encoded) <= limit:
+            return text
+        head = encoded[: limit // 2].decode("utf-8", errors="ignore")
+        tail = encoded[-(limit // 2):].decode("utf-8", errors="ignore")
+        omitted = len(encoded) - (limit // 2) * 2
+        return f"{head}\n\n[... {omitted} bytes of output truncated ...]\n\n{tail}"
 
     def _split_by_shell_operators(self, command: str) -> list[tuple[str, str]]:
         """
