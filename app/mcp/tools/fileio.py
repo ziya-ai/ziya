@@ -289,7 +289,18 @@ class FileReadTool(BaseMCPTool):
             pass
 
         try:
-            text = resolved.read_text(encoding="utf-8", errors="replace")
+            # Bound the read so a pathologically large file cannot exhaust
+            # memory (PenPal #96, CWE-400). read_text() slurps the entire file
+            # into memory before the offset/limit slice below ever runs; read
+            # at most _MAX_READ_BYTES+1 bytes (the +1 only detects overflow)
+            # and flag truncation instead.
+            _MAX_READ_BYTES = int(os.environ.get("ZIYA_MAX_FILE_READ_BYTES", str(16 * 1024 * 1024)))
+            with open(resolved, "rb") as _fh:
+                raw = _fh.read(_MAX_READ_BYTES + 1)
+            byte_truncated = len(raw) > _MAX_READ_BYTES
+            if byte_truncated:
+                raw = raw[:_MAX_READ_BYTES]
+            text = raw.decode("utf-8", errors="replace")
         except Exception as exc:
             return {"error": True, "message": f"Cannot read {path_str}: {exc}"}
 
@@ -306,6 +317,8 @@ class FileReadTool(BaseMCPTool):
         meta = f"{total_lines} total lines"
         if truncated:
             meta += f", showing lines {start + 1}–{min(end, total_lines)}"
+        if byte_truncated:
+            meta += f" (file exceeded {_MAX_READ_BYTES:,}-byte read cap; content truncated)"
 
         return {"content": content, "metadata": meta, "path": path_str}
 
