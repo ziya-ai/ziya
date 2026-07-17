@@ -581,6 +581,68 @@ def extract_document_text(file_path: str) -> Optional[str]:
     
     return extracted_text
 
+# ZIP-bomb / oversized-document guards (PenPal #80/#81 [CWE-502/400], #76).
+# Office formats (.docx/.xlsx/.pptx) are ZIP containers whose central
+# directory declares each member's *uncompressed* size — a small file can
+# claim gigabytes, OOMing the parser on open. PDFs and everything else are
+# bounded by an on-disk size cap (the large-PDF RAG stub path in
+# extract_pdf_text handles the common big-but-legitimate PDF case first).
+# All limits are env-overridable; a non-positive value disables that check.
+_MAX_DOCUMENT_DISK_BYTES = int(os.environ.get("ZIYA_MAX_DOCUMENT_DISK_BYTES", str(200 * 1024 * 1024)))
+_MAX_ZIP_UNCOMPRESSED_BYTES = int(os.environ.get("ZIYA_MAX_ZIP_UNCOMPRESSED_BYTES", str(1024 * 1024 * 1024)))
+_MAX_ZIP_COMPRESSION_RATIO = int(os.environ.get("ZIYA_MAX_ZIP_COMPRESSION_RATIO", "200"))
+
+_ZIP_CONTAINER_EXTS = frozenset({'.docx', '.xlsx', '.pptx'})
+
+
+def _check_document_safe_to_extract(file_path: str, ext: str) -> Optional[str]:
+    """Return a human-readable rejection reason if *file_path* is unsafe to
+    extract, or None if it is within bounds.
+
+    Two guards:
+      1. On-disk size cap for every format (cheap stat, catches a plainly
+         oversized file before any parser touches it).
+      2. For ZIP-container Office formats, sum the central directory's
+         declared *uncompressed* sizes and check the compression ratio, so a
+         zip bomb is refused before the parser inflates it into memory.
+    """
+    try:
+        disk_size = os.path.getsize(file_path)
+    except OSError:
+        return None  # let the extractor surface the real I/O error
+
+    if _MAX_DOCUMENT_DISK_BYTES > 0 and disk_size > _MAX_DOCUMENT_DISK_BYTES:
+        return (
+            f"file is {disk_size:,} bytes on disk, exceeding the "
+            f"{_MAX_DOCUMENT_DISK_BYTES:,}-byte extraction cap"
+        )
+
+    if ext in _ZIP_CONTAINER_EXTS:
+        import zipfile
+        try:
+            with zipfile.ZipFile(file_path) as zf:
+                total_uncompressed = sum(i.file_size for i in zf.infolist())
+        except zipfile.BadZipFile:
+            return None  # not a valid zip — let the parser report it
+        except OSError:
+            return None
+
+        if _MAX_ZIP_UNCOMPRESSED_BYTES > 0 and total_uncompressed > _MAX_ZIP_UNCOMPRESSED_BYTES:
+            return (
+                f"archive declares {total_uncompressed:,} bytes uncompressed, "
+                f"exceeding the {_MAX_ZIP_UNCOMPRESSED_BYTES:,}-byte cap "
+                f"(possible zip bomb)"
+            )
+        if (_MAX_ZIP_COMPRESSION_RATIO > 0 and disk_size > 0
+                and total_uncompressed / disk_size > _MAX_ZIP_COMPRESSION_RATIO):
+            return (
+                f"archive compression ratio "
+                f"{total_uncompressed / disk_size:.0f}:1 exceeds the "
+                f"{_MAX_ZIP_COMPRESSION_RATIO}:1 cap (possible zip bomb)"
+            )
+    return None
+
+
 def _extract_document_text_impl(file_path: str) -> Optional[str]:
     """
     Internal implementation of document text extraction.
@@ -602,6 +664,13 @@ def _extract_document_text_impl(file_path: str) -> Optional[str]:
     logger.debug(f"Attempting to extract text from document: {file_path}")
     
     ext = os.path.splitext(file_path)[1].lower()
+
+    # Refuse oversized files / zip bombs before handing to any parser
+    # (PenPal #80/#81/#76). Returns a reason string when unsafe.
+    _unsafe = _check_document_safe_to_extract(file_path, ext)
+    if _unsafe:
+        logger.warning(f"Refusing to extract {file_path}: {_unsafe}")
+        return None
     
     if ext == '.pdf':
         logger.debug(f"Processing PDF file: {file_path}")
