@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Any
 
 import httpx
 import json
+from app.utils.http_bounded import fetch_json_bounded
 
 from app.mcp.registry.interface import (
     RegistryProvider, RegistryServiceInfo, RegistryTool, ToolSearchResult,
@@ -77,10 +78,9 @@ class PulseMCPRegistryProvider(RegistryProvider):
             
             # Fetch with latest version filter
             params = {'version': 'latest'}
-            response = await client.get(url, params=params)
-            response.raise_for_status()
-            
-            data = response.json()
+            # Bounded read (PenPal #112, CWE-400): stream + abort past the cap
+            # so a misbehaving registry can't drive unbounded memory growth.
+            data = await fetch_json_bounded(client, url, params=params)
             servers = data.get('servers', [])
             
             logger.info(f"PulseMCP: Fetched {len(servers)} servers from official registry")

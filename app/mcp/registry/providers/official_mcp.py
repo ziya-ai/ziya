@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Any, Tuple
 
 import httpx
 
+from app.utils.http_bounded import fetch_json_bounded
 from app.mcp.registry.interface import (
     RegistryProvider, RegistryServiceInfo, RegistryTool, ToolSearchResult,
     InstallationResult, ServiceStatus, SupportLevel, InstallationType
@@ -230,10 +231,8 @@ class OfficialMCPRegistryProvider(RegistryProvider):
             params['limit'] = min(max_results, 100)  # API max is 100
             
             client = self._get_http_client()
-            response = await client.get(url, params=params)
-            response.raise_for_status()
-            
-            data = response.json()
+            # Bounded read (PenPal #114, CWE-400): stream + abort past the cap.
+            data = await fetch_json_bounded(client, url, params=params)
             
             # Handle both old format and new cursor-based format
             if 'servers' in data:
