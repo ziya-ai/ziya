@@ -46,6 +46,11 @@ class ZiyaASTEnhancer:
         self.project_ast = UnifiedAST()
         self.UnifiedAST = UnifiedAST  # Store reference for re-initialization
         self.resolution_estimates = {}
+        # PenPal #133 (CWE-400): cache the resolution estimates. They are a pure
+        # function of ast_cache contents (each GET /api/ast/resolutions otherwise
+        # regenerates the FULL AST context for all 5 resolution levels). Reset to
+        # None whenever ast_cache is rebuilt (process_codebase), recomputed lazily.
+        self._estimates_cache: Optional[Dict[str, Dict[str, Any]]] = None
     
     def _register_parsers(self):
         """Register available parsers."""
@@ -221,6 +226,9 @@ class ZiyaASTEnhancer:
         Returns:
             Dict containing AST processing results
         """
+        # ast_cache is about to change, so any cached resolution estimates
+        # (PenPal #133) are stale — drop them; next request recomputes once.
+        self._estimates_cache = None
         # Import gitignore utilities
         from app.utils.gitignore_parser import parse_gitignore_patterns
         from app.utils.directory_util import get_ignored_patterns
@@ -321,6 +329,13 @@ class ZiyaASTEnhancer:
         Returns:
             Dictionary mapping resolution levels to their estimated sizes
         """
+        # PenPal #133 (CWE-400): serve the memoized estimates when the AST cache
+        # hasn't changed since they were computed. process_codebase() resets
+        # _estimates_cache to None on every rebuild, so a stale result is never
+        # served; the expensive all-levels regeneration below runs at most once
+        # per index instead of on every GET /api/ast/resolutions.
+        if self._estimates_cache is not None:
+            return self._estimates_cache
         estimates = {}
         
         for resolution_name, settings in self.resolution_settings.items():
@@ -353,6 +368,7 @@ class ZiyaASTEnhancer:
             self.ast_resolution = original_resolution
         
         self.resolution_estimates = estimates
+        self._estimates_cache = estimates
         return estimates
     
     def generate_ast_context(self) -> str:
