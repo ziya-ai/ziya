@@ -543,8 +543,15 @@ async def reorganize(store=None) -> Dict[str, Any]:
         stamp_interference_scores,
     )
     try:
-        for node in store.list_mindmap_nodes():
-            results["cross_links"].extend(discover_cross_links(store, node.id))
+        # PenPal #53: load the node list once and share a branch-id cache across
+        # the whole pass so each discover_cross_links call is O(candidates), not
+        # O(n) disk reads — turning the loop from O(n^2) I/O into O(n).
+        _nodes = store.list_mindmap_nodes()
+        _branch_cache: Dict[str, Any] = {}
+        for node in _nodes:
+            results["cross_links"].extend(
+                discover_cross_links(store, node.id, node_list=_nodes,
+                                     branch_cache=_branch_cache))
     except Exception as e:
         logger.error(f"Cross-link discovery failed: {e}")
 

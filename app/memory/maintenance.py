@@ -553,20 +553,49 @@ def discover_cross_links_by_embedding(store, node_id: str, centroid_cache=None) 
     return added
 
 
-def discover_cross_links(store, node_id: str) -> List[Tuple[str, str]]:
+def discover_cross_links(
+    store,
+    node_id: str,
+    node_list: Optional[List["MindMapNode"]] = None,
+    branch_cache: Optional[Dict[str, Set[str]]] = None,
+) -> List[Tuple[str, str]]:
     """Find nodes in other branches that share tags with this node.
 
     Returns list of (node_id, linked_node_id) pairs that were added.
+
+    PenPal #53 (CWE-400, O(n^2) memory maintenance): whole-corpus callers
+    (``cleanup_corpus``, the ``/api/memory`` maintenance pass) invoke this once
+    per node inside their own node loop. Each call re-listed every node from
+    disk (``list_mindmap_nodes`` → JSON read + decrypt) and recomputed
+    ``_same_branch_ids`` (up to ~40 ``get_mindmap_node`` disk reads), making the
+    pass O(n^2) in disk I/O + decryptions. Two optional injected caches let the
+    caller amortize that shared work across the loop — mirroring how
+    ``discover_cross_links_by_embedding`` already takes a shared centroid cache:
+
+      - ``node_list``: a preloaded candidate list (tags are immutable during a
+        cross-link pass, so a cached list is safe; ``cross_links`` writes are
+        ``set()``-guarded, so a stale ``other`` at worst causes a redundant
+        idempotent save, never an incorrect link).
+      - ``branch_cache``: memoizes ``_same_branch_ids`` per node id.
+
+    Both default to ``None`` (self-contained per-call behavior) so single-node
+    callers (``run_post_save_maintenance``) are unchanged.
     """
     node = store.get_mindmap_node(node_id)
     if not node or not node.tags:
         return []
 
     node_tags = {t.lower() for t in node.tags}
-    all_nodes = store.list_mindmap_nodes()
+    all_nodes = node_list if node_list is not None else store.list_mindmap_nodes()
     added: List[Tuple[str, str]] = []
 
-    same_branch = _same_branch_ids(store, node_id)
+    if branch_cache is not None:
+        same_branch = branch_cache.get(node_id)
+        if same_branch is None:
+            same_branch = _same_branch_ids(store, node_id)
+            branch_cache[node_id] = same_branch
+    else:
+        same_branch = _same_branch_ids(store, node_id)
 
     for other in all_nodes:
         if other.id in same_branch:

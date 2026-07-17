@@ -200,10 +200,15 @@ async def run_maintenance():
     store = get_memory_storage()
     results = {"divided": [], "cross_linked": []}
     _centroids = {}
-    for node in store.list_mindmap_nodes():
+    # PenPal #53: share the node list + branch cache across the loop so the
+    # tag-overlap cross-linker is O(n) disk reads instead of O(n^2).
+    _nodes = store.list_mindmap_nodes()
+    _branch_cache = {}
+    for node in _nodes:
         divided = maybe_divide_node(store, node.id)
         results["divided"].extend(divided)
-        links = discover_cross_links(store, node.id)
+        links = discover_cross_links(store, node.id, node_list=_nodes,
+                                     branch_cache=_branch_cache)
         results["cross_linked"].extend(links)
         results["cross_linked"].extend(
             discover_cross_links_by_embedding(store, node.id, _centroids))
