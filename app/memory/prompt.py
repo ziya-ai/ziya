@@ -129,6 +129,38 @@ def get_memory_activation_directive() -> str:
     )
 
 
+def _audit_memory_injection(conversation_id, memory_ids) -> None:
+    """NF-010: emit a 'memory_injected' activation record (LPCI Phase 3 —
+    Trigger) for memory ids injected into a conversation's system prompt for
+    the FIRST time.
+
+    Flag-gated behind the same forensic switch as NF-006/008
+    (ZIYA_AUDIT_CONTEXT_SNAPSHOT env, or an enterprise config provider's
+    should_capture_audit_context()) since injection is per-turn-frequent and
+    only matters during incident reconstruction.  "New" ids are computed from
+    the feedback seen-set, so this MUST be called BEFORE record_load updates
+    that set — yielding one record per memory per conversation, not per turn.
+    Never raises: activation audit must never break prompt assembly.
+    """
+    try:
+        from app.utils.audit_context import is_context_capture_enabled
+        if not (conversation_id and is_context_capture_enabled()):
+            return
+        from app.memory.feedback import get_loaded_memory_ids
+        seen = get_loaded_memory_ids(conversation_id)
+        new = [i for i in memory_ids if i not in seen]
+        if not new:
+            return
+        from app.utils.tool_audit_log import log_security_event
+        log_security_event(
+            "memory_injected",
+            source_tool="memory_prompt",
+            details={"memory_ids": new, "conversation": conversation_id[:12], "count": len(new)},
+        )
+    except Exception:
+        pass  # Activation audit must never break prompt assembly
+
+
 def get_memory_prompt_section() -> str:
     """
     Build the memory context block for the system prompt.
@@ -201,7 +233,12 @@ def get_memory_prompt_section() -> str:
             try:
                 from app.memory.feedback import record_load
                 from app.context import get_conversation_id_or_none
-                record_load(get_conversation_id_or_none(), [m.id for m in core])
+                _cid = get_conversation_id_or_none()
+                _core_ids = [m.id for m in core]
+                # NF-010: emit a first-injection activation record BEFORE
+                # record_load updates the per-conversation seen-set.
+                _audit_memory_injection(_cid, _core_ids)
+                record_load(_cid, _core_ids)
             except Exception:
                 pass  # Non-fatal
             by_layer: dict[str, list] = {}
