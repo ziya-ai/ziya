@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Any
 
 import httpx
 
+from app.utils.http_bounded import read_status_and_bounded_bytes
 from app.mcp.registry.interface import (
     RegistryProvider, RegistryServiceInfo, RegistryTool, ToolSearchResult,
     InstallationResult, ServiceStatus, SupportLevel, InstallationType
@@ -79,17 +80,16 @@ class AwesomeListRegistryProvider(RegistryProvider):
             
             # Fetch raw README
             url = f"https://raw.githubusercontent.com/{repo}/master/README.md"
-            response = await client.get(url)
-            
-            # Try 'main' branch if 'master' fails
-            if response.status_code == 404:
+            # Bounded read (PenPal #112, CWE-400): stream + abort past the cap so
+            # a huge/hostile README can't drive unbounded memory growth. Keep
+            # the master→main 404 fallback by inspecting status before the body.
+            status, body = await read_status_and_bounded_bytes(client, "GET", url)
+            if status == 404:
                 url = f"https://raw.githubusercontent.com/{repo}/main/README.md"
-                response = await client.get(url)
-            
-            response.raise_for_status()
-            
-            
-            return self._parse_markdown_list(response.text, repo)
+                status, body = await read_status_and_bounded_bytes(client, "GET", url)
+            if status >= 400:
+                raise RuntimeError(f"HTTP {status} fetching awesome list {repo}")
+            return self._parse_markdown_list(body.decode("utf-8", errors="replace"), repo)
             
         except Exception as e:
             logger.error(f"Error fetching awesome list {repo}: {e}")
