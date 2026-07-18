@@ -141,3 +141,67 @@ def log_tool_execution(
             pass  # Best-effort
     except Exception:
         pass  # Audit logging must never break the main flow
+
+
+def log_security_event(
+    event_name: str,
+    source_tool: str = "unknown",
+    details: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Append a single security-detection event to the audit trail.
+
+    Unlike ``log_tool_execution`` (which records *what tool ran*), this
+    records *what defensive control fired* — e.g. hidden-character
+    stripping or an injection-pattern match.  Events are written to a
+    dedicated ``security_<date>.jsonl`` file in the same ~/.ziya/audit/
+    directory so defenders can query injection attempts in isolation
+    from general tool-execution noise (NF-009).
+
+    Same operational contract as ``log_tool_execution``:
+    - Never raises (catches internally)
+    - Truncates large values to keep entries bounded
+    - Restricts the file to owner-only (0600)
+
+    Args:
+        event_name:  Short machine-readable event id, e.g.
+                     "hidden_chars_stripped" or "injection_pattern_detected".
+        source_tool: Name of the tool whose output triggered the control.
+        details:     Optional structured context (char class, count,
+                     matched pattern, etc.). String values are truncated.
+    """
+    log_dir = _ensure_log_dir()
+    if log_dir is None:
+        return
+    try:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        log_file = log_dir / f"security_{today}.jsonl"
+
+        # Bound detail values so a large matched span can't bloat the log.
+        safe_details: Dict[str, Any] = {}
+        for k, v in (details or {}).items():
+            if isinstance(v, str):
+                safe_details[k] = v[:500] if len(v) > 500 else v
+            else:
+                safe_details[k] = v
+
+        entry = {
+            "eventTime": datetime.now(timezone.utc).isoformat(),
+            "eventCategory": "security",
+            "eventName": event_name,
+            "userIdentity": _get_username(),
+            "principalType": "LocalUser",
+            "sourceHostname": _get_hostname(),
+            "sourceTool": source_tool,
+            "details": safe_details,
+        }
+
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, default=str) + "\n")
+
+        # Restrict file permissions to owner-only (SEL §5.2.1.1)
+        try:
+            os.chmod(log_file, 0o600)
+        except OSError:
+            pass  # Best-effort
+    except Exception:
+        pass  # Audit logging must never break the main flow
