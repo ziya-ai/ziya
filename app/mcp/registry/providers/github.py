@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Any
 
 import httpx
 
+from app.utils.http_bounded import read_status_and_bounded_bytes
 from app.mcp.registry.interface import (
     RegistryProvider, RegistryServiceInfo, RegistryTool, ToolSearchResult,
     InstallationResult, ServiceStatus, SupportLevel
@@ -55,22 +56,24 @@ class GitHubRegistryProvider(RegistryProvider):
             
             url = f"{self.github_api_base}/repos/{self.registry_repo}/contents/registry.json"
             
+            # Bounded read (PenPal #114, CWE-400): stream + abort past the cap.
             async with httpx.AsyncClient(timeout=15.0) as client:
-                response = await client.get(url, headers=getattr(self, 'headers', {}))
+                status, body = await read_status_and_bounded_bytes(
+                    client, "GET", url, headers=getattr(self, 'headers', {}))
 
             # Return empty results since no static registry file exists
-            if response.status_code == 404:
+            if status == 404:
                 logger.debug(f"GitHub static registry file doesn't exist (expected)")
                 return {
                     'services': [],
                     'next_token': None
                 }
             
-            response.raise_for_status()
-            
+            if status >= 400:
+                raise RuntimeError(f"HTTP {status} fetching GitHub registry")
             # Decode content (it's base64 encoded)
             import base64
-            content = base64.b64decode(response.json()['content']).decode('utf-8')
+            content = base64.b64decode(json.loads(body.decode("utf-8"))['content']).decode('utf-8')
             registry_data = json.loads(content)
             
             services = []
