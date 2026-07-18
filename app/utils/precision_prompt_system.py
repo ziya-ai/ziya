@@ -122,6 +122,17 @@ class PrecisionPromptSystem:
                 except (ImportError, RuntimeError, OSError) as e:
                     logger.debug("Memory activation directive unavailable: %s", e)
 
+            # ASR NF-002: teach the model how to treat the trust-labeled
+            # <tool_result> envelopes that wrap all model-facing tool output.
+            if messages and messages[0]["role"] == "system":
+                try:
+                    from app.mcp.tool_result_demarcation import get_tool_result_trust_directive
+                    messages[0]["content"] = (
+                        messages[0]["content"] + "\n\n" + get_tool_result_trust_directive()
+                    )
+                except (ImportError, RuntimeError, OSError) as e:
+                    logger.debug("Tool-result trust directive unavailable: %s", e)
+
             # Inject project-specific fileio write policy instructions into
             # the system message.  This runs per-request (not cached in the
             # template) so different projects get accurate instructions.

@@ -3311,6 +3311,15 @@ Please retry the tool call with valid JSON. Ensure:
                             lines = raw_result.split('\n')
                             clean_lines = [line for line in lines if not line.startswith('$ ')]
                             raw_result = '\n'.join(clean_lines).strip()
+                        # ASR NF-002: wrap model-facing tool output in an
+                        # explicit trust-labeled envelope so the model treats
+                        # it as external data, not instructions.  Non-string
+                        # (image content-block) results pass through unchanged.
+                        try:
+                            from app.mcp.tool_result_demarcation import wrap_tool_result_for_model
+                            raw_result = wrap_tool_result_for_model(raw_result, tool_result.get('tool_name', ''))
+                        except Exception:
+                            pass  # Demarcation must never break tool-result assembly
                         provider_tool_results.append({
                             "tool_use_id": tool_result['tool_id'],
                             "content": raw_result,
