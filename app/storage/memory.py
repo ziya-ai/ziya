@@ -217,6 +217,14 @@ class MemoryStorage:
     @_rmw_locked('_memories_file')
     def save(self, memory: Memory) -> Memory:
         """Create or update a memory in the flat store."""
+        # ASR NF-003: scan memory content for encoded instruction payloads
+        # on write (covers the direct memory_save tool path, which does not
+        # pass through the proposals store).  Detection only — flag + audit.
+        try:
+            from app.mcp.encoding_scanner import scan_and_log
+            scan_and_log(memory.content, source="memory_save")
+        except Exception:
+            pass  # Detection must never break memory persistence
         memories = self._load_memories()
         existing_idx = next(
             (i for i, m in enumerate(memories) if m.get("id") == memory.id),
