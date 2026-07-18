@@ -193,7 +193,7 @@ def validate_response(
     return result
 
 
-def sanitize_text(text: str, preserve_ansi: bool = False) -> str:  # noqa: ARG001
+def sanitize_text(text: str, preserve_ansi: bool = False, source_tool: str = "unknown") -> str:  # noqa: ARG001
     """Strip hidden characters, control chars, bidi overrides, and surrogates.
 
     Per SDO-183 (GenAI Hidden Character Smuggling), stripping is applied
@@ -222,6 +222,15 @@ def sanitize_text(text: str, preserve_ansi: bool = False) -> str:  # noqa: ARG00
         logger.warning(
             f"Stripped {removed_count} hidden/control/bidi characters from response text"
         )
+        try:
+            from app.utils.tool_audit_log import log_security_event
+            log_security_event(
+                "hidden_chars_stripped",
+                source_tool=source_tool,
+                details={"removed_count": removed_count},
+            )
+        except Exception:
+            pass  # Detection audit must never break sanitization
 
     return cleaned
 
@@ -419,11 +428,21 @@ def _validate_text_block(
         )
         block["mimeType"] = "text/plain"
 
-    block["text"] = sanitize_text(text)
+    block["text"] = sanitize_text(text, source_tool=tool_name)
 
     injection_warnings = scan_text_for_injection(block["text"], tool_name)
     for w in injection_warnings:
         logger.warning(w)
+    if injection_warnings:
+        try:
+            from app.utils.tool_audit_log import log_security_event
+            log_security_event(
+                "injection_pattern_detected",
+                source_tool=tool_name,
+                details={"match_count": len(injection_warnings)},
+            )
+        except Exception:
+            pass  # Detection audit must never break validation
 
 
 def _validate_image_block(
