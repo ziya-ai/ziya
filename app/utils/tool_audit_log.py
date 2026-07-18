@@ -94,6 +94,7 @@ def log_tool_execution(
     verified: Optional[bool] = None,
     error_message: str = "",
     duration_ms: float = 0,
+    context_snapshot: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Append a single audit entry.
 
@@ -101,6 +102,11 @@ def log_tool_execution(
     - Never raises exceptions (catches internally)
     - Truncates large values to prevent log bloat
     - Strips internal args (prefixed with _) from the log
+
+    context_snapshot (NF-006/008): optional co-presence record —
+    {active_memory_ids, recent_tool_result_ids, relation} — of what was in
+    the context window when this call fired.  Correlation, not causation
+    (see audit_context.build_context_snapshot).  Omitted when None.
     """
     log_dir = _ensure_log_dir()
     if log_dir is None:
@@ -130,6 +136,9 @@ def log_tool_execution(
             "error": error_message[:200] if error_message else "",
             "ms": round(duration_ms, 1),
         }
+        # NF-006/008: attach co-presence snapshot only when capture is enabled.
+        if context_snapshot:
+            entry["context"] = context_snapshot
 
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, default=str) + "\n")
