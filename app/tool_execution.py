@@ -307,6 +307,16 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
 
         # --- Audit log ---
         _tool_elapsed = (time.time() - _tool_start_time) * 1000
+        # NF-006/008: capture what was co-present in context at decision time
+        # (recent tool-result ids + active memory ids).  Returns None unless
+        # capture is enabled (env flag or enterprise config policy), so this is
+        # a no-op for the community default.
+        _ctx_snap = None
+        try:
+            from app.utils.audit_context import build_context_snapshot
+            _ctx_snap = build_context_snapshot(ctx.conversation_id, ctx.conversation)
+        except Exception:
+            _ctx_snap = None
         log_tool_execution(
             tool_name=ctx.actual_tool_name,
             args={k: v for k, v in ctx.args.items() if not k.startswith('_')},
@@ -315,6 +325,7 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
             verified=is_verified,
             error_message=str(result.get('message', ''))[:200] if isinstance(result, dict) and result.get('error') else "",
             duration_ms=_tool_elapsed,
+            context_snapshot=_ctx_snap,
         )
 
         # Track recent commands for deduplication
