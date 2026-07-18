@@ -235,6 +235,25 @@ class MemoryStorage:
             memories[existing_idx] = dump
         else:
             memories.append(dump)
+            # NF-010: provenance audit on memory CREATION (LPCI Phase 2 —
+            # Storage).  Always-on: creation is rare (not per-turn) and is
+            # core forensic provenance.  Respects ZIYA_DISABLE_AUDIT_LOG via
+            # log_security_event.  Only the create branch fires — updates
+            # (re-embedding, corroboration bumps) are not new provenance.
+            try:
+                from app.utils.tool_audit_log import log_security_event
+                log_security_event(
+                    "memory_created",
+                    source_tool="memory_store",
+                    details={
+                        "memory_id": memory.id,
+                        "layer": memory.layer,
+                        "learned_from": memory.learned_from,
+                        "learned_from_conversation": memory.learned_from_conversation or "",
+                    },
+                )
+            except Exception:
+                pass  # Provenance audit must never break memory persistence
         self._save_memories(memories)
         logger.info(f"💾 Memory saved: {memory.id} [{memory.layer}] {memory.content[:60]}")
 

@@ -285,6 +285,16 @@ class MemorySaveTool(BaseMCPTool):
             layer=layer,
             learned_from="explicit_save",
         )
+        # NF-010 item 3: populate cross-session provenance on the direct
+        # memory_save path too (the promotion path already sets this from the
+        # proposal's conversation_id in lifecycle.py).  memory_save is a tool
+        # call the model makes mid-conversation, so the conversation id is
+        # available and is the true origin of this fact.
+        try:
+            from app.context import get_conversation_id_or_none
+            memory.learned_from_conversation = get_conversation_id_or_none()
+        except Exception:
+            pass  # Provenance is best-effort; never block the save
         if project_path:
             memory.scope.project_paths = [project_path]
         saved = store.save(memory)
