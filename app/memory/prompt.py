@@ -161,6 +161,42 @@ def _audit_memory_injection(conversation_id, memory_ids) -> None:
         pass  # Activation audit must never break prompt assembly
 
 
+def _rescan_core_for_encoding(conversation_id, core) -> None:
+    """NF-001 item 1: re-scan recalled memory CONTENT for encoded instruction
+    payloads (Base64/hex/ROT13 → injection text) at REPLAY time, reusing the
+    NF-003 scanner.
+
+    Why replay-time when NF-003 already scans at write: memories written
+    BEFORE the NF-003 write-scan shipped never passed through it, and at-rest
+    corruption bypasses it entirely.  Re-scanning on recall is the
+    defense-in-depth that closes that gap — a genuine risk re-check, which is
+    the substantiable core of NF-001's "re-score before injection".
+
+    Always-on (like the NF-003 write scan, not the forensic co-presence
+    flag): a legacy encoded payload is exactly as dangerous regardless of
+    forensic mode.  ``scan_and_log`` is SILENT on clean content — it only
+    logs an actual decode-to-instruction hit — so a clean store produces zero
+    noise.  Detection only: never mutates, blocks, or suppresses the memory
+    (that would carry NF-005's false-positive cost on legitimately imperative
+    memories).  Scans only FIRST-injection memories per conversation (via the
+    feedback seen-set, read BEFORE record_load) so a real hit is logged once,
+    not every turn.  Never raises.
+    """
+    try:
+        targets = core
+        if conversation_id:
+            from app.memory.feedback import get_loaded_memory_ids
+            seen = get_loaded_memory_ids(conversation_id)
+            targets = [m for m in core if m.id not in seen]
+        if not targets:
+            return
+        from app.mcp.encoding_scanner import scan_and_log
+        for m in targets:
+            scan_and_log(m.content, source="memory_replay")
+    except Exception:
+        pass  # Replay re-scan must never break prompt assembly
+
+
 def get_memory_prompt_section() -> str:
     """
     Build the memory context block for the system prompt.
@@ -238,6 +274,10 @@ def get_memory_prompt_section() -> str:
                 # NF-010: emit a first-injection activation record BEFORE
                 # record_load updates the per-conversation seen-set.
                 _audit_memory_injection(_cid, _core_ids)
+                # NF-001 item 1: re-scan recalled content for encoded payloads
+                # (defense-in-depth for pre-NF-003 / at-rest-corrupted memories).
+                # Also before record_load so first-injection dedup works.
+                _rescan_core_for_encoding(_cid, core)
                 record_load(_cid, _core_ids)
             except Exception:
                 pass  # Non-fatal
