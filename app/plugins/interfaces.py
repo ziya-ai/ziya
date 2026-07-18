@@ -85,6 +85,19 @@ class ConfigProvider(ABC):
         """
         return None
 
+    def should_capture_audit_context(self) -> bool:
+        """Whether tool-audit entries should include a co-presence context
+        snapshot (active memory ids + recent tool-result ids) for forensic
+        incident reconstruction (ASR NF-006/008).
+
+        Default False (community edition — off, no forensic overhead).  An
+        enterprise provider returns True to enable capture by policy without
+        requiring the ZIYA_AUDIT_CONTEXT_SNAPSHOT env var.  The env var, when
+        explicitly set, overrides this either way (see
+        app.utils.audit_context.is_context_capture_enabled).
+        """
+        return False
+
     def get_max_approval_ttl(self) -> Optional[int]:
         """
         Return the maximum lifetime, in seconds, of a signed task-scope
