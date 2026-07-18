@@ -444,6 +444,15 @@ def _validate_text_block(
         except Exception:
             pass  # Detection audit must never break validation
 
+    # ASR NF-003: scan tool-result content for encoded instruction payloads
+    # (Base64/hex/ROT13 that decode to injection text).  Detection only —
+    # never mutates or blocks; logs an "encoded_payload_detected" event.
+    try:
+        from app.mcp.encoding_scanner import scan_and_log
+        scan_and_log(block["text"], source=tool_name)
+    except Exception:
+        pass  # Detection scan must never break validation
+
 
 def _validate_image_block(
     block: Dict[str, Any], index: int, tool_name: str

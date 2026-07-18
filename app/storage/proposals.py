@@ -207,6 +207,15 @@ class ProposalsStore:
         """
         if not proposal.content.strip():
             raise ValueError("proposal.content must be non-empty")
+        # ASR NF-003: scan proposed memory content for encoded instruction
+        # payloads before it enters the probationary store.  Detection only
+        # (flag + audit) — a flagged proposal is still recorded; approval
+        # remains a human decision.
+        try:
+            from app.mcp.encoding_scanner import scan_and_log
+            scan_and_log(proposal.content, source="memory_proposal")
+        except Exception:
+            pass  # Detection must never break memory ingestion
         pid = f"prop_{_content_hash(proposal.content)}"
         proposal.id = pid
         proposal.content_hash = pid.split("_", 1)[1]
