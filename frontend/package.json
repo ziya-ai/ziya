@@ -1,6 +1,6 @@
 {
   "name": "frontend",
-  "version": "0.8.0",
+  "version": "0.8.3",
   "private": true,
   "engines": {
     "node": ">=20.0.0",
@@ -39,6 +39,9 @@
     "vega-lite": "^6.4.0",
     "web-worker": "^1.5.0"
   },
+  "optionalDependencies": {
+    "vexflow": "^5.0.0"
+  },
   "proxy": "http://localhost:6969",
   "scripts": {
     "start": "craco start",
@@ -65,13 +68,16 @@
     "@testing-library/user-event": "^14.5.2",
     "@types/d3": "^7.4.3",
     "@types/lodash": "^4.17.20",
+    "@viz-js/viz": "^3.11.0",
+    "@types/jest": "^29.5.14",
     "@types/node": "^24.9.2",
     "@types/prismjs": "^1.26.5",
     "@types/react": "^18.3.1",
     "@types/react-dom": "^18.3.0",
     "eslint": "^8.57.1",
     "eslint-plugin-react": "^7.37.5",
-    "react-scripts": "5.0.1"
+    "react-scripts": "5.0.1",
+    "typescript": "^5.9.3"
   },
   "overrides": {
     "nth-check": "^2.1.1",
@@ -93,6 +99,7 @@
     "fork-ts-checker-webpack-plugin": {
       "minimatch": "^3.1.2"
     },
+    "typescript": "^5.9.3",
     "json5": "^2.2.3",
     "loader-utils": "^2.0.4",
     "ws": "^8.18.0",
