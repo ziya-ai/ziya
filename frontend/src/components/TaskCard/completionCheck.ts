@@ -46,3 +46,52 @@ export function stripAssessmentTag(text: unknown): string {
   // the end (a common case: model emits the tag at end of stream).
   return out.trimEnd();
 }
+
+// ``<progress note="..."/>`` — mid-stream model-authored progress
+// markers (backend mirror: app/utils/completion_check.py).  The
+// executor consumes them into the run's live-progress surface; they
+// are metadata, never display text.
+const PROGRESS_TAG = /<\s*progress\b[^>]*\/?>/gi;
+// A tag still streaming in (no closing ``>`` yet) at the very end of
+// the text.  Hidden so the user doesn't see raw tag characters
+// flicker while the tag completes.
+const PARTIAL_TRAILING_PROGRESS = /<\s*progress\b[^>]*$/i;
+
+/**
+ * Remove complete <progress .../> tags anywhere in ``text`` plus an
+ * incomplete one at the tail (mid-stream).  Idempotent.
+ *
+ * Tags are sometimes emitted with no surrounding whitespace (e.g.
+ * ``...test gate.<progress note="..."/>Test gate passes...``).  A
+ * bare removal would glue the sentence before the tag directly to
+ * the sentence after it, with no space between them.  Only insert a
+ * replacement space when BOTH the character immediately before and
+ * immediately after the tag are non-whitespace — tags that already
+ * have surrounding whitespace (the common, well-formatted case) are
+ * still stripped to nothing rather than doubled up.
+ */
+export function stripProgressTags(text: unknown): string {
+  if (typeof text !== 'string' || text.length === 0) {
+    return typeof text === 'string' ? text : '';
+  }
+  const fillGap = (match: string, offset: number, str: string): string => {
+    const before = offset > 0 ? str[offset - 1] : '';
+    const after = offset + match.length < str.length ? str[offset + match.length] : '';
+    return before && after && !/\s/.test(before) && !/\s/.test(after) ? ' ' : '';
+  };
+  return text
+    .replace(PROGRESS_TAG, fillGap)
+    .replace(PARTIAL_TRAILING_PROGRESS, (match: string, offset: number, str: string) => {
+      const before = offset > 0 ? str[offset - 1] : '';
+      return before && !/\s/.test(before) ? ' ' : '';
+    });
+}
+
+/**
+ * Strip ALL task meta tags (<self_assessment>, <progress>) from
+ * model text bound for display.  The single entry point render
+ * sites should use so new meta tags only need wiring here.
+ */
+export function stripTaskMetaTags(text: unknown): string {
+  return stripProgressTags(stripAssessmentTag(text)).trimEnd();
+}
