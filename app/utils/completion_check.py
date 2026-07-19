@@ -25,7 +25,7 @@ formatting requirements when given a literal example.
 from __future__ import annotations
 
 import re
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 # Recognised verdict values; anything else is normalised to ``unknown``.
 _VERDICT_VALUES = {"true", "false", "partial", "unknown"}
@@ -135,3 +135,115 @@ def strip_assessment_tag(text: str) -> str:
     if not text:
         return text
     return _TAG_RE.sub("", text).rstrip()
+
+
+# ───────────────────────── progress notes ──────────────────────────
+# Mid-stream, model-authored progress markers.  Same tag-contract
+# pattern as <self_assessment>, but emittable at any point in the
+# stream.  The executor scans them out of text deltas and routes the
+# note into the run's live-progress surface (task_progress relay
+# event + TaskRunStorage.record_activity).  Display-only metadata:
+# never fed back to the model, never used to grade the task.
+
+PROGRESS_TAG = "progress"
+
+PROGRESS_INSTRUCTION = """
+## Progress Notes (encouraged)
+
+While working, emit a one-line progress marker whenever your phase of
+work changes (finished surveying, starting edits, beginning
+verification, ...):
+
+  <progress note="reviewed 12/30 diffs; grouping into 3 commits" />
+
+Rules:
+  * ``note`` is ONE short line (under 120 chars), present tense,
+    concrete — include counts when you have them ("4/10 files done").
+  * Emit at phase transitions or every ~5 tool calls, not per step.
+  * The note is shown live in the UI while you work; it is not part
+    of your final response and carries no other meaning.
+""".strip()
+
+_PROGRESS_RE = re.compile(
+    r"<\s*progress\b([^>]*?)/?\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Bound on the note surfaced to the UI regardless of what the model
+# emitted — the tile is a one-liner.
+_MAX_NOTE_LEN = 200
+
+
+def extract_progress_notes(text: str) -> List[str]:
+    """Return the ``note`` attribute of every complete <progress .../>
+    tag in ``text``, in order.  Tags without a non-empty note are
+    skipped."""
+    notes: List[str] = []
+    if not text:
+        return notes
+    for m in _PROGRESS_RE.finditer(text):
+        for am in _ATTR_RE.finditer(m.group(1)):
+            if am.group(1).lower() == "note":
+                val = am.group(3).strip()
+                if val:
+                    notes.append(val[:_MAX_NOTE_LEN])
+    return notes
+
+
+def strip_progress_tags(text: str) -> str:
+    """Remove all <progress .../> tags from ``text``.  Idempotent;
+    safe when no tag is present.
+
+    Tags are sometimes emitted with no surrounding whitespace (e.g.
+    ``...test gate.<progress note="..."/>Test gate passes...``).  A
+    bare removal would glue the sentence before the tag directly to
+    the sentence after it.  Only insert a replacement space when
+    BOTH the character immediately before and after the tag are
+    non-whitespace; tags that already have surrounding whitespace
+    are still stripped to nothing rather than doubled up.  Mirrors
+    the frontend fix in completionCheck.ts."""
+    if not text:
+        return text
+
+    def _fill_gap(m: "re.Match[str]") -> str:
+        s = m.string
+        start, end = m.start(), m.end()
+        before = s[start - 1] if start > 0 else ""
+        after = s[end] if end < len(s) else ""
+        if before and after and not before.isspace() and not after.isspace():
+            return " "
+        return ""
+
+    return _PROGRESS_RE.sub(_fill_gap, text)
+
+
+class ProgressTagScanner:
+    """Incremental <progress .../> scanner for streamed text.
+
+    A tag can be split across arbitrary chunk boundaries, so the
+    scanner carries unconsumed text between ``feed`` calls.  Only
+    COMPLETE tags are reported; a partial tag at the buffer tail is
+    retained until its closing ``>`` arrives.  The carry buffer is
+    bounded so a stream that never emits a tag cannot grow it
+    unboundedly (a legal tag is far shorter than the cap).
+    """
+
+    _KEEP = 600
+
+    def __init__(self) -> None:
+        self._buf = ""
+
+    def feed(self, chunk: str) -> List[str]:
+        """Consume the next text delta; return notes from any tags
+        completed by it (usually empty)."""
+        self._buf += chunk or ""
+        last_end = 0
+        for m in _PROGRESS_RE.finditer(self._buf):
+            last_end = m.end()
+        if last_end:
+            notes = extract_progress_notes(self._buf[:last_end])
+            self._buf = self._buf[last_end:]
+            return notes
+        if len(self._buf) > self._KEEP:
+            self._buf = self._buf[-self._KEEP:]
+        return []
