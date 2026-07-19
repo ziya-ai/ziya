@@ -1253,7 +1253,7 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                 const modelRoot = model.getRoot(); // This is cell 0
 
                 // Cell 1 is the default parent (first child of root)
-                let defaultParent = null;
+                let defaultParent: any = null;
                 if (modelRoot && modelRoot.children && modelRoot.children.length > 0) {
                     defaultParent = modelRoot.children[0]; // Cell 1
                 } else {
@@ -2819,8 +2819,8 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                     } catch (elkError) {
                         console.error('📐 ELK: Layout failed, falling back to manual routing:', elkError);
                         console.error('📐 ELK: Error details:', {
-                            message: elkError.message,
-                            stack: elkError.stack
+                            message: elkError instanceof Error ? elkError.message : String(elkError),
+                            stack: elkError instanceof Error ? elkError.stack : undefined
                         });
                     }
                 } // Close the hasExplicitLayout else block

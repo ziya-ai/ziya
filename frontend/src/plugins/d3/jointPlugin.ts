@@ -1410,10 +1410,6 @@ const createEnhancedLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
             // Use the center of the element as connection point
             return view.model.getBBox().center();
         },
-        connectionStrategy: (end, view, magnet, coords) => {
-            // Use the center of the element as connection point
-            return view.model.getBBox().center();
-        },
         connector: {
             name: linkSpec.connector || 'rounded',
             args: { radius: 15 }

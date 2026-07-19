@@ -73,6 +73,11 @@ const pluginMetadata: PluginMetadata[] = [
     name: 'packet-renderer',
     priority: 6,
     loader: async () => (await import('./packetPlugin')).packetPlugin
+  },
+  {
+    name: 'music-renderer',
+    priority: 6,
+    loader: async () => (await import('./musicPlugin')).musicPlugin
   }
 ];
 
