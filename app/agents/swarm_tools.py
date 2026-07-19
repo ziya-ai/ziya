@@ -329,6 +329,16 @@ class SwarmRequestDelegateInput(BaseModel):
     scope: str = Field(..., description="What this delegate should do.")
     files: str = Field("", description="Comma-separated file paths for the delegate's context.")
     depends_on: str = Field("", description="Comma-separated delegate IDs this depends on.")
+    model_tier: str = Field(
+        "",
+        description=(
+            "Optional portable model tier for this delegate: xsmall | small "
+            "| medium | large | frontier. Run cheap executor work on a low "
+            "tier under a smarter orchestrator; 'medium' is the default. "
+            "Reserve 'frontier' for work that truly needs it (~20x cost, "
+            "throttled). Empty = inherit the conversation's model."
+        ),
+    )
 
 
 class SwarmRequestDelegateTool(BaseMCPTool):
@@ -346,7 +356,8 @@ class SwarmRequestDelegateTool(BaseMCPTool):
         self._ctx = swarm_ctx
 
     async def execute(self, name: str = "", scope: str = "",
-                      files: str = "", depends_on: str = "", **kw) -> str:
+                      files: str = "", depends_on: str = "",
+                      model_tier: str = "", **kw) -> str:
         mgr = self._ctx["get_manager"]()
         plan_id = self._ctx["plan_id"]
         delegate_id = self._ctx["delegate_id"]
@@ -371,6 +382,7 @@ class SwarmRequestDelegateTool(BaseMCPTool):
             scope=scope,
             files=file_list,
             dependencies=dep_list,
+            model_tier=(model_tier.strip() or None),
         )
 
         with mgr._persist_lock:
@@ -414,7 +426,8 @@ class SwarmLaunchSubplanInput(BaseModel):
         ...,
         description=(
             'JSON array of delegate specs. Each entry: '
-            '{"name": "...", "scope": "...", "files": "comma,separated", "depends_on": "D1,D2"}. '
+            '{"name": "...", "scope": "...", "files": "comma,separated", "depends_on": "D1,D2", '
+            '"model_tier": "small"}. model_tier is optional (xsmall|small|medium|large|frontier). '
             'delegate_id is auto-assigned (D1, D2, etc.).'
         ),
     )
@@ -467,6 +480,7 @@ class SwarmLaunchSubplanTool(BaseMCPTool):
                 scope=raw.get("scope", ""),
                 files=files,
                 dependencies=deps,
+                model_tier=(str(raw.get("model_tier", "")).strip() or None),
             ))
 
         # Find the calling delegate's conversation_id for source_conversation_id
