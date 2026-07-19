@@ -25,8 +25,10 @@ def env_bool(key: str, default: bool = False) -> bool:
 
 USE_DIRECT_STREAMING = env_bool('ZIYA_USE_DIRECT_STREAMING')
 
-# Server configuration
-DEFAULT_PORT = 6969
+# Server configuration.  The registry is the single source of truth for
+# the port default; this alias exists for legacy imports.
+from app.config.env_registry import REGISTRY as _ENV_REGISTRY
+DEFAULT_PORT = _ENV_REGISTRY["ZIYA_PORT"].default
 
 # Diff validation settings
 ENABLE_DIFF_VALIDATION = env_bool('ZIYA_ENABLE_DIFF_VALIDATION', True)

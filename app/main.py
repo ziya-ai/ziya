@@ -53,9 +53,11 @@ def parse_arguments():
     add_common_arguments(parser)
     
     # Server-specific arguments (not used by CLI subcommands)
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT,
+    # Default honors ZIYA_PORT from the environment (registry declares
+    # cli_flag="--port" for it); explicit --port still wins.
+    parser.add_argument("--port", type=int, default=ziya_env("ZIYA_PORT"),
                         help=(f"Port number to run Ziya frontend on "
-                              f"(default: {DEFAULT_PORT}, e.g., --port 8080)"))
+                              f"(default: $ZIYA_PORT or {DEFAULT_PORT}, e.g., --port 8080)"))
     parser.add_argument("--max-depth", type=int, default=15,
                         help="Maximum depth for folder structure traversal (e.g., --max-depth 20)")
     parser.add_argument("--version", action="store_true",
@@ -444,11 +446,18 @@ def start_server(args):
                 from app.config.models_config import MODEL_CONFIGS
                 _model_name = ziya_env("ZIYA_MODEL") or ""
                 _model_cfg = MODEL_CONFIGS.get("bedrock", {}).get(_model_name, {})
+                # The retention mode is an account/region-wide setting, so match it
+                # to ONLY what the selected model requires. Resolve the region the
+                # same way the runtime invoke path does (get_current_region also
+                # consults the boto3 session), so the mode is set in the region we
+                # will actually call — not a hardcoded default.
+                from app.utils.aws_utils import (
+                    ensure_bedrock_data_retention_mode,
+                    get_current_region,
+                )
+                _region = get_current_region()
                 if _model_cfg.get("requires_provider_data_share"):
-                    from app.utils.aws_utils import ensure_bedrock_data_retention_mode
-                    _region = os.environ.get(
-                        "AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-                    )
+                    # Model opts into Anthropic data sharing (e.g. Fable 5).
                     _ok, _err = ensure_bedrock_data_retention_mode(
                         required_mode="provider_data_share",
                         region=_region,
@@ -467,14 +476,34 @@ def start_server(args):
                         )
                         print("=" * 80 + "\n")
                         sys.exit(1)
+                else:
+                    # Selected model does NOT require data sharing. Reset the
+                    # account/region retention mode to 'inherit' so a prior Fable 5
+                    # session does not leave other models silently running under
+                    # provider_data_share. Best-effort: this model needs no
+                    # retention change, so a failure here only warns (never blocks).
+                    _ok, _err = ensure_bedrock_data_retention_mode(
+                        required_mode="inherit",
+                        region=_region,
+                        profile_name=getattr(args, "profile", None),
+                    )
+                    if not _ok:
+                        logger.warning(
+                            f"Could not reset Bedrock data retention to 'inherit' "
+                            f"in {_region}: {_err}"
+                        )
 
                 # Apply mantle data retention for models that need it.
                 if _model_cfg.get("endpoint_override") == "bedrock-mantle":
+                    from app.utils.aws_utils import ensure_mantle_data_retention_mode
+                    from app.providers.bedrock_mantle import resolve_mantle_region
+                    # Target the region mantle will actually invoke in — the
+                    # session region may not host this model at all.
+                    _mantle_region = resolve_mantle_region(_model_cfg, _region)
                     if _model_cfg.get("requires_provider_data_share"):
-                        from app.utils.aws_utils import ensure_mantle_data_retention_mode
                         _ok, _err = ensure_mantle_data_retention_mode(
                             required_mode="provider_data_share",
-                            region=_region,
+                            region=_mantle_region,
                             profile_name=getattr(args, "profile", None),
                         )
                         if not _ok:
@@ -490,6 +519,21 @@ def start_server(args):
                             )
                             print("=" * 80 + "\n")
                             sys.exit(1)
+                    else:
+                        # Mantle model that does not require data sharing: reset the
+                        # mantle retention mode to 'inherit' so a prior sharing session
+                        # does not persist for models that don't need it. Best-effort —
+                        # warn, never block, since no retention change is required here.
+                        _ok, _err = ensure_mantle_data_retention_mode(
+                            required_mode="inherit",
+                            region=_mantle_region,
+                            profile_name=getattr(args, "profile", None),
+                        )
+                        if not _ok:
+                            logger.warning(
+                                f"Could not reset Mantle data retention to 'inherit' "
+                                f"in {_region}: {_err}"
+                            )
 
             # Set an environment variable to indicate we've already checked auth
             # This will be used by ModelManager to avoid duplicate initialization
@@ -525,6 +569,11 @@ def start_server(args):
             logger.info("=" * 80)
             
             logger.info("=== STARTUP PHASE 3: Starting Server ===")
+            # Publish the actually-bound port so in-process consumers that
+            # build self-referential URLs (diagram renderer, export routes,
+            # model routes) resolve ZIYA_PORT to this instance instead of
+            # falling back to the 6969 default.
+            os.environ["ZIYA_PORT"] = str(args.port)
             # Use uvicorn directly instead of langchain_cli.serve()
             # Set the terminal window/tab title to "Ziya:<port>"
             print(f"\033]0;Ziya:{args.port}\007", end="", flush=True)
@@ -691,7 +740,14 @@ def main():
         from app.utils.scope_approvals import write_approval_policy_breadcrumb
         write_approval_policy_breadcrumb()
     except Exception as e:
-        logger.debug(f"Could not publish approval-TTL breadcrumb: {e}")
+        # Elevated from debug: a failure here silently causes every
+        # task-scope approval signed afterward to be minted unbounded,
+        # which the enterprise TTL policy then fail-closed rejects —
+        # an admin needs to see this, not just find it in a debug trace.
+        logger.warning(f"Could not publish approval-TTL breadcrumb — "
+                       f"approvals signed via ziya-approve until this is "
+                       f"resolved may be minted unbounded and rejected "
+                       f"by an enterprise TTL policy: {e}", exc_info=True)
 
     # Handle info flag - print system info and exit immediately
     if args.info:

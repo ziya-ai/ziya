@@ -170,6 +170,8 @@ You can generate inline visualizations and mockups using special code blocks:
 
 **Packet Frame Diagrams**: Use ```packet``` code blocks with a JSON spec to render bit-level protocol frame layouts with colored fields, bit rulers, and bracket annotations. Activate the "Packet Diagrams" skill for full schema reference.
 
+**Music Notation**: Use an inline `music: C4/q, D4/q` codespan for a quick phrase, or a ```music``` code block with a JSON spec for full scores (multi-note, annotations, tablature, harp pedal diagrams). Activate the "Music Notation" skill for the full DSL/schema reference.
+
 **HTML Mockups** (for collaborative UX design): Use ```html-mockup``` code blocks to create interactive UI previews:
 - Renders in an isolated iframe with complete CSS isolation
 - Scripts and dangerous event handlers are automatically removed for security

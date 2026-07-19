@@ -61,10 +61,31 @@ def _resolve_chat_for_request(_kwargs: Dict[str, Any]) -> Dict[str, Any]:
     Returns a dict with ok=True plus chat handles, or ok=False plus an
     error message.  Walks: ContextVar conversation_id → request-scoped
     project_root → ProjectStorage.get_by_path → ChatStorage(project_dir).
+
+    Both the project and chat lookups self-heal by auto-vivifying a
+    minimal record rather than failing outright:
+
+    - CLI sessions never call the web app's project-registration flow,
+      so ``ProjectStorage.get_by_path`` legitimately misses on a path
+      that is nonetheless a perfectly valid project root.
+      ``ProjectStorage.create()`` is idempotent by path (returns the
+      existing record if one is found), so calling it unconditionally
+      here is safe for the web path too.
+    - CLI conversation ids (``cli_<timestamp>_<pid>``) and brand-new
+      web conversations that haven't synced yet are never persisted
+      via ``ChatStorage.create()`` before a tool call can reach them,
+      so the chat file legitimately doesn't exist yet.  We create it
+      at the exact ``conversation_id`` the caller is already using
+      (not a fresh uuid — that would silently start a second,
+      invisible chat record next turn) so every subsequent call in
+      this conversation resolves to the same file.
     """
+    import time as _time
+
     from app.context import get_conversation_id_or_none, get_project_root_or_none
     from app.storage.projects import ProjectStorage
     from app.storage.chats import ChatStorage
+    from app.models.project import ProjectCreate
     from app.utils.paths import get_ziya_home, get_project_dir
 
     conversation_id = get_conversation_id_or_none()
@@ -83,18 +104,59 @@ def _resolve_chat_for_request(_kwargs: Dict[str, Any]) -> Dict[str, Any]:
     project_storage = ProjectStorage(ziya_home)
     project = project_storage.get_by_path(project_root)
     if not project:
-        return {"ok": False,
-                "error": f"Project not registered for path: {project_root}"}
+        try:
+            project = project_storage.create(ProjectCreate(path=project_root))
+        except Exception as e:
+            logger.error(f"context tools: auto-register project failed for "
+                         f"{project_root}: {e}")
+            return {"ok": False,
+                    "error": f"Could not register project for path: {project_root}"}
 
     storage = ChatStorage(get_project_dir(project.id))
     chat_file = storage._chat_file(conversation_id)
     chat_data = storage._read_json(chat_file)
     if not chat_data:
-        return {"ok": False,
-                "error": (f"Chat {conversation_id[:8]} not found in project "
-                          f"{project.name} — it may belong to a different "
-                          f"project or be a brand-new conversation that "
-                          f"hasn't been persisted yet.")}
+        # Auto-vivify a minimal chat record at this exact id.  This is the
+        # normal path for CLI sessions (which never call ChatStorage.create()
+        # up front) and for a brand-new web conversation whose first sync
+        # hasn't landed yet — neither is an error condition.
+        now = int(_time.time() * 1000)
+        chat_data = {
+            "id": conversation_id,
+            "title": "CLI session" if conversation_id.startswith("cli_") else "New conversation",
+            "groupId": None,
+            "contextIds": [],
+            "skillIds": [],
+            "additionalFiles": [],
+            "additionalPrompt": None,
+            "messages": [],
+            "createdAt": now,
+            "lastActiveAt": now,
+            "_version": now,
+        }
+        try:
+            storage._write_json(chat_file, chat_data)
+            logger.info(f"context tools: auto-vivified chat record "
+                        f"{conversation_id[:8]} in project {project.name}")
+            # ChatStorage.create() also registers new chats in the
+            # cross-project chat_index (app/storage/chat_index.py),
+            # which app/api/chats.py's bulk-get endpoint uses to resolve
+            # chat IDs across projects without scanning every project's
+            # chats dir. Mirror that registration here — otherwise this
+            # auto-vivified chat is present on disk but invisible to
+            # that cross-project index lookup.
+            try:
+                from app.storage import chat_index
+                chat_index.on_chat_written(conversation_id, project.id)
+            except Exception as e:
+                logger.debug(f"context tools: chat_index update skipped: {e}")
+        except Exception as e:
+            logger.error(f"context tools: auto-vivify chat failed for "
+                         f"{conversation_id[:8]}: {e}")
+            return {"ok": False,
+                    "error": (f"Could not create a chat record for "
+                              f"{conversation_id[:8]} in project "
+                              f"{project.name}: {e}")}
 
     return {
         "ok": True,

@@ -183,7 +183,8 @@ Output the decomposition as a fenced JSON block with the language tag
       "scope": "Detailed description of what this delegate does",
       "files": ["src/path/to/file.ts"],
       "dependencies": [],
-      "role": "worker"
+      "role": "worker",
+      "model_tier": "small"
     },
     {
       "delegate_id": "coordinator",
@@ -223,7 +224,15 @@ Rules:
 - Include an emoji that represents each delegate's purpose
 - The scope field must be detailed enough for a fully independent agent to execute
 - For coordinators: explicitly name which worker crystals to incorporate
-- For verifiers: explicitly state what acceptance criteria to check''',
+- For verifiers: explicitly state what acceptance criteria to check
+- OPTIONAL per-delegate `model_tier`: a portable cost/capability rung —
+  one of `xsmall`, `small`, `medium`, `large`, `frontier` (`medium` is the
+  default/average model). Assign cheap tiers (`xsmall`/`small`) to
+  mechanical, well-scoped executor work and higher tiers (`large`) to
+  synthesis, judgment, or coordination. This is the "cheap executors under
+  a smarter supervisor" pattern. Reserve `frontier` for work that truly
+  needs it — it runs ~20x the cost of `large` with heavy throttling. Omit
+  to inherit the conversation's model.''',
         'color': '#6366f1',
     },
     {
@@ -236,7 +245,10 @@ Rules:
                      'until', 'for each', 'retry', 'attempts', 'passes',
                      'parallel', 'count', 'do this N times', 'try again',
                      'keep trying', 'until it passes', 'over and over',
-                     'batch', 'iteration', 'explore', 'sweep'],
+                     'batch', 'iteration', 'explore', 'sweep', 'schedule',
+                     'recurring', 'cron', 'daily', 'every hour', 'stages',
+                     'multi-step', 'multi-stage', 'pipeline', 'state',
+                     'variables', 'given', 'assume'],
         'prompt': '''You can author a **Task Card** — a small block tree the user launches
 from the conversation.  A task card runs inline in the chat and reports live
 status; the user can cancel, inspect, and query it.  Use a task card when:
@@ -247,6 +259,10 @@ status; the user can cancel, inspect, and query it.  Use a task card when:
   sampling) so failures can be clustered and inspected
 - A piece of work has a clear loop/sequence/parallel shape that benefits
   from being a reusable object rather than an ad-hoc chat turn
+- The user describes a fixed multi-stage pipeline ("first do A, then B,
+  then C") that should be tracked and re-runnable as a unit
+- The user wants something to run on a recurring schedule (hourly, daily,
+  cron) rather than once right now
 
 Use `delegate-tasks` instead (not this) when the work is a *fan-out of
 different specialized roles* (planner → workers → verifier) with
@@ -255,8 +271,8 @@ structured repetition; delegates are for multi-agent orchestration.
 
 ## Block grammar
 
-Three block shapes compose the tree.  Any block's `body` can contain any
-other block.
+Six block shapes compose the tree.  Any block's `body` can contain any
+other block (except Task and State, which are leaves with no body).
 
 **Task** — atomic action, one model invocation, returns one Artifact.
 
@@ -298,6 +314,105 @@ blocks in any `body` runs them top-to-bottom.
 { "block_type": "parallel", "name": "Fan out", "body": [ ] }
 ```
 
+**Group** — a plain sequence of DISTINCT one-shot stages, run top-to-bottom
+exactly once, no repetition and no fan-out.  This is the shape for "do step
+1, then step 2, then step 3" multi-stage processes: each stage is its own
+Task with its own instructions and scope.  Use a Group root whenever the
+user describes more than one distinct stage that each runs once — do NOT
+collapse multiple stages into one Task's instructions, and do NOT wrap them
+in a Repeat(count=1) just to have a body.
+
+```
+{
+  "block_type": "group",
+  "name": "5-stage migration",
+  "body": [
+    { "block_type": "task", "name": "Stage 1: ...", "instructions": "..." },
+    { "block_type": "task", "name": "Stage 2: ...", "instructions": "..." }
+  ]
+}
+```
+
+**Until** — repeats its body until a MODEL-EVALUATED condition holds, not a
+substring match.  Distinct from Repeat's `until` mode: on each iteration,
+after the body runs, a separate evaluator model is asked "given this
+result, is `<until_condition>` true?"  If yes, the loop stops; if no and
+`until_max` isn't reached, it repeats.  Use this for conditions that need
+judgment ("the tests pass", "the counter is above 300", "the output looks
+correct") rather than a literal string appearing in the summary — use
+Repeat's `until` mode instead when a literal substring check is sufficient
+(it's cheaper — no evaluator call).
+
+```
+{
+  "block_type": "until",
+  "name": "Fix until tests pass",
+  "until_mode": "model",
+  "until_condition": "all tests pass with no errors",
+  "until_max": 5,
+  "body": [
+    { "block_type": "task", "name": "Propose fix", "instructions": "..." },
+    { "block_type": "task", "name": "Apply and re-test", "instructions": "..." }
+  ]
+}
+```
+
+Leave `until_condition` blank to fall back to "stop on the first
+non-failed iteration" (goal-card style, driven by the inner task's own
+self-assessment instead of a separate evaluator call).
+
+**Schedule** — a recurring TRIGGER, not a loop.  Wraps any body (Task,
+Repeat, Parallel, Until, or a nested Schedule) and causes the in-process
+scheduler to fire an independent run of that body each time the trigger
+condition is met.  Modes:
+- `"interval"` — every N minutes/hours/days (`schedule_interval_value` +
+  `schedule_interval_unit`)
+- `"at"` — once at a specific ISO-8601 timestamp (`schedule_at_iso`)
+- `"daily_at"` — every day at `"HH:MM"` local time (`schedule_daily_at`)
+- `"cron"` — a 5-field cron expression (`schedule_cron`)
+A card with a Schedule root is launched once to *register* the trigger;
+each subsequent fire produces its own independent TaskRun.  "Run now" on
+such a card runs the body immediately as a one-off, in addition to (not
+instead of) its scheduled fires.
+
+```
+{
+  "block_type": "schedule",
+  "name": "Nightly report",
+  "schedule_mode": "daily_at",
+  "schedule_daily_at": "02:00",
+  "body": [
+    { "block_type": "task", "name": "Generate report", "instructions": "..." }
+  ]
+}
+```
+
+**State** — a read-only declaration of run-scoped givens.  A leaf (no
+body) like Task, but it doesn't invoke the model — it just sets context
+for the tasks that follow it.  Two forms, usable together:
+- `state_context`: freeform prose ("assume prod, migration already ran,
+  feature flag is off") automatically prepended to every subsequent
+  in-scope task's context — no templating needed. This is the primary,
+  most natural form.
+- `state_variables`: a name → literal map for tasks that want to
+  reference a specific value by name via `{{var.NAME}}` templating.
+Placement is the reset policy: a State block that runs once (before a
+loop, or at the top of a Group) sets its givens once for the whole run.
+The SAME state block placed INSIDE a Repeat/Until body re-applies its
+literals at the start of every iteration, resetting to baseline each
+cycle — use this when you want a loop to always start from the same
+known state rather than drifting.
+
+```
+{
+  "block_type": "state",
+  "name": "Assume staging environment",
+  "state_context": "Target environment is staging, not production. The database migration has already run.",
+  "state_variables": { "environment": "staging" },
+  "body": []
+}
+```
+
 ## Propagation (templating)
 
 A block's `instructions` may reference prior results via `{{ }}` templates,
@@ -306,13 +421,67 @@ rendered at dispatch time:
   (propagate=last), `{{all}}` (propagate=all) — field access like
   `{{previous.summary}}`, `{{previous.outputs[0].text}}`.
 - Inside a sequence: `{{previous_sibling}}`, `{{sibling("block-id")}}`.
+- Anywhere in scope of a State block: `{{var.NAME}}` for a declared
+  variable; State's `state_context` prose needs no template at all — it
+  is injected automatically.
 Missing fields render as empty strings — never crash.
+
+## Scope (what a task can touch)
+
+Each Task block may carry a `scope` object narrowing what that specific
+task is allowed to do — scope does NOT cascade to children, every Task
+sets its own:
+- `paths`: list of `{path, is_dir, read, write, context}` entries. `read`
+  is advisory; `write` is enforced (file_write is blocked outside granted
+  writable paths); `context` preloads that file's content into the
+  task's system prompt.
+- `tools`: allowlist of tool names the task may call. Empty = unrestricted.
+- `skills`: skill ids to activate for this task only.
+- `shell_commands`: per-task shell-command grants (literal first-token
+  match, or `"re:<pattern>"` against the full command line). Additive
+  over the base shell policy; never unlocks `sudo`/`vi`/etc.
+- `model_tier`: OPTIONAL portable model rung this task runs on — one of
+  `xsmall`, `small`, `medium`, `large`, `frontier` (`medium` is the
+  default/average model; `frontier` is the rare, ~20x-cost, throttled
+  top). Unlike the permission fields above, model selection DOES flow
+  down: a tier set on a container block (Repeat/Parallel/Until/Group) or
+  the card applies to every task beneath it, and a leaf can override for
+  itself (most specific wins). Put a smart tier (`large`) on the card and
+  cheap tiers (`small`) on mechanical leaf tasks to run "cheap executors
+  under a smarter supervisor". An unmapped rung rounds UP to the nearest
+  available model, so it never silently under-serves a task. `model_name`
+  / `model_id_override` pin a SPECIFIC model instead — an escape hatch
+  that is not portable across endpoints, so prefer `model_tier`.
+Omit `scope` entirely for a task that needs only its default (safe,
+read-mostly) permissions — most tasks don't need to set this.
 
 ## Output format
 
 Emit a fenced JSON block with language tag `task-card`.  The user can
 preview it and click **Start**; launching creates a run bound to the chat
 and the inline tile shows live status.
+
+## Choosing a root block — decision guide
+
+- One single action, no repetition → **Task** root.
+- Same action repeated N times, or once per item in a list, or until a
+  cheap substring check passes → **Repeat** root.
+- Different actions running at the same time (no shared ordering) →
+  **Parallel** root.
+- Several DIFFERENT, DISTINCT steps that each run exactly once, in a
+  fixed order ("first do A, then B, then C") → **Group** root. This is
+  the most commonly needed shape for described multi-stage processes —
+  do NOT collapse the stages into one Task's instructions, and do NOT
+  wrap them in a trivial `Repeat(count=1)` just to have a body.
+- Repeat something until a model has to JUDGE whether a condition holds
+  (not just check a literal string) → **Until** root.
+- The work should fire on a recurring schedule rather than immediately →
+  **Schedule** root, wrapping whichever of the above shapes the
+  triggered work actually needs.
+- Need to fix some givens before a loop runs, or reset a loop to a known
+  baseline each cycle → put a **State** block first in the relevant body
+  (a Group root's body if the givens apply to the whole run; inside a
+  Repeat/Until body if they should reset every iteration).
 
 ## Example: fuzz test the renderer 10 times
 
@@ -323,19 +492,36 @@ the iteration is marked failed and its signature clustered automatically.
 
 ## Example: keep trying to fix X until the tests pass
 
-Root is a Repeat(until, max=4) wrapping a sequence: Task(propose fix) then
-Task(apply and re-test).  Exits as soon as the re-test artifact does not fail.
+Root is an Until block (until_condition="all tests pass", until_max=4)
+wrapping a sequence: Task(propose fix) then Task(apply and re-test).
+Exits as soon as the evaluator judges the condition true.  Use Repeat's
+`until` mode instead if a plain substring match in the summary would do.
+
+## Example: a 5-stage migration
+
+Root is a Group with 5 Task children, each with its own name and
+instructions, run top-to-bottom exactly once.  Each stage's task can
+reference the prior stage's result via `{{previous_sibling}}`.
+
+## Example: nightly report at 2am
+
+Root is a Schedule (mode="daily_at", schedule_daily_at="02:00") wrapping
+a single Task that generates the report.
 
 ## Rules
 
-- The root is ONE block; use a Repeat/Parallel root to run a body of
-  multiple steps.
+- The root is ONE block; use a Group root for a fixed sequence of distinct
+  one-shot stages, or a Repeat/Parallel root to run a body of repeated or
+  concurrent work, or an Until root when termination needs judgment, or a
+  Schedule root when the work should recur.
 - `instructions` should be self-contained — the Task runs in a sandboxed
   conversation and cannot see anything outside its scope.
 - Don't over-decorate: if the user asks for a single action, emit a card
   with a single Task root, not a trivial Repeat(count=1).
 - Keep `repeat_count` reasonable for default runs (5-50).  Larger sweeps
   (1000+) are supported but should be explicit in the user's request.
+- Use Until (not Repeat's until mode) whenever the stopping condition
+  needs interpretation rather than a literal substring match.
 - Do not include `id`, `created_at`, or other server-assigned fields —
   they are filled in on create.''',
         'color': '#eab308',
@@ -401,5 +587,70 @@ Example:
 }
 ```''',
         'color': '#0ea5e9',
+    },
+    {
+        'id': 'music_notation',
+        'visibility': MODEL_DISCOVERABLE,
+        'catalog_description': 'Render annotated music notation: inline snippets or complete staves/scores',
+        'name': 'Music Notation',
+        'description': 'Generate sheet music notation, from a short inline phrase to a full annotated score',
+        'keywords': ['music', 'sheet-music', 'notation', 'staff', 'stave', 'score', 'chord',
+                     'melody', 'vexflow', 'harp-pedal', 'tablature'],
+        'prompt': '''You can render music notation two ways depending on how much you need to show.
+
+**Inline (conversational, no chrome)** — for a short phrase mentioned in passing,
+use a single-backtick codespan starting with `music:` followed by VexFlow
+EasyScore note syntax (`key/duration` pairs, comma-separated). Renders as a
+small inline staff with no border/card, matching how `$x=0$` renders inline
+for math:
+
+`music: C4/q, D4/q, E4/q, F4/q`
+
+Add a text annotation above or below a note with `^"text"` / `_"text"`
+immediately after that note:
+
+`music: C4/q ^"Cmaj7", G4/h`
+
+Duration codes: `w` whole, `h` half, `q` quarter, `8` eighth, `16` sixteenth.
+Append `.` for dotted (`q.`). Octave is the number after the pitch letter
+(`c/4` = middle C). Use `##`/`bb` for double sharp/flat, `#`/`b` for single.
+
+**Complete scores (full chrome, multi-note/multi-voice)** — for anything with
+more than a few notes, multiple voices, tablature, or harp pedal diagrams, use
+a ```music``` fenced code block with a JSON spec:
+
+```
+{
+  "type": "music",
+  "clef": "treble",                         // treble | bass | alto | tenor | percussion
+  "keySignature": "C",                       // e.g. "C", "G", "Bb", "F#"
+  "timeSignature": "4/4",
+  "notes": [
+    {
+      "keys": ["c/5"],                       // one entry per note in a chord
+      "duration": "q",                       // w, h, q, 8, 16 (+ "." for dotted)
+      "annotations": [                       // optional text above/below the note
+        {"text": "Cmaj7", "position": "above"}
+      ],
+      "harpPedal": "^v-|vv-^"                // optional, see below
+    },
+    {"keys": ["d/5"], "duration": "q"}
+  ]
+}
+```
+
+Harp pedal diagrams: attach a `harpPedal` string to any note using LilyPond's
+compact encoding — `^` flat, `-` natural, `v` sharp, one character per pedal
+in order D C B | E F G A (the `|` divides left-foot from right-foot pedals).
+Renders as a small glyph row above the stave at that note's position.
+
+Guidance:
+- Prefer inline `music:` for anything you'd describe in one sentence of music.
+- Use the fenced block once you need more than ~4 notes, a chord symbol on
+  every note, tablature, or a harp pedal diagram — trying to cram those into
+  the inline form produces an unreadable one-liner.
+- Don't fabricate `harpPedal` strings unless the user's context specifies
+  actual pedal positions; it's a niche feature, not a default decoration.''',
+        'color': '#9333ea',
     },
 ]
