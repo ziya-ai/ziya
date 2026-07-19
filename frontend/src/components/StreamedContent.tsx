@@ -156,7 +156,22 @@ export const StreamedContent: React.FC<{}> = () => {
     }, [activeSwarmInfo, delegateStatusKey]);
 
     // Track if we have any streamed content to show
-    const hasStreamedContent = streamedContentMap.has(currentConversationId) &&
+    // Guard against a race in chatApi.ts's readStream(): addMessageToConversation
+    // (commits the final message to currentMessages) and removeStreamingConversation
+    // (clears this conversation's streamedContentMap entry) are two separate
+    // setState calls. If they land in different React commits — e.g. because
+    // removeStreamingConversation happens in an async finally block — there is
+    // a window where currentMessages already has the assistant reply AND
+    // streamedContentMap still holds the same content, causing this streaming
+    // bubble and Conversation.tsx's committed-message bubble to both render
+    // "AI:" simultaneously. Suppress the streaming bubble as soon as the
+    // trailing message in currentMessages matches the streamed content.
+    const lastMessage = currentMessages[currentMessages.length - 1];
+    const streamedContentAlreadyCommitted =
+        lastMessage?.role === 'assistant' &&
+        lastMessage.content === streamedContentMap.get(currentConversationId);
+    const hasStreamedContent = !streamedContentAlreadyCommitted &&
+        streamedContentMap.has(currentConversationId) &&
         streamedContentMap.get(currentConversationId) !== '';
 
     // Enhanced thinking indicator logic
@@ -625,7 +640,7 @@ export const StreamedContent: React.FC<{}> = () => {
             }
         };
 
-        document.addEventListener('preservedContent', handlePreservedContent as EventListener);
+        document.addEventListener('preservedContent', handlePreservedContent as unknown as EventListener);
 
         // Handle authentication error retry events
         const handleRetryAuthError = async (event: CustomEvent) => {
@@ -643,6 +658,9 @@ export const StreamedContent: React.FC<{}> = () => {
             // the conversation so the user doesn't see a stale error block once
             // the retry succeeds.  The error message is identifiable by the
             // auth-error-retry-button class embedded in its HTML content.
+            // Also remove the preserved partial-turn message (marked with
+            // ziya-auth-interrupted) that immediately precedes the banner,
+            // since the retry will regenerate that turn from scratch.
             setConversations(prev => prev.map(conv => {
                 if (conv.id !== retryConversationId) return conv;
                 // Walk backwards to find and remove the error message
@@ -652,6 +670,11 @@ export const StreamedContent: React.FC<{}> = () => {
                         typeof msgs[i].content === 'string' &&
                         msgs[i].content.includes('auth-error-retry-button')) {
                         msgs.splice(i, 1);
+                        if (i > 0 && msgs[i - 1].role === 'assistant' &&
+                            typeof msgs[i - 1].content === 'string' &&
+                            msgs[i - 1].content.includes('ziya-auth-interrupted')) {
+                            msgs.splice(i - 1, 1);
+                        }
                         break;
                     }
                 }
@@ -672,8 +695,23 @@ export const StreamedContent: React.FC<{}> = () => {
                 // Clear the error message and retry
                 // Filter out the error message as well — currentMessages may
                 // not yet reflect the state update above due to React batching.
-                const messagesToSend = currentMessages
-                    .filter(msg => !msg.muted && !(msg.role === 'assistant' && typeof msg.content === 'string' && msg.content.includes('auth-error-retry-button')));
+                // Strip the banner and its adjacent preserved-partial message
+                // (ziya-auth-interrupted) so the regenerated turn doesn't get
+                // the stale partial as context.
+                const messagesToSend = currentMessages.filter(msg => !msg.muted);
+                for (let i = messagesToSend.length - 1; i >= 0; i--) {
+                    if (messagesToSend[i].role === 'assistant' &&
+                        typeof messagesToSend[i].content === 'string' &&
+                        messagesToSend[i].content.includes('auth-error-retry-button')) {
+                        messagesToSend.splice(i, 1);
+                        if (i > 0 && messagesToSend[i - 1].role === 'assistant' &&
+                            typeof messagesToSend[i - 1].content === 'string' &&
+                            messagesToSend[i - 1].content.includes('ziya-auth-interrupted')) {
+                            messagesToSend.splice(i - 1, 1);
+                        }
+                        break;
+                    }
+                }
 
                 // Mark the conversation as streaming so the UI reflects the retry
                 addStreamingConversation(retryConversationId);
@@ -689,7 +727,7 @@ export const StreamedContent: React.FC<{}> = () => {
             }
         };
 
-        window.addEventListener('retryAuthError', handleRetryAuthError as EventListener);
+        window.addEventListener('retryAuthError', handleRetryAuthError as unknown as EventListener);
 
         // Handle context-error retry events.  Mirror of handleRetryAuthError:
         // the user has (hopefully) reduced context or switched models, now resend
@@ -749,7 +787,7 @@ export const StreamedContent: React.FC<{}> = () => {
             }
         };
 
-        window.addEventListener('retryContextError', handleRetryContextError as EventListener);
+        window.addEventListener('retryContextError', handleRetryContextError as unknown as EventListener);
 
         // Handle stream-interruption auto-retry.  Fired by chatApi when a
         // stream read error occurs (network drop, OS sleep, etc.).  Strips the
@@ -808,13 +846,13 @@ export const StreamedContent: React.FC<{}> = () => {
             }
         };
 
-        window.addEventListener('retryStreamInterruption', handleRetryStreamInterruption as EventListener);
+        window.addEventListener('retryStreamInterruption', handleRetryStreamInterruption as unknown as EventListener);
 
         return () => {
-            document.removeEventListener('preservedContent', handlePreservedContent as EventListener);
-            window.removeEventListener('retryAuthError', handleRetryAuthError as EventListener);
-            window.removeEventListener('retryContextError', handleRetryContextError as EventListener);
-            window.removeEventListener('retryStreamInterruption', handleRetryStreamInterruption as EventListener);
+            document.removeEventListener('preservedContent', handlePreservedContent as unknown as EventListener);
+            window.removeEventListener('retryAuthError', handleRetryAuthError as unknown as EventListener);
+            window.removeEventListener('retryContextError', handleRetryContextError as unknown as EventListener);
+            window.removeEventListener('retryStreamInterruption', handleRetryStreamInterruption as unknown as EventListener);
         };
     }, [
         currentConversationId,
