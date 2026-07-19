@@ -20,3 +20,10 @@ temp_merge/
 # Bug-specific analysis documents (keep local)
 *_FIX_SUMMARY.md
 build-warnings
+build-errors.txt
+bedrock_profile_results.json
+CODE_QUALITY_REPORT.md
+
+# Personal dev scratch files (keep local)
+commands
+whatisziya

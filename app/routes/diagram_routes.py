@@ -83,7 +83,8 @@ async def render_diagram(request: DiagramRenderRequest) -> Response:
         spec["title"] = request.title
 
     try:
-        renderer = await get_diagram_renderer()
+        from app.config.env_registry import ziya_env
+        renderer = await get_diagram_renderer(server_port=ziya_env("ZIYA_PORT"))
         image_bytes = await renderer.render_diagram(
             spec,
             format=request.format,
