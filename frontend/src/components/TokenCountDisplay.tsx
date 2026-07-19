@@ -230,13 +230,13 @@ export const TokenCountDisplay = memo(() => {
                                         setAstTokenCount(pollData.token_count);
                                     }
                                     if (!pollData.is_indexing || pollData.is_complete) {
-                                        clearInterval(pollForCompletion);
+                                        if (pollForCompletion) clearInterval(pollForCompletion);
                                         pollForCompletion = null;
                                     }
                                 }
                             } catch (error) {
                                 console.debug('Error polling AST status:', error);
-                                clearInterval(pollForCompletion);
+                                if (pollForCompletion) clearInterval(pollForCompletion);
                                 pollForCompletion = null;
                             }
                         }, 3000);
@@ -800,8 +800,8 @@ export const TokenCountDisplay = memo(() => {
             }
         };
 
-        window.addEventListener('messagesMutedChanged', handleMuteChange as EventListener);
-        return () => window.removeEventListener('messagesMutedChanged', handleMuteChange as EventListener);
+        window.addEventListener('messagesMutedChanged', handleMuteChange as unknown as EventListener);
+        return () => window.removeEventListener('messagesMutedChanged', handleMuteChange as unknown as EventListener);
     }, [currentConversationId]);
     // Listen for conversation updates (including mute changes)
     useEffect(() => {

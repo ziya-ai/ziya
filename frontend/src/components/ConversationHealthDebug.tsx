@@ -64,7 +64,7 @@ const ConversationHealthDebug: React.FC = () => {
             }
             
             // Check for emergency recovery data
-            let emergencyRecoveryData = { exists: false };
+            let emergencyRecoveryData: { exists: boolean; data?: any; size?: number } = { exists: false };
             try {
                 const emergencyBackup = localStorage.getItem('ZIYA_EMERGENCY_CONVERSATION_RECOVERY');
                 if (emergencyBackup) {
