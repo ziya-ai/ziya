@@ -285,32 +285,38 @@ class _StdoutSink:
                 print(_c("90", f"  ↻ iteration {idx}"))
 
 
-def _iter_task_blocks(block):
-    """Yield every ``task`` block in the tree, depth-first."""
+def _iter_task_blocks(block, ancestors=()):
+    """Yield ``(task_block, ancestor_scopes)`` for every ``task`` block in
+    the tree, depth-first.  ``ancestor_scopes`` is the root→parent tuple of
+    scopes above the yielded block (its own scope is NOT included)."""
     if getattr(block, "block_type", None) == "task":
-        yield block
+        yield block, ancestors
     for child in (getattr(block, "body", None) or []):
-        yield from _iter_task_blocks(child)
+        yield from _iter_task_blocks(child, ancestors + (getattr(block, "scope", None),))
 
 
-def _warn_unauthorized_scopes(root_block) -> None:
+def _warn_unauthorized_scopes(root_block, deck_scope=None, card_scope=None) -> None:
     """Notice (not enforcement) for task blocks whose escalating scope is
     not signed-authorized.  Those will run at the default floor — shell
     grants dropped, write flags stripped — exactly as the GUI does.
 
-    Uses the SAME key (``block.id``) and predicate the executor enforces
-    with: task_executor calls ``authorize_scope(block.id, scope)``, which
-    is ``scope if is_scope_authorized(block.id, scope) else floor``.  So a
-    block flagged here is exactly one the executor will down-scope — the
-    notice cannot disagree with what actually runs.
+    Uses the SAME key (``block.id``) and the SAME effective-scope merge
+    (deck + card + ancestors + own — see
+    ``block_executor.ExecutionContext.effective_scope``) that the executor
+    enforces with: task_executor calls ``authorize_scope(block.id, scope)``
+    on the merged scope, which is ``scope if is_scope_authorized(block.id,
+    scope) else floor``.  So a block flagged here is exactly one the
+    executor will down-scope — the notice cannot disagree with what
+    actually runs.
     """
     from app.utils.scope_approvals import is_scope_authorized
     unauth = []
-    for blk in _iter_task_blocks(root_block):
-        if blk.scope is None:
+    for blk, ancestor_scopes in _iter_task_blocks(root_block):
+        scope_chain = (deck_scope, card_scope) + ancestor_scopes + (blk.scope,)
+        if not any(s is not None for s in scope_chain):
             continue
         try:
-            if not is_scope_authorized(blk.id, blk.scope):
+            if not is_scope_authorized(blk.id, *scope_chain):
                 unauth.append(blk)
         except Exception as e:  # noqa: BLE001 — a check failure must not block the run
             logger.debug("scope auth check failed for block %s: %s", blk.id, e)
@@ -345,12 +351,18 @@ async def run_card(root: str, card_ref: str, stream: bool = True) -> int:
                   " to see available cards.", file=sys.stderr)
         return 1
 
+    from app.storage.projects import ProjectStorage
+    from app.utils.paths import get_ziya_home
+    proj = ProjectStorage(get_ziya_home()).get(project_id)
+    deck_scope = getattr(proj.settings, "taskScope", None) if proj else None
+
     run_id = f"cli-{uuid.uuid4().hex[:12]}"
     ctx = ExecutionContext(
         run_id=run_id,
         project_root=root,
         project_id=project_id,
         storage=None,  # no run persistence for a one-shot CLI run (v1)
+        deck_scope=deck_scope, card_scope=card.scope,
     )
 
     print(_c("36", f"▶ Running card '{card.name}' ({card.root.block_type})") +
@@ -359,7 +371,7 @@ async def run_card(root: str, card_ref: str, stream: bool = True) -> int:
     # (B) Surface un-approved escalations BEFORE running, so the operator
     # knows the card is about to run at the floor rather than discovering it
     # afterward.  Reporting only — the executor independently enforces.
-    _warn_unauthorized_scopes(card.root)
+    _warn_unauthorized_scopes(card.root, deck_scope=deck_scope, card_scope=card.scope)
 
     # (A) Live streaming: register a stdout sink with the same relay the GUI
     # WebSocket uses.  task_executor already pushes events because ctx.run_id

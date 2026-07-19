@@ -285,6 +285,8 @@ async def _fire_one(target: _ScheduledCard) -> None:
     project_dir = get_project_dir(target.project_id)
     run_storage = TaskRunStorage(project_dir)
     card_storage = TaskCardStorage(project_dir)
+    card = card_storage.get(target.card_id)
+    card_scope = getattr(card, "scope", None) if card is not None else None
 
     run = run_storage.create(TaskRunCreate(
         card_id=target.card_id, source_conversation_id=None,
@@ -323,9 +325,20 @@ async def _fire_one(target: _ScheduledCard) -> None:
     async def _go() -> None:
         try:
             run_storage.update_status(run.id, "running")
+            from ..storage.projects import ProjectStorage
+            proj = ProjectStorage(get_ziya_home()).get(target.project_id)
+            deck_scope = getattr(proj.settings, "taskScope", None) if proj else None
             ctx = ExecutionContext(
                 run_id=run.id, project_root=None,
                 project_id=target.project_id, storage=run_storage,
+                deck_scope=deck_scope, card_scope=card_scope,
+                # _resolve_body_root promotes the schedule's body to a
+                # synthetic new root (or unwraps to a single child), so
+                # the schedule block itself is never re-visited by
+                # execute_block.  Seed its own scope onto the stack so
+                # it still contributes to the effective-scope merge for
+                # everything the fire executes.
+                scope_stack=[target.block.scope],
             )
             artifact = await execute_block(target.body_root, ctx)
             run_storage.set_artifact(run.id, artifact)

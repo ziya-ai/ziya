@@ -175,6 +175,17 @@ def _mcp_config_path() -> Path:
     override = os.environ.get("ZIYA_APPROVE_CONFIG")
     if override:
         return Path(override)
+    # Mirror app.utils.paths.get_ziya_home()'s ZIYA_HOME override, which the
+    # server (writer of ~/.ziya/.approval_max_ttl and mcp_config.json) honors
+    # first. Without this the writer would drop those files under $ZIYA_HOME
+    # while this signer looked under SUDO_USER's ~/.ziya, so the auto-stamp
+    # breadcrumb would never be found and every approval would be minted
+    # unbounded. ZIYA_HOME is an absolute, user-agnostic path, so it applies
+    # identically under sudo. Resolve only — never mkdir/chmod here: this runs
+    # as root under sudo and must not create or re-own dirs in the user's tree.
+    ziya_home = os.environ.get("ZIYA_HOME")
+    if ziya_home:
+        return Path(ziya_home) / "mcp_config.json"
     sudo_user = os.environ.get("SUDO_USER")
     if sudo_user:
         # Best-effort: the real user's ~/.ziya, not root's.
@@ -503,9 +514,52 @@ def _find_block(block, target_id):
     return None
 
 
-def _render_task_escalation(block_obj) -> str:
-    """Human-readable preview of a task block's privilege-bearing escalation."""
-    esc = sc.task_escalation_block(getattr(block_obj, "scope", None))
+def _find_block_with_ancestors(block, target_id, ancestors=()):
+    """Like ``_find_block`` but also returns the root→parent tuple of
+    ancestor scopes above the match, so the caller can hash/sign the
+    block's EFFECTIVE (merged) escalation rather than just its own.
+    Returns ``(block, ancestor_scopes)`` or ``None`` if not found."""
+    if getattr(block, "id", None) == target_id:
+        return block, ancestors
+    for child in (getattr(block, "body", None) or []):
+        hit = _find_block_with_ancestors(
+            child, target_id, ancestors + (getattr(block, "scope", None),))
+        if hit is not None:
+            return hit
+    return None
+
+
+def _resolve_deck_scope(project_id: str):
+    """Read a project's deck-level (project-wide) taskScope, namespace-
+    wrapped.  Decrypt-soft (mirrors ``_resolve_card``): returns None on
+    any unreadable/undecryptable/malformed project.json, or when the
+    project has no deck scope configured — never raises."""
+    from app.utils.paths import get_project_dir
+    project_dir = (
+        Path(os.environ["ZIYA_APPROVE_PROJECTS_DIR"]) / project_id
+        if os.environ.get("ZIYA_APPROVE_PROJECTS_DIR")
+        else get_project_dir(project_id)
+    )
+    try:
+        raw = (project_dir / "project.json").read_bytes()
+    except OSError:
+        return None
+    from app.utils.encryption import is_encrypted, get_encryptor
+    try:
+        text = get_encryptor().decrypt(raw) if is_encrypted(raw) else raw.decode("utf-8")
+        data = json.loads(text)
+    except Exception:  # noqa: BLE001 — no KEK out-of-process; deck scope unknown
+        return None
+    if not isinstance(data, dict):
+        return None
+    return _ns((data.get("settings") or {}).get("taskScope"))
+
+
+def _render_task_escalation(*scopes) -> str:
+    """Human-readable preview of the EFFECTIVE (merged) privilege-bearing
+    escalation across one or more scope layers — deck, card, ancestors,
+    and the target block's own scope, in that order."""
+    esc = sc.task_escalation_block(*scopes)
     if not esc:
         return "  (no escalation beyond the default floor — nothing to approve)"
     lines = []
@@ -568,11 +622,24 @@ def _approve_task(project_id: str, card_id: str, block_id: str,
     from app.utils import scope_approvals as sa
 
     card = _resolve_card(project_id, card_id)
-    block_obj = _find_block(card.root, block_id) if card is not None else None
-    if block_obj is None:
+    found = _find_block_with_ancestors(card.root, block_id) if card is not None else None
+    if found is not None:
+        block_obj, ancestor_scopes = found
+        # Full effective chain: deck scope (project-wide) + card scope +
+        # every ancestor container block's scope + the target block's own.
+        # Matches EXACTLY what ExecutionContext.effective_scope grants at
+        # run time — see app/agents/block_executor.py.
+        deck_scope = _resolve_deck_scope(project_id)
+        card_scope = getattr(card, "scope", None)
+        scope_chain = (deck_scope, card_scope) + ancestor_scopes + (getattr(block_obj, "scope", None),)
+    else:
         # Card missing/plaintext-absent, OR encrypted and undecryptable by the
-        # out-of-process signer. Fall back to the server-staged decrypted scope.
+        # out-of-process signer. Fall back to the server-staged decrypted
+        # scope — the server (which holds the KEK) already staged the FULL
+        # EFFECTIVE (merged) scope via get_card_scope_status, so this is
+        # already a single, complete chain of one.
         block_obj = _resolve_staged_block(project_id, card_id, block_id)
+        scope_chain = (getattr(block_obj, "scope", None),) if block_obj is not None else ()
     if block_obj is None:
         sys.stderr.write(
             f"Block {block_id!r} not found for card {card_id!r}.\n"
@@ -581,15 +648,15 @@ def _approve_task(project_id: str, card_id: str, block_id: str,
         )
         return 2
 
-    scope = getattr(block_obj, "scope", None)
-    scope_hash = sc.task_scope_hash(scope)
+    scope_hash = sc.task_scope_hash(*scope_chain)
 
     sys.stdout.write(
         f"Task card: {card_id}  block: {block_id} "
         f"({getattr(block_obj, 'name', '')!r})\n"
     )
-    sys.stdout.write("Pending task-scope escalation (vs default floor):\n")
-    sys.stdout.write(_render_task_escalation(block_obj) + "\n")
+    sys.stdout.write("Pending EFFECTIVE task-scope escalation (deck + card + "
+                     "ancestors + block, vs default floor):\n")
+    sys.stdout.write(_render_task_escalation(*scope_chain) + "\n")
 
     if not scope_hash:
         sys.stdout.write("Nothing to approve.\n")

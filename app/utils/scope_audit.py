@@ -82,12 +82,16 @@ def _ns(obj: Any) -> Any:
     return obj
 
 
-def _iter_task_blocks(block: Any) -> Iterator[Any]:
-    """Depth-first yield of every ``task`` block in a card tree."""
+def _iter_task_blocks(block: Any, ancestors: tuple = ()) -> Iterator[tuple]:
+    """Depth-first yield of ``(task_block, ancestor_scopes)`` for every
+    ``task`` block in a card tree.  ``ancestor_scopes`` is the root→parent
+    tuple of scopes above the yielded block (its own scope is NOT
+    included — callers merge it in themselves via
+    ``sc.task_escalation_block(deck, card, *ancestor_scopes, own)``)."""
     if getattr(block, "block_type", None) == "task":
-        yield block
+        yield block, ancestors
     for child in (getattr(block, "body", None) or []):
-        yield from _iter_task_blocks(child)
+        yield from _iter_task_blocks(child, ancestors + (getattr(block, "scope", None),))
 
 
 def _projects_base() -> Path:
@@ -134,6 +138,27 @@ def _read_card_root(card_file: Path) -> Optional[Any]:
     return _ns(data)
 
 
+def _read_project_deck_scope(project_dir: Path) -> Optional[Any]:
+    """Read a project's deck-level (project-wide) taskScope, namespace-
+    wrapped.  Mirrors ``_read_card_root``'s decrypt-soft contract: never
+    raises, returns None on any unreadable/undecryptable/malformed file
+    or when the project has no deck scope configured."""
+    project_file = project_dir / "project.json"
+    try:
+        raw = project_file.read_bytes()
+    except OSError:
+        return None
+    from app.utils.encryption import is_encrypted, get_encryptor
+    try:
+        text = get_encryptor().decrypt(raw) if is_encrypted(raw) else raw.decode("utf-8")
+        data = json.loads(text)
+    except Exception:  # noqa: BLE001 — decrypt-soft; report as no deck scope
+        return None
+    if not isinstance(data, dict):
+        return None
+    return _ns((data.get("settings") or {}).get("taskScope"))
+
+
 def collect_card_entries(
     projects_base: Optional[Path] = None,
     public_key_path: Optional[str] = None,
@@ -149,20 +174,24 @@ def collect_card_entries(
         tc_dir = project_dir / "task_cards"
         if not tc_dir.is_dir():
             continue
+        deck_scope = _read_project_deck_scope(project_dir)
         for card_file in sorted(tc_dir.glob("*.json")):
             root = _read_card_root(card_file)
             if root is None:
                 encrypted += 1  # encrypted-uninspectable or malformed
                 continue
             card_name = getattr(root, "name", None) or card_file.stem
-            for blk in _iter_task_blocks(getattr(root, "root", root)):
-                scope = getattr(blk, "scope", None)
-                esc = sc.task_escalation_block(scope)
+            card_scope = getattr(root, "scope", None)
+            for blk, ancestor_scopes in _iter_task_blocks(getattr(root, "root", root)):
+                own_scope = getattr(blk, "scope", None)
+                scope_chain = (deck_scope, card_scope) + ancestor_scopes + (own_scope,)
+                esc = sc.task_escalation_block(*scope_chain)
                 if not esc:
                     continue  # no privilege-bearing escalation
                 block_id = getattr(blk, "id", "") or ""
                 try:
-                    signed = sa.is_scope_authorized(block_id, scope, public_key_path)
+                    signed = sa.is_scope_authorized(
+                        block_id, *scope_chain, public_key_path=public_key_path)
                 except Exception as e:  # noqa: BLE001 — a check failure is "unsigned"
                     logger.debug("card scope auth check failed for %s: %s", block_id, e)
                     signed = False
@@ -172,7 +201,7 @@ def collect_card_entries(
                     store_key=block_id,
                     location=project_dir.name,
                     escalation=esc,
-                    scope_hash=sc.task_scope_hash(scope),
+                    scope_hash=sc.task_scope_hash(*scope_chain),
                     signed=signed,
                 ))
     return entries, encrypted
