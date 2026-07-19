@@ -20,6 +20,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from .region_extraction import extract_fenced_regions
+
 
 # Shell-typed fence opening: ```bash, ```sh, ```shell, ```zsh,
 # ```console, ```terminal (case-insensitive, optional whitespace).
@@ -27,11 +29,6 @@ _SHELL_FENCE_OPEN_RE = re.compile(
     r'^`{3,}[ \t]*(bash|sh|shell|zsh|console|terminal)\s*$',
     re.IGNORECASE | re.MULTILINE,
 )
-
-# Generic fence opening: 3+ backticks at start of line.  The captured
-# backtick run length is used to build a matching-or-longer close regex
-# per CommonMark rules -- a 4-backtick open requires 4+ to close.
-_FENCE_OPEN_RE = re.compile(r'^(`{3,})', re.MULTILINE)
 
 # grep -n / grep -rn output: one or more digits, colon, content.  Real
 # grep output has NO whitespace between the colon and the content
@@ -140,38 +137,6 @@ class FakeShellMatch:
     fence_body_full: str = ""
 
 
-def _extract_fence_bodies(text: str) -> list[str]:
-    """
-    Return the bodies of all completed fenced code blocks in *text*.
-
-    'Completed' means both the opening ``` and closing ``` are present.
-    Only the body text (between the fences, exclusive) is returned.
-    """
-    bodies: list[str] = []
-    pos = 0
-    while pos < len(text):
-        open_m = _FENCE_OPEN_RE.search(text, pos)
-        if open_m is None:
-            break
-        # Body starts after the newline that ends the opening fence line.
-        body_start = text.find('\n', open_m.start())
-        if body_start == -1:
-            break
-        body_start += 1  # skip the newline itself
-        # Find the matching close fence -- must have >= as many backticks.
-        open_ticks = open_m.group(1)
-        close_re = re.compile(
-            rf'^`{{{len(open_ticks)},}}\s*$',
-            re.MULTILINE,
-        )
-        close_m = close_re.search(text, body_start)
-        if close_m is None:
-            break  # unclosed — skip; stream may still be arriving
-        bodies.append(text[body_start:close_m.start()])
-        pos = close_m.end()
-    return bodies
-
-
 def _is_shell_fence(opening_line: str) -> bool:
     """True if the fence opening line declares a shell language."""
     return bool(_SHELL_FENCE_OPEN_RE.match(opening_line.rstrip()))
@@ -186,35 +151,14 @@ def detect_fake_shell_session(text: str) -> FakeShellMatch | None:
     as a complete block, so token-by-token accumulation of output-looking
     content inside a fence is itself the fabrication signal.
     """
-    pos = 0
-    while pos < len(text):
-        open_m = _FENCE_OPEN_RE.search(text, pos)
-        if open_m is None:
-            break
-
-        # Extract the opening line to check language tag.
-        open_line_end = text.find('\n', open_m.start())
-        if open_line_end == -1:
-            break
-        opening_line = text[open_m.start():open_line_end]
-
-        body_start = open_line_end + 1
-        # Close fence must have at least as many backticks as the open.
-        open_ticks = open_m.group(1)
-        close_re = re.compile(
-            rf'^`{{{len(open_ticks)},}}\s*$',
-            re.MULTILINE,
-        )
-        close_m = close_re.search(text, body_start)
-        if close_m is None:
-            # Fence is still open (streaming).  Scan whatever has arrived.
-            # If evidence threshold is met we fire now rather than waiting --
-            # token-by-token delivery of output lines IS the fabrication signal.
-            body = text[body_start:]
-            pos = len(text)  # nothing left to scan after this
-        else:
-            body = text[body_start:close_m.start()]
-            pos = close_m.end()
+    # Fence enumeration is delegated to the shared extractor. It reproduces
+    # this detector's historical backtick-only, no-indent grammar exactly
+    # (see extract_fenced_regions' grammar note), and yields the trailing
+    # UNCLOSED fence as its final region so streaming detection is preserved.
+    for region in extract_fenced_regions(text):
+        opening_line = region.opening_line
+        open_ticks = region.marker
+        body = region.body
 
         # Structural skip: if the fence body contains a *matched* inner
         # fence pair (open + close of strictly fewer backticks than the
@@ -259,10 +203,18 @@ def detect_fake_shell_session(text: str) -> FakeShellMatch | None:
             # Coalesce `\`-continued lines so a multi-line curl/find/etc.
             # counts as ONE command, not (command + N output lines).
             coalesced = _coalesce_continuations(body)
-            prompt_lines = _PROMPT_LINE_RE.findall(coalesced)
+            # Count ONLY strict `$ ` prompts here, not `# ` — a `#`-leading
+            # line inside a bash fence is a shell COMMENT (e.g. section
+            # headers in a block of commands written for the user to run),
+            # not a fabricated root prompt. The loose `[$#]` regex counted
+            # those comments as prompts, so a legitimate ```bash block of
+            # user-facing commands with `# 1. ...` / `# 2. ...` headers was
+            # scored as prompt+output and killed as a fake session. This
+            # matches the strictness the entry gate already applies.
+            prompt_lines = _STRICT_DOLLAR_PROMPT_RE.findall(coalesced)
             output_lines = [
                 l for l in coalesced.splitlines()
-                if l.strip() and not _PROMPT_LINE_RE.match(l)
+                if l.strip() and not _STRICT_DOLLAR_PROMPT_RE.match(l)
             ]
             # At least one prompt line and two output lines together
             # constitute a fake session.
