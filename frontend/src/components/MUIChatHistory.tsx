@@ -3,6 +3,7 @@ import { FixedSizeList, ListProps as ReactWindowListProps } from 'react-window';
 import { message, Modal, Form, Spin, Input, Switch, Dropdown, Menu as AntMenu } from 'antd';
 import { ConversationHealthDebugModal } from './ConversationHealthDebug';
 import ExportConversationModal from './ExportConversationModal';
+import ConversationInfoModal from './ConversationInfoModal';
 import { useConversationList } from '../context/ConversationListContext';
 import { useActiveChat } from '../context/ActiveChatContext';
 import { useStreamingContext } from '../context/StreamingContext';
@@ -12,7 +13,9 @@ import { Conversation, ConversationFolder, SearchResult } from '../utils/types';
 import SwarmRecoveryPanel from './SwarmRecoveryPanel';
 import { db } from '../utils/db';
 import { folderIsEffectivelyGlobal, conversationIsEffectivelyGlobal, globalMenuItemState } from '../utils/folderUtil';import { v4 as uuidv4 } from 'uuid';
+import { sortComparator } from '../utils/chatTreeSort';
 import type { DelegateMeta, TaskPlan, DelegateStatus } from '../types/delegate';
+import { CONVERSATION_FLAG_LABELS, CONVERSATION_FLAG_COLORS, getFlagColorDef } from '../utils/conversationFlags';
 // MUI imports
 import { styled } from '@mui/material/styles';
 import Typography from '@mui/material/Typography';
@@ -51,6 +54,7 @@ import AddCommentIcon from '@mui/icons-material/AddComment';
 import {
   EditOutlined,
   DeleteOutlined,
+  InfoCircleOutlined,
   CopyOutlined as AntCopyOutlined,
   CompressOutlined as AntCompressOutlined,
   SettingOutlined as AntSettingOutlined,
@@ -61,6 +65,7 @@ import {
   SwapOutlined as AntSwapOutlined,
   BranchesOutlined as AntBranchesOutlined,
   CheckSquareOutlined as AntCheckSquareOutlined,
+  FlagOutlined as AntFlagOutlined,
 } from '@ant-design/icons';
 
 // Spinning animation for the loading icon
@@ -117,6 +122,11 @@ interface ChatTreeItemProps {
   // the work-item queue is built (design/work-primitives-taxonomy.md).
   openBeadCount?: number;
   openWorkItemCount?: number;
+  // Conversation flags (triage). Folders never carry flags today.
+  flags?: string[];
+  flagColor?: string | null;
+  onToggleFlag?: (id: string, flagId: string) => void;
+  onSetFlagColor?: (id: string, colorId: string | null) => void;
   onEdit: (id: string) => void;
   onDelete: (id: string) => void;
   onAddChat: (id: string) => void;
@@ -125,9 +135,11 @@ interface ChatTreeItemProps {
   onFork: (id: string) => void;
   onCompress: (id: string) => void;
   onExport?: (id: string) => void;
+  onInfo?: (id: string) => void;
   onMove: (id: string, folderId: string | null) => void;
   onToggleGlobal?: (id: string) => void;
   onMoveToProject?: (id: string, anchorEl: HTMLElement) => void;
+  onCopyToProject?: (id: string, anchorEl: HTMLElement) => void;
   onOpenMoveMenu?: (id: string, anchorEl: HTMLElement) => void;
   onPromoteEphemeral?: (id: string) => void;
   onCreateSubfolder?: (id: string) => void;
@@ -140,7 +152,6 @@ interface ChatTreeItemProps {
   depth?: number;
   isExpanded?: boolean;
   hasChildren?: boolean;
-  onToggleExpand?: (nodeId: string) => void;
   children?: React.ReactNode;
   isDragOver?: boolean;
   className?: string;
@@ -172,6 +183,10 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     conversationCount = 0,
     openBeadCount = 0,
     openWorkItemCount = 0,
+    flags = [],
+    flagColor = null,
+    onToggleFlag,
+    onSetFlagColor,
     onEdit,
     onDelete,
     onAddChat,
@@ -200,23 +215,37 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     depth,
     isExpanded,
     hasChildren,
-    onToggleExpand,
     ...other
   } = props;
 
   const { isDarkMode } = useTheme();
   const [isHovered, setIsHovered] = useState(false);
+  // Tracks whether the row's "..." action menu (Dropdown) is actually open,
+  // as reported by antd's onOpenChange. This is distinct from isHovered:
+  // moving the pointer from the row onto the popup menu itself (or briefly
+  // off the row while clicking) would otherwise flip isHovered to false and
+  // unmount the Dropdown mid-interaction, closing/removing the menu before
+  // a selection could be made. Keeping the row's action affordances visible
+  // whenever either the row is hovered OR the menu is open, and never
+  // unmounting the Dropdown itself, keeps the menu stable and clickable.
+  const [isActionMenuOpen, setIsActionMenuOpen] = useState(false);
+  const showRowActions = isHovered || isActionMenuOpen;
   const editInputRef = useRef<HTMLInputElement>(null);
 
   // Focus the edit input when it becomes visible
   useEffect(() => {
-    if (isEditing && editInputRef.current) {
-      setTimeout(() => {
-        if (editInputRef.current) {
-          editInputRef.current.focus();
-        }
-      }, 50);
-    }
+    if (!isEditing) return;
+    const timer = setTimeout(() => {
+      const el = editInputRef.current;
+      // Skip if already focused — the TextField's own autoFocus (or a
+      // prior invocation of this effect) may have already focused it,
+      // and .select() the user has since performed (e.g. Cmd+A) would
+      // otherwise be silently collapsed by this redundant .focus() call.
+      if (el && document.activeElement !== el) {
+        el.focus();
+      }
+    }, 50);
+    return () => clearTimeout(timer);
   }, [isEditing]);
 
   // Handle menu interactions
@@ -256,12 +285,6 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
           ? (isDarkMode ? '#177ddc' : '#e6f7ff')
           : undefined,
         color: props.isCurrentItem && isDarkMode ? '#fff' : undefined,
-      }}
-      onClick={(e) => {
-        // If folder with children, toggle expand on the chevron area or the whole row
-        if (isFolder && hasChildren) {
-          onToggleExpand?.(nodeId);
-        }
       }}
     >
       <div style={{ flex: 1, minWidth: 0 }}>
@@ -360,6 +383,22 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                     <PublicIcon fontSize="small" color="info" sx={{ ml: 0.5, fontSize: 14 }} />
                   </Tooltip>
                 )}
+                {!isFolder && flagColor && (
+                  <Tooltip title={getFlagColorDef(flagColor)?.label || 'Flagged'}>
+                    <span style={{
+                      display: 'inline-block', width: 8, height: 8, borderRadius: '50%',
+                      backgroundColor: getFlagColorDef(flagColor)?.hex || '#999',
+                      marginLeft: 4, flexShrink: 0,
+                    }} />
+                  </Tooltip>
+                )}
+                {!isFolder && flags.length > 0 && (
+                  <Tooltip title={flags.map(fid => CONVERSATION_FLAG_LABELS.find(f => f.id === fid)?.label || fid).join(', ')}>
+                    <span style={{ marginLeft: 4, fontSize: 12, whiteSpace: 'nowrap' }}>
+                      {flags.map(fid => CONVERSATION_FLAG_LABELS.find(f => f.id === fid)?.emoji || '🏳️').join('')}
+                    </span>
+                  </Tooltip>
+                )}
                 {/* Open-work indicators (conversation rows only).  Beads use
                     the branch glyph + amber, matching the BeadTree chip; work
                     items use a check-square.  The work-item count is a shell —
@@ -395,49 +434,60 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'flex-end',
-                  opacity: isHovered ? 1 : 0,
+                  opacity: showRowActions ? 1 : 0,
+                  pointerEvents: showRowActions ? 'auto' : 'none',
                   transition: 'opacity 0.2s ease-in-out'
                 }}>
                   {isFolder && !isTaskPlanFolder && (
-                      isHovered ? (
-                        <Tooltip title="New chat in this folder">
-                          <IconButton
-                            size="small"
-                            onClick={(e) => { e.stopPropagation(); onAddChat(nodeId); }}
-                            sx={{ p: 0.5, mr: 0.5 }}
-                          >
-                            <AddIcon fontSize="small" sx={{ fontSize: '16px' }} />
-                          </IconButton>
-                        </Tooltip>
-                      ) : null
-                  )}
-                    {isHovered ? (
-                      <Dropdown
-                        dropdownRender={() => <AntActionMenu
-                          isFolder={isFolder}
-                          nodeId={nodeId} isTaskPlanFolder={isTaskPlanFolder} onCopyToProject={props.onCopyToProject}
-                          delegateStatus={delegateStatus} onDelegateRetry={props.onDelegateRetry} onDelegateSkip={props.onDelegateSkip}
-                          onSwarmRecovery={props.onSwarmRecovery}
-                          onEdit={onEdit} onDelete={onDelete} onFork={onFork} onCompress={onCompress} onExport={onExport}
-                          onOpenMoveMenu={onOpenMoveMenu}
-                          onToggleGlobal={onToggleGlobal} onMoveToProject={onMoveToProject} isGlobalItem={isGlobalItem}
-                          isEphemeralItem={isEphemeralItem}
-                          isGlobalByInheritanceOnly={isGlobalByInheritanceOnly}
-                          onPromoteEphemeral={(props as any).onPromoteEphemeral}
-                          onConfigure={onConfigure} onPin={onPin} isPinned={isPinned} onCreateSubfolder={onCreateSubfolder}
-                        />}
-                        trigger={['click']}
-                        placement="bottomRight"
+                    <Tooltip title="New chat in this folder">
+                      <IconButton
+                        size="small"
+                        onClick={(e) => { e.stopPropagation(); onAddChat(nodeId); }}
+                        sx={{ p: 0.5, mr: 0.5 }}
                       >
-                        <IconButton size="small" sx={{ p: 0.5 }} onClick={e => e.stopPropagation()} >
-                          <MoreVertIcon fontSize="small" sx={{ fontSize: '16px' }} />
-                        </IconButton>
-                      </Dropdown>
-                    ) : (
-                      <IconButton size="small" sx={{ p: 0.5, opacity: 0, pointerEvents: 'none' }}>
-                        <MoreVertIcon fontSize="small" sx={{ fontSize: '16px' }} />
+                        <AddIcon fontSize="small" sx={{ fontSize: '16px' }} />
                       </IconButton>
-                    )}
+                    </Tooltip>
+                  )}
+                  {/*
+                    Always mount the Dropdown (never conditionally render it on
+                    isHovered). Previously this whole block was swapped for a
+                    disabled placeholder icon the instant isHovered went false,
+                    which unmounted an already-open menu (e.g. while moving the
+                    pointer from the row toward the popup, or during the click
+                    itself) before a selection could register. onOpenChange now
+                    drives isActionMenuOpen so showRowActions keeps the row's
+                    actions visible for as long as the menu is open, regardless
+                    of hover state.
+                  */}
+                  <Dropdown
+                    dropdownRender={() => <AntActionMenu
+                      isFolder={isFolder}
+                      nodeId={nodeId} isTaskPlanFolder={isTaskPlanFolder} onCopyToProject={props.onCopyToProject}
+                      delegateStatus={delegateStatus} onDelegateRetry={props.onDelegateRetry} onDelegateSkip={props.onDelegateSkip}
+                      onSwarmRecovery={props.onSwarmRecovery}
+                      onEdit={onEdit} onDelete={onDelete} onFork={onFork} onCompress={onCompress} onExport={onExport} onInfo={props.onInfo}
+                      onOpenMoveMenu={onOpenMoveMenu}
+                      onToggleGlobal={onToggleGlobal} onMoveToProject={onMoveToProject} isGlobalItem={isGlobalItem}
+                      isEphemeralItem={isEphemeralItem}
+                      isGlobalByInheritanceOnly={isGlobalByInheritanceOnly}
+                      onPromoteEphemeral={(props as any).onPromoteEphemeral}
+                      onConfigure={onConfigure} onPin={onPin} isPinned={isPinned} onCreateSubfolder={onCreateSubfolder}
+                      flags={flags} flagColor={flagColor}
+                      onToggleFlag={onToggleFlag} onSetFlagColor={onSetFlagColor}
+                    />}
+                    trigger={['click']}
+                    placement="bottomRight"
+                    open={isActionMenuOpen}
+                    onOpenChange={setIsActionMenuOpen}
+                  >
+                    <IconButton size="small" sx={{ p: 0.5 }} onClick={e => e.stopPropagation()} >
+                      <MoreVertIcon fontSize="small" sx={{ fontSize: '16px' }} />
+                    </IconButton>
+                  </Dropdown>
+                </Box>
+              </Box>
+            )}
             {isRunningTask && !isStreaming && (
               <Box sx={{
                 display: 'flex',
@@ -449,9 +499,6 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                 <Typography variant="caption" sx={{ fontSize: '11px' }}>
                   Task running…
                 </Typography>
-              </Box>
-            )}
-                </Box>
               </Box>
             )}
             {isStreaming && (
@@ -472,7 +519,27 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     </div>
   );
 });
-const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress, onExport, onOpenMoveMenu, onToggleGlobal, onMoveToProject, onCopyToProject, isGlobalItem, isGlobalByInheritanceOnly, isEphemeralItem, onPromoteEphemeral, onConfigure, onPin, isPinned, onCreateSubfolder, isTaskPlanFolder, onSwarmRecovery, delegateStatus, onDelegateRetry, onDelegateSkip }) => {
+
+// Globe with a diagonal slash — the "Stop sharing across projects" (un-share)
+// action.  Visually distinct from the plain globe (share) and from the
+// pushpin the real "Pin to Top" action uses, so the sharing control never
+// reads as a pin.
+const GlobalUnshareIcon = () => (
+  <span style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
+    <AntGlobalOutlined />
+    <span style={{
+      position: 'absolute',
+      left: '50%',
+      top: '50%',
+      width: '140%',
+      height: 0,
+      borderTop: '1.5px solid currentColor',
+      transform: 'translate(-50%, -50%) rotate(-45deg)',
+      pointerEvents: 'none',
+    }} />
+  </span>
+);
+const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress, onExport, onOpenMoveMenu, onToggleGlobal, onMoveToProject, onCopyToProject, isGlobalItem, isGlobalByInheritanceOnly, isEphemeralItem, onPromoteEphemeral, onConfigure, onPin, isPinned, onCreateSubfolder, isTaskPlanFolder, onSwarmRecovery, delegateStatus, onDelegateRetry, onDelegateSkip, flags, flagColor, onToggleFlag, onSetFlagColor, onInfo }) => {
   const handleAntAction = (actionCallback: (id: string) => void, originalEvent?: React.MouseEvent | Event) => {
     originalEvent?.stopPropagation();
     actionCallback(nodeId);
@@ -507,6 +574,32 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
       { key: 'fork', label: 'Fork', icon: <AntCopyOutlined />, onClick: (e) => handleAntAction(onFork, e.domEvent) },
       { key: 'compress', label: 'Compress', icon: <AntCompressOutlined />, onClick: (e) => handleAntAction(onCompress, e.domEvent) },
       {
+        key: 'flags',
+        label: 'Flags',
+        icon: <AntFlagOutlined />,
+        children: [
+          ...CONVERSATION_FLAG_LABELS.map(f => ({
+            key: `flag-label-${f.id}`,
+            label: `${(flags || []).includes(f.id) ? '✅ ' : ''}${f.emoji} ${f.label}`,
+            onClick: (e) => { e.domEvent.stopPropagation(); onToggleFlag && onToggleFlag(nodeId, f.id); },
+          })),
+          { type: 'divider' as const },
+          ...CONVERSATION_FLAG_COLORS.map(c => ({
+            key: `flag-color-${c.id}`,
+            label: `${flagColor === c.id ? '✅ ' : ''}${c.label}`,
+            icon: <span style={{
+              display: 'inline-block', width: 10, height: 10, borderRadius: '50%', backgroundColor: c.hex,
+            }} />,
+            onClick: (e) => { e.domEvent.stopPropagation(); onSetFlagColor && onSetFlagColor(nodeId, flagColor === c.id ? null : c.id); },
+          })),
+          { type: 'divider' as const },
+          {
+            key: 'flag-color-clear', label: 'Clear color',
+            onClick: (e) => { e.domEvent.stopPropagation(); onSetFlagColor && onSetFlagColor(nodeId, null); },
+          },
+        ],
+      },
+      {
         key: 'move', label: 'Move to folder', icon: <AntFolderOutlined />, onClick: (e) => {
           e.domEvent.stopPropagation();
           onOpenMoveMenu && onOpenMoveMenu(nodeId, e.domEvent.currentTarget as HTMLElement);
@@ -515,7 +608,7 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
       {
         key: 'global-toggle',
         ...(({ label, disabled, tooltip }) => ({ label, disabled, title: tooltip }))(globalMenuItemState(isGlobalItem, !isGlobalByInheritanceOnly && isGlobalItem)),
-        icon: <AntGlobalOutlined />,
+        icon: (isGlobalItem && !isGlobalByInheritanceOnly) ? <GlobalUnshareIcon /> : <AntGlobalOutlined />,
         onClick: (e) => {
           e.domEvent.stopPropagation();
           if (isGlobalByInheritanceOnly) return;
@@ -536,6 +629,7 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
       },
       { key: 'export', label: 'Export', icon: <AntExportOutlined />, onClick: (e) => handleAntAction(onExport, e.domEvent) },
       { type: 'divider' as const },
+      { key: 'info', label: 'Info', icon: <InfoCircleOutlined />, onClick: (e) => { e.domEvent.stopPropagation(); onInfo && onInfo(nodeId); } },
       { key: 'delete', label: 'Delete', icon: <DeleteOutlined />, onClick: (e) => handleAntAction(onDelete, e.domEvent), danger: true }
     );
   } else { // isFolder
@@ -561,8 +655,8 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
       },
       {
         key: 'global-toggle',
-        label: isGlobalByInheritanceOnly ? 'Shared via parent folder' : (isGlobalItem ? '📌 This project only' : '🌐 Share across projects'),
-        icon: <AntGlobalOutlined />,
+        label: isGlobalByInheritanceOnly ? 'Shared via parent folder' : (isGlobalItem ? 'Stop sharing across projects' : 'Share across projects'),
+        icon: (isGlobalItem && !isGlobalByInheritanceOnly) ? <GlobalUnshareIcon /> : <AntGlobalOutlined />,
         disabled: isGlobalByInheritanceOnly,
         title: isGlobalByInheritanceOnly ? 'Shared via a parent folder — unshare the parent to change this' : undefined,
         onClick: (e) => {
@@ -590,45 +684,6 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
 
   return <AntMenu items={items} />;
 };
-
-// Sort comparator extracted so both full-rebuild and sort-only fast path share it.
-function sortComparator(a: any, b: any, taskPlanBoost: Map<string, number>): number {
-  if (a.isPinned && !b.isPinned) return -1;
-  if (!a.isPinned && b.isPinned) return 1;
-
-  const aDel = a.delegateMeta;
-  const bDel = b.delegateMeta;
-  if (aDel && bDel) {
-    if (aDel.role === 'orchestrator' && bDel.role !== 'orchestrator') return -1;
-    if (bDel.role === 'orchestrator' && aDel.role !== 'orchestrator') return 1;
-    return (a.conversation?.lastAccessedAt ?? 0) - (b.conversation?.lastAccessedAt ?? 0);
-  }
-
-  const getTime = (item: any) => {
-    if (item.folder) return item.lastActivityTime > 0 ? item.lastActivityTime : item.createdAt;
-    const ct = item.conversation?.lastAccessedAt ?? 0;
-    const boost = item.conversation?.id ? (taskPlanBoost.get(item.conversation.id) || 0) : 0;
-    // Server summaries use lastActiveAt; IDB-hydrated conversations use lastAccessedAt.
-    const serverTs = item.conversation?.lastActiveAt ?? 0;
-    return Math.max(ct, serverTs, boost);
-  };
-  const aT = getTime(a), bT = getTime(b);
-  if (aT > 0 && bT > 0) return bT - aT;
-  if (aT > 0) return -1;
-  if (bT > 0) return 1;
-
-  if (a.folder && !b.folder) return -1;
-  if (!a.folder && b.folder) return 1;
-  if (!a.folder && !b.folder) {
-    const aA = a.conversation?.lastAccessedAt ?? 0;
-    const bA = b.conversation?.lastAccessedAt ?? 0;
-    if (aA > 0 && bA > 0) return bA - aA;
-    if (aA > 0) return -1;
-    if (bA > 0) return 1;
-    return a.conversation?.id?.localeCompare(b.conversation?.id) || 0;
-  }
-  return 0;
-}
 
 // Re-anchor TaskPlan folders immediately after their source conversation.
 // Sorting may separate them; this restores adjacency.
@@ -890,6 +945,7 @@ const MUIChatHistory = () => {
   } = useConversationList();
   const {
     currentConversationId,
+    setCurrentConversationId,
     setDynamicTitleLength,
     startNewChat,
     promoteEphemeralToRetained,
@@ -933,6 +989,7 @@ const MUIChatHistory = () => {
     }>({ anchorEl: null, nodeId: null, mode: 'move' });
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportConversationId, setExportConversationId] = useState<string | null>(null);
+  const [infoConversationId, setInfoConversationId] = useState<string | null>(null);
   const [showHealthDebug, setShowHealthDebug] = useState(false);
   const [swarmRecoveryFolderId, setSwarmRecoveryFolderId] = useState<string | null>(null);
   const [showSwarmRecovery, setShowSwarmRecovery] = useState(false);
@@ -1206,6 +1263,51 @@ const MUIChatHistory = () => {
       message.success(!wasGlobal ? 'Folder shared across all projects' : 'Folder restricted to current project');
     }
   };
+
+  // Handle toggling a label flag (multi-select) on a conversation.
+  // Flags are conversation-only today (folders don't carry them).
+  const handleToggleFlag = useCallback(async (nodeId: string, flagId: string) => {
+    if (!nodeId.startsWith('conv-')) return;
+    const conversationId = nodeId.substring(5);
+    const conv = conversations.find(c => c.id === conversationId);
+    const current = conv?.flags || [];
+    const next = current.includes(flagId)
+      ? current.filter(f => f !== flagId)
+      : [...current, flagId];
+    try {
+      const { mutateConversationMeta } = await import('../utils/conversationMutations');
+      const result = await mutateConversationMeta(
+        conversationId, { flags: next }, { projectId: currentProject?.id, fallback: conv }
+      );
+      if (!result.ok) throw result.error;
+      setConversations(conversations.map(c =>
+        c.id === conversationId ? { ...c, flags: next, _version: result.conversation?._version } : c
+      ));
+    } catch (error) {
+      console.error('Error toggling conversation flag:', error);
+      message.error('Failed to update flag');
+    }
+  }, [conversations, currentProject?.id, setConversations]);
+
+  // Handle setting (or clearing, when colorId is null) the single color flag.
+  const handleSetFlagColor = useCallback(async (nodeId: string, colorId: string | null) => {
+    if (!nodeId.startsWith('conv-')) return;
+    const conversationId = nodeId.substring(5);
+    const conv = conversations.find(c => c.id === conversationId);
+    try {
+      const { mutateConversationMeta } = await import('../utils/conversationMutations');
+      const result = await mutateConversationMeta(
+        conversationId, { flagColor: colorId }, { projectId: currentProject?.id, fallback: conv }
+      );
+      if (!result.ok) throw result.error;
+      setConversations(conversations.map(c =>
+        c.id === conversationId ? { ...c, flagColor: colorId, _version: result.conversation?._version } : c
+      ));
+    } catch (error) {
+      console.error('Error setting conversation flag color:', error);
+      message.error('Failed to update flag color');
+    }
+  }, [conversations, currentProject?.id, setConversations]);
 
   // Handle opening the move-to-project menu
   const handleOpenMoveToProjectMenu = (nodeId: string, anchorEl: HTMLElement) => {
@@ -2012,6 +2114,10 @@ const MUIChatHistory = () => {
     handleNodeSelect(null as any, id);
   };
 
+  // Show the conversation Info modal (id, project id, storage statistics)
+  const handleShowInfo = (id: string) => {
+    setInfoConversationId(id.startsWith('conv-') ? id.substring(5) : id);
+  };
   // Handle node selection
   const handleNodeSelect = (event: React.SyntheticEvent, nodeId: string) => {
     if (nodeId.startsWith('conv-')) {
@@ -2611,6 +2717,14 @@ const MUIChatHistory = () => {
     const oh = fnv1a();
     safeConversations.forEach(c => { oh.add(String(c.lastAccessedAt || 0)); });
     pinnedFolders.forEach(id => oh.add(id));
+    // Active-processing membership (streaming / running task cards) is an
+    // ordering input: active conversations sort above idle ones, so a
+    // stream/task starting or stopping must invalidate the cached order
+    // and trigger a re-sort even when timestamps haven't changed.
+    const activeConvIds = new Set<string>();
+    streamingConversations.forEach(id => activeConvIds.add(id));
+    runningTaskConversations.forEach(id => activeConvIds.add(id));
+    Array.from(activeConvIds).sort().forEach(id => oh.add('act:' + id));
     const sortHash = oh.value();
 
     // Fast exit: nothing changed at all
@@ -2682,8 +2796,28 @@ const MUIChatHistory = () => {
 
         const pinChanged = node.folder && (pinnedFolders.has(node.id) !== node.isPinned);
 
+        // Recompute active-descendant status.  Streaming/task-running
+        // membership is external to node identity — a conversation node's
+        // reference doesn't change when it starts/stops streaming — so this
+        // must be recomputed unconditionally on every folder clone rather
+        // than gated behind conversationChanged/childrenChanged, otherwise a
+        // stream starting inside an already-built subtree would never float
+        // its containing folder.
+        let newHasActiveDescendant = false;
+        if (node.folder && newChildren) {
+          for (const child of newChildren) {
+            if (child.folder) {
+              if (child.hasActiveDescendant) { newHasActiveDescendant = true; break; }
+            } else if (child.conversation?.id && activeConvIds.has(child.conversation.id)) {
+              newHasActiveDescendant = true;
+              break;
+            }
+          }
+        }
+        const activeDescendantChanged = node.folder && newHasActiveDescendant !== !!node.hasActiveDescendant;
+
         // If nothing changed, reuse the original node reference
-        if (!conversationChanged && !childrenChanged && !activityChanged && !pinChanged) {
+        if (!conversationChanged && !childrenChanged && !activityChanged && !pinChanged && !activeDescendantChanged) {
           return node;
         }
 
@@ -2700,6 +2834,9 @@ const MUIChatHistory = () => {
         }
         if (pinChanged) {
           copy.isPinned = pinnedFolders.has(node.id);
+        }
+        if (activeDescendantChanged) {
+          copy.hasActiveDescendant = newHasActiveDescendant;
         }
         return copy;
       };
@@ -2737,7 +2874,7 @@ const MUIChatHistory = () => {
       // Sort the cloned arrays (safe — we own these copies)
       const resortRecursive = (nodes: any[], _d = 0): any[] => {
         if (_d > 20) return nodes;
-        nodes.sort((a, b) => sortComparator(a, b, taskPlanBoost));
+        nodes.sort((a, b) => sortComparator(a, b, taskPlanBoost, activeConvIds));
         nodes.forEach(n => { if (n.children?.length) n.children = resortRecursive(n.children, _d + 1); });
         return nodes;
       };
@@ -3016,13 +3153,35 @@ const MUIChatHistory = () => {
       return maxTime;
     };
 
+    // Roll up "has an actively-processing descendant" from subfolders and
+    // direct conversation children into parent folders.  Bottom-up, same
+    // shape as the two roll-ups above.  This is what lets a folder float
+    // to the active tier when the streaming/task-running conversation is
+    // nested inside it (possibly several levels down, possibly collapsed).
+    const rollUpActiveDescendant = (node: any, _depth = 0): boolean => {
+      if (_depth > 20) return false;
+      if (!node.folder) return false;
+      let anyActive = false;
+      if (node.children) {
+        for (const child of node.children) {
+          if (child.folder) {
+            if (rollUpActiveDescendant(child, _depth + 1)) anyActive = true;
+          } else if (child.conversation?.id && activeConvIds.has(child.conversation.id)) {
+            anyActive = true;
+          }
+        }
+      }
+      node.hasActiveDescendant = anyActive;
+      return anyActive;
+    };
+
     // Apply roll-up before sorting
-    rootItems.forEach(item => { if (item.folder) { rollUpConversationCount(item); rollUpLastActivityTime(item); } });
+    rootItems.forEach(item => { if (item.folder) { rollUpConversationCount(item); rollUpLastActivityTime(item); rollUpActiveDescendant(item); } });
 
     // Sort using extracted comparator shared with the fast path
     const sortRecursive = (nodes: any[], _depth = 0): any[] => {
       if (_depth > 20) return nodes;
-      const sorted = nodes.sort((a, b) => sortComparator(a, b, taskPlanBoost));
+      const sorted = nodes.sort((a, b) => sortComparator(a, b, taskPlanBoost, activeConvIds));
       sorted.forEach(node => {
         if (node.children && node.children.length > 0) {
           node.children = sortRecursive(node.children, _depth + 1);
@@ -3070,7 +3229,7 @@ const MUIChatHistory = () => {
     } catch {}
 
     return result;
-  }, [conversations, folders, pinnedFolders, isProjectSwitching, currentProject?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [conversations, folders, pinnedFolders, isProjectSwitching, currentProject?.id, streamingConversations, runningTaskConversations]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Debounce treeData updates: during startup, conversations change 4+ times
   // in rapid succession. Only rebuild the flattened tree once things settle.
@@ -3459,23 +3618,21 @@ const MUIChatHistory = () => {
             placeholder="Search conversations..."
             value={searchQuery}
             onChange={(e) => handleSearchChange(e.target.value)}
-            slotProps={{
-              input: {
-                startAdornment: (
-                  <SearchIcon sx={{ mr: 1, color: isDarkMode ? '#888' : '#999' }} />
-                ),
-                endAdornment: searchQuery && (
-                  <IconButton
-                    size="small"
-                    onClick={() => {
-                      setSearchQuery('');
-                      setSearchResults([]);
-                    }}
-                  >
-                    <CloseIcon fontSize="small" />
-                  </IconButton>
-                )
-              }
+            InputProps={{
+              startAdornment: (
+                <SearchIcon sx={{ mr: 1, color: isDarkMode ? '#888' : '#999' }} />
+              ),
+              endAdornment: searchQuery && (
+                <IconButton
+                  size="small"
+                  onClick={() => {
+                    setSearchQuery('');
+                    setSearchResults([]);
+                  }}
+                >
+                  <CloseIcon fontSize="small" />
+                </IconButton>
+              )
             }}
             sx={{ flex: 1, minWidth: 0 }}
           />
@@ -3559,7 +3716,7 @@ const MUIChatHistory = () => {
                     }
                     (window as any).__ziyaSearchHighlight = searchQuery;
                     await loadConversationAndScrollToMessage(
-                      result.conversationId, firstMatchIndex);
+                      result.conversationId, firstMatchIndex ?? 0);
                     setSearchQuery('');
                     setSearchResults([]);
                   } catch (error) {
@@ -3747,6 +3904,8 @@ const MUIChatHistory = () => {
                 const conversationCount = isFolder ? node.conversationCount : 0;
                 const openBeadCount = isFolder ? 0 : (node.conversation?.openBeadCount || 0);
                 const openWorkItemCount = isFolder ? 0 : (node.conversation?.openWorkItemCount || 0);
+                const rowFlags = isFolder ? [] : (node.conversation?.flags || []);
+                const rowFlagColor = isFolder ? null : (node.conversation?.flagColor || null);
                 const isEditingNode = editingId === (isFolder ? nodeId : nodeId.substring(5));
 
                 const handleCustomMouseDown = (e: React.MouseEvent) => {
@@ -3771,10 +3930,29 @@ const MUIChatHistory = () => {
 
                 return (
                   <div style={rowStyle} onClick={(e) => {
+                    // Ignore clicks that are part of a multi-click burst so a
+                    // rapid double-click doesn't re-select/navigate on the
+                    // second click right before onDoubleClick opens the
+                    // rename editor (see ChatTreeItem's onDoubleClick handler).
+                    // This is the SINGLE click handler for the row — it also
+                    // owns folder expand/collapse (previously duplicated on
+                    // ChatTreeItem's own onClick, which fired redundantly on
+                    // every click since that div is nested inside this one).
+                    if (e.detail > 1) return;
                     // Don't navigate on icon button clicks
                     if ((e.target as HTMLElement).closest('button') || (e.target as HTMLElement).closest('.MuiIconButton-root')) return;
-                    if (nodeId.startsWith('conv-')) handleConversationClick(nodeId.substring(5));
-                    else setCurrentFolderId(nodeId);
+                    if (nodeId.startsWith('conv-')) {
+                      handleConversationClick(nodeId.substring(5));
+                    } else {
+                      setCurrentFolderId(nodeId);
+                      if (flat.hasChildren) {
+                        setExpandedNodes(prev => {
+                          const s = new Set(prev.map(String));
+                          if (s.has(nodeId)) { s.delete(nodeId); } else { s.add(nodeId); }
+                          return Array.from(s);
+                        });
+                      }
+                    }
                   }}>
                     {/* Indent guide lines aligned with parent chevrons */}
                     {indentGuides[index]?.map((show, d) => show && (
@@ -3802,7 +3980,9 @@ const MUIChatHistory = () => {
                       isGlobalByInheritanceOnly={isGlobalByInheritanceOnly}
                       openBeadCount={openBeadCount} openWorkItemCount={openWorkItemCount}
                       conversationCount={conversationCount}
-                      onEdit={handleEdit} onDelete={handleDelete} onAddChat={handleAddChat}
+                      flags={rowFlags} flagColor={rowFlagColor}
+                      onToggleFlag={handleToggleFlag} onSetFlagColor={handleSetFlagColor}
+                      onEdit={handleEdit} onDelete={handleDelete} onInfo={handleShowInfo} onAddChat={handleAddChat}
                       onExport={handleExportConversation} onPin={togglePinFolder}
                       onConfigure={handleConfigureFolder} onFork={handleForkConversation}
                       onCompress={handleCompressConversation} onMove={handleMoveConversation}
@@ -3819,13 +3999,6 @@ const MUIChatHistory = () => {
                       onMouseDown={handleCustomMouseDown}
                       depth={flat.depth} isExpanded={flat.isExpanded}
                       hasChildren={flat.hasChildren}
-                      onToggleExpand={(id) => {
-                        setExpandedNodes(prev => {
-                          const s = new Set(prev.map(String));
-                          if (s.has(id)) { s.delete(id); } else { s.add(id); }
-                          return Array.from(s);
-                        });
-                      }}
                       style={{
                         cursor: customDragState.isDragging && customDragState.draggedNodeId === nodeId ? 'grabbing' : 'default',
                         opacity: customDragState.isDragging && customDragState.draggedNodeId === nodeId ? 0.6 : 1,
@@ -3886,9 +4059,19 @@ const MUIChatHistory = () => {
 
       {/* Export modal - only for conversations, not folders */}
       {exportConversationId && (
-        <ExportConversationModal visible={showExportModal} onClose={() => { setShowExportModal(false); setExportConversationId(null); }} />
+        <ExportConversationModal visible={showExportModal} conversationId={exportConversationId} onClose={() => { setShowExportModal(false); setExportConversationId(null); }} />
       )}
 
+      {/* Conversation Info modal — id, project id, and storage statistics */}
+      {infoConversationId && (
+        <ConversationInfoModal
+          visible={!!infoConversationId}
+          conversationId={infoConversationId}
+          conversation={conversations.find(c => c.id === infoConversationId) || null}
+          projectId={currentProject?.id}
+          onClose={() => setInfoConversationId(null)}
+        />
+      )}
       {/* Swarm Recovery Modal */}
       {swarmRecoveryFolder && (
         <Modal

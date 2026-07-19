@@ -175,9 +175,41 @@ export async function deleteChat(projectId: string, chatId: string): Promise<boo
  * Convert a frontend Conversation to a ServerChat for syncing.
  */
 export function conversationToServerChat(conv: any, projectId: string): ServerChat {
+  // folderId is the frontend's single source of truth for folder
+  // membership; groupId is only the server's storage name for the same
+  // concept.  A conversation object can carry a STALE groupId left over
+  // from an earlier server read — folder moves patch folderId only and
+  // never update groupId.  Spreading ...conv would then push the stale
+  // groupId alongside the new folderId; the server prefers the explicit
+  // incoming groupId (chats.py bulk-sync guard) and read-back resolves
+  // `groupId || folderId`, so the conversation snaps back to its old
+  // folder.  Force groupId to mirror folderId here so both sides stay
+  // consistent and any pre-existing divergence self-heals on next push.
+  //
+  // The absent-vs-null distinction is load-bearing: an explicit move to
+  // ROOT sets folderId===null (present), which must win over a stale
+  // groupId — a `??` chain would wrongly fall through to groupId and
+  // snap the conversation back.  Only fall back to groupId when folderId
+  // is genuinely absent (undefined), e.g. a server-hydrated record that
+  // carries only groupId and hasn't been mapped to folderId yet.
+  const resolvedFolderId =
+    conv.folderId !== undefined ? conv.folderId : (conv.groupId ?? null);
+  // Preserve the TRUE owner of a chat rather than re-stamping it with the
+  // project currently being viewed.  Global chats from other projects are
+  // surfaced into this project's sidebar and hydrated into IndexedDB carrying
+  // their real owner's projectId (see syncMerge).  Forcing `projectId` to the
+  // viewing project here made the next bulk-sync clone the chat into the
+  // viewed project's dir and re-stamp it as local — producing cross-project
+  // duplicates with divergent groupId/isGlobal (a chat that "reappeared under
+  // the wrong global group" / "went missing" in its home project).  Only fall
+  // back to the viewing project for a genuinely new local chat that has no
+  // owner yet.
+  const ownerProjectId = conv.projectId || projectId;
   return {
     ...conv,
-    projectId,
+    projectId: ownerProjectId,
+    folderId: resolvedFolderId,
+    groupId: resolvedFolderId,
     lastActiveAt: conv.lastAccessedAt || conv.lastActiveAt || Date.now(),
     createdAt: conv.createdAt || conv.lastAccessedAt || Date.now(),
     messages: (conv.messages || []).map((m: any) => ({
