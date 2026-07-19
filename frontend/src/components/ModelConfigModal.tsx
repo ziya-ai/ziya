@@ -195,7 +195,9 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
         top_k: currentSettings.top_k,
         max_output_tokens: currentSettings.max_output_tokens,
         max_input_tokens: capabilities.max_input_tokens || capabilities.token_limit,
-        thinking_mode: currentSettings.thinking_mode
+        thinking_mode: currentSettings.thinking_mode,
+        thinking_level: currentSettings.thinking_level || capabilities.thinking_level_default || 'high',
+        thinking_effort: currentSettings.thinking_effort || capabilities.thinking_effort_default || 'medium'
       };
 
       setFormValues(initialValues);

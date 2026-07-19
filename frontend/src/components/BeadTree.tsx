@@ -349,7 +349,7 @@ const BeadTree: React.FC<BeadTreeProps> = ({ conversationId, onResume }) => {
           <BeadNode
             key={b.id}
             bead={b}
-            allBeads={tree.beads}
+            allBeads={tree?.beads ?? []}
             depth={0}
             isDarkMode={isDarkMode}
             onResume={handleResume}

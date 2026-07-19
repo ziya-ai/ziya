@@ -343,7 +343,7 @@ export const SkillsSection: React.FC<Props> = ({
         <div
           style={{
             padding: '7px 10px', display: 'flex', alignItems: 'center', gap: '8px',
-            cursor: 'pointer', opacity: isOff ? 0.55 : 1,
+            cursor: 'pointer',
           }}
           onClick={() => setExpandedId(isExpanded ? null : skill.id)}
         >
@@ -359,6 +359,22 @@ export const SkillsSection: React.FC<Props> = ({
               {skill.description}
             </div>
           </div>
+          {isOff && (
+            <Button
+              type="text"
+              size="small"
+              onClick={(e) => {
+                e.stopPropagation();
+                setLevel(skill, skill.visibility === 'model_discoverable' ? 'on-demand' : 'active');
+              }}
+              style={{
+                fontSize: '10px', height: '20px', padding: '0 6px',
+                color: t.segDemandFg,
+              }}
+            >
+              Enable
+            </Button>
+          )}
           {levelLabel(level, isDarkMode)}
           <span style={{
             fontSize: '9px', color: t.textFaint, transition: 'transform 0.15s',
