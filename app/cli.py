@@ -93,6 +93,59 @@ from prompt_toolkit.formatted_text import FormattedText
 # Session history management
 # ============================================================================
 
+# Phrases that announce intent to act ("Let me check X before writing...").
+# Mirrors the server-side StreamingToolExecutor discriminator (_INTENT_PHRASES
+# in app/streaming_tool_executor.py) so the CLI's OUTER continuation loop
+# applies the same rule, independently of whatever the inner executor decided.
+_CLI_INTENT_PHRASES = (
+    'let me check', 'let me look', 'let me examine',
+    'let me search', 'let me verify', 'let me read',
+    'let me review', 'let me see', 'let me inspect',
+    'let me explore', 'let me first', 'let me dig',
+    'let me get', 'let me run', 'let me confirm',
+    'let me gather', 'let me pull', 'let me grab',
+    'let me trace', 'let me find', 'let me locate', 'let me investigate',
+    "i'll check", "i'll look", "i'll examine",
+    "i'll search", "i'll verify", "i'll read",
+    "i'll review", "i'll inspect", "i'll run", "i'll confirm",
+    "i'll get", "i'll write", "i'll create", "i'll update",
+    "i'll gather", "i'll pull", "i'll grab", "i'll trace",
+    "i'll find", "i'll locate", "i'll investigate",
+    'before writing', 'before i write',
+    'before creating', 'before i create',
+    'first, let me', 'first let me',
+    'i need to read', 'i need to check',
+)
+
+
+def _response_looks_incomplete(response: str) -> Tuple[bool, bool]:
+    """Decide whether a diff-free model response should be auto-continued.
+
+    Returns (looks_incomplete, has_unexecuted_intent). Pure function, no I/O,
+    so it is directly unit-testable without mocking the model call.
+
+    Two independent triggers:
+      - truncation: ends with ':' / '...' / a non-terminal char after 100+ chars
+      - unexecuted intent: narrates an action ("Let me check X.") without a
+        tool call, and does NOT end in '?' (a question is the model handing
+        the turn back to the user, not narrating unfinished work -- don't
+        nudge that case).
+    """
+    stripped = response.rstrip()
+    yields_to_user = stripped.endswith('?')
+    has_unexecuted_intent = (
+        not yields_to_user
+        and any(p in stripped.lower() for p in _CLI_INTENT_PHRASES)
+    )
+    looks_incomplete = (
+        stripped.endswith(':') or
+        stripped.endswith('...') or
+        (len(stripped) > 100 and not stripped[-1] in '.!?)') or
+        has_unexecuted_intent
+    )
+    return looks_incomplete, has_unexecuted_intent
+
+
 def get_session_dir() -> Path:
     """Get the directory for session storage."""
     session_dir = Path.home() / '.ziya' / 'sessions'
@@ -503,6 +556,80 @@ async def select_session() -> Optional[str]:
         return None
 
 
+async def select_joinable_chat(summaries) -> Optional[str]:
+    """Interactive picker for a GUI conversation to /join.
+
+    ``summaries`` are ChatSummary objects (already sorted most-recent-first
+    by the storage layer).  Mirrors select_session's RadioList UX.  Returns
+    the chosen chat id, or None on cancel.
+    """
+    from app.utils.cli_chat_bridge import chat_display_label
+    from prompt_toolkit.formatted_text import HTML
+    from html import escape as html_escape
+
+    if not summaries:
+        print("No conversations to join.")
+        return None
+
+    radio_values = []
+    for s in summaries[:25]:
+        label_txt = html_escape(chat_display_label(s))
+        try:
+            updated = datetime.fromtimestamp(s.lastActiveAt / 1000).strftime('%b %d %H:%M')
+        except (ValueError, TypeError, OverflowError, AttributeError):
+            updated = '?'
+        meta = f"{getattr(s, 'messageCount', 0)} msgs"
+        open_beads = getattr(s, 'openBeadCount', 0) or 0
+        bead_tag = f" · {open_beads} open" if open_beads else ""
+        label = HTML(f"<b>{label_txt}</b>\n    {meta}{bead_tag}"
+                     f"  <style fg='ansibrightblack'>{updated}</style>")
+        radio_values.append((s.id, label))
+
+    radio_list = RadioList(values=radio_values, default=radio_values[0][0])
+
+    kb = KeyBindings()
+
+    @kb.add('enter')
+    def _join_enter(event):
+        event.app.exit(result=radio_list.current_value)
+
+    @kb.add('escape')
+    def _join_escape(event):
+        event.app.exit(result=None)
+
+    custom_kb = KeyBindings()
+
+    @custom_kb.add('up')
+    def _join_up(event):
+        radio_list._selected_index = max(0, radio_list._selected_index - 1)
+        radio_list.current_value = radio_list.values[radio_list._selected_index][0]
+
+    @custom_kb.add('down')
+    def _join_down(event):
+        radio_list._selected_index = min(len(radio_list.values) - 1, radio_list._selected_index + 1)
+        radio_list.current_value = radio_list.values[radio_list._selected_index][0]
+
+    @custom_kb.add('enter')
+    def _join_sel_enter(event):
+        highlighted = radio_list.values[radio_list._selected_index][0]
+        radio_list.current_value = highlighted
+        event.app.exit(result=highlighted)
+
+    from prompt_toolkit.key_binding import merge_key_bindings
+    radio_list.control.key_bindings = merge_key_bindings([radio_list.control.key_bindings, custom_kb])
+
+    layout = Layout(HSplit([
+        Window(content=FormattedTextControl(
+            text='Join GUI Conversation — ↑/↓ navigate, Enter select, Esc cancel\n'), height=2),
+        radio_list,
+    ]))
+    app = Application(layout=layout, key_bindings=kb, full_screen=False, mouse_support=False)
+    try:
+        return await app.run_async()
+    except (EOFError, KeyboardInterrupt):
+        return None
+
+
 def print_chat_startup_info(args):
     """Pretty print essential startup information for chat mode."""
     root = getattr(args, 'root', None) or os.getcwd()
@@ -660,6 +787,14 @@ COMMAND_SPEC = [
         'handler': 'cmd_files',
     },
     {
+        'name': '/root',
+        'aliases': ['/cd'],
+        'help': 'Show or change the project base directory',
+        'usage': '/root [path]',
+        'completion': 'path',
+        'handler': 'cmd_root',
+    },
+    {
         'name': '/shell',
         'help': 'Manage shell commands (session-local by default)',
         'handler': 'cmd_shell',
@@ -749,6 +884,32 @@ COMMAND_SPEC = [
         'handler': 'cmd_resume',
     },
     {
+        'name': '/join',
+        'help': 'Attach to a live GUI conversation (shared, synced)',
+        'usage': '/join [id-or-title]',
+        'arg_hint': 'conversation',
+        'handler': 'cmd_join',
+    },
+    {
+        'name': '/tangent',
+        'help': 'Pursue a temporary side-idea (branches from here; discarded on /quit)',
+        'usage': '/tangent <topic>',
+        'handler': 'cmd_tangent',
+    },
+    {
+        'name': '/context',
+        'aliases': ['/ctx'],
+        'help': 'Break down token/context utilization for this session',
+        'usage': '/context [files | tools | history | all]',
+        'handler': 'cmd_context',
+        'subcommands': {
+            'files': {'help': 'Per-file token estimates'},
+            'tools': {'help': 'Tool-definition tokens grouped by server'},
+            'history': {'help': 'Per-message token estimates'},
+            'all': {'help': 'Show every detail section'},
+        },
+    },
+    {
         'name': '/beads',
         'help': "Show the conversation's task tree (beads)",
         'handler': 'cmd_beads',
@@ -762,8 +923,14 @@ COMMAND_SPEC = [
     {
         'name': '/quit',
         'aliases': ['/q', '/exit'],
-        'help': 'Exit',
+        'help': 'Exit (or return from an active tangent)',
+        'usage': '/quit [summary|verbatim|discard]',
         'handler': 'cmd_quit',
+        'subcommands': {
+            'summary': {'help': 'Return, splicing an AI summary into the parent context'},
+            'verbatim': {'help': 'Return, appending the full tangent transcript'},
+            'discard': {'help': 'Return with nothing carried over (default)'},
+        },
     },
 ]
 
@@ -861,6 +1028,22 @@ class CLI:
         self._session_shell_commands = None  # Session-local shell command overrides
         self._session_yolo = False  # Session-local yolo mode (never persisted)
         self._session_timeout = None  # Session-local command timeout override
+        # Remember the project root as it stood at startup so /reset can undo
+        # any mid-session /root (/cd) change instead of letting it persist.
+        self._initial_root = os.environ.get("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
+        self._initial_explicit_root = os.environ.get("ZIYA_EXPLICIT_ROOT")
+        # Stack of saved (history/files) frames for /tangent — one level
+        # today; a list so nesting can be enabled later without a redesign.
+        self._tangent_stack = []
+        # Live-attach ("/join") state — None when running a normal local
+        # session.  When attached, conversation_id returns the bare GUI
+        # chat id so beads/task-injection/sidebar share the conversation,
+        # and each completed turn is written back into the GUI chat.
+        self._attached_project_id = None
+        self._attached_chat_id = None
+        self._attach_baseline_sig = None
+        # Pending join request from `ziya chat --join`, applied in chat().
+        self._pending_join = None
         self._setup_prompt_session()
     
     @property
@@ -872,7 +1055,14 @@ class CLI:
         resume path overwrites _session_id after construction, and this
         property picks that up automatically.
         """
+        if self._attached_chat_id:
+            return self._attached_chat_id
         return f"cli_{self._session_id}"
+
+    @property
+    def _attached(self) -> bool:
+        """True while joined to a live GUI conversation (see /join)."""
+        return self._attached_chat_id is not None
 
     def _bead_prompt_segments(self):
         """Prompt-prefix segments for the per-conversation bead indicator.
@@ -905,6 +1095,29 @@ class CLI:
             return [('bold yellow', f'[⑃{parked}]'), ('', '  ')]
         return [('bold green', f'[⑃{open_count}]'), ('', '  ')]
 
+    def _tangent_prompt_segment(self):
+        """Prompt-prefix badge while a /tangent is active.
+
+        Shown ahead of the bead indicator so it's unmissable which context
+        the next message will land in — the tangent's own history frame,
+        not the parent conversation's.
+        """
+        if not self._tangent_stack:
+            return []
+        topic = self._tangent_stack[-1]['topic']
+        label = topic if len(topic) <= 24 else topic[:21] + '...'
+        return [('bold magenta', f'[tangent:{label}]'), ('', ' ')]
+
+    def _attach_prompt_segment(self):
+        """Prompt-prefix badge while joined to a GUI conversation.
+
+        Shown alongside the tangent/bead badges so it's unmissable that the
+        next turn lands in — and syncs to — the shared GUI conversation."""
+        if not self._attached:
+            return []
+        cid = self._attached_chat_id or ''
+        return [('bold cyan', f'[⇄{cid[:6]}]'), ('', ' ')]
+
     @property
     def model(self):
         """Lazy-load model on first use."""
@@ -927,7 +1140,9 @@ class CLI:
             endpoint = ziya_env("ZIYA_ENDPOINT")
             if endpoint == "bedrock":
                 from app.utils.aws_utils import check_aws_credentials
-                valid, message = check_aws_credentials()
+                _profile = (ziya_env("ZIYA_AWS_PROFILE")
+                            or os.environ.get("AWS_PROFILE"))
+                valid, message = check_aws_credentials(profile_name=_profile)
                 if not valid:
                     self._init_error = message
                     return None
@@ -1288,15 +1503,19 @@ class CLI:
             
             # If no diffs, we're done
             if '```diff' not in response:
-                # Check if response looks incomplete (truncated mid-thought)
-                stripped = response.rstrip()
-                looks_incomplete = (
-                    stripped.endswith(':') or
-                    stripped.endswith('...') or
-                    (len(stripped) > 100 and not stripped[-1] in '.!?)')
-                )
+                # Check if response looks incomplete (truncated mid-thought),
+                # OR narrates an intended action without taking it. Pure,
+                # unit-tested discriminator -- see _response_looks_incomplete
+                # docstring for rationale. The inner StreamingToolExecutor has
+                # its own bounded intent-continuation logic, but this OUTER
+                # loop has no visibility into whether that budget was
+                # exhausted, judged the turn complete, or never engaged.
+                looks_incomplete, _has_unexecuted_intent = _response_looks_incomplete(response)
                 if looks_incomplete:
-                    print("\033[90m[trace] response looks incomplete, auto-continuing\033[0m", file=sys.stderr)
+                    if _has_unexecuted_intent:
+                        print("\033[90m[trace] response narrates unexecuted intent, auto-continuing\033[0m", file=sys.stderr)
+                    else:
+                        print("\033[90m[trace] response looks incomplete, auto-continuing\033[0m", file=sys.stderr)
                     messages.append(AIMessage(content=response))
                     messages.append(HumanMessage(content="[System: Your response appears incomplete. Please continue where you left off.]"))
                     continuation = await self._run_with_tools_from_messages(messages, stream)
@@ -2004,6 +2223,14 @@ class CLI:
             print(f"\n\033[31mError: {self._init_error or 'Model not available'}\033[0m", file=sys.stderr)
             self._print_auth_help()
             return
+
+        # Apply a launch-time --join before entering the loop.  Storage-only,
+        # so it's safe to run before background MCP/plugin init completes.
+        pending = getattr(self, '_pending_join', None)
+        if pending:
+            self._pending_join = None
+            join_arg = pending if isinstance(pending, str) else ''
+            await self.cmd_join(join_arg)
         
         while True:
             try:
@@ -2016,9 +2243,14 @@ class CLI:
                 # into "awaiting input" and keep showing the busy/spinner
                 # indicator on the tab even though nothing is running.
                 sys.stdout.write("\033]133;D\007\033]133;A\007\033]133;B\007"); sys.stdout.flush()
+                # Pull any turns added to the joined GUI conversation since
+                # our last write, before showing the prompt (no-op if local).
+                self._pull_external_updates()
                 try:
                     prompt_segments = (
-                        self._bead_prompt_segments()
+                        self._tangent_prompt_segment()
+                        + self._attach_prompt_segment()
+                        + self._bead_prompt_segments()
                         + [('bold magenta', 'ℤ'), ('cyan', 'iya'), ('', ' '), ('bold cyan', '› ')]
                     )
                     user_input = await asyncio.to_thread(
@@ -2067,6 +2299,9 @@ class CLI:
                 finally:
                     self._ask_task = None
                 _autocheckpoint(self)
+                # Write this turn back into the joined GUI conversation so the
+                # GUI (and any other attached CLI) sees it (no-op if local).
+                self._sync_after_turn()
                 sys.stdout.write("\033]133;D\007"); sys.stdout.flush()
                 print("\033[90m[trace] ask() returned, looping to prompt\033[0m", file=sys.stderr)
                 print()
@@ -2162,8 +2397,82 @@ class CLI:
         self.list_files()
         return True
 
+    async def cmd_root(self, arg: str) -> bool:
+        """/root [path] — show or change the project base directory."""
+        current = os.environ.get("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
+        arg = arg.strip()
+        if not arg:
+            print(f"\033[1mRoot:\033[0m {current}")
+            return True
+
+        new_root = os.path.abspath(os.path.expanduser(arg))
+        if not os.path.isdir(new_root):
+            print(f"\033[31mNot a directory: {new_root}\033[0m")
+            return True
+
+        if new_root == current:
+            print(f"\033[90mAlready at {new_root}\033[0m")
+            return True
+
+        if self.files:
+            print(f"\033[33m⚠ Clearing {len(self.files)} context file(s) "
+                  f"relative to the old root.\033[0m")
+            self.files = []
+
+        await self._switch_root(current, new_root, explicit="true")
+        print(f"\033[32m✓ Root: {new_root}\033[0m")
+        return True
+
+    async def _switch_root(self, old_root: str, new_root: str, explicit) -> None:
+        """Point the session at ``new_root``: update env, cwd, and MCP state.
+
+        Shared by /root (change root) and /reset (restore the startup root).
+        ``explicit`` is the value for ZIYA_EXPLICIT_ROOT — pass "true" for an
+        explicit /root change, or the captured startup value on reset so the
+        flag returns to exactly how it started (None removes the var).
+        """
+        os.environ["ZIYA_USER_CODEBASE_DIR"] = new_root
+        if explicit is None:
+            os.environ.pop("ZIYA_EXPLICIT_ROOT", None)
+        else:
+            os.environ["ZIYA_EXPLICIT_ROOT"] = explicit
+        try:
+            os.chdir(new_root)
+        except OSError as e:
+            print(f"\033[31mCould not chdir to {new_root}: {e}\033[0m")
+
+        # Workspace-scoped MCP clients (e.g. the shell server) are keyed by
+        # project root and cache a live subprocess per root. Tear down any
+        # instance bound to the OLD root so the next tool call spawns a
+        # fresh subprocess rooted at the new directory instead of silently
+        # continuing to operate on the old one.
+        try:
+            from app.mcp.manager import get_mcp_manager
+            mcp_manager = get_mcp_manager()
+            if mcp_manager and mcp_manager.is_initialized:
+                for server_name, instances in list(mcp_manager.workspace_scoped_clients.items()):
+                    for instance_key, client in list(instances.items()):
+                        if instance_key.startswith(old_root):
+                            await client.disconnect()
+                            del mcp_manager.workspace_scoped_clients[server_name][instance_key]
+                            mcp_manager._workspace_instance_last_used.get(server_name, {}).pop(instance_key, None)
+                mcp_manager.invalidate_tools_cache()
+        except (ImportError, OSError, RuntimeError, asyncio.TimeoutError) as e:
+            print(f"\033[2m(MCP workspace refresh skipped: {e})\033[0m")
+
     async def cmd_clear(self, arg: str) -> bool:
         """/clear — clear conversation history."""
+        # Detach from any joined GUI conversation FIRST: clearing local
+        # history while attached would, on the next turn's write-back,
+        # truncate the shared GUI chat to the cleared contents (data loss).
+        if self._attached:
+            self._detach("Detached from the GUI conversation before clearing.")
+        # A full /clear inside an active tangent would otherwise leave a
+        # dangling saved frame that /quit later "pops" into a history that
+        # was never the tangent's actual parent — drop the stack outright.
+        if self._tangent_stack:
+            print(f"\033[90m  (discarding {len(self._tangent_stack)} active tangent)\033[0m")
+            self._tangent_stack = []
         count = len(self.history)
         self.history = []
         # Fresh session identity: the next save writes a new session file,
@@ -2177,10 +2486,28 @@ class CLI:
 
     async def cmd_reset(self, arg: str) -> bool:
         """/reset — clear history, files, and all session state."""
+        # Detach from any joined GUI conversation first (same data-loss
+        # reasoning as /clear — a post-reset write-back would truncate it).
+        if self._attached:
+            self._detach("Detached from the GUI conversation before reset.")
+        # Same reasoning as /clear: a /reset wipes session identity, so any
+        # in-flight tangent frame is now orphaned — drop it rather than let
+        # a future /quit resurrect a pre-reset history.
+        if self._tangent_stack:
+            print(f"\033[90m  (discarding {len(self._tangent_stack)} active tangent)\033[0m")
+            self._tangent_stack = []
         hist_count = len(self.history)
         file_count = len(self.files)
         self.history = []
         self.files = []
+        # Undo any mid-session /root (/cd) change: a changed project root is
+        # session state and must not survive a reset. Restore the root as it
+        # stood at startup (env vars + cwd + MCP workspace clients).
+        current_root = os.environ.get("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
+        if current_root != self._initial_root:
+            await self._switch_root(current_root, self._initial_root,
+                                    explicit=self._initial_explicit_root)
+            print(f"\033[90m  Restored root: {self._initial_root}\033[0m")
         self._session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{os.getpid()}"
         self._session_name = None
         self._session_start_time = None
@@ -2217,6 +2544,9 @@ class CLI:
             label = name or session_id
             print(f"\033[32m✓ Snapshot saved: {label}\033[0m")
             print(f"\033[90mFork it later with: /resume {label}\033[0m")
+            if self._attached:
+                self._detach("Detached from the GUI conversation — this "
+                             "fork is a private local session from here on.")
         except Exception as e:
             print(f"\033[31mSave failed: {e}\033[0m")
         return True
@@ -2285,6 +2615,143 @@ class CLI:
         _print_resumed_beads(self.conversation_id)
         return True
 
+    async def cmd_join(self, arg: str) -> bool:
+        """/join [id-or-title] — attach to a live GUI conversation.
+
+        Adopts the GUI chat's id as this session's conversation_id so beads,
+        task-result injection, and the GUI sidebar all operate on the shared
+        conversation.  Completed turns are written back into the GUI chat,
+        and external updates (from the GUI or another CLI) are pulled in at
+        the next prompt.  /save forks to a private local session and detaches.
+        """
+        from app.utils.cli_chat_bridge import (
+            list_joinable_chats, load_chat_as_history, chat_signature,
+            chat_display_label,
+        )
+        root = os.environ.get("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
+        project_id, summaries = list_joinable_chats(root)
+        if project_id is None:
+            print("\033[33mNo GUI project registered for this directory — "
+                  "open it in the Ziya GUI first.\033[0m")
+            return True
+        if not summaries:
+            print("\033[90mNo conversations to join in this project.\033[0m")
+            return True
+
+        arg = arg.strip()
+        chat_id = None
+        if arg:
+            for s in summaries:
+                if s.id == arg:
+                    chat_id = s.id
+                    break
+            if not chat_id:
+                for s in summaries:
+                    if s.id.startswith(arg) or (s.title or '').lower() == arg.lower():
+                        chat_id = s.id
+                        break
+            if not chat_id:
+                print(f"\033[33mNo conversation matching '{arg}'\033[0m")
+                return True
+        else:
+            chat_id = await select_joinable_chat(summaries)
+            if not chat_id:
+                return True
+
+        chat, history = load_chat_as_history(project_id, chat_id)
+        if chat is None:
+            print(f"\033[31mConversation {chat_id} could not be loaded.\033[0m")
+            return True
+
+        # Checkpoint the current local session before switching away (unless
+        # already attached — then the prior chat is its own store).
+        if self.history and not getattr(self, '_ephemeral', False) and not self._attached:
+            try:
+                save_session(self, cleanup=False)
+            except Exception:
+                pass
+
+        self._attached_project_id = project_id
+        self._attached_chat_id = chat_id
+        self.history = history
+        self._attach_baseline_sig = chat_signature(project_id, chat_id)
+        label = chat_display_label(chat)
+        print(f"\033[32m✓ Joined GUI conversation: {label}\033[0m")
+        print(f"\033[90m  {len(history)} messages · shared id {chat_id[:8]} · "
+              f"/save to fork & detach\033[0m\n")
+        _print_resumed_beads(self.conversation_id)
+        return True
+
+    def _detach(self, reason: str = "") -> None:
+        """Detach from a joined GUI conversation (stop write-back).
+
+        conversation_id reverts to cli_<session_id> afterward.  Safe to call
+        when not attached (no-op)."""
+        if not self._attached:
+            return
+        self._attached_project_id = None
+        self._attached_chat_id = None
+        self._attach_baseline_sig = None
+        if reason:
+            print(f"\033[90m  {reason}\033[0m")
+
+    def _sync_after_turn(self) -> None:
+        """Write the current history back into the joined GUI chat.
+
+        Reuses ids for the unchanged prefix and adopts the resulting
+        signature as the new baseline so our own write isn't mistaken for
+        an external edit on the next prompt.  Non-fatal on failure."""
+        if not self._attached:
+            return
+        try:
+            from app.utils.cli_chat_bridge import write_back
+            sig = write_back(self._attached_project_id, self._attached_chat_id, self.history)
+            if sig is None:
+                self._detach("Joined conversation disappeared — detached.")
+            else:
+                self._attach_baseline_sig = sig
+        except Exception as e:  # noqa: BLE001 — a sync hiccup must not break the loop
+            logger.debug("write_back failed (non-fatal): %s", e)
+
+    def _pull_external_updates(self) -> None:
+        """If the joined chat advanced elsewhere, pull new turns into history.
+
+        Runs at each prompt boundary.  Compares the live chat signature to
+        our baseline; on a change, reloads the full history and prints a
+        short preview of the new turns.  The input buffer is untouched
+        (this runs before the prompt is shown)."""
+        if not self._attached:
+            return
+        try:
+            from app.utils.cli_chat_bridge import chat_signature, load_chat_as_history
+            sig = chat_signature(self._attached_project_id, self._attached_chat_id)
+        except Exception:  # noqa: BLE001
+            return
+        if sig is None:
+            self._detach("Joined conversation disappeared — detached.")
+            return
+        if sig == self._attach_baseline_sig:
+            return
+        prev_len = len(self.history)
+        chat, history = load_chat_as_history(
+            self._attached_project_id, self._attached_chat_id)
+        if chat is None:
+            self._detach("Joined conversation disappeared — detached.")
+            return
+        self.history = history
+        self._attach_baseline_sig = sig
+        new_msgs = history[prev_len:] if len(history) >= prev_len else []
+        if new_msgs:
+            print(f"\033[36m↻ {len(new_msgs)} new message(s) from the GUI:\033[0m")
+            for m in new_msgs:
+                who = 'you' if m.get('type') == 'human' else 'ai'
+                preview = (m.get('content') or '').strip().replace('\n', ' ')
+                if len(preview) > 100:
+                    preview = preview[:97] + '...'
+                color = '\033[32m' if who == 'you' else '\033[35m'
+                print(f"  {color}{who}:\033[0m {preview}")
+            print()
+
     async def cmd_shell(self, arg: str) -> bool:
         """/shell — manage shell command allowlist."""
         await self._handle_shell_command(arg)
@@ -2340,9 +2807,320 @@ class CLI:
         await self._handle_model_selection_async(arg)
         return True
 
+    async def cmd_tangent(self, arg: str) -> bool:
+        """/tangent <topic> — branch into a temporary side-conversation.
+
+        Saves the current history/files as a frame on ``_tangent_stack``
+        and continues with the SAME history underneath (so the model still
+        has the prior context to reason from) but any files added while the
+        tangent is active are confined to it — the snapshot restores the
+        pre-tangent file list on /quit, per the "context additions disappear
+        with tangent" requirement. Beads are NOT snapshotted: conversation_id
+        is unchanged for the duration of the tangent, so bead_create/
+        bead_complete calls made while tangential land in the exact same
+        tree as the parent conversation automatically — no merge step needed.
+
+        Single-level today (a list, not a fixed slot) so a future nested
+        /tangent is a matter of relaxing the guard below, not a redesign.
+        """
+        topic = arg.strip()
+        if not topic:
+            print("\033[90mUsage: /tangent <topic>\033[0m")
+            return True
+        if self._tangent_stack:
+            print("\033[33mAlready in a tangent — nesting isn't supported yet."
+                  " /quit first.\033[0m")
+            return True
+
+        bead_id = None
+        try:
+            from app.models.bead import Bead
+            from app.storage.beads import load_bead_tree, save_bead_tree
+            tree = load_bead_tree(conversation_id=self.conversation_id)
+            active = tree.active_bead
+            if active:
+                active.status = "parked"
+            new_bead = Bead(parent_id=active.id if active else None,
+                             content=f"[tangent] {topic}"[:200], status="active")
+            tree.beads.append(new_bead)
+            save_bead_tree(tree, conversation_id=self.conversation_id)
+            bead_id = new_bead.id
+        except Exception as e:
+            logger.debug(f"tangent bead_create skipped (non-fatal): {e}")
+
+        self._tangent_stack.append({
+            'topic': topic,
+            'history_len': len(self.history),
+            'files': list(self.files),
+            'bead_id': bead_id,
+        })
+        print(f"\033[35m↝ Tangent: {topic}\033[0m")
+        print("\033[90m  /quit [summary|verbatim|discard] to return"
+              " (default: discard)\033[0m")
+        return True
+
+    async def _summarize_tangent(self, tangent_messages: list) -> str:
+        """One/two-line AI summary of the tangent's Q&A, for /quit summary."""
+        if not tangent_messages:
+            return ""
+        transcript = "\n".join(
+            f"{m.get('type', '?')}: {m.get('content', '')}"[:500]
+            for m in tangent_messages
+        )[:4000]
+        try:
+            from langchain_core.messages import HumanMessage
+            prompt = (
+                "Summarize the following side-conversation in 1-2 sentences, "
+                "focused on any conclusion or decision reached:\n\n" + transcript
+            )
+            result = await self.model.ainvoke([HumanMessage(content=prompt)])
+            content = result.content if hasattr(result, 'content') else str(result)
+            return content.strip()
+        except Exception as e:
+            logger.debug(f"tangent summarize failed (non-fatal): {e}")
+            return "[tangent summary unavailable]"
+
+    async def _pop_tangent(self, mode: str) -> None:
+        """Return from the active tangent per ``mode`` (summary/verbatim/discard)."""
+        frame = self._tangent_stack.pop()
+        tangent_messages = self.history[frame['history_len']:]
+
+        if mode == 'discard' or not tangent_messages:
+            self.history = self.history[:frame['history_len']]
+        elif mode == 'verbatim':
+            pass  # tangent messages already sit at the tail of history — keep them
+        elif mode == 'summary':
+            summary = await self._summarize_tangent(tangent_messages)
+            self.history = self.history[:frame['history_len']]
+            if summary:
+                self.history.append({
+                    'type': 'ai',
+                    'content': f"[Tangent \"{frame['topic']}\" summary] {summary}",
+                })
+
+        # File additions made during the tangent are confined to it —
+        # restore the pre-tangent set regardless of mode.
+        self.files = frame['files']
+
+        bead_id = frame.get('bead_id')
+        if bead_id:
+            try:
+                from app.storage.beads import load_bead_tree, save_bead_tree
+                tree = load_bead_tree(conversation_id=self.conversation_id)
+                target = next((b for b in tree.beads if b.id == bead_id), None)
+                if target and target.status not in ("completed", "abandoned"):
+                    target.status = "completed" if mode != 'discard' else "abandoned"
+                    if target.parent_id:
+                        parent = next((b for b in tree.beads if b.id == target.parent_id), None)
+                        if parent and parent.status == "parked":
+                            parent.status = "active"
+                    save_bead_tree(tree, conversation_id=self.conversation_id)
+            except Exception as e:
+                logger.debug(f"tangent bead resolve skipped (non-fatal): {e}")
+
+        label = {'summary': 'with summary', 'verbatim': 'verbatim', 'discard': 'discarded'}[mode]
+        print(f"\033[35m↜ Back from tangent \"{frame['topic']}\" ({label})\033[0m")
+
     async def cmd_quit(self, arg: str) -> bool:
-        """/quit — exit."""
+        """/quit [summary|verbatim|discard] — exit, or pop an active tangent.
+
+        Context-sensitive overload: with a tangent active, returns to the
+        parent context per the given mode (default 'discard', silent —
+        the completer surfaces the other options rather than a prompt).
+        With no tangent active, behaves exactly as before (exit the CLI).
+        """
+        if self._tangent_stack:
+            mode = arg.strip().lower() or 'discard'
+            if mode not in ('summary', 'verbatim', 'discard'):
+                print(f"\033[33mUnknown /quit option '{mode}' — use summary,"
+                      " verbatim, or discard.\033[0m")
+                return True
+            await self._pop_tangent(mode)
+            return True
         return False
+
+    async def cmd_context(self, arg: str) -> bool:
+        """/context — break down token/context utilization for this session."""
+        from app.agents.agent import estimate_token_count
+
+        mode = (arg or "").strip().lower()
+        show_files = mode in ("files", "all")
+        show_tools = mode in ("tools", "all")
+        show_history = mode in ("history", "all")
+
+        # Build the exact messages the model receives (empty question = current
+        # standing context: system prompt + codebase + chat history).
+        try:
+            messages = self._build_messages("")
+        except Exception as e:  # noqa: BLE001
+            print(f"\033[31mCould not build context: {e}\033[0m")
+            return True
+
+        def _text(content) -> str:
+            # LangChain message content is either a str or a list of blocks.
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                parts = []
+                for block in content:
+                    if isinstance(block, dict):
+                        parts.append(block.get("text", "") if block.get("type") == "text" else "")
+                    elif isinstance(block, str):
+                        parts.append(block)
+                return "".join(parts)
+            return str(content)
+
+        # Separate the system message (prompt + embedded codebase) from the
+        # conversation turns.
+        system_text = ""
+        turn_msgs = []
+        for msg in messages:
+            cls = type(msg).__name__
+            if cls == "SystemMessage":
+                system_text += _text(msg.content)
+            else:
+                turn_msgs.append(msg)
+
+        # Split the system prompt at the real codebase markers (see prompts.py).
+        BEGIN = "Below is the current codebase of the user:"
+        END = "Codebase ends here."
+        base_prompt_text = system_text
+        codebase_text = ""
+        b = system_text.find(BEGIN)
+        if b != -1:
+            e = system_text.find(END, b)
+            if e != -1:
+                codebase_text = system_text[b + len(BEGIN):e]
+                base_prompt_text = system_text[:b] + system_text[e + len(END):]
+
+        base_tokens = estimate_token_count(base_prompt_text)
+        codebase_tokens = estimate_token_count(codebase_text) if codebase_text else 0
+
+        # Chat history / turn breakdown.
+        history_rows = []
+        history_tokens = 0
+        for msg in turn_msgs:
+            role = {"HumanMessage": "user", "AIMessage": "assistant"}.get(
+                type(msg).__name__, "other")
+            t = estimate_token_count(_text(msg.content))
+            history_tokens += t
+            history_rows.append((role, t, _text(msg.content)))
+
+        # MCP tool definitions — count them the way they're actually serialized
+        # into the request payload (same converter the executor uses).
+        tool_tokens = 0
+        tools_by_server = {}
+        tool_count = 0
+        try:
+            from app.mcp.manager import get_mcp_manager
+            mcp_manager = get_mcp_manager()
+            if mcp_manager and getattr(mcp_manager, "is_initialized", False):
+                from app.mcp.enhanced_tools import create_secure_mcp_tools
+                from app.streaming_tool_executor import StreamingToolExecutor
+                tools = create_secure_mcp_tools() or []
+                executor = StreamingToolExecutor.__new__(StreamingToolExecutor)
+                for tool in tools:
+                    try:
+                        schema = executor._convert_tool_schema(tool)
+                        t = estimate_token_count(json.dumps(schema))
+                    except Exception:  # noqa: BLE001
+                        t = 0
+                    server = (getattr(tool, "_server_name", None)
+                              or (getattr(tool, "metadata", {}) or {}).get("server_name")
+                              or "builtin")
+                    agg = tools_by_server.setdefault(server, [0, 0])
+                    agg[0] += 1
+                    agg[1] += t
+                    tool_tokens += t
+                    tool_count += 1
+        except Exception:  # noqa: BLE001
+            pass
+
+        total = base_tokens + codebase_tokens + history_tokens + tool_tokens
+
+        # Model context window for the utilization bar.
+        token_limit = None
+        model_name = ziya_env("ZIYA_MODEL") or ""
+        try:
+            from app.config.models_config import MODEL_CONFIGS, DEFAULT_MODELS
+            endpoint = ziya_env("ZIYA_ENDPOINT")
+            available = MODEL_CONFIGS.get(endpoint, {})
+            if not model_name:
+                model_name = DEFAULT_MODELS.get(endpoint, "")
+            cfg = available.get(model_name, {})
+            token_limit = cfg.get("token_limit")
+            if cfg.get("supports_extended_context") and cfg.get("extended_context_limit"):
+                token_limit = cfg.get("extended_context_limit")
+        except Exception:  # noqa: BLE001
+            pass
+
+        def bar(frac, width=28):
+            frac = max(0.0, min(1.0, frac))
+            filled = int(round(frac * width))
+            return "█" * filled + "░" * (width - filled)
+
+        def fmt(n):
+            return f"{n:,}"
+
+        def pct(n):
+            return f"{(100.0 * n / total):.1f}%" if total else "0.0%"
+
+        print(f"\n\033[1mContext utilization\033[0m"
+              f" \033[90m({model_name or 'unknown model'})\033[0m")
+        rows = [
+            ("System prompt", base_tokens),
+            (f"Codebase / files ({len(self.files)})", codebase_tokens),
+            (f"Tool definitions ({tool_count})", tool_tokens),
+            (f"Chat history ({len(turn_msgs)} msgs)", history_tokens),
+        ]
+        label_w = max(len(r[0]) for r in rows) + 2
+        for label, n in rows:
+            print(f"  \033[36m{label:<{label_w}}\033[0m "
+                  f"{fmt(n):>9}  \033[90m{pct(n):>6}\033[0m")
+        print(f"  {'':<{label_w}} {'':>9}  {'':>6}")
+        print(f"  \033[1m{'Total input':<{label_w}}\033[0m "
+              f"\033[1m{fmt(total):>9}\033[0m")
+
+        if token_limit:
+            frac = total / token_limit
+            color = "\033[32m" if frac < 0.7 else ("\033[33m" if frac < 0.9 else "\033[31m")
+            print(f"\n  {color}{bar(frac)}\033[0m "
+                  f"{100.0 * frac:.1f}% of {fmt(token_limit)} ctx")
+
+        # Detail sections (opt-in via subcommand).
+        if show_files and self.files:
+            print(f"\n\033[1mPer-file estimates\033[0m \033[90m({len(self.files)})\033[0m")
+            root = os.environ.get("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
+            file_rows = []
+            for f in self.files:
+                path = f if os.path.isabs(f) else os.path.join(root, f)
+                try:
+                    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                        file_rows.append((f, estimate_token_count(fh.read())))
+                except OSError:
+                    file_rows.append((f, 0))
+            for name, t in sorted(file_rows, key=lambda r: -r[1]):
+                print(f"  {fmt(t):>9}  \033[90m{name}\033[0m")
+
+        if show_tools and tools_by_server:
+            print(f"\n\033[1mTool definitions by server\033[0m")
+            for server, (cnt, t) in sorted(tools_by_server.items(), key=lambda r: -r[1][1]):
+                print(f"  {fmt(t):>9}  \033[36m{server}\033[0m \033[90m({cnt} tools)\033[0m")
+
+        if show_history and history_rows:
+            print(f"\n\033[1mPer-message estimates\033[0m \033[90m({len(history_rows)})\033[0m")
+            for i, (role, t, text) in enumerate(history_rows, 1):
+                snippet = " ".join(text.split())[:60]
+                print(f"  {i:>3}. \033[36m{role:<9}\033[0m {fmt(t):>8}  "
+                      f"\033[90m{snippet}\033[0m")
+
+        if mode not in ("", "files", "tools", "history", "all"):
+            print(f"\n\033[33mUnknown /context option '{mode}' — "
+                  "use files, tools, history, or all.\033[0m")
+        elif not mode:
+            print("\n\033[90mDetail: /context files | tools | history | all\033[0m")
+        print()
+        return True
 
     async def cmd_beads(self, arg: str) -> bool:
         """/beads — render the conversation's task tree."""
@@ -3313,8 +4091,9 @@ def _init_and_authenticate(args, *, skip_setup_env: bool = False):
     _enforce_endpoint_policy()
 
     profile = getattr(args, 'profile', None)
-    if not _check_auth_quick(profile):
-        _print_auth_error()
+    _auth_ok, _auth_msg = _check_auth_quick(profile)
+    if not _auth_ok:
+        _print_auth_error(_auth_msg)
         sys.exit(1)
 
 
@@ -3362,8 +4141,9 @@ def cmd_chat(args):
         _enforce_endpoint_policy()
         # Authenticate on resume path.
         profile = getattr(args, 'profile', None)
-        if not _check_auth_quick(profile):
-            _print_auth_error()
+        _auth_ok, _auth_msg = _check_auth_quick(profile)
+        if not _auth_ok:
+            _print_auth_error(_auth_msg)
             sys.exit(1)
 
         resume_arg = args.resume if isinstance(args.resume, str) else None
@@ -3406,15 +4186,22 @@ def cmd_chat(args):
     # Normal (non-resume) path — skip setup_env/plugins (already ran above)
     # Auth check doesn't need plugins; policy enforcement is deferred to the
     # background init task inside _run_async_cli.
-    if not _check_auth_quick(getattr(args, 'profile', None)):
-        _print_auth_error()
-        sys.exit(1)
+    _auth_ok, _auth_msg = _check_auth_quick(getattr(args, 'profile', None))
+    if not _auth_ok:
+        _print_auth_error(_auth_msg)
+        # _plugins_executor's worker thread is non-daemon, so a bare
+        # sys.exit() here would block on it during interpreter shutdown —
+        # letting initialize_plugins()'s app.server import (and the AST
+        # indexing side effect it triggers) run to completion anyway.
+        _plugins_executor.shutdown(wait=False, cancel_futures=True)
+        os._exit(1)
     
     root = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
     files = resolve_files(args.files, root) if args.files else []
     cli = CLI(files=files)
     cli._plugins_future = _plugins_future
     cli._ephemeral = getattr(args, 'ephemeral', False)
+    cli._pending_join = getattr(args, 'join', False)
     asyncio.run(_run_async_cli(cli))
     
     if not getattr(args, 'ephemeral', False):
@@ -3676,35 +4463,53 @@ def cmd_task(args):
 # Auth helpers
 # ============================================================================
 
-def _check_auth_quick(profile: str = None) -> bool:
-    """Quick check if authentication is likely to work."""
+def _check_auth_quick(profile: str = None) -> tuple:
+    """Quick check if authentication is likely to work.
+
+    Returns (valid, message) — message is the diagnostic detail from
+    check_aws_credentials() (distinguishing expired creds from network/
+    outage failures) when available, else None.
+    """
     endpoint = ziya_env("ZIYA_ENDPOINT")
     
     if endpoint == "bedrock":
         try:
             from app.utils.aws_utils import check_aws_credentials
             # Pass profile explicitly to ensure it's used
-            valid, _ = check_aws_credentials(profile_name=profile)
-            return valid
+            valid, message = check_aws_credentials(profile_name=profile)
+            return valid, message
         except (ImportError, OSError, RuntimeError, ValueError):
-            return False
+            return False, None
     elif endpoint == "google":
-        return bool(os.environ.get("GOOGLE_API_KEY"))
+        return bool(os.environ.get("GOOGLE_API_KEY")), None
     elif endpoint == "openai":
-        return bool(os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_BASE_URL"))
+        return bool(os.environ.get("OPENAI_API_KEY") or os.environ.get("OPENAI_BASE_URL")), None
     elif endpoint == "anthropic":
-        return bool(os.environ.get("ANTHROPIC_API_KEY"))
+        return bool(os.environ.get("ANTHROPIC_API_KEY")), None
     
-    return True
+    return True, None
 
 
-def _print_auth_error():
-    """Print authentication error with helpful instructions."""
+def _print_auth_error(message: str = None):
+    """Print authentication error with helpful instructions.
+
+    Args:
+        message: Optional diagnostic detail from check_aws_credentials().
+            When it indicates a network/connectivity failure (as opposed to
+            missing/expired credentials), a distinct message is shown so
+            users aren't told to re-authenticate during an AWS-side outage.
+    """
     endpoint = ziya_env("ZIYA_ENDPOINT")
+    is_network_error = bool(message) and "NETWORK ERROR" in message
     
     print("\n\033[31m✗ Authentication failed\033[0m\n", file=sys.stderr)
     
-    if endpoint == "bedrock":
+    if endpoint == "bedrock" and is_network_error:
+        print("Could not reach AWS to verify credentials — this looks like a network", file=sys.stderr)
+        print("or service issue, not expired/missing credentials.\n", file=sys.stderr)
+        print(f"\033[33mDetail:\033[0m {message}\n", file=sys.stderr)
+        print("If this persists, check AWS service health before re-authenticating.", file=sys.stderr)
+    elif endpoint == "bedrock":
         print("Your AWS credentials are missing or expired.\n", file=sys.stderr)
         print("\033[33mTo fix:\033[0m", file=sys.stderr)
         print("  aws sso login --profile <your-profile>", file=sys.stderr)
@@ -3765,6 +4570,8 @@ Examples:
     chat_parser.add_argument('files', nargs='*', help='Files/directories for context')
     chat_parser.add_argument('--resume', nargs='?', const=True, default=False, metavar='NAME',
                              help='Resume a session; optional NAME/id to skip the picker')
+    chat_parser.add_argument('--join', nargs='?', const=True, default=False, metavar='NAME',
+                             help='Join a live GUI conversation; optional NAME/id to skip the picker')
     chat_parser.add_argument('--ephemeral', action='store_true', help='Do not save session history')
     chat_parser.set_defaults(func=cmd_chat)
     
