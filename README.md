@@ -85,7 +85,6 @@ The full capability reference, if you want it, is in [Feature Inventory](Docs/Fe
 Ziya makes deliberate choices, and they aren't the choices everyone would make. It doesn't follow the dominant UX patterns — IDE plugin, chat-with-tools, wizard-led plan/act — because the frontend is part of the research, not a thin shell over the backend. It rewards power users: the depth is there, but the UI trusts you to reach for it rather than walking you through a guided onboarding, and some of the strongest capabilities (the multi-agent system, the full visualization range) reveal themselves as you use them rather than announcing themselves cold. If you want a locked-down, hand-holding consumer experience, that is not what this is, on purpose.
 
 The project keeps an honest running account of what's still being actively refined — cross-session memory and the autonomous-vs-guided balance chief among them — in the [What I'd Do Differently](Docs/DesignPhilosophy.md#what-id-do-differently) section of the philosophy doc. It's there because a mature project can afford to be candid about its own edges, not because the edges are load-bearing.
-The project keepsThe diff was already complete before the cutoff — here it is cleanly, ready to apply:
 
 ---
 

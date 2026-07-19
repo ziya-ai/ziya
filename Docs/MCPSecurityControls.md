@@ -31,6 +31,8 @@ All tool descriptions are scanned for prompt-injection patterns before being exp
 - Hidden HTML comments
 - Excessively long descriptions (>4000 chars) that may hide instructions
 
+**Warning severity (`classify_warnings()`):** Scanner warnings are split into two tiers. A concrete injection-pattern match (or homoglyph/mixed-script obfuscation) is **blocking** — the tool is dropped at connect time and re-authorization refuses it. The unusually-long-description heuristic is **advisory** — it is logged for human review but never, on its own, drops a tool or blocks re-authorization, since legitimately verbose tool docs routinely exceed 4000 chars.
+
 **Module:** `app/mcp/response_validator.py`
 
 Tool responses are validated for hidden character smuggling (Unicode zero-width characters, orphaned surrogates, bidi overrides, control characters) per SDO-183 guidelines.
@@ -57,6 +59,8 @@ When the shell server rejects a command (BLOCKED or WRITE BLOCKED), the MCP clie
 
 The `file_write` tool enforces write policies through `WritePolicyManager`, restricting writes to project-configured approved paths.
 
+**Unified shell/file_write write scope (`ZIYA_PROJECT_WRITE_PATHS`).** The `file_write` tool runs in the trusted parent process (which holds the KEK and can decrypt `project.json`), so it honors the project `writePolicy` unsigned. The shell subprocess cannot read the ALE-encrypted `project.json` (no KEK), so it historically fell back to the floor and refused shell writes (`cp`, `sed`, `>`) to project-policy paths that `file_write` already allowed — a confusing asymmetry. The parent now forwards the decrypted project write policy to the shell through a dedicated **non-gated** env channel, `ZIYA_PROJECT_WRITE_PATHS` (`app/config/scope_canonical.py`), which `WritePolicyManager.merge_env_overrides` folds into `safe_write_paths` (directory entries) and `allowed_write_patterns` (glob entries). This channel needs no root signature — it grants the shell exactly what the same unsigned policy already grants `file_write`, so it is consistency, not new trust. Forgery resistance does not rest on the signature gate: `MCPManager._apply_project_write_paths` **always sets-or-deletes** the key at spawn from a *throwaway* per-workspace `WritePolicyManager` (never the shared multi-project singleton), so a value hand-written into `mcp_config.json` is overwritten before the subprocess sees it, and only the `shell` server receives it. The genuinely-gated escalations (extra `ALLOW_COMMANDS`, `SAFE_WRITE_PATHS` beyond the floor, `YOLO_MODE`, git ops) remain signature-gated and unchanged.
+
 ### 3. Cross-Origin Escalation (Shadowing)
 
 **Module:** `app/mcp/tool_guard.py` — `detect_shadowing()`
@@ -67,7 +71,11 @@ When external MCP servers connect, their tool names are checked against built-in
 
 **Module:** `app/mcp/tool_guard.py` — `fingerprint_tools()`, `check_fingerprint_change()`
 
-At connection time, each MCP server's tool definitions (names, descriptions, schemas) are fingerprinted with SHA-256. On reconnection, the fingerprint is compared to the baseline. Any change triggers a warning, catching post-install tool definition mutations.
+At connection time, each MCP server's tool definitions (names, descriptions, schemas) are fingerprinted with SHA-256. On reconnection, the fingerprint is compared to the baseline. Any change against a persisted, human-approved baseline quarantines the server — its tools are withheld from every prompt path — until an explicit, human-initiated re-authorization.
+
+**Re-authorization (`reauthorize_server()`, `POST /api/mcp/reauthorize-server`):** Lifting a quarantine re-scans the mutated descriptions (which the connect-time scan skipped while quarantined). Advisory-only warnings (e.g. length) are accepted automatically; a blocking injection-pattern match refuses re-authorization and returns the per-tool reasons to the UI, which lists them and offers an explicit **"Re-authorize anyway"** override (`force=true`). All outcomes (clean, forced, refused, advisory-accepted) are logged server-side.
+
+**Persistent, fingerprint-bound force-accept:** A forced override is durable, not session-scoped. `reauthorize_server(force=True)` records the accepted fingerprint to `~/.ziya/mcp_force_accepts.json`; on reconnection the connect-time scan keeps those blocking tools as long as the current fingerprint still equals the accepted one. This is deliberately narrower than marking the server `trusted` (which disables the scan entirely, forever, for all tools): the acceptance is bound to the exact descriptions the human reviewed. If the definitions mutate **again**, the fingerprint no longer matches, the force-accept no longer applies, and both the poisoning scan and rug-pull quarantine re-engage automatically — the override self-revokes on any later change. A subsequent clean (non-forced) re-authorization clears any prior force-accept.
 
 ### 5. Result Integrity
 

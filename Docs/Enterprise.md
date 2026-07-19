@@ -118,6 +118,13 @@ ziya --endpoint openai
 ```
 
 ---
+#### `should_capture_audit_context()`
+
+Returns `True` to make every MCP tool-audit entry include a **co-presence context snapshot** for forensic prompt-injection incident reconstruction (ASR NF-006/008). Default `False` — community deployments pay zero overhead and their audit entries are unchanged.
+
+When enabled, each `~/.ziya/audit/tool_audit_<date>.jsonl` entry gains a `context` object:
+
+
 
 ### ServiceModelProvider
 
@@ -496,3 +503,4 @@ Both sections are optional. The file is loaded at server startup; restart Ziya a
 | `ZIYA_GROUNDING_MODEL` | `nova-2-lite` | Nova model for web grounding |
 | `ZIYA_GROUNDING_REGION` | `us-east-1` | AWS region for grounding calls |
 | `ZIYA_ENABLE_<CATEGORY>` | varies | Override enabled state for any builtin tool category |
+| `ZIYA_AUDIT_CONTEXT_SNAPSHOT` | `false` | Add a co-presence `context` snapshot (active memory ids + recent tool-result ids) to each tool-audit entry for forensic incident reconstruction (NF-006/008). Overrides the `should_capture_audit_context()` plugin policy when set. |
