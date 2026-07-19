@@ -941,6 +941,14 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
     context_normalized = [normalize_line_for_comparison(line) for line in context_lines]
     
     # Search for context lines in the file (they may have shifted due to other hunks)
+    # Track whether we found the hunk's context verbatim anywhere in the file
+    # without the additions following it. That is a strong, position-independent
+    # signal that the file is still in its pre-application state at the one
+    # place this hunk's context actually appears -- so the context-free
+    # "distinctive block" fallback below must not be allowed to override it,
+    # regardless of which `pos` the caller happens to be probing (callers may
+    # scan every position 0..N when hunting for an already-applied match).
+    context_found_without_addition = False
     for search_pos in range(len(file_lines) - len(context_lines) + 1):
         file_context = _file_normalized[search_pos:search_pos + len(context_lines)]
         
@@ -949,6 +957,7 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
             check_pos = search_pos + len(context_lines)
             
             if check_pos + len(added_lines) > len(file_lines):
+                context_found_without_addition = True
                 continue
                         # The added content exists in the file, but before
             
@@ -957,6 +966,7 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
             if file_block == added_block:
                 logger.debug(f"Pure addition already applied: context at {search_pos}, additions at {check_pos}")
                 return True
+            context_found_without_addition = True
 
     # Before falling through to the context-free whole-file search, check
     # whether the hunk's context lines match at the expected position `pos`.
@@ -973,6 +983,24 @@ def _check_pure_addition_already_applied(file_lines: List[str], added_lines: Lis
                 f"but added lines are absent there; suppressing context-free fallback"
             )
             return False
+
+    # Same suppression, but position-independent: if the full-file scan above
+    # found this hunk's context verbatim somewhere (with the additions absent
+    # there), the file is demonstrably in its pre-application state at that
+    # location. That is true regardless of which `pos` the caller passed in,
+    # so it must also block the context-free fallback -- otherwise callers
+    # that probe every position 0..N (rather than just the hunk's expected
+    # position) can slip past the pos-specific guard above and hit the
+    # fallback's risky whole-block search, which may match an unrelated
+    # sibling occurrence of the same added text (e.g. a duplicated guard
+    # clause reused across similar functions) and falsely report "already
+    # applied".
+    if context_found_without_addition:
+        logger.debug(
+            "Pure addition NOT already applied: context found elsewhere in file "
+            "without the additions following; suppressing context-free fallback"
+        )
+        return False
     
     # Fallback: the diff's context lines may not match the file exactly (e.g.
     # the diff was generated against a slightly different version of the file,
