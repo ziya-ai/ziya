@@ -38,7 +38,7 @@ class NovaBedrockProvider(LLMProvider):
     """Streams Nova model responses via the Bedrock Converse API."""
 
     def __init__(self, model_id: str, model_config: Dict[str, Any],
-                 aws_profile: str = "ziya", region: str = "us-west-2"):
+                 aws_profile: Optional[str] = None, region: str = "us-west-2"):
         self.model_id = model_id
         self.model_config = model_config
         self._region = region

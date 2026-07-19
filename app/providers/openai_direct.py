@@ -90,8 +90,11 @@ class OpenAIDirectProvider(LLMProvider):
         base_delay = 2
 
         for retry_attempt in range(max_retries + 1):
+            content_yielded = False
             try:
                 async for event in self._do_stream(request_kwargs):
+                    if isinstance(event, (TextDelta, ThinkingDelta, ToolUseStart)):
+                        content_yielded = True
                     yield event
                 return
             except Exception as e:
@@ -100,6 +103,17 @@ class OpenAIDirectProvider(LLMProvider):
                 retryable = classified in (
                     ErrorType.THROTTLE, ErrorType.READ_TIMEOUT, ErrorType.OVERLOADED,
                 )
+                # A from-scratch retry after content has already been
+                # yielded APPENDS the retry's full response to the partial
+                # text the consumer accumulated — producing duplicated
+                # message corruption. Once content is out, fail loudly;
+                # ErrorEvent is handled cleanly downstream.
+                if retryable and content_yielded:
+                    logger.warning(
+                        f"OpenAIDirectProvider: {classified.name} mid-stream after "
+                        f"content was yielded — refusing duplicate-producing retry"
+                    )
+                    retryable = False
                 if retryable and retry_attempt < max_retries:
                     delay = base_delay * (2 ** retry_attempt) + 1
                     logger.warning(

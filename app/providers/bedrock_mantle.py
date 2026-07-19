@@ -11,6 +11,7 @@ transport, so no separate API key is needed.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, Optional
 
 import httpx
@@ -25,6 +26,32 @@ logger = get_mode_aware_logger(__name__)
 
 # Base-URL template. The Anthropic SDK appends /v1/messages automatically.
 _MANTLE_BASE_URL = "https://bedrock-mantle.{region}.api.aws/anthropic"
+
+
+def resolve_mantle_region(model_config: Optional[Dict[str, Any]], region: Optional[str] = None) -> str:
+    """Clamp a requested region to the model's mantle-available regions.
+
+    Mantle model availability differs per region (e.g. anthropic.claude-fable-5
+    exists on bedrock-mantle.us-east-1 but NOT us-west-2 — verified via
+    GET /v1/models on both). The session's AWS_REGION frequently resolves to
+    a region where the model doesn't exist, yielding a 404 "model does not
+    exist". The model config's available_regions/preferred_region is the
+    source of truth for mantle models; honor it here since the generic
+    region-clamping in ModelManager only fires for dict-form model_ids.
+    """
+    region = region or os.environ.get(
+        "AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
+    )
+    cfg = model_config or {}
+    avail = cfg.get("available_regions") or []
+    if avail and region not in avail:
+        clamped = cfg.get("preferred_region") or avail[0]
+        logger.info(
+            f"Mantle region {region} not in model's available_regions {avail}; "
+            f"clamping to {clamped}"
+        )
+        return clamped
+    return region
 
 
 class _AsyncSigV4Transport(httpx.AsyncBaseTransport):
@@ -95,6 +122,12 @@ class BedrockMantleProvider(AnthropicDirectProvider):
         """Character-based heuristic; mantle has no count_tokens endpoint."""
         import json
         total_chars = 0
+        # Image content blocks carry no text but cost tokens (Claude vision
+        # caps a single image at ~1568px ≈ 1600 tokens). The pre-flight is a
+        # safety net that should err high, so count each image at that cap
+        # rather than the zero it contributed before — a request full of
+        # images could otherwise sail past _check_context_limit unbounded.
+        image_tokens = 0
         system = request_kwargs.get("system")
         if isinstance(system, str):
             total_chars += len(system)
@@ -112,10 +145,12 @@ class BedrockMantleProvider(AnthropicDirectProvider):
                         total_chars += len(block.get("text", ""))
                         if "input" in block:
                             total_chars += len(json.dumps(block["input"]))
+                        if block.get("type") == "image":
+                            image_tokens += 1600
         tools = request_kwargs.get("tools", [])
         if tools:
             total_chars += int(len(json.dumps(tools)) * 2.5)
-        return int(total_chars / 3.5)
+        return int(total_chars / 3.5) + image_tokens
 
     @property
     def provider_name(self) -> str:

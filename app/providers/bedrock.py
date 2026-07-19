@@ -62,7 +62,7 @@ class BedrockProvider(LLMProvider):
         self,
         model_id: str,
         model_config: Dict[str, Any],
-        aws_profile: str = "ziya",
+        aws_profile: Optional[str] = None,
         region: str = "us-west-2",
     ):
         self.model_id = model_id
