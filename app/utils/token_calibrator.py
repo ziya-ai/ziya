@@ -62,6 +62,9 @@ class TokenCalibrator:
         # Fixed overhead baselines (measured once from first request)
         self.baseline_overhead_tokens = {}  # model_family -> overhead_tokens
         self.baseline_mcp_tokens_per_tool = 0  # Average tokens per MCP tool
+        # model_family -> MCP tool count at last baseline measurement, used to
+        # detect when the registered tool set changes and re-measure.
+        self.baseline_tool_counts = {}
         self.baselines_measured = set()  # Set of model families with measured baselines
         
         # Persistence strategy
@@ -140,6 +143,7 @@ class TokenCalibrator:
                     # Load baselines
                     self.baseline_overhead_tokens = data.get('baseline_overhead_tokens', {})
                     self.baselines_measured = set(data.get('baselines_measured', []))
+                    self.baseline_tool_counts = data.get('baseline_tool_counts', {})
                 
                     # Count total samples and types
                     total_models = len(self.stats_by_model_and_type)
@@ -171,19 +175,54 @@ class TokenCalibrator:
             logger.info(f"📊 SAVE: Attempting to save to {self.cache_file}")
             temp_file = self.cache_file + '.tmp'
             
-            data = {
-                'stats_by_model_and_type': dict(self.stats_by_model_and_type),
-                'global_by_model': self.global_by_model,
-                'document_cache': self.document_cache,
-                'global_fallback': self.global_fallback,
-                'baseline_overhead_tokens': self.baseline_overhead_tokens,
-                'baselines_measured': list(self.baselines_measured),
-                'last_updated': time.time(),
-                'version': '1.0'
-            }
-            
             # Safe concurrent write with atomic rename and retry logic
             with self.file_lock:
+                # TokenCalibrator is a per-process singleton loaded once at
+                # startup (_load_calibration_data). Baseline overhead is
+                # established lazily and independently by each process the
+                # first time it streams a request for a given model family.
+                # record_actual_usage() calls this method on every sample
+                # regardless of whether THIS process has established a
+                # baseline yet. Serializing only self.baseline_overhead_tokens
+                # unconditionally means a process that hasn't (or couldn't)
+                # establish its own baseline overwrites a value another
+                # process already persisted, under the same file lock, with
+                # its own empty/stale in-memory copy -- a last-writer-wins
+                # data loss race across concurrent CLI/server processes.
+                # Re-read the on-disk baseline fields and merge (on-disk
+                # entries win for families this process hasn't measured)
+                # before writing.
+                on_disk_baselines = {}
+                on_disk_measured = set()
+                on_disk_tool_counts = {}
+                try:
+                    if os.path.exists(self.cache_file):
+                        with open(self.cache_file, 'r') as existing:
+                            existing_data = json.load(existing)
+                        on_disk_baselines = existing_data.get('baseline_overhead_tokens', {}) or {}
+                        on_disk_measured = set(existing_data.get('baselines_measured', []) or [])
+                        on_disk_tool_counts = existing_data.get('baseline_tool_counts', {}) or {}
+                except (json.JSONDecodeError, OSError, ValueError) as merge_err:
+                    logger.debug(f"📊 SAVE: Could not read existing baselines for merge: {merge_err}")
+                
+                merged_baselines = dict(on_disk_baselines)
+                merged_baselines.update(self.baseline_overhead_tokens)
+                merged_measured = on_disk_measured | self.baselines_measured
+                merged_tool_counts = dict(on_disk_tool_counts)
+                merged_tool_counts.update(self.baseline_tool_counts)
+                
+                data = {
+                    'stats_by_model_and_type': dict(self.stats_by_model_and_type),
+                    'global_by_model': self.global_by_model,
+                    'document_cache': self.document_cache,
+                    'global_fallback': self.global_fallback,
+                    'baseline_overhead_tokens': merged_baselines,
+                    'baselines_measured': list(merged_measured),
+                    'baseline_tool_counts': merged_tool_counts,
+                    'last_updated': time.time(),
+                    'version': '1.0'
+                }
+                
                 with open(temp_file, 'w') as f:
                     json.dump(data, f, indent=2)
                     f.flush()  # Ensure buffered data is written
