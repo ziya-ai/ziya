@@ -3,6 +3,7 @@ Project data models.
 """
 from pydantic import BaseModel
 from typing import List, Optional
+from app.models.task_card import TaskScope
 
 class WritePolicy(BaseModel):
     """Per-project write policy overrides."""
@@ -21,6 +22,11 @@ class ProjectSettings(BaseModel):
     writePolicy: Optional[WritePolicy] = None
     contextManagement: Optional[ContextManagementSettings] = None
     externalPaths: List[str] = []
+    # Deck-level (project-wide) Task Card permissions baseline.  Merged
+    # additively with each card's own scope and every block's ancestor
+    # chain (see app.models.task_card.merge_scopes and
+    # app/agents/block_executor.py) — this is the outermost layer.
+    taskScope: Optional[TaskScope] = None
 
 class Project(BaseModel):
     id: str

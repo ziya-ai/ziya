@@ -38,9 +38,9 @@ Snapshot shape (versioned via ``schema_version``):
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from ..models.task_card import Block
+from ..models.task_card import Block, TaskScope, merge_scopes
 
 
 SCHEMA_VERSION = 1
@@ -68,11 +68,22 @@ def _scope_to_dict(scope) -> Optional[Dict[str, Any]]:
     }
 
 
-def _walk_blocks(block: Block, out: Dict[str, Dict[str, Any]]) -> None:
-    """Recursively populate ``out`` with one entry per block that has
-    a non-empty scope.  Empty-scope blocks are skipped to keep the
-    snapshot small and post-mortem-readable."""
-    scope_dict = _scope_to_dict(getattr(block, "scope", None))
+def _walk_blocks(
+    block: Block,
+    out: Dict[str, Dict[str, Any]],
+    ancestor_layers: List[Optional[TaskScope]],
+) -> None:
+    """Recursively populate ``out`` with one entry per block whose
+    EFFECTIVE scope (deck + card + every ancestor + its own, merged
+    additively) is non-empty.  Empty-effective-scope blocks are
+    skipped to keep the snapshot small and post-mortem-readable.
+
+    ``ancestor_layers`` accumulates root→this-block's-parent scopes;
+    the caller seeds it with [deck_scope, card_scope].
+    """
+    own_scope = getattr(block, "scope", None)
+    effective = merge_scopes(*ancestor_layers, own_scope)
+    scope_dict = _scope_to_dict(effective)
     if scope_dict is not None and (
         scope_dict["paths"] or scope_dict["tools"]
         or scope_dict["skills"] or scope_dict["shell_commands"]
@@ -83,8 +94,9 @@ def _walk_blocks(block: Block, out: Dict[str, Dict[str, Any]]) -> None:
             "block_type": block.block_type,
             **scope_dict,
         }
+    child_layers = ancestor_layers + [own_scope]
     for child in getattr(block, "body", []) or []:
-        _walk_blocks(child, out)
+        _walk_blocks(child, out, child_layers)
 
 
 def _base_policy_snapshot() -> Dict[str, Any]:
@@ -108,14 +120,19 @@ def build_permissions_snapshot(
     *,
     root_block: Block,
     project_root: Optional[str],
+    deck_scope: Optional[TaskScope] = None,
+    card_scope: Optional[TaskScope] = None,
 ) -> Dict[str, Any]:
     """Build the full permissions snapshot for a launching TaskRun.
 
-    Captures effective state at launch time.  Caller persists the
-    return value on TaskRun.permissions_snapshot.
+    ``block_scopes`` records each block's EFFECTIVE (merged) scope —
+    deck + card + every ancestor block's own scope + the block's own —
+    matching exactly what the executor grants at run time (see
+    app.agents.block_executor.ExecutionContext.effective_scope).
+    Caller persists the return value on TaskRun.permissions_snapshot.
     """
     block_scopes: Dict[str, Dict[str, Any]] = {}
-    _walk_blocks(root_block, block_scopes)
+    _walk_blocks(root_block, block_scopes, [deck_scope, card_scope])
     return {
         "schema_version": SCHEMA_VERSION,
         "captured_at": int(time.time() * 1000),

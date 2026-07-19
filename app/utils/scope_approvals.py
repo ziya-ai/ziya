@@ -92,7 +92,7 @@ def save_record(record: Dict[str, Any]) -> Path:
     return path
 
 
-def _within_policy_bound(record: Dict[str, Any]) -> bool:
+def _within_policy_bound(record: Dict[str, Any]) -> tuple:
     """True iff *record* satisfies the enterprise approval-TTL policy.
 
     No policy bound (None) -> always True (open-source default; approvals may
@@ -103,6 +103,11 @@ def _within_policy_bound(record: Dict[str, Any]) -> bool:
 
     The temporal check (expiry in the past) lives in
     ``scope_canonical.verify_approval_record``; this adds the *policy* ceiling.
+
+    Returns ``(ok, reason)``: ``reason`` is ``None`` when ``ok`` is True, and a
+    short machine-readable code otherwise — surfaced through the scope-status
+    endpoint so the editor's "still unsigned" banner can show WHY instead of
+    a bare boolean.
     """
     try:
         from app.plugins import get_max_approval_ttl
@@ -110,56 +115,88 @@ def _within_policy_bound(record: Dict[str, Any]) -> bool:
     except Exception:
         max_ttl = None
     if max_ttl is None:
-        return True
+        return True, None
     exp = record.get("expires_at")
     if exp is None:
         logger.info("🔒 SCOPE_AUTHZ: approval is unbounded but policy requires "
                     f"expiry within {max_ttl}s — escalation denied")
-        return False
+        return False, f"unbounded_approval_requires_expiry:{max_ttl}"
     try:
         lifetime = int(exp) - int(record["approved_at"])
     except (KeyError, TypeError, ValueError):
-        return False
+        return False, "malformed_expiry"
     if lifetime > max_ttl:
         logger.info(f"🔒 SCOPE_AUTHZ: approval lifetime {lifetime}s exceeds "
                     f"policy bound {max_ttl}s — escalation denied")
-        return False
-    return True
+        return False, f"approval_lifetime_exceeds_policy:{lifetime}>{max_ttl}"
+    return True, None
 
 
-def is_scope_authorized(task_id: str, scope: Any,
+def is_scope_authorized(task_id: str, *scopes: Any,
                         public_key_path: Optional[str] = None) -> bool:
-    """True iff *scope*'s escalation is authorized for *task_id*.
+    """True iff the escalation from one or more scope layers is authorized
+    for *task_id*.
 
-    Returns True when the scope carries no escalation at all (nothing to
+    Callers pass the FULL effective hierarchy in root→leaf order — deck
+    scope, card scope, every ancestor block's scope, and the target
+    block's own scope — so the hash checked here matches exactly what
+    ``ExecutionContext.effective_scope`` grants at run time (see
+    ``sc.task_escalation_block`` / ``sc.task_scope_hash``, which union
+    across all passed layers).  A single scope still works.
+
+    Returns True when the union carries no escalation at all (nothing to
     authorize — it runs at the floor regardless). Otherwise requires a stored
     record whose signature verifies AND whose ``scope_hash`` equals the scope's
     CURRENT hash. Any mismatch / missing / unverifiable record -> False.
     """
-    current_hash = sc.task_scope_hash(scope)
+    ok, _ = is_scope_authorized_with_reason(task_id, *scopes, public_key_path=public_key_path)
+    return ok
+
+
+def is_scope_authorized_with_reason(task_id: str, *scopes: Any,
+                                    public_key_path: Optional[str] = None) -> tuple:
+    """Same predicate as ``is_scope_authorized``, returning ``(ok, reason)``.
+
+    ``reason`` is ``None`` when authorized, else a short machine-readable code:
+      - ``no_record``           — nothing has been signed for this task_id
+      - ``scope_hash_mismatch`` — a record exists but for a different scope
+                                   (scope edited since signing)
+      - ``signature_invalid``   — the record's signature does not verify
+      - ``unbounded_approval_requires_expiry:<seconds>`` — enterprise TTL
+                                   policy requires a bound; this record has
+                                   no ``expires_at``
+      - ``approval_lifetime_exceeds_policy:<got>><max>`` — signed lifetime
+                                   exceeds the policy bound
+      - ``malformed_expiry``    — expiry/approved_at fields unparsable
+
+    ``is_scope_authorized`` remains the plain-boolean form for the runtime
+    gate; the reason exists for UX surfaces (the task-card editor's banner).
+    """
+    current_hash = sc.task_scope_hash(*scopes)
     if not current_hash:
-        return True  # no privilege-bearing escalation; nothing to authorize
+        return True, None  # no privilege-bearing escalation; nothing to authorize
 
     record = get_record(task_id)
     if record is None:
         logger.info(f"🔒 SCOPE_AUTHZ: no approval record for task {task_id!r} "
                     f"(hash {current_hash[:12]}…) — escalation denied")
-        return False
+        return False, "no_record"
 
     if record.get("scope_hash") != current_hash:
         logger.info(f"🔒 SCOPE_AUTHZ: approval for task {task_id!r} is for a "
                     f"different scope (stored {str(record.get('scope_hash'))[:12]}… "
                     f"!= current {current_hash[:12]}…) — escalation denied")
-        return False
+        return False, "scope_hash_mismatch"
 
     if not sc.verify_approval_record(record, public_key_path):
         logger.warning(f"🔒 SCOPE_AUTHZ: approval record for task {task_id!r} "
                        f"failed signature verification — escalation denied")
-        return False
+        return False, "signature_invalid"
 
-    if not _within_policy_bound(record):
-        return False
-    return True
+    bound_ok, bound_reason = _within_policy_bound(record)
+    if not bound_ok:
+        return False, bound_reason
+    return True, None
 
 
 class _UnauthorizedScope:
@@ -273,25 +310,34 @@ def is_cli_task_authorized(task_key: str, allow: Any,
     signature verifies AND whose ``scope_hash`` equals the allow block's CURRENT
     hash. Any mismatch / missing / unverifiable record -> False (fail-closed).
     """
+    ok, _ = is_cli_task_authorized_with_reason(task_key, allow, public_key_path=public_key_path)
+    return ok
+
+
+def is_cli_task_authorized_with_reason(task_key: str, allow: Any,
+                                       public_key_path: Optional[str] = None) -> tuple:
+    """Same predicate as ``is_cli_task_authorized``, returns ``(ok, reason)``.
+    See ``is_scope_authorized_with_reason`` for the reason-code catalog."""
     current_hash = sc.cli_task_hash(allow)
     if not current_hash:
-        return True  # no escalation in the allow block
+        return True, None  # no escalation in the allow block
 
     record = get_record(task_key)
     if record is None:
         logger.info(f"🔒 SCOPE_AUTHZ: no approval record for CLI task {task_key!r} "
                     f"(hash {current_hash[:12]}…) — escalation denied")
-        return False
+        return False, "no_record"
     if record.get("scope_hash") != current_hash:
         logger.info(f"🔒 SCOPE_AUTHZ: approval for CLI task {task_key!r} is for a "
                     f"different allow block (stored "
                     f"{str(record.get('scope_hash'))[:12]}… != current "
                     f"{current_hash[:12]}…) — escalation denied")
-        return False
+        return False, "scope_hash_mismatch"
     if not sc.verify_approval_record(record, public_key_path):
         logger.warning(f"🔒 SCOPE_AUTHZ: approval record for CLI task {task_key!r} "
                        f"failed signature verification — escalation denied")
-        return False
-    if not _within_policy_bound(record):
-        return False
-    return True
+        return False, "signature_invalid"
+    bound_ok, bound_reason = _within_policy_bound(record)
+    if not bound_ok:
+        return False, bound_reason
+    return True, None
