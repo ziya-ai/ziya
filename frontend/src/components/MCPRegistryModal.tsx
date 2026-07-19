@@ -5,6 +5,8 @@ import {
 } from 'antd';
 import MarkdownRenderer from './MarkdownRenderer';
 import ServiceCard from './ServiceCard';
+import { useConfig } from '../context/ConfigContext';
+import type { McpRegistryPreset } from '../types/config';
 import {
     SearchOutlined,
     DownloadOutlined,
@@ -45,7 +47,15 @@ interface RegistryProvider {
     isInternal: boolean;
     supportsSearch: boolean;
     enabled?: boolean;
-    stats?: RegistryStats;
+    stats?: {
+        totalServices: number;
+        lastError?: boolean;
+        // Actual failure reason from the provider (e.g. "mcp-registry CLI
+        // not available. Install with: toolbox install mcp-registry").
+        // Populated by GET /api/mcp/registry/providers.
+        errorMessage?: string | null;
+        lastFetched?: string;
+    };
 }
 
 interface MCPService {
@@ -119,7 +129,6 @@ interface RegistryStats {
     totalServices: number;
     lastFetched?: string;
     fetchTime?: number;
-    errorCount?: number;
 }
 
 const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose }) => {
@@ -151,6 +160,29 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
     const [currentPage, setCurrentPage] = useState(1);
     const [pageSize, setPageSize] = useState(10);
     const browseServicesScrollRef = useRef<HTMLDivElement>(null);
+
+    // Plugin-driven quick-select presets. Community edition injects none, so
+    // no preset buttons render. An enterprise plugin ships a preset (e.g.
+    // "Amazon Supported") via config.frontend.mcpRegistryPresets. Applying a
+    // preset narrows the same selectedProviders / filterSupport state the
+    // browse list and tool search already consult.
+    const { config } = useConfig();
+    const registryPresets = config.frontend?.mcpRegistryPresets ?? [];
+
+    const applyRegistryPreset = (preset: McpRegistryPreset) => {
+        const known = new Set(providers.map(p => p.id));
+        let nextSelected: string[];
+        if (preset.providerIds && preset.providerIds.length > 0) {
+            nextSelected = preset.providerIds.filter(id => known.has(id));
+        } else if (preset.internalOnly) {
+            nextSelected = providers.filter(p => p.isInternal).map(p => p.id);
+        } else {
+            nextSelected = providers.map(p => p.id);
+        }
+        setSelectedProviders(nextSelected);
+        if (preset.supportLevel) setFilterSupport(preset.supportLevel);
+        setActiveTab('browse');
+    };
 
     useEffect(() => {
         if (visible) {
@@ -505,6 +537,11 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
         setProviders(prev => prev.map(p => 
             p.id === registryId ? { ...p, enabled } : p
         ));
+        // Keep Browse/Search provider filter in lockstep with the enabled
+        // switch — selectedProviders is what browse and tool search consult.
+        setSelectedProviders(prev => enabled
+            ? (prev.includes(registryId) ? prev : [...prev, registryId])
+            : prev.filter(id => id !== registryId));
 
         try {
             // This would be a new endpoint to enable/disable registries
@@ -525,6 +562,9 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                 setProviders(prev => prev.map(p => 
                     p.id === registryId ? { ...p, enabled: !enabled } : p
                 ));
+                setSelectedProviders(prev => !enabled
+                    ? (prev.includes(registryId) ? prev : [...prev, registryId])
+                    : prev.filter(id => id !== registryId));
                 message.error('Failed to toggle registry');
             }
         } catch (error) {
@@ -532,6 +572,9 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
             setProviders(prev => prev.map(p => 
                 p.id === registryId ? { ...p, enabled: !enabled } : p
             ));
+            setSelectedProviders(prev => !enabled
+                ? (prev.includes(registryId) ? prev : [...prev, registryId])
+                : prev.filter(id => id !== registryId));
             console.error('Error toggling registry:', error);
             message.error('Failed to toggle registry');
         }
@@ -720,6 +763,11 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
     const renderRegistryCard = (provider: RegistryProvider) => {
         const stats = registryStats[provider.id] || { totalServices: 0 };
         const isEnabled = provider.enabled !== false; // Default to enabled if not specified
+        // The service count above comes from a separate endpoint
+        // (/registry/services) that carries no failure info. The actual
+        // "why zero" reason — e.g. a missing CLI binary — only comes from
+        // /registry/providers, on provider.stats.
+        const providerError = provider.stats?.errorMessage;
         const refreshing = loading; // Could track per-provider loading state
         const serviceNames = registryServiceNames[provider.id] || [];
 
@@ -772,9 +820,6 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                 <Tag color="default" style={{ fontSize: '11px' }}>
                                     {provider.id}
                                 </Tag>
-                                {stats.errorCount && stats.errorCount > 0 && (
-                                    <Tag color="red">{stats.errorCount} errors</Tag>
-                                )}
                             </Space>
                             <Switch
                                 checked={isEnabled}
@@ -850,12 +895,16 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                             • Fetch time: {stats.fetchTime}ms
                                         </span>
                                     )}
-                                    {stats.errorCount && stats.errorCount > 0 && (
-                                        <span style={{ marginLeft: 8, color: '#ff4d4f' }}>
-                                            • {stats.errorCount} errors
-                                        </span>
-                                    )}
                                 </div>
+                                {providerError && (
+                                    <Alert
+                                        type="warning"
+                                        showIcon
+                                        message="Registry unavailable"
+                                        description={providerError}
+                                        style={{ marginTop: 8 }}
+                                    />
+                                )}
                             </Space>
                         </div>
                     }
@@ -1221,6 +1270,21 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                                 )}
                                             </Space>
                                         </Checkbox>
+                                        {registryPresets.length > 0 && (
+                                            <>
+                                                <Divider type="vertical" />
+                                                {registryPresets.map(preset => (
+                                                    <Tooltip key={preset.id} title={preset.tooltip}>
+                                                        <Button
+                                                            size="small"
+                                                            onClick={() => applyRegistryPreset(preset)}
+                                                        >
+                                                            {preset.label}
+                                                        </Button>
+                                                    </Tooltip>
+                                                ))}
+                                            </>
+                                        )}
                                     </Space>
                                 </Col>
                                 <Col span={8}>
