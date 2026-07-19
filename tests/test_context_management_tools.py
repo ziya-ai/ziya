@@ -255,3 +255,166 @@ def test_category_registered_in_builtin_tools():
     assert names == sorted([
         "context_add_file", "context_remove_file", "context_list_files",
     ])
+
+
+# ── _resolve_chat_for_request auto-vivification (CLI root-cause fix) ────
+#
+# Regression coverage for the bug where a CLI session's synthetic
+# conversation_id (cli_<timestamp>_<pid>) — and any brand-new web
+# conversation that hasn't synced yet — was never persisted via
+# ChatStorage.create() ahead of a tool call, so _resolve_chat_for_request
+# unconditionally returned "not found" and the tools could never succeed
+# from the CLI. Both the missing-project and missing-chat branches now
+# self-heal by auto-vivifying a minimal record instead of erroring.
+
+@pytest.fixture
+def unregistered_env(tmp_path, monkeypatch):
+    """
+    A project root that ProjectStorage has never seen, and a
+    conversation_id with no chat file on disk — mirrors a CLI session
+    hitting a context tool for the very first time.
+    """
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    (project_root / "src").mkdir()
+    (project_root / "src" / "main.py").write_text("line1\nline2\n")
+
+    ziya_home = tmp_path / "ziya_home"
+    (ziya_home / "projects").mkdir(parents=True)
+
+    monkeypatch.setattr("app.utils.paths.get_ziya_home", lambda: ziya_home)
+    monkeypatch.setattr(
+        "app.mcp.tools.context_management.get_ziya_home", lambda: ziya_home,
+        raising=False,
+    )
+
+    conversation_id = f"cli_20260708_{os.urandom(3).hex()}"
+    from app.context import set_conversation_id, set_project_root
+    set_conversation_id(conversation_id)
+    set_project_root(str(project_root.resolve()))
+
+    monkeypatch.setattr(
+        "app.plugins.data_retention.get_retention_enforcer",
+        lambda: type("X", (), {"is_expired": lambda *a, **kw: False})(),
+        raising=False,
+    )
+
+    return {
+        "project_root": str(project_root.resolve()),
+        "ziya_home": ziya_home,
+        "conversation_id": conversation_id,
+    }
+
+
+class TestAutoVivifyProjectAndChat:
+
+    def test_context_add_file_succeeds_on_first_call_from_unregistered_state(self, unregistered_env):
+        """This is the exact CLI failure mode: no project record, no chat
+        record. context_add_file must succeed on the first call instead
+        of returning 'not found' / 'not registered'."""
+        result = run(ContextAddFileTool().execute(path="src/main.py"))
+        assert result.get("error") is not True, result
+        assert result.get("success") is True
+        assert "line1" in result["content"]
+
+    def test_project_is_registered_on_disk_after_auto_vivify(self, unregistered_env):
+        run(ContextAddFileTool().execute(path="src/main.py"))
+
+        from app.storage.projects import ProjectStorage
+        storage = ProjectStorage(unregistered_env["ziya_home"])
+        project = storage.get_by_path(unregistered_env["project_root"])
+        assert project is not None
+        assert project.path == unregistered_env["project_root"]
+
+    def test_project_auto_registration_is_idempotent(self, unregistered_env):
+        """Two tool calls in a row must not create two project records
+        for the same path (ProjectStorage.create() is idempotent by path,
+        this just confirms that guarantee actually holds through our
+        call site)."""
+        run(ContextAddFileTool().execute(path="src/main.py"))
+        run(ContextListFilesTool().execute())
+
+        from app.storage.projects import ProjectStorage
+        storage = ProjectStorage(unregistered_env["ziya_home"])
+        projects = [p for p in storage.list() if p.path == unregistered_env["project_root"]]
+        assert len(projects) == 1
+
+    def test_chat_file_is_created_at_exact_conversation_id(self, unregistered_env):
+        """The auto-vivified chat must be created at the SAME
+        conversation_id the caller used — not a fresh uuid, which would
+        silently start an invisible second chat record on the next call
+        in the same conversation."""
+        run(ContextAddFileTool().execute(path="src/main.py"))
+
+        from app.storage.projects import ProjectStorage
+        from app.storage.chats import ChatStorage
+        from app.utils.paths import get_project_dir
+
+        pstorage = ProjectStorage(unregistered_env["ziya_home"])
+        project = pstorage.get_by_path(unregistered_env["project_root"])
+        chat_file = get_project_dir(project.id) / "chats" / f"{unregistered_env['conversation_id']}.json"
+        assert chat_file.exists()
+        chat_data = json.loads(chat_file.read_text())
+        assert chat_data["id"] == unregistered_env["conversation_id"]
+
+    def test_second_call_in_same_conversation_reuses_the_same_chat_file(self, unregistered_env):
+        """Two calls in the same conversation must resolve to the SAME
+        chat file/record, not vivify a new one each time (which would
+        silently drop the first call's context_add_file)."""
+        run(ContextAddFileTool().execute(path="src/main.py"))
+        result = run(ContextListFilesTool().execute())
+        assert result["count"] == 1
+        assert result["files"][0]["path"] == "src/main.py"
+
+    def test_auto_vivified_chat_is_registered_in_chat_index(self, unregistered_env):
+        """The auto-vivified chat must be discoverable via the
+        cross-project chat_index, the same as a chat created through the
+        normal ChatStorage.create() path — otherwise it exists on disk
+        but is invisible to cross-project bulk-get lookups."""
+        from app.storage import chat_index
+        chat_index.invalidate()
+
+        run(ContextAddFileTool().execute(path="src/main.py"))
+
+        from app.storage.projects import ProjectStorage
+        pstorage = ProjectStorage(unregistered_env["ziya_home"])
+        project = pstorage.get_by_path(unregistered_env["project_root"])
+
+        resolved, missing = chat_index.lookup_many(
+            unregistered_env["ziya_home"], [unregistered_env["conversation_id"]]
+        )
+        assert unregistered_env["conversation_id"] in resolved
+        assert unregistered_env["conversation_id"] not in missing
+
+    def test_cli_style_conversation_id_gets_cli_session_title(self, unregistered_env):
+        """conversation_ids prefixed cli_ get a distinguishable title so
+        they're recognizable in any chat listing, instead of the generic
+        'New conversation' title used for un-synced web chats."""
+        run(ContextAddFileTool().execute(path="src/main.py"))
+
+        from app.storage.projects import ProjectStorage
+        from app.utils.paths import get_project_dir
+
+        pstorage = ProjectStorage(unregistered_env["ziya_home"])
+        project = pstorage.get_by_path(unregistered_env["project_root"])
+        chat_file = get_project_dir(project.id) / "chats" / f"{unregistered_env['conversation_id']}.json"
+        chat_data = json.loads(chat_file.read_text())
+        assert chat_data["title"] == "CLI session"
+
+    def test_context_remove_file_works_end_to_end_from_unregistered_state(self, unregistered_env):
+        """The full add-then-remove cycle must work from a cold start,
+        not just context_add_file in isolation."""
+        run(ContextAddFileTool().execute(path="src/main.py"))
+        result = run(ContextRemoveFileTool().execute(path="src/main.py"))
+        assert result.get("success") is True
+
+        list_result = run(ContextListFilesTool().execute())
+        assert list_result["count"] == 0
+
+    def test_context_list_files_alone_auto_vivifies_and_returns_empty(self, unregistered_env):
+        """Calling context_list_files first (before any add) must not
+        error — it should auto-vivify an empty chat record and report
+        zero files, not 'chat not found'."""
+        result = run(ContextListFilesTool().execute())
+        assert result.get("error") is not True, result
+        assert result["count"] == 0

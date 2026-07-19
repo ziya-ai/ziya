@@ -137,7 +137,7 @@ class TestSingleEventLoopInCommands:
 
         patches = [
             patch("app.cli.setup_env"),
-            patch("app.cli._check_auth_quick", return_value=True),
+            patch("app.cli._check_auth_quick", return_value=(True, None)),
             patch("app.cli.resolve_files", return_value=[]),
             patch("app.cli.read_stdin_if_available", return_value=None),
             patch("app.cli.CLI"),

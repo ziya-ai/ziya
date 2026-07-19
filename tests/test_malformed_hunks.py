@@ -96,3 +96,81 @@ def test_pure_deletion_hunk():
 
     assert "def test_function" not in result, "Deleted line should be gone"
     assert "return 'test'" in result, "Non-deleted content should remain"
+
+
+def test_pure_add_eof_preserves_preexisting_adjacent_duplicate():
+    """
+    A pure-addition hunk appended near EOF must NOT cause a legitimate,
+    pre-existing pair of adjacent-identical lines elsewhere in the file to be
+    collapsed by the function's final consecutive-duplicate cleanup pass.
+
+    Regression guard for the whole-file dedup data-loss bug: the cleanup used
+    to drop one of two identical adjacent source lines far from any hunk,
+    reporting success (silent data loss). This is the same failure that
+    corrupted tests/test_task_run_storage.py while appending a test class.
+
+    Exercises apply_diff_with_difflib_hybrid_forced DIRECTLY — the corpus
+    harness routes this shape through the system-patch stage, which does not
+    reach this code path (see MRE_pure_add_eof_drops_upstream_dup metadata).
+    """
+    original = (
+        "def setup():\n"
+        "    create(id='a')\n"
+        "    create(id='a')\n"       # legitimate pre-existing adjacent duplicate
+        "    create(id='b')\n"
+        "\n"
+        "def teardown():\n"
+        "    close()\n"
+    )
+    diff = (
+        "--- a/f.py\n"
+        "+++ b/f.py\n"
+        "@@ -6,2 +6,5 @@\n"
+        " def teardown():\n"
+        "     close()\n"
+        "+\n"
+        "+def extra():\n"
+        "+    pass\n"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        f = os.path.join(d, "f.py")
+        _write(f, original)
+        result = "".join(
+            apply_diff_with_difflib_hybrid_forced(f, diff, original.splitlines(True))
+        )
+
+    assert result.count("create(id='a')") == 2, (
+        "pre-existing adjacent duplicate was dropped by the dedup pass:\n" + result
+    )
+    assert "def extra():" in result, "the EOF addition should have applied"
+    assert "close()" in result, "existing content should be preserved"
+
+
+def test_dedup_budget_does_not_disable_seam_cleanup():
+    """
+    The dedup fix only PRESERVES duplicates present in the source; it does not
+    disable the cleanup. A line with zero adjacent-duplicate budget in the
+    original keeps its single occurrence (the cleanup would still collapse an
+    applier-introduced adjacent pair of it).
+    """
+    original = (
+        "line one\n"
+        "MARKER\n"
+        "line three\n"
+    )
+    diff = (
+        "--- a/f.py\n"
+        "+++ b/f.py\n"
+        "@@ -1,1 +1,2 @@\n"
+        " line one\n"
+        "+inserted\n"
+    )
+    with tempfile.TemporaryDirectory() as d:
+        f = os.path.join(d, "f.py")
+        _write(f, original)
+        result = "".join(
+            apply_diff_with_difflib_hybrid_forced(f, diff, original.splitlines(True))
+        )
+
+    assert result.count("MARKER") == 1, "single source line must stay single"
+    assert "inserted" in result, "the addition should have applied"

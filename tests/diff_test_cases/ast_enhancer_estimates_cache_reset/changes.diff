@@ -1,0 +1,8 @@
+diff --git a/app/utils/ast_parser/ziya_ast_enhancer.py b/app/utils/ast_parser/ziya_ast_enhancer.py
+--- a/app/utils/ast_parser/ziya_ast_enhancer.py
++++ b/app/utils/ast_parser/ziya_ast_enhancer.py
+@@ -210,6 +210,9 @@ def process_codebase(self, codebase_dir: str, ignored_patterns: Optional[List[st
+         """
++        # ast_cache is about to change, so any cached resolution estimates
++        # (PenPal #133) are stale — drop them; next request recomputes once.
++        self._estimates_cache = None

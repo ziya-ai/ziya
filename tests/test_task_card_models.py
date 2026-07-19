@@ -4,6 +4,7 @@ import pytest
 from app.models.task_card import (
     Block, TaskScope, ScopeEntry, Artifact, ArtifactPart,
     TaskCard, TaskCardCreate, TaskCardUpdate, TaskCardRun,
+    merge_scopes, find_scope_chain,
 )
 
 
@@ -186,3 +187,126 @@ class TestTaskCard:
         upd = TaskCardUpdate(name="renamed")
         dumped = upd.model_dump(exclude_unset=True)
         assert dumped == {"name": "renamed"}
+
+    def test_card_scope_defaults_none(self):
+        card = TaskCard(id="tc-2", name="X", description="", root=self._tree())
+        assert card.scope is None
+
+    def test_card_scope_round_trip(self):
+        card = TaskCard(
+            id="tc-3", name="X", description="", root=self._tree(),
+            scope=TaskScope(tools=["file_read"]),
+        )
+        data = card.model_dump()
+        restored = TaskCard(**data)
+        assert restored.scope.tools == ["file_read"]
+
+    def test_create_and_update_accept_scope(self):
+        req = TaskCardCreate(
+            name="X", root=self._tree(),
+            scope=TaskScope(shell_commands=["pytest"]),
+        )
+        assert req.scope.shell_commands == ["pytest"]
+        upd = TaskCardUpdate(scope=TaskScope(tools=["file_read"]))
+        dumped = upd.model_dump(exclude_unset=True)
+        assert dumped["scope"]["tools"] == ["file_read"]
+
+
+class TestMergeScopes:
+    """Deck / card / ancestor-block hierarchy — additive-only merge."""
+
+    def test_all_none_returns_none(self):
+        assert merge_scopes(None, None, None) is None
+
+    def test_single_scope_passthrough_equivalent(self):
+        s = TaskScope(tools=["file_read"])
+        merged = merge_scopes(None, s, None)
+        assert merged.tools == ["file_read"]
+
+    def test_tools_skills_shell_commands_union_deduped(self):
+        a = TaskScope(tools=["file_read"], skills=["debug_mode"],
+                       shell_commands=["pytest"])
+        b = TaskScope(tools=["file_read", "file_write"], skills=["web_research"],
+                       shell_commands=["pytest", "make test"])
+        merged = merge_scopes(a, b)
+        assert merged.tools == ["file_read", "file_write"]
+        assert merged.skills == ["debug_mode", "web_research"]
+        assert merged.shell_commands == ["pytest", "make test"]
+
+    def test_paths_merged_by_path_key_union_of_flags(self):
+        a = TaskScope(paths=[ScopeEntry(path="src/", is_dir=True, read=True, write=False)])
+        b = TaskScope(paths=[ScopeEntry(path="src/", is_dir=True, read=False, write=True)])
+        merged = merge_scopes(a, b)
+        assert len(merged.paths) == 1
+        entry = merged.paths[0]
+        # Union: a leaf-only "read" layer + an ancestor-only "write" layer
+        # produce a path that is both readable and writable.
+        assert entry.read is True
+        assert entry.write is True
+
+    def test_distinct_paths_both_kept(self):
+        a = TaskScope(paths=[ScopeEntry(path="a.py")])
+        b = TaskScope(paths=[ScopeEntry(path="b.py")])
+        merged = merge_scopes(a, b)
+        assert {e.path for e in merged.paths} == {"a.py", "b.py"}
+
+    def test_later_layer_cannot_downgrade_earlier_write_grant(self):
+        """A more specific (later) layer that only grants read must not
+        silently strip an earlier (ancestor) layer's write grant for the
+        same path — union, not overwrite."""
+        deck = TaskScope(paths=[ScopeEntry(path="out/", is_dir=True, write=True)])
+        leaf = TaskScope(paths=[ScopeEntry(path="out/", is_dir=True, read=True, write=False)])
+        merged = merge_scopes(deck, leaf)
+        assert merged.paths[0].write is True
+
+    def test_cwd_most_specific_wins(self):
+        deck = TaskScope(cwd="/deck")
+        card = TaskScope(cwd="/card")
+        leaf = TaskScope()  # no cwd — must not clobber card's
+        merged = merge_scopes(deck, card, leaf)
+        assert merged.cwd == "/card"
+
+    def test_cwd_falls_back_when_innermost_is_none(self):
+        deck = TaskScope(cwd="/deck")
+        merged = merge_scopes(deck, None)
+        assert merged.cwd == "/deck"
+
+    def test_none_layers_skipped(self):
+        a = TaskScope(tools=["file_read"])
+        merged = merge_scopes(None, a, None, None)
+        assert merged.tools == ["file_read"]
+
+    def test_order_is_root_to_leaf_for_docs_but_union_is_order_independent(self):
+        """Union semantics mean swapping layer order produces the same
+        grant set (only cwd and same-path-flag precedence are order
+        sensitive, covered by dedicated tests above)."""
+        a = TaskScope(tools=["x"])
+        b = TaskScope(tools=["y"])
+        assert set(merge_scopes(a, b).tools) == set(merge_scopes(b, a).tools)
+
+
+class TestFindScopeChain:
+    def test_root_is_target(self):
+        root = Block(block_type="task", id="root", scope=TaskScope(tools=["a"]))
+        chain = find_scope_chain(root, "root")
+        assert chain == [root.scope]
+
+    def test_nested_target_returns_root_to_leaf_chain(self):
+        leaf = Block(block_type="task", id="leaf", scope=TaskScope(tools=["leaf-tool"]))
+        mid = Block(block_type="repeat", id="mid", scope=TaskScope(tools=["mid-tool"]),
+                    body=[leaf])
+        root = Block(block_type="group", id="root", scope=None, body=[mid])
+        chain = find_scope_chain(root, "leaf")
+        assert chain == [None, mid.scope, leaf.scope]
+
+    def test_missing_id_returns_none(self):
+        root = Block(block_type="task", id="root")
+        assert find_scope_chain(root, "nonexistent") is None
+
+    def test_sibling_not_matched_does_not_pollute_chain(self):
+        a = Block(block_type="task", id="a", scope=TaskScope(tools=["a-tool"]))
+        b = Block(block_type="task", id="b", scope=TaskScope(tools=["b-tool"]))
+        root = Block(block_type="parallel", id="root", body=[a, b])
+        chain = find_scope_chain(root, "b")
+        assert chain == [None, b.scope]
+        assert chain[-1].tools == ["b-tool"]
