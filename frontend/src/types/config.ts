@@ -1,3 +1,16 @@
+export interface McpRegistryPreset {
+    id: string;
+    label: string;
+    tooltip?: string;
+    // Exact provider ids to select. Takes precedence over internalOnly.
+    providerIds?: string[];
+    // When true (and no providerIds given), select every provider whose
+    // isInternal flag is set.
+    internalOnly?: boolean;
+    // When set, also constrain the Support Level filter (e.g. "Supported").
+    supportLevel?: string;
+}
+
 export interface AppConfig {
     theme?: string;
     defaultModel?: string;
@@ -18,6 +31,12 @@ export interface AppConfig {
     // Privacy/Storage settings
     ephemeralMode?: boolean;
     memoryEnabled?: boolean;
+    // Plugin-injected frontend config (from the /api/config merge of
+    // provider.get_defaults()['frontend']). Community edition supplies none.
+    frontend?: {
+        formatters?: string[];
+        mcpRegistryPresets?: McpRegistryPreset[];
+    };
 }
 
 export const DEFAULT_CONFIG: AppConfig = {

@@ -8,6 +8,7 @@
  import { useProject } from '../../context/ProjectContext';
  import { PermissionsDialog, PermissionEntry, PermissionsSavePayload } from '../Permissions/PermissionsDialog';
  import { DirectoryBrowserModal } from '../DirectoryBrowserModal';
+import { ModelTierPicker } from './ModelTierPicker';
 import { AutoGrowTextarea } from './AutoGrowTextarea';
 import { DragHandle } from './DragContext';
 import './task-card-editor.css';
@@ -34,7 +35,7 @@ const ScopeChip: React.FC<{
 };
 
 const removeFromScopeList = (
-  scope: TaskScope, key: keyof TaskScope, value: string,
+  scope: TaskScope, key: 'tools' | 'skills', value: string,
 ): TaskScope => ({ ...scope, [key]: scope[key].filter(v => v !== value) });
 
 export const TaskBlockEditor: React.FC<Props> = ({ block, onChange, onDelete, isRoot }) => {
@@ -158,7 +159,13 @@ export const TaskBlockEditor: React.FC<Props> = ({ block, onChange, onDelete, is
                 {' '}(working directory: {scope.cwd})
               </span>
             )}
+            {(scope.model_tier || scope.model_name) && (
+              <span className="tc-advanced-summary">
+                {' '}(model: {scope.model_name ?? scope.model_tier})
+              </span>
+            )}
           </summary>
+          <ModelTierPicker scope={scope} onChange={updateScope} />
           <div className="tc-cwd-row">
             <span className="tc-cwd-label" title="Working directory for this task. Must be inside the project root.">
               📂 Working directory:

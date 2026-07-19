@@ -11,16 +11,19 @@
  */
  import React, { useEffect, useState } from 'react';
 import type { LiveTaskState } from '../../hooks/useTaskRunStream';
+import type { IterationsResponse, RunStatus } from '../../types/task_run';
  import { collapseEventRuns, bucketEventsByIteration, type DeltaRun, type DisplayEvent, type EventBucket, type RawEvent } from './eventLog';
  import { truncatePreview } from './previewText';
  import { MarkdownRenderer } from '../MarkdownRenderer';
- import { stripAssessmentTag } from './completionCheck';
+ import { stripTaskMetaTags } from './completionCheck';
 
 interface Props {
   live: LiveTaskState;
   onClear?: () => void;
   /** Optional default-open. */
   defaultOpen?: boolean;
+  persistedIterations?: IterationsResponse['items'];
+  runStatus?: RunStatus;
 }
 
 type TabKey = 'live' | 'tools' | 'events';
@@ -122,7 +125,7 @@ const LiveTextTab: React.FC<{
         <div key={blockId} className="tc-tile__inspector-block">
           <div className="tc-tile__inspector-block-id">block {blockId}</div>
             <MarkdownRenderer
-              markdown={stripAssessmentTag(content)}
+              markdown={stripTaskMetaTags(content)}
               enableCodeApply={false}
               breaks={true}
               isStreaming={true}
@@ -181,7 +184,7 @@ const IterationSectionsView: React.FC<{
             </summary>
             <div className="tc-tile__inspector-iter-body">
               <MarkdownRenderer
-                markdown={stripAssessmentTag(it.streamText)}
+                markdown={stripTaskMetaTags(it.streamText)}
                 enableCodeApply={false}
                 breaks={true}
                 isStreaming={it.status === 'running'}

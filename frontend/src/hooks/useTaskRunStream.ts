@@ -66,11 +66,27 @@ export interface LiveTaskState {
    * Names-only — prose context is ambient and intentionally NOT here.
    */
   variables: Record<string, unknown>;
+  /**
+   * Live per-block lifecycle statuses from ``block_status`` events,
+   * keyed by block_id: queued / running / done / failed / cancelled /
+   * skipped.  Freshest source for the run map; the REST snapshot's
+   * block_states carries the durable record across reloads.
+   */
+  blockStatuses: Record<string, string>;
+  /**
+   * Latest server-derived progress note (``task_progress`` event) —
+   * e.g. "ran run_shell_command: git status".  Freshest source; the
+   * tile falls back to run.progress_note from REST when absent.
+   */
+  progressNote?: string;
+  /** Epoch seconds of the most recent event seen on this stream. */
+  lastActivityTs?: number;
 }
 
-const EMPTY_LIVE: LiveTaskState = { text: {}, toolCalls: [], events: [], iterations: [], variables: {} };
+const EMPTY_LIVE: LiveTaskState = { text: {}, toolCalls: [], events: [], iterations: [], variables: {}, blockStatuses: {} };
 const MAX_EVENTS = 500;       // hard cap so a long run can't unbound memory
 const MAX_TOOL_CALLS = 200;
+const POLL_INTERVAL_MS = 15000; // safety-net REST poll cadence while a WS is open
 /**
  * Action returned by dispatchTaskRunEvent — what the stream loop
  * should do in response to an incoming event.  Extracted as a pure
@@ -90,6 +106,8 @@ export function dispatchTaskRunEvent(
   if (typeof type !== 'string') return { kind: 'ignore' };
   switch (type) {
     case 'run_started':
+    case 'run_paused':
+    case 'run_resumed':
     case 'iteration_completed':
     case 'block_completed':
       // State has changed — persisted snapshot is the source of
@@ -133,6 +151,7 @@ export function useTaskRunStream(
   const wsRef = useRef<WebSocket | null>(null);
   const mountedRef = useRef<boolean>(true);
   const terminalFetchedRef = useRef<boolean>(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchOnce = useCallback(async () => {
     if (!projectId || !runId) return;
@@ -175,6 +194,17 @@ export function useTaskRunStream(
     }
     wsRef.current = ws;
 
+    // Safety-net poll: the terminal run_completed WS event can be lost
+    // (dropped relay frame, dead-but-open socket, backgrounded tab),
+    // leaving the tile stuck "running" indefinitely even though the
+    // backend already wrote a terminal status.  Poll the REST snapshot
+    // periodically; the reconcile effect below closes everything once
+    // it observes a terminal status, whatever the source.
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(() => {
+      if (mountedRef.current) fetchOnce();
+    }, POLL_INTERVAL_MS);
+
     ws.onmessage = async (evt) => {
       if (!mountedRef.current) return;
       let data: unknown;
@@ -211,6 +241,10 @@ export function useTaskRunStream(
     return () => {
       try { ws.close(); } catch { /* ignore */ }
       if (wsRef.current === ws) wsRef.current = null;
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
     };
     // Intentional: run?.status would cause teardown on every status
     // transition.  We only (re)open when runId changes or we learn
@@ -218,6 +252,23 @@ export function useTaskRunStream(
     // reopening is prevented by the early-return above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, runId, run != null, fetchOnce]);
+
+  // Terminal reconciliation: whenever ``run`` reaches a terminal status
+  // — via WS event refetch, safety-net poll, or onclose refetch — stop
+  // polling and close the socket.  This decouples "run is terminal"
+  // from "we received the run_completed event", so a dropped terminal
+  // event still self-heals within one poll interval instead of leaving
+  // the tile stuck "running" forever.
+  useEffect(() => {
+    if (run && TERMINAL.includes(run.status)) {
+      terminalFetchedRef.current = true;
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      if (wsRef.current) {
+        try { wsRef.current.close(); } catch { /* ignore */ }
+        wsRef.current = null;
+      }
+    }
+  }, [run?.status]);
 
   return { run, error, loading, live, clearLive, refresh: fetchOnce };
 }
@@ -397,7 +448,23 @@ export function useTaskRunStream(
       variables = { ...prev.variables, ...(e.values as Record<string, unknown>) };
     }
 
-     return { text, toolCalls, events, iterations, variables };
+    // Live-progress surface: every event is proof of life; a
+    // task_progress event additionally carries a display note.
+    const lastActivityTs = typeof e.ts === 'number' ? e.ts : Date.now() / 1000;
+    // block_status: per-block lifecycle transition for the run map
+    // (running / done / failed / cancelled / skipped).  Last-write-wins.
+    let blockStatuses = prev.blockStatuses;
+    if (type === 'block_status' && typeof e.block_id === 'string'
+        && typeof e.status === 'string') {
+      blockStatuses = { ...prev.blockStatuses, [e.block_id]: e.status };
+    }
+
+    let progressNote = prev.progressNote;
+    if (type === 'task_progress' && typeof e.note === 'string' && e.note) {
+      progressNote = e.note;
+    }
+
+     return { text, toolCalls, events, iterations, variables, blockStatuses, progressNote, lastActivityTs };
   });
 }
 

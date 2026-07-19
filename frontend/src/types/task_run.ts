@@ -7,9 +7,14 @@
  * endpoint (see design/task-cards.md §Queryable runs).
  */
 
-import type { Artifact } from './task_card';
+import type { Artifact, Block } from './task_card';
 
-export type RunStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
+export type RunStatus = 'queued' | 'running' | 'paused' | 'done' | 'failed' | 'cancelled';
+/**
+ * Per-block lifecycle status — RunStatus plus 'skipped' (a sibling
+ * that never ran because of on_failure="stop").  Drives the run map.
+ */
+export type BlockStatus = RunStatus | 'skipped';
 export type IterationStatus = 'passed' | 'failed' | 'cancelled';
 
 export interface IterationSummary {
@@ -24,7 +29,7 @@ export interface IterationSummary {
 export interface TaskRunBlockState {
   block_id: string;
   block_type: string;
-  status: RunStatus;
+  status: BlockStatus;
   started_at?: number | null;
   completed_at?: number | null;
   artifact?: Artifact | null;
@@ -41,10 +46,23 @@ export interface TaskRun {
   completed_at?: number | null;
   error?: string | null;
   cancel_requested: boolean;
+  /** Soft-pause flag; executor holds at the next boundary when set. */
+  pause_requested: boolean;
   artifact?: Artifact | null;
   block_states: Record<string, TaskRunBlockState>;
   total_tokens: number;
   total_tool_calls: number;
+  /** Heartbeat: wall-clock seconds of most recent executor activity. */
+  last_activity_at?: number | null;
+  /** Short server-derived line describing the latest activity. */
+  progress_note?: string | null;
+  /**
+   * Snapshot of the card definition (name/description/root) captured at
+   * launch, so later edits to the card don't retroactively rewrite what
+   * this run is shown to have executed.  Absent on runs created before
+   * snapshotting was added — fall back to the live card in that case.
+   */
+  card_snapshot?: { name: string; description: string; root: Block } | null;
   created_at: number;
   updated_at: number;
 }

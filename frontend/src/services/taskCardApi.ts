@@ -94,6 +94,14 @@ export interface CardScopeBlockStatus {
   authorized: boolean;
   escalation: Record<string, string[]>;
   signCommand: string;
+  /** Machine-readable denial code (e.g. "no_record", "scope_hash_mismatch",
+   *  "unbounded_approval_requires_expiry:7776000"), or null when authorized.
+   *  See app/utils/scope_approvals.is_scope_authorized_with_reason. */
+  denialReason?: string | null;
+  /** Human-readable explanation of denialReason for display in the editor's
+   *  approval banner — rendered server-side so the reason catalog lives in
+   *  one place (app/api/task_cards._denial_reason_message). */
+  denialMessage?: string | null;
 }
 
 export interface CardScopeStatus {

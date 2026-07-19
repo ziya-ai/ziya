@@ -8,20 +8,46 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Modal, Input, Button, Tooltip, message, Empty, Popconfirm, Tag,
+  Modal, Input, Button, Tooltip, message, Empty, Popconfirm, Tag, Dropdown,
 } from 'antd';
 import {
   PlusOutlined, DeleteOutlined, CopyOutlined, SearchOutlined,
   PlayCircleOutlined, StopOutlined, ReloadOutlined,
+  MoreOutlined, PushpinOutlined, FolderOutlined, FolderAddOutlined,
 } from '@ant-design/icons';
 import { useProject } from '../../context/ProjectContext';
 import { useChatContext } from '../../context/ChatContext';
-import type { TaskCard, Block } from '../../types/task_card';
+import type { TaskCard, Block, TaskScope } from '../../types/task_card';
 import { useTaskRunStream } from '../../hooks/useTaskRunStream';
 import { taskCardApi, type CardScopeStatus } from '../../services/taskCardApi';
 import { cancelTaskRun } from '../../services/taskRunApi';
 import { createBinding } from '../../services/taskBindingApi';
 import { TaskCardEditor } from './TaskCardEditor';
+import { BlockScopeButton } from './BlockScopeButton';
+
+// Client-only pin set, mirroring the conversation sidebar's
+// ZIYA_PINNED_FOLDERS pattern (see MUIChatHistory.tsx). Task Cards have no
+// `pinned` field server-side by design: pins are a personal, per-browser
+// affordance layered on top of the card list, not a shared card property.
+const PINNED_TASK_CARDS_KEY = 'ZIYA_PINNED_TASK_CARDS';
+
+function loadPinnedCardIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(PINNED_TASK_CARDS_KEY);
+    if (raw) return new Set(JSON.parse(raw));
+  } catch (error) {
+    console.error('Error loading pinned task cards:', error);
+  }
+  return new Set();
+}
+
+// Tags double as "folders" for Task Cards (no dedicated folder model
+// server-side). A tag prefixed with this marker is treated as a folder
+// membership rather than a plain search-matchable tag, so it can be
+// rendered/grouped distinctly without a schema change.
+const FOLDER_TAG_PREFIX = 'folder:';
+const folderNameFromTag = (tag: string): string => tag.slice(FOLDER_TAG_PREFIX.length);
+const folderTagFromName = (name: string): string => `${FOLDER_TAG_PREFIX}${name}`;
 
 interface Props {
   visible: boolean;
@@ -46,9 +72,19 @@ function emptyRoot(): Block {
 export const TaskCardsLibrary: React.FC<Props> = ({
   visible, onClose, chatId, anchorMessageId, initialCardId,
 }) => {
-  const { currentProject } = useProject();
+  const { currentProject, updateProject } = useProject();
   const { addRunningTaskConversation, startNewChat } = useChatContext();
   const projectId = currentProject?.id ?? '';
+
+  // Deck-level (project-wide) Task Card permissions baseline — merged
+  // additively with each card's own scope (see ProjectSettings.taskScope).
+  const deckScope: TaskScope = currentProject?.settings?.taskScope ?? { paths: [], tools: [], skills: [] };
+  const handleDeckScopeChange = useCallback((next: TaskScope) => {
+    if (!currentProject) return;
+    updateProject(currentProject.id, {
+      settings: { ...currentProject.settings, taskScope: next },
+    });
+  }, [currentProject, updateProject]);
 
   const [cards, setCards] = useState<TaskCard[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -58,6 +94,23 @@ export const TaskCardsLibrary: React.FC<Props> = ({
 
   // cardId -> escalation/signature status, for the deck-list badge.
   const [scopeMap, setScopeMap] = useState<Record<string, CardScopeStatus>>({});
+
+  // Pinned card ids — client-only (see loadPinnedCardIds above).
+  const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => loadPinnedCardIds());
+  useEffect(() => {
+    try {
+      localStorage.setItem(PINNED_TASK_CARDS_KEY, JSON.stringify([...pinnedIds]));
+    } catch (error) {
+      console.error('Error saving pinned task cards:', error);
+    }
+  }, [pinnedIds]);
+  const togglePinCard = useCallback((id: string) => {
+    setPinnedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
 
   // Active run tracking — id is seeded on launch; hook streams status.
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
@@ -187,6 +240,34 @@ export const TaskCardsLibrary: React.FC<Props> = ({
     }
   }, [projectId, selectedId, reload]);
 
+  // "Folders" are just tags prefixed with FOLDER_TAG_PREFIX (see note near
+  // the constant above) — no dedicated backend model, so these mutate a
+  // card's existing `tags` array through the normal update endpoint.
+  const setCardFolder = useCallback(async (id: string, folderName: string | null) => {
+    if (!projectId) return;
+    const card = cards.find(c => c.id === id) ?? (draft?.id === id ? draft : null);
+    if (!card) return;
+    const withoutFolders = card.tags.filter(t => !t.startsWith(FOLDER_TAG_PREFIX));
+    const nextTags = folderName ? [...withoutFolders, folderTagFromName(folderName)] : withoutFolders;
+    try {
+      const updated = await taskCardApi.update(projectId, id, { tags: nextTags });
+      if (draft?.id === id) setDraft(updated);
+      await reload();
+    } catch (e) {
+      message.error(`Move to folder failed: ${String(e)}`);
+    }
+  }, [projectId, cards, draft, reload]);
+
+  const [newFolderModalCardId, setNewFolderModalCardId] = useState<string | null>(null);
+  const [newFolderName, setNewFolderName] = useState('');
+  const handleCreateFolderAndAssign = useCallback(async () => {
+    const name = newFolderName.trim();
+    if (!name || !newFolderModalCardId) return;
+    await setCardFolder(newFolderModalCardId, name);
+    setNewFolderModalCardId(null);
+    setNewFolderName('');
+  }, [newFolderName, newFolderModalCardId, setCardFolder]);
+
   // Shared launch path: persist the draft (the binding endpoint needs a
   // durable card to reference), bind the card to targetChatId, surface the
   // inline tile, flag the conversation as running, and close the deck so the
@@ -260,6 +341,146 @@ export const TaskCardsLibrary: React.FC<Props> = ({
     );
   }, [cards, search]);
 
+  // Card-derived folder name for a card (first folder: tag, since a card
+  // lives in at most one folder in this lightweight scheme).
+  const folderOfCard = useCallback((c: TaskCard): string | null => {
+    const tag = c.tags.find(t => t.startsWith(FOLDER_TAG_PREFIX));
+    return tag ? folderNameFromTag(tag) : null;
+  }, []);
+
+  // Every folder name in use, so "Move to folder" can offer existing
+  // folders even if their only member is currently filtered out.
+  const allFolderNames = useMemo(() => {
+    const names = new Set<string>();
+    for (const c of cards) {
+      const n = folderOfCard(c);
+      if (n) names.add(n);
+    }
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }, [cards, folderOfCard]);
+
+  // Grouping for render: pinned cards float to the top regardless of
+  // folder, then folders (alphabetical), then unfiled cards.
+  const grouped = useMemo(() => {
+    const pinned = filtered.filter(c => pinnedIds.has(c.id));
+    const unpinned = filtered.filter(c => !pinnedIds.has(c.id));
+    const byFolder = new Map<string, TaskCard[]>();
+    const unfiled: TaskCard[] = [];
+    for (const c of unpinned) {
+      const f = folderOfCard(c);
+      if (f) {
+        if (!byFolder.has(f)) byFolder.set(f, []);
+        byFolder.get(f)!.push(c);
+      } else {
+        unfiled.push(c);
+      }
+    }
+    const folders = [...byFolder.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    return { pinned, folders, unfiled };
+  }, [filtered, pinnedIds, folderOfCard]);
+
+  // Per-row "⋯" context menu — mirrors the conversation sidebar's
+  // AntActionMenu affordances (Duplicate, Delete, Pin, Move to folder).
+  const cardMenuItems = useCallback((c: TaskCard) => {
+    const currentFolder = folderOfCard(c);
+    const folderSubmenu = [
+      ...allFolderNames.map(name => ({
+        key: `folder:${name}`,
+        label: name,
+        icon: <FolderOutlined />,
+        disabled: name === currentFolder,
+      })),
+      ...(allFolderNames.length > 0 ? [{ type: 'divider' as const }] : []),
+      { key: 'folder:__new__', label: 'New folder…', icon: <FolderAddOutlined /> },
+      ...(currentFolder ? [{ key: 'folder:__none__', label: 'Remove from folder' }] : []),
+    ];
+    return {
+      items: [
+        { key: 'duplicate', label: 'Duplicate', icon: <CopyOutlined /> },
+        {
+          key: 'pin',
+          label: pinnedIds.has(c.id) ? 'Unpin' : 'Pin',
+          icon: <PushpinOutlined />,
+        },
+        { key: 'move', label: 'Add to folder', icon: <FolderOutlined />, children: folderSubmenu },
+        { type: 'divider' as const },
+        { key: 'delete', label: 'Delete', icon: <DeleteOutlined />, danger: true },
+      ],
+      onClick: (info: { key: string; domEvent: { stopPropagation: () => void } }) => {
+        const { key } = info;
+        info.domEvent.stopPropagation();
+        if (key === 'duplicate') { handleDuplicate(c.id); return; }
+        if (key === 'pin') { togglePinCard(c.id); return; }
+        if (key === 'delete') {
+          Modal.confirm({
+            title: `Delete "${c.name || 'Untitled'}"?`,
+            okType: 'danger',
+            onOk: () => handleDelete(c.id),
+          });
+          return;
+        }
+        if (key === 'folder:__new__') { setNewFolderModalCardId(c.id); return; }
+        if (key === 'folder:__none__') { setCardFolder(c.id, null); return; }
+        if (key.startsWith('folder:')) { setCardFolder(c.id, key.slice('folder:'.length)); return; }
+      },
+    };
+  }, [allFolderNames, folderOfCard, pinnedIds, handleDuplicate, handleDelete, togglePinCard, setCardFolder]);
+
+  const renderCardRow = useCallback((c: TaskCard) => (
+    <div
+      key={c.id}
+      onClick={() => loadCard(c.id)}
+      style={{
+        padding: '8px 10px',
+        borderBottom: '1px solid rgba(128,128,128,0.15)',
+        background: c.id === selectedId ? 'rgba(24,144,255,0.12)' : 'transparent',
+        cursor: 'pointer',
+        display: 'flex',
+        alignItems: 'flex-start',
+        justifyContent: 'space-between',
+        gap: 4,
+      }}
+    >
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontWeight: 500, fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
+          {pinnedIds.has(c.id) && <PushpinOutlined style={{ fontSize: 11, opacity: 0.7 }} />}
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {c.name || 'Untitled'}
+          </span>
+          {(() => {
+            // Escalation/signature badge: only for cards whose blocks
+            // request shell/write escalation. Red when any block is
+            // unsigned, green when all escalation is signed.
+            const st = scopeMap[c.id];
+            const escBlocks = st?.blocks.filter(b => b.hasEscalation) ?? [];
+            if (escBlocks.length === 0) return null;
+            const unsigned = escBlocks.filter(b => !b.authorized).length;
+            return unsigned > 0 ? (
+              <Tag color="red" style={{ marginInlineEnd: 0, fontSize: 10, lineHeight: '16px', padding: '0 5px' }}>
+                Unsigned · {unsigned}
+              </Tag>
+            ) : (
+              <Tag color="green" style={{ marginInlineEnd: 0, fontSize: 10, lineHeight: '16px', padding: '0 5px' }}>
+                Signed
+              </Tag>
+            );
+          })()}
+        </div>
+        <div style={{ fontSize: 11, opacity: 0.6 }}>
+          {c.root.block_type}
+          {c.is_template ? ' · template' : ''}
+          {c.run_count > 0 ? ` · ${c.run_count} run${c.run_count === 1 ? '' : 's'}` : ''}
+        </div>
+      </div>
+      <Dropdown menu={cardMenuItems(c)} trigger={['click']} placement="bottomRight">
+        <MoreOutlined
+          style={{ fontSize: 14, opacity: 0.6, padding: '2px 4px' }}
+          onClick={(e) => e.stopPropagation()}
+        />
+      </Dropdown>
+    </div>
+  ), [selectedId, pinnedIds, scopeMap, cardMenuItems, loadCard]);
+
   const statusTag = activeRun ? (
     <Tag color={
       activeRun.status === 'running' ? 'blue' :
@@ -281,6 +502,14 @@ export const TaskCardsLibrary: React.FC<Props> = ({
       <div style={{ display: 'flex', gap: 12, height: '70vh' }}>
         {/* Left: list */}
         <div style={{ width: 260, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {currentProject && (
+            <BlockScopeButton
+              scope={deckScope}
+              onChange={handleDeckScopeChange}
+              title={`${currentProject.name} (deck)`}
+              label="Deck Permissions"
+            />
+          )}
           <div style={{ display: 'flex', gap: 6 }}>
             <Input
               size="small"
@@ -293,47 +522,28 @@ export const TaskCardsLibrary: React.FC<Props> = ({
             <Tooltip title="Refresh"><Button size="small" icon={<ReloadOutlined />} onClick={reload} loading={loading} /></Tooltip>
           </div>
           <div style={{ overflowY: 'auto', flex: 1, border: '1px solid rgba(128,128,128,0.2)', borderRadius: 4 }}>
-            {filtered.length === 0 ? <Empty description="No cards" style={{ marginTop: 40 }} /> : filtered.map(c => (
-              <div
-                key={c.id}
-                onClick={() => loadCard(c.id)}
-                style={{
-                  padding: '8px 10px',
-                  borderBottom: '1px solid rgba(128,128,128,0.15)',
-                  background: c.id === selectedId ? 'rgba(24,144,255,0.12)' : 'transparent',
-                  cursor: 'pointer',
-                }}
-              >
-                <div style={{ fontWeight: 500, fontSize: 13, display: 'flex', alignItems: 'center', gap: 6 }}>
-                  <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {c.name || 'Untitled'}
-                  </span>
-                  {(() => {
-                    // Escalation/signature badge: only for cards whose blocks
-                    // request shell/write escalation. Red when any block is
-                    // unsigned, green when all escalation is signed.
-                    const st = scopeMap[c.id];
-                    const escBlocks = st?.blocks.filter(b => b.hasEscalation) ?? [];
-                    if (escBlocks.length === 0) return null;
-                    const unsigned = escBlocks.filter(b => !b.authorized).length;
-                    return unsigned > 0 ? (
-                      <Tag color="red" style={{ marginInlineEnd: 0, fontSize: 10, lineHeight: '16px', padding: '0 5px' }}>
-                        Unsigned · {unsigned}
-                      </Tag>
-                    ) : (
-                      <Tag color="green" style={{ marginInlineEnd: 0, fontSize: 10, lineHeight: '16px', padding: '0 5px' }}>
-                        Signed
-                      </Tag>
-                    );
-                  })()}
-                </div>
-                <div style={{ fontSize: 11, opacity: 0.6 }}>
-                  {c.root.block_type}
-                  {c.is_template ? ' · template' : ''}
-                  {c.run_count > 0 ? ` · ${c.run_count} run${c.run_count === 1 ? '' : 's'}` : ''}
-                </div>
-              </div>
-            ))}
+            {filtered.length === 0 ? <Empty description="No cards" style={{ marginTop: 40 }} /> : (
+              <>
+                {grouped.pinned.length > 0 && (
+                  <div>
+                    <div style={{ padding: '4px 10px', fontSize: 11, opacity: 0.55, fontWeight: 600 }}>PINNED</div>
+                    {grouped.pinned.map(renderCardRow)}
+                  </div>
+                )}
+                {grouped.folders.map(([folderName, cardsInFolder]) => (
+                  <div key={folderName}>
+                    <div style={{ padding: '4px 10px', fontSize: 11, opacity: 0.55, fontWeight: 600, display: 'flex', alignItems: 'center', gap: 4 }}>
+                      <FolderOutlined /> {folderName.toUpperCase()}
+                    </div>
+                    {cardsInFolder.map(renderCardRow)}
+                  </div>
+                ))}
+                {grouped.unfiled.length > 0 && (grouped.pinned.length > 0 || grouped.folders.length > 0) && (
+                  <div style={{ padding: '4px 10px', fontSize: 11, opacity: 0.55, fontWeight: 600 }}>OTHER</div>
+                )}
+                {grouped.unfiled.map(renderCardRow)}
+              </>
+            )}
           </div>
         </div>
         {/* Right: editor */}
@@ -384,6 +594,22 @@ export const TaskCardsLibrary: React.FC<Props> = ({
           )}
         </div>
       </div>
+      <Modal
+        title="New folder"
+        open={newFolderModalCardId !== null}
+        onOk={handleCreateFolderAndAssign}
+        onCancel={() => { setNewFolderModalCardId(null); setNewFolderName(''); }}
+        okButtonProps={{ disabled: !newFolderName.trim() }}
+        destroyOnClose
+      >
+        <Input
+          placeholder="Folder name"
+          value={newFolderName}
+          onChange={e => setNewFolderName(e.target.value)}
+          onPressEnter={handleCreateFolderAndAssign}
+          autoFocus
+        />
+      </Modal>
     </Modal>
   );
 };

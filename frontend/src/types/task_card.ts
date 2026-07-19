@@ -38,7 +38,32 @@ export interface TaskScope {
    * redirection blocking.  Empty/undefined = no extra grants.
    */
   shell_commands?: string[];
+  /**
+   * Model selection for this task and everything beneath it.  Like
+   * ``cwd``, non-additive — the most specific (innermost) non-null
+   * value wins.
+   *
+   * ``model_tier`` is the RECOMMENDED way to pick a model: a portable
+   * rung that resolves to a concrete model per-endpoint on the
+   * backend (see app/config/models_config.py::resolve_tier_model).
+   * Lets a decomposed task run cheap/fast on small tiers with a
+   * smarter model supervising, without hardcoding a provider-specific
+   * name that breaks when that model is retired or the endpoint
+   * changes.
+   *
+   * ``model_name`` / ``model_id_override`` are escape hatches for
+   * users who want a SPECIFIC model — not portable across endpoints
+   * or time, so prefer ``model_tier`` unless you have a concrete
+   * reason to pin an exact model.
+   */
+  model_tier?: ModelTier | null;
+  model_name?: string | null;
+  model_id_override?: string | null;
+  model_endpoint?: string | null;
 }
+
+/** Portable model cost/capability rungs — see resolve_tier_model on the backend. */
+export type ModelTier = 'xsmall' | 'small' | 'medium' | 'large' | 'frontier';
 
 // ── Artifacts (for runtime display, not editing) ──────────
 
@@ -98,6 +123,13 @@ export interface Block {
   repeat_for_each_source?: string | null;
   repeat_item_template?: string | null;
 
+  // Container failure policy for this block's body sequence
+  // (group / repeat / until / schedule).  'continue' (default/legacy):
+  // later siblings run even after a failed one.  'stop': halt at the
+  // first failed child; its artifact becomes the sequence's result.
+  // Parallel is unaffected.  See block_executor.py::_execute_sequence.
+  on_failure?: 'stop' | 'continue' | null;
+
   // Until-only
   until_mode?: UntilMode | null;
   until_condition?: string | null;
@@ -140,6 +172,11 @@ export interface TaskCard {
   name: string;
   description: string;
   root: Block;
+  // Card-level permissions baseline — merged additively with the
+  // deck-level (project-wide) scope and every ancestor block's own
+  // scope before reaching a leaf Task.  See mergeScopes-equivalent
+  // handling in app/models/task_card.py::merge_scopes.
+  scope?: TaskScope | null;
   tags: string[];
   is_template: boolean;
   source: string;
@@ -153,6 +190,7 @@ export interface TaskCardCreate {
   name: string;
   description?: string;
   root: Block;
+  scope?: TaskScope | null;
   tags?: string[];
   is_template?: boolean;
 }
@@ -161,6 +199,7 @@ export interface TaskCardUpdate {
   name?: string;
   description?: string;
   root?: Block;
+  scope?: TaskScope | null;
   tags?: string[];
   is_template?: boolean;
 }

@@ -15,17 +15,24 @@ import {
   CaretRightOutlined, CaretDownOutlined, StopOutlined,
   CheckCircleOutlined, CloseCircleOutlined, ExclamationCircleOutlined,
   ClockCircleOutlined, ThunderboltOutlined, ReloadOutlined, EditOutlined,
+  PauseOutlined, PlayCircleOutlined,
 } from '@ant-design/icons';
 import { useProject } from '../../context/ProjectContext';
 import type { TaskBinding } from '../../types/task_binding';
 import type { TaskRun, RunStatus, IterationsResponse } from '../../types/task_run';
-import type { TaskCard, Block, ArtifactPart } from '../../types/task_card';
-import { cancelTaskRun, listIterations } from '../../services/taskRunApi';
+import type { TaskCard, Block, ArtifactPart, Artifact } from '../../types/task_card';
+import { cancelTaskRun, pauseTaskRun, resumeTaskRun, listIterations, getIterationArtifact } from '../../services/taskRunApi';
 import { createBinding, deleteBinding, launchStagedBinding } from '../../services/taskBindingApi';
 import { TASK_BINDING_EVENT, TASK_CARD_OPEN_EVENT } from '../../hooks/useTaskBindings';
 import { useTaskRunStream } from '../../hooks/useTaskRunStream';
 import { taskCardApi } from '../../services/taskCardApi';
 import { TaskRunInspector } from './TaskRunInspector';
+import { TaskRunMap } from './TaskRunMap';
+import { BlockDetailPanel } from './BlockDetailPanel';
+import { findBlockById, resolveBlockStatus } from './runMapModel';
+import FailureClusters from './FailureClusters';
+import { analyzeFailures } from '../../utils/iterationClusters';
+import { formatLastActivity } from './liveActivity';
 import { MarkdownRenderer } from '../MarkdownRenderer';
 import './task-card-inline-tile.css';
 
@@ -42,14 +49,26 @@ interface Props {
 const STATUS_COLORS: Record<RunStatus, string> = {
   queued: '#7d8590',
   running: '#1f6feb',
+  paused: '#8957e5',
   done: '#3fb950',
   failed: '#f85149',
   cancelled: '#d29922',
 };
 
+// Icon/text foreground variant. STATUS_COLORS.running (#1f6feb) is tuned as
+// a *filled* Tag background (white text on top reads fine at ~4.6:1), but
+// used directly as a foreground glyph color against the dark tile
+// background (#303a46) it drops to ~2.5:1 contrast — barely readable in
+// dark mode. Swap in a lighter accent for icon/text foreground use only.
+const STATUS_ICON_COLORS: Record<RunStatus, string> = {
+  ...STATUS_COLORS,
+  running: '#58a6ff',
+};
+
 const STATUS_ICONS: Record<RunStatus, React.ReactNode> = {
   queued: <ClockCircleOutlined />,
   running: <ThunderboltOutlined />,
+  paused: <PauseOutlined />,
   done: <CheckCircleOutlined />,
   failed: <CloseCircleOutlined />,
   cancelled: <ExclamationCircleOutlined />,
@@ -213,6 +232,30 @@ function findInstructionsAndWrappers(
   return { wrappers: wrap ? [wrap] : [], instructions: null };
 }
 
+/**
+ * Choose the card definition to DISPLAY for a run.  Prefers the
+ * snapshot captured at launch (run.card_snapshot) over the live card,
+ * so editing the card afterward does not retroactively rewrite what a
+ * completed run is shown to have executed.  The snapshot's block ids
+ * also match this run's block_states (a card edit reassigns ids), so
+ * driving the run map from it stays consistent.  Falls back to the
+ * live card for runs created before snapshotting existed.
+ */
+export function resolveDisplayCard(
+  run: TaskRun | null | undefined,
+  liveCard: TaskCard | null,
+): TaskCard | null {
+  if (run?.card_snapshot) {
+    return {
+      ...(liveCard ?? {}),
+      name: run.card_snapshot.name,
+      description: run.card_snapshot.description,
+      root: run.card_snapshot.root,
+    } as TaskCard;
+  }
+  return liveCard;
+}
+
 export const TaskCardInlineTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }) => {
   // Dispatch on staged vs launched.  React's rules-of-hooks forbid an
   // early return between hook calls, so we split into two sibling
@@ -238,6 +281,14 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
   const [expanded, setExpanded] = useState(true);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [rerunning, setRerunning] = useState(false);
+  // Focus: which block (and optional loop iteration) the output region
+  // shows detail for.  null = the whole-run artifact (default).  This
+  // is the "uplevel": the run map navigates, the region below reflects
+  // whatever is focused.
+  const [focus, setFocus] = useState<{ blockId: string; index: number | null } | null>(null);
+  const [iterArtifact, setIterArtifact] = useState<Artifact | null>(null);
+  const [iterLoading, setIterLoading] = useState(false);
+  const [iterError, setIterError] = useState<string | null>(null);
 
   // Fetch the card once — it's immutable from the tile's POV.
   useEffect(() => {
@@ -249,8 +300,63 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
     return () => { cancelled = true; };
   }, [projectId, binding.card_id]);
 
+  // Prefer the launch-time snapshot over the live card so later card
+  // edits don't retroactively rewrite this run's displayed definition.
+  const displayCard = useMemo(
+    () => resolveDisplayCard(run, card), [run?.card_snapshot, card],
+  );
+
+  // Focus toggle: clicking the focused element again clears focus back
+  // to the whole run.  index=null focuses the block; index=N a loop
+  // iteration of it.
+  const onFocus = useCallback((blockId: string, index: number | null) => {
+    setFocus(prev =>
+      prev && prev.blockId === blockId && prev.index === index
+        ? null
+        : { blockId, index });
+    setIterArtifact(null);
+    setIterError(null);
+  }, []);
+  const clearFocus = useCallback(() => {
+    setFocus(null);
+    setIterArtifact(null);
+    setIterError(null);
+  }, []);
+
+  // Fetch a focused loop iteration's artifact on demand.  Block-level
+  // focus needs no fetch (config is in the card; output is in the run
+  // snapshot / live text).
+  useEffect(() => {
+    if (!focus || focus.index == null || !run) return;
+    let cancelled = false;
+    setIterLoading(true);
+    getIterationArtifact(projectId, run.id, focus.blockId, focus.index)
+      .then(a => { if (!cancelled) setIterArtifact(a); })
+      .catch(e => { if (!cancelled) setIterError(String(e)); })
+      .finally(() => { if (!cancelled) setIterLoading(false); });
+    return () => { cancelled = true; };
+  }, [focus, projectId, run?.id]);
+
   const isTerminal = run != null && ['done', 'failed', 'cancelled'].includes(run.status);
   const isRunning = run != null && ['queued', 'running'].includes(run.status);
+  const isPaused = run != null && run.status === 'paused';
+  // "Pausing…" — flag set but the executor hasn't reached a boundary yet.
+  const isPausing = isRunning && !!run?.pause_requested;
+
+  // Live-progress surface: prefer the WS stream (freshest), fall back
+  // to the persisted run fields for REST-only clients.  A 5s tick
+  // keeps the "Ns ago" label moving while the run is live.
+  const progressNote = live.progressNote ?? run?.progress_note ?? null;
+  const lastActivityTs = live.lastActivityTs ?? run?.last_activity_at ?? null;
+  const [, setActivityTick] = useState(0);
+  useEffect(() => {
+    if (!isRunning) return;
+    const t = setInterval(() => setActivityTick(x => x + 1), 5000);
+    return () => clearInterval(t);
+  }, [isRunning]);
+  const activity = (isRunning && lastActivityTs != null)
+    ? formatLastActivity(lastActivityTs)
+    : null;
 
   // Auto-collapse after terminal (8s reveal)
   useEffect(() => {
@@ -287,6 +393,28 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
       refresh();
     } catch (e) {
       setCancelError(String(e));
+    }
+  }, [projectId, run, refresh]);
+
+  const handlePause = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!projectId || !run) return;
+    try {
+      await pauseTaskRun(projectId, run.id);
+      refresh();
+    } catch (err) {
+      setCancelError(String(err));
+    }
+  }, [projectId, run, refresh]);
+
+  const handleResume = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!projectId || !run) return;
+    try {
+      await resumeTaskRun(projectId, run.id);
+      refresh();
+    } catch (err) {
+      setCancelError(String(err));
     }
   }, [projectId, run, refresh]);
 
@@ -333,6 +461,13 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
     return total > 0 ? { passed, failed, total } : null;
   }, [run?.updated_at]);
 
+  // Failure-signature clustering ("10,000 runs, 4 error patterns").
+  // analyzeFailures is pure over block_states; shouldCluster gates it.
+  const clusterAnalysis = useMemo(
+    () => (run ? analyzeFailures(run.block_states) : null),
+    [run?.updated_at],
+  );
+
   // At-tail fallback: once the run is terminal, render nothing so a
   // finished ghost tile doesn't linger below the last message.
   if (hideWhenTerminal && run && ['done', 'failed', 'cancelled'].includes(run.status)) {
@@ -357,8 +492,9 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
   }
 
   const statusColor = STATUS_COLORS[run.status];
-  const title = card?.name || 'Task Run';
-  const { wrappers, instructions } = findInstructionsAndWrappers(card?.root);
+  const statusIconColor = STATUS_ICON_COLORS[run.status];
+  const title = displayCard?.name || 'Task Run';
+  const { wrappers, instructions } = findInstructionsAndWrappers(displayCard?.root);
 
   // Collapsed receipt view
   if (!expanded) {
@@ -369,7 +505,7 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
         title="Click to expand"
       >
         <CaretRightOutlined className="tc-tile__chevron" />
-        <span className="tc-tile__status-icon" style={{ color: statusColor }}>
+        <span className="tc-tile__status-icon" style={{ color: statusIconColor }}>
           {STATUS_ICONS[run.status]}
         </span>
         <span className="tc-tile__text">
@@ -390,7 +526,7 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
     <div className={`tc-tile tc-tile--expanded tc-tile--${run.status}`}>
       <div className="tc-tile__header" onClick={toggleExpand}>
         <CaretDownOutlined className="tc-tile__chevron" />
-        <span className="tc-tile__status-icon" style={{ color: statusColor }}>
+        <span className="tc-tile__status-icon" style={{ color: statusIconColor }}>
           {STATUS_ICONS[run.status]}
         </span>
         <span className="tc-tile__title">{title}</span>
@@ -411,6 +547,24 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
           </button>
         </Tooltip>
         {isRunning && (
+          <Tooltip title={isPausing ? 'Pausing at next boundary…' : 'Pause at next boundary'}>
+            <button
+              className="tc-tile__pause"
+              onClick={handlePause}
+              disabled={isPausing}
+            >
+              <PauseOutlined />
+            </button>
+          </Tooltip>
+        )}
+        {isPaused && (
+          <Tooltip title="Resume run">
+            <button className="tc-tile__resume" onClick={handleResume}>
+              <PlayCircleOutlined />
+            </button>
+          </Tooltip>
+        )}
+        {(isRunning || isPaused) && (
           <Tooltip title="Cancel run">
             <button className="tc-tile__cancel" onClick={handleCancel}>
               <StopOutlined />
@@ -443,58 +597,71 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
       </div>
 
       <div className="tc-tile__body">
-        {card?.description && (
-          <div className="tc-tile__description">{card.description}</div>
+        {displayCard?.description && (
+          <div className="tc-tile__description">{displayCard.description}</div>
         )}
 
-        {(wrappers.length > 0 || instructions) && (
-          <details className="tc-tile__instructions">
-            <summary>Instructions</summary>
-            {wrappers.length > 0 && (
-              <ul className="tc-tile__wrappers">
-                {wrappers.map((w, i) => (
-                  <li key={i}>
-                    <span className="tc-tile__wrapper-arrow">{i === 0 ? '▸' : '↳'}</span> {w}
-                  </li>
-                ))}
-              </ul>
-            )}
-            {instructions && wrappers.length > 0 && (
-              <div className="tc-tile__wrapper-divider">Task instructions:</div>
-            )}
-            <pre>{instructions}</pre>
-          </details>
+        {displayCard && (
+          <TaskRunMap
+            projectId={projectId} card={displayCard} run={run} live={live}
+            focusedId={focus?.blockId ?? null}
+            focusedIndex={focus?.index ?? null}
+            onFocus={onFocus}
+          />
         )}
 
-        {Object.keys(live.variables).length > 0 && (
-          <div className="tc-tile__vars">
-            <div className="tc-tile__vars-label">State variables</div>
-            <ul className="tc-tile__vars-list">
-              {Object.entries(live.variables).map(([k, v]) => (
-                <li key={k} className="tc-tile__var">
-                  <code className="tc-tile__var-name">{k}</code>
-                  <span className="tc-tile__var-eq">=</span>
-                  <code className="tc-tile__var-val">
-                    {typeof v === 'string' ? v : JSON.stringify(v)}
-                  </code>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
+        {focus && displayCard && (() => {
+          const fb = findBlockById(displayCard.root, focus.blockId);
+          if (!fb) return null;
+          return (
+            <div className="tc-focus">
+              <button className="tc-focus__crumb" onClick={clearFocus}>
+                ‹ Whole run
+              </button>
+              <BlockDetailPanel
+                block={fb}
+                status={resolveBlockStatus(fb.id, live.blockStatuses, run)}
+                blockState={run.block_states?.[fb.id]}
+                liveText={live.text[fb.id]}
+                iterationIndex={focus.index}
+                iterationArtifact={iterArtifact}
+                iterationLoading={iterLoading}
+                iterationError={iterError}
+              />
+            </div>
+          );
+        })()}
 
-        {isRunning && (
+        {(isRunning || isPaused) && (
           <div className="tc-tile__progress">
-            <Spin size="small" />
+            {isPaused ? <PauseOutlined style={{ color: '#8957e5' }} /> : <Spin size="small" />}
             <span>
-              {run.status === 'queued' ? 'Waiting to start…' : 'Executing…'}
+              {isPaused
+                ? 'Paused — resume to continue'
+                : isPausing
+                ? 'Pausing at next boundary…'
+                : run.status === 'queued'
+                ? 'Waiting to start…'
+                : (progressNote || 'Executing…')}
               {iterCounts && ` (${iterCounts.passed + iterCounts.failed} iterations)`}
             </span>
+            {activity && (
+              <span
+                style={{
+                  marginLeft: 'auto',
+                  fontSize: 11,
+                  opacity: 0.75,
+                  color: activity.stale ? '#d48806' : undefined,
+                }}
+                title="Time since the task's last tool call or output"
+              >{activity.stale ? '⚠ ' : ''}{activity.label}</span>
+            )}
           </div>
         )}
 
-        {run.artifact && (
+        {run.artifact && !focus && (
           <div className="tc-tile__artifact">
+            <div className="tc-tile__artifact-label">Result</div>
             {run.artifact.summary ? (
               <ArtifactSummary summary={run.artifact.summary} />
             ) : (
@@ -540,6 +707,50 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
             {iterCounts.failed > 0 && (
               <span className="tc-tile__iter-failed">{iterCounts.failed} failed</span>
             )}
+          </div>
+        )}
+
+        {clusterAnalysis?.shouldCluster && (
+          <FailureClusters
+            projectId={projectId}
+            runId={run.id}
+            analysis={clusterAnalysis}
+          />
+        )}
+
+        {(wrappers.length > 0 || instructions) && (
+          <details className="tc-tile__instructions">
+            <summary>Instructions</summary>
+            {wrappers.length > 0 && (
+              <ul className="tc-tile__wrappers">
+                {wrappers.map((w, i) => (
+                  <li key={i}>
+                    <span className="tc-tile__wrapper-arrow">{i === 0 ? '▸' : '↳'}</span> {w}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {instructions && wrappers.length > 0 && (
+              <div className="tc-tile__wrapper-divider">Task instructions:</div>
+            )}
+            <pre>{instructions}</pre>
+          </details>
+        )}
+
+        {Object.keys(live.variables).length > 0 && (
+          <div className="tc-tile__vars">
+            <div className="tc-tile__vars-label">State variables</div>
+            <ul className="tc-tile__vars-list">
+              {Object.entries(live.variables).map(([k, v]) => (
+                <li key={k} className="tc-tile__var">
+                  <code className="tc-tile__var-name">{k}</code>
+                  <span className="tc-tile__var-eq">=</span>
+                  <code className="tc-tile__var-val">
+                    {typeof v === 'string' ? v : JSON.stringify(v)}
+                  </code>
+                </li>
+              ))}
+            </ul>
           </div>
         )}
 

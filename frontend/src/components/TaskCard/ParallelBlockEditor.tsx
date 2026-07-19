@@ -8,8 +8,9 @@
  */
 
 import React from 'react';
-import type { Block } from '../../types/task_card';
+import type { Block, TaskScope } from '../../types/task_card';
 import { BlockBody } from './BlockBody';
+import { BlockScopeButton } from './BlockScopeButton';
 import { DragHandle } from './DragContext';
 import './task-card-editor.css';
 
@@ -38,6 +39,13 @@ export const ParallelBlockEditor: React.FC<Props> = ({ block, onChange, onDelete
         {onDelete && (
           <button className="tc-icon-btn tc-icon-btn-delete" onClick={onDelete} title="Delete">×</button>
         )}
+      </div>
+      <div className="tc-block-body tc-block-body-scope-row">
+        <BlockScopeButton
+          scope={block.scope}
+          onChange={(next: TaskScope) => update({ scope: next })}
+          title={block.name || 'this Parallel block'}
+        />
       </div>
       <BlockBody
         parentId={block.id}

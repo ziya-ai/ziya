@@ -87,11 +87,11 @@ export function collapseEventRuns(events: ReadonlyArray<RawEvent>): DisplayEvent
       // totalChars.toLocaleString() and walk rawEvents) don't
       // have to special-case undefined.
       const blockId = typeof (evt as { block_id?: unknown }).block_id === 'string'
-        ? (evt as { block_id: string }).block_id : '';
+        ? (evt as unknown as { block_id: string }).block_id : '';
       const content = typeof (evt as { content?: unknown }).content === 'string'
-        ? (evt as { content: string }).content : '';
+        ? (evt as unknown as { content: string }).content : '';
       const count = typeof (evt as { count?: unknown }).count === 'number'
-        ? (evt as { count: number }).count : 0;
+        ? (evt as unknown as { count: number }).count : 0;
       out.push({
         type: 'task_text_delta_run',
         block_id: blockId,
