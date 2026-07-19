@@ -65,7 +65,7 @@ export async function generateGraphvizFromCatalog(
     shapeCatalog: Record<string, ArchitectureShape>,
     title: string = 'Architecture',
     rankdir: 'LR' | 'TB' | 'RL' | 'BT' = 'LR'
-): string {
+): Promise<string> {
     const lines: string[] = [];
     
     // Graph header

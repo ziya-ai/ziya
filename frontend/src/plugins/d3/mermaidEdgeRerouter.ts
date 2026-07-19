@@ -211,7 +211,7 @@ function generateArcPath(
 
         const arcY = arcAbove
             ? minY - arcOffset
-            : maxY + arcMargin + arcScale;
+            : maxY + arcOffset;
 
         const cp1X = startX + (endX - startX) * 0.25;
         const cp2X = startX + (endX - startX) * 0.75;
@@ -225,7 +225,7 @@ function generateArcPath(
 
         const arcX = arcAbove
             ? minX - arcOffset
-            : maxX + arcMargin + arcScale;
+            : maxX + arcOffset;
 
         const cp1Y = startY + (endY - startY) * 0.25;
         const cp2Y = startY + (endY - startY) * 0.75;

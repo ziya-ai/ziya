@@ -210,7 +210,7 @@ export class DrawIOEnhancer {
                             const dash = el.getAttribute('stroke-dasharray');
                             return fill === 'none' || !!dash;
                         });
-                        let best: { el: SVGGraphicsElement; r: DOMRect; overlap: number; dashed: boolean } | null = null;
+                        const bestRef: { current: { el: SVGGraphicsElement; r: DOMRect; overlap: number; dashed: boolean } | null } = { current: null };
                         candidates.forEach(c => {
                             const r = c.getBoundingClientRect();
                             // Skip tiny shapes (edge markers, icon internals)
@@ -221,13 +221,14 @@ export class DrawIOEnhancer {
                             if (overlap <= 0) return;
                             const dashed = !!c.getAttribute('stroke-dasharray');
                             // Prefer dashed over filled-none; then larger overlap
+                            const best = bestRef.current;
                             if (!best ||
                                 (dashed && !best.dashed) ||
                                 (dashed === best.dashed && overlap > best.overlap)) {
-                                best = { el: c as SVGGraphicsElement, r, overlap, dashed };
+                                bestRef.current = { el: c as SVGGraphicsElement, r, overlap, dashed };
                             }
                         });
-                        const enclosing = best?.el || null;
+                        const enclosing = bestRef.current?.el || null;
                         if (enclosing) {
                             const encRect = enclosing.getBoundingClientRect();
                             const overshoot = (divRect.x + divRect.width) - (encRect.x + encRect.width);

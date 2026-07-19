@@ -223,19 +223,30 @@ export const plotlyPlugin: D3RenderPlugin = {
 
     await Plotly.newPlot(renderDiv, plotlySpec.data, layout, config);
 
+    // Plotly.Plots.resize() returns a Promise that REJECTS asynchronously
+    // ("Resize must be passed a displayed plot div element") when the div
+    // has been detached or hidden by the time a deferred callback fires
+    // (React re-render, cleanup racing the timers, or a viz still off in
+    // a collapsed/inactive tab). A bare try/catch only catches synchronous
+    // throws, so that rejection was escaping as an unhandled promise
+    // rejection. Check the div is connected AND actually displayed before
+    // calling resize, and always attach a .catch() to swallow any
+    // rejection that still slips through the check-then-call gap.
+    const safeResize = () => {
+      if (!renderDiv.isConnected || renderDiv.offsetParent === null) return;
+      try {
+        const p = Plotly.Plots.resize(renderDiv);
+        if (p && typeof p.catch === 'function') p.catch(() => { /* torn down mid-resize */ });
+      } catch { /* torn down */ }
+    };
+
     // Force a resize after the next paint — the container's final width
     // often isn't known at newPlot time, causing Plotly to fall back to
     // its 700x450 default. Re-running Plots.resize picks up the real width.
-    requestAnimationFrame(() => {
-      try { Plotly.Plots.resize(renderDiv); } catch { /* torn down */ }
-    });
-    setTimeout(() => {
-      try { Plotly.Plots.resize(renderDiv); } catch { /* torn down */ }
-    }, 200);
+    requestAnimationFrame(safeResize);
+    setTimeout(safeResize, 200);
 
-    const resizeObserver = new ResizeObserver(() => {
-      try { Plotly.Plots.resize(renderDiv); } catch { /* render torn down */ }
-    });
+    const resizeObserver = new ResizeObserver(safeResize);
     resizeObserver.observe(container);
     (container as any)._plotlyResizeObserver = resizeObserver;
     (container as any)._plotlyDiv = renderDiv;

@@ -111,7 +111,7 @@ export function detectSupportedDiagramTypes(mermaid: any): Set<string> {
       supportedTypes.add(testCase.type);
     } catch (error) {
       // Type not supported - this is expected for beta types
-      console.log('❌ TYPE-DETECTION: Not supported:', testCase.type, error.message);
+      console.log('❌ TYPE-DETECTION: Not supported:', testCase.type, error instanceof Error ? error.message : String(error));
     }
   }
 

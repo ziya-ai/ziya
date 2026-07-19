@@ -85,7 +85,7 @@ export async function renderShapeAsDrawIO(
     width?: number,
     height?: number,
     customStyles?: Record<string, string | number>
-): { xml: string; cellId: string } {
+): Promise<{ xml: string; cellId: string }> {
     const cellId = `cell_${Math.random().toString(36).substr(2, 9)}`;
     const w = width || catalogShape.defaultSize?.width || 78;
     const h = height || catalogShape.defaultSize?.height || 78;
@@ -252,7 +252,7 @@ export async function generateDrawIOFromCatalog(
     connections: DrawIOConnection[],
     shapeCatalog: Record<string, ArchitectureShape>,
     title: string = 'Architecture Diagram'
-): string {
+): Promise<string> {
     const renderedShapes: Array<{ xml: string; cellId: string }> = [];
     
     // Render each shape
