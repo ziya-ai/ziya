@@ -154,13 +154,35 @@ class TestFakeShellDetector_ShouldDetect:
         text = _fence("terminal", "$ git status\nOn branch main\nYour branch is up to date.\n")
         assert detect_fake_shell_session(text) is not None
 
-    def test_hash_prompt_root_shell(self):
-        """# prompt (root shell) is also a valid shell prompt marker."""
+    def test_hash_only_prompt_is_not_a_prompt_marker(self):
+        """A '#'-leading line is NOT treated as a shell prompt (fix #3).
+
+        Signal 2 counts only strict '$ ' prompts. A '#'-leading line inside
+        a fence is a shell COMMENT (e.g. '# 1. step' section headers in a
+        block of commands written for the user to run), not a fabricated
+        root prompt. Counting '#' as a prompt killed legitimate ```bash
+        blocks of user-facing commented commands, so it was removed. The
+        accepted cost is a deliberate gap: a genuinely fabricated '#'-root
+        session with no '$' anywhere goes undetected by Signal 2.
+        """
         text = _fence("bash", (
             "# apt-get update\n"
             "Reading package lists...\n"
             "Building dependency tree...\n"
             "Reading state information...\n"
+        ))
+        # No '$' prompt and no grep/shell-grammar markers, so nothing fires.
+        assert detect_fake_shell_session(text) is None
+
+    def test_hash_line_does_not_suppress_when_dollar_present(self):
+        """A '#' line does not block detection when a real '$' prompt is
+        also present: the '$ ' line supplies the prompt and the following
+        lines supply the >=2 output lines Signal 2 requires."""
+        text = _fence("bash", (
+            "$ sudo -i\n"
+            "# apt-get update\n"
+            "Reading package lists...\n"
+            "Building dependency tree...\n"
         ))
         result = detect_fake_shell_session(text)
         assert result is not None

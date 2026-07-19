@@ -14,6 +14,42 @@ from app.mcp.registry.providers.awesome_list import AwesomeListRegistryProvider
 from app.mcp.registry.interface import ServiceStatus, SupportLevel, InstallationType
 
 
+class _FakeStreamCtx:
+    """Async context manager mimicking httpx client.stream()'s response.
+
+    The registry providers were switched to bounded streaming reads
+    (app.utils.http_bounded), so they call client.stream(...) — an async
+    context manager exposing status_code, raise_for_status(), and
+    aiter_bytes() — instead of client.get(). This fake reproduces that shape.
+    """
+
+    def __init__(self, body, status_code=200):
+        if isinstance(body, str):
+            body = body.encode("utf-8")
+        self._body = body
+        self.status_code = status_code
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    async def aiter_bytes(self):
+        yield self._body
+
+
+def _make_streaming_client(body, status_code: int = 200):
+    """Build a Mock client whose .stream(...) returns a fresh _FakeStreamCtx."""
+    client = Mock()
+    client.stream = Mock(side_effect=lambda *a, **k: _FakeStreamCtx(body, status_code))
+    return client
+
+
 class TestOfficialMCPProvider:
     """Tests for Official MCP Registry Provider."""
     
@@ -191,12 +227,8 @@ class TestOfficialMCPProvider:
     async def test_list_services(self, mock_client_class, provider, mock_api_response):
         """Test listing services from API."""
         # Setup mock
-        mock_response = Mock()
-        mock_response.json.return_value = mock_api_response
-        mock_response.raise_for_status = Mock()
-        
-        mock_client = Mock()
-        mock_client.get = AsyncMock(return_value=mock_response)
+        # Provider now uses bounded streaming (client.stream), not client.get.
+        mock_client = _make_streaming_client(json.dumps(mock_api_response))
         mock_client_class.return_value = mock_client
         
         # Force create new client
@@ -214,12 +246,8 @@ class TestOfficialMCPProvider:
     async def test_search_tools(self, mock_client_class, provider, mock_api_response):
         """Test searching for tools."""
         # Setup mock
-        mock_response = Mock()
-        mock_response.json.return_value = mock_api_response
-        mock_response.raise_for_status = Mock()
-        
-        mock_client = Mock()
-        mock_client.get = AsyncMock(return_value=mock_response)
+        # Provider now uses bounded streaming (client.stream), not client.get.
+        mock_client = _make_streaming_client(json.dumps(mock_api_response))
         mock_client_class.return_value = mock_client
         provider._http_client = mock_client
         
@@ -321,13 +349,9 @@ class TestAwesomeListProvider:
     async def test_fetch_awesome_list(self, mock_client_class, provider, sample_markdown):
         """Test fetching and parsing awesome list."""
         # Setup mock
-        mock_response = Mock()
-        mock_response.text = sample_markdown
-        mock_response.status_code = 200
-        mock_response.raise_for_status = Mock()
-        
-        mock_client = Mock()
-        mock_client.get = AsyncMock(return_value=mock_response)
+        # Provider now uses bounded streaming (read_status_and_bounded_bytes,
+        # which calls client.stream), not client.get.
+        mock_client = _make_streaming_client(sample_markdown, status_code=200)
         mock_client_class.return_value = mock_client
         provider._http_client = mock_client
         

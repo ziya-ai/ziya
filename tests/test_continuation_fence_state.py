@@ -60,14 +60,17 @@ class TestOpenFenceAt:
         text = f'{BT3}\nquoted: {BT3}\nafter\n'
         assert open_fence_at(text, len(text)) == BT3
 
-    def test_no_phantom_nesting_from_quoted_lang_tagged_opener(self):
-        # Inside an open 3-tick fence, a line-leading same-width
-        # lang-tagged line satisfies the closer rule (same char,
-        # >= width) and closes the block; the old stack scanner instead
-        # pushed a phantom level, so the NEXT closer popped only that
-        # level and the state stayed inverted ("still inside").
+    def test_lang_tagged_line_cannot_close_fence(self):
+        # Post-#1: a closing fence may carry NO info string (CommonMark).
+        # Inside an open bare 3-tick fence, a line-leading ```python line is
+        # an OPEN-only info-string line, so it does NOT close the block and
+        # the fence stays open. (Pre-#1 the close rule was permissive: same
+        # char + >= width alone closed the block, yielding None here.)
+        # There is still no phantom nesting -- open_fence_at uses a simple
+        # in-fence flag, so the result is a single, correctly-unclosed
+        # fence rather than an inverted stack.
         text = f'{BT3}\n{BT3}python\nafter\n'
-        assert open_fence_at(text, len(text)) is None
+        assert open_fence_at(text, len(text)) == BT3
 
     def test_tilde_fence_not_closed_by_backticks(self):
         text = f'{TLD3}\ncontent\n{BT3}\nstill content\n'

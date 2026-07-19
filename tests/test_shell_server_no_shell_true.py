@@ -171,6 +171,55 @@ class TestExecutePipeline(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("5", result.stdout.strip())
 
+    def test_multi_pipe_semicolon_chain_no_duplication(self):
+        """Regression for the 'flaky grep' bug: a ';'-chain where every
+        segment is itself a pipe (e.g. 'echo A | head; echo B | head; ...')
+        must surface each pipe's final-stage stdout exactly once. The old
+        implementation withheld stdout from any segment whose *own*
+        operator was '|' (including the pipe's last stage) and then
+        re-added only the overall last segment's stdout once at the end,
+        so earlier pipe results vanished while the last one could be
+        duplicated.
+        """
+        result = self.srv._execute_pipeline(
+            "echo A | head; echo B | head; echo C | head", 10, "/tmp"
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.count("A"), 1)
+        self.assertEqual(result.stdout.count("B"), 1)
+        self.assertEqual(result.stdout.count("C"), 1)
+
+    def test_multi_grep_head_semicolon_chain(self):
+        """Closer real-world repro of the audit-transcript failure: several
+        ';'-separated 'cmd | grep ... | head' segments must each contribute
+        their own match, with none dropped and none duplicated.
+        """
+        result = self.srv._execute_pipeline(
+            'printf "foo\\nbar" | grep foo | head; '
+            'printf "baz\\nqux" | grep baz | head',
+            10, "/tmp",
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.count("foo"), 1)
+        self.assertEqual(result.stdout.count("baz"), 1)
+        self.assertNotIn("bar", result.stdout)
+        self.assertNotIn("qux", result.stdout)
+
+    def test_pipe_not_last_in_chain_stdout_preserved(self):
+        """A pipe segment that is NOT the last thing in the ';' chain must
+        still have its final-stage stdout captured (the bug dropped it
+        entirely in this ordering, since 'last_result' at chain-end
+        referred to the unrelated trailing segment).
+        """
+        result = self.srv._execute_pipeline(
+            'echo first | head; echo second', 10, "/tmp"
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("first", result.stdout)
+        self.assertIn("second", result.stdout)
+        self.assertEqual(result.stdout.count("first"), 1)
+        self.assertEqual(result.stdout.count("second"), 1)
+
     def test_shell_false_used(self):
         """Verify subprocess.run is called with shell=False."""
         with patch("subprocess.run") as mock_run:
@@ -187,13 +236,14 @@ class TestExecutePipeline(unittest.TestCase):
                 )
 
     def test_timeout_propagated(self):
-        """Timeout parameter is passed to subprocess.run."""
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess(
-                args=["echo", "hi"], returncode=0, stdout="hi\n", stderr=""
-            )
+        """Timeout parameter is passed to the child's communicate()."""
+        with patch("subprocess.Popen") as mock_popen:
+            mock_proc = mock_popen.return_value
+            mock_proc.communicate.return_value = ("hi\n", "")
+            mock_proc.returncode = 0
+            mock_proc.args = ["echo", "hi"]
             self.srv._execute_pipeline("echo hi", 42, "/tmp")
-            _, kwargs = mock_run.call_args
+            _, kwargs = mock_proc.communicate.call_args
             self.assertEqual(kwargs["timeout"], 42)
 
 

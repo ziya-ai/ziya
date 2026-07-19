@@ -356,3 +356,103 @@ class TestFenceTransitionsCounter:
     def test_no_fences_no_transitions(self, update_tracker):
         tracker = _run(update_tracker, "just some prose with no fences at all\n")
         assert tracker["fence_transitions"] == 0
+
+
+# ---------------------------------------------------------------------------
+# A <-> B contract (the fence-awareness unification regression net)
+#
+# Two fence authorities coexist in the codebase and MUST stay in agreement:
+#   A = app.hallucination.region_extraction.open_fence_at  (CommonMark-faithful,
+#       stateless; used by sanitizer / parroting / continuation split-point)
+#   B = _update_code_block_tracker                          (incremental line
+#       state machine; used by repetition guard / block_continue / transitions)
+#
+# Step-0 characterization (Docs/fence-awareness-step0-findings.md) measured a
+# 9-case corpus at every line boundary and found A and B agree on 8 of 9. The
+# SOLE intentional divergence is the "2a-narrow line-start marker" case: a line
+# that begins (after lstrip) with ```<lang> followed by extra prose words. A
+# opens a fence there (CommonMark says an info string is legal); B deliberately
+# suppresses it as an anti-false-open heuristic (fix #1) so that a model merely
+# narrating a marker does not fabricate an unclosed block.
+#
+# This class pins that contract: 8 cases must agree line-for-line, and the 9th
+# must diverge in exactly the documented direction. If a future refactor
+# (e.g. collapsing the fake-shell detector's private regex onto A) shifts the
+# boundary, one of these breaks and forces a conscious decision rather than a
+# silent behavioral drift.
+# ---------------------------------------------------------------------------
+
+from app.hallucination import open_fence_at  # noqa: E402  (A authority)
+
+_BT3 = "```"
+_BT4 = "````"
+
+
+def _verdicts_B(update_tracker, text):
+    """B's in_block verdict recorded at each line boundary (streaming order)."""
+    tracker = _fresh_tracker()
+    verdicts = []
+    for line in text.split("\n"):
+        update_tracker(None, line + "\n", tracker)
+        verdicts.append(tracker["in_block"])
+    return verdicts
+
+
+def _verdicts_A(text):
+    """A's open-fence verdict at the char offset ending each line's content."""
+    verdicts = []
+    offset = 0
+    for line in text.split("\n"):
+        offset += len(line)
+        verdicts.append(open_fence_at(text, offset) is not None)
+        offset += 1  # consume the newline
+    return verdicts
+
+
+# Corpus that A and B must agree on line-for-line.
+_AGREE_CORPUS = {
+    "simple_lang_block": f"prose\n{_BT3}python\nx=1\n{_BT3}\nafter",
+    "bare_fence": f"prose\n{_BT3}\nx=1\n{_BT3}\nafter",
+    "narrower_inner": f"{_BT4}outer\n{_BT3}\ninner\n{_BT3}\n{_BT4}\nafter",
+    "width_mismatch_close": f"{_BT4}\nbody\n{_BT3}\nstill body\n{_BT4}\nafter",
+    "2a_narrow_prose_quoting": f"I will use {_BT3}diff in the body\nmore prose",
+    "hash_comments_in_bash": f"{_BT3}bash\n# 1. step\n# 2. step\n{_BT3}\nafter",
+    "diff_repeated_line": f"{_BT3}diff\n+ a ? b : c\n+ a ? b : c\n+ a ? b : c\n{_BT3}\nafter",
+    "two_blocks": f"{_BT3}py\na\n{_BT3}\nmid\n{_BT3}js\nb\n{_BT3}\nafter",
+}
+
+
+class TestABContract:
+    """A (open_fence_at) and B (tracker) must not silently diverge."""
+
+    @pytest.mark.parametrize("name", sorted(_AGREE_CORPUS))
+    def test_ab_agree_line_for_line(self, update_tracker, name):
+        text = _AGREE_CORPUS[name]
+        a = _verdicts_A(text)
+        b = _verdicts_B(update_tracker, text)
+        assert a == b, (
+            f"A/B diverged on {name!r}:\n"
+            + "\n".join(
+                f"  L{i} A={int(a[i])} B={int(b[i])} | {ln!r}"
+                for i, ln in enumerate(text.split("\n"))
+            )
+        )
+
+    def test_sole_documented_divergence_line_start_marker(self, update_tracker):
+        # The one intentional A/B mismatch. A opens the fence at the marker
+        # line (CommonMark info string); B suppresses (fix #1 anti-false-open).
+        # If this ever STOPS diverging, the suppression heuristic changed and
+        # the step-0 findings doc must be updated in the same change.
+        text = f"prose\n{_BT3}diff and more words\nbody\nend"
+        a = _verdicts_A(text)
+        b = _verdicts_B(update_tracker, text)
+        assert a != b, (
+            "Expected the line-start-marker case to remain the sole A/B "
+            "divergence, but A and B now agree — update the contract and "
+            "Docs/fence-awareness-step0-findings.md."
+        )
+        # Pin the exact shape: prose line agrees (both closed); the marker
+        # line and everything after it is A-open / B-closed.
+        assert a[0] is False and b[0] is False  # 'prose'
+        assert a[1:] == [True, True, True]      # A opens and stays open
+        assert b[1:] == [False, False, False]   # B keeps it prose

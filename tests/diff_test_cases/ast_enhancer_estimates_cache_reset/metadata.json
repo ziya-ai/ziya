@@ -1,0 +1,8 @@
+{
+    "target_file": "app/utils/ast_parser/ziya_ast_enhancer.py",
+    "expect_error": true,
+    "description": "Insert a _estimates_cache reset at the start of process_codebase. The diff's only context line is a bare triple-quote, which occurs 12 times in the target file, and its @@ header line does not land on any of them (the header is drifted and its old-line count is wrong). The context is therefore non-distinctive: there is no language-agnostic signal that selects the intended process_codebase docstring over the 11 other triple-quotes (module docstring, other method docstrings, and even the OPENING vs CLOSING quote of the same docstring). The buggy applicator took the first file-wide match and silently inserted the reset at the top of the file while reporting success. The fix refuses to guess: a pure-addition hunk whose single context line matches multiple positions and none at the header is rejected loudly and the file is left unchanged.",
+    "date_added": "2026-07-16",
+    "issue_reference": "ambiguous_pure_addition_non_distinctive_context",
+    "expected_behavior": "The pipeline must NOT report success/already_applied for a pure-addition hunk whose only context line is non-distinctive (matches multiple positions, none at the header). It must fail loudly and leave the file byte-for-byte unchanged rather than silently placing the addition at the first matching position."
+}
