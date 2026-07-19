@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, memo, useCallback, useMemo, useState, Suspense, lazy } from "react";
+import React, { useEffect, useRef, memo, useCallback, useMemo, useState, Suspense } from "react";
 import { useActiveChat } from '../context/ActiveChatContext';
 import { useConversationList } from '../context/ConversationListContext';
 import { useScrollContext } from '../context/ScrollContext';
@@ -22,7 +22,8 @@ import { useCopyCleanup } from '../hooks/useCopyCleanup';
 
 // Lazy load the MarkdownRenderer
 import { MarkdownRenderer } from "./MarkdownRenderer";
-const TaskCardInlineTile = lazy(() => import('./TaskCard/TaskCardInlineTile'));
+import { lazyWithRetry } from '../utils/lazyWithRetry';
+const TaskCardInlineTile = lazyWithRetry(() => import('./TaskCard/TaskCardInlineTile'));
 // --- Deferred markdown rendering ---------------------------------------------
 // Rendering MarkdownRenderer for a single large message (heavy diffs, syntax
 // highlighting, tool-blocks) can cost 1-2 seconds.  Mounting 8 of them in a
@@ -33,7 +34,12 @@ const TaskCardInlineTile = lazy(() => import('./TaskCard/TaskCardInlineTile'));
 // because live streaming goes through StreamedContent.tsx, not this path —
 // every message passed here is already settled.
 
-type QueueEntry = { priority: number; task: () => void };
+// scheduledAt/label support MSG_QUEUE tracing below, which can be
+// correlated against FolderContext.tsx's TREE_IDLE tracing to diagnose
+// main-thread idle-time contention (see the runbook comment above
+// __folderTreeIdle in FolderContext.tsx for the full diagnostic steps).
+type QueueEntry = { priority: number; task: () => void; scheduledAt: number; label: string };
+let __messageQueueSeq = 0;
 const __messageRenderQueue: QueueEntry[] = [];
 let __messageQueueProcessing = false;
 const __rIC: (cb: () => void, opts?: { timeout: number }) => number =
@@ -49,6 +55,16 @@ const __processMessageQueue = () => {
         const entry = __messageRenderQueue.shift();
         __messageQueueProcessing = false;
         if (entry) {
+            const waitMs = performance.now() - entry.scheduledAt;
+            // A large wait here with FolderContext TREE_IDLE entries logged
+            // in the same window means a folder-tree rebuild is winning the
+            // idle-time race against this markdown mount — that's the
+            // "conversation text frozen during scan" bug class.
+            if (waitMs > 500) {
+                console.warn(`📝 MSG_QUEUE[${entry.label}] waited ${waitMs.toFixed(0)}ms for an idle slot — check FolderContext TREE_IDLE logs for contention in this window`);
+            } else {
+                console.log(`📝 MSG_QUEUE[${entry.label}] ran after wait=${waitMs.toFixed(0)}ms`);
+            }
             try { entry.task(); } catch (e) { console.warn('deferred markdown render threw:', e); }
         }
         // Yield to scroll/input between mounts.  Without this delay the queue
@@ -88,6 +104,8 @@ const LazyMarkdownRenderer: React.FC<React.ComponentProps<typeof MarkdownRendere
                 mountedRef.current = true;
                 setMounted(true);
             },
+            scheduledAt: performance.now(),
+            label: `markdown-mount-${++__messageQueueSeq}`,
         };
         __messageRenderQueue.push(entry);
         __processMessageQueue();
@@ -247,7 +265,7 @@ const MessageActions = memo<MessageActionsProps>(({
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
             {/* Mute button */}
             {!showRetry && message.role !== 'system' && (
-                <Tooltip title={message.muted ? "Unmute (include in context)" : "Mute (exclude from context)"}>
+                <Tooltip title={`${message.muted ? "Unmute (re-include in context)" : "Mute (exclude from context)"} · ~${Math.ceil((message.content?.length || 0) / 4).toLocaleString()} tokens`}>
                     <Button icon={message.muted ? <MutedOutlined /> : <SoundOutlined />}
                         type="default" size="small"
                         style={{ padding: '0 8px', minWidth: '32px', height: '32px' }}
@@ -255,14 +273,6 @@ const MessageActions = memo<MessageActionsProps>(({
                 </Tooltip>
             )}
             {/* Delete button — only visible when the message is muted */}
-            {!showRetry && message.role !== 'system' && message.muted && !isCurrentlyStreaming && (
-                <Tooltip title="Delete this message">
-                    <Button icon={<DeleteOutlined />} type="default" size="small" danger
-                        style={{ padding: '0 8px', minWidth: '32px', height: '32px' }}
-                        onClick={handleDiscard} />
-                </Tooltip>
-            )}
-            {/* Delete button — only shown when message is muted */}
             {!showRetry && message.role !== 'system' && message.muted && !isCurrentlyStreaming && (
                 <Tooltip title="Delete this message">
                     <Button icon={<DeleteOutlined />} type="default" size="small" danger
@@ -361,7 +371,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     } = useChatContext();
     useEffect(() => {
         if (!currentConversationId) return;
-        const TERMINAL = new Set(['done', 'failed', 'canceled']);
+        const TERMINAL = new Set(['done', 'failed', 'cancelled']);
         let hasRunning = false;
         for (const arr of bindingsByAnchor.values()) {
             for (const b of arr) {
@@ -706,8 +716,8 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                 })
             );
         };
-        document.addEventListener('feedbackDelivered', handleFeedbackDelivered as EventListener);
-        return () => document.removeEventListener('feedbackDelivered', handleFeedbackDelivered as EventListener);
+        document.addEventListener('feedbackDelivered', handleFeedbackDelivered as unknown as EventListener);
+        return () => document.removeEventListener('feedbackDelivered', handleFeedbackDelivered as unknown as EventListener);
     }, []);
 
     return (
@@ -825,7 +835,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                 // Regular message rendering for messages with content
                                 <>
                                     {msg.role === 'human' && (
-                                        <div style={{ display: editingMessageIndex === actualIndex ? 'none' : 'flex', justifyContent: 'space-between', paddingRight: '8px' }}>
+                                        <div className="message-header" style={{ display: editingMessageIndex === actualIndex ? 'none' : 'flex', justifyContent: 'space-between', paddingRight: '8px' }}>
                                             <div className="message-sender">
                                                 You{msg._isFeedback && msg._feedbackStatus === 'pending' && (
                                                     <span style={{
@@ -834,6 +844,13 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                                         marginLeft: '4px',
                                                         fontStyle: 'italic'
                                                     }}>(pending feedback)</span>
+                                                )}{msg.muted && (
+                                                    <span style={{
+                                                        fontSize: '12px',
+                                                        marginLeft: '4px',
+                                                        fontStyle: 'italic',
+                                                        fontWeight: 'normal'
+                                                    }}>(muted · ~{Math.ceil((msg.content?.length || 0) / 4).toLocaleString()} tokens)</span>
                                                 )}:
                                             </div>
                                             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
@@ -913,8 +930,15 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                         </>
                                     ) : msg.role === 'assistant' && msg.content ? (
                                         <>
-                                            <div style={{ display: 'flex', justifyContent: 'space-between', paddingRight: '8px' }}>
-                                                <div className="message-sender">AI:</div>
+                                            <div className="message-header" style={{ display: 'flex', justifyContent: 'space-between', paddingRight: '8px' }}>
+                                                <div className="message-sender">AI{msg.muted && (
+                                                    <span style={{
+                                                        fontSize: '12px',
+                                                        marginLeft: '4px',
+                                                        fontStyle: 'italic',
+                                                        fontWeight: 'normal'
+                                                    }}>(muted · ~{Math.ceil((msg.content?.length || 0) / 4).toLocaleString()} tokens)</span>
+                                                )}:</div>
                                                 <MessageActions
                                                     message={msg}
                                                     actualIndex={actualIndex}

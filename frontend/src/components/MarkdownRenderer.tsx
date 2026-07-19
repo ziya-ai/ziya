@@ -1,7 +1,7 @@
 import React, { useState, useEffect, memo, useMemo, useCallback, useRef, useId, useLayoutEffect } from 'react';
 import { lazyWithRetry } from '../utils/lazyWithRetry';
 import { marked, Tokens } from 'marked';
-import { Alert, Button, message, Tooltip, Collapse } from 'antd';
+import { Alert, Button, message, notification, Tooltip, Collapse } from 'antd';
 import { parseDiff, Diff, Hunk } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
 import { DiffLine } from './DiffLine';
@@ -336,16 +336,16 @@ export function pruneRendererCaches(): void {
     diffRequestMap.clear();
 
     // Prune diffElementPaths — maps diff element IDs to file paths on each Apply click
-    if (window.diffElementPaths?.size > 500) {
+    if (window.diffElementPaths && window.diffElementPaths.size > 500) {
         const entries = Array.from(window.diffElementPaths.entries());
         window.diffElementPaths = new Map(entries.slice(-200));
     }
     // Cap window-level registries — keep the most recent entries
-    if (window.hunkStatusRegistry?.size > 500) {
+    if (window.hunkStatusRegistry && window.hunkStatusRegistry.size > 500) {
         const entries = Array.from(window.hunkStatusRegistry.entries());
         window.hunkStatusRegistry = new Map(entries.slice(-200));
     }
-    if (window.appliedDiffsRegistry?.size > 500) {
+    if (window.appliedDiffsRegistry && window.appliedDiffsRegistry.size > 500) {
         const entries = Array.from(window.appliedDiffsRegistry);
         window.appliedDiffsRegistry = new Set(entries.slice(-200));
     }
@@ -1922,10 +1922,10 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
             }
         };
 
-        window.addEventListener('hunkStatusUpdate', handleWindowStatusUpdate as EventListener);
+        window.addEventListener('hunkStatusUpdate', handleWindowStatusUpdate as unknown as EventListener);
 
         return () => {
-            window.removeEventListener('hunkStatusUpdate', handleWindowStatusUpdate as EventListener);
+            window.removeEventListener('hunkStatusUpdate', handleWindowStatusUpdate as unknown as EventListener);
         };
     }, [updateHunkStatuses, diffId]);
 
@@ -2938,9 +2938,11 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                     triggerDiffUpdate(data.details?.hunk_statuses || {}, data.request_id, diffElementId);
 
                     // Show partial success message with failed hunks
-                    message.warning({
-                        content: (
-                            <div>
+                    notification.warning({
+                        message: 'Some changes could not be applied',
+                        placement: 'topRight',
+                        description: (
+                            <div style={{ maxHeight: '50vh', overflowY: 'auto' }}>
                                 <p>{data.message}</p>
                                 {data.details?.failed && data.details.failed.length > 0 && (
                                     <div>
@@ -2962,7 +2964,7 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                                 )}
                             </div>
                         ),
-                        duration: 10  // Show for 10 seconds since there's more to read
+                        duration: 10  // Auto-dismiss, but user can close via the X button
                     });
                 }
             } else {
@@ -2970,9 +2972,11 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                 const errorData = result.data || {};
                 setIsApplied(false);
 
-                message.error({
-                    content: (
-                        <div>
+                notification.error({
+                    message: 'Failed to apply changes',
+                    placement: 'topRight',
+                    description: (
+                        <div style={{ maxHeight: '50vh', overflowY: 'auto' }}>
                             <p>
                                 <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} />
                                 {result.error || 'Failed to apply changes'}
@@ -2997,14 +3001,20 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                             )}
                         </div>
                     ),
-                    duration: 5
+                    duration: 0  // Stay until the user closes it — the payload can be large
                 });
             }
         } catch (error: unknown) {
-            message.error({
-                content: 'Error applying changes: ' + (error instanceof Error ? error.message : String(error)),
+            notification.error({
+                message: 'Error applying changes',
                 key: 'apply-changes-error',
-                duration: 5
+                placement: 'topRight',
+                description: (
+                    <div style={{ maxHeight: '50vh', overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
+                        {error instanceof Error ? error.message : String(error)}
+                    </div>
+                ),
+                duration: 0  // Validation dumps can be huge; require an explicit close
             });
         } finally {
             setIsProcessing(false);
@@ -3094,8 +3104,8 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                 });
             }
         }
-        window.addEventListener('hunkStatusUpdate', handleHunkStatusUpdate as EventListener);
-        return () => window.removeEventListener('hunkStatusUpdate', handleHunkStatusUpdate as EventListener);
+        window.addEventListener('hunkStatusUpdate', handleHunkStatusUpdate as unknown as EventListener);
+        return () => window.removeEventListener('hunkStatusUpdate', handleHunkStatusUpdate as unknown as EventListener);
     }, [diffElementId, filePath, setHunkStatuses, fileIndex]);
 
     // Clear processed request IDs when component unmounts
@@ -3491,6 +3501,7 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded 
 interface DiffViewWrapperProps {
     token: TokenWithText;
     enableCodeApply: boolean;
+    superseded?: boolean;
     isStreaming?: boolean;
     forceRender?: boolean;
     index?: number;
@@ -4042,7 +4053,7 @@ const CodeBlock: React.FC<CodeBlockProps> = ({ token, index }) => {
 type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' |
     'd3' | 'mermaid' | 'plotly' | 'file-operation' | 'tool' |
     'joint' | 'jointjs' | 'code' | 'html' | 'text' | 'list' | 'table' | 'escape' | 'math' |
-    'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' | 'packet' | 'drawio' |
+    'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' | 'packet' | 'drawio' | 'music' |
     'circuitikz' | 'html-mockup' | 'delegate-tasks' | 'task-card' |
     'codespan' | 'strong' | 'em' | 'del' | 'link' | 'image' |
     'br' | 'list_item' |
@@ -4174,6 +4185,10 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
 
         if (lang === 'packet' || lang === 'packet-diagram' || lang === 'bytefield') {
             return 'packet';
+        }
+
+        if (lang === 'music' || lang === 'sheet-music' || lang === 'vexflow') {
+            return 'music';
         }
 
         // Only log when debug logging is enabled and only for debugging specific issues
@@ -4645,6 +4660,31 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             isStreaming={isStreaming}
                         />
                     );
+
+                case 'music':
+                    if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
+                    return (
+                        <LazyD3Renderer
+                            key={sk}
+                            spec={{
+                                type: 'music',
+                                definition: tokenWithText.text,
+                                isStreaming: isStreaming,
+                                forceRender: true,
+                            }}
+                            type="d3"
+                            isStreaming={isStreaming}
+                        />
+                    );
+
+                case 'circuitikz':
+                    // No visual circuit-schematic renderer is implemented yet (no
+                    // D3 plugin registered for this type). Render as a
+                    // syntax-highlighted LaTeX/TikZ code block rather than
+                    // falling through to the unhandled-token fallback, which
+                    // rendered raw, unformatted text.
+                    if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
+                    return <CodeBlock key={sk} token={{ ...tokenWithText, lang: 'latex' }} index={index} />;
 
                 case 'drawio':
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
@@ -5318,6 +5358,11 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     return <em key={sk}>{renderTokens((token as Tokens.Em).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</em>;
                 case 'codespan':
                     if (!hasText(tokenWithText)) return null;
+                    // No-chrome inline music notation: `music: C4/q, D4/q`
+                    if (/^music:\s*/i.test(tokenWithText.text)) {
+                        const dsl = tokenWithText.text.replace(/^music:\s*/i, '').trim();
+                        if (dsl) return <MusicInlineRenderer key={sk} dsl={dsl} isDarkMode={isDarkMode} />;
+                    }
                     const decodedCode = decodeHtmlEntities(tokenWithText.text);
                     // Use text content instead of dangerouslySetInnerHTML to prevent HTML parsing issues
                     return <code key={sk}>{decodedCode}</code>;
@@ -5634,7 +5679,7 @@ const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, 
         const Element = displayMode ? 'div' : 'span';
         return displayMode ?
             <Element
-                ref={mathRef}
+                ref={mathRef as React.RefObject<HTMLDivElement>}
                 className={displayMode ? "math-display" : "math-inline"}
                 role="img"
                 aria-label={ariaLabel}
@@ -5643,7 +5688,7 @@ const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, 
                 dangerouslySetInnerHTML={{ __html: html }}
             /> :
             <Element
-                ref={mathRef as React.RefObject<HTMLSpanElement>}
+                ref={mathRef as React.RefObject<HTMLDivElement>}
                 className="math-inline"
                 role="img"
                 aria-label={ariaLabel}
@@ -5658,6 +5703,69 @@ const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, 
             <div className="math-fallback" style={{ fontFamily: 'monospace', padding: '4px' }}>{math}</div> :
             <span className="math-fallback" style={{ fontFamily: 'monospace' }}>{math}</span>;
     }
+};
+
+/**
+ * No-chrome inline music notation, mirroring MathRenderer's pattern for
+ * KaTeX: lazy-loads VexFlow, renders a bare small SVG staff with no
+ * border/card/download button, and falls back to the raw DSL text as
+ * monospace while loading or on error.  Triggered by a codespan whose text
+ * starts with `music:` (see the 'codespan' case in renderTokens).
+ *
+ * dsl is VexFlow EasyScore note syntax, e.g. "C4/q, D4/q ^\"Cmaj7\"".
+ */
+const MusicInlineRenderer: React.FC<{ dsl: string; isDarkMode: boolean }> = ({ dsl, isDarkMode }) => {
+    const containerRef = useRef<HTMLSpanElement>(null);
+    const [isLoading, setIsLoading] = useState(true);
+    const [hasError, setHasError] = useState(false);
+
+    useEffect(() => {
+        let cancelled = false;
+        const renderInline = async () => {
+            try {
+                const [{ Factory }, d3mod] = await Promise.all([
+                    import('vexflow'),
+                    import('d3'),
+                ]);
+                if (cancelled || !containerRef.current) return;
+                containerRef.current.innerHTML = '';
+                const width = Math.max(140, 40 + dsl.split(',').length * 32);
+                const height = 60;
+                const factory = new (Factory as any)({
+                    renderer: { elementId: containerRef.current, width, height, backend: 1 },
+                });
+                const score = factory.EasyScore();
+                const system = factory.System({ width: width - 10 });
+                const notes = score.notes(dsl, { clef: 'treble' });
+                system.addStave({ voices: [score.voice(notes)] });
+                factory.draw();
+            } catch (error) {
+                console.debug('MusicInlineRenderer: VexFlow render failed (handled):', error);
+                if (!cancelled) setHasError(true);
+            } finally {
+                if (!cancelled) setIsLoading(false);
+            }
+        };
+        renderInline();
+        return () => { cancelled = true; };
+    }, [dsl]);
+
+    if (isLoading || hasError) {
+        // Fallback while loading or on error — same monospace-text pattern
+        // MathRenderer uses for its own loading/error fallback.
+        return <span className="music-inline-fallback" style={{ fontFamily: 'monospace' }}>{dsl}</span>;
+    }
+
+    return (
+        <span
+            ref={containerRef}
+            className="music-inline"
+            role="img"
+            aria-label={`Music notation: ${dsl}`}
+            title={dsl}
+            style={{ display: 'inline-block', verticalAlign: 'middle' }}
+        />
+    );
 };
 
 /**
@@ -6144,26 +6252,17 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                     return segment;
                 }
 
-                console.log('📐 Processing math in segment:', {
-                    segmentPreview: segment.substring(0, 100),
-                    hasMathbf: segment.includes('mathbf'),
-                    hasDisplayMath: segment.includes('$$')
-                });
-
                 // Process math only in non-code segments
                 let processed = segment;
 
                 try {
                     // Handle display math $$...$$
-                    const beforeReplace = processed;
                     processed = processed.replace(
                         /\$\$([\s\S]+?)\$\$/g,
                         (match, captured) => {
-                            console.log('📐 DISPLAY MATH REPLACEMENT:', { match: match.substring(0, 100), captured: captured.substring(0, 100), hasMathbf: captured.includes('mathbf') });
                             return '\n<div class="math-display-block">MATH_DISPLAY:' + captured + '</div>\n';
                         }
                     );
-                    console.log('📐 After display math replace:', { changed: beforeReplace !== processed, processedPreview: processed.substring(0, 200) });
 
                     // Handle inline math $...$ — classifier + KaTeX-adjacency
                     // match regex live in inlineMathClassifier.ts (unit-tested).
@@ -6571,13 +6670,13 @@ useLayoutEffect(() => {
             setThrottlingRecoveryData(next);
         }
     };
-    document.addEventListener('throttlingRecoveryData', handleThrottlingRecoveryData as EventListener);
+    document.addEventListener('throttlingRecoveryData', handleThrottlingRecoveryData as unknown as EventListener);
 
     const initialScanTimer = setTimeout(scanAndAttachHandlers, 200);
 
     return () => {
         clearTimeout(initialScanTimer);
-        document.removeEventListener('throttlingRecoveryData', handleThrottlingRecoveryData as EventListener);
+        document.removeEventListener('throttlingRecoveryData', handleThrottlingRecoveryData as unknown as EventListener);
         attachedHandlersRef.current.clear();
     };
 }, [currentConversationId]);
@@ -6600,6 +6699,16 @@ const cleanDiffContent = (content: string): string => {
             line.startsWith('@@ ')) {
             return line;
         }
+
+        // Reverse escapeNestedBacktickFences' ` escaping. That pass
+        // neutralizes the leading backtick run of every fence-shaped
+        // CONTENT line inside a diff block (e.g. a context line closing
+        // a nested \`\`\`bash block quoted from the file being patched) so
+        // marked's lexer doesn't prematurely close the outer \`\`\`diff
+        // fence. The diff rendering path never re-decoded them, so
+        // without this the user saw literal "`" text instead of the
+        // original backticks.
+        line = line.replace(/`/g, '\`');
 
         // Fix any MATH_INLINE expansions that might have slipped through
         // This handles cases like $1 in regex replacements being converted to ⟨MATH_INLINE:1⟩

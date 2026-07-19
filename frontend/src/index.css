@@ -719,6 +719,16 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   overflow: hidden;
 }
 
+/* LeftPanel uses .left-panel-container (not .folder-tree-panel); give its
+   antd tab-content chain the same bounded flex column so TabPane children
+   (ContextsTab, ChatsTab) can scroll internally instead of overflowing. */
+.left-panel-container .ant-tabs-content-holder {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .folder-tree-panel .ant-tabs-tabpane {
   height: 100%;
 }
@@ -2291,9 +2301,15 @@ body:not(.dark) .token.attr-name {
 }
 
 .message.muted {
-  opacity: 0.5;
   background-color: rgba(128, 128, 128, 0.1);
   border-left: 3px solid #ccc;
+}
+
+/* Dim muted content but keep the action toolbar (mute/unmute, delete) usable.
+   Applying opacity to the whole .message would create a stacking context its
+   own children could not override, so dim every direct child except the header. */
+.message.muted > *:not(.message-header) {
+  opacity: 0.5;
 }
 
 .message.human:hover .ant-btn[title*="Resubmit"] {
