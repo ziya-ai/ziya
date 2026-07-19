@@ -63,6 +63,13 @@ def _check_libraries():
     try:
         import pypdf
         _AVAILABLE_LIBRARIES['pypdf'] = True
+        # pypdf logs a warning (via the stdlib `logging` module, not
+        # exceptions) for every malformed xref entry it silently repairs
+        # while reading a non-compliant PDF (see pypdf._reader). During a
+        # directory scan this can fire hundreds of times per bad PDF and
+        # floods stderr. These are expected, handled conditions, not
+        # actionable for the user, so raise the threshold to ERROR.
+        logging.getLogger("pypdf").setLevel(logging.ERROR)
     except ImportError:
         pass
     
