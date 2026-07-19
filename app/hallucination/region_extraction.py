@@ -20,6 +20,7 @@ Design decisions:
 from __future__ import annotations
 
 import re
+from typing import NamedTuple
 
 
 # Fenced code block open/close: ``` or ~~~ (3 or more of either char).
@@ -30,6 +31,31 @@ _INDENT_BLOCK_RE = re.compile(r'^(    |\t)')
 
 # Blockquote: optional leading whitespace then >.
 _BLOCKQUOTE_RE = re.compile(r'^\s*>')
+
+
+def _is_fence_close(m: "re.Match[str] | None", fence_marker: str | None) -> bool:
+    """
+    True iff line match ``m`` is a valid CLOSE for an open fence whose
+    opening marker was ``fence_marker``.
+
+    Single source of truth for close-line semantics across all fence
+    scanners in this module (extract_scannable_regions, scannable_line_indices,
+    open_fence_at). A close line must:
+      * be a fence line at all (``m`` truthy, an open fence in progress);
+      * use the same fence character as the opener;
+      * be at least as wide as the opener (CommonMark width discipline);
+      * carry NO info string -- only trailing whitespace is allowed after
+        the fence characters. A line like ```` ```bash ```` is therefore an
+        OPENING fence, never a close, so it cannot terminate a fence it did
+        not open. group(3) is the trailing-content capture of _FENCE_RE.
+    """
+    return bool(
+        m
+        and fence_marker is not None
+        and m.group(2).startswith(fence_marker[0])
+        and len(m.group(2)) >= len(fence_marker)
+        and m.group(3).strip() == ''
+    )
 
 
 def extract_scannable_regions(text: str) -> list[str]:
@@ -53,12 +79,7 @@ def extract_scannable_regions(text: str) -> list[str]:
     for line in text.splitlines(keepends=True):
         if in_fence:
             m = _FENCE_RE.match(line)
-            if (
-                m
-                and fence_marker is not None
-                and m.group(2).startswith(fence_marker[0])
-                and len(m.group(2)) >= len(fence_marker)
-            ):
+            if _is_fence_close(m, fence_marker):
                 in_fence = False
                 fence_marker = None
             flush()
@@ -117,12 +138,7 @@ def scannable_line_indices(text: str) -> list[tuple[int, str]]:
     for i, line in enumerate(text.split('\n')):
         if in_fence:
             m = _FENCE_RE.match(line)
-            if (
-                m
-                and fence_marker is not None
-                and m.group(2).startswith(fence_marker[0])
-                and len(m.group(2)) >= len(fence_marker)
-            ):
+            if _is_fence_close(m, fence_marker):
                 in_fence = False
                 fence_marker = None
             continue
@@ -164,12 +180,7 @@ def open_fence_at(text: str, position: int) -> str | None:
     for line in text[:position].split('\n'):
         if in_fence:
             m = _FENCE_RE.match(line)
-            if (
-                m
-                and fence_marker is not None
-                and m.group(2).startswith(fence_marker[0])
-                and len(m.group(2)) >= len(fence_marker)
-            ):
+            if _is_fence_close(m, fence_marker):
                 in_fence = False
                 fence_marker = None
             continue
@@ -180,6 +191,76 @@ def open_fence_at(text: str, position: int) -> str | None:
             fence_marker = m.group(2)
 
     return fence_marker if in_fence else None
+
+
+# ---------------------------------------------------------------------------
+# Detector-compat fence extraction.
+#
+# NOTE: this deliberately uses a NARROWER fence grammar than _FENCE_RE above.
+# It exists to give the fake-shell detector a single shared extraction walk
+# without changing that detector's behavior. Specifically, versus _FENCE_RE
+# it recognises ONLY backtick fences (no ~~~) with NO leading indentation,
+# and a close line is backticks-only followed by whitespace, NOT "same char
+# with trailing content allowed". Those are exactly the rules the detector's
+# private regex used.
+#
+# Reconciling this grammar with _FENCE_RE / open_fence_at (so the whole
+# module speaks one CommonMark-faithful dialect) is a follow-up behavior
+# change tracked separately -- it widens detection to ~~~ and indented
+# fences, which must be reviewed and tested on its own.
+# ---------------------------------------------------------------------------
+_DETECTOR_FENCE_OPEN_RE = re.compile(r'^(`{3,})', re.MULTILINE)
+
+
+class FencedRegion(NamedTuple):
+    """One fenced code block found by :func:`extract_fenced_regions`."""
+    opening_line: str   # full opening fence line, sans trailing newline
+    marker: str         # the backtick run that opened the fence, e.g. 3 backticks
+    body: str           # text between the opening line and the close (exclusive)
+    closed: bool        # True iff a matching close fence was found
+
+
+def extract_fenced_regions(text: str) -> list[FencedRegion]:
+    """
+    Return the backtick-fenced code blocks in *text*, in order.
+
+    Both completed and trailing-unclosed fences are returned: an unclosed
+    fence (the stream may still be arriving) is emitted as the final region
+    with ``closed=False`` and a body running to end of text. This mirrors
+    the fake-shell detector's need to fire on in-progress fences, where
+    token-by-token output delivery is itself the fabrication signal.
+
+    A fence whose opening marker is not yet followed by a newline (the text
+    ends on the opening line) is NOT emitted -- there is no body to scan.
+
+    Close semantics match CommonMark width discipline: the close line must
+    be a run of at least as many backticks as the opener, optionally
+    followed by whitespace only.
+    """
+    regions: list[FencedRegion] = []
+    pos = 0
+    while pos < len(text):
+        open_m = _DETECTOR_FENCE_OPEN_RE.search(text, pos)
+        if open_m is None:
+            break
+        open_line_end = text.find('\n', open_m.start())
+        if open_line_end == -1:
+            break  # opener with no newline yet -- no body to scan
+        opening_line = text[open_m.start():open_line_end]
+        marker = open_m.group(1)
+        body_start = open_line_end + 1
+        close_re = re.compile(rf'^`{{{len(marker)},}}\s*$', re.MULTILINE)
+        close_m = close_re.search(text, body_start)
+        if close_m is None:
+            regions.append(
+                FencedRegion(opening_line, marker, text[body_start:], False)
+            )
+            break
+        regions.append(
+            FencedRegion(opening_line, marker, text[body_start:close_m.start()], True)
+        )
+        pos = close_m.end()
+    return regions
 
 
 def _strip_inline_code(line: str) -> str:
