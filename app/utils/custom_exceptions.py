@@ -60,15 +60,27 @@ class KnownCredentialException(Exception):
     """
     # Reset the class variable on module import
     _error_displayed = False
+    # Last message printed to the console. Model init re-runs on every chat
+    # turn while credentials are missing, reconstructing this exception each
+    # time; without dedup the same banner printed once per turn. Tracking the
+    # last-printed text (rather than the _error_displayed boolean, which
+    # ModelManager.initialize_model deliberately resets to allow a *new* error
+    # through) suppresses only exact repeats while still surfacing a genuinely
+    # different credential error.
+    _last_printed_message = None
     
     def __init__(self, message, is_server_startup=False):
         self.message = message
         self.is_server_startup = is_server_startup
         
-        # Always print the message - we need to see credential errors
-        print("\n" + "=" * 80)
-        print(message)
-        print("=" * 80 + "\n")
+        # Print the message unless it is an exact repeat of the last one shown
+        # (see _last_printed_message note above). Startup always prints so the
+        # operator sees why the process is about to exit.
+        if is_server_startup or message != KnownCredentialException._last_printed_message:
+            print("\n" + "=" * 80)
+            print(message)
+            print("=" * 80 + "\n")
+            KnownCredentialException._last_printed_message = message
         
         # Mark that we've displayed the error
         KnownCredentialException._error_displayed = True

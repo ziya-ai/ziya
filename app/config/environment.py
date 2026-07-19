@@ -88,6 +88,13 @@ def setup_environment(args: Any) -> None:
     # -- Root directory (always direct-assign; never setdefault) ------------
     root_arg = getattr(args, 'root', None)
     root_dir = root_arg or os.getcwd()
+    # Canonicalize at this write boundary so every downstream reader
+    # (~30 sites) sees one stable absolute form. This matches the other two
+    # boundaries that already abspath: the /root command (cli.py) and the
+    # per-request workspace path (mcp/manager.py). Without this, a raw `.`,
+    # `~/proj`, trailing slash, or `../` leaks through and fails to match the
+    # abspath'd values those paths are later compared against.
+    root_dir = os.path.abspath(os.path.expanduser(root_dir))
     os.environ["ZIYA_USER_CODEBASE_DIR"] = root_dir
     # Record whether the root was explicitly supplied (--root/--directory) so
     # the frontend can give an explicit startup directory precedence over a
@@ -111,6 +118,32 @@ def setup_environment(args: Any) -> None:
     if include:
         os.environ["ZIYA_INCLUDE_DIRS"] = ','.join(include)
         logger.info(f"Including external paths: {','.join(include)}")
+
+    # -- Network: outbound proxy / corporate CA bundle -----------------------
+    # Corporate environments often force AI-provider traffic through an
+    # egress proxy (frequently TLS-intercepting).  One flag/env var fans out
+    # to the variable each transport stack actually reads: botocore honors
+    # HTTPS_PROXY + AWS_CA_BUNDLE, httpx (anthropic/openai SDKs) honors
+    # HTTPS_PROXY + SSL_CERT_FILE, requests honors REQUESTS_CA_BUNDLE.
+    proxy = getattr(args, 'proxy', None) or os.environ.get("ZIYA_PROXY")
+    if proxy:
+        os.environ["ZIYA_PROXY"] = proxy
+        os.environ["HTTPS_PROXY"] = proxy
+        os.environ["HTTP_PROXY"] = proxy
+        logger.info(f"Routing outbound traffic via proxy: {proxy}")
+
+    ca_bundle = getattr(args, 'ca_bundle', None) or os.environ.get("ZIYA_CA_BUNDLE")
+    if ca_bundle:
+        ca_path = os.path.abspath(os.path.expanduser(ca_bundle))
+        if not os.path.isfile(ca_path):
+            logger.error(f"CA bundle file not found: {ca_path}")
+            logger.error("Provide a readable PEM file via --ca-bundle or ZIYA_CA_BUNDLE.")
+            sys.exit(1)
+        os.environ["ZIYA_CA_BUNDLE"] = ca_path
+        os.environ["AWS_CA_BUNDLE"] = ca_path        # botocore (Bedrock)
+        os.environ["SSL_CERT_FILE"] = ca_path        # httpx (anthropic/openai SDKs)
+        os.environ["REQUESTS_CA_BUNDLE"] = ca_path   # requests
+        logger.info(f"Using custom CA bundle for outbound TLS: {ca_path}")
 
     # -- AWS profile --------------------------------------------------------
     endpoint = getattr(args, 'endpoint', config.DEFAULT_ENDPOINT)
@@ -172,6 +205,23 @@ def setup_environment(args: Any) -> None:
         endpoint = corrected_endpoint
         if hasattr(args, 'endpoint'):
             args.endpoint = corrected_endpoint
+
+    # -- Credential-based endpoint auto-selection ---------------------------
+    # First-run UX: if the user picked neither --endpoint nor --model, the
+    # default is bedrock. When bedrock has no credentials but exactly one
+    # other provider does, switch to it (and say so, once) rather than telling
+    # a Google/OpenAI/Anthropic user to configure AWS.
+    if not explicit_endpoint and not _was_flag_explicit('model'):
+        from app.utils.provider_detection import (
+            maybe_autoselect_endpoint, announce_autoselect,
+        )
+        chosen = maybe_autoselect_endpoint(endpoint, explicit_endpoint)
+        if chosen and chosen != endpoint:
+            announce_autoselect(chosen)
+            endpoint = chosen
+            model = model or config.DEFAULT_MODELS.get(endpoint, "")
+            if hasattr(args, 'endpoint'):
+                args.endpoint = chosen
 
     os.environ["ZIYA_ENDPOINT"] = endpoint
     # Always set ZIYA_MODEL so a stale value from a previous run or shell
