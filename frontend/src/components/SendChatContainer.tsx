@@ -33,7 +33,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [isSendingFeedback, setIsSendingFeedback] = useState(false);
   const [currentToolId, setCurrentToolId] = useState<string | null>(null);
-  const [feedbackStatus, setFeedbackStatus] = useState<'idle' | 'pending' | 'queued' | 'delivered'>('idle');
+  const [feedbackStatus, setFeedbackStatus] = useState<'idle' | 'pending' | 'queued' | 'delivered' | 'undelivered'>('idle');
   const [throttlingError, setThrottlingError] = useState<any>(null);
   const [showContinueButton, setShowContinueButton] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -115,8 +115,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       }
     };
 
-    document.addEventListener('feedbackReady', handleFeedbackReady as EventListener);
-    return () => document.removeEventListener('feedbackReady', handleFeedbackReady as EventListener);
+    document.addEventListener('feedbackReady', handleFeedbackReady as unknown as EventListener);
+    return () => document.removeEventListener('feedbackReady', handleFeedbackReady as unknown as EventListener);
   }, [currentConversationId]);
 
   // Listen for feedback delivery confirmation (SSE event from backend)
@@ -129,8 +129,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
         setTimeout(() => setFeedbackStatus('idle'), 4000);
       }
     };
-    document.addEventListener('feedbackDelivered', handleDelivered as EventListener);
-    return () => document.removeEventListener('feedbackDelivered', handleDelivered as EventListener);
+    document.addEventListener('feedbackDelivered', handleDelivered as unknown as EventListener);
+    return () => document.removeEventListener('feedbackDelivered', handleDelivered as unknown as EventListener);
   }, [currentConversationId]);
 
   // Listen for WebSocket-level acknowledgment (feedback reached server queue)
@@ -158,9 +158,23 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     return () => ws.removeEventListener('message', wsHandler);
   }, [isCurrentlyStreaming, currentConversationId]);
 
-  // Reset feedback status when streaming ends
+  // Reset feedback status when streaming ends.
+  // If feedback was still 'queued' (accepted by the server but never confirmed
+  // 'delivered' via the SSE feedbackDelivered event), the turn ended before the
+  // model consumed it — the backend straggler path re-enqueues it for the next
+  // turn. Surface an 'undelivered' warning instead of silently flipping to idle,
+  // which previously hid the loss from the user.
   useEffect(() => {
-    if (!isCurrentlyStreaming) setFeedbackStatus('idle');
+    if (!isCurrentlyStreaming) {
+      setFeedbackStatus((prev) => {
+        if (prev === 'queued') {
+          console.warn('📝 FEEDBACK: turn ended while still queued — deferred to next turn');
+          setTimeout(() => setFeedbackStatus('idle'), 6000);
+          return 'undelivered';
+        }
+        return 'idle';
+      });
+    }
   }, [isCurrentlyStreaming]);
 
   // Listen for throttling errors from chatApi
@@ -173,8 +187,8 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       setThrottlingError(event.detail);
     };
 
-    document.addEventListener('throttlingError', handleThrottlingError as EventListener);
-    return () => document.removeEventListener('throttlingError', handleThrottlingError as EventListener);
+    document.addEventListener('throttlingError', handleThrottlingError as unknown as EventListener);
+    return () => document.removeEventListener('throttlingError', handleThrottlingError as unknown as EventListener);
   }, [currentConversationId]);
 
   // Clear throttling error when streaming starts
@@ -307,7 +321,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
           id: uuidv4(),
           filename: file.name,
           data: resized.split(',')[1],
-          mediaType: isSvg ? 'image/png' : file.type,
+          mediaType: isSvg ? 'image/png' : file.type as 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp',
           size: file.size,
           width: finalWidth || undefined,
           height: finalHeight || undefined,
@@ -683,26 +697,45 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     setIsSendingFeedback(true);
 
     try {
-      // Build the feedback placeholder, but do NOT insert it until we know
-      // the WebSocket is actually ready to deliver it. Inserting it before
-      // the readiness check strands a `_feedbackStatus: 'pending'` human
-      // message in the transcript forever when delivery never happens.
-      const feedbackMessage: Message = {
-        role: 'human',
-        content: feedbackText,
-        _timestamp: Date.now(),
-        _isFeedback: true,
-        _feedbackStatus: 'pending'
-      };
+      // Deliberately NO placeholder message in the transcript. Inserting a
+      // human message mid-stream lands it between the original question and
+      // the assistant's (not-yet-committed) response — two consecutive
+      // "You:" blocks, which flags the first as unanswered. The backend
+      // renders "📝 Feedback received:" inline at the actual injection
+      // point; the status chip above the input tracks queued/delivered.
       // Use the global WebSocket if available
       const feedbackWebSocket = (window as any).feedbackWebSocket;
-      if (feedbackWebSocket && (window as any).feedbackWebSocketReady) {
-        addMessageToConversation(feedbackMessage, currentConversationId);
-        setFeedbackStatus('pending');
+      let sent = false;
+      if (feedbackWebSocket) {
         const toolId = currentToolId || 'streaming_tool';
-        feedbackWebSocket.sendFeedback(toolId, feedbackText);
-        console.log('🔄 FEEDBACK:', feedbackText);
+        // The singleton follows whichever conversation most recently started
+        // streaming — rebind if it's pointed at a different conversation.
+        if (feedbackWebSocket['conversationId'] !== currentConversationId) {
+          try {
+            await feedbackWebSocket.connect(currentConversationId);
+            (window as any).feedbackWebSocketReady = true;
+          } catch (e) {
+            console.warn('🔄 FEEDBACK: Rebind to current conversation failed:', e);
+          }
+        }
+        sent = feedbackWebSocket.sendFeedback(toolId, feedbackText) === true;
+        if (!sent) {
+          // The socket can die silently mid-stream (idle timeout, server
+          // restart, reload race) — nothing tells the user until they try
+          // to send. One reconnect attempt before reporting failure.
+          try {
+            await feedbackWebSocket.connect(currentConversationId);
+            (window as any).feedbackWebSocketReady = true;
+            sent = feedbackWebSocket.sendFeedback(toolId, feedbackText) === true;
+          } catch (reconnectErr) {
+            console.error('🔄 FEEDBACK: Reconnect attempt failed:', reconnectErr);
+          }
+        }
+      }
+
+      if (sent) {
         setFeedbackStatus('queued');
+        console.log('🔄 FEEDBACK:', feedbackText);
 
         // Clear the input
         if (editorRef.current) editorRef.current.innerHTML = '';
@@ -717,7 +750,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
           key: 'feedback-sent'
         });
       } else {
-        console.error('🔄 FEEDBACK: WebSocket not ready');
+        console.error('🔄 FEEDBACK: WebSocket not ready and reconnect failed');
         message.warning({
           content: 'Feedback system unavailable — tools will continue without feedback. Your text is preserved in the input box; resend when a response is active.',
           duration: 3,
@@ -730,7 +763,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     } finally {
       setIsSendingFeedback(false);
     }
-  }, [inputValue, isSendingFeedback, currentConversationId, currentToolId, addMessageToConversation]);
+  }, [inputValue, isSendingFeedback, currentConversationId, currentToolId]);
 
   const handleSend = useCallback(async () => {
     // If streaming, send as feedback instead
@@ -1133,15 +1166,21 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
               gap: '6px',
               color: feedbackStatus === 'delivered'
                 ? (isDarkMode ? '#95de64' : '#52c41a')
+                : feedbackStatus === 'undelivered'
+                ? (isDarkMode ? '#ff7875' : '#cf1322')
                 : (isDarkMode ? '#faad14' : '#d48806'),
               transition: 'opacity 0.3s',
-              opacity: feedbackStatus === 'idle' ? 0 : 1,
+              opacity: 1,
             }}>
               <span style={{
                 display: 'inline-block',
-                animation: feedbackStatus !== 'delivered' ? 'pulse 1.2s ease-in-out infinite' : 'none',
+                animation: (feedbackStatus !== 'delivered' && feedbackStatus !== 'undelivered')
+                  ? 'pulse 1.2s ease-in-out infinite' : 'none',
               }}>
-                {feedbackStatus === 'pending' ? '⏳ Sending…' : feedbackStatus === 'queued' ? '📤 Queued — awaiting model…' : '✅ Delivered to model'}
+                {feedbackStatus === 'pending' ? '⏳ Sending…'
+                  : feedbackStatus === 'queued' ? '📤 Queued — awaiting model…'
+                  : feedbackStatus === 'undelivered' ? '⚠️ Deferred to next turn'
+                  : '✅ Delivered to model'}
               </span>
             </div>
           )}

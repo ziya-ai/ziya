@@ -162,16 +162,33 @@ def validate_tool_args_against_schema(tool_name: str, args: dict, schema: dict) 
     return "\n".join(error_lines)
 
 class StreamingToolExecutor:
-    def __init__(self, profile_name: str = 'ziya', region: str = 'us-west-2', model_id: str = None):
+    def __init__(self, profile_name: Optional[str] = None, region: str = 'us-west-2', model_id: Optional[str] = None,
+                 model_override: Optional[str] = None, endpoint_override: Optional[str] = None):
+        """
+        Args:
+            model_override: Optional model name/alias/portable tier
+                (xsmall/small/base/medium/large/frontier) to use for THIS
+                executor instance instead of the global ZIYA_MODEL env var.
+                Lets a decomposed task (Task Card block, delegate) run on
+                a cheaper or more capable model than the top-level
+                conversation without touching global state. Ignored when
+                model_id is also provided (model_id wins outright).
+            endpoint_override: Optional endpoint (bedrock/google/openai/
+                anthropic/zai) to use for THIS executor instance instead
+                of the global ZIYA_ENDPOINT env var. Combine with
+                model_override to route a task to an entirely different
+                provider.
+        """
         
         # Only initialize Bedrock client for Bedrock endpoints
         # Also create provider for the new normalized streaming interface.
         # During migration, both self.bedrock and self.provider coexist.
         self.provider = None
         from app.agents.models import ModelManager
-        endpoint = ziya_env("ZIYA_ENDPOINT")
-        model_name = ziya_env("ZIYA_MODEL")
+        endpoint = endpoint_override or ziya_env("ZIYA_ENDPOINT")
+        model_name = model_override or ziya_env("ZIYA_MODEL")
         self.model_config = ModelManager.get_model_config(endpoint, model_name)
+        self.endpoint = endpoint
         
         # Use provided model_id or get from ModelManager (which handles region-specific IDs)
         if model_id:
@@ -188,7 +205,12 @@ class StreamingToolExecutor:
             else:
                 raise ValueError("No model_id configured. Set ZIYA_MODEL or provide model_id parameter.")
         
-        if endpoint == "bedrock":
+        # Mantle-routed models (endpoint_override: bedrock-mantle) are not
+        # served by bedrock-runtime — a boto3 client here would only be used
+        # by the baseline calibration probe, which then fails with
+        # "on-demand throughput isn't supported". Treat them as non-Bedrock.
+        _mantle = (self.model_config or {}).get("endpoint_override") == "bedrock-mantle"
+        if endpoint == "bedrock" and not _mantle:
             # Use ModelManager's wrapped bedrock client for proper extended context handling
             try:
                 self.bedrock = ModelManager._get_persistent_bedrock_client(
@@ -270,6 +292,19 @@ class StreamingToolExecutor:
         """
         if actual_tool_name != 'sequentialthinking' or not isinstance(args, dict):
             return args
+        # Models occasionally double-escape newlines in the tool-use JSON
+        # (emitting \\n on the wire), so json.loads yields literal
+        # backslash-n sequences instead of newlines and the thought renders
+        # as one run-on line with visible "\n" marks.  Detect the signature
+        # of that failure — escape sequences present but not a single real
+        # newline in a thought long enough to have wanted line breaks — and
+        # decode.  A thought containing genuine newlines is left untouched.
+        thought = args.get('thought')
+        if isinstance(thought, str) and '\n' not in thought and '\\n' in thought:
+            args['thought'] = (
+                thought.replace('\\n', '\n').replace('\\t', '\t')
+            )
+            logger.debug("🧠 SEQ_THINKING_UNESCAPE: decoded double-escaped newlines in thought")
         if 'thoughtNumber' in args and 'totalThoughts' in args:
             return args
         n = getattr(self, '_seq_thought_counter', 0) + 1
@@ -583,14 +618,28 @@ class StreamingToolExecutor:
     # unbounded, while intent → intent → intent with no work between gives
     # up after this many consecutive no-progress rounds.
     _INTENT_CONTINUE_STALL_CAP = 3
+    # How long (seconds) the pre-end feedback check polls for in-flight user
+    # feedback before ending a turn with no tool calls. The feedback
+    # WebSocket → shared asyncio.Queue → monitor-task round trip can be
+    # delayed well past a short fixed window under event-loop contention
+    # (many concurrent streams) or host memory pressure, silently stranding
+    # feedback with no error (see ASR: feedback loss investigation). Not
+    # user-configurable — this is an internal safety-net tuning value, not
+    # a behavior tradeoff any install should need to vary.
+    _FEEDBACK_GRACE_SECONDS = 10.0
     _INTENT_PHRASES = (
         'let me check', 'let me look', 'let me examine',
         'let me search', 'let me verify', 'let me read',
         'let me review', 'let me see', 'let me inspect',
         'let me explore', 'let me first', 'let me dig',
+        'let me gather', 'let me pull', 'let me grab',
+        'let me confirm', 'let me trace', 'let me find',
+        'let me locate', 'let me investigate', 'let me run',
         "i'll check", "i'll look", "i'll examine",
         "i'll search", "i'll verify", "i'll read",
         "i'll review", "i'll inspect",
+        "i'll gather", "i'll pull", "i'll grab", "i'll confirm",
+        "i'll trace", "i'll find", "i'll locate", "i'll investigate",
         "before writing", "before i write",
         "before creating", "before i create",
         "first, let me", "first let me",
@@ -622,6 +671,12 @@ class StreamingToolExecutor:
           'nudge'                    — textonly_grace_used += 1; append nudge text
                                        block to conversation[-1]; continue
           'spend_empty_retry'        — empty_completion_retry_used += 1; continue
+          'judge_intent'             — phrase prefilter matched on a clean,
+                                       tool-free, non-question turn end; caller
+                                       resolves via intent_judge (yes → same
+                                       side effects as inject_intent_continue;
+                                       no/error → end) and logs the probe with
+                                       decider='judge'
           'block_continue'           — non-prefill: append assistant + "finish the
                                        code block" user turn; caller manages the
                                        progress-reset stall counter; continue
@@ -680,8 +735,14 @@ class StreamingToolExecutor:
                 _yields_to_user = assistant_text.rstrip().endswith('?')
                 if (_clean_stop and _has_intent and not _yields_to_user
                         and intent_stalls < self._INTENT_CONTINUE_STALL_CAP):
-                    return ('inject_intent_continue', 'no_prefill_intent_continue',
-                            ('NO_PREFILL_INTENT', True, 'phrase'))
+                    # Prefilter only — substring matching cannot distinguish a
+                    # genuine dangling announcement from an intent phrase inside
+                    # quoted/drafted content, a conditional-on-the-user future,
+                    # negation, or past tense (all observed false positives).
+                    # The caller resolves this provisional verdict with a cheap
+                    # judge call and logs the probe itself (decider='judge'),
+                    # so no probe is returned here.
+                    return ('judge_intent', 'no_prefill_intent_prefilter', None)
                 return ('end', 'no_prefill_end',
                         ('NO_PREFILL_INTENT', False, 'phrase_yields' if _yields_to_user else 'phrase'))
 
@@ -1302,7 +1363,23 @@ class StreamingToolExecutor:
                 logger.debug(f"🖼️ Message {i} has multi-modal content with {len(content)} blocks")
             
             if role == 'system':
-                system_content = content
+                # Accumulate rather than overwrite. Multiple 'system' messages
+                # legitimately reach this loop: the base system prompt plus one
+                # synthetic system message per task-card run injected by
+                # _inject_task_results (server.py). A bare overwrite kept only
+                # the last, so re-running a card in one conversation surfaced
+                # only one instance to the model — and, depending on ordering,
+                # could clobber the base prompt entirely. Concatenate so every
+                # system contribution reaches the provider's system param.
+                if system_content is None:
+                    system_content = content
+                elif isinstance(system_content, str) and isinstance(content, str):
+                    system_content = system_content + "\n\n" + content
+                else:
+                    # Rare multi-modal/list system content — coerce to text and join.
+                    prev_txt = system_content if isinstance(system_content, str) else str(system_content)
+                    cur_txt = content if isinstance(content, str) else str(content)
+                    system_content = prev_txt + "\n\n" + cur_txt
             elif role in ('user', 'assistant', 'ai'):
                 bedrock_role = 'assistant' if role == 'ai' else role
                 # Drop turns with empty/whitespace-only content. Persisted
@@ -1423,6 +1500,14 @@ class StreamingToolExecutor:
             "UNEXPECTED_EOF_WHILE_READING", "EOF occurred in violation of protocol",
             "SSL validation failed", "SSLError", "Connection aborted",
             "Connection broken", "EndpointConnectionError", "ConnectionClosedError"])
+        # Subset of is_read_timeout: the endpoint was unreachable outright
+        # (refused/aborted/closed) rather than merely slow to respond. Both
+        # buckets share the same retry/backoff handling below, but the
+        # frontend needs a distinct error_type to show "Connection Failed"
+        # instead of the misleading "Connection timed out. Retrying..." text.
+        is_connection_error = any(ind in error_str for ind in [
+            "Connection aborted", "Connection broken", "EndpointConnectionError",
+            "ConnectionClosedError", "ConnectionResetError", "Connection reset by peer"])
         is_transient = any(ind in error_str for ind in [
             "internalServerException", "ServiceUnavailableException",
             "The system encountered an unexpected error"])
@@ -1434,7 +1519,15 @@ class StreamingToolExecutor:
         )
         
         if is_auth:
-            error_message = auth_provider.get_credential_help_message() if auth_provider else "AWS credentials have expired."
+            # KnownCredentialException already carries a specific, actionable
+            # message (e.g. "Profile 'X' not found, available profiles: ...").
+            # Only fall back to the generic auth-provider template for errors
+            # detected purely by string-matching (auth_provider.is_auth_error),
+            # which have no specific message of their own.
+            if isinstance(error, KnownCredentialException):
+                error_message = str(error)
+            else:
+                error_message = auth_provider.get_credential_help_message() if auth_provider else "AWS credentials have expired."
             return {
                 'type': 'auth',
                 'should_retry': False,
@@ -1507,6 +1600,9 @@ class StreamingToolExecutor:
         if is_transient:
             error_type = 'transient_service_error'
             retry_msg = f"AWS service temporarily unavailable after {len(tool_results)} tool execution(s). Retrying..."
+        elif is_connection_error:
+            error_type = 'connection_error'
+            retry_msg = f"Could not reach the model endpoint. Retrying in {time_delay}s... (attempt {throttle_state['retry_count']}/{throttle_state['max_retries']})"
         elif is_read_timeout:
             error_type = 'throttling_error'
             retry_msg = f"Connection timed out. Retrying in {time_delay}s... (attempt {throttle_state['retry_count']}/{throttle_state['max_retries']})"
@@ -1786,6 +1882,18 @@ class StreamingToolExecutor:
     ) -> None:
         """Record actual token usage for future calibration improvement."""
         try:
+            # Track consecutive turns where calibration recorded nothing. Every
+            # path below is an early return except the record_actual_usage call,
+            # so this counter climbs while the calibrator is starving (e.g. a
+            # persistently hot prompt cache making every turn a `cached > 0`
+            # skip) and resets the moment a real sample lands. Warn once per
+            # streak — not per turn — so a never-learning calibrator surfaces
+            # without adding per-turn log noise.
+            self._calib_consecutive_skips = getattr(self, '_calib_consecutive_skips', 0) + 1
+            if self._calib_consecutive_skips == 25:
+                logger.warning(
+                    "📊 CALIBRATION: 25 consecutive turns skipped — calibrator is "
+                    "not learning (check for persistent cache hits or baseline overhead)")
             # Cache-read tokens come from prior turns and can't be accurately
             # attributed to current content — skip calibration to avoid inflated
             # token counts producing impossible chars/token ratios.
@@ -1821,6 +1929,33 @@ class StreamingToolExecutor:
             cache_written = iteration_usage.cache_write_tokens
             effective_input = (total_input + cache_written) if cache_written > 0 else total_input
 
+            # effective_input includes fixed per-request overhead (MCP tool
+            # schemas sent via the separate `tools` param, plus static system
+            # prompt boilerplate) that has NO corresponding characters in
+            # total_input_chars below (which only sums system_content +
+            # conversation text, never the tools payload). Left in, the
+            # chars/token ratio the calibrator checks reduces algebraically to
+            # total_input_chars / effective_input — independent of the file
+            # split entirely — so any turn with substantial tool-schema
+            # overhead deflates the ratio below MIN_CHARS_PER_TOKEN and every
+            # sample gets rejected. Subtract the known baseline overhead
+            # (learned once via the baseline probe) before attributing tokens
+            # to files so only genuinely content-derived tokens remain.
+            baseline_overhead = calibrator.get_baseline_overhead(model_family)
+            # If the learned baseline overhead meets or exceeds the effective
+            # input, no tokens remain that can be attributed to file content.
+            # Flooring to 1 here (and again on file_only_tokens below) would
+            # forward a bogus 1-token sample for many KB of files, producing an
+            # implausible chars/token ratio that the calibrator rejects with a
+            # noisy warning. Skip recording instead.
+            content_input = effective_input - baseline_overhead
+            if content_input <= 0:
+                logger.debug(
+                    f"📊 CALIBRATION: Skipping (input {effective_input:,} <= "
+                    f"baseline overhead {baseline_overhead:,}; nothing to attribute)")
+                return
+            effective_input = content_input
+
             # Derive file-only tokens by proportional character attribution:
             # estimate file content's share of total input characters.
             file_chars = sum(len(c) for c in file_contents.values())
@@ -1829,7 +1964,26 @@ class StreamingToolExecutor:
                 len(str(m.get('content', ''))) for m in conversation
             )
             total_input_chars = max(1, system_chars + conversation_chars)
-            file_only_tokens = max(1, int(effective_input * (file_chars / total_input_chars)))
+            file_only_tokens = int(effective_input * (file_chars / total_input_chars))
+
+            # Pre-validate before handing the sample to the calibrator.
+            # Flooring file_only_tokens to 1 (the old max(1, ...) behaviour)
+            # manufactured samples like "26,716 chars / 1 token" whenever the
+            # proportional attribution rounded down to zero — the calibrator
+            # then rejected them with a noisy WARNING. Skip such samples quietly
+            # here so they never reach the calibrator.
+            if file_only_tokens <= 0:
+                logger.debug(
+                    f"📊 CALIBRATION: Skipping ({file_chars:,} file chars attributed "
+                    f"0 tokens from {effective_input:,} effective input)")
+                return
+            implied_ratio = file_chars / file_only_tokens
+            if not (calibrator.MIN_CHARS_PER_TOKEN <= implied_ratio
+                    <= calibrator.MAX_CHARS_PER_TOKEN):
+                logger.debug(
+                    f"📊 CALIBRATION: Skipping implausible ratio {implied_ratio:.3f} "
+                    f"({file_chars:,} chars / {file_only_tokens:,} tokens)")
+                return
 
             calibrator.record_actual_usage(
                 conversation_id=conversation_id,
@@ -1838,37 +1992,82 @@ class StreamingToolExecutor:
                 model_id=str(model_id),
                 model_family=model_family,
             )
+            self._calib_consecutive_skips = 0
             logger.debug(f"📊 CALIBRATION: Recorded {len(file_contents)} files for {model_family}")
         except (ImportError, KeyError, AttributeError, OSError, ValueError) as calib_error:
             logger.error(f"📊 CALIBRATION ERROR: {calib_error}")
 
     async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None) -> AsyncGenerator[Dict[str, Any], None]:
+        """Public entry point — wraps _stream_with_tools_impl with refcounted
+        cleanup of the shared per-conversation pending-feedback list (see
+        app.server.pending_feedback_lists).  Multiple concurrent generators
+        for the same conversation_id (e.g. the primary stream plus a
+        diff-validation retry) each bind to the SAME list so feedback capture
+        and delivery are decoupled from which generator's monitor won the
+        race; this wrapper ensures the shared entry is dropped once the last
+        concurrent generator for that conversation_id exits, rather than
+        leaking one empty list per conversation for the life of the server.
+        No `await` in the `finally` — safe even during GeneratorExit teardown.
+        """
+        if conversation_id:
+            from app.server import pending_feedback_lists, pending_feedback_refcounts
+            pending_feedback_refcounts[conversation_id] = (
+                pending_feedback_refcounts.get(conversation_id, 0) + 1)
+        try:
+            async for chunk in self._stream_with_tools_impl(
+                messages, tools=tools, conversation_id=conversation_id,
+                project_root=project_root, is_delegate=is_delegate,
+                extra_tools=extra_tools, cancel_event=cancel_event,
+            ):
+                yield chunk
+        finally:
+            if conversation_id:
+                pending_feedback_refcounts[conversation_id] -= 1
+                if pending_feedback_refcounts[conversation_id] <= 0:
+                    _lst = pending_feedback_lists.get(conversation_id)
+                    if _lst is not None and not _lst:
+                        pending_feedback_lists.pop(conversation_id, None)
+                    pending_feedback_refcounts.pop(conversation_id, None)
+
+    async def _stream_with_tools_impl(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None) -> AsyncGenerator[Dict[str, Any], None]:
         # --- Concurrent feedback monitor ---
         # Instead of relying solely on discrete polling points, run a
         # background task that continuously drains the feedback queue and
         # deposits messages into a thread-safe list.  The main loop picks
         # them up on every iteration / tool boundary without risk of
         # missing messages that arrive during long tool executions.
-        _pending_feedback: List[dict] = []
+        # Shared per-conversation staging list (see pending_feedback_lists in
+        # app.server): every concurrent generator for this conversation_id
+        # binds the SAME list here, so whichever generator's monitor captures
+        # an item, the generator currently delivering (its pre-end drain) sees
+        # it — capture-closure and delivery-closure are decoupled.  Falls back
+        # to a private list when there's no conversation_id (CLI one-shot,
+        # delegate) where no cross-generator sharing is possible anyway.
+        if conversation_id:
+            from app.server import pending_feedback_lists
+            _pending_feedback: List[dict] = pending_feedback_lists.setdefault(
+                conversation_id, [])
+        else:
+            _pending_feedback = []
         _feedback_monitor_task: Optional[asyncio.Task] = None
 
         async def _feedback_monitor(conv_id: str):
-            """Background coroutine that drains the feedback queue continuously."""
+            """Background coroutine that drains the shared feedback queue."""
             try:
-                from app.server import active_feedback_connections
+                from app.server import (
+                    get_feedback_queue, feedback_queues,
+                    active_feedback_connections,
+                )
                 while True:
                     try:
-                        if conv_id not in active_feedback_connections:
-                            await asyncio.sleep(0.3)
-                            continue
-                        conns = active_feedback_connections[conv_id]
-                        if not conns:
-                            await asyncio.sleep(0.3)
-                            continue
-                        queue = conns[0].get('feedback_queue')
-                        if not queue:
-                            await asyncio.sleep(0.3)
-                            continue
+                        # Re-fetch every loop — the shared per-conversation
+                        # queue is created lazily and may be replaced after a
+                        # cleanup + client reconnect.  Holding a reference
+                        # captured once would strand messages in the new queue.
+                        # This also replaces the old conns[0] lookup, which
+                        # lost feedback whenever the first socket died with
+                        # undelivered items in its private queue.
+                        queue = get_feedback_queue(conv_id)
 
                         # Block for up to 1s, then loop to re-check cancellation
                         try:
@@ -1884,19 +2083,22 @@ class StreamingToolExecutor:
                             _pending_feedback.append({'type': 'feedback', 'message': msg})
                             logger.info(f"🔄 FEEDBACK_MONITOR: Captured feedback for {conv_id}: {msg[:60]}")
 
-                            # Send acknowledgment back through WebSocket
-                            try:
-                                ws = conns[0].get('websocket')
-                                if ws:
-                                    import json as _json
-                                    await ws.send_json({
-                                        'type': 'feedback_status',
-                                        'status': 'queued',
-                                        'feedback_id': data.get('feedback_id', ''),
-                                        'message': msg[:80],
-                                    })
-                            except (OSError, RuntimeError, ConnectionError) as ack_err:
-                                logger.debug(f"Could not send feedback ack: {ack_err}")
+                            # Best-effort ack over every live socket for this
+                            # conversation — the sender may be any of them,
+                            # and a dead socket must not block the ack to a
+                            # live one.
+                            for conn in list(active_feedback_connections.get(conv_id, [])):
+                                try:
+                                    ws = conn.get('websocket')
+                                    if ws:
+                                        await ws.send_json({
+                                            'type': 'feedback_status',
+                                            'status': 'queued',
+                                            'feedback_id': data.get('feedback_id', ''),
+                                            'message': msg[:80],
+                                        })
+                                except (OSError, RuntimeError, ConnectionError) as ack_err:
+                                    logger.debug(f"Could not send feedback ack: {ack_err}")
                     except asyncio.CancelledError:
                         raise
                     except (OSError, RuntimeError, asyncio.QueueEmpty, KeyError) as inner_err:
@@ -1904,6 +2106,23 @@ class StreamingToolExecutor:
                         await asyncio.sleep(0.5)
             except asyncio.CancelledError:
                 logger.debug(f"🔄 FEEDBACK_MONITOR: Stopped for {conv_id}")
+                # NOTE: _pending_feedback is now the shared per-conversation
+                # list (app.server.pending_feedback_lists), so undrained items
+                # are NOT lost when this monitor's generator ends — a concurrent
+                # or later generator for the same conversation drains the same
+                # list.  The old requeue-to-asyncio.Queue dance (and its
+                # capture→drain shape re-normalization) is therefore removed;
+                # requeuing here would race a concurrent generator mid-drain.
+                # Don't leak queues for conversations that never had (or no
+                # longer have) a feedback WebSocket: drop the shared queue
+                # if it's empty and no sockets remain.
+                try:
+                    if not active_feedback_connections.get(conv_id):
+                        q = feedback_queues.get(conv_id)
+                        if q is not None and q.empty():
+                            del feedback_queues[conv_id]
+                except (KeyError, NameError):
+                    pass
 
         def _drain_pending_feedback() -> List[dict]:
             """Atomically drain all pending feedback messages."""
@@ -1912,6 +2131,32 @@ class StreamingToolExecutor:
             drained = _pending_feedback.copy()
             _pending_feedback.clear()
             return drained
+
+        async def _poll_for_feedback(total_seconds: float, poll_interval: float = 0.3) -> List[dict]:
+            """Poll _pending_feedback for up to *total_seconds*, checking
+            every *poll_interval*, returning as soon as something arrives.
+
+            Replaces a single fixed-length sleep-then-drain: under event-loop
+            contention (many concurrent streams) or host memory pressure, the
+            WebSocket → shared asyncio.Queue → _feedback_monitor round trip
+            can take far longer than a short fixed window, and a one-shot
+            check has no way to catch a delivery that lands 50ms after it
+            gave up. Polling in small increments both catches a late arrival
+            without waiting the full budget when feedback shows up early, and
+            tolerates a much longer overall budget without the caller stalling
+            for that whole duration on the common case (no feedback at all —
+            still costs the full budget when nothing arrives, but that path
+            already only runs once per turn ending, not per iteration).
+            """
+            elapsed = 0.0
+            while elapsed < total_seconds:
+                drained = _drain_pending_feedback()
+                if drained:
+                    return drained
+                step = min(poll_interval, total_seconds - elapsed)
+                await asyncio.sleep(step)
+                elapsed += step
+            return _drain_pending_feedback()
 
         # Initialize streaming metrics
         stream_metrics = {
@@ -1989,6 +2234,11 @@ class StreamingToolExecutor:
         recent_commands = []  # Track recent commands to prevent duplicates
         using_extended_context = False  # Track if we've enabled extended context
         consecutive_empty_tool_calls = 0  # Track empty tool calls to break loops
+        # Cross-iteration repeat-block tracking. The per-call repetitive guard
+        # (_is_repetitive_call) refuses a call but cannot end the loop — the
+        # model just retries the block next iteration. This counter persists
+        # ACROSS iterations and drives a stop-and-summarize recovery injection.
+        consecutive_blocked_calls = 0
         
         # Intelligent throttle backoff state
         throttle_state = {
@@ -2148,17 +2398,36 @@ class StreamingToolExecutor:
                         logger.info(f"📊 BASELINE: No Bedrock client — using provider token counting")
                         baseline_tokens = 0
                         
-                        # Try provider's count_tokens API (Anthropic direct has this)
+                        # Baseline measures FRAMEWORK overhead (tools + system
+                        # template) — NOT the per-request file context. The
+                        # Bedrock invoke_model path below strips the codebase
+                        # section before measuring; this path must do the same.
+                        # Without the strip, the entire codebase lands in the
+                        # persisted baseline AND is estimated again as
+                        # system_tokens on every request — the double count
+                        # behind est ≈ 2x actual (baseline=834K on a 482K turn).
+                        _baseline_sys = system_content if isinstance(system_content, str) else ""
+                        _cb_marker = 'Below is the current codebase of the user:'
+                        if _cb_marker in _baseline_sys:
+                            _baseline_sys = (_baseline_sys.split(_cb_marker)[0]
+                                             + f"\n\n{_cb_marker}\n\n(No files selected)")
+
+                        # Try provider's count_tokens API. Only the Anthropic
+                        # direct provider supports it — mantle shares the same
+                        # client shape but has no count_tokens endpoint and a
+                        # placeholder api_key ("unused"), so calling it would
+                        # raise an uncaught AuthenticationError.
                         try:
-                            if self.provider and hasattr(self.provider, 'client'):
+                            if (self.provider and hasattr(self.provider, 'client')
+                                    and getattr(self.provider, 'provider_name', '') == 'anthropic'):
                                 import anthropic as _anthropic
                                 sync_client = _anthropic.Anthropic(api_key=self.provider.client.api_key)
                                 count_kwargs = {
                                     "model": self.model_id,
                                     "messages": [{"role": "user", "content": "Hello"}],
                                 }
-                                if system_content:
-                                    count_kwargs["system"] = system_content if isinstance(system_content, str) else system_content
+                                if _baseline_sys:
+                                    count_kwargs["system"] = _baseline_sys
                                 if bedrock_tools:
                                     count_kwargs["tools"] = bedrock_tools
                                 resp = sync_client.messages.count_tokens(**count_kwargs)
@@ -2168,19 +2437,28 @@ class StreamingToolExecutor:
                             logger.info(f"📊 BASELINE: count_tokens failed ({ct_err}), using JSON size estimate")
                         
                         # Fallback: estimate from JSON size with higher multiplier
+                        # (estimated_* default to 0 so the log line below is
+                        # safe when count_tokens succeeded and this block is
+                        # skipped — referencing them undefined was a latent
+                        # NameError that escaped the outer except tuple.)
+                        estimated_tool_tokens = 0
+                        estimated_sys_tokens = 0
                         if baseline_tokens == 0:
                             tool_json_size = len(json.dumps(bedrock_tools)) if bedrock_tools else 0
                             # Anthropic's internal tool formatting adds ~2.5x overhead
                             estimated_tool_tokens = int(tool_json_size * 2.5 / 3.5)
-                            sys_size = len(system_content) if isinstance(system_content, str) else 0
+                            sys_size = len(_baseline_sys)
                             estimated_sys_tokens = int(sys_size / 3.5)
                             baseline_tokens = estimated_tool_tokens + estimated_sys_tokens
+                            _baseline_src = f"estimated (tools: {estimated_tool_tokens:,}, system: {estimated_sys_tokens:,})"
+                        else:
+                            _baseline_src = "count_tokens API"
 
                         calibrator.baseline_overhead_tokens[model_family] = baseline_tokens
                         calibrator.baselines_measured.add(model_family)
+                        calibrator.baseline_tool_counts[model_family] = mcp_tool_count
                         calibrator._save_calibration_data()
-                        logger.info(f"✅ BASELINE (estimated): {baseline_tokens:,} tokens "
-                                    f"(tools: {estimated_tool_tokens:,}, system: {estimated_sys_tokens:,})")
+                        logger.info(f"✅ BASELINE: {baseline_tokens:,} tokens via {_baseline_src}")
                         # Skip the Bedrock invoke_model path below
                         raise RuntimeError("Baseline established via estimation")
                     
@@ -2270,6 +2548,7 @@ class StreamingToolExecutor:
                             # Store the baseline overhead (system prompt + tools)
                             calibrator.baseline_overhead_tokens[model_family] = baseline_tokens
                             calibrator.baselines_measured.add(model_family)
+                            calibrator.baseline_tool_counts[model_family] = mcp_tool_count
                             calibrator._save_calibration_data()
                             if not chat_mode:
                                 logger.info(f"✅ BASELINE: Established {baseline_tokens:,} tokens")
@@ -2358,6 +2637,7 @@ class StreamingToolExecutor:
             blocked_tools_this_iteration = 0  # Track blocked tools to prevent runaway loops
             commands_this_iteration = []  # Track commands executed in this specific iteration
             last_stop_reason = None  # Track whether model was cut off (max_tokens) or finished (end_turn)
+            non_retryable_error_surfaced = False  # Provider yielded a fatal ErrorEvent (e.g. CONTEXT_LIMIT)
             empty_tool_calls_this_iteration = 0  # Track empty tool calls in this iteration
             thinking_text = ""  # Track thinking/reasoning content (DeepSeek R1)
             thinking_tag_opened = False  # Whether we've emitted the opening <thinking-data> tag
@@ -2473,30 +2753,41 @@ class StreamingToolExecutor:
                     event_count += 1
 
                     # --- Periodic feedback check during streaming ---
-                    # Without this, feedback sent while the model is
-                    # streaming text sits in _pending_feedback until
+                    # Without this, an interrupt sent while the model is
+                    # streaming text wouldn't take effect until
                     # message_stop, which can be minutes later.
                     _now = time.time()
                     if (event_count % 50 == 0 or _now - _last_feedback_check_time > 2.0):
                         _last_feedback_check_time = _now
                         await asyncio.sleep(0)  # let monitor deposit
-                        for _mid_stream_fb in _drain_pending_feedback():
-                            if _mid_stream_fb['type'] == 'interrupt':
-                                yield track_yield({'type': 'text', 'content': '\n\n**User requested stop.**\n\n'})
-                                yield track_yield({'type': 'stream_end'})
-                                if _feedback_monitor_task:
-                                    _feedback_monitor_task.cancel()
-                                return
-                            _fb_msg = _mid_stream_fb.get('message', '')
-                            if any(w in _fb_msg.lower() for w in ['stop', 'halt', 'abort', 'cancel', 'quit']):
-                                yield track_yield({'type': 'text', 'content': f"\n\n**User feedback:** {_fb_msg}\n**Stopping as requested.**\n\n"})
-                                yield track_yield({'type': 'stream_end'})
-                                if _feedback_monitor_task:
-                                    _feedback_monitor_task.cancel()
-                                return
-                            # Non-stop feedback: flag it for injection after this stream completes
-                            _pending_feedback.append(_mid_stream_fb)
-                            logger.info(f"🔄 MID_STREAM_FEEDBACK: Captured feedback during streaming, will inject after message_stop: {_fb_msg[:60]}")
+                        # PEEK — do not drain.  Non-stop feedback must stay
+                        # in _pending_feedback for the iteration-boundary
+                        # drain points to inject with proper conversation
+                        # framing.  The old drain-and-re-append cycled every
+                        # pending item through the list every 2 seconds,
+                        # scrambling arrival order against newly arriving
+                        # items and racing the other drain points.
+                        if any(fb.get('type') == 'interrupt' for fb in _pending_feedback):
+                            yield track_yield({'type': 'text', 'content': '\n\n**User requested stop.**\n\n'})
+                            yield track_yield({'type': 'stream_end'})
+                            if _feedback_monitor_task:
+                                _feedback_monitor_task.cancel()
+                            return
+                        _stop_fb = next(
+                            (fb for fb in _pending_feedback
+                             if fb.get('type') == 'feedback' and any(
+                                 w in fb.get('message', '').lower()
+                                 for w in ['stop', 'halt', 'abort', 'cancel', 'quit'])),
+                            None)
+                        if _stop_fb is not None:
+                            _fb_msg = _stop_fb.get('message', '')
+                            yield track_yield({'type': 'text', 'content': f"\n\n**User feedback:** {_fb_msg}\n**Stopping as requested.**\n\n"})
+                            yield track_yield({'type': 'stream_end'})
+                            if _feedback_monitor_task:
+                                _feedback_monitor_task.cancel()
+                            return
+                        if _pending_feedback:
+                            logger.debug(f"🔄 MID_STREAM_FEEDBACK: {len(_pending_feedback)} message(s) pending, will inject at next drain point")
 
                     # --- Usage tracking ---
                     if isinstance(stream_event, UsageEvent):
@@ -2554,6 +2845,7 @@ class StreamingToolExecutor:
                             raise Exception(stream_event.message)
                         else:
                             # Non-retryable (e.g. CONTEXT_LIMIT) — surface to user
+                            non_retryable_error_surfaced = True
                             yield {'type': 'error', 'content': stream_event.message}
                             break
                     elif isinstance(stream_event, StreamEnd):
@@ -2742,7 +3034,22 @@ class StreamingToolExecutor:
                             # Check for autoregressive degeneration in real time.
                             # Accumulate text into sentences; if the same sentence
                             # appears 3+ times, suppress further output.
-                            self._sentence_buffer += delta.get('text', '')
+                            #
+                            # Skip entirely while inside a fenced code block.
+                            # Code legitimately repeats structurally (the same
+                            # ternary/boilerplate line appearing in an optimistic
+                            # update and both revert-path branches of a diff, for
+                            # example) in ways prose degeneration never does. This
+                            # guard previously scanned code verbatim and cut a
+                            # real diff off mid-line after the third occurrence of
+                            # a shared line fragment, silently corrupting the
+                            # diff on disk with no signal to the model that it had
+                            # been truncated — the model then reasonably reported
+                            # (correctly, from what it could see) that its
+                            # response was not cut off, because it never learned
+                            # otherwise.
+                            if not code_block_tracker.get('in_block'):
+                                self._sentence_buffer += delta.get('text', '')
                             while True:
                                 m = re.search(r'([.!?])\s', self._sentence_buffer)
                                 if not m:
@@ -3176,6 +3483,21 @@ Please retry the tool call with valid JSON. Ensure:
                         thinking_tag_opened = _ms_state.thinking_tag_opened
                         break
 
+                # A non-retryable provider error (e.g. a CONTEXT_LIMIT 400) was
+                # already surfaced to the user as an error chunk. Re-issuing
+                # the identical request can only fail identically, so do NOT
+                # fall through to the no-activity decider below — its
+                # empty-completion retry would re-send the oversized prompt
+                # two more times (observed live: two extra 400s per turn).
+                if non_retryable_error_surfaced:
+                    logger.info(
+                        f"🛑 NON_RETRYABLE_END: provider error already surfaced, "
+                        f"ending stream without decider (iteration={iteration}, "
+                        f"stop_reason={last_stop_reason!r})"
+                    )
+                    yield {'type': 'stream_end'}
+                    break
+
                 # MOVED: Log usage metrics AFTER processing all chunks
                 # This ensures we have all the data before logging
                 if iteration_usage.input_tokens > 0 or iteration_usage.output_tokens > 0:
@@ -3289,8 +3611,17 @@ Please retry the tool call with valid JSON. Ensure:
                 if tools_executed_this_iteration:
                     logger.debug(f"🔍 TOOL_RESULTS_PROCESSING: Adding {len(tool_results)} tool results to conversation")
                     provider_tool_results = []
+                    iteration_had_block = False
                     for tool_result in tool_results:
                         raw_result = tool_result['result']
+                        # Detect a per-call repetitive-guard block (manager.py
+                        # emits this exact phrase). A single block can't end the
+                        # loop — the model retries it next iteration — so track
+                        # consecutive blocked iterations and inject a stop-and-
+                        # summarize recovery below once they accumulate.
+                        if (isinstance(raw_result, str)
+                                and "has been called repeatedly with similar arguments" in raw_result):
+                            iteration_had_block = True
                         # Structured image content (list of content blocks with
                         # base64 images) was already shown to the model in this
                         # iteration via tool_result_for_model.  For conversation
@@ -3331,6 +3662,39 @@ Please retry the tool call with valid JSON. Ensure:
                             conversation.append(sub_msg)
                     else:
                         conversation.append(tool_msg)
+
+                    # Cross-iteration repeat-block recovery (auto-recover). A
+                    # single blocked call cannot end the loop — the model just
+                    # retries it next iteration. Track consecutive blocked
+                    # iterations and, on the 3rd, inject a firm stop-and-
+                    # summarize instruction so the model breaks out on its own.
+                    # Any non-blocked iteration clears the counter, so real
+                    # progress is never penalized. Reset after injecting so a
+                    # model that ignores the guidance gets another 3-strike
+                    # cycle rather than a hard stop (true auto-recover).
+                    if iteration_had_block:
+                        consecutive_blocked_calls += 1
+                    else:
+                        consecutive_blocked_calls = 0
+                    if consecutive_blocked_calls >= 3:
+                        logger.warning(
+                            f"🛑 REPEAT_BLOCK_RECOVERY: {consecutive_blocked_calls} consecutive "
+                            f"blocked tool calls — injecting stop-and-summarize guidance"
+                        )
+                        conversation.append({
+                            "role": "user",
+                            "content": (
+                                "SYSTEM: Your last several tool calls were identical and have "
+                                "been blocked as a repeated-call loop. Retrying the same call "
+                                "will keep being blocked. The previous results are what they "
+                                "are — if a command returned no output, that means it ran "
+                                "successfully and produced no matching results. Stop calling "
+                                "tools now. Summarize what you have found so far and either "
+                                "answer the user directly or ask a clarifying question. Do not "
+                                "issue another identical tool call."
+                            ),
+                        })
+                        consecutive_blocked_calls = 0
                 
                 # Inject deferred feedback AFTER assistant message + tool results
                 # so it appears at the correct position in conversation history.
@@ -3372,11 +3736,52 @@ Please retry the tool call with valid JSON. Ensure:
                 # Skip duplicate execution - tools are already executed in content_block_stop
                 # This section was causing duplicate tool execution
 
+                # DIAG (temporary): unconditional branch-selector snapshot logged
+                # before the three-way hallucination/tools/no-tools split. Every
+                # iteration passes through here exactly once, so this cannot be
+                # bypassed by any downstream break/return — it pins which branch
+                # an iteration takes when the decider appears "never reached".
+                logger.info(
+                    f"🧭 ITER_BRANCH iteration={iteration} "
+                    f"text_len={len(assistant_text.strip())} "
+                    f"halluc={hallucination_this_iteration} "
+                    f"tools_exec={tools_executed_this_iteration} "
+                    f"stop_reason={last_stop_reason!r} "
+                    f"non_retryable={non_retryable_error_surfaced}"
+                )
+
                 # Handle hallucination recovery — retry with corrective feedback
                 if hallucination_this_iteration:
                     hallucination_retries += 1
                     if hallucination_retries >= 3:
                         logger.error("🚨 HALLUCINATION: Max retries reached, ending stream")
+                        # Before giving up on this turn, check for feedback that
+                        # arrived while retries were exhausting — this break was
+                        # previously the only turn-ending path with no feedback
+                        # check at all (see ASR: feedback loss investigation).
+                        await asyncio.sleep(0)
+                        _halluc_fb = [
+                            fb.get('message', '') for fb in _drain_pending_feedback()
+                            if fb['type'] == 'feedback'
+                        ]
+                        if not _halluc_fb:
+                            _halluc_fb = [
+                                fb.get('message', '') for fb in await _poll_for_feedback(self._FEEDBACK_GRACE_SECONDS)
+                                if fb['type'] == 'feedback'
+                            ]
+                        if _halluc_fb:
+                            _combined_halluc_fb = ' '.join(_halluc_fb)
+                            logger.info(f"🔄 PRE-END FEEDBACK (hallucination path): Processing {len(_halluc_fb)} feedback message(s) before stream end")
+                            if assistant_text.strip():
+                                conversation.append({"role": "assistant", "content": assistant_text})
+                            conversation.append({"role": "user", "content": f"[User feedback]: {_combined_halluc_fb}"})
+                            yield track_yield({
+                                'type': 'text',
+                                'content': f"\n\n**📝 Feedback received:** {_combined_halluc_fb}\n\n"
+                            })
+                            yield track_yield({'type': 'feedback_delivered', 'message': _combined_halluc_fb[:80]})
+                            hallucination_retries = 0
+                            continue
                         yield track_yield({
                             'type': 'text',
                             'content': '\n\n⚠️ Model repeatedly fabricated tool output after 3 attempts. Ending response.\n\n'
@@ -3495,12 +3900,16 @@ Please retry the tool call with valid JSON. Ensure:
                     ]
 
                     # Second-chance drain: if feedback was in-flight (e.g. the
-                    # monitor was mid-await when we yielded above), wait briefly
-                    # and try once more before committing to a break decision.
+                    # monitor was mid-await when we yielded above, or the
+                    # WebSocket→queue→monitor round trip is delayed by event-
+                    # loop contention or memory pressure), poll for up to the
+                    # configured grace window before committing to a break
+                    # decision — a single fixed short sleep silently stranded
+                    # feedback that arrived a beat late (see ASR: feedback
+                    # loss investigation).
                     if not pending_feedback_before_end:
-                        await asyncio.sleep(0.3)
                         pending_feedback_before_end = [
-                            fb.get('message', '') for fb in _drain_pending_feedback()
+                            fb.get('message', '') for fb in await _poll_for_feedback(self._FEEDBACK_GRACE_SECONDS)
                             if fb['type'] == 'feedback'
                         ]
                     
@@ -3568,6 +3977,30 @@ Please retry the tool call with valid JSON. Ensure:
                         )
                         if _probe:
                             _grace_probe(_probe[0], says_continue=_probe[1], decider=_probe[2])
+
+                        if _verdict == 'judge_intent':
+                            # The decider's phrase prefilter matched on a clean,
+                            # tool-free, non-question turn end. Substring matching
+                            # cannot distinguish a genuine dangling announcement
+                            # from an intent phrase inside quoted/drafted content,
+                            # a conditional-on-the-user future, negation, or past
+                            # tense — so resolve with a cheap-tier judge call on
+                            # the response tail. Fail-closed: judge error or "no"
+                            # ends the turn (a wrong "end" costs one lost
+                            # auto-continue; a wrong "continue" costs a
+                            # full-context primary-model round trip).
+                            from app.services.intent_judge import judge_dangling_intent
+                            _judge_yes = await judge_dangling_intent(assistant_text)
+                            _grace_probe('NO_PREFILL_INTENT',
+                                         says_continue=_judge_yes, decider='judge')
+                            logger.info(
+                                f"⚖️ INTENT_JUDGE: prefilter matched, judge says "
+                                f"{'continue' if _judge_yes else 'end'} (iteration={iteration})"
+                            )
+                            if _judge_yes:
+                                _verdict, _reason = 'inject_intent_continue', 'no_prefill_intent_continue'
+                            else:
+                                _verdict, _reason = 'end', 'no_prefill_end'
 
                         if _verdict == 'inject_max_tokens':
                             logger.info(
@@ -3744,122 +4177,6 @@ Please retry the tool call with valid JSON. Ensure:
                         yield {'type': 'stream_end'}
                         break
                 
-                # CRITICAL: Check for pending feedback after the iteration loop completes
-                # This ensures feedback that arrived during the last iteration or after completion
-                # is not lost and gives the model a chance to respond
-                if conversation_id:
-                    # Cancel the monitor FIRST to prevent it from competing
-                    # with our direct queue.get() below.  Two consumers on the
-                    # same asyncio Queue means ~50% of items go to the wrong
-                    # reader, silently dropping feedback.
-                    if _feedback_monitor_task:
-                        _feedback_monitor_task.cancel()
-                        try:
-                            await _feedback_monitor_task
-                        except asyncio.CancelledError:
-                            pass
-                        _feedback_monitor_task = None
-
-                    # Also drain anything the monitor deposited before cancellation
-                    post_cancel_feedback = [fb.get('message', '') for fb in _drain_pending_feedback() if fb['type'] == 'feedback']
-
-                    try:
-                        from app.server import active_feedback_connections
-                        if conversation_id in active_feedback_connections:
-                            conns = active_feedback_connections[conversation_id]
-                            feedback_queue = conns[0]['feedback_queue'] if len(conns) > 0 else None
-                            if not feedback_queue:
-                                raise asyncio.QueueEmpty()
-                            
-                            # Grace period: wait up to 500ms for in-flight feedback
-                            # that was sent during the final iteration but hasn't
-                            # arrived in the queue yet.
-                            pending_feedback = []
-                            try:
-                                feedback_data = await asyncio.wait_for(
-                                    feedback_queue.get(), timeout=0.5
-                                )
-                                while feedback_data:
-                                    # Also incorporate anything drained from the monitor above
-                                    if post_cancel_feedback:
-                                        pending_feedback.extend(post_cancel_feedback)
-                                        post_cancel_feedback = []  # Only add once
-
-                                    feedback_type = feedback_data.get('type')
-                                    if feedback_type == 'tool_feedback':
-                                        pending_feedback.append(feedback_data.get('message', ''))
-                                        logger.info(f"🔄 POST-LOOP FEEDBACK: Queued tool_feedback: {feedback_data.get('message', '')[:50]}...")
-                                    elif feedback_type == 'interrupt':
-                                        logger.info(f"🔄 POST-LOOP FEEDBACK: Received interrupt after tool chain")
-                                        yield track_yield({'type': 'text', 'content': '\n\n**User requested stop.**\n\n'})
-                                        yield track_yield({'type': 'stream_end'})
-                                        return
-                                    try:
-                                        feedback_data = feedback_queue.get_nowait()
-                                    except asyncio.QueueEmpty:
-                                        break
-                            except asyncio.TimeoutError:
-                                # No feedback from queue within grace period.
-                                # Still incorporate anything drained from the
-                                # monitor before cancellation.
-                                if post_cancel_feedback:
-                                    pending_feedback.extend(post_cancel_feedback)
-                                    post_cancel_feedback = []
-                            except (asyncio.QueueEmpty, asyncio.TimeoutError, OSError, KeyError) as queue_error:
-                                logger.debug(f"Error draining feedback queue: {queue_error}")
-                            
-                            # If we have pending feedback, send it to the model
-                            if pending_feedback:
-                                combined_feedback = ' '.join(pending_feedback)
-                                logger.info(f"🔄 POST-LOOP FEEDBACK: Processing {len(pending_feedback)} feedback message(s) after tool chain completion")
-                                
-                                # Add the model's current response to conversation
-                                # before the feedback, so the model retains context
-                                # of what it just said.  Without this, feedback is
-                                # injected as a consecutive user message.
-                                if assistant_text.strip():
-                                    conversation.append({"role": "assistant", "content": assistant_text})
-
-                                # Add feedback to conversation
-                                conversation.append({
-                                    "role": "user",
-                                    "content": f"[User feedback after tool execution]: {combined_feedback}"
-                                })
-                                logger.info(f"🔄 FEEDBACK_DELIVERED: Added post-loop feedback to conversation: {combined_feedback[:50]}...")
-                                
-                                # Notify user that feedback is being processed
-                                yield track_yield({
-                                    'type': 'text',
-                            'content': f"\n\n**📝 Feedback received:** {combined_feedback}\n\n",
-                                    'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                })
-                                
-                                # Make ONE additional API call to get model's response to feedback
-                                try:
-                                    # Use provider abstraction for feedback response
-                                    feedback_config = self._build_provider_config(iteration)
-                                    feedback_config.suppress_tools = True
-                                    
-                                    async for fb_event in self.provider.stream_response(
-                                        conversation, system_content, bedrock_tools, feedback_config
-                                    ):
-                                        if isinstance(fb_event, TextDelta):
-                                            yield track_yield({
-                                                'type': 'text',
-                                                'content': fb_event.content,
-                                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms"
-                                            })
-                                        elif isinstance(fb_event, StreamEnd):
-                                            break
-
-                                    # Signal stream completion after feedback response
-                                    yield track_yield({'type': 'stream_end'})
-                                    return
-                                except (OSError, RuntimeError, asyncio.TimeoutError) as feedback_error:
-                                    logger.error(f"Error processing post-loop feedback: {feedback_error}")
-                    except (KeyError, OSError, RuntimeError, asyncio.QueueEmpty) as e:
-                        logger.debug(f"Error checking post-loop feedback: {e}")
-                
                 # Clean up iteration resources to prevent memory leaks
                 self._cleanup_iteration_resources()
 
@@ -3905,6 +4222,39 @@ Please retry the tool call with valid JSON. Ensure:
         # Stop the feedback monitor
         if _feedback_monitor_task and not _feedback_monitor_task.done():
             _feedback_monitor_task.cancel()
+
+        # Final straggler drain: feedback can land in _pending_feedback during
+        # turn teardown — after the last in-loop drain/pre-end poll returned but
+        # before the loop broke — where no remaining code path delivers it. The
+        # monitor still acks it as 'queued' (giving the user a false "awaiting
+        # model" signal), then this generator's finally reclaims the shared list
+        # (refcount → 0) and the item vanishes with no trace (see ASR: feedback
+        # loss investigation). Cancel the monitor FIRST (no await between cancel
+        # and drain, so it cannot re-populate the list), then re-enqueue any
+        # straggler onto the conversation's surviving feedback queue so the next
+        # turn's monitor re-captures and delivers it rather than losing it.
+        if conversation_id:
+            _leftover = _drain_pending_feedback()
+            if _leftover:
+                logger.warning(
+                    f"🔄 FEEDBACK_STRAGGLER: {len(_leftover)} feedback item(s) "
+                    f"captured during turn teardown for {conversation_id}; "
+                    f"re-enqueueing for next turn instead of dropping."
+                )
+                try:
+                    from app.server import _enqueue_feedback
+                    for _item in _leftover:
+                        # Normalize back to the queue's wire shape ('tool_feedback');
+                        # the monitor re-normalizes to {'type':'feedback',...} on drain.
+                        if _item.get('type') == 'feedback':
+                            _enqueue_feedback(conversation_id, {
+                                'type': 'tool_feedback',
+                                'message': _item.get('message', ''),
+                            })
+                        else:
+                            _enqueue_feedback(conversation_id, _item)
+                except (ImportError, RuntimeError, KeyError) as _req_err:
+                    logger.debug(f"Feedback straggler re-enqueue failed: {_req_err}")
         
         # ------------------------------------------------------------------
         # Autocompaction hook: if this conversation is a delegate, compress

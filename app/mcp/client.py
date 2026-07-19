@@ -1481,7 +1481,10 @@ class MCPClient:
             # Check rate limit before executing
             wait_time = self._check_rate_limit(name)
             if wait_time is not None and wait_time > 0:
-                logger.warning(f"Rate limit active for tool '{name}': waiting {wait_time:.1f}s")
+                if wait_time > 2.0:
+                    logger.warning(f"Rate limit active for tool '{name}': waiting {wait_time:.1f}s")
+                else:
+                    logger.debug(f"Rate limit active for tool '{name}': waiting {wait_time:.1f}s")
                 # Wait for the remaining time
                 await asyncio.sleep(wait_time)
             elif wait_time == 0:

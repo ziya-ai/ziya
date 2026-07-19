@@ -2261,6 +2261,31 @@ class MCPManager:
                 arguments = self._coerce_argument_types(internal_tool_name, arguments)
                 if isinstance(arguments, dict) and arguments.get("__validation_error__"):
                     return {"error": True, "message": arguments.get("message", "Invalid arguments"), "code": -32602}
+                # Loop guards must run on this path too. The workspace-scoped
+                # branch returns below BEFORE the turn-ceiling and
+                # repetitive-call guards further down in this method, so shell
+                # commands (shell is workspace-scoped) previously bypassed both
+                # entirely — a hallucinated tool-name loop re-issued the same
+                # command indefinitely (cli_20260716_000737_41665).
+                if self._exceeds_turn_ceiling(conversation_id):
+                    return {
+                        "error": True,
+                        "message": (
+                            f"Tool call refused: this turn reached the per-turn "
+                            f"tool-call ceiling ({self._turn_limit()}). This circuit "
+                            f"breaker guards against runaway tool loops within a single "
+                            f"response. Send a new message to continue, or raise "
+                            f"ZIYA_MAX_TOOLS_PER_TURN."
+                        ),
+                        "code": -32001,
+                    }
+                if self._is_repetitive_call(tool_name, arguments, conversation_id):
+                    logger.warning(f"🔍 MCP_MANAGER: Blocking repetitive tool call: {tool_name} with {arguments}")
+                    return {
+                        "error": True,
+                        "message": f"Tool call blocked: {tool_name} has been called repeatedly with similar arguments. Please try a different approach or check if the previous results contain what you need.",
+                        "code": -32001,
+                    }
                 result = await self._call_tool_with_timeout(workspace_client, internal_tool_name, arguments)
                 
                 # Trigger periodic cleanup
