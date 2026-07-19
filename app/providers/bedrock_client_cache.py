@@ -82,10 +82,14 @@ def get_persistent_bedrock_client(
                 time.sleep(retry_delays[attempt])
             else:
                 from app.utils.custom_exceptions import KnownCredentialException
-                raise KnownCredentialException(
-                    f"AWS credentials check failed: {cred_error}",
-                    is_server_startup=False,
-                )
+                # When creds are simply absent (vs expired/invalid), surface the
+                # full multi-provider setup guide instead of a raw boto3 error.
+                if "Unable to locate credentials" in err:
+                    from app.utils.provider_detection import build_setup_help
+                    msg = build_setup_help()
+                else:
+                    msg = f"AWS credentials check failed: {cred_error}"
+                raise KnownCredentialException(msg, is_server_startup=False)
 
     bedrock_client = session.client(
         "bedrock-runtime", region_name=region,

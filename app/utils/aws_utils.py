@@ -8,16 +8,42 @@ from botocore.client import BaseClient
 from botocore.exceptions import ClientError, NoCredentialsError, ProfileNotFound
 from app.utils.logging_utils import logger
 
-def create_fresh_boto3_session(profile_name=None):
+def create_fresh_boto3_session(profile_name=None, is_server_startup: bool = False):
     """Create a fresh boto3 session by reloading the modules.
     
     Args:
         profile_name (str): Optional AWS profile name to use
+        is_server_startup (bool): If True and the profile is invalid, print
+            the error and exit the process immediately (CLI startup UX).
+            If False (default), raise KnownCredentialException instead so
+            request-time callers (already running inside the event loop)
+            can handle it gracefully instead of crashing the server.
         
     Returns:
         boto3.Session: A fresh boto3 session
     """
     logger.debug(f"create_fresh_boto3_session called with profile_name={profile_name}")
+    # Convenience default for internal Amazon users who follow the
+    # TROUBLESHOOTING.md setup and create a profile literally named "ziya"
+    # (via `ada profile add --profile=ziya ...`). Only applied when the
+    # caller passed NO profile at all — never overrides an explicit
+    # --profile/ZIYA_AWS_PROFILE/AWS_PROFILE value — and only when that
+    # profile actually exists on this machine, so users who never set it
+    # up (the common case) fall through silently to boto3's normal
+    # default credential chain instead of erroring on a profile they
+    # never asked for.
+    # The env vars MUST be checked here, not just the argument: many
+    # request-time callers (e.g. check_aws_credentials() with no args)
+    # reach this with profile_name=None while the user's --profile is
+    # carried in AWS_PROFILE. Preempting that env value hijacked the
+    # session onto the "ziya" profile even when a different profile was
+    # explicitly requested at startup.
+    _env_profile = (os.environ.get("AWS_PROFILE")
+                    or os.environ.get("AWS_DEFAULT_PROFILE")
+                    or os.environ.get("ZIYA_AWS_PROFILE"))
+    if not profile_name and not _env_profile and "ziya" in _get_available_profiles():
+        profile_name = "ziya"
+        logger.debug("No profile specified; using convenience profile 'ziya' (found in AWS config)")
     try:
         if profile_name:
             return boto3.Session(profile_name=profile_name)
@@ -25,14 +51,24 @@ def create_fresh_boto3_session(profile_name=None):
             return boto3.Session()
     except ProfileNotFound as e:
         requested_profile = profile_name or os.environ.get('AWS_PROFILE') or os.environ.get('AWS_DEFAULT_PROFILE')
-        _handle_profile_not_found_error(requested_profile)
+        _handle_profile_not_found_error(requested_profile, is_server_startup=is_server_startup)
         raise  # Re-raise to ensure we don't continue
     except Exception as e:
         logger.error(f"Error creating fresh boto3 session: {e}")
         return _create_fallback_session()
 
-def _handle_profile_not_found_error(profile_name: str):
-    """Handle ProfileNotFound with a user-friendly error message and clean exit."""
+def _handle_profile_not_found_error(profile_name: str, is_server_startup: bool = False):
+    """Handle ProfileNotFound with a user-friendly error message.
+
+    At server/CLI startup (is_server_startup=True), prints the message and
+    exits the process immediately — the previous behavior, appropriate when
+    nothing is running yet. At request time (is_server_startup=False), a
+    bare SystemExit would otherwise escape the caller's event loop and
+    tear down in-flight websocket/streaming connections along with it, so
+    this raises KnownCredentialException instead — the same exception type
+    every other auth-failure path already knows how to catch and surface
+    as a clean, retryable error to the user.
+    """
     available_profiles = _get_available_profiles()
     profiles_hint = f"Available profiles: {', '.join(available_profiles)}" if available_profiles else "Run 'aws configure list-profiles' to see available profiles."
     
@@ -46,8 +82,11 @@ Please either:
 
 {profiles_hint}
 """
-    print(error_msg, file=sys.stderr)
-    raise SystemExit(1)
+    if is_server_startup:
+        print(error_msg, file=sys.stderr)
+        raise SystemExit(1)
+    from app.utils.custom_exceptions import KnownCredentialException
+    raise KnownCredentialException(error_msg, is_server_startup=False)
 
 def _get_available_profiles():
     """Get list of available AWS profiles."""
@@ -168,7 +207,8 @@ def check_aws_credentials(is_server_startup=True, profile_name=None, region_name
         logger.debug(f"Successfully authenticated as: {identity.get('Arn', 'Unknown')}")
         return True, None
     except NoCredentialsError:
-        error_msg = "⚠️ AWS CREDENTIALS ERROR: No AWS credentials found. Please set up your AWS credentials."
+        from app.utils.provider_detection import build_setup_help
+        error_msg = build_setup_help()
         logger.error(f"AWS credentials check failed: No credentials found")
         return False, error_msg
     except ClientError as e:
@@ -193,12 +233,8 @@ def check_aws_credentials(is_server_startup=True, profile_name=None, region_name
         )
         
         if not has_any_credentials:
-            return False, """⚠️ AWS CREDENTIALS ERROR: No AWS credentials found.
- 
-Please set up your AWS credentials using one of these methods:
-1. Run 'aws configure' to set up credentials
-2. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY environment variables
-3. Use IAM roles if running on EC2/ECS"""
+            from app.utils.provider_detection import build_setup_help
+            return False, build_setup_help()
         
         # Create a more user-friendly error message
         error_msg = str(e)
@@ -221,7 +257,8 @@ Please set up your AWS credentials using one of these methods:
         elif "AccessDenied" in error_msg:
             return False, "⚠️ AWS CREDENTIALS ERROR: Access denied. Your AWS credentials don't have sufficient permissions."
         elif "NoCredentialProviders" in error_msg:
-            return False, "⚠️ AWS CREDENTIALS ERROR: No AWS credentials found. Please set up your AWS credentials."
+            from app.utils.provider_detection import build_setup_help
+            return False, build_setup_help()
         else:
             # Check for network/connectivity errors before falling back to generic credentials message
             network_indicators = ["i/o timeout", "dial tcp", "connection refused", "no such host",
