@@ -160,6 +160,22 @@ composite artifacts:
   artifact is a composite whose `outputs` is the concatenation of
   each child's outputs in declared order.
 
+### Failure policy — on_failure
+
+A container block (Group / Repeat / Until / Schedule) may declare
+`on_failure` for the implicit sequence formed by its body:
+
+- `continue` (default, legacy) — every sibling runs regardless of a
+  prior sibling's failure; the failed artifact flows onward as
+  `{{previous_sibling}}`.
+- `stop` — the sequence halts at the first child whose artifact is
+  failed; that artifact (annotated with a skip note in its decisions)
+  becomes the sequence's result, so the failure propagates upward
+  instead of silently feeding failed input into later stages.
+
+Parallel is unaffected: its children are concurrent, so there is no
+"later sibling" to gate.
+
 ### Propagation — what an iteration sees
 
 An iteration's instructions can reference state from prior iterations
@@ -188,6 +204,16 @@ Field access follows the Artifact schema: `{{previous.summary}}`,
 `{{previous.outputs[0].text}}`, `{{previous.decisions}}`.  Missing
 fields substitute to the empty string and log a warning; they do not
 crash dispatch.
+
+A Repeat's `for_each` source may itself contain placeholders
+(`{{sibling("plan-id")}}`, `{{previous_sibling}}`, `{{var.X}}`),
+rendered at the Repeat's dispatch time against the artifacts completed
+so far in the run.  The rendered text is parsed as a JSON array; if it
+is prose that merely CONTAINS a JSON array (the typical planner-task
+summary), the first embedded array is extracted.  This enables the
+canonical decomposition shape: Task("plan") → Repeat(for_each over the
+plan's output).  An unparseable source falls back to count-based
+iteration.
 
 ### Iteration result storage at scale
 
@@ -228,6 +254,7 @@ Event types (server → client):
 | `iteration_completed` | `{run_id, block_id, index, status, signature?, duration_ms, tokens}` |
 | `block_completed` | `{run_id, block_id, at}` |
 | `run_completed` | `{run_id, status, at}` |
+| `block_status` | `{run_id, block_id, block_type, status, at, error?}` — per-block lifecycle transition (running / done / failed / cancelled / skipped); drives the run map |
 | `whisper_received` | `{run_id, block_id, text}` — ack of a whispered hint |
 
 Events are transient; persisted storage remains the source of truth.
