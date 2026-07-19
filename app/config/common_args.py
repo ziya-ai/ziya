@@ -44,6 +44,16 @@ def add_common_arguments(parser):
     parser.add_argument('--region', type=str, default=None,
                         help=f'AWS region (default: {config.DEFAULT_REGION}). '
                              f'If omitted, model-specific defaults may apply.')
+
+    # Network / corporate proxy configuration
+    parser.add_argument('--proxy', type=str, default=None,
+                        help='HTTP(S) proxy URL for outbound AI-provider traffic '
+                             '(e.g. http://proxy.corp.example.com:8080). '
+                             'Sets HTTPS_PROXY/HTTP_PROXY for all provider SDKs.')
+    parser.add_argument('--ca-bundle', type=str, default=None,
+                        help='Path to a PEM CA bundle to trust for outbound TLS '
+                             '(needed behind TLS-intercepting corporate proxies). '
+                             'Sets AWS_CA_BUNDLE, SSL_CERT_FILE, and REQUESTS_CA_BUNDLE.')
     
     # Model parameters
     parser.add_argument('--temperature', type=float, default=None,

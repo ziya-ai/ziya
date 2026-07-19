@@ -127,6 +127,15 @@ _VARS: List[EnvVar] = [
     EnvVar("ZIYA_THINKING_BUDGET", int, 16000, EnvCategory.MODEL_PARAMS,
            "Token budget for extended thinking (Bedrock streaming)."),
 
+    # ── Network ───────────────────────────────────────────────────────────
+    EnvVar("ZIYA_PROXY", str, None, EnvCategory.CORE,
+           "HTTP(S) proxy URL for outbound AI-provider traffic. "
+           "Fans out to HTTPS_PROXY/HTTP_PROXY at startup.", cli_flag="--proxy"),
+    EnvVar("ZIYA_CA_BUNDLE", str, None, EnvCategory.CORE,
+           "Path to a PEM CA bundle for outbound TLS (TLS-intercepting proxies). "
+           "Fans out to AWS_CA_BUNDLE, SSL_CERT_FILE, and REQUESTS_CA_BUNDLE.",
+           cli_flag="--ca-bundle"),
+
     # ── AWS ───────────────────────────────────────────────────────────────
     EnvVar("ZIYA_AWS_PROFILE", str, None, EnvCategory.AWS,
            "AWS credential profile name for Bedrock.", cli_flag="--profile"),
@@ -236,6 +245,10 @@ _VARS: List[EnvVar] = [
            "Passphrase for at-rest encryption of stored conversations."),
     EnvVar("ZIYA_RETENTION_OVERRIDE_DAYS", float, None, EnvCategory.SECURITY,
            "Minimum retention TTL in days, overriding stricter plugin policies."),
+    EnvVar("ZIYA_AUTO_RECONCILE_CHATS", bool, False, EnvCategory.SECURITY,
+           "Auto-remove cross-project chat shadow copies at startup. Off by "
+           "default (warn-only): reconciliation deletes files, so it requires "
+           "an explicit opt-in."),
     EnvVar("ZIYA_DISABLE_AUDIT_LOG", bool, False, EnvCategory.SECURITY,
            "Disable the MCP tool audit log."),
     EnvVar("ZIYA_ALLOW_ALL_ENDPOINTS", bool, False, EnvCategory.SECURITY,

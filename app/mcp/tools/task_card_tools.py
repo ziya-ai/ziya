@@ -101,12 +101,18 @@ class TaskCardListTool(BaseMCPTool):
             return {"error": True, "message": str(e)}
 
         bound_ids: Optional[set] = None
+        binding_warning: Optional[str] = None
         if kwargs.get("bound_to_current_chat"):
             bound_ids = self._bound_card_ids(res["project_id"])
             if bound_ids is None:
-                return {"error": True, "message": (
-                    "bound_to_current_chat requested but no conversation_id "
-                    "is set in the current request context.")}
+                # Fail open: no conversation_id is resolvable in this
+                # invocation context, so we cannot filter by binding.
+                # Return the unfiltered list rather than hard-erroring —
+                # bound_to_current_chat is a convenience filter and should
+                # not cause the whole tool call to fail.
+                binding_warning = (
+                    "Could not determine the current conversation_id, "
+                    "so results are unfiltered (all project cards).")
 
         out = []
         for c in cards:
@@ -118,12 +124,15 @@ class TaskCardListTool(BaseMCPTool):
                 "description": c.description,
                 "root_block_type": getattr(c.root, "block_type", None),
             })
-        return {
+        result = {
             "success": True,
             "count": len(out),
             "cards": out,
             "message": f"{len(out)} task card(s) in project.",
         }
+        if binding_warning:
+            result["warning"] = binding_warning
+        return result
 
     @staticmethod
     def _bound_card_ids(project_id: str) -> Optional[set]:

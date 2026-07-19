@@ -112,7 +112,8 @@ class RenderDiagramTool(BaseMCPTool):
         try:
             from app.services.diagram_renderer import get_diagram_renderer
 
-            port = int(os.environ.get("ZIYA_PORT", "6969"))
+            from app.config.env_registry import ziya_env
+            port = ziya_env("ZIYA_PORT")
             renderer = await get_diagram_renderer(server_port=port)
 
             spec: dict[str, Any] = {
