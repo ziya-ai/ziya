@@ -10,6 +10,9 @@
  * contract without requiring a real IndexedDB instance.
  */
 
+// Force module scope — see identical comment in dualWriteFastPath.test.ts.
+export {};
+
 // ---------------------------------------------------------------------------
 // Types mirroring the Conversation shape relevant to the save guard
 // ---------------------------------------------------------------------------

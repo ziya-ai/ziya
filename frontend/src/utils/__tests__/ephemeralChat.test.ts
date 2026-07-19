@@ -18,6 +18,9 @@
  * IndexedDB / BroadcastChannel / syncApi.bulkSync).
  */
 
+// Force module scope — see identical comment in dualWriteFastPath.test.ts.
+export {};
+
 interface MinimalConversation {
     id: string;
     title: string;

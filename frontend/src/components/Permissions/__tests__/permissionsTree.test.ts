@@ -16,7 +16,13 @@ import {
   type PermissionSets,
 } from '../permissionsTree';
 
-function emptySets(): PermissionSets {
+// Test-local mutable variant: PermissionSets deliberately declares
+// ReadonlySet fields for its real (read-only) consumers like
+// hasDescendantInSets, but these tests build fixtures by calling
+// .add() repeatedly, so the helper needs mutable Set<string> here.
+type MutablePermissionSets = { [K in keyof PermissionSets]: Set<string> };
+
+function emptySets(): MutablePermissionSets {
   return { scope: new Set(), writable: new Set(), context: new Set() };
 }
 
