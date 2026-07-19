@@ -206,8 +206,11 @@ class GoogleDirectProvider(LLMProvider):
 
         max_retries = 3
         for attempt in range(max_retries + 1):
+            content_yielded = False
             try:
                 async for event in self._do_stream(contents, gen_config):
+                    if isinstance(event, (TextDelta, ThinkingDelta, ToolUseStart)):
+                        content_yielded = True
                     yield event
                 return
             except Exception as e:
@@ -216,6 +219,17 @@ class GoogleDirectProvider(LLMProvider):
                 retryable = classified in (
                     ErrorType.THROTTLE, ErrorType.OVERLOADED, ErrorType.READ_TIMEOUT
                 )
+                # A from-scratch retry after content has already been
+                # yielded APPENDS the retry's full response to the partial
+                # text the consumer accumulated — producing duplicated
+                # message corruption. Once content is out, fail loudly;
+                # ErrorEvent is handled cleanly downstream.
+                if retryable and content_yielded:
+                    logger.warning(
+                        f"GoogleDirectProvider: {classified.name} mid-stream after "
+                        f"content was yielded — refusing duplicate-producing retry"
+                    )
+                    retryable = False
                 if retryable and attempt < max_retries:
                     delay = 2 * (2 ** attempt)
                     logger.warning(

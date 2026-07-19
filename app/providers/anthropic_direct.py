@@ -26,6 +26,7 @@ from app.providers.base import (
     ToolUseStart,
     UsageEvent,
 )
+from app.config.env_registry import ziya_env
 from app.utils.logging_utils import get_mode_aware_logger
 
 logger = get_mode_aware_logger(__name__)
@@ -81,14 +82,31 @@ class AnthropicDirectProvider(LLMProvider):
         base_delay = 2
 
         for retry_attempt in range(max_retries + 1):
+            content_yielded = False
             try:
                 async for event in self._do_stream(request_kwargs):
+                    if isinstance(event, (TextDelta, ThinkingDelta, ToolUseStart)):
+                        content_yielded = True
                     yield event
                 return  # success
             except Exception as e:
                 error_str = str(e)
                 classified = self._classify_error(error_str)
                 retryable = classified in (ErrorType.THROTTLE, ErrorType.READ_TIMEOUT, ErrorType.OVERLOADED)
+
+                # A from-scratch retry after content has already been
+                # yielded APPENDS the retry's full response to the partial
+                # text the consumer accumulated (assistant_text += delta) —
+                # producing the observed duplicated-message corruption and
+                # the spurious turn-end heuristics that ran over the
+                # corrupted tail. Once content is out, fail loudly instead;
+                # ErrorEvent is already handled cleanly downstream.
+                if retryable and content_yielded:
+                    logger.warning(
+                        f"AnthropicDirectProvider: {classified.name} mid-stream after "
+                        f"content was yielded — refusing duplicate-producing retry"
+                    )
+                    retryable = False
 
                 if retryable and retry_attempt < max_retries:
                     if classified == ErrorType.THROTTLE:
@@ -144,16 +162,36 @@ class AnthropicDirectProvider(LLMProvider):
         messages: List[Dict[str, Any]],
         iteration: int,
     ) -> List[Dict[str, Any]]:
-        """Anthropic API has no 4-block limit on cache markers.
+        """Place one conversation cache breakpoint (plus system = 2 of 4).
 
         Cache the conversation boundary (second-to-last message) so that
         on multi-turn conversations prior turns get reused.
+
+        The Anthropic Messages API allows at most 4 cache breakpoints per
+        request — the same limit Bedrock enforces, and BedrockMantleProvider
+        inherits this method while talking to Bedrock behind the gateway.
+        Strip any markers already present in the incoming history so the
+        total stays at 1 conversation marker + 1 system marker.
         """
+        # Parity with BedrockProvider: honor the diagnostic kill switch.
+        if ziya_env("ZIYA_DISABLE_PROMPT_CACHE"):
+            logger.info("🧪 PROMPT_CACHE: disabled via ZIYA_DISABLE_PROMPT_CACHE=1")
+            return messages
+
         if iteration == 0 or len(messages) < 3:
             return messages
 
         import copy
         messages = copy.deepcopy(messages)
+
+        # Strip stale markers from incoming history — accumulation past
+        # the 4-breakpoint limit rejects the request / disables caching.
+        for msg in messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        block.pop("cache_control", None)
 
         boundary = messages[-2]
         bc = boundary.get("content")
@@ -184,6 +222,23 @@ class AnthropicDirectProvider(LLMProvider):
     def provider_name(self) -> str:
         return "anthropic"
 
+    def bind(self, **kwargs):
+        """Compatibility no-op for the legacy LangChain agent path.
+
+        RetryingChatBedrock.bind() calls model.bind(stop=[...]) at startup;
+        pipeline providers handle stop sequences in stream_response instead.
+        """
+        return self
+
+    def get_num_tokens(self, text: str) -> int:
+        """Compatibility shim for the legacy LangChain agent path.
+
+        RetryingChatBedrock.get_num_tokens() delegates here. Uses the same
+        chars/token heuristic as _estimate_request_tokens; pipeline providers
+        get accurate counts from UsageEvent at stream time instead.
+        """
+        return int(len(text) / 3.5)
+
     # ------------------------------------------------------------------
     # Internal: request building
     # ------------------------------------------------------------------
@@ -208,8 +263,19 @@ class AnthropicDirectProvider(LLMProvider):
                 "cache_control": {"type": "ephemeral"},
             }]
 
+        # Temperature — defense-in-depth: some models (e.g. Fable 5 / Mythos
+        # class) reject `temperature` with a 400 invalid_request_error
+        # ("`temperature` is deprecated for this model"). The ziya_bedrock
+        # wrapper strips it upstream on the deployed path, but any caller that
+        # builds a ProviderConfig directly (delegates, calibration baseline,
+        # tests) re-introduces the 0.3 default. Filter here against the
+        # model's declared unsupported_parameters, mirroring
+        # BedrockProvider._build_request_body — this method is also inherited
+        # by BedrockMantleProvider, where the gap was observed live.
         if config.temperature is not None:
-            kwargs["temperature"] = config.temperature
+            unsupported = set(self.model_config.get("unsupported_parameters", []) or [])
+            if "temperature" not in unsupported:
+                kwargs["temperature"] = config.temperature
 
         if tools and not config.suppress_tools:
             kwargs["tools"] = tools

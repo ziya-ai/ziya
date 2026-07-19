@@ -81,14 +81,20 @@ def create_provider(
         # Some models override the default bedrock-runtime endpoint.
         endpoint_override = model_config.get("endpoint_override", "")
         if endpoint_override == "bedrock-mantle":
-            from app.providers.bedrock_mantle import BedrockMantleProvider
-            _region = region or os.environ.get(
-                "AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-east-1")
-            )
+            from app.providers.bedrock_mantle import BedrockMantleProvider, resolve_mantle_region
+            # Clamp to the model's mantle-available regions — the caller's
+            # session region (often us-west-2) may not host this model.
+            _region = resolve_mantle_region(model_config, region)
             return BedrockMantleProvider(
                 model_id=model_id,
                 model_config=model_config,
                 region=_region,
+                # Sign with the caller's profile — dropping this made the
+                # SigV4 transport fall back to the default credential chain,
+                # which can resolve to a different account whose mantle
+                # retention mode is wrong for this model (400: "data
+                # retention mode 'default' is not available").
+                aws_profile=aws_profile,
             )
 
         # Claude uses the Anthropic invoke_model API (prompt caching,
@@ -106,21 +112,21 @@ def create_provider(
             from app.providers.openai_bedrock import OpenAIBedrockProvider
             return OpenAIBedrockProvider(
                 model_id=model_id, model_config=model_config,
-                aws_profile=aws_profile or "ziya", region=region or "us-west-2",
+                aws_profile=aws_profile, region=region or "us-west-2",
             )
 
         if not is_claude:
             from app.providers.nova_bedrock import NovaBedrockProvider
             return NovaBedrockProvider(
                 model_id=model_id, model_config=model_config,
-                aws_profile=aws_profile or "ziya", region=region or "us-west-2",
+                aws_profile=aws_profile, region=region or "us-west-2",
             )
 
         from app.providers.bedrock import BedrockProvider
         return BedrockProvider(
             model_id=model_id,
             model_config=model_config,
-            aws_profile=aws_profile or "ziya",
+            aws_profile=aws_profile,
             region=region or "us-west-2",
         )
 

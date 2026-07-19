@@ -19,7 +19,6 @@ from app.utils.logging_utils import logger # Use your logger
 class ZiyaChatGoogleGenerativeAI(ChatGoogleGenerativeAI):
     """
     Custom wrapper for ChatGoogleGenerativeAI to add specific debugging
-     and Google function calling support.
-     """
-     
-     pass
+    and Google function calling support.
+    """
+    pass
