@@ -77,6 +77,57 @@ Ziya supports models from multiple providers. The default model is `sonnet4.6` o
 
 ---
 
+## Portable Model Tiers
+
+Instead of naming a specific model, you can select a **tier** — a portable,
+endpoint-agnostic cost/capability rung. Tiers let a decomposed workload run
+cheap executor work on small models under a smarter supervisor, without
+hardcoding a provider- or version-specific name that rots when models are
+retired or you switch endpoint.
+
+| Tier | Intent | Bedrock | Google | OpenAI | Anthropic | z.ai |
+|---|---|---|---|---|---|---|
+| `xsmall` | Cheapest/fastest | Nova Micro | Flash Lite | GPT-5.5 Nano | Haiku 4.5 | GLM-4.6 |
+| `small` | Cheap | Nova Lite | Gemini Flash | GPT-5.5 Mini | Haiku 4.5 | GLM-4.6 |
+| `medium` | **Default** (average) | Sonnet 5 | Gemini 3.1 Pro | GPT-5.5 | Sonnet 5 | GLM-5.2 |
+| `large` | Most capable | Opus 4.8 | Gemini 3.1 Pro | GPT-5.5 Pro | Opus 4.8 | GLM-5.2 |
+| `frontier` | Cutting edge — rare, expensive | Fable 5 | Gemini 3.1 Pro | GPT-5.5 Pro | Fable 5 | GLM-5.2 |
+
+Five rungs, cheapest → most capable. **`medium` is the center: the default,
+"average" model — the same one the top-level conversation uses (Sonnet 5 on
+Bedrock).** It is also the resolution fallback target. **`frontier`** is the
+rarely-warranted top: cutting-edge models that today run roughly 20× the cost
+of `large` with heavy throttling, so reserve it for work that genuinely needs
+it.
+
+The resolution is **not** a separate table — each model entry carries a
+`tier` tag, so the tier follows the model automatically as models are added
+or retired. A rung with no exactly-tagged model **rounds up** to the nearest
+defined rung at or above it (falling to the highest rung below only if nothing
+at/above exists), so an unmapped rung never silently under-serves a task.
+`--model <tier>` works at the top level too.
+
+**Where tiers apply:**
+
+- **Top-level conversation** — `--model medium` (or any tier) selects the
+  resolved model for the session.
+- **Task Card blocks** — the Model control (Task Advanced section, and on
+  every container block / the card / the deck via the Permissions row) picks
+  a tier (recommended) or a specific model. A tier set on a container, the
+  card, or the project-wide deck flows down to every task beneath it; a leaf
+  overrides for itself. Set a smart tier on the card and cheap tiers on
+  mechanical leaf tasks to run cheap executors under a smart supervisor.
+- **Delegates** — each delegate spec can carry a `model_tier` so a swarm runs
+  cheap executors under a smarter orchestrator. A model that authors its own
+  plan (a `delegate-tasks` or `task-card` block, or `swarm_request_delegate`)
+  can set `model_tier` per unit of work directly.
+
+A **specific model name** (e.g. `sonnet4.6`) or inference-profile ARN is
+still available as an escape hatch, but is explicitly flagged non-portable in
+the UI — prefer a tier unless you have a concrete reason to pin an exact model.
+
+---
+
 ## Tools
 
 The model has access to tools it can call autonomously when they would help answer your question.
@@ -390,6 +441,7 @@ Inside `ziya chat`, the following slash commands are available:
 | `/reset` | Clear history, context files, and all session state |
 | `/suspend` | Save session and exit |
 | `/resume` | Restore a previous session |
+| `/join [id\|title]` | Attach to a live GUI conversation for this project (shared, synced) |
 | `/help` | Show command reference |
 
 ### /goal — Autonomous Goals
@@ -412,6 +464,59 @@ The agent iterates (up to 15 times by default), re-evaluating whether the goal i
 | `/goal pause` | Pause the running goal |
 | `/goal resume` | Resume a paused goal |
 | `/goal clear` | Cancel and remove the goal |
+
+> **`/goal pause` vs. the task-run tile Pause button.** These are different
+> mechanisms. `/goal pause` stops the goal's run (it goes to `cancelled`) and
+> `/goal resume` **relaunches the card from scratch** as a fresh run — right
+> for a goal's Until-loop, which re-evaluates repo state each pass. The
+> **Pause button** on a task-run tile is a true in-place hold: the same run
+> pauses at the next boundary (between Repeat iterations, sequence siblings,
+> or `until` loops — the same boundaries Cancel uses), keeping loop progress
+> and in-memory context, and **Resume** continues it. An in-flight Task/LLM
+> step always finishes before the hold takes effect. A held run shows a
+> distinct non-terminal `paused` status.
+
+### /join — Continue a GUI Conversation from the Terminal
+
+`/join` attaches your CLI session to a conversation that already exists in the
+Ziya GUI for the same project directory, so both surfaces operate on the same
+underlying chat. Run it with no argument for an interactive picker, or pass a
+conversation id (or title) to attach directly:
+
+```
+/join
+/join "Auth refactor"
+```
+
+You can also attach at launch:
+
+```bash
+ziya chat --join            # interactive picker
+ziya chat --join "Auth refactor"
+```
+
+While attached:
+
+- The GUI chat's `id` becomes the session's conversation id, so **beads,
+  task-card results, and the GUI sidebar all track the shared conversation**.
+- Each completed turn is **written back** into the GUI chat; message ids for the
+  unchanged prefix are preserved so the sidebar doesn't churn.
+- Turns added elsewhere — from the GUI, or another attached CLI — are **pulled
+  in and previewed at the next prompt**. Your input buffer is never touched, so
+  you can keep typing while sync happens.
+- A `[⇄<id>]` badge on the prompt marks the attached state.
+
+To split off a private local branch, use the existing fork mechanic: **`/save`
+forks the current history into a local session and detaches** — the GUI
+conversation is left untouched and your CLI continues privately from that point.
+`/clear` and `/reset` also detach first (clearing local history while attached
+would otherwise truncate the shared GUI chat).
+
+> The GUI has no "join from GUI" affordance yet; attachment is CLI-initiated.
+> Concurrent edits are last-writer-wins in this version.
+
+`/join` requires the directory to have been opened in the GUI at least once (so
+a project record exists); otherwise there are no conversations to join.
 
 ### Piping
 

@@ -25,6 +25,16 @@ All Ziya configuration environment variables use the `ZIYA_` prefix. This docume
 | `ZIYA_ADDITIONAL_EXCLUDE_DIRS` | str | `""` | `--exclude` | Comma-separated directories to exclude from scanning |
 
 ## Model / Endpoint
+## Network (corporate proxies)
+
+| Variable | Type | Default | CLI Flag | Description |
+|---|---|---|---|---|
+| `ZIYA_PROXY` | str | — | `--proxy` | HTTP(S) proxy URL for outbound AI-provider traffic. Fans out to `HTTPS_PROXY`/`HTTP_PROXY` at startup so botocore (Bedrock) and httpx (Anthropic/OpenAI SDKs) route through it |
+| `ZIYA_CA_BUNDLE` | str | — | `--ca-bundle` | Path to a PEM CA bundle to trust for outbound TLS. Fans out to `AWS_CA_BUNDLE` (botocore), `SSL_CERT_FILE` (httpx), and `REQUESTS_CA_BUNDLE` (requests) |
+
+Behind a TLS-intercepting egress proxy (Netskope, Zscaler, etc.) you typically need **both**:
+
+
 
 | Variable | Type | Default | CLI Flag | Description |
 |---|---|---|---|---|
@@ -112,6 +122,8 @@ Provider credentials are read directly from the environment (not the `ZIYA_*` na
 |---|---|---|---|
 | `ZIYA_ENCRYPTION_KEY` | str | — | Passphrase for at-rest encryption of stored conversations |
 | `ZIYA_DISABLE_AUDIT_LOG` | bool | `false` | Disable the MCP tool audit log |
+| `ZIYA_AUDIT_CONTEXT_SNAPSHOT` | bool | `false` | Add a co-presence `context` snapshot (active memory ids + recent tool-result ids) to each MCP tool audit entry, for forensic prompt-injection incident reconstruction (ASR NF-006/008/010). Records what was in context at decision time — correlation, not causation. Off by default; also enableable via an enterprise `ConfigProvider.should_capture_audit_context()`. When set, this env var overrides the plugin policy. |
+| `ZIYA_AUTO_RECONCILE_CHATS` | bool | `false` | Auto-remove cross-project chat shadow copies at startup. Off by default (warn-only): the boot-time integrity check logs a warning when shadows exist but never deletes. Set to `1`/`true` to have startup reconcile automatically. Manual review/cleanup is available any time via `GET /api/v1/chat-integrity` and `POST /api/v1/chat-integrity/reconcile`. |
 | `ZIYA_ALLOW_ALL_ENDPOINTS` | bool | `false` | Bypass enterprise endpoint restrictions (dev/testing only) |
 | `ZIYA_RETENTION_OVERRIDE_DAYS` | number | — | Minimum retention in days — raises any plugin-enforced TTL that is shorter than this value (e.g. `30` to guarantee 30-day retention). Set to `0` or unset to disable. Fractional values like `0.5` (12 hours) are supported. |
 | `ZIYA_CSP_MODE` | str | `relaxed` | Content-Security-Policy strictness. `relaxed` allows `unsafe-inline`/`unsafe-eval` + the jsdelivr origin so Mermaid/Vega CDN diagrams render; `strict` drops `unsafe-eval` and pins jsdelivr to specific script paths (Vega expression-eval diagrams will not render). (ASR F-005) |

@@ -32,11 +32,24 @@ ziya
 
 Open `http://localhost:6969` in your browser.
 
-If your AWS credentials aren't configured yet:
+### Credentials on first run
+
+Ziya defaults to AWS Bedrock but works with several providers. On first run it
+detects which credentials you already have and, if AWS isn't set up but exactly
+one other provider is, **auto-selects that provider and tells you it did so**
+(once). Set the environment variable for whichever provider you want:
 
 ```bash
-aws configure
+export ANTHROPIC_API_KEY=sk-ant-...   # or: ziya --endpoint anthropic
+export OPENAI_API_KEY=sk-...          # or: ziya --endpoint openai
+export GOOGLE_API_KEY=...             # or: ziya --endpoint google
+aws configure                         # AWS Bedrock (the default)
+ziya --profile my-profile             # use an existing named AWS profile
 ```
+
+If **no** provider is configured, Ziya prints this full list so you know your
+options. If **more than one** non-Bedrock provider is configured, it won't guess
+— pick one with `--endpoint`.
 
 ---
 
