@@ -51,6 +51,12 @@ interface DelegateTaskPlanSpec {
     dependencies?: string[];
     skill_id?: string;
     color?: string;
+    // Model selection — model-expressed plans may pick a per-delegate
+    // tier (portable) or a specific model. Mirrors DelegateSpec.
+    model_tier?: string;
+    model_name?: string;
+    model_id_override?: string;
+    model_endpoint?: string;
   }>;
 }
 
@@ -80,7 +86,7 @@ const DelegateLaunchButton: React.FC<DelegateLaunchButtonProps> = ({
   conversationId,
 }) => {
   const { currentProject } = useProject();
-  const { setConversations, setFolders } = useConversationList();
+  const { conversations, setConversations, setFolders } = useConversationList();
   const { currentConversationId: contextConversationId } = useActiveChat();
   // Fall back to the active conversation when no explicit conversationId prop is supplied.
   const effectiveConversationId = conversationId ?? contextConversationId ?? null;
@@ -107,6 +113,10 @@ const DelegateLaunchButton: React.FC<DelegateLaunchButtonProps> = ({
         dependencies: d.dependencies || [],
         skill_id: d.skill_id || null,
         color: d.color || '',
+        model_tier: (d.model_tier as any) || null,
+        model_name: d.model_name || null,
+        model_id_override: d.model_id_override || null,
+        model_endpoint: d.model_endpoint || null,
       }));
 
       const response = await fetch(

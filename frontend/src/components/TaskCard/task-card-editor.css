@@ -96,6 +96,72 @@
   font-weight: 500;
 }
 
+/* Wrapper grouping the permissions row + model picker on container /
+   card / deck surfaces (BlockScopeButton). */
+.tc-block-scope-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* ── Model tier picker ───────────────────────────────────── */
+.tc-model-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+
+.tc-tier-seg {
+  display: inline-flex;
+  border: 1px solid var(--tc-card-border, #30363d);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.tc-tier-btn {
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--tc-card-border, #30363d);
+  color: var(--tc-muted, #7d8590);
+  font-size: 11px;
+  padding: 3px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tc-tier-btn:last-child { border-right: none; }
+.tc-tier-btn:hover { color: var(--tc-fg, #ddd); background: var(--tc-chip-bg, rgba(255, 255, 255, 0.05)); }
+
+.tc-tier-btn-active {
+  background: var(--tc-accent, #1f6feb);
+  color: #fff;
+}
+
+.tc-tier-resolved {
+  font-family: ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--tc-muted, #7d8590);
+}
+
+.tc-model-mode-link {
+  background: transparent; border: none;
+  color: var(--tc-accent, #58a6ff);
+  font-size: 10px; cursor: pointer;
+  text-decoration: underline; padding: 0;
+}
+
+.tc-model-select {
+  background: var(--tc-chip-bg, rgba(0, 0, 0, 0.05));
+  border: 1px solid var(--tc-card-border, #30363d);
+  color: var(--tc-fg, #ddd);
+  border-radius: 4px; padding: 2px 6px; font-size: 11px;
+}
+
+.tc-model-warn { font-size: 10px; color: #d29922; }
+
 .tc-cwd-value {
   font-family: ui-monospace, monospace;
   background: var(--tc-chip-bg, rgba(0, 0, 0, 0.05));
@@ -484,6 +550,13 @@ textarea.tc-text-input {
   border-radius: 4px;
 }
 .tc-scope-approval-block-name { font-weight: 600; }
+.tc-scope-approval-reason {
+  font-size: 11px;
+  font-style: italic;
+  opacity: 0.85;
+  margin: 2px 0 4px;
+  color: #d48806;
+}
 .tc-scope-approval-detail {
   font-family: monospace;
   font-size: 12px;
@@ -500,6 +573,13 @@ textarea.tc-text-input {
   word-break: break-all;
 }
 .tc-scope-approval-recheck { margin-top: 8px; }
+.tc-scope-approval-recheck:disabled { opacity: 0.6; cursor: default; }
+.tc-scope-approval-check-error {
+  margin-top: 6px; font-size: 11px; color: #f85149;
+}
+.tc-scope-approval-check-hint {
+  margin-top: 6px; font-size: 11px; opacity: 0.7; font-style: italic;
+}
 
 /* ── Drag-and-drop composability ─────────────────────────── */
 
@@ -533,4 +613,20 @@ textarea.tc-text-input {
   height: 22px;
   background: rgba(31, 111, 235, 0.12);
   border-color: #1f6feb;
+}
+
+/* ── Hierarchy-level Permissions rows (deck / card / container blocks) ──
+ * BlockScopeButton reuses .tc-perms-row itself; these wrappers just give
+ * the button consistent spacing at the card level and inside a
+ * container block's body (so it doesn't crowd the block's own controls
+ * or the body's drop zones). */
+.tc-card-scope-row {
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--tc-card-border, #30363d);
+}
+.tc-block-body-scope-row {
+  padding: 6px 12px 0 12px;
+}
+.tc-block-body-scope-row .tc-perms-row {
+  margin: 0 0 6px 0;
 }

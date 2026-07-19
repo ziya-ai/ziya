@@ -18,6 +18,12 @@ export interface TaskBinding {
   run_id?: string | null;
   anchor_message_id?: string | null;
   created_at: number;
+  /**
+   * Server-enriched on GET /task-bindings: current status of the
+   * bound run ("queued" | "running" | "done" | "failed" |
+   * "cancelled").  Absent for staged bindings with no run.
+   */
+  run_status?: string;
 }
 
 export interface TaskBindingCreateRequest {

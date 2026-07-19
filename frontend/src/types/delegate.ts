@@ -5,6 +5,8 @@
  * Used by: MUIChatHistory (sidebar status), future delegate API
  */
 
+import type { ModelTier } from './task_card';
+
 export interface FileChange {
   path: string;
   action: string;  // 'created' | 'modified' | 'deleted'
@@ -35,6 +37,13 @@ export interface DelegateSpec {
   dependencies: string[];
   skill_id?: string | null;
   color: string;
+  // Model selection for this delegate — mirrors app/models/delegate.py.
+  // model_tier is the recommended, portable choice; model_name /
+  // model_id_override are escape hatches for a specific model.
+  model_tier?: ModelTier | null;
+  model_name?: string | null;
+  model_id_override?: string | null;
+  model_endpoint?: string | null;
 }
 
 export type DelegateStatus =

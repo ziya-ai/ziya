@@ -10,8 +10,9 @@
  */
 
 import React from 'react';
-import type { Block, UntilMode } from '../../types/task_card';
+import type { Block, UntilMode, TaskScope } from '../../types/task_card';
 import { BlockBody } from './BlockBody';
+import { BlockScopeButton } from './BlockScopeButton';
 import { DragHandle } from './DragContext';
 import { AutoGrowTextarea } from './AutoGrowTextarea';
 import './task-card-editor.css';
@@ -65,9 +66,25 @@ export const UntilBlockEditor: React.FC<Props> = ({ block, onChange, onDelete, i
           onChange={e => update({ until_max: parseInt(e.target.value, 10) || 1 })}
           title="Hard upper bound on iteration count"
         />
+        <select
+          className="tc-select"
+          value={block.on_failure ?? 'continue'}
+          onChange={e => update({ on_failure: e.target.value === 'stop' ? 'stop' : null })}
+          title="Failure policy for the steps inside each iteration: continue (later steps still run after a failed one) or stop (halt the iteration at the first failed step)"
+        >
+          <option value="continue">on fail: continue</option>
+          <option value="stop">on fail: stop</option>
+        </select>
         {onDelete && (
           <button className="tc-icon-btn tc-icon-btn-delete" onClick={onDelete} title="Delete">×</button>
         )}
+      </div>
+      <div className="tc-block-body tc-block-body-scope-row">
+        <BlockScopeButton
+          scope={block.scope}
+          onChange={(next: TaskScope) => update({ scope: next })}
+          title={block.name || 'this Until block'}
+        />
       </div>
       <BlockBody
         parentId={block.id}

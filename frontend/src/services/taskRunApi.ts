@@ -75,6 +75,28 @@ export async function cancelTaskRun(
   return res.json();
 }
 
+export async function pauseTaskRun(
+  projectId: string, runId: string,
+): Promise<TaskRun> {
+  const res = await fetch(
+    `${runsBase(projectId)}/${encodeURIComponent(runId)}/pause`,
+    { method: 'POST', headers: projectHeaders() },
+  );
+  if (!res.ok) throw new Error(`pauseTaskRun ${runId} failed: ${res.status}`);
+  return res.json();
+}
+
+export async function resumeTaskRun(
+  projectId: string, runId: string,
+): Promise<TaskRun> {
+  const res = await fetch(
+    `${runsBase(projectId)}/${encodeURIComponent(runId)}/resume`,
+    { method: 'POST', headers: projectHeaders() },
+  );
+  if (!res.ok) throw new Error(`resumeTaskRun ${runId} failed: ${res.status}`);
+  return res.json();
+}
+
 export async function deleteTaskRun(
   projectId: string, runId: string,
 ): Promise<void> {
