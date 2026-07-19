@@ -28,7 +28,7 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
-from ..models.task_card import Artifact, ArtifactPart, Block
+from ..models.task_card import Artifact, ArtifactPart, Block, TaskScope, merge_scopes
 from ..models.task_run import IterationStatus, IterationSummary, TaskRunBlockState
 from ..context import (
     set_task_iteration_context,
@@ -61,6 +61,18 @@ class ExecutionContext:
     # resolving scope.skills (which live under the project's
     # ~/.ziya/projects/{project_id}/skills directory).
     project_id: Optional[str] = None
+    # Deck-level (project-wide) scope — the outermost permissions layer,
+    # sourced from the project's ``settings.taskScope``.  Merged
+    # additively with ``card_scope`` and every ancestor container
+    # block's own scope before reaching a leaf Task.  See
+    # app.models.task_card.merge_scopes.
+    deck_scope: Optional[TaskScope] = None
+    # Card-level scope — the second-outermost layer, sourced from
+    # ``TaskCard.scope``.
+    card_scope: Optional[TaskScope] = None
+    # Stack of ancestor container blocks' own scopes, pushed/popped by
+    # execute_block as the tree is walked.  Root→leaf order.
+    scope_stack: List[Optional[TaskScope]] = field(default_factory=list)
     storage: Optional[TaskRunStorage] = None
     # Per-block pass-retention counters.  Keyed by block.id.
     pass_counts: Dict[str, int] = field(default_factory=dict)
@@ -108,11 +120,28 @@ class ExecutionContext:
     # its own entry, so the lookup sees that block's most recent result.
     artifact_registry: Dict[str, Artifact] = field(default_factory=dict)
 
+    def effective_scope(self, leaf_scope: Optional[TaskScope] = None) -> Optional[TaskScope]:
+        """Merge deck + card + every active ancestor's scope + an
+        optional leaf scope, root→leaf order (outermost first, so a
+        more specific layer only ever ADDS grants — see merge_scopes).
+        """
+        layers: List[Optional[TaskScope]] = [self.deck_scope, self.card_scope]
+        layers.extend(self.scope_stack)
+        if leaf_scope is not None:
+            layers.append(leaf_scope)
+        return merge_scopes(*layers)
+
     def cancel_requested(self) -> bool:
         if self.storage is None:
             return False
         run = self.storage.get(self.run_id)
         return bool(run and run.cancel_requested)
+
+    def pause_requested(self) -> bool:
+        if self.storage is None:
+            return False
+        run = self.storage.get(self.run_id)
+        return bool(run and run.pause_requested)
 
 
 class BlockExecutionCancelled(Exception):
@@ -126,30 +155,131 @@ async def _emit(ctx: "ExecutionContext", event: Dict[str, Any]) -> None:
     await _relay.safe_push(ctx.run_id, event)
 
 
+async def _wait_if_paused(ctx: "ExecutionContext") -> None:
+    """Hold at a boundary while the run's pause flag is set.
+
+    Called at the SAME boundaries as ``cancel_requested`` (between
+    Repeat iterations, between sequence siblings, between until loops).
+    No-op when not paused.  While held, the run's status is flipped to
+    ``paused`` and a ``run_paused`` event is emitted once; on resume the
+    status is restored to ``running`` and ``run_resumed`` is emitted.
+
+    Cancel wins over pause: if cancel is requested while paused, this
+    raises ``BlockExecutionCancelled`` so a paused run can still be
+    stopped.  The coroutine stays registered in the live-run set while
+    sleeping, so the cancel endpoint's soft-cancel path reaches it.
+    """
+    if ctx.storage is None:
+        return
+    notified = False
+    while ctx.pause_requested():
+        if ctx.cancel_requested():
+            raise BlockExecutionCancelled()
+        if not notified:
+            ctx.storage.update_status(ctx.run_id, "paused")
+            await _emit(ctx, {
+                "type": "run_paused", "run_id": ctx.run_id, "at": time.time(),
+            })
+            notified = True
+        await asyncio.sleep(0.4)
+    if notified:
+        ctx.storage.update_status(ctx.run_id, "running")
+        await _emit(ctx, {
+            "type": "run_resumed", "run_id": ctx.run_id, "at": time.time(),
+        })
+
+
+async def _mark_block_status(
+    ctx: "ExecutionContext", block: Block, status: str,
+    error: Optional[str] = None,
+    artifact: Optional[Artifact] = None,
+) -> None:
+    """Record a block's lifecycle transition for the run map.
+
+    Always emits a ``block_status`` event (cheap; drives the live run
+    map).  Persists to ``run.block_states`` only for structural blocks
+    — those NOT inside an active loop iteration (``binding_stack``
+    empty) — so a 10,000-iteration loop doesn't rewrite the run file
+    twice per inner block per iteration.  Inner-block state is
+    live-only; the loop block itself plus its iteration summaries
+    carry the durable record.
+    """
+    if not block.id:
+        return
+    event: Dict[str, Any] = {
+        "type": "block_status",
+        "block_id": block.id,
+        "block_type": block.block_type,
+        "status": status,
+        "at": time.time(),
+    }
+    if error:
+        event["error"] = error[:500]
+    await _emit(ctx, event)
+    if ctx.storage is not None and not ctx.binding_stack:
+        try:
+            ctx.storage.update_block_status(
+                ctx.run_id, block.id, status, error=error, artifact=artifact,
+            )
+        except Exception as exc:
+            logger.debug(f"update_block_status failed (non-fatal): {exc}")
+
+
 async def execute_block(block: Block, ctx: ExecutionContext) -> Artifact:
-    """Execute any block — dispatcher over block_type."""
-    if block.block_type == "task":
-        effective = _apply_templating_to_task(block, ctx)
-        artifact = await execute_task_block(
-            effective,
-            project_root=ctx.project_root,
-            project_id=ctx.project_id,
-            run_id=ctx.run_id,
-        )
-    elif block.block_type == "repeat":
-        artifact = await _execute_repeat(block, ctx)
-    elif block.block_type == "parallel":
-        artifact = await _execute_parallel(block, ctx)
-    elif block.block_type == "until":
-        artifact = await _execute_until(block, ctx)
-    elif block.block_type == "schedule":
-        artifact = await _execute_schedule_passthrough(block, ctx)
-    elif block.block_type == "state":
-        artifact = await _execute_state(block, ctx)
-    elif block.block_type == "group":
-        artifact = await _execute_sequence(block.body, ctx)
-    else:
-        raise TaskExecutorError(f"Unknown block_type: {block.block_type!r}")
+    """Execute any block — dispatcher over block_type.
+
+    Any block (leaf or container) may carry its own ``scope``, which
+    applies additively to itself and its entire subtree.  It is pushed
+    onto ``ctx.scope_stack`` for the duration of this call so a leaf
+    Task anywhere beneath it sees deck scope + card scope + every
+    ancestor's scope + its own, merged additively (see
+    ExecutionContext.effective_scope / app.models.task_card.merge_scopes).
+    """
+    ctx.scope_stack.append(block.scope)
+    await _mark_block_status(ctx, block, "running")
+    try:
+        if block.block_type == "task":
+            effective = _apply_templating_to_task(block, ctx)
+            merged_scope = ctx.effective_scope()
+            if merged_scope is not effective.scope:
+                effective = effective.model_copy(update={"scope": merged_scope})
+            artifact = await execute_task_block(
+                effective,
+                project_root=ctx.project_root,
+                project_id=ctx.project_id,
+                run_id=ctx.run_id,
+            )
+        elif block.block_type == "repeat":
+            artifact = await _execute_repeat(block, ctx)
+        elif block.block_type == "parallel":
+            artifact = await _execute_parallel(block, ctx)
+        elif block.block_type == "until":
+            artifact = await _execute_until(block, ctx)
+        elif block.block_type == "schedule":
+            artifact = await _execute_schedule_passthrough(block, ctx)
+        elif block.block_type == "state":
+            artifact = await _execute_state(block, ctx)
+        elif block.block_type == "group":
+            artifact = await _execute_sequence(
+                block.body, ctx,
+                on_failure=(block.on_failure or "continue"),
+            )
+        else:
+            raise TaskExecutorError(f"Unknown block_type: {block.block_type!r}")
+    except BlockExecutionCancelled:
+        await _mark_block_status(ctx, block, "cancelled")
+        raise
+    except Exception as exc:
+        await _mark_block_status(ctx, block, "failed", error=str(exc))
+        raise
+    finally:
+        ctx.scope_stack.pop()
+    # Terminal status: an artifact that reports failure marks the block
+    # failed even though no exception escaped (a failed leaf task, or a
+    # stopped sequence whose failure propagated up).
+    await _mark_block_status(
+        ctx, block, "failed" if artifact.failed else "done", artifact=artifact,
+    )
     # Register the completed artifact by block id for {{sibling("id")}}
     # lookups by later blocks.  Skip blocks with no id (shouldn't happen
     # post-_assign_block_ids, but guard so a stray empty id can't clobber
@@ -318,6 +448,7 @@ def _apply_templating_to_task(block: Block, ctx: ExecutionContext) -> Block:
 
 async def _execute_sequence(
     blocks: List[Block], ctx: ExecutionContext,
+    on_failure: str = "continue",
 ) -> Artifact:
     """Implicit sequence: run top-to-bottom, return the last block's
     artifact.  Cancel is checked between siblings.
@@ -326,6 +457,15 @@ async def _execute_sequence(
     the next sibling can see it (prose auto-context + {{previous_sibling}}).
     Pushes a fresh slot for this depth and pops it on exit so a nested
     sequence never leaks its last sibling to the enclosing one.
+
+    ``on_failure`` is the enclosing container's failure policy:
+    - "continue" (default, legacy) — every sibling runs regardless of
+      prior failures; a failed artifact flows onward as
+      {{previous_sibling}}.
+    - "stop" — halt at the first child whose artifact is failed.  That
+      artifact (annotated with a skip note) becomes the sequence's
+      result, so the failure propagates upward instead of silently
+      feeding failed input into later stages.
     """
     if not blocks:
         return Artifact(summary="", created_at=time.time())
@@ -333,11 +473,29 @@ async def _execute_sequence(
     ctx.sibling_stack.append(None)
     try:
         for i, child in enumerate(blocks):
-            if i > 0 and ctx.cancel_requested():
-                raise BlockExecutionCancelled()
+            if i > 0:
+                await _wait_if_paused(ctx)
+                if ctx.cancel_requested():
+                    raise BlockExecutionCancelled()
             last = await execute_block(child, ctx)
             # Make this sibling's result visible to the next sibling.
             ctx.sibling_stack[-1] = last
+            if on_failure == "stop" and last.failed and i < len(blocks) - 1:
+                skipped = len(blocks) - 1 - i
+                label = child.name or child.id or child.block_type
+                last = last.model_copy(update={
+                    "decisions": list(last.decisions or []) + [
+                        f"sequence stopped: step {i + 1}/{len(blocks)} "
+                        f"({label}) failed; {skipped} remaining step(s) "
+                        f"skipped (on_failure=stop)"
+                    ],
+                })
+                ctx.sibling_stack[-1] = last
+                # Mark never-run siblings as skipped so the run map can
+                # distinguish them from queued/failed blocks.
+                for rest in blocks[i + 1:]:
+                    await _mark_block_status(ctx, rest, "skipped")
+                break
     finally:
         ctx.sibling_stack.pop()
     assert last is not None
@@ -385,7 +543,7 @@ async def _execute_repeat(
 ) -> Artifact:
     """Execute a Repeat block in its declared mode.  One iteration is
     one top-to-bottom pass of the body."""
-    iterations = _plan_iterations(block)
+    iterations = _plan_iterations(block, ctx)
     if not iterations:
         return Artifact(summary="(repeat with 0 iterations)", created_at=time.time())
 
@@ -427,7 +585,10 @@ async def _execute_repeat(
         # single "Iteration 0" in the Live and Tools tabs.
         iter_ctx_token = set_task_iteration_context(block.id, index)
         try:
-            artifact = await _execute_sequence(block.body, ctx)
+            artifact = await _execute_sequence(
+                block.body, ctx,
+                on_failure=(block.on_failure or "continue"),
+            )
         finally:
             ctx.binding_stack.pop()
             reset_task_iteration_context(iter_ctx_token)
@@ -508,6 +669,7 @@ async def _execute_repeat(
             raise BlockExecutionCancelled()
     else:
         for i in range(len(iterations)):
+            await _wait_if_paused(ctx)
             if ctx.cancel_requested():
                 raise BlockExecutionCancelled()
             # Honour propagate mode.  "none" isolates iterations entirely
@@ -546,8 +708,49 @@ async def _execute_repeat(
     )
 
 
-def _plan_iterations(block: Block) -> List[Dict[str, Any]]:
-    """Produce the list of iteration descriptors for a Repeat block."""
+def _render_for_each_source(
+    block: Block, ctx: "ExecutionContext",
+) -> Optional[str]:
+    """Render templating in a Repeat's for_each source at dispatch time.
+
+    Enables the canonical decomposition shape — Task("plan") followed by
+    Repeat(for_each over the plan's output): the source may reference
+    {{sibling("plan-id")}} / {{previous_sibling}} / {{var.X}}, resolved
+    against the artifacts completed so far in this run.  A source with
+    no placeholders passes through unchanged (the JSON-literal path).
+    """
+    raw = block.repeat_for_each_source
+    if not raw or "{{" not in raw:
+        return raw
+    base = ctx.binding_stack[-1] if ctx.binding_stack else task_templating.IterationBindings()
+    updates: Dict[str, Any] = {}
+    merged = {**ctx.variables, **ctx.overrides}
+    if merged:
+        updates["variables"] = merged
+    sibling_prev = ctx.sibling_stack[-1] if ctx.sibling_stack else None
+    if sibling_prev is not None:
+        updates["previous_sibling"] = sibling_prev
+    if ctx.artifact_registry:
+        updates["sibling_artifacts"] = ctx.artifact_registry
+    bindings = replace(base, **updates) if updates else base
+    rendered = task_templating.render(raw, bindings)
+    if rendered != raw:
+        logger.info(
+            f"for_each source for block {block.id!r} rendered at "
+            f"dispatch time ({len(raw)} -> {len(rendered)} chars)"
+        )
+    return rendered
+
+
+def _plan_iterations(
+    block: Block, ctx: Optional["ExecutionContext"] = None,
+) -> List[Dict[str, Any]]:
+    """Produce the list of iteration descriptors for a Repeat block.
+
+    When ``ctx`` is provided, a for_each source containing {{...}}
+    placeholders is rendered against the run's completed artifacts and
+    variables first, so a planner Task's output can drive the fan-out.
+    """
     mode = block.repeat_mode or "count"
     if mode == "count":
         n = int(block.repeat_count or 1)
@@ -556,7 +759,11 @@ def _plan_iterations(block: Block) -> List[Dict[str, Any]]:
         n_max = int(block.repeat_max or 1)
         return [{"index": i, "item": None} for i in range(max(0, n_max))]
     if mode == "for_each":
-        items = task_templating.parse_for_each_source(block.repeat_for_each_source)
+        source = (
+            _render_for_each_source(block, ctx)
+            if ctx is not None else block.repeat_for_each_source
+        )
+        items = task_templating.parse_for_each_source(source)
         if items is not None:
             # Respect repeat_max as an upper bound when provided.
             if block.repeat_max and block.repeat_max > 0:
@@ -640,6 +847,7 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
     })
 
     for i in range(n_max):
+        await _wait_if_paused(ctx)
         if ctx.cancel_requested():
             raise BlockExecutionCancelled()
         await _emit(ctx, {
@@ -655,7 +863,10 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
         # block's id, not the inner task block's id.
         iter_ctx_token = set_task_iteration_context(block.id, i)
         try:
-            artifact = await _execute_sequence(block.body, ctx)
+            artifact = await _execute_sequence(
+                block.body, ctx,
+                on_failure=(block.on_failure or "continue"),
+            )
         finally:
             ctx.binding_stack.pop()
             reset_task_iteration_context(iter_ctx_token)
@@ -759,7 +970,9 @@ async def _execute_schedule_passthrough(
     if not block.body:
         return Artifact(summary="(empty schedule block)", created_at=time.time())
     logger.info(f"schedule block {block.id} executed directly (passthrough)")
-    return await _execute_sequence(block.body, ctx)
+    return await _execute_sequence(
+        block.body, ctx, on_failure=(block.on_failure or "continue"),
+    )
 
 
 async def _execute_state(block: Block, ctx: ExecutionContext) -> Artifact:

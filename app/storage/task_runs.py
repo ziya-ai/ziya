@@ -33,6 +33,9 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         # set the flag, the loop will honor it" and "zombie run from a
         # prior server lifetime — force-cancel directly".
         self._active_runs: set[str] = set()
+        # Per-run wall-clock of the last heartbeat WRITE, for the
+        # record_activity throttle.  Process-local by design.
+        self._last_activity_write: Dict[str, float] = {}
 
     def _run_file(self, run_id: str) -> Path:
         return self.runs_dir / f"{run_id}.json"
@@ -97,6 +100,42 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         self._write_json(self._run_file(run_id), run.model_dump())
         return run
 
+    def record_activity(
+        self, run_id: str, note: Optional[str] = None,
+        min_interval_s: float = 5.0,
+    ) -> Optional[TaskRun]:
+        """Heartbeat: stamp ``last_activity_at`` (+ optional
+        ``progress_note``) on the run file.
+
+        Throttled to one disk write per ``min_interval_s`` per run so
+        per-token text deltas don't become a write storm.  A call
+        carrying a genuinely NEW note bypasses the throttle so the
+        surfaced note is never stale relative to the last tool call.
+        No-op for unknown or already-terminal runs.
+        """
+        now = time.time()
+        last = self._last_activity_write.get(run_id, 0.0)
+        # Cheap path: throttled, note-less heartbeat — skip the disk
+        # read entirely.
+        if note is None and (now - last) < min_interval_s:
+            return None
+        run = self.get(run_id)
+        if not run:
+            return None
+        if run.status not in ("queued", "running"):
+            # Never resurrect activity on a terminal run.
+            return None
+        if note is not None and note == run.progress_note \
+                and (now - last) < min_interval_s:
+            return None
+        run.last_activity_at = now
+        if note is not None:
+            run.progress_note = note
+        run.updated_at = int(now * 1000)
+        self._write_json(self._run_file(run_id), run.model_dump())
+        self._last_activity_write[run_id] = now
+        return run
+
     def set_artifact(
         self, run_id: str, artifact: Artifact,
     ) -> Optional[TaskRun]:
@@ -119,6 +158,46 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         self._write_json(self._run_file(run_id), run.model_dump())
         return run
 
+    def update_block_status(
+        self, run_id: str, block_id: str, status: str,
+        error: Optional[str] = None,
+        artifact: Optional[Artifact] = None,
+    ) -> None:
+        """Update one block's lifecycle status in place, preserving its
+        iteration_summaries (unlike set_block_state, which replaces the
+        whole state object).  Called by the block executor as each
+        structural block starts/finishes so the REST snapshot can drive
+        the run map after reload/reconnect.
+
+        Timestamps: started_at is set on the first transition to
+        "running"; completed_at on any terminal status (done / failed /
+        cancelled / skipped).
+        """
+        run = self.get(run_id)
+        if not run:
+            return
+        state = run.block_states.get(block_id)
+        if state is None:
+            return
+        state.status = status  # type: ignore[assignment]
+        now = time.time()
+        if status == "running" and state.started_at is None:
+            state.started_at = now
+        elif status in ("done", "failed", "cancelled", "skipped"):
+            state.completed_at = now
+        if error:
+            state.error = error[:500]
+        # Persist the block's own artifact on the terminal write so its
+        # output survives reload.  Loop *iterations* already persist via
+        # write_iteration_artifact; this covers structural blocks
+        # (planner, verifier, the loop container's summary) which
+        # otherwise left only status behind.
+        if artifact is not None:
+            state.artifact = artifact
+        run.block_states[block_id] = state
+        run.updated_at = int(time.time() * 1000)
+        self._write_json(self._run_file(run_id), run.model_dump())
+
     def set_permissions_snapshot(
         self, run_id: str, snapshot: dict,
     ) -> Optional[TaskRun]:
@@ -132,6 +211,21 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         if not run:
             return None
         run.permissions_snapshot = snapshot
+        run.updated_at = int(time.time() * 1000)
+        self._write_json(self._run_file(run_id), run.model_dump())
+        return run
+
+    def set_card_snapshot(
+        self, run_id: str, snapshot: dict,
+    ) -> Optional[TaskRun]:
+        """Record the card definition (name/description/root) captured at
+        launch.  Set once per run, immediately after creation, so later
+        edits to the card don't rewrite what this run is shown to have
+        executed."""
+        run = self.get(run_id)
+        if not run:
+            return None
+        run.card_snapshot = snapshot
         run.updated_at = int(time.time() * 1000)
         self._write_json(self._run_file(run_id), run.model_dump())
         return run
@@ -152,6 +246,30 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         if not run:
             return None
         run.cancel_requested = True
+        run.updated_at = int(time.time() * 1000)
+        self._write_json(self._run_file(run_id), run.model_dump())
+        return run
+
+    def request_pause(self, run_id: str) -> Optional[TaskRun]:
+        """Set the soft-pause flag on a run.  Status is NOT flipped to
+        "paused" here — the executor does that when it actually reaches
+        the next boundary (via block_executor._wait_if_paused), so the
+        run reads "running" (pending) until the hold takes effect."""
+        run = self.get(run_id)
+        if not run:
+            return None
+        run.pause_requested = True
+        run.updated_at = int(time.time() * 1000)
+        self._write_json(self._run_file(run_id), run.model_dump())
+        return run
+
+    def request_resume(self, run_id: str) -> Optional[TaskRun]:
+        """Clear the soft-pause flag.  The executor's wait-loop observes
+        this at its next poll and restores status to "running"."""
+        run = self.get(run_id)
+        if not run:
+            return None
+        run.pause_requested = False
         run.updated_at = int(time.time() * 1000)
         self._write_json(self._run_file(run_id), run.model_dump())
         return run
@@ -177,7 +295,8 @@ class TaskRunStorage(BaseStorage[TaskRun]):
     # ---- startup reconciliation -----------------------------------
 
     def reconcile_stale_runs(self) -> int:
-        """Sweep on-disk runs and mark any ``running`` / ``queued``
+        """Sweep on-disk runs and mark any ``running`` / ``queued`` /
+        ``paused``
         rows as ``failed`` — they were owned by a prior server lifetime
         and have no live executor.  Idempotent.  Safe to call at
         startup before any new runs are launched.
@@ -187,7 +306,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         reconciled = 0
         now_ms = int(time.time() * 1000)
         for run in self.list():
-            if run.status not in ("running", "queued"):
+            if run.status not in ("running", "queued", "paused"):
                 continue
             run.status = "failed"  # type: ignore[assignment]
             run.cancel_requested = False

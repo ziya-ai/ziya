@@ -45,8 +45,14 @@ class ScopeEntry(BaseModel):
 class TaskScope(BaseModel):
     """A single task's allowed files, tools, and skills.
 
-    Scope does not cascade.  Each task block sets its own scope
-    independently; children do not inherit from the parent.
+    Scope is hierarchical and ADDITIVE (see ``merge_scopes`` below): a
+    deck-level (project-wide) scope, a card-level scope, and every
+    ancestor container block's scope (repeat/parallel/until/group/
+    schedule) each contribute grants that flow down to every leaf Task
+    beneath them.  A more specific layer can only grant more — it
+    never revokes what an ancestor granted.  ``cwd`` is the one
+    non-additive field: the most specific (innermost) non-null
+    ``cwd`` wins, since "working directory" is inherently singular.
     """
     model_config = {"extra": "allow"}
 
@@ -54,6 +60,29 @@ class TaskScope(BaseModel):
     cwd: Optional[str] = None
     tools: List[str] = []
     skills: List[str] = []
+    # Model selection for this task and everything beneath it.  Like
+    # ``cwd``, this is non-additive — the most specific (innermost)
+    # non-null value wins, since a task runs on exactly one model.
+    #
+    # ``model_tier`` is the RECOMMENDED way to pick a model: a portable
+    # rung ("xsmall" | "small" | "base" | "medium" | "large" |
+    # "frontier") that resolves to a concrete model per-endpoint via
+    # app.config.models_config.resolve_tier_model. This lets a
+    # decomposed task run cheap/fast on small tiers with a smarter
+    # model supervising, without hardcoding a provider-specific name
+    # that breaks when that model is retired or the endpoint changes.
+    #
+    # ``model_name`` is an escape hatch for users who want a SPECIFIC
+    # model (e.g. "sonnet4.6") or an explicit inference-profile ARN via
+    # ``model_id_override``. Prefer ``model_tier`` — a literal model
+    # name/ID is NOT portable across endpoints or time.
+    model_tier: Optional[str] = None
+    model_name: Optional[str] = None
+    model_id_override: Optional[str] = None
+    # Optional endpoint override (bedrock/google/openai/anthropic/zai).
+    # Only meaningful alongside model_name/model_id_override — combining
+    # model_tier with an endpoint override still resolves portably.
+    model_endpoint: Optional[str] = None
     # Per-task shell command grants.  Each entry is either a literal
     # first-token match (e.g. "pytest" grants any pytest invocation)
     # or, with a "re:" prefix, a regex against the full command line
@@ -69,6 +98,83 @@ class TaskScope(BaseModel):
     # injected into tool args by ``tool_execution``, consumed by
     # ``shell_server`` / ``ShellWriteChecker``.
     shell_commands: List[str] = []
+
+
+def merge_scopes(*scopes: "Optional[TaskScope]") -> "Optional[TaskScope]":
+    """Additively merge scopes from outermost to innermost.
+
+    Callers pass layers in root→leaf order, e.g.
+    ``merge_scopes(deck_scope, card_scope, *ancestor_block_scopes, leaf_scope)``.
+    ``None`` layers are skipped.  Returns ``None`` only when every layer
+    is ``None`` (matches the pre-existing "no scope set -> unrestricted"
+    semantics of a bare ``Optional[TaskScope]`` field).
+
+    Union rules:
+      - ``paths``: entries are merged by ``path``.  A later layer's
+        entry for the same path ORs each boolean flag onto the earlier
+        one (so a later "read only" grant cannot silently downgrade an
+        earlier "read+write" grant for the same path — union, not
+        overwrite).
+      - ``tools`` / ``skills`` / ``shell_commands``: set union,
+        de-duplicated, order-stable (first-seen order).
+      - ``cwd``: last non-null value wins (most specific).
+      - ``model_tier`` / ``model_name`` / ``model_id_override`` /
+        ``model_endpoint``: last non-null value wins (most specific),
+        same rule as ``cwd`` — a task runs on exactly one model, so a
+        leaf's own choice overrides an ancestor's, but an ancestor's
+        choice still applies to sibling leaves that set nothing.
+    """
+    present = [s for s in scopes if s is not None]
+    if not present:
+        return None
+    paths_by_key: Dict[str, ScopeEntry] = {}
+    tools: List[str] = []
+    skills: List[str] = []
+    shell_commands: List[str] = []
+    cwd: Optional[str] = None
+    model_tier: Optional[str] = None
+    model_name: Optional[str] = None
+    model_id_override: Optional[str] = None
+    model_endpoint: Optional[str] = None
+    for s in present:
+        for entry in s.paths or []:
+            key = entry.path
+            if key in paths_by_key:
+                prev = paths_by_key[key]
+                paths_by_key[key] = prev.model_copy(update={
+                    "is_dir": prev.is_dir or entry.is_dir,
+                    "read": prev.read or entry.read,
+                    "write": prev.write or entry.write,
+                    "context": prev.context or entry.context,
+                })
+            else:
+                paths_by_key[key] = entry
+        for v in (s.tools or []):
+            if v not in tools:
+                tools.append(v)
+        for v in (s.skills or []):
+            if v not in skills:
+                skills.append(v)
+        for v in (s.shell_commands or []):
+            if v not in shell_commands:
+                shell_commands.append(v)
+        if s.cwd:
+            cwd = s.cwd
+        if getattr(s, "model_tier", None):
+            model_tier = s.model_tier
+        if getattr(s, "model_name", None):
+            model_name = s.model_name
+        if getattr(s, "model_id_override", None):
+            model_id_override = s.model_id_override
+        if getattr(s, "model_endpoint", None):
+            model_endpoint = s.model_endpoint
+    return TaskScope(
+        paths=list(paths_by_key.values()),
+        cwd=cwd, tools=tools, skills=skills,
+        shell_commands=shell_commands,
+        model_tier=model_tier, model_name=model_name,
+        model_id_override=model_id_override, model_endpoint=model_endpoint,
+    )
 
 
 # ── Artifact (what flows back from a finished task) ────────
@@ -207,12 +313,42 @@ class Block(BaseModel):
     # baseline most cards use.  Same placement-is-reset-policy as vars.
     state_context: Optional[str] = None
 
+    # Container failure policy — governs the implicit sequence formed by
+    # this block's body (group / repeat / until / schedule bodies).
+    #   "continue" (default, legacy): a child completing with a failed
+    #     artifact does not stop later siblings from running.
+    #   "stop": the sequence halts at the first failed child; that
+    #     child's artifact (annotated) becomes the sequence's artifact
+    #     and remaining siblings are skipped.
+    # Parallel is unaffected (children are concurrent).  None == continue.
+    on_failure: Optional[Literal["stop", "continue"]] = None
+
     # Body — used by repeat / parallel / until / schedule (Task ignores)
     body: List["Block"] = []
 
 
 # Rebuild for forward ref
 Block.model_rebuild()
+
+
+def find_scope_chain(root: Block, target_id: str) -> Optional[List[Optional[TaskScope]]]:
+    """Depth-first search for ``target_id``; return the list of scopes
+    from ``root`` down to (and including) the matching block, or
+    ``None`` if no block with that id exists in the tree.
+
+    Used by every call site that needs the block's EFFECTIVE (merged)
+    scope without running the full executor — signing (``ziya-approve
+    --task``), the scope-status editor banner, and the compliance
+    audit.  Each caller additionally prepends deck/card scope via
+    ``merge_scopes(deck_scope, card_scope, *find_scope_chain(...))``.
+    """
+    if root.id == target_id:
+        return [root.scope]
+    for child in root.body or []:
+        found = find_scope_chain(child, target_id)
+        if found is not None:
+            return [root.scope] + found
+    return None
 
 
 # ── Task Card (top-level saveable unit) ────────────────────
@@ -225,6 +361,11 @@ class TaskCard(BaseModel):
     name: str = ""
     description: str = ""
     root: Block
+    # Card-level scope — a permissions baseline applied to every block in
+    # this card (merged additively with the deck-level scope and each
+    # block's ancestor chain; see ``merge_scopes`` and
+    # app/agents/block_executor.py).  ``None`` grants nothing extra.
+    scope: Optional[TaskScope] = None
     tags: List[str] = []
     is_template: bool = False
     source: str = "custom"  # custom | builtin | project
@@ -241,6 +382,7 @@ class TaskCardCreate(BaseModel):
     name: str
     description: str = ""
     root: Block
+    scope: Optional[TaskScope] = None
     tags: List[str] = []
     is_template: bool = False
 
@@ -250,6 +392,7 @@ class TaskCardUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     root: Optional[Block] = None
+    scope: Optional[TaskScope] = None
     tags: Optional[List[str]] = None
     is_template: Optional[bool] = None
 

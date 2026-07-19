@@ -58,43 +58,98 @@ async def get_task_card(project_id: str, card_id: str):
     return card
 
 
-def _walk_blocks(block):
-    """Depth-first walk of a card's block tree (root + nested bodies)."""
-    yield block
+def _walk_blocks(block, ancestors=()):
+    """Depth-first walk of a card's block tree (root + nested bodies).
+
+    Yields ``(block, ancestor_scopes)`` where ``ancestor_scopes`` is the
+    root→parent tuple of scopes above ``block`` (its own scope is NOT
+    included — callers merge it in themselves)."""
+    yield block, ancestors
     for child in (getattr(block, "body", None) or []):
-        yield from _walk_blocks(child)
+        yield from _walk_blocks(child, ancestors + (getattr(block, "scope", None),))
+
+
+def _denial_reason_message(reason: str) -> str:
+    """Human-readable explanation for a scope_approvals denial code.
+
+    Mirrors the reason codes returned by
+    ``scope_approvals.is_scope_authorized_with_reason`` — kept here (rather
+    than in scope_approvals) since it's presentation, not authorization logic.
+    """
+    if reason == "no_record":
+        return "Not yet signed."
+    if reason == "scope_hash_mismatch":
+        return "Signed for an earlier version of this scope — re-sign after editing."
+    if reason == "signature_invalid":
+        return "Signature failed verification — re-sign with the current root key."
+    if reason.startswith("unbounded_approval_requires_expiry:"):
+        max_s = reason.split(":", 1)[1]
+        days = int(max_s) // 86400 if max_s.isdigit() else "?"
+        return (f"Signed without an expiry, but policy requires approvals to "
+                f"expire within {days} day(s) — re-sign to pick up an expiry.")
+    if reason.startswith("approval_lifetime_exceeds_policy:"):
+        return "Signed lifetime exceeds the policy's maximum — re-sign with a shorter --ttl-days."
+    if reason == "malformed_expiry":
+        return "Approval record has an unreadable expiry — re-sign."
+    return "Escalation not authorized."
 
 
 @router.get("/{card_id}/scope-status")
 async def get_card_scope_status(project_id: str, card_id: str):
     """Per-block escalation-approval status for a card (ASR F-001).
 
-    For every block whose scope grants a privilege escalation (shell_commands
-    or writable paths), report whether a signed approval record matches its
-    CURRENT scope hash. Drives the "needs approval" banner in TaskCardEditor.
+    For every block whose EFFECTIVE scope (deck-level project scope +
+    the card's own scope + every ancestor block's scope + its own,
+    merged additively — see app.models.task_card.merge_scopes) grants a
+    privilege escalation (shell_commands or writable paths), report
+    whether a signed approval record matches the CURRENT effective-scope
+    hash. Drives the "needs approval" banner in TaskCardEditor.
     Blocks with no escalation (or restriction-only scopes) are omitted — they
     run at the floor and need no approval. The signCommand is the exact
     ``ziya-approve`` invocation that mints the missing record.
     """
     from app.config import scope_canonical as sc
     from app.utils import scope_approvals as sa
+    from app.models.task_card import merge_scopes
+
+    # Refresh the approval-TTL breadcrumb the out-of-process signer reads to
+    # auto-stamp a policy-compliant expires_at. It is otherwise written only
+    # once at server startup (main.py), which is racy and permanent: if the
+    # policy bound was unresolved at that moment, the build predates that
+    # writer, or the policy was tightened after startup, the file is missing
+    # or stale and the signer mints an UNBOUNDED approval that the fail-closed
+    # TTL gate then rejects ("Signed without an expiry" — re-sign loop that
+    # never converges). This endpoint runs immediately before the operator
+    # copies signCommand and signs, has the live in-process policy, and
+    # already writes under get_ziya_home(), so it is the natural refresh
+    # point. Best-effort: never fail the editor's status check over UX state.
+    try:
+        sa.write_approval_policy_breadcrumb()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not refresh approval-TTL breadcrumb: {e}")
 
     card = _get_storage(project_id).get(card_id)
     if not card:
         raise HTTPException(status_code=404, detail="Task card not found")
 
+    project = ProjectStorage(get_ziya_home()).get(project_id)
+    deck_scope = getattr(project.settings, "taskScope", None) if project else None
+
     blocks = []
     staged_scopes = {}  # "project:card:block" -> {name, scope} for the signer
-    for block in _walk_blocks(card.root):
-        scope = getattr(block, "scope", None)
+    for block, ancestor_scopes in _walk_blocks(card.root):
+        own_scope = getattr(block, "scope", None)
+        scope = merge_scopes(deck_scope, card.scope, *ancestor_scopes, own_scope)
         escalation = sc.task_escalation_block(scope)
         if not escalation:
             continue  # no privilege-bearing escalation -> nothing to approve
+        denial_reason = None
         try:
-            authorized = sa.is_scope_authorized(block.id, scope)
+            authorized, denial_reason = sa.is_scope_authorized_with_reason(block.id, scope)
         except Exception as e:  # noqa: BLE001 — status must never 500 the editor
             logger.warning(f"scope-status check failed for block {block.id}: {e}")
             authorized = False
+            denial_reason = "check_failed"
         sign_command = ""
         if not authorized:
             sign_command = (
@@ -127,6 +182,8 @@ async def get_card_scope_status(project_id: str, card_id: str):
             "authorized": bool(authorized),
             "escalation": {k: list(v) for k, v in escalation.items()},
             "signCommand": sign_command,
+            "denialReason": denial_reason,
+            "denialMessage": _denial_reason_message(denial_reason) if denial_reason else None,
         })
 
     # Merge-write the staging file: replace this card's entries (drop stale ones
@@ -213,6 +270,13 @@ async def _launch_run_for_card(
     if not card:
         raise HTTPException(status_code=404, detail="Task card not found")
 
+    # Deck-level (project-wide) permissions baseline — the outermost
+    # scope layer, merged additively with the card's own scope and
+    # every ancestor block's scope (see app.models.task_card.merge_scopes
+    # and app.agents.block_executor.ExecutionContext.effective_scope).
+    project = ProjectStorage(get_ziya_home()).get(project_id)
+    deck_scope = getattr(project.settings, "taskScope", None) if project else None
+
     run_storage = TaskRunStorage(get_project_dir(project_id))
     run = run_storage.create(TaskRunCreate(
         card_id=card_id,
@@ -220,6 +284,19 @@ async def _launch_run_for_card(
     ))
     storage.record_run(card_id)
     _seed_block_states(run_storage, run.id, card.root)
+
+    # Snapshot the card definition at launch so later edits to the card
+    # cannot retroactively rewrite what this run is displayed to have
+    # executed.  Uses the same block ids the run's block_states
+    # reference, keeping the run map consistent after edits too.
+    try:
+        run_storage.set_card_snapshot(run.id, {
+            "name": card.name,
+            "description": card.description,
+            "root": card.root.model_dump(),
+        })
+    except Exception as e:
+        logger.warning(f"📋 TASK_LAUNCH: card_snapshot capture failed: {e}")
 
     from ..context import get_project_root_or_none, set_project_root
     project_root = get_project_root_or_none()
@@ -230,7 +307,10 @@ async def _launch_run_for_card(
     # the agent was actually allowed to do* after the fact.
     try:
         from ..utils.permissions_snapshot import build_permissions_snapshot
-        snapshot = build_permissions_snapshot(root_block=card.root, project_root=project_root)
+        snapshot = build_permissions_snapshot(
+            root_block=card.root, project_root=project_root,
+            deck_scope=deck_scope, card_scope=card.scope,
+        )
         run_storage.set_permissions_snapshot(run.id, snapshot)
     except Exception as e:
         # Non-fatal — missing audit trail shouldn't block task execution.
@@ -273,6 +353,8 @@ async def _launch_run_for_card(
                 project_id=project_id,
                 storage=run_storage,
                 overrides=dict(parameter_overrides or {}),
+                deck_scope=deck_scope,
+                card_scope=card.scope,
             )
             logger.info(f"🚀 TASK_RUN: {run_id[:8]} → execute_block start (type={block.block_type})")
             artifact = await execute_block(block, ctx)

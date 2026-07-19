@@ -158,6 +158,38 @@ def _preload_files(
     return "\n".join(parts), warnings
 
 
+# Model-facing failure markers emitted by _process_result / the tool
+# layer.  Kept module-level (not inlined in the loop) so the classifier
+# can be unit-tested against the real strings observed in production
+# logs without standing up the full streaming harness.  Extend this
+# tuple when a new terminal failure prefix is introduced.
+FAILURE_RESULT_MARKERS = (
+    "POLICY BLOCK",
+    "🚫 BLOCKED",
+    "🚫 WRITE BLOCKED",
+    "COMMAND FAILED",
+    "Tool call refused",
+    "Tool call blocked",
+    "SECURITY VERIFICATION FAILED",
+    "non-zero exit status",
+)
+
+
+def is_failure_result(result: object) -> bool:
+    """Return True if a tool result's model-facing text denotes failure.
+
+    Used by the run-level consecutive-failure breaker.  Non-string
+    results (dicts, None) are treated as non-failures — a structured
+    result that reached the model without a failure prefix is, by this
+    heuristic, progress.  Matching is substring-based against
+    ``FAILURE_RESULT_MARKERS`` because the underlying tools do not
+    carry a machine-readable status field on the text channel.
+    """
+    if not isinstance(result, str):
+        return False
+    return any(marker in result for marker in FAILURE_RESULT_MARKERS)
+
+
 async def execute_task_block(
     block: Block,
     project_root: Optional[str] = None,
@@ -191,6 +223,41 @@ async def execute_task_block(
         except Exception as e:  # noqa: BLE001
             logger.debug("Stream relay push failed: %s", e)
 
+    # Heartbeat sink — persists "alive right now" plus a short
+    # progress note onto the run file so REST pollers (the inline
+    # tile between WS events, agents inspecting the run) can
+    # distinguish "slow but alive" from "hung" and see what the
+    # task is currently doing.  Throttling lives inside
+    # record_activity so per-token deltas don't become disk writes.
+    _hb_storage = None
+    if run_id and project_id:
+        try:
+            from ..storage.task_runs import TaskRunStorage
+            from ..utils.paths import get_project_dir
+            _hb_storage = TaskRunStorage(get_project_dir(project_id))
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Heartbeat storage unavailable: %s", e)
+
+    def _heartbeat(note: Optional[str] = None) -> None:
+        if _hb_storage is None or not run_id:
+            return
+        try:
+            _hb_storage.record_activity(run_id, note=note)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Heartbeat write failed: %s", e)
+
+    # Model-authored progress notes: incremental scanner for
+    # <progress note="..."/> tags in the streamed text.  Feeds the
+    # same task_progress / record_activity channel as the
+    # tool-derived notes; model notes are semantically richer so a
+    # later note simply overwrites an earlier one (last-write-wins).
+    try:
+        from app.utils.completion_check import ProgressTagScanner
+        _progress_scanner = ProgressTagScanner()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("Progress scanner unavailable: %s", e)
+        _progress_scanner = None
+
     scope = block.scope or None
     # ── Task-scope authorization gate (ASR F-001, design doc §4.2) ──────────
     # Before any privilege-bearing grant (shell_commands / writable paths) is
@@ -213,6 +280,10 @@ async def execute_task_block(
     scope_tools = set((scope.tools if scope else []) or [])
     scope_skills = (scope.skills if scope else []) or []
     scope_cwd = (scope.cwd if scope else None)
+    scope_model_tier = (getattr(scope, "model_tier", None) if scope else None)
+    scope_model_name = (getattr(scope, "model_name", None) if scope else None)
+    scope_model_id_override = (getattr(scope, "model_id_override", None) if scope else None)
+    scope_model_endpoint = (getattr(scope, "model_endpoint", None) if scope else None)
 
     # Resolve an effective project root for this task.  ``scope.cwd``
     # is interpreted relative to the caller's project_root and must
@@ -295,6 +366,20 @@ async def execute_task_block(
     tool_call_count = 0
     collected_text: List[str] = []
     decisions: List[str] = []
+    # Run-level consecutive-failure breaker.  The per-call breakers in
+    # MCPManager.call_tool (turn ceiling, repetitive-call) do NOT protect
+    # the shell path: the shell server is workspace-scoped and returns
+    # before those guards run, and the model can evade repetition
+    # detection by varying arguments (e.g. `git add`, `git apply`,
+    # `git commit …`).  Without a backstop the run loops until the model
+    # happens to stop, leaving the card stuck "running" indefinitely.
+    # Count consecutive failing tool results; reset on any success; abort
+    # the run once the streak crosses the threshold.
+    try:
+        _consecutive_fail_limit = int(os.environ.get("ZIYA_TASK_MAX_CONSECUTIVE_TOOL_FAILURES", "12"))
+    except (TypeError, ValueError):
+        _consecutive_fail_limit = 12
+    _consecutive_tool_failures = 0
 
     # Build the sandboxed conversation.
     # Only the task's instructions; no parent transcript, no prior chat.
@@ -326,8 +411,11 @@ async def execute_task_block(
     # tasks which streamed cleanly but abandoned their stated goal
     # mid-run.
     try:
-        from app.utils.completion_check import SELF_ASSESSMENT_INSTRUCTION
+        from app.utils.completion_check import (
+            SELF_ASSESSMENT_INSTRUCTION, PROGRESS_INSTRUCTION,
+        )
         system_parts.append(SELF_ASSESSMENT_INSTRUCTION)
+        system_parts.append(PROGRESS_INSTRUCTION)
     except Exception as e:
         logger.warning(f"📋 TASK_EXEC: self_assessment instruction inject failed (non-fatal): {e}")
 
@@ -362,7 +450,20 @@ async def execute_task_block(
     region = state.get("aws_region", "us-east-1")
     profile = state.get("aws_profile", "default")
 
-    executor = StreamingToolExecutor(profile_name=profile, region=region)
+    # Per-task model override: a Task block's scope can name a portable
+    # tier (preferred) or a specific model/endpoint to run on, letting a
+    # decomposed task run cheaper/faster than the top-level conversation
+    # (or, for scoped power users, on a specific model). model_id_override
+    # wins over model_name if both are set; either wins over model_tier.
+    _model_override = scope_model_id_override or scope_model_name or scope_model_tier
+    if _model_override:
+        decisions.append(f"scope: model override = {_model_override!r}")
+    executor = StreamingToolExecutor(
+        profile_name=profile, region=region,
+        model_id=scope_model_id_override,
+        model_override=(scope_model_name or scope_model_tier) if not scope_model_id_override else None,
+        endpoint_override=scope_model_endpoint,
+    )
 
     # Load MCP tools and filter by scope.tools allowlist
     tools: List = []
@@ -464,6 +565,12 @@ async def execute_task_block(
     try:
         async for chunk in executor.stream_with_tools(
             messages, tools=tools, project_root=effective_root,
+            # Without a conversation_id, app.context.set_conversation_id()
+            # is never called for Task Card runs, so model-driven context
+            # tools (context_add_file/context_remove_file/context_list_files)
+            # fail with "no conversation_id is set in the current request
+            # context". run_id is unique per run and stable for its duration.
+            conversation_id=run_id,
         ):
             ctype = chunk.get("type")
             if ctype == "text":
@@ -476,9 +583,31 @@ async def execute_task_block(
                         "block_id": delta_block_id,
                         "content": content,
                     })
+                    _heartbeat()
+                    if _progress_scanner is not None:
+                        for _pnote in _progress_scanner.feed(content):
+                            await _emit({
+                                "type": "task_progress",
+                                "run_id": run_id,
+                                "block_id": delta_block_id,
+                                "note": _pnote,
+                                "source": "model",
+                                "ts": time.time(),
+                            })
+                            _heartbeat(_pnote)
             elif ctype == "tool_display":
                 tool_call_count += 1
                 _result = chunk.get("result", "")
+                _tool_name = chunk.get("tool_name") or "tool"
+                _args = chunk.get("args")
+                _arg_hint = ""
+                if isinstance(_args, dict):
+                    _arg_hint = str(
+                        _args.get("command") or _args.get("path")
+                        or _args.get("query") or ""
+                    )[:120]
+                _note = (f"ran {_tool_name}: {_arg_hint}" if _arg_hint
+                         else f"ran {_tool_name}")
                 await _emit({
                     "type": "task_tool_call",
                     "run_id": run_id,
@@ -488,6 +617,48 @@ async def execute_task_block(
                     "result_preview": (_result or "")[:500] if isinstance(_result, str) else "",
                     "ts": time.time(),
                 })
+                await _emit({
+                    "type": "task_progress",
+                    "run_id": run_id,
+                    "block_id": delta_block_id,
+                    "note": _note,
+                    "ts": time.time(),
+                })
+                _heartbeat(_note)
+                # Consecutive-failure detection.  ``_result`` is the
+                # model-facing text produced by _process_result, so failed
+                # calls carry a recognizable prefix regardless of the
+                # underlying tool (policy block, non-zero exit, refusal,
+                # verification failure, generic error).
+                _is_failure = is_failure_result(_result)
+                if _is_failure and _consecutive_fail_limit > 0:
+                    _consecutive_tool_failures += 1
+                    if _consecutive_tool_failures >= _consecutive_fail_limit:
+                        _abort_note = (
+                            f"aborting: {_consecutive_tool_failures} consecutive "
+                            f"tool failures (last: {_tool_name}). The task is not "
+                            f"making progress — likely a blocked command or a "
+                            f"missing permission grant."
+                        )
+                        await _emit({
+                            "type": "task_progress",
+                            "run_id": run_id,
+                            "block_id": delta_block_id,
+                            "note": _abort_note,
+                            "level": "error",
+                            "ts": time.time(),
+                        })
+                        logger.warning(
+                            f"📋 TASK_EXEC: {block.name!r} aborting after "
+                            f"{_consecutive_tool_failures} consecutive tool failures"
+                        )
+                        raise TaskExecutorError(
+                            f"Task aborted after {_consecutive_tool_failures} "
+                            f"consecutive tool failures without progress. "
+                            f"Last tool: {_tool_name}."
+                        )
+                else:
+                    _consecutive_tool_failures = 0
             elif ctype == "stream_end":
                 break
             elif ctype == "error":
@@ -525,8 +696,11 @@ async def execute_task_block(
     try:
         from app.utils.completion_check import (
             parse_self_assessment, is_failure, signature_for,
-            strip_assessment_tag,
+            strip_assessment_tag, strip_progress_tags,
         )
+        # Progress tags are live-UI metadata — never part of the
+        # artifact summary, whether or not a self-assessment exists.
+        full_text = strip_progress_tags(full_text)
         self_assessment = parse_self_assessment(full_text)
         if self_assessment is None:
             decisions.append(
