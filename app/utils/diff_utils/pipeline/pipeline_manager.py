@@ -171,6 +171,30 @@ def apply_diff_pipeline(git_diff: str, file_path: str, request_id: Optional[str]
             user_codebase_dir=user_codebase_dir,
         )
 
+def clean_duplicate_headers(diff_content: str) -> str:
+    """
+    Clean up duplicate header lines in a diff that can cause 'trailing garbage' errors.
+    
+    Args:
+        diff_content: The diff content to clean
+        
+    Returns:
+        The cleaned diff content
+    """
+    lines = diff_content.splitlines()
+    cleaned_lines = []
+    seen_headers = set()
+    
+    for line in lines:
+        # Skip duplicate +++ or --- lines
+        if line.startswith('+++ ') or line.startswith('--- '):
+            if line in seen_headers:
+                continue
+            seen_headers.add(line)
+        
+        cleaned_lines.append(line)
+    
+    return '\n'.join(cleaned_lines)
 
 def _apply_diff_pipeline_locked(git_diff: str, file_path: str, request_id: Optional[str] = None, skip_already_applied_check: bool = False, user_codebase_dir: Optional[str] = None) -> Dict[str, Any]:
     """
@@ -209,6 +233,10 @@ def _apply_diff_pipeline_locked(git_diff: str, file_path: str, request_id: Optio
 
     pipeline.result.request_id = request_id
     pipeline.update_stage(PipelineStage.INIT)
+    
+    # Clean up duplicate headers in the diff
+    git_diff = clean_duplicate_headers(git_diff)
+    pipeline.current_diff = git_diff
     
     # Split combined diffs if present
     logger.debug(f"Original diff first 10 lines:\n{git_diff.splitlines()[:10]}")

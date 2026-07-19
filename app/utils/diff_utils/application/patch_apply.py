@@ -1090,14 +1090,44 @@ def apply_diff_with_difflib_hybrid_forced(
                 logger.debug(f"Hunk #{hunk_idx}: Pure addition context doesn't match at initial_pos={initial_pos}, searching for context...")
                 normalized_context = [normalize_line_for_comparison(line) for line in h['old_block']]
                 
-                for search_pos in range(len(final_lines_with_endings) - len(h['old_block']) + 1):
-                    file_slice = final_lines_with_endings[search_pos : search_pos + len(h['old_block'])]
-                    normalized_file = [normalize_line_for_comparison(line) for line in file_slice]
-                    
-                    if normalized_file == normalized_context:
-                        logger.info(f"Hunk #{hunk_idx}: Found pure addition context at position {search_pos} (header said {initial_pos})")
-                        initial_pos = search_pos
-                        break
+                candidate_positions = [
+                    search_pos
+                    for search_pos in range(len(final_lines_with_endings) - len(h['old_block']) + 1)
+                    if [normalize_line_for_comparison(line)
+                        for line in final_lines_with_endings[search_pos : search_pos + len(h['old_block'])]]
+                       == normalized_context
+                ]
+                if len(candidate_positions) == 1:
+                    # The context is a distinctive anchor: it occurs exactly once
+                    # in the file, just not at the header line (the diff drifted).
+                    # Placing here is unambiguous.
+                    initial_pos = candidate_positions[0]
+                    logger.info(f"Hunk #{hunk_idx}: Pure addition context uniquely relocated to {initial_pos} (header said other)")
+                elif len(candidate_positions) > 1:
+                    # The context is NOT distinctive: it matches several positions
+                    # and none of them is the header line. There is no
+                    # language-agnostic way to know which one the author meant
+                    # (e.g. a lone '"""'/'}' that recurs throughout the file), so
+                    # guessing risks silently inserting at the wrong place. Refuse
+                    # to place this hunk and fail loudly instead of corrupting the
+                    # file. Distinctive diffs (unique context, or context matching
+                    # at the header) are unaffected.
+                    logger.error(
+                        f"Hunk #{hunk_idx}: Pure addition has a non-distinctive context line "
+                        f"matching {len(candidate_positions)} positions {candidate_positions} "
+                        f"and none at header {initial_pos}; refusing to guess placement."
+                    )
+                    hunk_failures.append((
+                        f"Ambiguous pure-addition placement for Hunk #{hunk_idx}",
+                        {
+                            "status": "error",
+                            "type": "ambiguous_pure_addition_context",
+                            "hunk": hunk_idx,
+                            "candidates": candidate_positions,
+                            "header_position": initial_pos,
+                        },
+                    ))
+                    continue
         
         available_lines = len(final_lines_with_endings) - initial_pos
         actual_old_block_count = len(h['old_block'])
@@ -2533,8 +2563,30 @@ def apply_diff_with_difflib_hybrid_forced(
 
     logger.info(f"Successfully applied {len(hunks)} hunks using difflib for {file_path}")
     
-    # Remove duplicate consecutive lines that may have been created by fuzzy matching
-    # This handles cases where context lines get duplicated during application
+    # Remove duplicate consecutive lines that application may have created by
+    # duplicating a context line at an insertion seam.
+    #
+    # This pass MUST NOT delete adjacent-identical lines that were already
+    # present in the source: repeated calls, repeated closing braces, repeated
+    # imports, etc. are all legitimate and common.  A naive "collapse every
+    # consecutive duplicate" scan silently corrupts such files by dropping a
+    # real line far from any hunk (the pure-addition-at-EOF case in
+    # tests/diff_test_cases/MRE_pure_add_eof_drops_upstream_dup, which dropped
+    # one of two identical create(card_id="a") lines 47 lines above the hunk).
+    #
+    # So we budget removals per line value: preserve as many adjacent
+    # duplicates as the ORIGINAL file had for that value, and only drop the
+    # excess that this application introduced.  Erring toward preservation is
+    # the safe direction — at worst we leave a spurious duplicate in place
+    # rather than delete real content.
+    from collections import Counter
+    original_adjacent_dups: Counter = Counter()
+    for j in range(len(original_lines_with_endings) - 1):
+        line_j = original_lines_with_endings[j]
+        if line_j == original_lines_with_endings[j + 1] and line_j.strip() != '':
+            original_adjacent_dups[line_j] += 1
+
+    preserved_dups: Counter = Counter()
     deduplicated_lines = []
     i = 0
     while i < len(final_lines_with_endings):
@@ -2543,8 +2595,16 @@ def apply_diff_with_difflib_hybrid_forced(
         while (i + 1 < len(final_lines_with_endings) and 
                final_lines_with_endings[i] == final_lines_with_endings[i + 1] and
                final_lines_with_endings[i].strip() != ''):  # Don't deduplicate blank lines
-            logger.debug(f"Removing duplicate line at position {i + 1}: {repr(final_lines_with_endings[i])}")
-            i += 1
+            value = final_lines_with_endings[i]
+            if preserved_dups[value] < original_adjacent_dups.get(value, 0):
+                # This adjacent duplicate existed in the source — keep it.
+                preserved_dups[value] += 1
+                deduplicated_lines.append(final_lines_with_endings[i + 1])
+                i += 1
+            else:
+                # Excess duplicate introduced by application — drop it.
+                logger.debug(f"Removing duplicate line at position {i + 1}: {repr(value)}")
+                i += 1
         i += 1
     
     if len(deduplicated_lines) != len(final_lines_with_endings):
