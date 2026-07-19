@@ -2,7 +2,7 @@ import { SetStateAction, Dispatch } from 'react';
 import { message } from 'antd';
 import { Message, ImageAttachment } from '../utils/types';
 import { AppConfig, DEFAULT_CONFIG } from '../types/config';
-import { formatMCPOutput, enhanceToolDisplayHeader } from '../utils/mcpFormatter';
+import { formatMCPOutput, enhanceToolDisplayHeader, stripRedundantCdForDisplay } from '../utils/mcpFormatter';
 import { handleToolStart, handleToolDisplay, ToolEventContext } from '../utils/mcpToolHandlers';
 import { Project } from '../types/project';
 import { projectSync } from '../utils/projectSync';
@@ -40,6 +40,9 @@ class FeedbackWebSocket {
 
             console.log('🔄 FEEDBACK: Attempting WebSocket connection to:', wsUrl);
             this.ws = new WebSocket(wsUrl);
+            // Capture this specific socket so stale event handlers from a
+            // replaced connection can't corrupt current connection state.
+            const socket = this.ws;
 
             // Set a connection timeout
             const connectionTimeout = setTimeout(() => {
@@ -66,8 +69,14 @@ class FeedbackWebSocket {
 
             this.ws.onclose = () => {
                 clearTimeout(connectionTimeout);
+                // Ignore close events from sockets we've already replaced
+                if (this.ws !== null && this.ws !== socket) return;
                 this.isConnected = false;
                 this.isConnecting = false;
+                // Keep the global readiness flag honest — otherwise senders
+                // claim 'queued' on a socket that silently died (idle
+                // timeout, server restart, reload race).
+                (window as any).feedbackWebSocketReady = false;
                 console.log('🔄 FEEDBACK: WebSocket closed');
             };
 
@@ -95,26 +104,23 @@ class FeedbackWebSocket {
         return this.connectionPromise;
     }
 
-    sendFeedback(toolId: string, feedback: string) {
-        // Guard against sending on closed/closing WebSocket
+    sendFeedback(toolId: string, feedback: string): boolean {
+        // Guard against sending on closed/closing WebSocket. Returns false
+        // when the message was NOT handed to the socket — callers must treat
+        // that as delivery failure, not fire-and-forget.
         if (!this.ws || !this.isConnected || this.ws.readyState !== WebSocket.OPEN) {
             console.warn('🔄 FEEDBACK: Cannot send - WebSocket not ready:', { isConnected: this.isConnected, readyState: this.ws?.readyState });
-            return;
+            return false;
         }
 
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({
-                type: 'tool_feedback',
-                tool_id: toolId,
-                message: feedback,
-                feedback_id: (window as any).__lastFeedbackId || Date.now().toString()
-            }));
-            console.log('🔄 FEEDBACK: Sent feedback:', feedback);
-        } else {
-            console.error('🔄 FEEDBACK: Cannot send feedback - WebSocket not ready. State:', this.ws?.readyState);
-            // Fallback: Log that feedback would have been sent
-            console.log('🔄 FEEDBACK: Would have sent feedback (WebSocket unavailable):', feedback);
-        }
+        this.ws.send(JSON.stringify({
+            type: 'tool_feedback',
+            tool_id: toolId,
+            message: feedback,
+            feedback_id: (window as any).__lastFeedbackId || Date.now().toString()
+        }));
+        console.log('🔄 FEEDBACK: Sent feedback:', feedback);
+        return true;
     }
 
     disconnect() {
@@ -545,6 +551,11 @@ function showError(errorDetail: string, conversationId: string, addMessageToConv
         const isAuthError = errorType === 'authentication_error' || errorDetail.includes('credential') || errorDetail.includes('mwinit') || errorDetail.includes('AWS credentials');
         // Context-size errors get the same treatment: visible text + retry button, no collapsible.
         const isContextSizeError = errorType === 'context_size_error' || errorDetail.includes('too large') || errorDetail.includes('too long') || errorDetail.includes('tokens >') || errorDetail.includes('prompt is too');
+        // Connection/endpoint failures (e.g. botocore EndpointConnectionError during
+        // an AWS-side outage) are transient and retriable, but previously fell through
+        // to the generic collapsed <details> block with no retry affordance and raw
+        // boto3 text. Give them the same visible-banner treatment as context-size errors.
+        const isConnectionError = errorType === 'connection_error' || errorDetail.includes('Could not connect to the endpoint') || errorDetail.includes('EndpointConnectionError') || errorDetail.includes('Connection aborted') || errorDetail.includes('Connection broken');
 
         // Auth errors get a prominent, immediately-visible banner instead of the
         // generic collapsed <details> block.  Extract an actionable hint from the
@@ -618,6 +629,37 @@ ${safeDetailHtml}
                 _timestamp: Date.now()
             };
             addMessageToConversation(contextSizeMessage, conversationId);
+            return;
+        }
+
+        // Connection/endpoint errors: same visible-banner-with-retry treatment.
+        // Reuses the context-error-retry-button class/event plumbing rather than
+        // introducing a fourth parallel button type, since the recovery action
+        // (resend the last message) is identical.
+        if (isConnectionError) {
+            const connectionErrorMessage: Message = {
+                role: 'assistant',
+                content: `<div class="connection-error-banner" style="margin: 16px 0; padding: 16px 20px; background: var(--auth-error-bg, linear-gradient(135deg, #fff2f0 0%, #fff7f0 100%)); border: 1px solid var(--auth-error-border, #ffccc7); border-left: 4px solid var(--auth-error-accent, #ff4d4f); border-radius: 6px; color: var(--auth-error-text, #434343);">
+<div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px;">
+<span style="font-size: 24px;">📡</span>
+<span style="font-size: 16px; font-weight: 600; color: var(--auth-error-heading, #cf1322);">Connection Failed</span>
+</div>
+<div style="font-size: 14px; line-height: 1.6; margin-bottom: 16px;">
+Could not reach the model endpoint. This is usually temporary — a network blip or a brief service outage.
+</div>
+<div style="display: flex; align-items: center; gap: 12px;">
+<button class="context-error-retry-button" data-conversation-id="${conversationId}" style="padding: 10px 24px; background-color: #1890ff; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; font-weight: 500; box-shadow: 0 2px 4px rgba(0,0,0,0.1); transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='#40a9ff'" onmouseout="this.style.backgroundColor='#1890ff'">🔄 Retry Request</button>
+</div>
+<details style="margin-top: 14px; border-top: 1px solid var(--auth-error-border, #ffd6cc); padding-top: 10px;">
+<summary style="cursor: pointer; font-size: 12px; color: var(--auth-error-muted, #8c8c8c);">Technical details</summary>
+<div style="margin-top: 8px; white-space: pre-wrap; font-family: monospace; font-size: 12px; color: var(--auth-error-detail, #8c1f1f); max-height: 200px; overflow-y: auto;">
+${safeDetailHtml}
+</div>
+</details>
+</div>`,
+                _timestamp: Date.now()
+            };
+            addMessageToConversation(connectionErrorMessage, conversationId);
             return;
         }
 
@@ -889,7 +931,7 @@ export const sendPayload = async (
     if ((window as any)[`abortListener_${conversationId}`]) {
         document.removeEventListener('abortStream', (window as any)[`abortListener_${conversationId}`]);
     }
-    document.addEventListener('abortStream', abortListener as EventListener);
+    document.addEventListener('abortStream', abortListener as unknown as EventListener);
     (window as any)[`abortListener_${conversationId}`] = abortListener;
 
     // CRITICAL FIX: Check if there's already an active stream for this conversation
@@ -1056,13 +1098,11 @@ export const sendPayload = async (
                     if (jsonData.type === 'processing') {
                         const phase = jsonData.phase || 'processing';
                         const elapsed = jsonData.elapsed_seconds || 0;
-                        console.log(`🧠 PROCESSING: phase=${phase}, elapsed=${elapsed.toFixed(0)}s`);
                         if (typeof setProcessingState === 'function') {
                             setProcessingState('model_thinking');
                         }
                     } else {
                         const state = jsonData.state || 'idle';
-                        console.log(`⚙️ PROCESSING_STATE: ${state}`, jsonData.tool_name || '');
                         if (typeof setProcessingState === 'function') {
                             setProcessingState(state);
                         }
@@ -1186,7 +1226,6 @@ export const sendPayload = async (
                     data.includes('```diff') || data.includes('diff --git') ||
                     data.match(/^@@ /) || data.match(/^\+\+\+ /) || data.match(/^--- /))) {
                     containsDiff = true;
-                    console.log("Detected diff content, disabling error detection");
                 }
             } catch (e) {
                 // JSON parse error, continue processing
@@ -1211,7 +1250,7 @@ export const sendPayload = async (
 
             // CRITICAL FIX: Check parsed JSON directly for error patterns
             // extractErrorFromSSE expects "data: " prefix which was already stripped
-            let errorResponse = null;
+            let errorResponse: ErrorResponse | null = null;
             if (!(containsCodeBlock || containsDiff || containsToolExecution) && !errorAlreadyDisplayed) {
                 if (jsonData && (jsonData.error || jsonData.error_type || jsonData.type === 'error')) {
                     const errorText = jsonData.error || jsonData.content || jsonData.detail || '';
@@ -1372,14 +1411,28 @@ export const sendPayload = async (
                     ? `${errorResponse.detail} (Partial response preserved - ${currentContent.length} characters)`
                     : errorResponse.detail || 'An error occurred';
 
+                // For auth errors, preserve any partial content accumulated this
+                // turn (streamed text + tool call transcript) as its own message
+                // BEFORE the banner, so the turn's history isn't discarded when
+                // credentials expire mid-tool-chain.  The marker comment lets the
+                // retry handler strip this message before regenerating the turn.
+                if (errorResponse.error === 'authentication_error' && currentContent && currentContent.trim()) {
+                    const authPartialMessage: Message = {
+                        role: 'assistant',
+                        content: '<!-- ziya-auth-interrupted -->\n' + currentContent + '\n\n*[Interrupted by authentication error]*',
+                        _timestamp: Date.now()
+                    };
+                    addMessageToConversation(authPartialMessage, targetConversationId, targetConversationId !== conversationId);
+                    console.log('Preserved partial turn content before auth banner:', currentContent.length, 'characters');
+                }
 
                 showError(errorMessage, targetConversationId, addMessageToConversation, currentContent.length > 0 ? 'warning' : 'error', errorResponse.error);
                 errorOccurred = true;
 
-                // For auth errors, skip the partial-content "[Response interrupted]" message.
-                // The auth banner is self-contained with a retry button; adding a second
-                // message creates orphan content that the retry handler can't clean up,
-                // leaving stale error text visible after a successful retry.
+                // For auth errors, skip the generic "[Response interrupted]"
+                // message below — the partial content was already preserved
+                // above (with a strippable marker), and the auth banner is
+                // self-contained with a retry button.
                 if (errorResponse.error === 'authentication_error') {
                     setStreamedContentMap((prev: Map<string, string>) => {
                         const next = new Map(prev);
@@ -1418,7 +1471,6 @@ export const sendPayload = async (
             try {
                 // Process the JSON object
                 if (unwrappedData.heartbeat) {
-                    console.log("Received heartbeat, skipping");
                     return;
                 }
 
@@ -1426,7 +1478,6 @@ export const sendPayload = async (
                 if (unwrappedData.type === 'processing') {
                     const phase = unwrappedData.phase || 'processing';
                     const elapsed = unwrappedData.elapsed_seconds || 0;
-                    console.log(`🧠 PROCESSING: phase=${phase}, elapsed=${elapsed.toFixed(0)}s`);
                     if (typeof setProcessingState === 'function') {
                         setProcessingState('model_thinking');
                     }
@@ -1437,7 +1488,6 @@ export const sendPayload = async (
                 // Handle explicit processing state updates from backend
                 if (unwrappedData.type === 'processing_state') {
                     const state = unwrappedData.state || 'idle';
-                    console.log(`⚙️ PROCESSING_STATE: ${state}`, unwrappedData.tool_name || '');
                     if (typeof setProcessingState === 'function') {
                         setProcessingState(state);
                     }
@@ -1742,13 +1792,6 @@ export const sendPayload = async (
                     const lines = currentContent.split('\n');
                     if (jsonData.rewind_line && lines.length > jsonData.rewind_line) {
                         const beforeRewind = lines.slice(0, jsonData.rewind_line).join('\n');
-                        console.log('SPLICE_PROBE_continuation_rewind', JSON.stringify({
-                            rewindLine: jsonData.rewind_line,
-                            totalLines: lines.length,
-                            preLen: currentContent.length,
-                            postLen: beforeRewind.length,
-                            keptTail: beforeRewind.slice(-60),
-                        }));
                         currentContent = beforeRewind;
                         console.log(`🔄 REWIND: Trimmed content to line ${jsonData.rewind_line}, length: ${currentContent.length}`);
                         flushStreamedContent();
@@ -1971,7 +2014,6 @@ export const sendPayload = async (
 
                 // Handle MCP tool display events
                 if (unwrappedData.type === 'tool_display') {
-                    console.log('🔧 TOOL_DISPLAY received:', unwrappedData);
 
                     // Extract verification status if present
                     const isVerified = unwrappedData.verified === true;
@@ -2034,9 +2076,10 @@ export const sendPayload = async (
                     // Enhance shell command headers with the actual command
                     if (isShellCommandTool && storedInput?.command) {
                         // Truncate long commands for the header
-                        const cmdPreview = storedInput.command.length > 50
-                            ? storedInput.command.substring(0, 47) + '...'
-                            : storedInput.command;
+                        const displayCommand = stripRedundantCdForDisplay(storedInput.command);
+                        const cmdPreview = displayCommand.length > 50
+                            ? displayCommand.substring(0, 47) + '...'
+                            : displayCommand;
                         // Add "Shell: " prefix to make the tool type clear in the header
                         displayHeader = `Shell: ${cmdPreview}`;
                     }
@@ -2080,7 +2123,7 @@ export const sendPayload = async (
 
                     // For shell commands, add command as first line if not present
                     if (actualToolName === 'run_shell_command' && storedInput?.command && !displayContent.startsWith('$ ')) {
-                        displayContent = `$ ${storedInput.command}\n${displayContent}`;
+                        displayContent = `$ ${stripRedundantCdForDisplay(storedInput.command)}\n${displayContent}`;
                     }
 
                     // Add lock icon if cryptographically verified (verified flag from backend)
@@ -2101,10 +2144,6 @@ export const sendPayload = async (
                         maxLength: 10000,
                         defaultCollapsed: true
                     });
-
-                    console.log('🔧 FORMATTED CONTENT:', formatted.content.substring(0, 200));
-                    console.log('🔧 FORMATTED TYPE:', formatted.type);
-                    console.log('🔧 HAS HIERARCHICAL:', !!formatted.hierarchicalResults);
 
                     // Create tool display with header - handle hierarchical results
                     let toolResultContent: string;
@@ -2146,14 +2185,6 @@ export const sendPayload = async (
                     // STRATEGY 1: Use tool_id marker (most reliable)
                     const toolMarker = `<!-- TOOL_MARKER:${unwrappedData.tool_id} -->`;
                     let markerIndex = currentContent.indexOf(toolMarker);
-
-                    console.log('🔧 TOOL_RESULT: Strategy 1 (tool_id marker):', markerIndex);
-
-
-                    // DEBUG: Log marker search
-                    console.log('🔧 TOOL_RESULT: Searching for marker:', toolMarker);
-                    console.log('🔧 TOOL_RESULT: Current content includes marker?', currentContent.includes(toolMarker));
-                    console.log('🔧 TOOL_RESULT: Current content length:', currentContent.length);
                     if (markerIndex === -1) {
                         console.error('MARKER NOT FOUND', {
                             toolId: unwrappedData.tool_id,
@@ -2187,12 +2218,9 @@ export const sendPayload = async (
                                 currentContent = currentContent.substring(0, markerIndex) +
                                     toolResultDisplay +
                                     currentContent.substring(endIndex);
-
-                                console.log('🔧 TOOL_RESULT: Replaced using tool_id marker (shell command)');
                             } else {
                                 // Couldn't find closing fence, append instead
                                 currentContent += toolResultDisplay;
-                                console.log('🔧 TOOL_RESULT: Could not find closing fence, appending');
                             }
                         } else {
                             // For other tools, look for TOOL_BLOCK_END
@@ -2212,16 +2240,12 @@ export const sendPayload = async (
                                 currentContent = currentContent.substring(0, markerIndex) +
                                     toolResultDisplay +
                                     currentContent.substring(endIndex);
-
-                                console.log('🔧 TOOL_RESULT: Replaced using tool_id marker (standard tool)');
                             } else {
                                 currentContent += toolResultDisplay;
-                                console.log('🔧 TOOL_RESULT: Could not find block end after marker, appending');
                             }
                         }
                     } else {
                         // FALLBACK: Try pattern matching strategies (for backward compatibility)
-                        console.log('🔧 TOOL_RESULT: Marker not found, falling back to pattern matching');
 
                         let lastStartIndex = -1;
 
@@ -2239,7 +2263,6 @@ export const sendPayload = async (
                             const exactPattern = `<!-- TOOL_BLOCK_START:${toolName}|${displayHeader} -->`;
                             lastStartIndex = currentContent.lastIndexOf(exactPattern);
                         }
-                        console.log('🔧 TOOL_RESULT: Strategy 2 (pattern match with flexible backticks):', lastStartIndex);
 
                         // Strategy 3: Try stored header
                         if (lastStartIndex === -1 && storedHeader && storedHeader !== displayHeader) {
@@ -2255,7 +2278,6 @@ export const sendPayload = async (
                                 const storedHeaderPattern = `<!-- TOOL_BLOCK_START:${toolName}|${storedHeader} -->`;
                                 lastStartIndex = currentContent.lastIndexOf(storedHeaderPattern);
                             }
-                            console.log('🔧 TOOL_RESULT: Strategy 3 (stored header):', lastStartIndex);
                         }
 
                         // Strategy 4: Last resort - match just tool name
@@ -2271,7 +2293,6 @@ export const sendPayload = async (
                                 const toolNameOnlyPattern = `<!-- TOOL_BLOCK_START:${toolName}|`;
                                 lastStartIndex = currentContent.lastIndexOf(toolNameOnlyPattern);
                             }
-                            console.log('🔧 TOOL_RESULT: Strategy 4 (tool name only):', lastStartIndex);
                         }
 
                         if (lastStartIndex !== -1) {
@@ -2289,10 +2310,8 @@ export const sendPayload = async (
                                     const blockEndIndex = lastStartIndex + afterStart.indexOf(backtickMatch[0]);
                                     const replaceStart = lastStartIndex > 0 && currentContent[lastStartIndex - 1] === '\n' ? lastStartIndex - 1 : lastStartIndex;
                                     currentContent = currentContent.substring(0, replaceStart) + toolResultDisplay + currentContent.substring(blockEndIndex + endOffset);
-                                    console.log('🔧 TOOL_RESULT: Replaced tool block (pattern match)');
                                 } else {
                                     currentContent += toolResultDisplay;
-                                    console.log('🔧 TOOL_RESULT: No block end found, appending');
                                 }
                             } else {
                                 // Block end marker includes tool_id, so we need to search for it with tool_id
@@ -2302,21 +2321,17 @@ export const sendPayload = async (
                                     endOffset = blockEndMarker.length + 2;
                                     const replaceStart = lastStartIndex > 0 && currentContent[lastStartIndex - 1] === '\n' ? lastStartIndex - 1 : lastStartIndex;
                                     currentContent = currentContent.substring(0, replaceStart) + toolResultDisplay + currentContent.substring(blockEndIndex + endOffset);
-                                    console.log('🔧 TOOL_RESULT: Replaced tool block (pattern match)');
                                 } else {
                                     currentContent += toolResultDisplay;
-                                    console.log('🔧 TOOL_RESULT: No block end found, appending');
                                 }
                             }
                         } else {
                             currentContent += toolResultDisplay;
-                            console.log('🔧 TOOL_RESULT: Pattern matching failed, appending');
                         }
                     }
 
                     flushStreamedContent();
                 } else if (unwrappedData.type === 'tool_start') {
-                    console.log('🔧 TOOL_START received:', unwrappedData);
 
                     if (typeof setProcessingState === 'function') {
                         setProcessingState('processing_tools');
@@ -2398,13 +2413,13 @@ export const sendPayload = async (
 
                     if (actualToolName === 'run_shell_command' && inputArgs.command) {
                         // Shell commands: include the command line in the loading display
+                        inputArgs.command = stripRedundantCdForDisplay(inputArgs.command);
                         toolStartDisplay = `\n\n<!-- TOOL_MARKER:${unwrappedData.tool_id} -->\n${fence}tool:${toolName}|${displayHeader}|${syntax}\n$ ${inputArgs.command}\n⏳ Running...\n${fence}\n\n`;
                     } else {
                         // Add TOOL_MARKER for all tools so tool_display can find and replace reliably
                         toolStartDisplay = `\n\n<!-- TOOL_MARKER:${unwrappedData.tool_id} -->\n${fence}tool:${toolName}|${displayHeader}|${syntax}\n⏳ Running...\n${fence}\n\n`;
                     }
 
-                    console.log('🔧 TOOL_START formatted:', toolStartDisplay);
                     currentContent += toolStartDisplay;
                     flushStreamedContent();
                 }
@@ -2521,7 +2536,6 @@ export const sendPayload = async (
                                         msg.content.includes('```diff') || msg.content.includes('diff --git') ||
                                         msg.content.match(/^@@ /m) || msg.content.match(/^\+\+\+ /m) || msg.content.match(/^--- /m))) {
                                         containsDiff = true;
-                                        console.log("Detected diff content in message, disabling error detection");
                                     }
 
                                     // Skip error checking if the message contains tool execution results
@@ -2645,11 +2659,9 @@ export const sendPayload = async (
                         if (!chunk) {
                             // Check if the stream was aborted during processing
                             if (isAborted) {
-                                console.log("Stream was aborted during processing, discarding chunk");
                                 removeStreamingConversation(conversationId);
                                 return 'Response generation stopped by user.';
                             }
-                            console.log("Empty chunk received, continuing");
                             continue;
                         }
 
@@ -2658,7 +2670,6 @@ export const sendPayload = async (
                             chunk.includes('```diff') || chunk.includes('diff --git') ||
                             chunk.match(/^@@ /m) || chunk.match(/^\+\+\+ /m) || chunk.match(/^--- /m))) {
                             containsDiff = true;
-                            console.log("Detected diff content in chunk, disabling error detection");
                         }
 
                         // Check for errors using our new function - but be careful with code blocks
@@ -2736,7 +2747,7 @@ export const sendPayload = async (
                         if (buffer.includes('"error"')) {
                             console.log('🚨 RECOVERED_ERROR: Found error in unprocessed buffer');
                             // Try to extract meaningful error text from buffer
-                            let missedError = null;
+                            let missedError: ErrorResponse | null = null;
                             try {
                                 const bufferJson = JSON.parse(buffer);
                                 missedError = {
@@ -2788,7 +2799,7 @@ export const sendPayload = async (
                     `ziya-stream-${conversationId}`,
                     { mode: 'exclusive' },
                     async (lock) => {
-                        console.log('🔒 Acquired Web Lock for streaming:', lock.name);
+                        console.log('🔒 Acquired Web Lock for streaming:', lock?.name);
                         return readStream();
                     }
                 );
@@ -2948,7 +2959,7 @@ export const sendPayload = async (
         throw error;
     } finally {
         if (eventSource && typeof eventSource.close === 'function') eventSource.close();
-        document.removeEventListener('abortStream', abortListener as EventListener);
+        document.removeEventListener('abortStream', abortListener as unknown as EventListener);
         // Also drop the window-level reference set when the listener was
         // registered; without this, each sendPayload call leaks a closure
         // that pins streamedContentMap and message arrays for the session.
