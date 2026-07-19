@@ -95,20 +95,32 @@ export function shouldFetchFull(
     // to 0 so the comparison below forces a pull.  Without this, a
     // wiped-local/populated-server state is a permanent trap:
     // localVer=Infinity blocks the pull forever.
+    //
+    // Shells produced by getConversationShells() spread the full IDB
+    // record, so they carry the record's REAL _version and the true
+    // on-disk message count in _fullMessageCount.  Pinning every shell
+    // to Infinity discarded both signals and created a second permanent
+    // trap: a browser whose IDB fell behind (closed while another
+    // instance advanced the conversation) could never detect the
+    // divergence and never pulled.  Only fall back to Infinity when the
+    // shell genuinely lacks a version (placeholder awaiting hydration).
     const localFullCount = local._fullMessageCount;
     const serverSummaryMsgs = typeof sc.messageCount === 'number' ? sc.messageCount : 0;
     const emptyLocalPopulatedServer = local._isShell && localFullCount === 0 && serverSummaryMsgs > 0;
     const localVer = emptyLocalPopulatedServer
         ? 0
-        : (local._isShell ? Infinity : (local._version || local.lastAccessedAt || 0));
+        : (local._isShell
+            ? (local._version || local.lastAccessedAt || Infinity)
+            : (local._version || local.lastAccessedAt || 0));
     // Symmetric message-count divergence check (mirror of the push-side
     // filter).  If server reports strictly more messages than we have
     // locally, fetch — even if versions match.  Without this, a local
     // copy that fell behind the server with coincident _version stays
-    // permanently behind.  Shells are excluded (they intentionally carry
-    // a reduced message count until lazy-load completes).
+    // permanently behind.  Shells compare via _fullMessageCount (the
+    // true on-disk count) — their messages array is intentionally
+    // reduced and must not be compared directly.
     const localMsgCount = local._isShell
-        ? Infinity
+        ? (typeof localFullCount === 'number' ? localFullCount : Infinity)
         : (Array.isArray(local.messages) ? local.messages.length : 0);
     const countDiverged = serverSummaryMsgs > localMsgCount;
     const versionDiverged = serverVer > localVer;
@@ -274,16 +286,46 @@ export function mergeServerChat(
         // sync cycle.  'isGlobal' is authoritative on the server: a chat
         // marked global on disk must render with the global label in every
         // project regardless of whether IDB has caught up.
+        //
+        // Version stamping is conditional on content currency.  Stamping
+        // serverVersion unconditionally onto a record whose content is
+        // BEHIND the server (fetch skipped by the active-conv guard or
+        // alreadyFetchedThisSession) marks stale content as current:
+        // the record then wins version comparisons everywhere — the
+        // preservation loop can pin its stale messages, clear the shell
+        // markers, and regress IDB — while the missing messages are
+        // never pulled.  Keep the local version in that case so the
+        // divergence stays visible to shouldFetchFull on later cycles
+        // and the pull fires as soon as the guards lift.
+        const localContentCount = local._isShell
+            ? (local._fullMessageCount
+                ?? (Array.isArray(local.messages) ? local.messages.length : 0))
+            : (Array.isArray(local.messages) ? local.messages.length : 0);
+        const contentBehind = typeof sc.messageCount === 'number'
+            && sc.messageCount > localContentCount;
         return {
             action: 'set',
             record: {
                 ...local,
                 title: sc.title || local.title,
                 projectId: sc.projectId || local.projectId || ctx.projectId,
-                folderId: sc.groupId || sc.folderId || local.folderId || null,
+                // Absent-vs-null is load-bearing here (mirror of
+                // conversationToServerChat).  The server summary always
+                // serializes groupId, so groupId === null is the server
+                // EXPLICITLY saying root.  The old falsy || chain fell
+                // through a null groupId to the stale local.folderId, and
+                // the next push echoed that old folder back to the server
+                // — undoing a move-to-root performed in another browser
+                // (and re-inheriting global visibility if the old folder
+                // was global).  This is the server-newer branch: adopt the
+                // server's folder when it said anything at all, and only
+                // fall back to local when both fields are genuinely absent.
+                folderId: sc.groupId !== undefined ? sc.groupId
+                    : sc.folderId !== undefined ? sc.folderId
+                    : (local.folderId ?? null),
                 lastActiveAt: sc.lastActiveAt || local.lastActiveAt,
                 isGlobal: sc.isGlobal ?? local.isGlobal,
-                _version: serverVersion,
+                _version: contentBehind ? local._version : serverVersion,
                 _isShell: local._isShell,
                 openBeadCount: sc.openBeadCount ?? local.openBeadCount ?? 0,
                 openWorkItemCount: sc.openWorkItemCount ?? local.openWorkItemCount ?? 0,
