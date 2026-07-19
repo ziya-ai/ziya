@@ -28,7 +28,11 @@ interface MockToken {
  */
 function filterParagraphTokens(pTokens: MockToken[]): MockToken[] {
     return pTokens.filter(
-        t => t.type !== 'text' || t.text !== '' || t.text === '\n'
+        // The `|| t.text === '\n'` clause is unreachable given the preceding
+        // `!== ''` check (any non-empty string, including '\n', already
+        // satisfies it) — kept verbatim to mirror MarkdownRenderer.tsx's
+        // paragraph case exactly, per this file's "must stay in sync" contract.
+        t => t.type !== 'text' || t.text !== '' || (t.text as string) === '\n'
     );
 }
 

@@ -104,14 +104,14 @@ describe('globalMenuItemState', () => {
     test('not global → enabled "Share across projects"', () => {
         const s = globalMenuItemState(false, false);
         expect(s.disabled).toBe(false);
-        expect(s.label).toBe('🌐 Share across projects');
+        expect(s.label).toBe('Share across projects');
         expect(s.tooltip).toBeUndefined();
     });
 
     test('own-global → enabled "This project only" (un-share)', () => {
         const s = globalMenuItemState(true, true);
         expect(s.disabled).toBe(false);
-        expect(s.label).toBe('📌 This project only');
+        expect(s.label).toBe('Stop sharing across projects');
         expect(s.tooltip).toBeUndefined();
     });
 
@@ -135,7 +135,7 @@ describe('globalMenuItemState', () => {
         // silently disabled.
         const s = globalMenuItemState(false, true);
         expect(s.disabled).toBe(false);
-        expect(s.label).toBe('📌 This project only');
+        expect(s.label).toBe('Stop sharing across projects');
     });
 
     test('composes with the effective-global helpers (leaf under global root)', () => {
@@ -152,6 +152,6 @@ describe('globalMenuItemState', () => {
         const own = folders[0].isGlobal === true;
         const s = globalMenuItemState(eff, own);
         expect(s.disabled).toBe(false);
-        expect(s.label).toBe('📌 This project only');
+        expect(s.label).toBe('Stop sharing across projects');
     });
 });
