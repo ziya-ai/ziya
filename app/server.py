@@ -75,6 +75,56 @@ active_feedback_connections: dict[str, list[dict]] = {}  # conversation_id → l
 # Track active WebSocket connections for feedback
 # (Delegate streaming connections are managed by app.agents.delegate_stream_relay)
 
+# Per-conversation feedback queue — one queue shared by every WebSocket
+# connection for a conversation, with a lifetime decoupled from any single
+# socket.  The old design kept a queue per connection and fanned each
+# message into all of them while the executor drained only conns[0]:
+# a page reload could orphan undelivered feedback inside the dead
+# socket's queue, and the same message could later be re-delivered from
+# a sibling connection's copy.
+feedback_queues: dict[str, asyncio.Queue] = {}
+
+# Per-conversation *pending* feedback list — the drained-but-not-yet-delivered
+# staging area, shared by every concurrent stream_with_tools() generator for a
+# conversation.  Previously this was closure-local per generator, so when a
+# single user turn ran two generators for one conversation (e.g. the primary
+# stream plus the diff-validation retry at stream_chunks), each spawned its own
+# feedback monitor racing on the single shared feedback_queues[cid]; a monitor
+# could pull an item into a generator that had already ended, and the
+# *delivering* generator's pre-end drain (a different closure's list) never saw
+# it — silently lost with no trace.  Sharing the list by conversation_id makes
+# capture-closure and delivery-closure irrelevant: all of them touch one list.
+pending_feedback_lists: dict[str, list] = {}
+
+# Refcount of concurrent stream_with_tools() generators currently bound to
+# each conversation_id's pending_feedback_lists entry.  Without this, an
+# entry created via setdefault() is never removed, leaking one empty list
+# per distinct conversation_id for the life of the server.  Decremented (and
+# the entry dropped once both the refcount and the list are empty) when each
+# generator exits — see StreamingToolExecutor.stream_with_tools.
+pending_feedback_refcounts: dict[str, int] = {}
+
+
+def get_feedback_queue(conversation_id: str) -> asyncio.Queue:
+    """Get or create the shared feedback queue for a conversation."""
+    q = feedback_queues.get(conversation_id)
+    if q is None:
+        # Bounded so a consumer-less queue can't grow without limit.
+        q = asyncio.Queue(maxsize=100)
+        feedback_queues[conversation_id] = q
+    return q
+
+
+def _enqueue_feedback(conversation_id: str, item: dict) -> None:
+    """Put an item on the shared queue, dropping oldest if full."""
+    q = get_feedback_queue(conversation_id)
+    if q.full():
+        try:
+            q.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+    q.put_nowait(item)
+
 # Global security stats tracker
 _security_stats = {
     'total_verifications': 0,
@@ -519,6 +569,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Task-run reconciliation skipped: {e}")
 
+    # Cross-project chat-integrity self-detection.  Surfaces shadow copies
+    # (the same chat cloned into multiple project dirs by the pre-guard
+    # bulk-sync bug) in the logs at boot.  Warn-only by default; deletes
+    # files only when ZIYA_AUTO_RECONCILE_CHATS is set.  Never blocks startup.
+    try:
+        from app.utils.chat_integrity import run_startup_check
+        from app.utils.paths import get_ziya_home as _get_ziya_home_ci
+        run_startup_check(_get_ziya_home_ci())
+    except Exception as e:
+        logger.warning(f"Chat-integrity startup check skipped: {e}")
+
     # Register deferred plugin routes (plugins may have loaded before server)
     if ziya_env('ZIYA_LOAD_INTERNAL_PLUGINS'):
         try:
@@ -854,9 +915,6 @@ async def feedback_websocket(websocket: WebSocket, conversation_id: str):
     conn_entry = {
         'websocket': websocket,
         'connected_at': time.time(),
-        # Bounded to prevent unbounded growth if the stream consumer exits
-        # before the WS disconnects. Old messages dropped, not blocked.
-        'feedback_queue': asyncio.Queue(maxsize=100)
     }
     if conversation_id not in active_feedback_connections:
         active_feedback_connections[conversation_id] = []
@@ -872,28 +930,12 @@ async def feedback_websocket(websocket: WebSocket, conversation_id: str):
                 if feedback_type == 'tool_feedback':
                     logger.info(f"🔄 FEEDBACK: Received tool feedback for {conversation_id}: {data.get('message', '')}")
                     
-                    # Add to feedback queue of ALL connections for this conversation
-                    if conversation_id in active_feedback_connections:
-                        for conn in active_feedback_connections[conversation_id]:
-                            q = conn['feedback_queue']
-                            # Drop oldest if full — never block the WS receive loop
-                            if q.full():
-                                try:
-                                    q.get_nowait()
-                                except asyncio.QueueEmpty:
-                                    pass
-                            q.put_nowait(data)
+                    # Shared per-conversation queue — the executor's single
+                    # consumer point.  Survives socket reconnects.
+                    _enqueue_feedback(conversation_id, data)
                 elif feedback_type == 'interrupt':
                     logger.info(f"🔄 FEEDBACK: Received interrupt request for {conversation_id}")
-                    if conversation_id in active_feedback_connections:
-                        for conn in active_feedback_connections[conversation_id]:
-                            q = conn['feedback_queue']
-                            if q.full():
-                                try:
-                                    q.get_nowait()
-                                except asyncio.QueueEmpty:
-                                    pass
-                            q.put_nowait({'type': 'interrupt'})
+                    _enqueue_feedback(conversation_id, {'type': 'interrupt'})
                 
             except WebSocketDisconnect:
                 logger.debug(f"🔄 FEEDBACK: WebSocket disconnected for {conversation_id}")
@@ -911,6 +953,15 @@ async def feedback_websocket(websocket: WebSocket, conversation_id: str):
             # Remove the key entirely if no connections remain
             if not active_feedback_connections[conversation_id]:
                 del active_feedback_connections[conversation_id]
+        # Drop the shared queue once no connections remain AND nothing is
+        # pending.  A non-empty queue is deliberately kept so feedback sent
+        # just before a page reload survives for the executor to drain; the
+        # executor re-fetches via get_feedback_queue() on every poll, so a
+        # later reconnect creating a fresh queue is picked up automatically.
+        if not active_feedback_connections.get(conversation_id):
+            _q = feedback_queues.get(conversation_id)
+            if _q is not None and _q.empty():
+                del feedback_queues[conversation_id]
 
 # Create the FastAPI app
 @app.websocket("/ws/file-tree")
@@ -1488,7 +1539,12 @@ async def stream_chunks(body):
                 # Get current model state
                 state = ModelManager.get_state()
                 current_region = state.get('aws_region', 'us-east-1')
-                aws_profile = state.get('aws_profile', 'default')
+                # ModelManager._state['aws_profile'] can legitimately still be
+                # None here (it's only set when a profile lookup succeeds at
+                # init time, which can race CLI --profile propagation). Fall
+                # back to the environment directly so --profile/ZIYA_AWS_PROFILE
+                # is never silently dropped by a stale/unset cached state value.
+                aws_profile = state.get('aws_profile') or ziya_env("ZIYA_AWS_PROFILE") or os.environ.get("AWS_PROFILE")
                 endpoint = ziya_env("ZIYA_ENDPOINT")
                 
                 logger.debug(f"🔍 DIRECT_STREAMING_DEBUG: About to call build_messages_for_streaming with {len(files)} files")
@@ -1822,7 +1878,14 @@ async def stream_chunks(body):
                 )
                 
                 if is_auth_error:
-                    error_message = auth_provider.get_credential_help_message() if auth_provider else "AWS credentials have expired."
+                    # Same rationale as StreamingToolExecutor._classify_and_handle_error:
+                    # a KnownCredentialException's own message is already specific
+                    # (e.g. profile-not-found with the list of available profiles),
+                    # so it must not be overwritten by the generic provider template.
+                    if isinstance(e, KnownCredentialException):
+                        error_message = str(e)
+                    else:
+                        error_message = auth_provider.get_credential_help_message() if auth_provider else "AWS credentials have expired."
                     yield f"data: {json.dumps({'error': error_message, 'error_type': 'authentication_error', 'can_retry': True})}\n\n"
                     return
                 

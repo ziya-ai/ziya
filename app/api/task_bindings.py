@@ -20,6 +20,7 @@ from ..storage.projects import ProjectStorage
 from ..storage.chats import ChatStorage
 from ..storage.task_bindings import TaskBindingStorage
 from ..storage.task_cards import TaskCardStorage
+from ..storage.task_runs import TaskRunStorage
 from ..utils.paths import get_ziya_home, get_project_dir
 from ..utils.logging_utils import logger
 from .task_cards import _launch_run_for_card
@@ -65,9 +66,62 @@ class TaskBindingCreateResponse(BaseModel):
 async def list_task_bindings(project_id: str, chat_id: str) -> List[TaskBinding]:
     """List all bindings attached to a chat.  Returns [] if chat has
     no bindings.  Does not validate that the chat exists — bindings
-    for a deleted chat can still be listed (and would be empty)."""
+    for a deleted chat can still be listed (and would be empty).
+
+    Each binding with a run_id is enriched with a ``run_status``
+    extra field (TaskBinding has extra="allow") so the client can
+    show running-task affordances without a per-binding round trip.
+    """
     storage = _bindings_storage(project_id)
-    return storage.list_for_chat(chat_id)
+    bindings = storage.list_for_chat(chat_id)
+    source_project_id = project_id
+    run_dir = get_project_dir(project_id)
+
+    # Cross-project fallback for global conversations.  A global chat is
+    # visible from every project, but its binding file
+    # (chats/{chat_id}.bindings.json) lives only under the project the card
+    # was launched in — the chat's HOME project.  Viewed from any other
+    # project the URL's project_id has no binding file, so already-run cards
+    # vanish from the inline chat view.  Resolve the chat's owning project
+    # via the shared chat_index (chat_id -> owning project_id, O(1),
+    # self-healing) and read the bindings from there instead.  Cards are
+    # launched from their home project (confirmed workflow), so the chat
+    # owner is always the correct binding source; the mixed case (a card
+    # launched against a global chat from a *third* project) is out of scope.
+    if not bindings and chat_id:
+        try:
+            from app.storage import chat_index
+            owner = chat_index.lookup(get_ziya_home(), chat_id)
+            if owner and owner[0] != project_id:
+                owner_pid = owner[0]
+                owner_dir = get_project_dir(owner_pid)
+                bindings = TaskBindingStorage(owner_dir).list_for_chat(chat_id)
+                if bindings:
+                    source_project_id = owner_pid
+                    run_dir = owner_dir
+        except Exception as e:
+            logger.debug(
+                f"cross-project binding resolution failed for "
+                f"chat {chat_id[:8]}: {e}"
+            )
+
+    if bindings:
+        run_storage = TaskRunStorage(run_dir)
+        for b in bindings:
+            # Stamp the project the binding actually lives in (TaskBinding
+            # has extra="allow", same channel as run_status) so the client
+            # targets its card / run / iteration / cancel / rerun calls at
+            # the OWNING project rather than the possibly-different viewing
+            # project — otherwise those follow-up reads 404.
+            b.project_id = source_project_id
+            if b.run_id:
+                try:
+                    run = run_storage.get(b.run_id)
+                    if run:
+                        b.run_status = run.status
+                except Exception as e:
+                    logger.debug(f"Binding {b.id[:8]}: run status lookup failed: {e}")
+    return bindings
 
 
 @router.post("", response_model=TaskBindingCreateResponse, status_code=201)
