@@ -103,3 +103,82 @@ class TestInitializeAstCleanup:
         )
         # Also verify the error was captured, not masked by NameError
         assert _ast_indexing_status.get("error") is not None
+
+
+class TestSkippedResultIsNotAFailure:
+    """Regression: process_codebase()'s deliberate "too broad to index" guard
+    (e.g. ZIYA_USER_CODEBASE_DIR == $HOME) returns files_processed=0 with no
+    error — a benign early-return, not a processing failure. Previously
+    initialize_ast_if_enabled() treated any files_processed == 0 result as an
+    error unconditionally, logging two ERROR lines and raising. It must now
+    recognize result["skipped"] and log at INFO with is_complete=True instead.
+    """
+
+    def test_skipped_result_logs_info_not_error(self, _enable_ast, tmp_path):
+        """Asserts on logger.error call count directly (mock.patch), rather
+        than capturing stderr: ModeAwareLogger's StreamHandler() binds
+        sys.stderr at handler-creation (import) time. That handler can end
+        up holding a stale, closed stream object left over from an earlier
+        test's capsys/capfd fixture teardown, causing "I/O operation on
+        closed file" logging errors that corrupt an unrelated later test's
+        captured stderr — a fixture-lifecycle hazard, not a bug in this code.
+        Patching logger.error directly sidesteps it entirely."""
+        from app.utils import context_enhancer
+        from app.utils.context_enhancer import _ast_indexing_status
+
+        fake_result = {
+            "skipped": True,
+            "files_processed": 0,
+            "ast_context": "# AST Analysis\n\nProject directory is too broad for AST indexing. Open a specific project folder.",
+            "token_count": 10,
+            "file_list": [],
+        }
+        with mock.patch(
+            "app.utils.context_enhancer.initialize_ast_capabilities",
+            return_value=fake_result,
+        ), mock.patch.object(context_enhancer.logger, "error") as mock_error:
+            _run_init_synchronously()
+
+        mock_error.assert_not_called()
+        assert _ast_indexing_status.get("error") is None
+        assert _ast_indexing_status.get("is_complete") is True
+        assert _ast_indexing_status.get("is_indexing") is False
+
+    def test_skipped_result_does_not_raise(self, _enable_ast, tmp_path):
+        """A skipped result must not propagate through the except Exception
+        branch (which would additionally overwrite is_complete=False)."""
+        from app.utils.context_enhancer import _ast_indexing_status
+
+        fake_result = {"skipped": True, "files_processed": 0, "ast_context": "n/a"}
+        with mock.patch(
+            "app.utils.context_enhancer.initialize_ast_capabilities",
+            return_value=fake_result,
+        ):
+            _run_init_synchronously()
+
+        assert _ast_indexing_status.get("is_complete") is True
+        assert _ast_indexing_status.get("error") is None
+
+    def test_genuine_zero_files_without_skip_flag_still_errors(self, _enable_ast, tmp_path):
+        """Negative control: a real failure (files_processed=0, no skip flag)
+        must still be treated as an error — this guards against the fix
+        becoming overly broad and silently swallowing real failures.
+
+        Asserts on logger.error call count directly rather than captured
+        stderr — see test_skipped_result_logs_info_not_error's docstring for
+        why stream capture is unreliable across this logger's thread/fixture
+        interaction.
+        """
+        from app.utils import context_enhancer
+        from app.utils.context_enhancer import _ast_indexing_status
+
+        fake_result = {"files_processed": 0, "ast_context": ""}
+        with mock.patch(
+            "app.utils.context_enhancer.initialize_ast_capabilities",
+            return_value=fake_result,
+        ), mock.patch.object(context_enhancer.logger, "error") as mock_error:
+            _run_init_synchronously()
+
+        assert mock_error.called, "a genuine zero-files failure (no skip flag) must still log at ERROR"
+        assert _ast_indexing_status.get("error") is not None
+        assert _ast_indexing_status.get("is_complete") is False

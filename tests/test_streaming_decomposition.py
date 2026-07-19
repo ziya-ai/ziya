@@ -363,3 +363,64 @@ class TestClassifyAndHandleError:
         
         # Broken cache should reduce to 50%
         assert result['reduced_max_tokens'] <= 8192 * 0.5 + 1
+
+    # -----------------------------------------------------------------
+    # is_connection_error classification (PenPal follow-up: EndpointConnectionError
+    # was previously folded into the generic read-timeout bucket and labeled
+    # error_type='throttling_error' with "Connection timed out..." wording,
+    # which is misleading for a connection-refused/outage failure and never
+    # matched the frontend's isConnectionError check in chatApi.ts.)
+    # -----------------------------------------------------------------
+
+    def _run_classify(self, error_str, iteration=0):
+        executor = _make_executor()
+        error = Exception(error_str)
+        with patch('app.plugins.get_active_auth_provider') as mock_auth:
+            mock_auth.return_value = MagicMock(is_auth_error=MagicMock(return_value=False))
+            return executor._classify_and_handle_error(
+                error, error_str, iteration, [],
+                self._base_throttle_state(), self._base_delay_state(),
+                [], self._base_provider_config()
+            )
+
+    def test_endpoint_connection_error_tagged_connection_error(self):
+        result = self._run_classify("EndpointConnectionError: Could not connect to the endpoint URL")
+        assert result['error_chunk']['error'] == 'connection_error'
+
+    def test_connection_aborted_tagged_connection_error(self):
+        result = self._run_classify("Connection aborted.")
+        assert result['error_chunk']['error'] == 'connection_error'
+
+    def test_connection_reset_by_peer_tagged_connection_error(self):
+        result = self._run_classify("ConnectionResetError: Connection reset by peer")
+        assert result['error_chunk']['error'] == 'connection_error'
+
+    def test_connection_error_retry_message_does_not_say_timed_out(self):
+        """Regression: the connection-error bucket must get its own wording,
+        not the read-timeout bucket's misleading "Connection timed out" text —
+        a refused/aborted connection was never merely slow to respond."""
+        result = self._run_classify("EndpointConnectionError: Could not connect to the endpoint URL")
+        assert "timed out" not in result['error_message'].lower()
+        assert "reach the model endpoint" in result['error_message'].lower()
+
+    def test_connection_error_still_retries_like_read_timeout(self):
+        """is_connection_error is a subset of is_read_timeout — retry/backoff
+        behavior must be unaffected, only the frontend-facing label changes."""
+        result = self._run_classify("Connection aborted.")
+        assert result['type'] == 'read_timeout'
+        assert result['should_retry'] is True
+        assert result['delay'] > 0
+
+    def test_plain_read_timeout_not_tagged_connection_error(self):
+        """Negative control: a genuine slow-response timeout (no
+        connection-refused/aborted/closed indicator) must keep the existing
+        error_type='throttling_error' / "Connection timed out" wording."""
+        result = self._run_classify("Read timed out on stream")
+        assert result['error_chunk']['error'] == 'throttling_error'
+        assert "timed out" in result['error_message'].lower()
+
+    def test_ssl_error_not_tagged_connection_error(self):
+        """SSL/EOF drops are read-timeout-bucket transient failures, not
+        connection-refused failures — must not be mislabeled either way."""
+        result = self._run_classify("SSLError: EOF occurred in violation of protocol")
+        assert result['error_chunk']['error'] == 'throttling_error'

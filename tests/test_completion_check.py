@@ -16,6 +16,7 @@ from app.utils.completion_check import (
     parse_self_assessment,
     signature_for,
     strip_assessment_tag,
+    strip_progress_tags,
 )
 
 
@@ -160,6 +161,41 @@ class TestStrip:
     def test_handles_empty(self):
         assert strip_assessment_tag("") == ""
         assert strip_assessment_tag(None) is None  # type: ignore[arg-type]
+
+
+class TestStripProgressTags:
+    def test_strips_tag_with_surrounding_spaces(self):
+        # Well-formed case: tag already has whitespace on both sides,
+        # so removal collapses to a double space rather than gluing.
+        assert strip_progress_tags('a <progress note="x"/> b') == "a  b"
+
+    def test_strips_multiple_tags(self):
+        out = strip_progress_tags('<progress note="a"/> x <progress note="b" /> y')
+        assert "progress" not in out
+        assert "x" in out and "y" in out
+
+    def test_does_not_glue_inline_tag_to_surrounding_text(self):
+        # Regression: a tag emitted with no surrounding whitespace must
+        # not merge the sentence before it with the sentence after it.
+        text = 'the hard test gate.<progress note="x"/>Test gate passes'
+        assert strip_progress_tags(text) == "the hard test gate. Test gate passes"
+
+    def test_inline_gap_fill_only_when_glued_on_both_sides(self):
+        # Leading space present, trailing side glued: still just one
+        # space is inserted for the glued side, no doubling on the
+        # already-spaced side.
+        text = 'before <progress note="x"/>after'
+        assert strip_progress_tags(text) == "before after"
+
+    def test_case_insensitive(self):
+        assert strip_progress_tags('<PROGRESS Note="x"/>done') == "done"
+
+    def test_idempotent_when_no_tag(self):
+        assert strip_progress_tags("done") == "done"
+
+    def test_handles_empty_and_none(self):
+        assert strip_progress_tags("") == ""
+        assert strip_progress_tags(None) is None  # type: ignore[arg-type]
 
 
 class TestPromptInstruction:

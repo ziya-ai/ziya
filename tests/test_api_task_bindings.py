@@ -35,8 +35,11 @@ from fastapi.testclient import TestClient
 
 from app.models.chat import ChatCreate
 from app.models.task_card import Artifact, Block, TaskCardCreate
+from app.models.task_run import TaskRunCreate
 from app.storage.chats import ChatStorage
+from app.storage.task_bindings import TaskBindingStorage
 from app.storage.task_cards import TaskCardStorage
+from app.storage.task_runs import TaskRunStorage
 
 
 @pytest.fixture
@@ -279,3 +282,106 @@ def test_delete_is_chat_scoped(client):
     # Original binding still there
     rows = tc.get(f"/api/v1/projects/{pid}/chats/{chat_id}/task-bindings").json()
     assert len(rows) == 1
+
+
+# ──────────────────────────────────────────────────────────────────
+# run_status enrichment on GET
+#
+# The frontend reconciler (Conversation.tsx) reads ``run_status`` off
+# each binding to decide whether the conversation shows the
+# running-task gear.  These tests pin the wire contract: present and
+# accurate when the binding has a live run, absent otherwise.
+# ──────────────────────────────────────────────────────────────────
+
+def _seed_run_and_binding(pdir, chat_id, card_id, status=None):
+    """Create a run + binding directly via storage (no background
+    executor task), so run status is fully under test control."""
+    run_storage = TaskRunStorage(pdir)
+    run = run_storage.create(TaskRunCreate(card_id=card_id))
+    if status:
+        run_storage.update_status(run.id, status)
+    binding = TaskBindingStorage(pdir).create(
+        chat_id=chat_id, card_id=card_id, run_id=run.id,
+    )
+    return run, binding
+
+
+def test_get_enriches_run_status_via_launch_endpoint(client):
+    """End-to-end: POST launches a run; GET must include run_status
+    with a valid RunStatus value.  Tolerant of executor-stub timing —
+    any legal status is accepted, but the field must be present."""
+    tc, pid, chat_id, card_id = client
+    tc.post(
+        f"/api/v1/projects/{pid}/chats/{chat_id}/task-bindings",
+        json={"card_id": card_id, "anchor_message_id": None},
+    )
+    rows = tc.get(f"/api/v1/projects/{pid}/chats/{chat_id}/task-bindings").json()
+    assert len(rows) == 1
+    assert "run_status" in rows[0], (
+        "GET /task-bindings must enrich bindings with run_status; "
+        "without it the frontend running-task gear never shows"
+    )
+    assert rows[0]["run_status"] in ("queued", "running", "done", "failed", "cancelled")
+
+
+def test_run_status_tracks_run_lifecycle(client, ziya_home, project_dir):
+    """run_status reflects the run's CURRENT status on every GET —
+    it is a live join, not a value frozen at binding creation."""
+    tc, pid, chat_id, card_id = client
+    pdir = ziya_home / "projects" / project_dir
+    run, _ = _seed_run_and_binding(pdir, chat_id, card_id)
+    url = f"/api/v1/projects/{pid}/chats/{chat_id}/task-bindings"
+
+    rows = tc.get(url).json()
+    assert rows[0]["run_status"] == "queued"
+
+    run_storage = TaskRunStorage(pdir)
+    for status in ("running", "done"):
+        run_storage.update_status(run.id, status)
+        rows = tc.get(url).json()
+        assert rows[0]["run_status"] == status
+
+
+def test_cancelled_spelling_contract(client, ziya_home, project_dir):
+    """The wire spelling is the two-L British 'cancelled' (RunStatus
+    literal).  The frontend terminal set {'done','failed','cancelled'}
+    must match exactly — a one-L 'canceled' anywhere in this chain
+    would leave the gear spinning forever after a user cancel.  This
+    test breaks loudly if the backend spelling ever changes."""
+    tc, pid, chat_id, card_id = client
+    pdir = ziya_home / "projects" / project_dir
+    _seed_run_and_binding(pdir, chat_id, card_id, status="cancelled")
+
+    rows = tc.get(f"/api/v1/projects/{pid}/chats/{chat_id}/task-bindings").json()
+    assert rows[0]["run_status"] == "cancelled"
+    assert rows[0]["run_status"] != "canceled"
+
+
+def test_staged_binding_has_no_run_status(client, ziya_home, project_dir):
+    """A staged binding (run_id None — e.g. created by /goal and
+    awaiting user confirmation) has no run to report on; run_status
+    must be absent, not null-ish garbage."""
+    tc, pid, chat_id, card_id = client
+    pdir = ziya_home / "projects" / project_dir
+    TaskBindingStorage(pdir).create(
+        chat_id=chat_id, card_id=card_id, run_id=None,
+    )
+    rows = tc.get(f"/api/v1/projects/{pid}/chats/{chat_id}/task-bindings").json()
+    assert len(rows) == 1
+    assert rows[0]["run_id"] is None
+    assert rows[0].get("run_status") is None
+
+
+def test_dangling_run_id_degrades_gracefully(client, ziya_home, project_dir):
+    """A binding pointing at a missing run (deleted run file) must not
+    fail the whole list — that binding simply omits run_status."""
+    tc, pid, chat_id, card_id = client
+    pdir = ziya_home / "projects" / project_dir
+    TaskBindingStorage(pdir).create(
+        chat_id=chat_id, card_id=card_id, run_id="no-such-run",
+    )
+    res = tc.get(f"/api/v1/projects/{pid}/chats/{chat_id}/task-bindings")
+    assert res.status_code == 200
+    rows = res.json()
+    assert len(rows) == 1
+    assert rows[0].get("run_status") is None

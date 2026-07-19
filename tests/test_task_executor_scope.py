@@ -46,6 +46,7 @@ class _FakeExecutor:
 
     captured_messages = None
     captured_tools = None
+    captured_kwargs = None
 
     def __init__(self, *args, **kwargs):
         pass
@@ -54,6 +55,7 @@ class _FakeExecutor:
         # Record what the executor was called with so tests can inspect.
         type(self).captured_messages = messages
         type(self).captured_tools = tools
+        type(self).captured_kwargs = kwargs
         yield {"type": "text", "content": "done"}
         yield {"type": "stream_end"}
 
@@ -63,6 +65,7 @@ def fake_executor():
     # Reset capture state between tests.
     _FakeExecutor.captured_messages = None
     _FakeExecutor.captured_tools = None
+    _FakeExecutor.captured_kwargs = None
     with patch("app.streaming_tool_executor.StreamingToolExecutor", _FakeExecutor), \
          patch("app.agents.models.ModelManager.get_state",
                return_value={"aws_region": "us-east-1", "aws_profile": "x",
@@ -92,6 +95,32 @@ class TestValidation:
         block = Block(block_type="task", id="t", name="T", instructions="  ")
         with pytest.raises(task_executor.TaskExecutorError):
             await task_executor.execute_task_block(block)
+
+    @pytest.mark.asyncio
+    async def test_run_id_passed_as_conversation_id(self, fake_executor):
+        # Regression test: execute_task_block must forward run_id to
+        # stream_with_tools as conversation_id, otherwise
+        # app.context.set_conversation_id() is never called during a
+        # Task Card run and model-driven context tools
+        # (context_add_file/context_remove_file/context_list_files)
+        # fail with "no conversation_id is set in the current request
+        # context".
+        block = _task("do it")
+        await task_executor.execute_task_block(block, run_id="run-xyz")
+        assert fake_executor.captured_kwargs is not None
+        assert fake_executor.captured_kwargs.get("conversation_id") == "run-xyz"
+
+    @pytest.mark.asyncio
+    async def test_no_run_id_omits_conversation_id(self, fake_executor):
+        # When no run_id is supplied (e.g. a caller that predates this
+        # fix, or a non-Task-Card invocation), conversation_id should
+        # simply be None rather than an empty string or missing kwarg
+        # entirely — stream_with_tools treats falsy conversation_id as
+        # "no conversation context" and skips set_conversation_id().
+        block = _task("do it")
+        await task_executor.execute_task_block(block)
+        assert fake_executor.captured_kwargs is not None
+        assert fake_executor.captured_kwargs.get("conversation_id") is None
 
 
 # ── Skills ───────────────────────────────────────────────────────────

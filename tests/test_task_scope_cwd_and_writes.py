@@ -197,7 +197,12 @@ class TestPathsContextFlag:
         assert "READ_ME_MARKER" not in _system_text(fake_executor)
 
     @pytest.mark.asyncio
-    async def test_directory_with_context_skipped(self, fake_executor, tmp_path):
+    async def test_directory_with_context_expands(self, fake_executor, tmp_path):
+        # A context=True directory grant is deliberately expanded at launch to
+        # every regular file under the subtree (task_executor._preload, capped
+        # at 200 files, skipping .git/node_modules/etc.), so child contents ARE
+        # preloaded into the system prompt. This keeps the saved scope compact
+        # (one dir entry) while still surfacing the files to the model.
         sub = tmp_path / "subdir"
         sub.mkdir()
         (sub / "inside.py").write_text("INSIDE_MARKER\n")
@@ -207,7 +212,7 @@ class TestPathsContextFlag:
         await task_executor.execute_task_block(
             block, project_root=str(tmp_path),
         )
-        assert "INSIDE_MARKER" not in _system_text(fake_executor)
+        assert "INSIDE_MARKER" in _system_text(fake_executor)
 
 
 # ── Writable-path contextvar (app.context) ───────────────────────────

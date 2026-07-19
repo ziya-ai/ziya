@@ -126,6 +126,32 @@ class TestBuildRequest:
         
         assert "temperature" not in request
 
+    def test_temperature_dropped_when_unsupported(self, anthropic_provider):
+        """A non-None temperature must be filtered out when the model lists
+        it in unsupported_parameters — mirrors BedrockProvider. Fable 5 /
+        Mythos-class models 400 with "`temperature` is deprecated for this
+        model", observed live on the inherited BedrockMantleProvider path
+        because ProviderConfig.temperature defaults to 0.3.
+        """
+        anthropic_provider.model_config = {
+            "family": "claude",
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        }
+        config = ProviderConfig(temperature=0.3)
+        messages = [{"role": "user", "content": "Hi"}]
+        request = anthropic_provider._build_request(messages, None, [], config)
+
+        assert "temperature" not in request
+
+    def test_temperature_kept_when_not_unsupported(self, anthropic_provider):
+        """A supported temperature must still pass through."""
+        anthropic_provider.model_config = {"family": "claude"}
+        config = ProviderConfig(temperature=0.7)
+        messages = [{"role": "user", "content": "Hi"}]
+        request = anthropic_provider._build_request(messages, None, [], config)
+
+        assert request["temperature"] == 0.7
+
     def test_adaptive_thinking(self, anthropic_provider):
         """Adaptive thinking should set thinking with budget."""
         thinking = ThinkingConfig(enabled=True, mode="adaptive", budget_tokens=16000)
@@ -294,6 +320,39 @@ class TestFeatureSupport:
     def test_provider_name(self, anthropic_provider):
         """Provider name should be 'anthropic'."""
         assert anthropic_provider.provider_name == "anthropic"
+
+
+# ---------------------------------------------------------------------------
+# Legacy LangChain Compatibility Shim Tests
+# ---------------------------------------------------------------------------
+
+class TestLangChainCompatShims:
+    """RetryingChatBedrock calls model.bind(stop=[...]) and
+    model.get_num_tokens(text) on whatever ModelManager returns.  When a
+    pipeline provider (AnthropicDirectProvider or its BedrockMantleProvider
+    subclass) flows through that legacy path, these shims must exist —
+    their absence caused a live AttributeError:
+    'BedrockMantleProvider' object has no attribute 'bind'.
+    """
+
+    def test_bind_returns_self(self, anthropic_provider):
+        assert anthropic_provider.bind(stop=["</tool>"]) is anthropic_provider
+
+    def test_bind_ignores_arbitrary_kwargs(self, anthropic_provider):
+        assert anthropic_provider.bind(stop=["x"], temperature=0.1, foo="bar") is anthropic_provider
+
+    def test_get_num_tokens_heuristic(self, anthropic_provider):
+        text = "a" * 350
+        assert anthropic_provider.get_num_tokens(text) == 100
+
+    def test_get_num_tokens_empty(self, anthropic_provider):
+        assert anthropic_provider.get_num_tokens("") == 0
+
+    def test_mantle_provider_inherits_shims(self):
+        from app.providers.bedrock_mantle import BedrockMantleProvider
+        assert BedrockMantleProvider.bind is not None
+        assert "bind" not in BedrockMantleProvider.__dict__  # inherited, not redefined
+        assert callable(getattr(BedrockMantleProvider, "get_num_tokens"))
 
 
 # ---------------------------------------------------------------------------

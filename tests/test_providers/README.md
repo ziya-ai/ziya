@@ -8,9 +8,19 @@ Comprehensive tests for `app/providers/` — the LLM provider abstraction layer.
 |------|-------|--------|
 | `test_base.py` | 37 | ✅ Passing |
 | `test_bedrock.py` | 41 | ✅ Passing |
-| `test_anthropic_direct.py` | 34 | ✅ Passing |
+| `test_anthropic_direct.py` | 41 | ✅ Passing |
 | `test_factory.py` | 7 | ✅ Passing |
-| **Total** | **119** | ✅ All Passing |
+| `test_bedrock_mantle_region.py` | 9 | ✅ Passing |
+| `test_bedrock_mantle_cache.py` | 13 | ✅ Passing |
+| **Total** | **148** | ✅ All Passing |
+
+> `test_anthropic_direct.py` includes 2 tests asserting `temperature` is
+> dropped when the model lists it in `unsupported_parameters` (the Fable 5 /
+> Mythos-class 400 that surfaced on the inherited Mantle path). Its cache and
+> request-building tests are inherited in behavior by `BedrockMantleProvider`;
+> `test_bedrock_mantle_cache.py` pins the Mantle-specific parity (stale-marker
+> stripping under the Bedrock 4-breakpoint limit, `ZIYA_DISABLE_PROMPT_CACHE`,
+> and usage cache-counter surfacing).
 
 ## Test Details
 
@@ -122,6 +132,37 @@ pytest tests/test_providers/test_anthropic_direct.py -v
 # With coverage
 pytest tests/test_providers/ --cov=app.providers --cov-report=html
 ```
+
+## Live / real-endpoint testing (footgun)
+
+Unit tests mock the SDK client and never touch the network. When you write a
+throwaway harness that hits a **real** endpoint (e.g. verifying Bedrock Mantle
+prompt caching returns non-zero `cache_read_input_tokens`), do **not** run it
+from outside the repo root:
+
+```bash
+# WRONG — sys.path[0] becomes /tmp, so `import app` resolves to the
+# INSTALLED site-packages copy, not your edited workspace tree. Your local
+# provider fix is silently absent and the harness "reproduces" the old bug.
+python3 /tmp/my_live_harness.py
+
+# RIGHT — force the workspace onto sys.path before importing app, or run
+# from the repo root so cwd wins.
+#   sys.path.insert(0, "/path/to/ziya-<ver>")   # at top of the script
+# then verify you loaded the right module:
+#   import app.providers.anthropic_direct as m; print(m.__file__)
+```
+
+This bit us while validating the Mantle cache-marker stripping fix: the first
+live run 400'd with `A maximum of 4 blocks with cache_control` because it
+imported the unpatched installed copy. Confirm `m.__file__` points into the
+workspace before trusting any live result.
+
+Real-endpoint harnesses also need live AWS creds (the `aws` CLI and `env` are
+blocked under the shell policy — probe credentials via `boto3.Session()` in
+Python instead) and must set `temperature=None` (or use a model without
+`temperature` in `unsupported_parameters`) for Fable 5 / Mythos-class models,
+which reject `temperature` with a 400.
 
 ## Architecture
 

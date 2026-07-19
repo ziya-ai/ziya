@@ -199,3 +199,61 @@ def test_lists_are_actual_lists_not_pydantic_internal_types():
         root_block=_task("a", scope=scope), project_root="/p")
     # If any field is non-JSON, this raises.
     json.dumps(snap)
+
+
+# ── deck / card scope hierarchy ────────────────────────────────────
+
+
+def test_deck_scope_alone_makes_scopeless_block_appear():
+    """A block with no scope of its own is still captured when the
+    deck (project-wide) scope grants something — the snapshot records
+    the EFFECTIVE scope, matching what the executor actually grants."""
+    deck = TaskScope(tools=["deck-tool"])
+    snap = build_permissions_snapshot(
+        root_block=_task("a"), project_root="/p", deck_scope=deck)
+    assert snap["block_scopes"]["a"]["tools"] == ["deck-tool"]
+
+
+def test_card_scope_alone_makes_scopeless_block_appear():
+    card = TaskScope(shell_commands=["pytest"])
+    snap = build_permissions_snapshot(
+        root_block=_task("a"), project_root="/p", card_scope=card)
+    assert snap["block_scopes"]["a"]["shell_commands"] == ["pytest"]
+
+
+def test_deck_card_and_leaf_scopes_merge_additively():
+    deck = TaskScope(tools=["deck-tool"])
+    card = TaskScope(skills=["debug_mode"])
+    leaf_scope = TaskScope(shell_commands=["pytest"])
+    snap = build_permissions_snapshot(
+        root_block=_task("a", scope=leaf_scope), project_root="/p",
+        deck_scope=deck, card_scope=card)
+    bs = snap["block_scopes"]["a"]
+    assert bs["tools"] == ["deck-tool"]
+    assert bs["skills"] == ["debug_mode"]
+    assert bs["shell_commands"] == ["pytest"]
+
+
+def test_ancestor_scope_flows_to_nested_leaf():
+    """A container block's own scope must be captured on every leaf
+    beneath it, not just re-recorded once for the container itself."""
+    inner_scope = TaskScope(tools=["leaf-tool"])
+    outer_scope = TaskScope(shell_commands=["make test"])
+    root = _parallel("root", body=[
+        _task("child", scope=inner_scope),
+    ])
+    root.scope = outer_scope
+    snap = build_permissions_snapshot(root_block=root, project_root="/p")
+    assert snap["block_scopes"]["child"]["tools"] == ["leaf-tool"]
+    assert snap["block_scopes"]["child"]["shell_commands"] == ["make test"]
+    # The container itself is ALSO captured (its own scope is non-empty).
+    assert snap["block_scopes"]["root"]["shell_commands"] == ["make test"]
+
+
+def test_no_deck_or_card_scope_preserves_prior_behavior():
+    """Omitting deck_scope/card_scope (the default) must reproduce the
+    exact pre-hierarchy behavior — a purely additive change."""
+    scope = TaskScope(tools=["file_read"])
+    snap = build_permissions_snapshot(
+        root_block=_task("a", scope=scope), project_root="/p")
+    assert snap["block_scopes"]["a"]["tools"] == ["file_read"]

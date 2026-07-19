@@ -633,3 +633,156 @@ class TestUntilExitConditions:
             "explicit until_condition must be evaluated, not short-circuited "
             "by the inner task's self_assessment"
         )
+
+
+# --------------------------------------------------------------------
+# Deck / card / ancestor scope hierarchy
+# --------------------------------------------------------------------
+#
+# Every hierarchy layer (project-wide deck, card, and every container
+# block down to the leaf Task) can carry a scope; execute_block merges
+# them additively (deck -> card -> ancestor(s) -> leaf) before the leaf
+# Task actually runs.  See app.models.task_card.merge_scopes and
+# ExecutionContext.effective_scope / scope_stack.
+
+class TestScopeHierarchy:
+    @pytest.mark.asyncio
+    async def test_leaf_with_no_ancestor_scope_gets_deck_and_card_only(self):
+        from app.models.task_card import TaskScope
+        block = _task("t1")
+        ctx = ExecutionContext(
+            run_id="r",
+            deck_scope=TaskScope(tools=["deck-tool"]),
+            card_scope=TaskScope(tools=["card-tool"]),
+        )
+        seen = []
+
+        async def capture(b, project_root=None, project_id=None, run_id=None):
+            seen.append(b.scope)
+            return _mk_artifact("ok")
+
+        with patch("app.agents.block_executor.execute_task_block", capture):
+            await execute_block(block, ctx)
+
+        assert seen[0].tools == ["deck-tool", "card-tool"]
+
+    @pytest.mark.asyncio
+    async def test_ancestor_container_scope_flows_to_leaf(self):
+        from app.models.task_card import TaskScope
+        leaf = _task("leaf")
+        wrapper = Block(
+            block_type="parallel", id="wrap", name="wrap",
+            scope=TaskScope(shell_commands=["make test"]),
+            body=[leaf],
+        )
+        ctx = ExecutionContext(run_id="r")
+        seen = []
+
+        async def capture(b, project_root=None, project_id=None, run_id=None):
+            seen.append(b.scope)
+            return _mk_artifact("ok")
+
+        with patch("app.agents.block_executor.execute_task_block", capture):
+            await execute_block(wrapper, ctx)
+
+        assert seen[0].shell_commands == ["make test"]
+
+    @pytest.mark.asyncio
+    async def test_full_chain_merges_additively(self):
+        from app.models.task_card import TaskScope, ScopeEntry
+        leaf = Block(
+            block_type="task", id="leaf", name="leaf", instructions="go",
+            scope=TaskScope(tools=["leaf-tool"]),
+        )
+        mid = Block(
+            block_type="repeat", id="mid", name="mid",
+            repeat_mode="count", repeat_count=1,
+            scope=TaskScope(shell_commands=["pytest"]),
+            body=[leaf],
+        )
+        ctx = ExecutionContext(
+            run_id="r",
+            deck_scope=TaskScope(paths=[ScopeEntry(path="out/", is_dir=True, write=True)]),
+            card_scope=TaskScope(skills=["debug_mode"]),
+        )
+        seen = []
+
+        async def capture(b, project_root=None, project_id=None, run_id=None):
+            seen.append(b.scope)
+            return _mk_artifact("ok")
+
+        with patch("app.agents.block_executor.execute_task_block", capture):
+            await execute_block(mid, ctx)
+
+        merged = seen[0]
+        assert merged.tools == ["leaf-tool"]
+        assert merged.shell_commands == ["pytest"]
+        assert merged.skills == ["debug_mode"]
+        assert merged.paths[0].path == "out/"
+        assert merged.paths[0].write is True
+
+    @pytest.mark.asyncio
+    async def test_no_scope_anywhere_leaves_none(self):
+        """When deck/card/every ancestor and the leaf itself have no
+        scope at all, the merged scope passed to the leaf stays None —
+        matching the pre-hierarchy 'no scope = unrestricted' contract."""
+        block = _task("t1")
+        ctx = ExecutionContext(run_id="r")
+        seen = []
+
+        async def capture(b, project_root=None, project_id=None, run_id=None):
+            seen.append(b.scope)
+            return _mk_artifact("ok")
+
+        with patch("app.agents.block_executor.execute_task_block", capture):
+            await execute_block(block, ctx)
+
+        assert seen[0] is None
+
+    @pytest.mark.asyncio
+    async def test_scope_stack_popped_after_sibling_finishes(self):
+        """A container's scope must not leak onto a LATER sibling
+        outside its own subtree — scope_stack push/pop must be
+        properly nested per-block, not merely per-call."""
+        from app.models.task_card import TaskScope
+        scoped_leaf = _task("scoped-leaf")
+        scoped_wrapper = Block(
+            block_type="parallel", id="scoped-wrap", name="w",
+            scope=TaskScope(tools=["scoped-only"]),
+            body=[scoped_leaf],
+        )
+        plain_leaf = _task("plain-leaf")
+        root = Block(
+            block_type="group", id="root", name="root",
+            body=[scoped_wrapper, plain_leaf],
+        )
+        ctx = ExecutionContext(run_id="r")
+        seen = {}
+
+        async def capture(b, project_root=None, project_id=None, run_id=None):
+            seen[b.id] = b.scope
+            return _mk_artifact("ok")
+
+        with patch("app.agents.block_executor.execute_task_block", capture):
+            await execute_block(root, ctx)
+
+        assert seen["scoped-leaf"].tools == ["scoped-only"]
+        assert seen["plain-leaf"] is None
+        assert ctx.scope_stack == []  # fully unwound after the run
+
+    @pytest.mark.asyncio
+    async def test_effective_scope_helper_directly(self):
+        from app.models.task_card import TaskScope
+        ctx = ExecutionContext(
+            run_id="r",
+            deck_scope=TaskScope(tools=["deck"]),
+            card_scope=TaskScope(tools=["card"]),
+        )
+        ctx.scope_stack.append(TaskScope(tools=["ancestor"]))
+        merged = ctx.effective_scope(TaskScope(tools=["leaf"]))
+        assert merged.tools == ["deck", "card", "ancestor", "leaf"]
+
+    @pytest.mark.asyncio
+    async def test_effective_scope_all_none_returns_none(self):
+        ctx = ExecutionContext(run_id="r")
+        assert ctx.effective_scope() is None

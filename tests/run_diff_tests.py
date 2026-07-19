@@ -714,6 +714,30 @@ class DiffRegressionTest(unittest.TestCase):
         the bug is upstream in anchoring."""
         self.run_diff_test('MRE_duplicate_trailing_line_drop')
 
+    def test_MRE_pure_add_eof_drops_upstream_dup(self):
+        """TWO bugs, one fixture (see this case's metadata.json for the full
+        writeup).
+
+        (1) FIXED — the upstream line-drop: the global consecutive-duplicate
+        cleanup pass in apply_diff_with_difflib_hybrid_forced used to collapse a
+        LEGITIMATE pre-existing adjacent-identical pair no hunk touched. Fixed in
+        patch_apply.py (per-line dedup budget vs. the original file's adjacent-dup
+        count). The durable regression guard for the drop is the direct unit test
+        tests/test_malformed_hunks.py::
+        test_pure_add_eof_preserves_preexisting_adjacent_duplicate (plus a proven
+        negative control) — NOT this corpus case, because through the full
+        pipeline this fixture takes the system-patch success path and never
+        reaches the difflib-hybrid-forced drop path.
+
+        (2) OPEN — this case currently FAILS on a SEPARATE defect it happens to
+        reproduce: apply_patch_directly (pipeline_manager.py small-diff fast path)
+        strips the file's trailing newline (raw 'patch -p1' with identical args
+        preserves it). Output is otherwise byte-correct (109 lines, card_id="a"
+        x3 — drop confirmed fixed). Left failing (not expected_to_fail) as a live
+        reproduction of the open trailing-newline-strip bug; see
+        .ziya/BUG-trailing-newline-strip.md."""
+        self.run_diff_test('MRE_pure_add_eof_drops_upstream_dup')
+
     def test_MRE_css_padding_real_file(self):
         """Test case for CSS padding property incorrectly marked as already applied using real file"""
         test_case = 'MRE_css_padding_real_file'

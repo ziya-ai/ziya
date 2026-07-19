@@ -118,6 +118,53 @@ class TestCancel:
         assert resp.status_code == 404
 
 
+class TestPauseResume:
+    def test_pause_running_sets_flag(self, client, project_id, run_storage):
+        run = run_storage.create(TaskRunCreate(card_id="c1"))
+        run_storage.update_status(run.id, "running")
+        resp = client.post(
+            f"/api/v1/projects/{project_id}/task-runs/{run.id}/pause"
+        )
+        assert resp.status_code == 200, resp.text
+        # Endpoint only sets the flag; the executor flips status to
+        # "paused" when it reaches a boundary, so status stays running.
+        data = resp.json()
+        assert data["pause_requested"] is True
+        assert data["status"] == "running"
+
+    def test_resume_clears_flag(self, client, project_id, run_storage):
+        run = run_storage.create(TaskRunCreate(card_id="c1"))
+        run_storage.update_status(run.id, "running")
+        run_storage.request_pause(run.id)
+        resp = client.post(
+            f"/api/v1/projects/{project_id}/task-runs/{run.id}/resume"
+        )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["pause_requested"] is False
+
+    def test_pause_idempotent_on_terminal(self, client, project_id, run_storage):
+        run = run_storage.create(TaskRunCreate(card_id="c1"))
+        run_storage.update_status(run.id, "done")
+        resp = client.post(
+            f"/api/v1/projects/{project_id}/task-runs/{run.id}/pause"
+        )
+        assert resp.status_code == 200, resp.text
+        # Terminal run returns unchanged; flag never set.
+        data = resp.json()
+        assert data["pause_requested"] is False
+        assert data["status"] == "done"
+
+    def test_pause_missing_run_404(self, client, project_id):
+        resp = client.post(
+            f"/api/v1/projects/{project_id}/task-runs/does-not-exist/pause"
+        )
+        assert resp.status_code == 404
+
+    def test_resume_missing_run_404(self, client, project_id):
+        resp = client.post(
+            f"/api/v1/projects/{project_id}/task-runs/does-not-exist/resume"
+        )
+        assert resp.status_code == 404
 class TestIterationsQuery:
     def test_list_all(self, client, project_id, populated_run):
         resp = client.get(

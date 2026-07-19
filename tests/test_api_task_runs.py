@@ -261,3 +261,44 @@ class TestIterationArtifactFetch:
             f"/api/v1/projects/{pid}/task-runs/nope/iterations/x/0",
         )
         assert resp.status_code == 404
+
+
+class TestCardSnapshot:
+    """The card definition is snapshotted at launch so editing the card
+    afterward doesn't retroactively rewrite what a past run executed."""
+
+    def test_set_card_snapshot_persists(self, storage):
+        run = storage.create(TaskRunCreate(card_id="c"))
+        assert run.card_snapshot is None
+
+        snap = {
+            "name": "Original name",
+            "description": "Original desc",
+            "root": {"block_type": "task", "instructions": "do the thing"},
+        }
+        updated = storage.set_card_snapshot(run.id, snap)
+        assert updated is not None
+        assert updated.card_snapshot == snap
+
+        # Survives a reload from disk.
+        reloaded = storage.get(run.id)
+        assert reloaded.card_snapshot["name"] == "Original name"
+        assert reloaded.card_snapshot["root"]["instructions"] == "do the thing"
+
+    def test_set_card_snapshot_missing_run(self, storage):
+        assert storage.set_card_snapshot("no-such-run", {"name": "x"}) is None
+
+    def test_snapshot_is_independent_of_later_edits(self, storage):
+        """The snapshot is a plain dict copy — mutating the source card
+        model after snapshotting must not change what was recorded."""
+        run = storage.create(TaskRunCreate(card_id="c"))
+        source = {
+            "name": "v1",
+            "description": "",
+            "root": {"block_type": "task", "instructions": "v1 instructions"},
+        }
+        storage.set_card_snapshot(run.id, dict(source))
+        # Simulate a subsequent card edit against the same source object.
+        source["root"]["instructions"] = "v2 instructions"
+        reloaded = storage.get(run.id)
+        assert reloaded.card_snapshot["root"]["instructions"] == "v1 instructions"

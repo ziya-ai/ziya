@@ -85,12 +85,15 @@ class TestNonPrefillGate:
 
     def test_FIXED_end_turn_with_intent_continues(self, decide):
         # Bug ① FIXED: non-prefill + intent text + clean end_turn at iter 0
-        # now grants a continuation so the announced action actually runs,
-        # instead of being cut off by no_prefill_end.
+        # now returns the provisional judge_intent verdict — the caller
+        # resolves it with a cheap judge call (yes → the continuation side
+        # effects, no/error → end). The decider itself no longer decides;
+        # substring matching alone false-positived on quoted/drafted
+        # content and conditional-on-user futures.
         v = _call(decide, assistant_text=_LONG_INTENT,
                   supports_prefill=False, last_stop_reason='end_turn',
                   iteration=0, textonly_grace_used=0)
-        assert v[:2] == ('inject_intent_continue', 'no_prefill_intent_continue')
+        assert v == ('judge_intent', 'no_prefill_intent_prefilter', None)
 
     def test_intent_but_yields_to_user_does_not_continue(self, decide):
         # Bug #2 fix: intent phrasing that ENDS in a question mark is the
@@ -104,12 +107,12 @@ class TestNonPrefillGate:
 
     def test_intent_without_question_still_continues(self, decide):
         # The bug ① fix is preserved: intent NOT ending in a question still
-        # gets the continuation (the discriminator is purely subtractive).
+        # reaches the judge (the question-mark discriminator is subtractive).
         # Uses "let me check" — a phrase that is actually in _INTENT_PHRASES.
         v = _call(decide, assistant_text="Let me check the result to confirm it works.",
                   supports_prefill=False, last_stop_reason='end_turn',
                   iteration=0, textonly_grace_used=0)
-        assert v[:2] == ('inject_intent_continue', 'no_prefill_intent_continue')
+        assert v == ('judge_intent', 'no_prefill_intent_prefilter', None)
 
     def test_intent_with_trailing_whitespace_after_question(self, decide):
         # rstrip() handles trailing newline/space after the question mark.
@@ -129,19 +132,19 @@ class TestNonPrefillGate:
     def test_intent_continue_allowed_after_prior_work(self, decide):
         # REGRESSION (the cutoff-mid-turn bug): a model that announced intent
         # early, did a long productive tool cycle, then announces more intent
-        # at a LATER iteration must still be continued. The old code gated on
-        # iteration==0 and cut this off; now it continues while intent_stalls
-        # is under the cap, regardless of iteration.
+        # at a LATER iteration must still reach the judge. The old code gated
+        # on iteration==0 and cut this off; now the prefilter fires while
+        # intent_stalls is under the cap, regardless of iteration.
         v = _call(decide, assistant_text=_LONG_INTENT,
                   supports_prefill=False, last_stop_reason='end_turn',
                   iteration=7, intent_stalls=0)
-        assert v[:2] == ('inject_intent_continue', 'no_prefill_intent_continue')
+        assert v == ('judge_intent', 'no_prefill_intent_prefilter', None)
 
     def test_intent_continue_just_under_stall_cap(self, decide):
         v = _call(decide, assistant_text=_LONG_INTENT,
                   supports_prefill=False, last_stop_reason='end_turn',
                   iteration=2, intent_stalls=2)
-        assert v[:2] == ('inject_intent_continue', 'no_prefill_intent_continue')
+        assert v == ('judge_intent', 'no_prefill_intent_prefilter', None)
 
     def test_intent_continue_requires_clean_stop(self, decide):
         # max_tokens is handled by the cutoff path above, not the intent

@@ -54,36 +54,39 @@ class TestFileReadDocumentExtraction(unittest.IsolatedAsyncioTestCase):
     @patch('app.utils.document_extractor.extract_document_text', return_value=None)
     async def test_docx_extraction_failure_falls_back_to_raw(self, mock_extract, mock_is_doc, mock_resolve):
         """When extraction fails, fall back to raw text read (graceful degradation)."""
-        fake_path = MagicMock(spec=Path)
-        fake_path.exists.return_value = True
-        fake_path.is_file.return_value = True
-        fake_path.__str__ = lambda self: "/tmp/test_project/corrupt.docx"
-        fake_path.read_text.return_value = "PK\x03\x04 garbled binary"
-        mock_resolve.return_value = fake_path
+        # FileReadTool now performs the raw-read fallback via a bounded
+        # open(resolved, "rb") rather than resolved.read_text(), so point the
+        # validator at a REAL file whose bytes the open() path actually reads.
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile("w", suffix="corrupt.docx", delete=False)
+        tmp.write("PK\x03\x04 garbled binary")
+        tmp.close()
+        mock_resolve.return_value = Path(tmp.name)
 
         result = await self._execute_file_read("corrupt.docx")
 
         # Should fall back to raw read without error
         self.assertFalse(result.get("error", False), f"Unexpected error: {result}")
         mock_extract.assert_called_once()
-        fake_path.read_text.assert_called_once()
+        os.unlink(tmp.name)
 
     @patch('app.mcp.tools.fileio._resolve_and_validate')
     @patch('app.utils.document_extractor.is_document_file', return_value=False)
     async def test_plain_text_file_not_affected(self, mock_is_doc, mock_resolve):
         """Plain text files should be read normally, not routed through extractor."""
-        fake_path = MagicMock(spec=Path)
-        fake_path.exists.return_value = True
-        fake_path.is_file.return_value = True
-        fake_path.__str__ = lambda self: "/tmp/test_project/readme.md"
-        fake_path.read_text.return_value = "# Hello World\n\nSome content."
-        mock_resolve.return_value = fake_path
+        # The raw read now goes through a bounded open(resolved, "rb"), so a
+        # real file is required for the read to return content.
+        import tempfile
+        tmp = tempfile.NamedTemporaryFile("w", suffix="readme.md", delete=False)
+        tmp.write("# Hello World\n\nSome content.")
+        tmp.close()
+        mock_resolve.return_value = Path(tmp.name)
 
         result = await self._execute_file_read("readme.md")
 
         self.assertFalse(result.get("error", False))
         self.assertIn("Hello World", result["content"])
-        fake_path.read_text.assert_called_once()
+        os.unlink(tmp.name)
 
     @patch('app.mcp.tools.fileio._resolve_and_validate')
     @patch('app.utils.document_extractor.is_document_file', return_value=True)

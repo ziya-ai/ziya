@@ -2,11 +2,12 @@
 Tests for GET /api/v1/projects/{pid}/task-cards/{cid}/scope-status (ASR F-001).
 
 This endpoint backs the TaskCardEditor "needs approval" banner. It walks a
-card's block tree and, for every block whose scope grants a privilege
-escalation (shell_commands / writable paths), reports whether a signed approval
-record matches the block's CURRENT scope hash. Blocks with no escalation are
-omitted; the signCommand is the exact ziya-approve invocation to mint a missing
-record.
+card's block tree and, for every block whose EFFECTIVE scope (deck-level
+project scope + card scope + every ancestor block's scope + its own, merged
+additively) grants a privilege escalation (shell_commands / writable paths),
+reports whether a signed approval record matches the block's CURRENT
+effective-scope hash. Blocks with no escalation are omitted; the signCommand
+is the exact ziya-approve invocation to mint a missing record.
 
 A throwaway Ed25519 keypair + isolated approval store are used so nothing
 touches /etc/ziya or ~/.ziya.
@@ -58,11 +59,13 @@ def _escalating_card():
 from app.api import task_cards as tc
 
 
-def _status(card, project_id="proj1"):
+def _status(card, project_id="proj1", deck_scope=None):
     """Reproduce the endpoint body against an in-memory card."""
+    from app.models.task_card import merge_scopes
     blocks = []
-    for block in tc._walk_blocks(card.root):
-        scope = getattr(block, "scope", None)
+    for block, ancestor_scopes in tc._walk_blocks(card.root):
+        own_scope = getattr(block, "scope", None)
+        scope = merge_scopes(deck_scope, card.scope, *ancestor_scopes, own_scope)
         escalation = sc.task_escalation_block(scope)
         if not escalation:
             continue
@@ -81,13 +84,19 @@ def _status(card, project_id="proj1"):
             "blocks": blocks}
 
 
-def _approve(card, block_id, key):
-    block = None
-    for b in tc._walk_blocks(card.root):
-        if b.id == block_id:
-            block = b
-            break
-    h = sc.task_scope_hash(block.scope)
+def _effective_scope(card, block_id, deck_scope=None):
+    """Compute the effective (merged) scope for a block by id."""
+    from app.models.task_card import merge_scopes
+    for block, ancestor_scopes in tc._walk_blocks(card.root):
+        if block.id == block_id:
+            return merge_scopes(deck_scope, card.scope, *ancestor_scopes,
+                                 getattr(block, "scope", None))
+    return None
+
+
+def _approve(card, block_id, key, deck_scope=None):
+    scope = _effective_scope(card, block_id, deck_scope=deck_scope)
+    h = sc.task_scope_hash(scope)
     at = int(time.time())
     rec = {"task_id": block_id, "scope_hash": h, "approved_by": "tester",
            "approved_at": at,
@@ -97,8 +106,17 @@ def _approve(card, block_id, key):
 
 def test_walk_blocks_visits_nested(keyed_store):
     card = _escalating_card()
-    ids = [b.id for b in tc._walk_blocks(card.root)]
+    ids = [b.id for b, _ancestors in tc._walk_blocks(card.root)]
     assert ids == ["b-root", "b-esc", "b-benign"]
+
+
+def test_walk_blocks_ancestor_chain_grows_with_depth(keyed_store):
+    card = _escalating_card()
+    chains = {b.id: ancestors for b, ancestors in tc._walk_blocks(card.root)}
+    assert chains["b-root"] == ()
+    # Root's own scope (None here) is the sole ancestor entry for its children.
+    assert chains["b-esc"] == (card.root.scope,)
+    assert chains["b-benign"] == (card.root.scope,)
 
 
 def test_only_escalating_blocks_reported(keyed_store):
@@ -148,3 +166,75 @@ def test_card_with_no_escalation_is_empty(keyed_store):
     st = _status(card)
     assert st["blocks"] == []
     assert st["anyUnapproved"] is False
+
+
+# ── New: deck / card / ancestor scope hierarchy ───────────────────────────
+
+
+def test_card_level_scope_contributes_escalation(keyed_store):
+    """A card-level scope granting a writable path escalates an otherwise
+    benign leaf task, and the reported escalation reflects the union."""
+    root = Block(block_type="task", id="b1", name="T",
+                 scope=TaskScope(tools=["file_read"]))
+    card = TaskCard(id="c3", name="C", description="", root=root,
+                     scope=TaskScope(paths=[ScopeEntry(path="out/", is_dir=True, write=True)]))
+    st = _status(card)
+    assert [b["blockId"] for b in st["blocks"]] == ["b1"]
+    assert st["blocks"][0]["escalation"]["writable_paths"] == ["out/"]
+
+
+def test_deck_level_scope_contributes_escalation(keyed_store):
+    """A deck (project-wide) scope granting a shell command escalates a
+    leaf task that otherwise has no scope at all."""
+    root = Block(block_type="task", id="b1", name="T")
+    card = TaskCard(id="c4", name="C", description="", root=root)
+    deck = TaskScope(shell_commands=["pytest"])
+    st = _status(card, deck_scope=deck)
+    assert [b["blockId"] for b in st["blocks"]] == ["b1"]
+    assert st["blocks"][0]["escalation"]["shell_commands"] == ["pytest"]
+
+
+def test_ancestor_container_scope_contributes_escalation(keyed_store):
+    """A Repeat/Parallel container's own scope escalates every leaf task
+    beneath it, even when the leaf's own scope carries no escalation."""
+    root = Block(block_type="parallel", id="b-root", name="Root",
+                 scope=TaskScope(shell_commands=["make test"]),
+                 body=[Block(block_type="task", id="b-leaf", name="Leaf")])
+    card = TaskCard(id="c5", name="C", description="", root=root)
+    st = _status(card)
+    assert [b["blockId"] for b in st["blocks"]] == ["b-leaf"]
+    assert st["blocks"][0]["escalation"]["shell_commands"] == ["make test"]
+
+
+def test_approval_binds_to_full_effective_hash_not_leaf_alone(keyed_store):
+    """Approving a leaf's own scope hash does NOT authorize it once a
+    deck/card/ancestor layer adds escalation the approval never covered —
+    the effective hash differs, so the stored record no longer matches."""
+    root = Block(block_type="task", id="b1", name="T",
+                 scope=TaskScope(shell_commands=["pytest"]))
+    card = TaskCard(id="c6", name="C", description="", root=root)
+    # Sign only the leaf's OWN scope hash (simulating a stale/incomplete record).
+    leaf_only_hash = sc.task_scope_hash(root.scope)
+    at = int(time.time())
+    sa.save_record({
+        "task_id": "b1", "scope_hash": leaf_only_hash, "approved_by": "tester",
+        "approved_at": at,
+        "signature": sc.sign_approval_record("b1", leaf_only_hash, "tester", at),
+    })
+    # Now a deck scope adds a writable path -> effective hash changes.
+    deck = TaskScope(paths=[ScopeEntry(path="out/", is_dir=True, write=True)])
+    st = _status(card, deck_scope=deck)
+    assert st["blocks"][0]["authorized"] is False
+
+
+def test_approving_full_effective_scope_authorizes(keyed_store):
+    """Approving the TRUE effective (deck+card+ancestor+leaf) hash clears
+    the unapproved flag."""
+    root = Block(block_type="task", id="b1", name="T",
+                 scope=TaskScope(shell_commands=["pytest"]))
+    card = TaskCard(id="c7", name="C", description="", root=root)
+    deck = TaskScope(paths=[ScopeEntry(path="out/", is_dir=True, write=True)])
+    _approve(card, "b1", keyed_store, deck_scope=deck)
+    st = _status(card, deck_scope=deck)
+    assert st["anyUnapproved"] is False
+    assert st["blocks"][0]["authorized"] is True

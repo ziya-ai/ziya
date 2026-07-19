@@ -48,6 +48,11 @@ def _make_manager(**overrides) -> MCPManager:
         mgr._max_recent_calls = 10
         mgr._loop_detection_window = 60
         mgr._server_enabled_overrides = {}
+        # Added alongside rug-pull quarantine (CWE-345) and the F-010
+        # per-turn circuit breaker — call_tool() dereferences both
+        # unconditionally, so a manager built via __new__() needs them too.
+        mgr._quarantined_servers = set()
+        mgr._turn_tool_counts = {}
         mgr.tool_timeout = float(overrides.get('tool_timeout', DEFAULT_TOOL_TIMEOUT))
         return mgr
 

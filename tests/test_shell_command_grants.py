@@ -122,6 +122,41 @@ class TestMatcher:
         checker.set_task_scope({"shell_commands": ["", "   ", "pytest"]})
         assert checker._task_scope_grants_command("pytest") is True
 
+    def test_multiword_grant_matches_subcommand(self, checker):
+        """A multi-word grant ("git commit") grants that subcommand with args."""
+        checker.set_task_scope({"shell_commands": ["git commit"]})
+        assert checker._task_scope_grants_command("git commit") is True
+        assert checker._task_scope_grants_command('git commit -m "msg"') is True
+
+    def test_multiword_grant_denies_other_subcommands(self, checker):
+        """"git commit" must NOT grant "git push" or bare "git"."""
+        checker.set_task_scope({"shell_commands": ["git commit"]})
+        assert checker._task_scope_grants_command("git push") is False
+        assert checker._task_scope_grants_command("git") is False
+
+    def test_multiword_grant_exact_token_no_substring_bleed(self, checker):
+        """Token match is exact: "git commit" must not grant "git commit-tree"."""
+        checker.set_task_scope({"shell_commands": ["git commit"]})
+        assert checker._task_scope_grants_command("git commit-tree x") is False
+
+    def test_multiword_grant_basename_tolerance_first_token(self, checker):
+        """Basename tolerance applies to the first token only."""
+        checker.set_task_scope({"shell_commands": ["git commit"]})
+        assert checker._task_scope_grants_command("/usr/bin/git commit -m y") is True
+
+    def test_multiword_grant_list_matches_each(self, checker):
+        """Real card scope: each granted git op works, ungranted ones do not."""
+        checker.set_task_scope({
+            "shell_commands": ["git commit", "git rm", "git add", "git apply"],
+        })
+        assert checker._task_scope_grants_command(
+            "git add app/routes/page_routes.py") is True
+        assert checker._task_scope_grants_command(
+            "git apply --check /tmp/f.patch") is True
+        assert checker._task_scope_grants_command(
+            "git rm --cached CHANGELOG.md") is True
+        assert checker._task_scope_grants_command("git status") is False
+
 
 # --------------------------------------------------------------------------- #
 # Layer 2: bypass hooks in ``check``

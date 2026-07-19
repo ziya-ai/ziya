@@ -132,6 +132,60 @@ class TestCollectDocumentationFileKeys:
             assert 'README.md' in filenames
             assert 'other.md' not in filenames
 
+    def test_collects_nested_docs_recursively_by_default(self):
+        """By default, both AGENTS.md and README.md are collected at any depth."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            nested = os.path.join(tmpdir, 'pkg', 'sub')
+            os.makedirs(nested)
+            open(os.path.join(tmpdir, 'AGENTS.md'), 'w').close()
+            open(os.path.join(tmpdir, 'README.md'), 'w').close()
+            open(os.path.join(nested, 'AGENTS.md'), 'w').close()
+            open(os.path.join(nested, 'README.md'), 'w').close()
+
+            keys = collect_documentation_file_keys(tmpdir, True, tmpdir)
+            # 2 AGENTS.md + 2 README.md
+            assert len(keys) == 4
+
+    def test_readme_root_only_keeps_nested_agents_but_not_nested_readme(self):
+        """With readme_root_only, AGENTS.md stays recursive; README.md is root-only."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            nested = os.path.join(tmpdir, 'pkg', 'sub')
+            os.makedirs(nested)
+            open(os.path.join(tmpdir, 'AGENTS.md'), 'w').close()
+            open(os.path.join(tmpdir, 'README.md'), 'w').close()
+            open(os.path.join(nested, 'AGENTS.md'), 'w').close()
+            open(os.path.join(nested, 'README.md'), 'w').close()
+
+            keys = collect_documentation_file_keys(
+                tmpdir, True, tmpdir, readme_root_only=True
+            )
+            # root AGENTS.md, root README.md, nested AGENTS.md — but NOT nested README.md
+            assert 'AGENTS.md' in keys
+            assert 'README.md' in keys
+            assert os.path.join('pkg', 'sub', 'AGENTS.md') in keys
+            assert os.path.join('pkg', 'sub', 'README.md') not in keys
+            assert len(keys) == 3
+
+    def test_readme_root_only_with_no_root_readme(self):
+        """Root-only README mode collects nested AGENTS.md even when no root README exists."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            nested = os.path.join(tmpdir, 'pkg')
+            os.makedirs(nested)
+            open(os.path.join(nested, 'AGENTS.md'), 'w').close()
+            open(os.path.join(nested, 'README.md'), 'w').close()
+
+            keys = collect_documentation_file_keys(
+                tmpdir, True, tmpdir, readme_root_only=True
+            )
+            assert keys == [os.path.join('pkg', 'AGENTS.md')]
+
+    def test_empty_when_no_docs(self):
+        """Returns an empty list when there are no documentation files."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            open(os.path.join(tmpdir, 'main.py'), 'w').close()
+            keys = collect_documentation_file_keys(tmpdir, True, tmpdir)
+            assert keys == []
+
 
 class TestScheduleBroadcast:
     """Test the broadcast scheduling function."""

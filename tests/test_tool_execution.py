@@ -350,3 +350,203 @@ class TestExecuteSingleTool:
         model_results = [e for e in events if e.get('type') == 'tool_result_for_model']
         assert len(model_results) == 1
         assert 'SECURITY VERIFICATION FAILED' in str(model_results[0]['content'])
+
+
+# ---------------------------------------------------------------------------
+# Builtin-tool anti-loop circuit breaker
+# ---------------------------------------------------------------------------
+#
+# Regression coverage for the bug where builtin/direct tools (routed via
+# DirectMCPTool, e.g. context_add_file) bypassed MCPManager.call_tool()
+# entirely and therefore never hit the two circuit breakers that protect
+# external tool calls: the per-turn ceiling (_exceeds_turn_ceiling) and
+# the identical-arguments blocker (_is_repetitive_call). A builtin tool
+# that fails the same way on every attempt could be retried by the model
+# without limit within a single turn.
+
+class _FakeDirectTool:
+    """Minimal stand-in for app.mcp.enhanced_tools.DirectMCPTool."""
+
+    def __init__(self, name, execute_fn):
+        self.name = name
+        self.tool_instance = MagicMock()
+        self.tool_instance.execute = execute_fn
+
+
+def _make_builtin_ctx(execute_fn, tool_name="context_add_file", **overrides):
+    """Build a ToolExecContext with a builtin tool resolvable via all_tools.
+
+    Patches app.mcp.enhanced_tools.DirectMCPTool with a fake class so the
+    isinstance() check in execute_single_tool matches our fake tool
+    without requiring a real DirectMCPTool/BaseTool/pydantic instance.
+    """
+    fake_tool = _FakeDirectTool(tool_name, execute_fn)
+    ctx = _make_ctx(
+        actual_tool_name=tool_name,
+        args={"path": "src/main.py"},
+        all_tools=[fake_tool],
+        **overrides,
+    )
+    return ctx, fake_tool
+
+
+class TestBuiltinToolCircuitBreaker:
+    """Builtin tools must go through the same anti-loop guards as external ones."""
+
+    @pytest.mark.asyncio
+    async def test_repetitive_builtin_call_is_blocked_without_executing(self):
+        """A real (non-mocked) MCPManager repetitive-call check should short-circuit
+        execute() on the 6th identical call, instead of calling it again."""
+        from app.mcp.manager import MCPManager
+
+        execute_calls = []
+
+        async def failing_execute(**kwargs):
+            execute_calls.append(kwargs)
+            return {"error": True, "message": "Chat not found"}
+
+        real_manager = MCPManager()
+        mock_executor = MagicMock()
+        mock_executor._get_tool_header.return_value = "ContextAddFile"
+        mock_executor._infer_syntax_hint.return_value = ""
+        mock_executor._format_tool_result.return_value = "blocked"
+
+        with patch("app.mcp.enhanced_tools.DirectMCPTool", _FakeDirectTool), \
+             patch(_PATCH_VERIFY, return_value=(True, None)), \
+             patch(_PATCH_STRIP, side_effect=lambda r: r), \
+             patch(_PATCH_RECORD), \
+             patch(_PATCH_LOG), \
+             patch(_PATCH_SANITIZE, side_effect=lambda t, **kw: t):
+            for _ in range(6):
+                ctx, _ = _make_builtin_ctx(
+                    failing_execute,
+                    mcp_manager=real_manager,
+                    executor=mock_executor,
+                )
+                await _collect_events(ctx)
+
+        # Identical calls are allowed through 5 times, blocked on the 6th —
+        # so execute() should have run exactly 5 times, not 6.
+        assert len(execute_calls) == 5
+
+    @pytest.mark.asyncio
+    async def test_blocked_call_still_yields_tool_result_for_model(self):
+        """Regression: the blocked path must not `return` early inside the
+        async generator — the model must still receive a tool_result event
+        explaining the refusal, not a silently-exhausted generator."""
+        mock_manager = MagicMock()
+        mock_manager._exceeds_turn_ceiling.return_value = False
+        mock_manager._is_repetitive_call.return_value = True  # force-block
+        mock_manager._turn_limit.return_value = 0
+
+        execute_fn = AsyncMock(return_value={"content": [{"type": "text", "text": "should not run"}]})
+
+        mock_executor = MagicMock()
+        mock_executor._get_tool_header.return_value = "ContextAddFile"
+        mock_executor._infer_syntax_hint.return_value = ""
+        mock_executor._format_tool_result.return_value = "blocked message"
+
+        with patch("app.mcp.enhanced_tools.DirectMCPTool", _FakeDirectTool), \
+             patch(_PATCH_VERIFY, return_value=(True, None)), \
+             patch(_PATCH_STRIP, side_effect=lambda r: r), \
+             patch(_PATCH_RECORD), \
+             patch(_PATCH_LOG), \
+             patch(_PATCH_SANITIZE, side_effect=lambda t, **kw: t):
+            ctx, _ = _make_builtin_ctx(execute_fn, mcp_manager=mock_manager, executor=mock_executor)
+            events = await _collect_events(ctx)
+
+        # execute() must never have been called — the block happens before dispatch.
+        execute_fn.assert_not_called()
+
+        types = [e.get('type') for e in events]
+        assert 'tool_result_for_model' in types, (
+            "Blocked builtin call must still yield tool_result_for_model; "
+            "the generator must not return early."
+        )
+        model_result = [e for e in events if e['type'] == 'tool_result_for_model'][0]
+        assert 'called repeatedly' in str(model_result['content'])
+
+    @pytest.mark.asyncio
+    async def test_turn_ceiling_blocks_builtin_call(self):
+        """Per-turn ceiling breaker should also short-circuit builtin tools."""
+        mock_manager = MagicMock()
+        mock_manager._exceeds_turn_ceiling.return_value = True
+        mock_manager._turn_limit.return_value = 10
+        mock_manager._is_repetitive_call.return_value = False
+
+        execute_fn = AsyncMock(return_value={"content": [{"type": "text", "text": "should not run"}]})
+
+        mock_executor = MagicMock()
+        mock_executor._get_tool_header.return_value = "ContextAddFile"
+        mock_executor._infer_syntax_hint.return_value = ""
+        mock_executor._format_tool_result.return_value = "ceiling message"
+
+        with patch("app.mcp.enhanced_tools.DirectMCPTool", _FakeDirectTool), \
+             patch(_PATCH_VERIFY, return_value=(True, None)), \
+             patch(_PATCH_STRIP, side_effect=lambda r: r), \
+             patch(_PATCH_RECORD), \
+             patch(_PATCH_LOG), \
+             patch(_PATCH_SANITIZE, side_effect=lambda t, **kw: t):
+            ctx, _ = _make_builtin_ctx(execute_fn, mcp_manager=mock_manager, executor=mock_executor)
+            events = await _collect_events(ctx)
+
+        execute_fn.assert_not_called()
+        types = [e.get('type') for e in events]
+        assert 'tool_result_for_model' in types
+        model_result = [e for e in events if e['type'] == 'tool_result_for_model'][0]
+        assert 'per-turn' in str(model_result['content'])
+
+    @pytest.mark.asyncio
+    async def test_non_blocked_builtin_call_still_executes(self):
+        """Sanity check: when neither breaker trips, execute() still runs
+        and its result flows through normally (no regression on the
+        happy path)."""
+        mock_manager = MagicMock()
+        mock_manager._exceeds_turn_ceiling.return_value = False
+        mock_manager._is_repetitive_call.return_value = False
+
+        execute_fn = AsyncMock(return_value={"content": [{"type": "text", "text": "ok"}]})
+
+        mock_executor = MagicMock()
+        mock_executor._get_tool_header.return_value = "ContextAddFile"
+        mock_executor._infer_syntax_hint.return_value = ""
+        mock_executor._format_tool_result.return_value = "ok"
+
+        with patch("app.mcp.enhanced_tools.DirectMCPTool", _FakeDirectTool), \
+             patch(_PATCH_VERIFY, return_value=(True, None)), \
+             patch(_PATCH_STRIP, side_effect=lambda r: r), \
+             patch(_PATCH_RECORD), \
+             patch(_PATCH_LOG), \
+             patch(_PATCH_SANITIZE, side_effect=lambda t, **kw: t):
+            ctx, _ = _make_builtin_ctx(execute_fn, mcp_manager=mock_manager, executor=mock_executor)
+            events = await _collect_events(ctx)
+
+        execute_fn.assert_called_once()
+        tool_result_events = [e for e in events if e.get('type') == '_tool_result']
+        assert len(tool_result_events) == 1
+        assert tool_result_events[0]['result'] == 'ok'
+
+    @pytest.mark.asyncio
+    async def test_no_mcp_manager_falls_back_to_executing(self):
+        """If ctx.mcp_manager is None, the builtin call should still run
+        (no breaker available, but also no crash from calling methods on
+        None)."""
+        execute_fn = AsyncMock(return_value={"content": [{"type": "text", "text": "ok"}]})
+
+        mock_executor = MagicMock()
+        mock_executor._get_tool_header.return_value = "ContextAddFile"
+        mock_executor._infer_syntax_hint.return_value = ""
+        mock_executor._format_tool_result.return_value = "ok"
+
+        with patch("app.mcp.enhanced_tools.DirectMCPTool", _FakeDirectTool), \
+             patch(_PATCH_VERIFY, return_value=(True, None)), \
+             patch(_PATCH_STRIP, side_effect=lambda r: r), \
+             patch(_PATCH_RECORD), \
+             patch(_PATCH_LOG), \
+             patch(_PATCH_SANITIZE, side_effect=lambda t, **kw: t):
+            ctx, _ = _make_builtin_ctx(execute_fn, mcp_manager=None, executor=mock_executor)
+            events = await _collect_events(ctx)
+
+        execute_fn.assert_called_once()
+        tool_result_events = [e for e in events if e.get('type') == '_tool_result']
+        assert len(tool_result_events) == 1

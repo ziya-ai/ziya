@@ -1,0 +1,35 @@
+--- a/app/example.py
++++ b/app/example.py
+@@ -78,3 +78,32 @@
+ 
+     def test_delete_missing(self, storage):
+         assert storage.delete("nope") is False
++
++
++class TestPauseResume:
++    def test_request_pause_sets_flag_only(self, storage):
++        run = storage.create(TaskRunCreate(card_id="c"))
++        storage.update_status(run.id, "running")
++        out = storage.request_pause(run.id)
++        assert out is not None
++        assert out.pause_requested is True
++        assert out.status == "running"
++
++    def test_request_resume_clears_flag(self, storage):
++        run = storage.create(TaskRunCreate(card_id="c"))
++        storage.request_pause(run.id)
++        out = storage.request_resume(run.id)
++        assert out is not None
++        assert out.pause_requested is False
++
++    def test_request_pause_missing_run(self, storage):
++        assert storage.request_pause("nope") is None
++
++    def test_reconcile_sweeps_paused(self, storage):
++        run = storage.create(TaskRunCreate(card_id="c"))
++        storage.update_status(run.id, "paused")
++        n = storage.reconcile_stale_runs()
++        assert n >= 1
++        swept = storage.get(run.id)
++        assert swept is not None
++        assert swept.status == "failed"

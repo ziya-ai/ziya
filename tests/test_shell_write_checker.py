@@ -368,3 +368,69 @@ class TestInterpreterProcessSpawnEscape:
         """Sanity: the fix must not regress the ordinary safe-pattern case."""
         ok, reason = checker.check("python3 -c 'print(2+2)'", _simple_split)
         assert ok
+
+
+# ── Special device redirection (never a real filesystem write) ─────
+
+class TestSpecialDeviceRedirection:
+    """
+    Redirecting to /dev/null and equivalents is never a real write and
+    must always pass. Two bugs previously blocked this:
+      1. _extract_target swept the closing ``)`` of ``$(... 2>/dev/null)``
+         into the target, yielding ``/dev/null)`` which matched no
+         allowlist.
+      2. Device files were not recognized as always-writable.
+    """
+
+    @pytest.mark.parametrize("dev", [
+        "/dev/null",
+        "/dev/stdout",
+        "/dev/stderr",
+        "/dev/zero",
+        "/dev/fd/1",
+        "/dev/fd/2",
+    ])
+    def test_redirect_to_device_allowed(self, checker, dev):
+        ok, reason = checker.check(f"echo hi > {dev}", _simple_split)
+        assert ok, f"redirect to {dev} should be allowed (reason: {reason})"
+    @pytest.mark.parametrize("dev", [
+        "/dev/null",
+        "/dev/stderr",
+    ])
+    def test_stderr_redirect_to_device_allowed(self, checker, dev):
+        ok, reason = checker.check(f"curl -s http://x 2>{dev}", _simple_split)
+        assert ok, f"stderr redirect to {dev} should be allowed (reason: {reason})"
+
+    def test_devnull_inside_command_substitution_allowed(self, checker):
+        """The exact false-positive reported: closing paren of $(...) must
+        not be swept into the redirection target."""
+        cmd = 'r=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000 2>/dev/null)'
+        ok, reason = checker.check(cmd, _simple_split)
+        assert ok, f"reason: {reason}"
+
+    def test_devnull_in_for_loop_allowed(self, checker):
+        """Full reproducer from the bug report."""
+        cmd = (
+            'for p in 6969 8000 8080; do '
+            'r=$(curl -s -m 2 -o /dev/null -w "%{http_code}" '
+            '"http://127.0.0.1:$p/api/config" 2>/dev/null); '
+            'echo "port $p -> $r"; done'
+        )
+        ok, reason = checker.check(cmd, _simple_split)
+        assert ok, f"reason: {reason}"
+
+    def test_extract_target_stops_at_paren(self):
+        """Unit-level guard on the extraction fix."""
+        from app.mcp_servers.write_policy import _extract_target, _is_special_device
+        # position of the char right after '>' in '2>/dev/null)'
+        s = "2>/dev/null)"
+        target, _ = _extract_target(s, 2)
+        assert target == "/dev/null"
+        assert _is_special_device(target)
+
+    def test_real_project_redirect_still_blocked(self):
+        """Guard: the device allowlist must not open a hole for real files."""
+        from app.mcp_servers.write_policy import _is_special_device
+        assert not _is_special_device("/tmp/real.txt")
+        assert not _is_special_device("src/main.py")
+        assert not _is_special_device("/dev/null)")

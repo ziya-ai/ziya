@@ -189,8 +189,16 @@ class TestBulkSync:
         resp = tc.get(f"/api/v1/projects/{pid}/chats/chat-regress")
         assert len(resp.json()["messages"]) == 20
 
-    def test_message_regression_allowed_for_tiny_conversations(self, client):
-        """Conversations with <= 2 messages can be freely replaced (shell threshold)."""
+    def test_message_regression_blocked_even_for_tiny_conversations(self, client):
+        """Message-count shrinkage is blocked for ANY existing count >= 1.
+
+        The old ``> 2`` threshold that let small conversations be freely
+        replaced was removed deliberately (see chats.py): it was a hole that
+        let blanked 2-message shells overwrite already-damaged records,
+        compounding history loss.  Legitimate deletion must go through the
+        explicit delete endpoint, not bulk-sync.  So a 2 -> 1 replacement is
+        accepted as an update but the on-disk messages are preserved.
+        """
         tc, pid = client
         chats = [_make_chat("chat-tiny", "Tiny", version=1000, messages=[_make_message("a"), _make_message("b")])]
         tc.post(f"/api/v1/projects/{pid}/chats/bulk-sync", json={"chats": chats})
@@ -200,7 +208,49 @@ class TestBulkSync:
         assert resp.json()["updated"] == 1
 
         resp = tc.get(f"/api/v1/projects/{pid}/chats/chat-tiny")
-        assert len(resp.json()["messages"]) == 1  # Allowed: existing had <=2
+        # Regression blocked: the two original messages are preserved.
+        assert len(resp.json()["messages"]) == 2
+
+    def test_explicit_null_folder_clears_group(self, client):
+        """Move-to-root regression: an explicit folderId/groupId null must WIN.
+
+        The preserve-groupId guard restored existing.groupId whenever the
+        merged groupId was None — but after parsing, an explicit null was
+        indistinguishable from an absent field, so every move-to-root was
+        reverted on the very push meant to persist it (and read-back
+        snapped the chat into its old folder; if that folder was global,
+        the chat re-inherited global visibility).
+        """
+        tc, pid = client
+        chat = _make_chat("chat-reroot", "Rooted", version=1000)
+        chat["groupId"] = "grp-global"
+        tc.post(f"/api/v1/projects/{pid}/chats/bulk-sync", json={"chats": [chat]})
+
+        moved = _make_chat("chat-reroot", "Rooted", version=2000)
+        moved["folderId"] = None
+        moved["groupId"] = None
+        resp = tc.post(f"/api/v1/projects/{pid}/chats/bulk-sync", json={"chats": [moved]})
+        assert resp.json()["updated"] == 1
+
+        on_disk = tc.get(f"/api/v1/projects/{pid}/chats/chat-reroot").json()
+        assert on_disk.get("groupId") is None
+        assert on_disk.get("folderId") is None
+
+    def test_omitted_folder_preserves_group(self, client):
+        """The guard's documented purpose: a payload that says nothing
+        about folder membership must not clear the existing groupId."""
+        tc, pid = client
+        chat = _make_chat("chat-keepgrp", "Grouped", version=1000)
+        chat["groupId"] = "grp-keep"
+        tc.post(f"/api/v1/projects/{pid}/chats/bulk-sync", json={"chats": [chat]})
+
+        update = _make_chat("chat-keepgrp", "Renamed", version=2000)
+        assert "groupId" not in update and "folderId" not in update
+        resp = tc.post(f"/api/v1/projects/{pid}/chats/bulk-sync", json={"chats": [update]})
+        assert resp.json()["updated"] == 1
+
+        on_disk = tc.get(f"/api/v1/projects/{pid}/chats/chat-keepgrp").json()
+        assert on_disk.get("groupId") == "grp-keep"
 
 
 # ── List Chats ─────────────────────────────────────────────────────
