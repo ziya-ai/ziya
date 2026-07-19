@@ -165,6 +165,35 @@ def _consume_assignment_with_subst(segment: str) -> str | None:
     return None  # unbalanced parens
 
 
+def _consume_raw_word(segment: str) -> str:
+    """Return the raw span of the first whitespace-delimited word in *segment*.
+
+    Unlike ``shlex.split``, this preserves quote characters and the exact
+    source bytes, so the returned length can be used to slice the *raw*
+    string.  Whitespace inside single or double quotes does not terminate
+    the word; outside single quotes a backslash escapes the next character
+    (so ``\\ `` and ``\\"`` stay part of the word).  Used by
+    ``_peel_env_prefix`` to consume a full ``NAME=value`` token without the
+    quote-stripping length mismatch that ``shlex`` introduces.
+    """
+    i = 0
+    n = len(segment)
+    in_sq = in_dq = False
+    while i < n:
+        ch = segment[i]
+        if ch == '\\' and not in_sq and i + 1 < n:
+            i += 2
+            continue
+        if ch == "'" and not in_dq:
+            in_sq = not in_sq
+        elif ch == '"' and not in_sq:
+            in_dq = not in_dq
+        elif ch.isspace() and not in_sq and not in_dq:
+            break
+        i += 1
+    return segment[:i]
+
+
 def _find_substitution_spans(command: str) -> list:
     """Return outermost command-substitution spans in *command*.
 
@@ -533,18 +562,25 @@ class ShellServer:
                     env[name] = tok.split('=', 1)[1]
                     remaining = remaining[len(tok):].lstrip()
                     continue
-            # Tokenize just enough to consume one VAR=value pair (handles
-            # quoted values).  shlex with posix=True respects quotes.
+            # Consume one raw ``NAME=value`` word, quotes included, so the
+            # slice below advances past the *exact* source span.  Using
+            # shlex to find the boundary was wrong: shlex(posix=True) strips
+            # the surrounding quotes, so ``len(tok)`` was shorter than the
+            # raw span and the leftover quote/tail (e.g. the trailing ``1"``
+            # of ``ALL="150 … 141"``) was re-validated as a bogus command,
+            # producing ``'1"' is not allowed``.  We still run shlex on the
+            # raw word to compute the *unquoted* value for the env dict.
+            raw_tok = _consume_raw_word(remaining)
             try:
-                tok = shlex.split(remaining, posix=True)[0]
-            except ValueError:
+                unquoted = shlex.split(raw_tok, posix=True)[0]
+            except (ValueError, IndexError):
                 # Unbalanced quotes — let downstream handling deal with it
                 break
-            value = tok.split('=', 1)[1]
+            value = unquoted.split('=', 1)[1]
             env[name] = value
             # Drop the raw token (incl. its trailing whitespace) from
             # the remaining string.
-            remaining = remaining[len(tok):].lstrip()
+            remaining = remaining[len(raw_tok):].lstrip()
         return remaining, env, ""
 
     def _is_compound_command(self, command: str) -> bool:

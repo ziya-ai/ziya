@@ -236,6 +236,11 @@ class ShellWriteChecker:
         the task scope.  Only when the base check fails do we fall
         back to the task grant.
         """
+        # Special device files are not real filesystem writes — writing
+        # or redirecting to them is always permitted (matches the DEVNULL
+        # handling in shell_server.py).
+        if _is_special_device(target_path):
+            return True
         if self.pm.is_write_allowed(target_path):
             return True
         return self._task_scope_grants_write(target_path)
@@ -294,6 +299,9 @@ class ShellWriteChecker:
         Each grant is one of:
           • ``"<token>"`` — literal first-token allowlist (e.g.
             ``"pytest"`` grants any ``pytest …`` invocation).
+          • ``"<tok> <tok> …"`` — multi-word token-prefix allowlist (e.g.
+            ``"git commit"`` grants any ``git commit …`` invocation but
+            not ``git push``).  Mirrors the base allowlist's multi-word form.
           • ``"re:<regex>"`` — regex against the full command line.
 
         Grants are additive over base policy and consulted only after
@@ -326,7 +334,23 @@ class ShellWriteChecker:
                 except re.error:
                     continue
             else:
-                if entry == first_token or entry == first_basename:
+                # Split the grant into tokens.  A single token keeps the
+                # original first-token / basename semantics; a multi-word
+                # grant ("git commit") must match the command's leading
+                # tokens in order, with basename tolerance on the first
+                # token only (mirrors the base allowlist).
+                try:
+                    grant_tokens = shlex.split(entry)
+                except ValueError:
+                    grant_tokens = entry.split()
+                if not grant_tokens:
+                    continue
+                if len(grant_tokens) > len(tokens):
+                    continue
+                head = grant_tokens[0]
+                if head != first_token and head != first_basename:
+                    continue
+                if grant_tokens[1:] == tokens[1:len(grant_tokens)]:
                     return True
         return False
 
@@ -437,9 +461,26 @@ def _extract_target(cmd: str, pos: int) -> Tuple[str, int]:
         if pos < len(cmd):
             pos += 1  # skip closing quote
     else:
-        while pos < len(cmd) and cmd[pos] not in ' \t\r\n;|&':
+        # Stop at whitespace, pipeline/list operators, and command-
+        # substitution / subshell boundaries so a trailing ``)`` or
+        # backtick from ``$(... >/dev/null)`` isn't swept into the target.
+        while pos < len(cmd) and cmd[pos] not in ' \t\r\n;|&()`':
             target += cmd[pos]; pos += 1
     return target, pos
+
+
+# Special device files that are never real filesystem writes.  Redirecting
+# or writing to any of these (or a /dev/fd/N descriptor) is always allowed.
+_SPECIAL_DEVICES = frozenset({
+    '/dev/null', '/dev/zero', '/dev/full', '/dev/tty',
+    '/dev/stdout', '/dev/stderr', '/dev/stdin',
+    '/dev/random', '/dev/urandom',
+})
+
+
+def _is_special_device(path: str) -> bool:
+    p = (path or "").strip().strip("'\"")
+    return p in _SPECIAL_DEVICES or p.startswith('/dev/fd/')
 
 
 _DESTRUCTIVE_SCRIPT_RE = re.compile(
