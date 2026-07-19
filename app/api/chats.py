@@ -357,8 +357,37 @@ async def bulk_sync_chats(project_id: str, data: ChatBulkSync):
     
     results = {"created": 0, "updated": 0, "skipped": 0, "errors": []}
     
+    # Shadow-copy guard.  The frontend surfaces isGlobal chats from OTHER
+    # projects into the sidebar, merges them into IndexedDB, then pushes the
+    # whole set back here on the next sync.  Without this guard every such
+    # foreign chat gets cloned into the currently-viewed project's dir and
+    # re-stamped with THIS project's id — producing cross-project duplicates
+    # with divergent groupId/isGlobal (the "reappeared under the wrong global
+    # group" / "went missing here" symptom).  A chat belongs to exactly one
+    # project: the one named by its own projectId field.  If an incoming chat
+    # declares a projectId that is a real, different project, this bulk-sync
+    # (bound to project_id) is not its owner and must not write it here.  We
+    # skip (not error) so a mixed payload still syncs the chats that DO belong
+    # here.  A stale/bogus projectId (owner dir gone) is NOT treated as
+    # foreign, so a chat is never stranded.
+    ziya_home = get_ziya_home()
+
+    def _is_foreign(cd) -> bool:
+        owner = getattr(cd, 'projectId', None)
+        if not owner or owner == project_id:
+            return False
+        return (ziya_home / "projects" / owner / "project.json").exists()
+
     for chat_data in data.chats:
         try:
+            if _is_foreign(chat_data):
+                logger.debug(
+                    f"bulk-sync[{project_id[:8]}]: skipping foreign chat "
+                    f"{chat_data.id} owned by {chat_data.projectId[:8]} "
+                    f"(shadow-copy guard)"
+                )
+                results["skipped"] += 1
+                continue
             # Read without retention check — bulk-sync should not trigger
             # deletion of expired chats mid-sync (causes a delete→recreate loop).
             raw = storage._read_json(storage._chat_file(chat_data.id))
@@ -434,8 +463,19 @@ async def bulk_sync_chats(project_id: str, data: ChatBulkSync):
                     if merged.get('folderId') and not merged.get('groupId'):
                         merged['groupId'] = merged['folderId']
                     # Preserve existing groupId only when the incoming payload
-                    # specified neither groupId nor folderId.
-                    if merged.get('groupId') is None and existing.groupId is not None:
+                    # specified neither groupId nor folderId.  The presence
+                    # check must use model_fields_set: after model_dump() an
+                    # EXPLICIT null (move-to-root) is indistinguishable from
+                    # an absent field, and treating them the same reverted
+                    # every move-to-root — the old groupId was restored from
+                    # disk on the very push that was meant to clear it, and
+                    # read-back (folderId ← groupId) snapped the chat back
+                    # into its old folder.  If that folder was global, the
+                    # chat also re-inherited global visibility.
+                    folder_specified = ('folderId' in chat_data.model_fields_set
+                                        or 'groupId' in chat_data.model_fields_set)
+                    if (merged.get('groupId') is None and existing.groupId is not None
+                            and not folder_specified):
                         merged['groupId'] = existing.groupId
                     storage._write_json(
                         storage._chat_file(chat_data.id),
@@ -708,3 +748,33 @@ async def repair_timestamps(project_id: str, dry_run: bool = Query(True)):
             repaired += 1
 
     return {"scanned": scanned, "repaired": repaired, "dry_run": dry_run, "repairs": repairs}
+
+
+# ── Cross-project chat integrity ─────────────────────────────────────
+
+@router.get("/api/v1/chat-integrity")
+async def get_chat_integrity():
+    """Report cross-project chat shadow copies (read-only).
+
+    Scans every project for chat ids that appear in more than one project
+    directory — the shadow-copy corruption the bulk-sync guard now prevents.
+    Returns the chosen canonical copy and every shadow per duplicated id so a
+    human can eyeball the canonical choices before reconciling.  Never
+    mutates anything.
+    """
+    from app.utils.chat_integrity import scan_chat_integrity, report_dict
+    dup_sets = scan_chat_integrity(get_ziya_home())
+    return report_dict(dup_sets)
+
+
+@router.post("/api/v1/chat-integrity/reconcile")
+async def reconcile_chat_integrity_endpoint(dry_run: bool = Query(True)):
+    """Reconcile cross-project chat shadow copies.
+
+    Keeps the canonical copy of each duplicated chat, salvages any grouping/
+    global metadata a shadow retained but the canonical copy lost, then
+    removes the shadow files.  Defaults to dry_run=true (reports what WOULD
+    happen without writing); pass dry_run=false to apply.
+    """
+    from app.utils.chat_integrity import reconcile_chat_integrity
+    return reconcile_chat_integrity(get_ziya_home(), dry_run=dry_run)
