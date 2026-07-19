@@ -183,6 +183,26 @@ class WritePolicyManager:
             val = env_map.get(env_key, '').strip()
             if val:
                 overrides[policy_key] = [p.strip() for p in val.split(',') if p.strip()]
+        # Parent-authoritative project write policy (ZIYA_PROJECT_WRITE_PATHS):
+        # the unsigned project writePolicy set, injected by the manager from the
+        # decrypted project.json. Unlike SAFE_WRITE_PATHS this is NOT gated by a
+        # root signature — it grants the shell exactly what file_write already
+        # gets from the same policy in the trusted parent. Directory/prefix
+        # entries feed safe_write_paths; glob entries (containing * ? [) feed
+        # allowed_write_patterns, mirroring how the base policy stores each.
+        from app.config.scope_canonical import PROJECT_WRITE_PATHS_ENV_KEY
+        proj_raw = env_map.get(PROJECT_WRITE_PATHS_ENV_KEY, '').strip()
+        if proj_raw:
+            proj_paths, proj_patterns = [], []
+            for entry in (p.strip() for p in proj_raw.split(',') if p.strip()):
+                if any(ch in entry for ch in '*?['):
+                    proj_patterns.append(entry)
+                else:
+                    proj_paths.append(entry)
+            if proj_paths:
+                overrides.setdefault('safe_write_paths', []).extend(proj_paths)
+            if proj_patterns:
+                overrides.setdefault('allowed_write_patterns', []).extend(proj_patterns)
         if overrides:
             self._merge(overrides)
 

@@ -59,6 +59,23 @@ def private_key_path() -> str:
 # Env var that carries a pre-existing root-minted signature into the subprocess.
 SIG_ENV_KEY = "ZIYA_SCOPE_SIG"
 
+# Parent-authoritative channel carrying the project's *unsigned* write policy
+# (safe_write_paths + allowed_write_patterns) into the shell subprocess.
+#
+# Deliberately NOT in _LIST_FIELDS / ESCALATION_ENV_KEYS, so strip_escalations
+# never clamps it and it needs no root signature: it grants the shell exactly
+# the paths the project writePolicy already grants file_write (which honors
+# that policy unsigned, in the trusted parent). Extending the same set to shell
+# commands is consistency, not new trust — the agent can already place
+# arbitrary bytes at those paths via file_write.
+#
+# Forgery resistance does NOT come from the signature gate; it comes from the
+# manager ALWAYS setting-or-deleting this key at spawn from the freshly
+# decrypted project.json (which the agent cannot edit — it is ALE-encrypted and
+# the subprocess has no KEK). A value hand-written into mcp_config.json is
+# overwritten before the subprocess sees it. See manager._apply_project_write_paths.
+PROJECT_WRITE_PATHS_ENV_KEY = "ZIYA_PROJECT_WRITE_PATHS"
+
 # Privilege-bearing list-valued env fields. Anything NOT named here is not gated
 # (descriptions, timeouts, view prefs, etc. flow freely).
 _LIST_FIELDS = (
@@ -535,6 +552,56 @@ def verify_session_grant(delta: Dict[str, Any], grant_json: Optional[str],
 # escalations) and readable paths are advisory (F-006), so neither is hashed —
 # editing them must not churn an approval.
 
+def _task_shell_floor() -> set:
+    """Shell commands that a ``shell_commands`` grant would NOT escalate.
+
+    A grant only matters for a command the base allowlist does not already
+    permit outright (see shell_server.is_command_allowed's per-segment
+    no-match consultation of the grant). So a command already in the base
+    allowlist that carries no *further* runtime gate is a no-op grant and
+    must not be reported as an escalation.
+
+    Destructive commands, interpreters, and in-place-edit tools stay OUT of
+    the floor even though they're in the allowlist: a ``shell_commands``
+    grant bypasses their write-policy / destructive checks (Slice B), so
+    granting them genuinely escalates. Subtracting them here would silently
+    drop a real escalation — a security regression.
+
+    Plugin-independent (base config sources only), for the same reason
+    ``_floor()`` is: the out-of-process signer and the plugin-loaded status
+    API must compute the identical floor or signatures/hashes diverge.
+    """
+    from app.config.shell_config import get_base_shell_config
+    from app.config.write_policy import DEFAULT_WRITE_POLICY
+
+    allow = set(get_base_shell_config().get("allowedCommands", []))
+    gated = set(DEFAULT_WRITE_POLICY.get("destructive_commands", []))
+    gated |= set(DEFAULT_WRITE_POLICY.get("allowed_interpreters", []))
+    gated |= set(DEFAULT_WRITE_POLICY.get("inplace_edit_flags", {}).keys())
+    return allow - gated
+
+
+def _task_safe_write_floor() -> list:
+    """The default safe-write paths a writable grant would NOT escalate."""
+    from app.config.write_policy import DEFAULT_WRITE_POLICY
+    return list(DEFAULT_WRITE_POLICY.get("safe_write_paths", []))
+
+
+def _path_within_floor(path: str, safe_paths: list) -> bool:
+    """True iff ``path`` is contained in one of the floor safe-write paths.
+
+    Mirrors WritePolicyManager._check_path's containment (normpath + os.sep
+    boundary) so a writable grant the base policy already permits (e.g.
+    ``.ziya/audit`` inside ``.ziya/``) is not reported as an escalation.
+    """
+    norm = os.path.normpath(path)
+    for safe in safe_paths:
+        s = os.path.normpath(safe.rstrip("/")) if safe.rstrip("/") else safe
+        if norm == s or norm.startswith(s + os.sep):
+            return True
+    return False
+
+
 def task_escalation_block(*scopes: Any) -> Dict[str, Any]:
     """Extract the privilege-bearing fields from one or more TaskScope-like
     objects, unioned.
@@ -548,21 +615,30 @@ def task_escalation_block(*scopes: Any) -> Dict[str, Any]:
 
     Returns {} when the union grants no escalation (no shell_commands, no
     writable paths anywhere in the chain) — an empty block means "no
-    approval needed; runs at floor".
+    approval needed; runs at floor".  Grants already covered by the default
+    floor are subtracted first (a shell command in the base allowlist, or a
+    writable path inside a default safe-write path like ``.ziya/``), so a card
+    requesting only floor-covered permissions needs no signature — parity with
+    ``compute_delta`` for the env-scope path.
     Duck-typed (getattr) so it works on the pydantic TaskScope without importing
     the model here (keeps this module dependency-light and import-cycle-free) —
     and, just as importantly, works on the SimpleNamespace-wrapped scopes the
     out-of-process signer and compliance audit build without pydantic.
     """
+    shell_floor = _task_shell_floor()
+    safe_paths = _task_safe_write_floor()
     shell_cmds: set = set()
     writable: set = set()
     for scope in scopes:
         if scope is None:
             continue
-        shell_cmds.update(getattr(scope, "shell_commands", []) or [])
+        for c in (getattr(scope, "shell_commands", []) or []):
+            if c not in shell_floor:
+                shell_cmds.add(c)
         for e in (getattr(scope, "paths", []) or []):
             path = getattr(e, "path", None)
-            if path and getattr(e, "write", False):
+            if (path and getattr(e, "write", False)
+                    and not _path_within_floor(path, safe_paths)):
                 writable.add(path)
     block: Dict[str, Any] = {}
     if shell_cmds:
