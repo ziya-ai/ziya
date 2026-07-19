@@ -10,15 +10,15 @@ function pruneRendererCaches(win: typeof window): void {
     // Module-level sets are cleared unconditionally
     // (simulated externally in tests)
 
-    if (win.diffElementPaths?.size > 500) {
+    if (win.diffElementPaths && win.diffElementPaths.size > 500) {
         const entries = Array.from(win.diffElementPaths.entries());
         win.diffElementPaths = new Map(entries.slice(-200));
     }
-    if (win.hunkStatusRegistry?.size > 500) {
+    if (win.hunkStatusRegistry && win.hunkStatusRegistry.size > 500) {
         const entries = Array.from(win.hunkStatusRegistry.entries());
         win.hunkStatusRegistry = new Map(entries.slice(-200));
     }
-    if (win.appliedDiffsRegistry?.size > 500) {
+    if (win.appliedDiffsRegistry && win.appliedDiffsRegistry.size > 500) {
         const entries = Array.from(win.appliedDiffsRegistry);
         win.appliedDiffsRegistry = new Set(entries.slice(-200));
     }

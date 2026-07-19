@@ -102,12 +102,33 @@ describe('shouldFetchFull', () => {
     });
 
     it('treats shells as current (no repeated fetch before lazy-load)', () => {
-        // Shell _version: undefined used to look stale every cycle.
+        // A shell carrying the server's own _version must not re-fetch.
+        // (Placeholder shells from mergeServerChat are stamped with the
+        // server _version and messageCount, so they match exactly.)
         expect(shouldFetchFull(
             sc({ _version: NOW, messageCount: 4 }),
-            local({ _isShell: true, _version: undefined, _fullMessageCount: 4, messages: [] }),
+            local({ _isShell: true, _version: NOW, _fullMessageCount: 4, messages: [] }),
             fetchCtx()
         )).toBe(false);
+    });
+
+    it('fell-behind shell pulls: server version newer than shell version', () => {
+        // Browser whose IDB fell behind (another instance advanced the
+        // conversation while this one was closed).  The old Infinity pin
+        // made this a permanent trap — shell could never detect it.
+        expect(shouldFetchFull(
+            sc({ _version: NOW, messageCount: 84 }),
+            local({ _isShell: true, _version: NOW - 30_000, _fullMessageCount: 8, messages: [] }),
+            fetchCtx()
+        )).toBe(true);
+    });
+
+    it('fell-behind shell pulls on count divergence even with coincident version', () => {
+        expect(shouldFetchFull(
+            sc({ _version: NOW - 30_000, messageCount: 84 }),
+            local({ _isShell: true, _version: NOW - 30_000, _fullMessageCount: 8, messages: [] }),
+            fetchCtx({ alreadyFetchedThisSession: true })
+        )).toBe(true);
     });
 
     it('empty-local/populated-server shell trap forces a pull', () => {
@@ -219,11 +240,10 @@ describe('mergeServerChat — local copy exists', () => {
         );
         expect(d.action).toBe('keep-local');
     });
-
-    it('summary-overlay when server newer and no full body', () => {
+    it('summary-overlay adopts server metadata and stamps server version', () => {
         const d = mergeServerChat(
             sc({ _version: NOW, title: 'Server Title', isGlobal: true }),
-            local({ _version: NOW - 30_000, title: 'Local Title' }),
+            local({ _version: NOW - 30_000, title: 'Old Title', _isShell: true, _fullMessageCount: 5 }),
             undefined,
             mergeCtx()
         );
@@ -251,13 +271,95 @@ describe('mergeServerChat — local copy exists', () => {
     it('summary-overlay falls back to local title when server title empty', () => {
         const d = mergeServerChat(
             sc({ _version: NOW, title: '' }),
-            local({ _version: NOW - 30_000, title: 'Keep Me' }),
+            local({ _version: NOW - 30_000, title: 'Keep Me', _isShell: true, _fullMessageCount: 5 }),
             undefined,
             mergeCtx()
         );
         expect(d.action).toBe('set');
         if (d.action !== 'set') return;
         expect(d.record.title).toBe('Keep Me');
+    });
+
+    it('summary-overlay: explicit server root (groupId null) clears local folderId', () => {
+        // Cross-browser echo regression: a re-root performed in another
+        // browser reaches this one as groupId: null in the summary.  The
+        // old falsy || chain fell through to the stale local.folderId, and
+        // the next push echoed the old folder back to the server — undoing
+        // the move (and re-inheriting global visibility if the old folder
+        // was global).
+        const d = mergeServerChat(
+            sc({ _version: NOW, groupId: null }),
+            local({ _version: NOW - 30_000, folderId: 'old-global-folder', _isShell: true, _fullMessageCount: 5 }),
+            undefined,
+            mergeCtx()
+        );
+        expect(d.action).toBe('set');
+        if (d.action !== 'set') return;
+        expect(d.record.folderId).toBeNull();
+    });
+
+    it('summary-overlay: server folder assignment wins over local', () => {
+        const d = mergeServerChat(
+            sc({ _version: NOW, groupId: 'new-folder' }),
+            local({ _version: NOW - 30_000, folderId: 'old-folder', _isShell: true, _fullMessageCount: 5 }),
+            undefined,
+            mergeCtx()
+        );
+        expect(d.action).toBe('set');
+        if (d.action !== 'set') return;
+        expect(d.record.folderId).toBe('new-folder');
+    });
+
+    it('summary-overlay: absent server folder fields preserve local folderId', () => {
+        // Genuinely absent (defensive: the real server model always
+        // serializes groupId, but partial/legacy payloads may not).
+        // The sc() factory hardcodes groupId: null, so strip it to
+        // actually test absence rather than an explicit root.
+        const summary = sc({ _version: NOW });
+        delete (summary as any).groupId;
+        const d = mergeServerChat(
+            summary,
+            local({ _version: NOW - 30_000, folderId: 'keep-folder' }),
+            undefined,
+            mergeCtx()
+        );
+        expect(d.action).toBe('set');
+        if (d.action !== 'set') return;
+        expect(d.record.folderId).toBe('keep-folder');
+    });
+
+    it('summary-overlay: content-behind local keeps its OLD version (no stale stamp)', () => {
+        // Stamping serverVersion onto a record whose content is behind
+        // the server marks stale content as current: it wins version
+        // comparisons everywhere while the missing messages are never
+        // pulled (browser-2 trap signature: server version, 8 msgs).
+        // Keeping the local version preserves the divergence signal so
+        // shouldFetchFull keeps trying once the skip-guards lift.
+        const d = mergeServerChat(
+            sc({ _version: NOW, title: 'Renamed', messageCount: 84 }),
+            local({ _version: NOW - 30_000, _isShell: true, _fullMessageCount: 8 }),
+            undefined,
+            mergeCtx()
+        );
+        expect(d.action).toBe('set');
+        if (d.action !== 'set') return;
+        expect(d.record._version).toBe(NOW - 30_000);
+        // Metadata overlay still applies.
+        expect(d.record.title).toBe('Renamed');
+    });
+
+    it('summary-overlay: unknown server messageCount still stamps (conservative)', () => {
+        const summary = sc({ _version: NOW });
+        delete (summary as any).messageCount;
+        const d = mergeServerChat(
+            summary,
+            local({ _version: NOW - 30_000, _isShell: true, _fullMessageCount: 8 }),
+            undefined,
+            mergeCtx()
+        );
+        expect(d.action).toBe('set');
+        if (d.action !== 'set') return;
+        expect(d.record._version).toBe(NOW);
     });
 
     it('adopts full record when server newer and counts agree', () => {
@@ -361,12 +463,7 @@ describe('mergeServerChat — open-work count propagation', () => {
     });
 
     it('branch 2 (server-only shell, no full): counts come from summary', () => {
-        const d = mergeServerChat(
-            sc({ title: 'Real chat', messageCount: 5, openBeadCount: 2, openWorkItemCount: 1 }),
-            undefined,
-            undefined,
-            mergeCtx()
-        );
+        const d = mergeServerChat(sc({ title: 'Real chat', messageCount: 5, openBeadCount: 2, openWorkItemCount: 1 }), undefined, undefined, mergeCtx());
         expect(d.action).toBe('set');
         expect((d as any).record._isShell).toBe(true);
         expect((d as any).record.openBeadCount).toBe(2);
@@ -412,12 +509,7 @@ describe('mergeServerChat — open-work count propagation', () => {
     });
 
     it('counts default to 0 when neither summary nor local provide them', () => {
-        const d = mergeServerChat(
-            sc({ messageCount: 5, openBeadCount: undefined, openWorkItemCount: undefined }),
-            undefined,
-            undefined,
-            mergeCtx()
-        );
+        const d = mergeServerChat(sc({ messageCount: 5, openBeadCount: undefined, openWorkItemCount: undefined }), undefined, undefined, mergeCtx());
         expect((d as any).record.openBeadCount).toBe(0);
         expect((d as any).record.openWorkItemCount).toBe(0);
     });

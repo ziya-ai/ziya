@@ -26,7 +26,6 @@ function setupFetchMock() {
     json: async () => ({}),
     status: 200,
   });
-  // @ts-expect-error overriding jsdom default
   global.fetch = fetchMock;
   return fetchMock;
 }

@@ -226,7 +226,7 @@ describe('preprocessPlotlySpec', () => {
     expect(out.layout.title.y).toBe(0.97);
     expect(out.layout.margin.t).toBe(100);
     // colorbars clamped
-    expect(out.data[1].marker.colorbar.x).toBe(0.99);
+    expect(out.data![1].marker.colorbar.x).toBe(0.99);
     // scene domains gapped
     expect(out.layout.scene2.domain.x[0] - out.layout.scene.domain.x[1]).toBeGreaterThanOrEqual(0.06 - 1e-9);
     // scene y-domains trimmed

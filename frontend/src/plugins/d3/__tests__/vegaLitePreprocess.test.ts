@@ -276,7 +276,11 @@ function fixInvalidColorSchemes(spec: any): void {
 
 describe('fixInvalidColorSchemes', () => {
   it('fixes hex scheme in top-level encoding', () => {
-    const spec = {
+    // `any`: fixInvalidColorSchemes mutates this object in place (adding
+    // `.range`, deleting `.scheme`), which the literal's inferred type
+    // can't reflect — the assertions below read fields the initializer
+    // never had.
+    const spec: any = {
       mark: 'arc',
       data: { values: [{a:1},{a:2},{a:3}] },
       encoding: { color: { field: 'a', type: 'nominal', scale: { scheme: '#ff6b6b' } } },
@@ -288,7 +292,8 @@ describe('fixInvalidColorSchemes', () => {
   });
 
   it('fixes hex scheme inside layer sub-specs (the donut chart bug)', () => {
-    const spec = {
+    // `any` — see comment on the fixture above.
+    const spec: any = {
       data: { values: Array.from({length: 7}, (_, i) => ({star: `S${i}`, power: i + 10})) },
       layer: [
         {
@@ -314,7 +319,8 @@ describe('fixInvalidColorSchemes', () => {
   });
 
   it('does NOT modify valid scheme names', () => {
-    const spec = {
+    // `any` — see comment on the first fixture in this describe block.
+    const spec: any = {
       mark: 'bar',
       encoding: { color: { field: 'x', scale: { scheme: 'tableau10' } } },
     };
@@ -334,7 +340,8 @@ describe('fixInvalidColorSchemes', () => {
   });
 
   it('handles hconcat sub-specs', () => {
-    const spec = {
+    // `any` — see comment on the first fixture in this describe block.
+    const spec: any = {
       hconcat: [{
         mark: 'bar',
         encoding: { fill: { field: 'x', scale: { scheme: '#abcdef' } } },
@@ -346,7 +353,8 @@ describe('fixInvalidColorSchemes', () => {
   });
 
   it('fixes fill and stroke channels too', () => {
-    const spec = {
+    // `any` — see comment on the first fixture in this describe block.
+    const spec: any = {
       mark: 'point',
       data: { values: [{a:1},{a:2}] },
       encoding: {
