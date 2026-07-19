@@ -213,20 +213,50 @@ def parse_for_each_source(raw: Optional[str]) -> Optional[List[Any]]:
 
     Accepts:
       - A JSON array literal: '["a", "b", "c"]' or '[{"id": 1}, ...]'
+      - Text that CONTAINS a JSON array (e.g. a planner task's summary:
+        'Here is the plan: ["a", "b"]') — the first embedded array wins
       - An empty / whitespace-only string → None (falls back to count)
       - None → None
 
     Returns None on parse failure so the caller can fall back to the
-    count-based iteration plan.  Intentionally does not support
-    artifact-reference syntax yet — that's a future extension once
-    the cross-block reference grammar is defined.
+    count-based iteration plan.  Artifact-reference syntax
+    ({{sibling("plan-id")}} etc.) is rendered by the block executor
+    BEFORE this function is called — see
+    app.agents.block_executor._render_for_each_source — so by the time
+    the text arrives here it is plain prose or JSON.
     """
     if not raw or not raw.strip():
         return None
     try:
         parsed = json.loads(raw)
     except (json.JSONDecodeError, ValueError):
-        return None
-    if not isinstance(parsed, list):
-        return None
-    return parsed
+        parsed = None
+    if isinstance(parsed, list):
+        return parsed
+    # Fallback: extract the first JSON array embedded in surrounding
+    # text.  This is what makes artifact-sourced fan-out practical: a
+    # planner task's artifact summary is prose that CONTAINS an array,
+    # not a bare array literal.
+    return _extract_json_array(raw)
+
+
+def _extract_json_array(text: str) -> Optional[List[Any]]:
+    """Return the first parseable JSON array embedded in ``text``.
+
+    Scans each '[' position and attempts a raw_decode from it; the
+    first decode that yields a list wins.  Non-array JSON values and
+    unparseable bracket runs are skipped.  Returns None when no
+    embedded array exists.
+    """
+    decoder = json.JSONDecoder()
+    idx = text.find("[")
+    while idx != -1:
+        try:
+            parsed, _end = decoder.raw_decode(text, idx)
+        except ValueError:
+            pass
+        else:
+            if isinstance(parsed, list):
+                return parsed
+        idx = text.find("[", idx + 1)
+    return None

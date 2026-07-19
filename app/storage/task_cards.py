@@ -115,6 +115,7 @@ class TaskCardStorage(BaseStorage[TaskCard]):
             name=f"{card.name} (copy)",
             description=card.description,
             root=card.root,
+            scope=card.scope,
             tags=card.tags,
             is_template=as_template,
         ))

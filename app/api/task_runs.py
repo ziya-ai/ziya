@@ -99,6 +99,50 @@ async def cancel_task_run(project_id: str, run_id: str):
     return run
 
 
+@router.post("/{run_id}/pause", response_model=TaskRun)
+async def pause_task_run(project_id: str, run_id: str):
+    """Request a soft pause on a running task run.
+
+    Sets ``pause_requested`` on the run file; the executor observes it
+    at the next boundary (between Repeat iterations, sequence siblings,
+    or until loops — the same boundaries soft-cancel uses) and flips
+    status to ``paused``.  An in-flight Task/LLM invocation is never
+    interrupted — pause lands at the next boundary.
+
+    The on-disk flag is the cross-process channel (the executor reads
+    it via storage.get), exactly like soft-cancel.  We deliberately do
+    NOT gate on the process-local live-run set: it is per-instance and
+    a fresh storage object is built per request, so it cannot see a
+    coroutine that marked itself active on a different instance.  A
+    genuinely dead run (zombie) simply never observes the flag — a
+    no-op that the startup reconciler cleans up.  Idempotent on
+    terminal runs.
+    """
+    storage = _get_storage(project_id)
+    run = storage.get(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    if run.status in ("done", "failed", "cancelled"):
+        return run  # terminal — nothing to pause
+    return storage.request_pause(run_id)
+
+
+@router.post("/{run_id}/resume", response_model=TaskRun)
+async def resume_task_run(project_id: str, run_id: str):
+    """Clear a run's pause flag so its executor's wait-loop resumes.
+
+    The executor restores status to ``running`` at its next poll.
+    Idempotent on terminal runs and on runs that aren't paused.
+    """
+    storage = _get_storage(project_id)
+    run = storage.get(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Task run not found")
+    if run.status in ("done", "failed", "cancelled"):
+        return run
+    return storage.request_resume(run_id)
+
+
 @router.get("/{run_id}/iterations")
 async def list_iterations(
     project_id: str, run_id: str,

@@ -18,9 +18,19 @@ from .task_card import Artifact
 RunStatus = Literal[
     "queued",      # created, not yet started
     "running",     # currently executing
+    "paused",      # held at a boundary by the user; resumable
     "done",        # finished successfully with an artifact
     "failed",      # crashed or errored
     "cancelled",   # stopped by user
+]
+
+
+# Per-block lifecycle status — a superset of RunStatus.  "skipped"
+# marks a sibling that never ran because an earlier sibling failed
+# under the container's on_failure="stop" policy.  Drives the run map
+# (frontend/src/components/TaskCard/TaskRunMap.tsx).
+BlockStatus = Literal[
+    "queued", "running", "done", "failed", "cancelled", "skipped",
 ]
 
 
@@ -53,7 +63,7 @@ class TaskRunBlockState(BaseModel):
 
     block_id: str
     block_type: str
-    status: RunStatus = "queued"
+    status: BlockStatus = "queued"
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
     artifact: Optional[Artifact] = None
@@ -77,6 +87,13 @@ class TaskRun(BaseModel):
     # Soft-cancel flag.  Block executor checks at iteration and
     # sibling boundaries.  See design/task-cards.md §Cancellation.
     cancel_requested: bool = False
+    # Soft-pause flag.  Checked at the SAME boundaries as cancel
+    # (between Repeat iterations, between sequence siblings, between
+    # until loops).  When set, the executor holds at the next boundary
+    # and flips status to "paused" until the flag is cleared (resume).
+    # An in-flight Task/LLM invocation is never interrupted — pause
+    # lands at the next boundary, exactly like soft-cancel.
+    pause_requested: bool = False
 
     # Top-level artifact produced by the root block
     artifact: Optional[Artifact] = None
@@ -88,12 +105,32 @@ class TaskRun(BaseModel):
     total_tokens: int = 0
     total_tool_calls: int = 0
 
+    # Live-progress surface ("what is it up to right now").
+    # last_activity_at: wall-clock seconds of the most recent executor
+    # event (tool call / text delta), throttled to ~one disk write per
+    # 5s.  progress_note: short human-readable line derived from the
+    # most recent tool invocation (e.g. "ran run_shell_command: git
+    # status").  Both are readable via GET /task-runs/{id} so REST
+    # pollers can distinguish "slow but alive" from "hung".
+    last_activity_at: Optional[float] = None
+    progress_note: Optional[str] = None
+
     # Snapshot of effective permissions (write policy + per-block task
     # scopes + project root) captured at launch.  Stored as a dict so
     # the schema can evolve without migrations; see
     # ``app/utils/permissions_snapshot.py`` for the active shape.
     # Populated by ``_launch_run_for_card`` immediately after create.
     permissions_snapshot: Optional[Dict[str, Any]] = None
+
+    # Snapshot of the card definition (name, description, root block tree)
+    # captured at launch, so later edits to the card don't retroactively
+    # rewrite what a completed run is shown to have executed.  The block
+    # ids stored here are the ones this run's block_states reference
+    # (a card edit reassigns block ids), so displaying the run map from
+    # the snapshot rather than the live card also keeps it consistent.
+    # Absent on runs created before snapshotting existed — callers fall
+    # back to the live card in that case.
+    card_snapshot: Optional[Dict[str, Any]] = None
 
     created_at: int = 0
     updated_at: int = 0
