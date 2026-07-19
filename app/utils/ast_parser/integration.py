@@ -160,6 +160,7 @@ def initialize_ast_capabilities(codebase_path: str, exclude_patterns: Optional[L
         return {
             "initialized": True,
             "files_processed": result.get("files_processed", 0),
+            "skipped": result.get("skipped", False),
             "token_count": result.get("token_count", 0),
             "ast_context": result.get("ast_context", "")
         }

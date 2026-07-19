@@ -183,6 +183,17 @@ def initialize_ast_if_enabled():
                 logger.info(f"AST initialization complete: {result.get('files_processed', 0)} files processed")
 
                 _broadcast_ast_complete(result.get("files_processed", 0))
+            elif result and result.get("skipped"):
+                # Deliberate early-return (e.g. directory too broad to index) —
+                # not a failure, so don't log at ERROR or raise.
+                logger.info(f"AST indexing skipped: {result.get('ast_context', 'directory not eligible for indexing')}")
+                _ast_indexing_status.update({
+                    'enabled': True,
+                    'is_indexing': False,
+                    'completion_percentage': 100,
+                    'is_complete': True,
+                    'error': None
+                })
             else:
                 error_msg = result.get("error", "No files processed") if result else "Unknown error during AST initialization"
                 logger.error(f"AST initialization failed: {error_msg}")
