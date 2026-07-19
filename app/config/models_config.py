@@ -10,10 +10,10 @@ import json
 # Model configuration
 DEFAULT_ENDPOINT = "bedrock"
 DEFAULT_MODELS = {
-    "bedrock": "sonnet4.6",
+    "bedrock": "sonnet5",
     "google": "gemini-3.1-pro",
     "openai": "gpt-5.5",
-    "anthropic": "claude-sonnet-4-6",
+    "anthropic": "claude-sonnet-5",
     "zai": "glm-5.2"
 }
 
@@ -30,7 +30,7 @@ MODEL_ALIASES: dict[str, dict[str, str]] = {
         "sonnet": "sonnet4.6",
         "opus": "opus4.8",
         "haiku": "haiku-4.5",
-        "nova": "nova-pro-v2",
+        "nova": "nova-pro",
     },
     "google": {
         "gemini": "gemini-3.1-pro",
@@ -44,6 +44,79 @@ MODEL_ALIASES: dict[str, dict[str, str]] = {
         "glm": "glm-5.2",
     },
 }
+
+# Portable model "tiers" — the recommended way for a decomposed task
+# (Task Card block, delegate, CLI task) to pick a model without
+# hardcoding a provider- or version-specific name.  A tier is a
+# relative cost/capability rung.
+#
+# Crucially, tiers are NOT a separate table.  Each concrete model entry
+# in MODEL_CONFIGS carries its own ``"tier"`` tag, so the tier follows
+# the model: when e.g. ``fable6`` lands, whoever adds it tags it in the
+# same edit, the ``fable`` alias re-points, and the ``frontier`` tier
+# auto-updates — no versioned name to maintain in two places.
+#
+# resolve_tier_model() scans MODEL_CONFIGS[endpoint] for the entry whose
+# ``tier`` matches (first match in insertion order wins if two share a
+# rung).  A requested tier with no tagged model rounds UP to the nearest
+# defined rung at or above it (falling to the highest rung below only
+# when nothing at/above is defined), then to the center rung ``medium``,
+# then to DEFAULT_MODELS.  Never raises.
+#
+# The ladder has five rungs.  ``medium`` is the CENTER — it is the
+# default/average model and the fallback target, i.e. the same model the
+# top-level conversation uses (sonnet5 on Bedrock).  ``frontier`` is the
+# rarely-warranted top: cutting-edge models that today run ~20x the cost
+# of ``large`` with heavy throttling, so reserve it for work that truly
+# needs it.  The rungs, cheapest → most capable:
+#     xsmall  small  medium(=default)  large  frontier
+_TIER_ORDER = ("xsmall", "small", "medium", "large", "frontier")
+MODEL_TIER_NAMES = _TIER_ORDER
+# The center rung: default model + resolution fallback target.
+DEFAULT_TIER = "medium"
+
+
+def resolve_tier_model(endpoint: str, tier: str) -> str:
+    """Resolve a portable tier name to a concrete model NAME on *endpoint*.
+
+    Scans per-model ``tier`` tags rather than a separate registry, so
+    tiers stay correct as models are added/retired with no extra
+    maintenance.  An unmapped rung rounds UP to the nearest defined rung
+    at or above it (falling to the highest below only if nothing at/above
+    exists), then the center rung ``medium``, then the endpoint default —
+    never raises on an unknown/unmapped tier.  Rounding up means an
+    unmapped rung never silently under-serves a task with a weaker model
+    than requested.
+    """
+    endpoint_models = MODEL_CONFIGS.get(endpoint, {})
+    # Build tier -> first-seen model name from per-model tags.
+    by_tier: dict[str, str] = {}
+    for name, cfg in endpoint_models.items():
+        t = cfg.get("tier")
+        if t and t not in by_tier:
+            by_tier[t] = name
+
+    if tier in by_tier:
+        return by_tier[tier]
+
+    # Requested tier has no tagged model on this endpoint: round UP —
+    # prefer the nearest defined rung at or above the requested index;
+    # only if none exists above, fall to the nearest (highest) below.
+    # Sort key: (is-below flag, distance) so all at/above rungs are
+    # considered before any below rung, nearest-first within each group.
+    if tier in _TIER_ORDER and by_tier:
+        idx = _TIER_ORDER.index(tier)
+        best = min(
+            by_tier.keys(),
+            key=lambda t: (0 if _TIER_ORDER.index(t) >= idx else 1,
+                           abs(_TIER_ORDER.index(t) - idx)),
+        )
+        return by_tier[best]
+
+    if DEFAULT_TIER in by_tier:
+        return by_tier[DEFAULT_TIER]
+    return DEFAULT_MODELS.get(endpoint, DEFAULT_MODELS[DEFAULT_ENDPOINT])
+
 
 # Lightweight models used for background tasks (memory extraction,
 # summarization, classification).  These should be the cheapest
@@ -82,6 +155,25 @@ SERVICE_MODEL_OVERRIDES: dict[str, dict[str, str]] = {
         "google": "gemini-3.1-pro",
         "openai": "gpt-5.5",
         "anthropic": "claude-opus-4-8",
+    },
+    # Dangling-intent judge (app/services/intent_judge.py) needs reliable
+    # yes/no instruction-following, not raw reasoning power. Measured live
+    # against 9 real transcript cases (4 genuine dangling-intent endings, 5
+    # correctly-resolved endings covering the quoted/conditional/negated/
+    # past-tense exclusions the judge exists to handle): the endpoint
+    # default (Nova Lite on Bedrock) scored 5/9 and specifically missed the
+    # judge's OWN canonical positive example shape ("Let me gather the
+    # exact text..." as the final sentence) — a lite-tier reliability gap,
+    # not a prompt defect (Haiku and Sonnet both scored 9/9 on the same
+    # prompt). Same fix pattern as memory_extraction above. Volume is low
+    # (single-digit calls/session per the module docstring) so the cost
+    # step from lite to Haiku-tier is negligible. Override per-user via
+    # ZIYA_INTENT_JUDGE_MODEL.
+    "intent_judge": {
+        "bedrock": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "google": "gemini-2.0-flash",
+        "openai": "gpt-5.5-mini",
+        "anthropic": "claude-haiku-4-5-20251001",
     },
 }
 
@@ -411,6 +503,32 @@ MODEL_CONFIGS = {
             "extended_context_limit": 1000000,
             "extended_context_header": "context-1m-2025-08-07"
         },
+        "sonnet5": {
+            "tier": "medium",
+            "model_id": {
+                "us": "us.anthropic.claude-sonnet-5",
+                "global": "global.anthropic.claude-sonnet-5"
+            },
+            "available_regions": [
+                "us-east-1", "us-east-2", "us-west-2"
+            ],
+            "preferred_region": "us-east-1",
+            "token_limit": 200000,
+            "max_output_tokens": 64000,
+            "default_max_output_tokens": 36000,
+            "supports_max_input_tokens": True,
+            "supports_thinking": True,
+            "supports_vision": True,
+            "family": "claude",
+            "supports_adaptive_thinking": True,
+            "thinking_effort_default": "medium",
+            "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+            "supports_context_caching": True,
+            "supports_assistant_prefill": False,
+            "supports_extended_context": True,
+            "extended_context_limit": 1000000,
+            "extended_context_header": "context-1m-2025-08-07"
+        },
         "sonnet3.7": {
             "model_id": "eu.anthropic.claude-3-7-sonnet-20250219-v1:0",
             "available_regions": ["eu-west-1", "eu-central-1"],
@@ -539,6 +657,7 @@ MODEL_CONFIGS = {
             "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
         "opus4.8": {
+            "tier": "large",
             "model_id": {
                 "us": "us.anthropic.claude-opus-4-8",
                 "eu": "eu.anthropic.claude-opus-4-8",
@@ -608,6 +727,7 @@ MODEL_CONFIGS = {
             "family": "nova-pro"  # Use nova-pro family which includes top_k
         },
         "nova-lite": {
+            "tier": "small",
             "model_id": {
                 "us": "us.amazon.nova-lite-v1:0"
             },
@@ -615,6 +735,7 @@ MODEL_CONFIGS = {
             "supported_parameters": ["temperature", "top_p", "max_tokens"]  # Adding temperature back as supported
         },
         "nova-micro": {
+            "tier": "xsmall",
             "model_id": {
                 "us": "us.amazon.nova-micro-v1:0"
             },
@@ -842,12 +963,18 @@ MODEL_CONFIGS = {
             "region": "us-west-2"
         },
         "fable5": {
-            "model_id": {
-                "us": "us.anthropic.claude-fable-5",
-                "eu": "eu.anthropic.claude-fable-5",
-                "global": "global.anthropic.claude-fable-5"
-            },
-            "available_regions": ["us-east-1", "eu-north-1"],
+            "tier": "frontier",
+            # Fable 5 is now routed via the Bedrock Mantle endpoint (not
+            # bedrock-runtime), so its data-retention opt-in is scoped to
+            # the mantle-only account/region switch (ensure_mantle_data_retention_mode)
+            # instead of the classic account-wide bedrock:PutAccountDataRetention
+            # switch every other model (Sonnet/Opus/etc.) shares. This is the
+            # deconfliction fix: opting Fable 5 into provider_data_share no
+            # longer touches the classic switch other users' sessions rely on.
+            # Mantle has no geo/global inference profiles for Fable 5 yet —
+            # a plain model_id string, single region, matching mythos5's shape.
+            "model_id": "anthropic.claude-fable-5",
+            "available_regions": ["us-east-1"],
             "preferred_region": "us-east-1",
             "token_limit": 1000000,
             "max_output_tokens": 128000,
@@ -864,13 +991,15 @@ MODEL_CONFIGS = {
             "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
             "supports_vision": True,
             "supports_assistant_prefill": False,
+            "endpoint_override": "bedrock-mantle",
             # Fable 5 (Mythos-class) requires temperature=1.0 (or unset) and
             # top_p >= 0.99 (or unset); top_k is not supported. Steer via
             # the effort parameter instead.
             "unsupported_parameters": ["temperature", "top_k", "top_p"],
-            # Bedrock requires the account-level data retention mode set to
-            # 'provider_data_share' before invocations succeed. Ziya applies
-            # this automatically at startup via the Data Retention API.
+            # Bedrock Mantle requires the mantle-scoped data retention mode
+            # set to 'provider_data_share' before invocations succeed. Ziya
+            # applies this automatically at startup via ensure_mantle_data_retention_mode
+            # (app/main.py), which is independent of the classic bedrock-runtime switch.
             "requires_provider_data_share": True,
         },
         "mythos5": {
@@ -912,6 +1041,7 @@ MODEL_CONFIGS = {
             "native_function_calling": True,
         },
         "gemini-flash": {
+            "tier": "small",
             "model_id": "gemini-2.5-flash",
             "token_limit": 1048576,
             "family": "gemini-flash",
@@ -933,6 +1063,7 @@ MODEL_CONFIGS = {
             "native_function_calling": True,
         },
         "gemini-2.0-flash-lite": {
+            "tier": "xsmall",
             "model_id": "gemini-2.0-flash-lite",
             "token_limit": 1048576,
             "family": "gemini-flash",
@@ -943,6 +1074,7 @@ MODEL_CONFIGS = {
             "native_function_calling": True,
         },
         "gemini-3.1-pro": {
+            "tier": "medium",
             "model_id": "gemini-3.1-pro-preview",
             "token_limit": 1048576,
             "family": "gemini-3",
@@ -1016,6 +1148,7 @@ MODEL_CONFIGS = {
     },
     "openai": {
         "gpt-5.5": {
+            "tier": "medium",
             "model_id": "gpt-5.5",
             "family": "openai-gpt",
             "token_limit": 1000000,
@@ -1025,6 +1158,7 @@ MODEL_CONFIGS = {
             "native_function_calling": True,
         },
         "gpt-5.5-pro": {
+            "tier": "large",
             "model_id": "gpt-5.5-pro",
             "family": "openai-gpt",
             "token_limit": 1000000,
@@ -1035,6 +1169,7 @@ MODEL_CONFIGS = {
             "native_function_calling": True,
         },
         "gpt-5.5-mini": {
+            "tier": "small",
             "model_id": "gpt-5.5-mini",
             "family": "openai-gpt",
             "token_limit": 1000000,
@@ -1044,6 +1179,7 @@ MODEL_CONFIGS = {
             "native_function_calling": True,
         },
         "gpt-5.5-nano": {
+            "tier": "xsmall",
             "model_id": "gpt-5.5-nano",
             "family": "openai-gpt",
             "token_limit": 1000000,
@@ -1164,6 +1300,18 @@ MODEL_CONFIGS = {
             "supports_adaptive_thinking": True,
             "native_function_calling": True,
         },
+        "claude-sonnet-5": {
+            "tier": "medium",
+            "model_id": "claude-sonnet-5",
+            "family": "claude",
+            "token_limit": 200000,
+            "max_output_tokens": 64000,
+            "default_max_output_tokens": 16384,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "supports_adaptive_thinking": True,
+            "native_function_calling": True,
+        },
         "claude-sonnet-4-5": {
             "model_id": "claude-sonnet-4-5-20250929",
             "family": "claude",
@@ -1198,6 +1346,7 @@ MODEL_CONFIGS = {
             "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
         "claude-opus-4-8": {
+            "tier": "large",
             "model_id": "claude-opus-4-8",
             "family": "claude",
             "token_limit": 200000,
@@ -1250,6 +1399,7 @@ MODEL_CONFIGS = {
             "native_function_calling": True,
         },
         "claude-haiku-4-5": {
+            "tier": "xsmall",
             "model_id": "claude-haiku-4-5-20251001",
             "family": "claude",
             "token_limit": 200000,
@@ -1260,6 +1410,7 @@ MODEL_CONFIGS = {
             "native_function_calling": True,
         },
         "claude-fable-5": {
+            "tier": "frontier",
             "model_id": "claude-fable-5",
             "family": "claude",
             "token_limit": 1000000,
@@ -1287,6 +1438,7 @@ MODEL_CONFIGS = {
     },
     "zai": {
         "glm-5.2": {
+            "tier": "medium",
             "model_id": "glm-5.2",
             "family": "zai-glm",
             "token_limit": 1000000,
@@ -1296,6 +1448,7 @@ MODEL_CONFIGS = {
             "native_function_calling": True,
         },
         "glm-4.6": {
+            "tier": "small",
             "model_id": "glm-4.6",
             "family": "zai-glm",
             "token_limit": 200000,
@@ -1725,7 +1878,7 @@ _VALID_MODEL_CONFIG_KEYS = frozenset({
     "supports_max_input_tokens", "supports_multimodal", "supports_streaming",
     "supports_thinking", "supports_vision", "temperature",
     "thinking_budget", "thinking_effort_default", "thinking_level",
-    "timeout_multiplier", "token_limit", "top_k", "top_p",
+    "tier", "timeout_multiplier", "token_limit", "top_k", "top_p",
     "unsupported_parameters", "wrapper_class",
 })
 
@@ -1794,5 +1947,28 @@ def validate_model_configs() -> list[str]:
                 issues.append(
                     f"[alias/{endpoint}] '{alias}' → '{target}' but '{target}' not in MODEL_CONFIGS['{endpoint}']"
                 )
+
+    # 6. Validate per-model tier tags: known rung names, and every
+    #    endpoint defines the center rung 'medium' (the default model and
+    #    the resolve_tier_model fallback target).  Missing OTHER rungs are
+    #    fine — resolve rounds up to the nearest defined one — so only
+    #    'medium' is required.
+    for endpoint, models in MODEL_CONFIGS.items():
+        seen_tiers = set()
+        for model_name, cfg in models.items():
+            t = cfg.get("tier")
+            if t is None:
+                continue
+            if t not in _TIER_ORDER:
+                issues.append(
+                    f"[tier/{endpoint}/{model_name}] unknown tier '{t}' "
+                    f"(valid: {', '.join(_TIER_ORDER)})"
+                )
+            seen_tiers.add(t)
+        if seen_tiers and DEFAULT_TIER not in seen_tiers:
+            issues.append(
+                f"[tier/{endpoint}] no model tagged '{DEFAULT_TIER}' (the center/"
+                f"default rung) — resolve_tier_model falls back to DEFAULT_MODELS"
+            )
 
     return issues

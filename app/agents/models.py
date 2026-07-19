@@ -185,6 +185,19 @@ class ModelManager:
         if model_name is None:
             model_name = cls.DEFAULT_MODELS.get(endpoint, cls.DEFAULT_MODELS[cls.DEFAULT_ENDPOINT])
             
+        # Resolve portable tier names (xsmall/small/base/medium/large/
+        # frontier) before alias resolution — lets a decomposed task pick
+        # a model by relative cost/capability rung instead of a
+        # provider-specific name.  Checked only when model_name isn't
+        # already a real model in this endpoint's config, so a model
+        # literally named e.g. "small" (unlikely, but possible for a
+        # user-added ~/.ziya/models.json entry) still takes priority.
+        from app.config.models_config import MODEL_TIER_NAMES, resolve_tier_model
+        if model_name not in cls.MODEL_CONFIGS[endpoint] and model_name in MODEL_TIER_NAMES:
+            resolved_tier = resolve_tier_model(endpoint, model_name)
+            logger.info(f"Resolved model tier '{model_name}' → '{resolved_tier}' on endpoint '{endpoint}'")
+            model_name = resolved_tier
+
         # Resolve aliases before lookup — allows "fable" → "fable5", etc.
         from app.config.models_config import MODEL_ALIASES
         endpoint_aliases = MODEL_ALIASES.get(endpoint, {})
@@ -875,9 +888,10 @@ class ModelManager:
         # standard bedrock-runtime boto3 endpoint.
         endpoint_override = model_config.get("endpoint_override", "")
         if endpoint_override == "bedrock-mantle":
-            from app.providers.bedrock_mantle import BedrockMantleProvider
-            _mantle_region = os.environ.get(
-                "AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", region)
+            from app.providers.bedrock_mantle import BedrockMantleProvider, resolve_mantle_region
+            _mantle_region = resolve_mantle_region(
+                model_config,
+                os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", region)),
             )
             logger.info(
                 f"Routing {model_id} to BedrockMantleProvider "
@@ -1141,7 +1155,7 @@ class ModelManager:
         # Explicitly get the API key after checking credentials
         google_api_key = os.environ.get("GOOGLE_API_KEY")
         if google_api_key:
-            logger.info(f"GOOGLE_API_KEY found, length: {len(google_api_key)}, first 5 chars: {google_api_key[:5]}...")
+            logger.info(f"GOOGLE_API_KEY found, length: {len(google_api_key)}")
             if not google_api_key.strip(): # Check if the key is just whitespace
                 logger.warning("GOOGLE_API_KEY is present but empty or whitespace. Treating as not set to allow ADC.")
                 google_api_key = None
