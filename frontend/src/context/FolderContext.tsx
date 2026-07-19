@@ -6,7 +6,61 @@ import { TreeDataNode } from "antd";
 import { debounce } from "../utils/debounce";
 import { useConfig } from "./ConfigContext";
 import { useProject } from "./ProjectContext";
+import { fetchDefaultIncludedFolders } from "../apis/folderApi";
 import { getTabState, setTabState } from '../utils/tabState';
+
+// convertToTreeData does a full recursive rebuild of the whole folder tree.
+// Calling it synchronously (as part of a setState) competes directly with
+// the requestIdleCallback-scheduled MarkdownRenderer mounts in
+// Conversation.tsx: during an active scan this function can run every ~1s,
+// which starves those idle slots and makes conversation text appear frozen
+// blank until the scan (and its polling) stops. Route the conversion
+// itself through the same idle-time scheduling so it never wins that race.
+//
+// DEBUGGING THIS CLASS OF BUG (conversation text frozen/blank while a
+// folder scan or other FolderContext update is running):
+//   1. Filter the browser console for "TREE_IDLE" (this file) and
+//      "MSG_QUEUE" (Conversation.tsx) — both log schedule time, wait
+//      latency, and task duration for their respective idle-callback
+//      queues, so the two can be correlated by timestamp.
+//   2. If TREE_IDLE entries show short wait but long duration, the
+//      rebuild itself (convertToTreeData) is the bottleneck — profile
+//      frontend/src/utils/folderUtil.ts, not the scheduling.
+//   3. If MSG_QUEUE shows long wait (scheduled_at far before ran_at) while
+//      TREE_IDLE is firing frequently in that same window, FolderContext
+//      is winning the idle-time race against markdown rendering — that's
+//      this exact bug class.
+//   4. Note the rIC "timeout" option forces a deadline-run even with zero
+//      idle time available, so once a scheduled TREE_IDLE callback hits
+//      its 500ms timeout it preempts whatever MSG_QUEUE was about to run.
+//      That's a structural trade-off in the current scheduling, not new
+//      breakage, if you see it in the logs.
+let __folderTreeIdleSeq = 0;
+const __folderTreeIdle: (cb: () => void, opts?: { timeout: number }) => number =
+  (window as any).requestIdleCallback
+    ? (window as any).requestIdleCallback.bind(window)
+    : ((cb: () => void) => window.setTimeout(cb, 16) as unknown as number);
+
+// Traced wrapper around __folderTreeIdle: logs when a rebuild is
+// scheduled, when it actually runs, how long it waited for an idle slot,
+// and how long the rebuild itself took. See the block comment above for
+// how to use this output to diagnose main-thread contention with
+// Conversation.tsx's deferred markdown-render queue.
+const __folderTreeIdleTraced = (label: string, cb: () => void, opts?: { timeout: number }) => {
+  const id = ++__folderTreeIdleSeq;
+  const scheduledAt = performance.now();
+  console.log(`📂 TREE_IDLE[${id}] scheduled (${label}), timeout=${opts?.timeout ?? 'none'}`);
+  return __folderTreeIdle(() => {
+    const waitMs = performance.now() - scheduledAt;
+    const runStart = performance.now();
+    try {
+      cb();
+    } finally {
+      const durationMs = performance.now() - runStart;
+      console.log(`📂 TREE_IDLE[${id}] ran (${label}) after wait=${waitMs.toFixed(0)}ms, duration=${durationMs.toFixed(0)}ms`);
+    }
+  }, opts);
+};
 
 export interface FolderContextType {
   folders: Folders | undefined;
@@ -95,7 +149,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   // Get current project from ProjectContext
   const { currentProject } = useProject();
   // Remove performance monitoring that's causing overhead
-  
+
   // Create ref to avoid stale closures in async callbacks
   const currentProjectRef = useRef(currentProject);
   currentProjectRef.current = currentProject;
@@ -124,14 +178,14 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       }
     }
   }, [currentProject]);
-  
+
   const cleanupCheckedKeys = useCallback(async () => {
     const checkedKeys = checkedKeysRef.current;
     if (!folders || checkedKeys.length === 0) return;
 
     // Use ref to get the LATEST project path (prevents stale closures)
     const projectPath = currentProjectRef.current?.path;
-    
+
     // Debug: log what we're actually using vs what we have
     console.log('🔍 CLEANUP_DEBUG:', {
       refPath: projectPath,
@@ -143,7 +197,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       console.warn('🧹 CLEANUP: No valid project path available, skipping validation');
       return;
     }
-    
+
     // External paths (under [external] root) are outside the project root by definition.
     // They were validated when added, so skip them during cleanup.
     const keysToValidate = checkedKeys.filter(key => !String(key).startsWith('[external]'));
@@ -170,13 +224,13 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         // external keys verbatim.
         const treePaths = collectAllTreePaths(folders);
         const cleanedProjectKeys = keysToValidate.filter(key => {
-            const s = String(key);
-            // File the server confirmed exists on disk
-            if (existingSet.has(s)) return true;
-            // Folder path that exists in the tree (validate endpoint
-            // doesn't validate folders, so trust the tree here)
-            if (treePaths.has(s)) return true;
-            return false;
+          const s = String(key);
+          // File the server confirmed exists on disk
+          if (existingSet.has(s)) return true;
+          // Folder path that exists in the tree (validate endpoint
+          // doesn't validate folders, so trust the tree here)
+          if (treePaths.has(s)) return true;
+          return false;
         });
         // Pass everything through the sanitizer one more time to drop
         // any structurally-invalid entries (corrupted strings, etc.)
@@ -214,9 +268,9 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       }
     };
 
-    window.addEventListener('restoreProjectFileSelections', handleRestoreSelections as EventListener);
+    window.addEventListener('restoreProjectFileSelections', handleRestoreSelections as unknown as EventListener);
     return () => {
-      window.removeEventListener('restoreProjectFileSelections', handleRestoreSelections as EventListener);
+      window.removeEventListener('restoreProjectFileSelections', handleRestoreSelections as unknown as EventListener);
     };
   }, [currentProject?.id]);
 
@@ -478,7 +532,11 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       }
       try {
         console.log('Checking folder progress...');
-        const response = await fetch('/folder-progress');
+        const projectPath = (window as any).__ZIYA_CURRENT_PROJECT_PATH__;
+        const progressUrl = projectPath
+          ? `/folder-progress?${new URLSearchParams({ project_path: projectPath }).toString()}`
+          : '/folder-progress';
+        const response = await fetch(progressUrl);
         console.log('Progress response:', response.ok, response.status);
         if (response.ok) {
           const data = await response.json();
@@ -564,12 +622,14 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         }
 
         // Single tree rebuild for the entire batch
-        try {
-          const treeNodes = convertToTreeData(updated);
-          setTreeData(treeNodes);
-        } catch (e) {
-          console.warn('📂 FILE_TREE_WS: tree rebuild error:', e);
-        }
+        __folderTreeIdleTraced('ws-batch-rebuild', () => {
+          try {
+            const treeNodes = convertToTreeData(updated);
+            setTreeData(treeNodes);
+          } catch (e) {
+            console.warn('📂 FILE_TREE_WS: tree rebuild error:', e);
+          }
+        }, { timeout: 500 });
 
         return updated;
       });
@@ -705,7 +765,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const fetchFolders = useCallback(async () => {
     // Don't block the main thread - use MessageChannel for true async
     const channel = new MessageChannel();
-    const closePorts = () => { try { channel.port1.close(); channel.port2.close(); } catch {} };
+    const closePorts = () => { try { channel.port1.close(); channel.port2.close(); } catch { } };
     channel.port1.onmessage = async () => {
       try {
         // Build URL with project_path parameter if we have a current project
@@ -740,12 +800,14 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
             const { _stale_and_scanning, ...folderData } = data;
             if (folderData && Object.keys(folderData).length > 0) {
               setFolders(folderData);
-              try {
-                const treeNodes = convertToTreeData(folderData);
-                setTreeData(treeNodes);
-              } catch (conversionError) {
-                console.error('Error converting stale folders to tree data:', conversionError);
-              }
+              __folderTreeIdleTraced('stale-and-scanning', () => {
+                try {
+                  const treeNodes = convertToTreeData(folderData);
+                  setTreeData(treeNodes);
+                } catch (conversionError) {
+                  console.error('Error converting stale folders to tree data:', conversionError);
+                }
+              }, { timeout: 500 });
             }
           }
         } else {
@@ -759,13 +821,15 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
           // Validate data before setting
           if (data && typeof data === 'object' && Object.keys(data).length > 0) {
             setFolders(data);
-            try {
-              const treeNodes = convertToTreeData(data);
-              setTreeData(treeNodes);
-            } catch (conversionError) {
-              console.error('Error converting folders to tree data:', conversionError);
-              setScanError('Failed to process folder structure');
-            }
+            __folderTreeIdleTraced('scan-complete', () => {
+              try {
+                const treeNodes = convertToTreeData(data);
+                setTreeData(treeNodes);
+              } catch (conversionError) {
+                console.error('Error converting folders to tree data:', conversionError);
+                setScanError('Failed to process folder structure');
+              }
+            }, { timeout: 500 });
           } else {
             console.warn('Received empty or invalid folder data');
             setFolders({});
@@ -787,6 +851,26 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   useEffect(() => {
     fetchFoldersRef.current = fetchFolders;
   }, [fetchFolders]);
+
+  // Auto-include documentation files (AGENTS.md recursively, README.md at the
+  // project root only). Unions the server-provided keys into the current
+  // selection rather than replacing it, so it never clobbers a user or
+  // restored selection. Safe to call on initial load and on project switch.
+  const seedDefaultIncludedFolders = useCallback(async (projectPath?: string) => {
+    try {
+      const keys = await fetchDefaultIncludedFolders(projectPath);
+      if (!keys || keys.length === 0) return;
+      setCheckedKeys(prev => {
+        const existing = new Set(prev.map(String));
+        const additions = keys.filter(k => !existing.has(String(k)));
+        if (additions.length === 0) return prev;
+        console.log(`📄 AUTO-CONTEXT: seeding ${additions.length} documentation file(s)`);
+        return [...prev, ...additions];
+      });
+    } catch (e) {
+      console.warn('Failed to seed default included folders:', e);
+    }
+  }, [setCheckedKeys]);
 
   useEffect(() => {
     // Make folder fetching completely asynchronous and non-blocking
@@ -815,8 +899,9 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     if (newPath && newPath !== prevProjectPath.current) {
       prevProjectPath.current = newPath;
       fetchFolders();
+      seedDefaultIncludedFolders(newPath);
     }
-  }, [currentProject?.path]);
+  }, [currentProject?.path, seedDefaultIncludedFolders]);
 
   // Listen for manual refresh events
   useEffect(() => {
@@ -911,11 +996,12 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
       // Trigger refresh with new project path
       fetchFolders();
+      seedDefaultIncludedFolders(projectPath);
     };
 
-    window.addEventListener('projectSwitched', handleProjectSwitch as EventListener);
-    return () => window.removeEventListener('projectSwitched', handleProjectSwitch as EventListener);
-  }, [fetchFolders]);
+    window.addEventListener('projectSwitched', handleProjectSwitch as unknown as EventListener);
+    return () => window.removeEventListener('projectSwitched', handleProjectSwitch as unknown as EventListener);
+  }, [fetchFolders, seedDefaultIncludedFolders]);
 
   // Listen for context sync events from backend
   useEffect(() => {
@@ -949,8 +1035,8 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       );
     };
 
-    window.addEventListener('syncContextFromBackend', handleContextSync as EventListener);
-    return () => window.removeEventListener('syncContextFromBackend', handleContextSync as EventListener);
+    window.addEventListener('syncContextFromBackend', handleContextSync as unknown as EventListener);
+    return () => window.removeEventListener('syncContextFromBackend', handleContextSync as unknown as EventListener);
   }, []);
 
   // Listen for context activation/deactivation from ProjectContext
@@ -967,25 +1053,22 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         return Array.from(newKeys);
       });
     };
-
     const handleRemoveFiles = (event: CustomEvent) => {
       const { files } = event.detail;
       if (!files || files.length === 0) return;
 
-      console.log('📂 CONTEXT_DEACTIVATION: Removing files from selection:', files.length);
+      console.log('📂 CONTEXT_ACTIVATION: Removing files from selection:', files.length);
 
       setCheckedKeys(prev => {
-        const filesSet = new Set(files);
-        return prev.filter(key => !filesSet.has(String(key)));
+        const removedSet = new Set<string>(files);
+        return prev.filter(k => !removedSet.has(k as string));
       });
     };
-
-    window.addEventListener('addFilesToSelection', handleAddFiles as EventListener);
-    window.addEventListener('removeFilesFromSelection', handleRemoveFiles as EventListener);
-
+    window.addEventListener('addFilesToSelection', handleAddFiles as unknown as EventListener);
+    window.addEventListener('removeFilesFromSelection', handleRemoveFiles as unknown as EventListener);
     return () => {
-      window.removeEventListener('addFilesToSelection', handleAddFiles as EventListener);
-      window.removeEventListener('removeFilesFromSelection', handleRemoveFiles as EventListener);
+      window.removeEventListener('addFilesToSelection', handleAddFiles as unknown as EventListener);
+      window.removeEventListener('removeFilesFromSelection', handleRemoveFiles as unknown as EventListener);
     };
   }, []);
 

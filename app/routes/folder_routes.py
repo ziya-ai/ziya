@@ -94,7 +94,7 @@ async def get_folder(request: FolderRequest):
             return {"error": f"Cannot access directory: {str(e)}"}
         
         # Get the ignored patterns
-        ignored_patterns = get_ignored_patterns(request.directory)
+        ignored_patterns = await asyncio.to_thread(get_ignored_patterns, request.directory)
         logger.info(f"Ignore patterns loaded: {len(ignored_patterns)} patterns")
         
         # Use the max_depth from the request, but ensure it's at least 15 if not specified
@@ -102,7 +102,9 @@ async def get_folder(request: FolderRequest):
         logger.info(f"Using max depth for folder structure: {max_depth}")
         
         # Use our enhanced cached folder structure function
-        result = get_cached_folder_structure(request.directory, ignored_patterns, max_depth)
+        result = await asyncio.to_thread(
+            get_cached_folder_structure, request.directory, ignored_patterns, max_depth
+        )
         
         # Check if we got an error result
         if isinstance(result, dict) and "error" in result:
@@ -257,9 +259,32 @@ async def save_file(request: FileContentRequest):
         return {"error": "Unable to write file."}
 
 @router.get('/api/default-included-folders')
-async def get_default_included_folders():
-    """Get the default included folders."""
-    return []
+async def get_default_included_folders(project_path: str = Query(None)):
+    """Return tree keys for documentation files that should be auto-included.
+
+    AGENTS.md is collected recursively from the project root; README.md is
+    collected at the project root only. Used by the frontend to seed the
+    checked selection on initial load and after a project switch.
+    """
+    try:
+        if project_path:
+            root = os.path.abspath(project_path)
+        else:
+            root = get_project_root()
+
+        if not root or not os.path.isdir(root):
+            return {"defaultIncludedFolders": []}
+
+        keys = _collect_documentation_file_keys(
+            root,
+            is_inside_workspace=True,
+            user_codebase_dir=root,
+            readme_root_only=True,
+        )
+        return {"defaultIncludedFolders": keys}
+    except Exception as e:
+        logger.error(f"Error collecting default included folders: {e}")
+        return {"defaultIncludedFolders": []}
 
 @router.get('/api/browse-directory')
 async def api_browse_directory(path: str = '~'):

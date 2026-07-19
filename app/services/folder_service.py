@@ -495,9 +495,14 @@ def collect_leaf_file_keys(dir_path: str, is_inside_workspace: bool, user_codeba
     return keys
 
 
-def collect_documentation_file_keys(dir_path: str, is_inside_workspace: bool, user_codebase_dir: str, max_depth: int = 10) -> list:
-    """Walk a directory and return tree keys for AGENTS.md and README.md files."""
-    DOC_FILES = {'AGENTS.md', 'README.md'}
+def collect_documentation_file_keys(dir_path: str, is_inside_workspace: bool, user_codebase_dir: str, max_depth: int = 10, readme_root_only: bool = False) -> list:
+    """Walk a directory and return tree keys for AGENTS.md and README.md files.
+
+    AGENTS.md is always collected recursively. When ``readme_root_only`` is set,
+    README.md is only collected at ``dir_path`` itself (depth 0), so switching to
+    a large project root auto-includes the root README without pulling in every
+    nested README.md in the tree.
+    """
     keys: list = []
     for root, dirs, files in os.walk(dir_path):
         depth = root[len(dir_path):].count(os.sep)
@@ -505,8 +510,11 @@ def collect_documentation_file_keys(dir_path: str, is_inside_workspace: bool, us
             dirs[:] = []
             continue
         dirs[:] = [d for d in dirs if not d.startswith('.')]
+        doc_files = {'AGENTS.md', 'README.md'}
+        if readme_root_only and depth > 0:
+            doc_files = {'AGENTS.md'}
         for fname in files:
-            if fname in DOC_FILES:
+            if fname in doc_files:
                 full = os.path.join(root, fname)
                 if is_inside_workspace:
                     key = os.path.relpath(full, user_codebase_dir)
