@@ -1107,9 +1107,21 @@ class DelegateManager:
             return
 
         state = ModelManager.get_state()
+        # Per-delegate model override: a delegate can run on a cheaper/
+        # faster model (or, for users who want it, a specific model) than
+        # the top-level conversation. model_id_override wins outright;
+        # otherwise model_name or model_tier (tier preferred — portable
+        # across endpoints/time). Cross-endpoint delegate routing isn't
+        # supported yet (delegates require bedrock, above), so
+        # spec.model_endpoint is intentionally not applied here.
+        _delegate_model_override = (
+            spec.model_name or spec.model_tier
+        ) if not spec.model_id_override else None
         executor = StreamingToolExecutor(
             profile_name=state.get("aws_profile"),
             region=state.get("aws_region", "us-west-2"),
+            model_id=spec.model_id_override,
+            model_override=_delegate_model_override,
         )
 
         # Resolve skill prompt if delegate has an assigned skill

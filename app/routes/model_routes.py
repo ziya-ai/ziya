@@ -483,8 +483,18 @@ async def _set_model_locked(request: SetModelRequest):
                 endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
                 model_name = os.environ.get("ZIYA_MODEL")
                 
+                # Pipeline providers (e.g. BedrockMantleProvider for fable5/mythos5,
+                # which live under the "bedrock" endpoint via endpoint_override:
+                # "bedrock-mantle") are LLMProvider instances driven directly by the
+                # streaming executor. They are NOT LangChain Runnables, so wrapping
+                # them in an XML agent raises "Expected a Runnable, callable or dict".
+                from app.providers.base import LLMProvider
+                if isinstance(new_model, LLMProvider):
+                    logger.info(f"Model {model_name} is a pipeline provider ({new_model.provider_name}), skipping XML agent creation")
+                    agent = None  # No XML agent needed
+                    agent_executor = None  # No executor needed
                 # For models with native function calling, skip XML agent creation
-                if endpoint in ("google", "openai", "anthropic") and model_name:
+                elif endpoint in ("google", "openai", "anthropic") and model_name:
                     model_config = ModelManager.get_model_config(endpoint, model_name)
                     uses_native_calling = model_config.get("native_function_calling", False)
                     

@@ -64,6 +64,20 @@ class DelegateSpec(BaseModel):
     skill_id: Optional[str] = None
     color: str = ""
     project_root: Optional[str] = None  # Captured at request time; used in background task
+    # Model selection for this delegate — lets a decomposed plan run
+    # cheap executor delegates while the orchestrator (or a top-level
+    # supervisor) stays on a smarter model. ``model_tier`` is the
+    # RECOMMENDED, portable way to express this: a relative rung
+    # ("xsmall" | "small" | "base" | "medium" | "large" | "frontier")
+    # resolved per-endpoint via app.config.models_config.resolve_tier_model.
+    # ``model_name`` / ``model_id_override`` are escape hatches for users
+    # who want a specific model — not portable across endpoints or as
+    # models are retired, so prefer ``model_tier`` unless you have a
+    # concrete reason to pin an exact model.
+    model_tier: Optional[str] = None
+    model_name: Optional[str] = None
+    model_id_override: Optional[str] = None
+    model_endpoint: Optional[str] = None
 
 
 class DelegateMeta(BaseModel):
