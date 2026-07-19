@@ -560,7 +560,7 @@ export const MUIFileExplorer = () => {
       }
       return undefined;
     };
-    return findInTree(muiTreeData);
+    return findInTree(muiTreeData as unknown as TreeNodeData[]);
   }, [muiTreeData]);
 
   // Effect to load folders on component mount - with improved caching

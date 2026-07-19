@@ -81,7 +81,7 @@ export interface GlobalMenuItemState {
  *   - inheritance-only (effective && !own): disabled, "Shared via parent
  *     folder", with a tooltip directing the user to unshare the parent —
  *     toggling the own flag here is a no-op for visibility.
- *   - own-global (own): enabled, "📌 This project only" (un-share).
+ *   - own-global (own): enabled, "Stop sharing across projects" (un-share).
  *   - not global: enabled, "🌐 Share across projects".
  *
  * Pure — both menu sites and the unit tests consume this single source.
@@ -99,7 +99,7 @@ export const globalMenuItemState = (
         };
     }
     return {
-        label: ownGlobal ? '📌 This project only' : '🌐 Share across projects',
+        label: ownGlobal ? 'Stop sharing across projects' : 'Share across projects',
         disabled: false,
     };
 };

@@ -11,6 +11,7 @@ export interface Folders {
 export type MessageRole = 'human' | 'assistant' | 'system';
 
 export interface ImageAttachment {
+    id?: string;
     data: string;  // base64 encoded image data (without data URI prefix)
     mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
     filename?: string;
@@ -102,6 +103,19 @@ export interface Conversation {
     // itself a root, the source's id), so the whole lineage shares one
     // bead tree resolved on the backend.  Absent on root/trunk conversations.
     lineageRootId?: string;
+    // ── Conversation flags (triage) ──────────────────────────────────────
+    // Multi-select label attribute ids from conversationFlags.CONVERSATION_FLAG_LABELS
+    // (e.g. "priority", "awaiting-verification"). Purely client-side triage —
+    // filtering/dedicated display land in a later slice.
+    flags?: string[];
+    // Single-select color flag id from conversationFlags.CONVERSATION_FLAG_COLORS,
+    // or null/undefined for "no color".
+    flagColor?: string | null;
+    // Lazy-load bookkeeping: a "shell" holds only recent messages (or none)
+    // while the full history is hydrated from IndexedDB/server on demand.
+    // See ChatContext.tsx's shell-hydration and dual-write-filter logic.
+    _isShell?: boolean;
+    _fullMessageCount?: number;
 }
 
 export interface ConversationFolder {
@@ -112,6 +126,7 @@ export interface ConversationFolder {
     parentId?: string | null;
     useGlobalContext?: boolean;
     useGlobalModel?: boolean;
+    systemInstructions?: string;
     createdAt: number;
     updatedAt: number;
     taskPlan?: TaskPlan | null;
