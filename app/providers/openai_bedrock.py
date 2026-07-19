@@ -44,7 +44,7 @@ class OpenAIBedrockProvider(LLMProvider):
     """Streams OpenAI-format model responses via Bedrock invoke_model."""
 
     def __init__(self, model_id: str, model_config: Dict[str, Any],
-                 aws_profile: str = "ziya", region: str = "us-west-2"):
+                 aws_profile: Optional[str] = None, region: str = "us-west-2"):
         self.model_id = model_id
         self.model_config = model_config
         self._region = region
