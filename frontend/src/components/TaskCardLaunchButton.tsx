@@ -38,10 +38,11 @@ import { PlayCircleOutlined, LoadingOutlined, CheckCircleOutlined } from '@ant-d
 import { useProject } from '../context/ProjectContext';
 import { useActiveChat } from '../context/ActiveChatContext';
 import { useChatContext } from '../context/ChatContext';
+import { TaskCardEditor } from './TaskCard/TaskCardEditor';
 import { useMessageId } from '../context/MessageIdContext';
 import { taskCardApi } from '../services/taskCardApi';
 import { createBinding } from '../services/taskBindingApi';
-import type { TaskCardCreate } from '../types/task_card';
+import type { TaskCard, TaskCardCreate } from '../types/task_card';
 
 // \x60 is the backtick char; written this way so no literal backtick
 // appears in the source and fence-unaware tools don't mis-parse it.
@@ -79,7 +80,43 @@ function summarizeRoot(root: TaskCardCreate['root']): string {
   if (root.block_type === 'parallel') {
     return `parallel · ${(root.body ?? []).length} block(s)`;
   }
+  if (root.block_type === 'group') {
+    const n = (root.body ?? []).length;
+    return `${n} stage${n === 1 ? '' : 's'} (sequence)`;
+  }
+  if (root.block_type === 'until') {
+    const max = root.until_max ?? '?';
+    return `until condition met · max ${max} attempt(s)`;
+  }
+  if (root.block_type === 'schedule') {
+    return `scheduled · ${(root.body ?? []).length} inner block(s)`;
+  }
   return root.block_type;
+}
+
+/**
+ * Build a draft TaskCard for the preview editor out of the parsed
+ * TaskCardCreate spec. TaskCardEditor expects a full TaskCard (id,
+ * tags, timestamps, etc.) — this is never persisted; it only exists so
+ * the user can review/tweak the AI-authored spec before Start creates
+ * the real card via taskCardApi.create.
+ */
+function makeDraftCard(spec: TaskCardCreate): TaskCard {
+  const now = Date.now() / 1000;
+  return {
+    id: 'draft',
+    name: spec.name,
+    description: spec.description ?? '',
+    root: spec.root,
+    scope: spec.scope ?? null,
+    tags: spec.tags ?? [],
+    is_template: spec.is_template ?? false,
+    source: 'ai',
+    created_at: now,
+    updated_at: now,
+    last_run_at: null,
+    run_count: 0,
+  };
 }
 
 export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageId }) => {
@@ -95,15 +132,32 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
   const [launching, setLaunching] = useState(false);
   const [launched, setLaunched] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
+  const [previewCard, setPreviewCard] = useState<TaskCard | null>(null);
 
   const spec = useMemo(() => parseTaskCardSpec(messageContent), [messageContent]);
+
+  const openPreview = useCallback(() => {
+    if (!spec) return;
+    setPreviewCard(makeDraftCard(spec));
+    setShowPreview(true);
+  }, [spec]);
 
   const handleLaunch = useCallback(async () => {
     if (!spec || !currentProject?.id || !currentConversationId) return;
     setLaunching(true);
     setShowPreview(false);
     try {
-      const card = await taskCardApi.create(currentProject.id, spec);
+      // If the user opened the preview and edited it, launch those edits;
+      // otherwise launch the originally parsed spec unchanged.
+      const toCreate: TaskCardCreate = previewCard ? {
+        name: previewCard.name,
+        description: previewCard.description,
+        root: previewCard.root,
+        scope: previewCard.scope,
+        tags: previewCard.tags,
+        is_template: previewCard.is_template,
+      } : spec;
+      const card = await taskCardApi.create(currentProject.id, toCreate);
       const resp = await createBinding(currentProject.id, currentConversationId, {
         card_id: card.id,
         anchor_message_id: effectiveMessageId,
@@ -124,7 +178,7 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
     } finally {
       setLaunching(false);
     }
-  }, [spec, currentProject?.id, currentConversationId, messageId, addRunningTaskConversation]);
+  }, [spec, previewCard, currentProject?.id, currentConversationId, effectiveMessageId, addRunningTaskConversation]);
 
   if (!spec) return null;
 
@@ -148,7 +202,7 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
             {summarizeRoot(spec.root)}
           </div>
         </div>
-        <Button size="small" onClick={() => setShowPreview(true)} disabled={launching || launched}>
+        <Button size="small" onClick={openPreview} disabled={launching || launched}>
           Preview
         </Button>
         <Button
@@ -162,7 +216,7 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
       </div>
 
       <Modal
-        title={`Task card: ${spec.name}`}
+        title={`Task card: ${previewCard?.name || spec.name}`}
         open={showPreview}
         onCancel={() => setShowPreview(false)}
         footer={[
@@ -172,13 +226,18 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
             Start
           </Button>,
         ]}
-        width={640}
+        width={800}
+        destroyOnClose
       >
-        <pre style={{
-          fontSize: 11, fontFamily: 'ui-monospace, monospace',
-          background: 'rgba(0,0,0,0.04)', padding: 12, borderRadius: 6,
-          maxHeight: 480, overflow: 'auto', margin: 0,
-        }}>{JSON.stringify(spec, null, 2)}</pre>
+        {previewCard ? (
+          <div style={{ maxHeight: 560, overflow: 'auto' }}>
+            <TaskCardEditor
+              card={previewCard}
+              onChange={setPreviewCard}
+              projectId={currentProject?.id}
+            />
+          </div>
+        ) : null}
       </Modal>
     </>
   );

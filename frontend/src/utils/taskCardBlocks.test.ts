@@ -9,7 +9,7 @@ describe('block factories', () => {
     const t = makeTaskBlock('Spec Gen');
     expect(t.block_type).toBe('task');
     expect(t.name).toBe('Spec Gen');
-    expect(t.scope).toEqual({ files: [], tools: [], skills: [] });
+    expect(t.scope).toEqual({ paths: [], tools: [], skills: [] });
     expect(t.body).toEqual([]);
     expect(t.id).toMatch(/^t-/);
   });

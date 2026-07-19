@@ -14,7 +14,7 @@ export const makeTaskBlock = (name: string = 'New Task'): Block => ({
   id: nextId('t'),
   name,
   instructions: '',
-  scope: { files: [], tools: [], skills: [] },
+  scope: { paths: [], tools: [], skills: [] },
   emoji: '🔵',
   body: [],
 });

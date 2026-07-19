@@ -333,17 +333,40 @@
 }
 .tc-tile__cancel:hover { background: rgba(248,81,73,0.1); }
 
+/* Pause button — sibling of .tc-tile__cancel.  Shown while a run is
+ * live.  Uses the same violet accent as the "paused" status colour
+ * (#8957e5) so the button and the state it produces read as one idea.
+ * Disabled while "pausing" (flag set, executor not yet at a boundary). */
+.tc-tile__pause {
+  background: transparent; border: 1px solid #8957e5;
+  color: #a371f7; border-radius: 4px; padding: 2px 6px;
+  cursor: pointer; font-size: 11px; line-height: 1;
+}
+.tc-tile__pause:hover { background: rgba(137,87,229,0.12); }
+.tc-tile__pause:disabled { opacity: 0.5; cursor: progress; }
+
+/* Resume button — shown while a run is paused. */
+.tc-tile__resume {
+  background: transparent; border: 1px solid #3fb950;
+  color: #3fb950; border-radius: 4px; padding: 2px 6px;
+  cursor: pointer; font-size: 11px; line-height: 1;
+}
+.tc-tile__resume:hover { background: rgba(63,185,80,0.12); }
+
 /* Rerun / restart button — sibling of .tc-tile__cancel.  Shown when a
  * run is in a terminal state.  Restart (failed/cancelled) is more
  * urgent than rerun (done) so they share the same shape but different
- * colours: warning amber for restart, neutral blue for rerun. */
+ * colours: warning amber for restart, neutral blue for rerun.
+ * Uses #58a6ff rather than the tile's #1f6feb accent — #1f6feb is tuned
+ * as a filled background (works with white text on top) and only hits
+ * ~2.5:1 contrast as text/border against the dark tile background. */
 .tc-tile__rerun {
-  background: transparent; border: 1px solid #1f6feb;
-  color: #1f6feb; border-radius: 4px; padding: 2px 6px;
+  background: transparent; border: 1px solid #58a6ff;
+  color: #58a6ff; border-radius: 4px; padding: 2px 6px;
   cursor: pointer; font-size: 11px; line-height: 1;
   display: inline-flex; align-items: center; gap: 4px;
 }
-.tc-tile__rerun:hover { background: rgba(31,111,235,0.1); }
+.tc-tile__rerun:hover { background: rgba(88,166,255,0.1); }
 .tc-tile__rerun:disabled { opacity: 0.5; cursor: progress; }
 .tc-tile__rerun--restart {
   border-color: #d29922; color: #d29922;
@@ -413,10 +436,18 @@
 }
 .tc-tile__progress {
   display: flex; align-items: center; gap: 8px;
-  color: #1f6feb; margin-bottom: 6px;
+  color: #58a6ff; margin-bottom: 6px;
 }
 
 .tc-tile__artifact { margin-top: 4px; }
+.tc-tile__artifact-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  opacity: 0.6;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
 .tc-tile__summary {
   font-size: 12px; line-height: 1.4;
   color: var(--tc-card-text, #e0e0e0);
@@ -533,6 +564,8 @@
 .tc-tile__instructions {
   font-size: 12px;
   margin: 4px 0 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 .tc-tile__instructions summary {
   cursor: pointer;
@@ -642,93 +675,6 @@
 /* Light mode overrides */
 @media (prefers-color-scheme: light) {
   .tc-tile {
-/* Failure clusters — shown in place of the flat iteration list when
-   failures repeat by signature.  See FailureClusters.tsx. */
-.tc-clusters {
-  margin-top: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.tc-clusters__header {
-  font-size: 11px;
-  opacity: 0.8;
-  margin-bottom: 2px;
-}
-
-.tc-cluster {
-  border: 1px solid rgba(248,81,73,0.25);
-  border-radius: 4px;
-  background: rgba(248,81,73,0.04);
-}
-.tc-cluster summary.tc-cluster__summary {
-  cursor: pointer;
-  padding: 4px 8px;
-  list-style: none;
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  font-size: 11px;
-}
-.tc-cluster summary.tc-cluster__summary::-webkit-details-marker { display: none; }
-.tc-cluster summary.tc-cluster__summary::before {
-  content: '▸';
-  display: inline-block;
-  width: 10px;
-  opacity: 0.6;
-  font-size: 9px;
-}
-.tc-cluster[open] summary.tc-cluster__summary::before {
-  content: '▾';
-}
-
-.tc-cluster__count {
-  color: #f85149;
-  font-weight: 600;
-  min-width: 32px;
-}
-.tc-cluster__sig {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
-  opacity: 0.7;
-}
-.tc-cluster__exemplar-preview {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  opacity: 0.75;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-}
-
-.tc-cluster__body {
-  padding: 6px 10px 8px 20px;
-  border-top: 1px solid rgba(248,81,73,0.15);
-  font-size: 11px;
-}
-.tc-cluster__exemplar {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 160px;
-  overflow: auto;
-  margin-bottom: 6px;
-}
-.tc-cluster__decisions {
-  margin: 4px 0 6px;
-  padding-left: 18px;
-  opacity: 0.85;
-}
-.tc-cluster__indices {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 10px;
-  opacity: 0.6;
-}
-.tc-cluster__error {
-  color: #f85149;
-  font-size: 11px;
-}
-
     background: #ffffff;
     color: #1f2328;
     border-color: rgba(0,0,0,0.1);
@@ -736,4 +682,154 @@
   .tc-tile--receipt:hover { background: rgba(0,0,0,0.03); }
   .tc-tile__header { background: rgba(0,0,0,0.02); }
   .tc-tile__header:hover { background: rgba(0,0,0,0.04); }
+}
+
+/* ── Run map (TaskRunMap) ─────────────────────────────────────── */
+.tc-map {
+  background: rgba(0,0,0,0.25);
+  border: 1px solid rgba(255,255,255,0.07);
+  border-radius: 6px;
+  padding: 4px;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.tc-map__row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 8px; border-radius: 4px;
+}
+.tc-map__row--running { background: rgba(31,111,235,0.09); }
+.tc-map__icon { width: 14px; text-align: center; font-weight: 700; flex: none; }
+.tc-map__icon--done { color: #3fb950; }
+.tc-map__icon--failed { color: #f85149; }
+.tc-map__icon--running {
+  color: #58a6ff;
+  animation: tc-map-blink 1.4s ease-in-out infinite;
+}
+.tc-map__icon--queued, .tc-map__icon--skipped { color: #7d8590; }
+.tc-map__icon--cancelled { color: #d29922; }
+@keyframes tc-map-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.tc-map__emoji { flex: none; }
+.tc-map__label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc-map__row--skipped .tc-map__label { opacity: 0.45; text-decoration: line-through; }
+.tc-map__row--queued .tc-map__label { opacity: 0.6; }
+.tc-map__tag { margin-left: auto; font-size: 10px; color: #7d8590; font-style: italic; flex: none; }
+.tc-map__dots { margin-left: auto; display: inline-flex; gap: 3px; align-items: center; flex: none; }
+.tc-map__dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  display: inline-block; border: none; padding: 0;
+}
+.tc-map__dot--passed { background: #3fb950; }
+.tc-map__dot--failed { background: #f85149; cursor: pointer; }
+.tc-map__dot--failed:hover, .tc-map__dot--selected { outline: 2px solid #58a6ff; outline-offset: 1px; }
+.tc-map__dot--cancelled { background: #d29922; }
+.tc-map__dot--running {
+  background: #58a6ff;
+  animation: tc-map-blink 1.4s ease-in-out infinite;
+}
+.tc-map__dot-count { font-size: 10px; color: #7d8590; margin-left: 2px; }
+.tc-map__detail {
+  margin: 2px 8px 6px 24px; padding: 6px 10px;
+  border-left: 2px solid #f85149;
+  background: rgba(248,81,73,0.06);
+  border-radius: 0 4px 4px 0;
+  font-size: 12px;
+}
+.tc-map__detail-title { font-weight: 600; margin-bottom: 3px; }
+
+/* ── Failure clusters (FailureClusters) ───────────────────────── */
+.tc-clusters {
+  margin-top: 8px; padding: 6px 8px;
+  border: 1px solid rgba(248,81,73,0.35);
+  border-radius: 6px;
+  background: rgba(248,81,73,0.04);
+  font-size: 12px;
+}
+.tc-clusters__header { margin-bottom: 4px; }
+.tc-cluster { margin: 2px 0; }
+.tc-cluster__summary { cursor: pointer; display: flex; gap: 8px; align-items: center; }
+.tc-cluster__count { color: #f85149; font-weight: 700; }
+.tc-cluster__sig { font-size: 10px; opacity: 0.7; }
+.tc-cluster__exemplar-preview {
+  opacity: 0.75; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tc-cluster__body { padding: 4px 0 4px 20px; }
+.tc-cluster__exemplar { white-space: pre-wrap; }
+.tc-cluster__decisions { margin: 4px 0; padding-left: 16px; }
+.tc-cluster__indices { font-size: 10px; color: #7d8590; margin-top: 4px; }
+.tc-cluster__error { color: #f85149; }
+
+@media (prefers-color-scheme: light) {
+  .tc-map { background: rgba(0,0,0,0.03); border-color: rgba(0,0,0,0.1); }
+}
+
+/* ── Clickable rows + focused block detail ────────────────────── */
+.tc-map__row { cursor: pointer; }
+.tc-map__row:hover { background: rgba(255,255,255,0.05); }
+.tc-map__row--selected { background: rgba(88,166,255,0.14); }
+.tc-map__row:focus-visible { outline: 1px solid #58a6ff; outline-offset: -1px; }
+
+.tc-focus { margin: 6px 0 8px; }
+.tc-focus__crumb {
+  background: none; border: none; color: #58a6ff; cursor: pointer;
+  font-size: 11px; padding: 2px 0; margin-bottom: 4px;
+}
+.tc-focus__crumb:hover { text-decoration: underline; }
+
+.tc-detail {
+  padding: 8px 10px;
+  border-left: 2px solid #58a6ff;
+  background: rgba(88,166,255,0.05);
+  border-radius: 0 4px 4px 0;
+  font-size: 12px;
+}
+.tc-detail__head {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 6px;
+}
+.tc-detail__title { font-weight: 600; }
+.tc-detail__status {
+  margin-left: auto; font-size: 10px; text-transform: uppercase;
+  letter-spacing: 0.04em; padding: 1px 6px; border-radius: 3px; font-weight: 600;
+}
+.tc-detail__status--running { color: #58a6ff; }
+.tc-detail__status--done { color: #3fb950; }
+.tc-detail__status--failed { color: #f85149; }
+.tc-detail__status--skipped, .tc-detail__status--queued { color: #7d8590; }
+.tc-detail__status--cancelled { color: #d29922; }
+.tc-detail__section { margin: 4px 0; }
+.tc-detail__section > summary {
+  cursor: pointer; font-size: 11px; opacity: 0.75; user-select: none;
+}
+.tc-detail__section-label {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
+  opacity: 0.6; margin: 6px 0 2px;
+}
+.tc-detail__config {
+  display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 4px 0;
+}
+.tc-detail__config dt { opacity: 0.6; font-size: 11px; }
+.tc-detail__config dd { margin: 0; font-size: 11px; word-break: break-word; }
+.tc-detail__pre {
+  white-space: pre-wrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px; background: rgba(127,127,127,0.08);
+  padding: 4px 6px; border-radius: 3px;
+}
+.tc-detail__decisions {
+  margin: 4px 0; padding-left: 18px; font-size: 11px; opacity: 0.85;
+}
+.tc-detail__empty { opacity: 0.5; font-style: italic; }
+.tc-detail__error { color: #f85149; }
+.tc-detail__error-box {
+  margin-top: 6px; padding: 6px 8px;
+  background: rgba(248,81,73,0.08);
+  border: 1px solid rgba(248,81,73,0.3);
+  border-radius: 4px;
+}
+.tc-detail__error-label {
+  font-size: 10px; text-transform: uppercase; color: #f85149; margin-bottom: 2px;
+}
+.tc-detail__error-box pre { margin: 0; white-space: pre-wrap; font-size: 11px; }
+
+@media (prefers-color-scheme: light) {
+  .tc-map__row:hover { background: rgba(0,0,0,0.04); }
+  .tc-map__row--selected { background: rgba(31,111,235,0.1); }
 }

@@ -7,8 +7,9 @@
  */
 
 import React from 'react';
-import type { TaskCard, Block } from '../../types/task_card';
+import type { TaskCard, Block, TaskScope } from '../../types/task_card';
 import { BlockEditor } from './BlockEditor';
+import { BlockScopeButton } from './BlockScopeButton';
 import { TaskCardDragProvider } from './DragContext';
 import { taskCardApi, type CardScopeStatus } from '../../services/taskCardApi';
 import { makeGroupBlock } from '../../utils/taskCardBlocks';
@@ -45,18 +46,26 @@ export const TaskCardEditor: React.FC<Props> = ({
   // signed record is picked up on the next run with no restart. Do not add a
   // "restart" affordance here — refreshScopeStatus alone reflects reality.
   const [scopeStatus, setScopeStatus] = React.useState<CardScopeStatus | null>(null);
-  const refreshScopeStatus = React.useCallback(async () => {
+  const [scopeCheckPending, setScopeCheckPending] = React.useState(false);
+  const [scopeCheckError, setScopeCheckError] = React.useState<string | null>(null);
+  const refreshScopeStatus = React.useCallback(async (opts?: { manual?: boolean }) => {
     if (!projectId || !card.id) {
       setScopeStatus(null);
       onScopeStatusChange?.(card.id, null);
       return;
     }
+    if (opts?.manual) { setScopeCheckPending(true); setScopeCheckError(null); }
     try {
       const st = await taskCardApi.scopeStatus(projectId, card.id);
       setScopeStatus(st);
       onScopeStatusChange?.(card.id, st);
-    } catch {
+    } catch (e) {
       setScopeStatus(null);  // status is advisory; never block editing on it
+      if (opts?.manual) {
+        setScopeCheckError(e instanceof Error ? e.message : String(e));
+      }
+    } finally {
+      if (opts?.manual) setScopeCheckPending(false);
     }
   }, [projectId, card.id, onScopeStatusChange]);
   // Re-check whenever the card id changes or its scope-bearing content changes.
@@ -66,6 +75,7 @@ export const TaskCardEditor: React.FC<Props> = ({
   const setRoot = (root: Block) => onChange({ ...card, root });
   const setName = (name: string) => onChange({ ...card, name });
   const setDescription = (description: string) => onChange({ ...card, description });
+  const setScope = (scope: TaskScope) => onChange({ ...card, scope });
 
   // The card root is always an invisible Group (a run-once sequence) so
   // the canvas presents an ordered drop list: a State can be added first
@@ -126,6 +136,11 @@ export const TaskCardEditor: React.FC<Props> = ({
               <div className="tc-scope-approval-block-name">
                 ⚠ {b.name || b.blockId}
               </div>
+              {b.denialMessage && (
+                <div className="tc-scope-approval-reason">
+                  {b.denialMessage}
+                </div>
+              )}
               {Object.entries(b.escalation).map(([field, vals]) => (
                 <div key={field} className="tc-scope-approval-detail">
                   {field}: {vals.join(', ')}
@@ -136,10 +151,22 @@ export const TaskCardEditor: React.FC<Props> = ({
           ))}
           <button
             className="tc-btn tc-btn-secondary tc-scope-approval-recheck"
-            onClick={() => void refreshScopeStatus()}
+            onClick={() => void refreshScopeStatus({ manual: true })}
+            disabled={scopeCheckPending}
           >
-            ↻ Re-check (after signing)
+            {scopeCheckPending ? '⏳ Checking…' : '↻ Re-check (after signing)'}
           </button>
+          {scopeCheckError && (
+            <div className="tc-scope-approval-check-error">
+              Re-check failed: {scopeCheckError}
+            </div>
+          )}
+          {!scopeCheckPending && !scopeCheckError && scopeStatus?.anyUnapproved && (
+            <div className="tc-scope-approval-check-hint">
+              Still unsigned as of the last check — verify you signed the block(s)
+              listed above in the same environment this server reads from.
+            </div>
+          )}
         </div>
       )}
       <input
@@ -148,6 +175,14 @@ export const TaskCardEditor: React.FC<Props> = ({
         onChange={e => setDescription(e.target.value)}
         placeholder="Optional description"
       />
+      <div className="tc-card-scope-row">
+        <BlockScopeButton
+          scope={card.scope}
+          onChange={setScope}
+          title={card.name || 'this card'}
+          label="Card Permissions"
+        />
+      </div>
       <div className="tc-card-canvas">
         <TaskCardDragProvider root={card.root} onRootChange={setRoot}>
           <BlockEditor block={card.root} onChange={setRoot} isRoot />
