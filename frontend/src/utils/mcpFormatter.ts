@@ -13,6 +13,70 @@ export function registerToolHeaderEnhancer(enhancer: (toolName: string, baseHead
 }
 
 /**
+* The shell tool (run_shell_command) always executes in a fresh subprocess
+* rooted at the active project directory: the workspace-scoped shell server is
+* spawned with ZIYA_USER_CODEBASE_DIR = currentProject.path, which the frontend
+* mirrors on `window.__ZIYA_CURRENT_PROJECT_PATH__` (updated by ProjectContext
+* on every project switch). That global is therefore the authoritative,
+* always-current shell cwd, so display helpers consult it to recognise a
+* redundant leading `cd <cwd>` and hide it. This is a DISPLAY concern only;
+* the executed command is never modified.
+*
+* `knownShellCwd` is an optional override used mainly by tests; when unset the
+* resolver falls back to the window global.
+ */
+let knownShellCwd: string | null = null;
+
+export function setKnownShellCwd(cwd: string | null | undefined): void {
+  knownShellCwd = cwd && typeof cwd === 'string' ? cwd.replace(/\/+$/, '') : null;
+}
+
+function resolveShellCwd(): string | null {
+ if (knownShellCwd !== null) return knownShellCwd;
+ const globalPath = typeof window !== 'undefined'
+   ? (window as any).__ZIYA_CURRENT_PROJECT_PATH__
+   : null;
+ return globalPath && typeof globalPath === 'string'
+   ? globalPath.replace(/\/+$/, '')
+   : null;
+}
+
+/**
+ * Strip a leading `cd <path> && ` (or `cd <path> ; `) prefix from a shell
+ * command FOR DISPLAY PURPOSES ONLY. The prefix is removed ONLY when the
+ * `cd` would not actually change directory from the known shell cwd — i.e.
+ * <path> equals the project root, or is a `.` / `./` no-op. If the cwd is
+ * unknown, only the unambiguous `.`/`./` no-op is stripped, so a real
+ * `cd somewhere/else && ...` is always preserved.
+ *
+ * A bare `cd foo` (no following command) is never touched, since there the
+ * cd IS the command the user ran.
+ */
+export function stripRedundantCdForDisplay(command: string): string {
+  if (!command || typeof command !== 'string') return command;
+  const match = command.match(
+    /^\s*cd\s+("([^"]*)"|'([^']*)'|[^\s&;|]+)\s*(?:&&|;)\s*(\S[\s\S]*)$/
+  );
+  if (!match) return command;
+  // Unquote the path (double, single, or bare token).
+  const rawPath = match[2] !== undefined ? match[2]
+    : match[3] !== undefined ? match[3]
+    : match[1];
+  const rest = match[4];
+  if (!rest || rest.trim().length === 0) return command;
+
+  const normalizedPath = rawPath.replace(/\/+$/, '');
+  const isNoOp = normalizedPath === '.' || normalizedPath === './' || normalizedPath === '';
+ const cwd = resolveShellCwd();
+ const isCwd = cwd !== null && normalizedPath === cwd;
+
+  if (isNoOp || isCwd) {
+    return rest.trim();
+  }
+  return command;
+}
+
+/**
  * Enhance tool display header with arguments for better visibility
  * Generic implementation that can be overridden by internal formatter
  */
@@ -154,6 +218,9 @@ export interface FormattedOutput {
     language?: string;
     metadata?: Record<string, any>;
   }>;
+  // Verification status propagated from structured tool results.
+  verified?: boolean;
+  verificationError?: string;
   // When set to 'diff', `content` is a unified-diff string suitable for
   // react-diff-view's parseDiff().  ToolBlock routes this to the diff
   // renderer instead of marked.parse / pre.
@@ -1443,7 +1510,7 @@ function createToolSummary(toolName: string, input: any): string {
 
   // Tool-specific parameter extraction
   const toolSummaries: Record<string, (input: any) => string> = {
-    'run_shell_command': (input) => input.command ? `$ ${input.command}` : '',
+    'run_shell_command': (input) => input.command ? `$ ${stripRedundantCdForDisplay(input.command)}` : '',
     'WorkspaceSearch': (input) => {
       const query = input.searchQuery || '';
       const type = input.searchType || 'contentLiteral';
