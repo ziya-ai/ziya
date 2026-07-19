@@ -1,6 +1,7 @@
 /**
  * Project types
  */
+import type { TaskScope } from './task_card';
 
 export interface WritePolicy {
   /** "none" = safe paths + patterns only, "new_files" = also create new files anywhere, "all_files" = write any project file */
@@ -21,6 +22,11 @@ export interface ProjectSettings {
   defaultSkillIds: string[];
   writePolicy?: WritePolicy;
   contextManagement?: ContextManagementSettings;
+  // Deck-level (project-wide) Task Card permissions baseline.  Merged
+  // additively with each card's own scope and every ancestor block's
+  // scope (see app/models/task_card.py::merge_scopes and
+  // app/agents/block_executor.py) — this is the outermost layer.
+  taskScope?: TaskScope | null;
 }
 
 export interface Project {

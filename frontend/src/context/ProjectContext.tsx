@@ -527,7 +527,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     const newProject = await projectApi.createProject({ path, name });
     
     // Add to projects list
-    setProjects(prev => [...prev, newProject]);
+    setProjects(prev => [...prev, {
+      ...newProject,
+      isCurrentWorkingDirectory: false,
+      conversationCount: 0,
+    }]);
     
     // Auto-switch to new project
     await switchProject(newProject.id);
@@ -544,7 +548,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     if (currentProject?.id === id) {
       setCurrentProject(updated);
     }
-    setProjects(prev => prev.map(p => p.id === id ? updated : p));
+    setProjects(prev => prev.map(p => p.id === id ? { ...p, ...updated } : p));
   }, [currentProject]);
   
   const deleteProjectFn = useCallback(async (id: string) => {

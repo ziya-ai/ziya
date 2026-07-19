@@ -5,11 +5,6 @@ import { message } from 'antd';
 import { performEmergencyRecovery } from './emergencyRecovery';
 
 declare global {
-    interface Navigator {
-        locks?: {
-            request(name: string, callback: (lock: any) => Promise<any>): Promise<any>;
-        };
-    }
     interface IDBDatabase { }
 }
 
@@ -177,10 +172,11 @@ class ConversationDB implements DB {
 
         this.initializing = true;
         if (navigator.locks) {
-            this.initPromise = navigator.locks.request('ziya-db-init', async _lock => {
-                return this._initWithLock();
+            const lockPromise: Promise<void> = navigator.locks.request<void>('ziya-db-init', async _lock => {
+                await this._initWithLock();
             });
-            return this.initPromise;
+            this.initPromise = lockPromise;
+            return lockPromise;
         }
         this.initPromise = this._initWithLock();
         return this.initPromise;
@@ -802,7 +798,7 @@ class ConversationDB implements DB {
                             existing.folderId = shellConv.folderId;
                             existing._version = shellConv._version || existing._version;
                             existing.lastAccessedAt = shellConv.lastAccessedAt || existing.lastAccessedAt;
-                            existing.groupId = shellConv.groupId !== undefined ? shellConv.groupId : existing.groupId;
+                        existing.groupId = (shellConv as any).groupId !== undefined ? (shellConv as any).groupId : existing.groupId;
                             existing.isGlobal = shellConv.isGlobal !== undefined ? shellConv.isGlobal : existing.isGlobal;
                             metaStore.put(existing, id);
                             console.log(`🔧 SAVE_GUARD: Merged metadata for ${id.substring(0, 8)} (folderId: ${shellConv.folderId})`);
