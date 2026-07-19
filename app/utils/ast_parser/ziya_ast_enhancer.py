@@ -248,6 +248,9 @@ class ZiyaASTEnhancer:
                 f"Open a specific project directory for full AST support."
             )
             return {
+                # Distinguishes this deliberate early-return from a real
+                # processing failure — see context_enhancer.py's handling.
+                "skipped": True,
                 "files_processed": 0,
                 "ast_context": "# AST Analysis\n\nProject directory is too broad for AST indexing. Open a specific project folder.",
                 "token_count": 10,
