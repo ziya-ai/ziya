@@ -1066,7 +1066,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     (db.getConversation(conversationId)).then(full => {
                         const toApply = queue.get(conversationId) ?? [];
                         queue.delete(conversationId);
-                        if (full?.messages?.length > existingConversation.messages.length) {
+                        if (full && full.messages && full.messages.length > existingConversation.messages.length) {
                             setConversations(prev => prev.map(c =>
                                 c.id === conversationId
                                     ? { ...c, messages: [...full.messages, ...toApply], _isShell: false, _fullMessageCount: undefined, _version: Date.now() }
@@ -1592,13 +1592,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // never in IDB or on the server, so any lazy-load attempt is a
             // wasted round-trip that 404s.
             const isEphemeralConv = (convEntry as any)?.isEphemeral === true;
-            const isZombieRecord = convEntry?.messages?.length <= 2
-                && !convEntry._isShell
+            const isZombieRecord = !!convEntry && (convEntry.messages?.length ?? 0) <= 2
+                && !(convEntry as any)._isShell
                 && convEntry.title !== 'New Conversation'
                 && convEntry.title !== '';
             const needsLazyLoad = !isEphemeralConv && convEntry && (
                 (!convEntry.messages || convEntry.messages.length === 0) ||
-                convEntry._isShell ||
+                (convEntry as any)._isShell ||
                 isZombieRecord
             );
 
@@ -2195,7 +2195,17 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             // Immediately populate from server rather than waiting for the
                             // next syncWithServer cycle — which depends on currentProject being
                             // set, a condition that may not hold yet at this point in startup.
-                            const recovered = serverSummaries.map(s => ({ ...s, projectId: startupPid }));
+                            const recovered: Conversation[] = serverSummaries.map(s => {
+                                const displayMode = s.displayMode === 'raw' || s.displayMode === 'pretty' ? s.displayMode : undefined;
+                                return {
+                                    ...s,
+                                    projectId: startupPid,
+                                    lastAccessedAt: s.lastAccessedAt ?? null,
+                                    isActive: s.isActive ?? false,
+                                    messages: [],
+                                    displayMode,
+                                };
+                            });
                             setConversations(recovered);
                             console.log(`🔧 IDB_REPAIR: Set ${recovered.length} conversations directly from server.`);
                         } catch (repairErr) {
@@ -3136,14 +3146,24 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         // Preserve in-memory messages that were lazy-loaded during
                         // this session but not yet persisted to IDB.
                         for (const mc of safeConvs) {
-                            const mcMsgCount = mc.messages?.length || 0;
+                            // For shell records, messages are stripped to
+                            // first+last (≤2) — compare against the real
+                            // on-disk count instead.  Comparing the stripped
+                            // count let ANY hydrated React copy (however
+                            // stale) out-count the shell and pin itself,
+                            // clearing the shell marker and adopting the
+                            // fresh _version — permanently masking updates
+                            // written to shared IDB by a sibling tab.
+                            const mcMsgCount = (mc as any)._isShell
+                                ? ((mc as any)._fullMessageCount ?? (mc.messages?.length || 0))
+                                : (mc.messages?.length || 0);
                             const inMemory = prevMap.get(mc.id);
                             const inMemoryCount = inMemory?.messages?.length || 0;
                             const isActive = mc.id === currentConversationRef.current;
                             const inMemoryIsNewer = (inMemory?._version || 0) > (mc._version || 0);
-                            if (inMemoryCount > mcMsgCount
+                            if (inMemory && (inMemoryCount > mcMsgCount
                                 || (isActive && inMemoryCount > 0 && inMemoryCount >= mcMsgCount)
-                                || (inMemoryIsNewer && inMemoryCount > 0)) {
+                                || (inMemoryIsNewer && inMemoryCount > 0))) {
                                 mc.messages = inMemory.messages;
                                 // We just restored REAL messages from React state.
                                 // mc came from db.getConversationShells() and carries
@@ -3358,9 +3378,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                         // Don't overwrite if a newer in-memory version exists
                                         // (user is actively editing while hydration lands).
                                         if ((c._version || 0) > ((full as any)._version || 0)) return c;
+                                        const fullDisplayMode = (full as any).displayMode;
+                                        const displayMode = fullDisplayMode === 'raw' || fullDisplayMode === 'pretty' ? fullDisplayMode : c.displayMode;
                                         return {
                                             ...c,
                                             ...full,
+                                            displayMode,
                                             _isShell: false,
                                             _fullMessageCount: undefined,
                                             projectId: (full as any).projectId || projectId,
@@ -3603,12 +3626,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     // Listen for model change events
     useEffect(() => {
-        window.addEventListener('modelChanged', handleModelChange as EventListener);
+        window.addEventListener('modelChanged', handleModelChange as unknown as EventListener);
 
         return () => {
-            // Reset processed changes when component unmounts
-            processedModelChanges.current.clear();
-            window.removeEventListener('modelChanged', handleModelChange as EventListener);
+            window.removeEventListener('modelChanged', handleModelChange as unknown as EventListener);
         };
     }, [handleModelChange]);
 
@@ -4037,18 +4058,35 @@ export function ChatProvider({ children }: ChatProviderProps) {
             return null;
         }
 
-        // If the source is a shell (messages stripped for sidebar memory),
-        // hydrate from IDB so the fork carries full history.  Read lock is
-        // separate from the write lock, safe during active streaming.
-        if ((source as any)._isShell) {
-            try {
-                const full = await db.getConversation(conversationId);
-                if (full && !((full as any)._isShell) && full.messages.length > 0) {
-                    source = full;
-                }
-            } catch (err) {
-                console.warn('Fork: failed to hydrate source from IDB:', err);
+        // Resolve the source's FULL message history (local → IDB → server) via
+        // the shared hydration helper.  Sidebar rows are shells (bodies
+        // stripped), and a never-opened conversation lives only on the server.
+        // Unlike the export/info modals — which degrade to an empty view — a
+        // fork that persisted empty history would be silent DATA LOSS, so we
+        // HARD-FAIL here and abort the fork rather than create a truncated copy.
+        {
+            const { hydrateConversationMessages } = await import('../utils/conversationHydration');
+            const res = await hydrateConversationMessages(conversationId, {
+                local: source,
+                projectId: source.projectId || currentProject?.id,
+            });
+            // A source that genuinely has messages must resolve to content.
+            // Empty-with-error = server unreachable; empty-without-error for a
+            // source the sidebar shows as non-trivial = something is wrong.
+            const sourceLooksNonEmpty =
+                ((source as any)._fullMessageCount ?? source.messages?.length ?? 0) > 0;
+            if (res.messages.length === 0 && sourceLooksNonEmpty) {
+                console.error('Fork: failed to hydrate source history', {
+                    id: conversationId, source: res.source, error: res.error,
+                });
+                message.error(
+                    res.error
+                        ? 'Cannot fork: could not load conversation history from the server. Open the conversation first, then retry.'
+                        : 'Cannot fork: conversation history is unavailable.'
+                );
+                return null;
             }
+            source = { ...source, messages: res.messages } as typeof source;
         }
 
         const newId = uuidv4();
@@ -4402,6 +4440,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
         loadConversationAndScrollToMessage,
         loadConversation,
         startNewChat,
+        startNewEphemeralChat,
+        promoteEphemeralToRetained,
         isTopToBottom,
         setIsTopToBottom,
         scrollToBottom,
@@ -4458,6 +4498,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
         addMessageToConversation,
         loadConversation,
         startNewChat,
+        startNewEphemeralChat,
+        promoteEphemeralToRetained,
         isTopToBottom,
         setIsTopToBottom,
         scrollToBottom,

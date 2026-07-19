@@ -5,6 +5,9 @@ import { useActiveChat } from '../context/ActiveChatContext';
 import { useTheme } from '../context/ThemeContext';
 import { captureAllVisualizations } from '../utils/visualizationCapture';
 import { exportConversationAsPdf } from '../utils/pdfExport';
+import { useProject } from '../context/ProjectContext';
+import { hydrateConversationMessages } from '../utils/conversationHydration';
+import type { Message } from '../utils/types';
 
 const { Text, Paragraph } = Typography;
 
@@ -13,9 +16,17 @@ type ExportMode = 'copy' | 'download' | 'pdf' | 'paste';
 interface ExportConversationModalProps {
     visible: boolean;
     onClose: () => void;
+    /**
+     * Conversation to export.  When omitted (or equal to the active chat),
+     * the modal exports the active conversation.  When it names a different
+     * conversation (e.g. a row picked from the history list), that
+     * conversation's messages are loaded from IndexedDB and exported
+     * instead of the active chat's.
+     */
+    conversationId?: string;
 }
 
-const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visible, onClose }) => {
+const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visible, onClose, conversationId }) => {
     const [exportMode, setExportMode] = useState<ExportMode>('copy');
     const [format, setFormat] = useState<'markdown' | 'html'>('markdown');
     const [embedImages, setEmbedImages] = useState(false);
@@ -38,7 +49,40 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
             description: 'Public paste service with markdown support'
         }
     ]);
-    const { currentConversationId, currentMessages } = useActiveChat();
+    const { currentConversationId: activeConversationId, currentMessages: activeMessages } = useActiveChat();
+    const { currentProject } = useProject();
+    // When an explicit target conversation is supplied and it is NOT the
+    // active chat, export that conversation's messages (loaded from IDB)
+    // rather than the active chat's.  Downstream code keeps using
+    // currentConversationId / currentMessages unchanged — these locals
+    // shadow the active-chat values and resolve to the correct source.
+    const [loadedConv, setLoadedConv] = useState<{ id: string; messages: Message[] } | null>(null);
+    const [loadError, setLoadError] = useState(false);
+    const useExplicitTarget = !!conversationId && conversationId !== activeConversationId;
+    const currentConversationId = useExplicitTarget ? conversationId! : activeConversationId;
+    const currentMessages: Message[] = useExplicitTarget
+        ? (loadedConv?.id === conversationId ? loadedConv.messages : [])
+        : activeMessages;
+
+    // Load the target conversation's messages when it differs from the active
+    // chat, via the shared hydration helper (local → IDB → server).  A
+    // conversation the user has never opened lives only on the server (its IDB
+    // entry is a metadata-only shell), which previously exported as "0 rounds".
+    // Cleared on close so a stale target can't leak into a later active-chat
+    // export.
+    useEffect(() => {
+        if (!visible || !useExplicitTarget) { setLoadedConv(null); setLoadError(false); return; }
+        let cancelled = false;
+        (async () => {
+            const res = await hydrateConversationMessages(conversationId!, {
+                projectId: currentProject?.id,
+            });
+            if (cancelled) return;
+            setLoadedConv({ id: conversationId!, messages: res.messages });
+            setLoadError(res.source === 'empty' && !!res.error);
+        })();
+        return () => { cancelled = true; };
+    }, [visible, useExplicitTarget, conversationId, currentProject?.id]);
     const { isDarkMode } = useTheme();
 
     useEffect(() => {
@@ -367,6 +411,21 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
 
     const renderOptions = () => (
         <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            {/* Hydration failure: the target conversation's history could not
+                be loaded from the server (shell record + server unreachable). */}
+            {loadError && useExplicitTarget && (
+                <div style={{
+                    padding: '8px 12px',
+                    background: isDarkMode ? '#3a1a1a' : '#fff2f0',
+                    border: `1px solid ${isDarkMode ? '#5c2626' : '#ffccc7'}`,
+                    borderRadius: 4,
+                    fontSize: 12,
+                    color: isDarkMode ? '#ff7875' : '#cf1322',
+                }}>
+                    ⚠️ Could not load this conversation's history from the server.
+                    It may export empty — open the conversation first, then retry.
+                </div>
+            )}
             {/* ── Scope & Content ────────────────────────────── */}
             <div style={{
                 padding: '10px 14px',
