@@ -20,8 +20,8 @@ DEFAULT_SHELL_CONFIG = {
         "ls", "cat", "pwd", "grep", "wc", "touch", "find", "date", "od", "df", 
         "netstat", "lsof", "ps", "sed", "awk", "cut", "sort", "which", "hexdump", 
         "xxd", "tail", "head", "echo", "printf", "tr", "uniq", "column", "nl", 
-        "tee", "base64", "md5sum", "sha1sum", "sha256sum", "bc", "expr", "seq", 
-        "paste", "join", "fold", "expand", "cd", "tree", "less", "xargs", "curl", 
+        "tee", "base64", "md5", "md5sum", "sha1sum", "sha256sum", "bc", "expr", "seq", 
+        "paste", "join", "comm", "fold", "expand", "cd", "tree", "less", "xargs", "curl", 
         "ping", "du", "file",
         # Scoped package runners (bare npx is unsafe — only specific tools allowed)
         "npx jest", "npx craco",
@@ -34,7 +34,8 @@ DEFAULT_SHELL_CONFIG = {
         # Network diagnostics
         "dig", "host", "nslookup",
         # Process execution control
-        "timeout", "time",
+        # sleep is needed for scripted pacing/backoff between commands (e.g. polling loops)
+        "timeout", "time", "sleep",
         # Shell flow-control keywords (needed for compound commands split on ; && ||)
         "for", "while", "until", "select",
         "if", "then", "else", "elif", "fi",
@@ -47,7 +48,7 @@ DEFAULT_SHELL_CONFIG = {
     "safeGitOperations": [
         "status", "log", "show", "diff", "branch", "remote", "config --get",
         "ls-files", "ls-tree", "blame", "tag", "stash list", "reflog", 
-        "rev-parse", "describe", "shortlog", "whatchanged"
+        "rev-parse", "rev-list", "describe", "shortlog", "whatchanged"
     ],
     "timeout": 30
 }
