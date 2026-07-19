@@ -9,12 +9,13 @@ import os
 from typing import Dict, List, Optional, Any, Tuple
 from pathlib import Path
 import logging
+from app.utils.logging_utils import get_mode_aware_logger
  
-logger = logging.getLogger(__name__)
+logger = get_mode_aware_logger(__name__)
 
 # Try to import scapy, but don't fail if it's not available
 try:
-    from scapy.all import (rdpcap, IP, IPv6, TCP, UDP, ICMP, 
+    from scapy.all import (rdpcap, PcapReader, PacketList, IP, IPv6, TCP, UDP, ICMP,
                           ARP, DNS, DNSQR, DNSRR, GRE, Raw, Ether)
     from scapy.contrib.geneve import GENEVE
     from scapy.packet import Packet
@@ -27,12 +28,17 @@ except ImportError:
 class PcapAnalyzer:
     """Analyzer for packet capture files"""
     
-    def __init__(self, pcap_path: str):
+    def __init__(self, pcap_path: str, max_packets: Optional[int] = None):
         """
         Initialize analyzer with a pcap file path
         
         Args:
             pcap_path: Path to the pcap file
+            max_packets: If set, stop after reading this many packets (a
+                bounded read via PcapReader, so an oversized capture is never
+                fully materialized). None (default) reads the whole file.
+                Honors the tool's advertised max_packets parameter, which was
+                previously accepted and silently ignored.
         """
         if not SCAPY_AVAILABLE:
             raise ImportError("Scapy is not installed. Install with: pip install scapy")
@@ -41,14 +47,28 @@ class PcapAnalyzer:
         if not self.pcap_path.exists():
             raise FileNotFoundError(f"PCAP file not found: {pcap_path}")
         
+        self.max_packets = max_packets if (max_packets is None or max_packets > 0) else None
         self.packets = None
         self._load_packets()
     
     def _load_packets(self):
         """Load packets from the pcap file"""
         try:
-            self.packets = rdpcap(str(self.pcap_path))
-            logger.info(f"Loaded {len(self.packets)} packets from {self.pcap_path}")
+            if self.max_packets is None:
+                self.packets = rdpcap(str(self.pcap_path))
+            else:
+                # Bounded read: pull at most max_packets without materializing
+                # the entire capture (rdpcap loads everything up front, so a
+                # post-hoc slice would still pay the full cost).
+                collected = []
+                with PcapReader(str(self.pcap_path)) as reader:
+                    for pkt in reader:
+                        collected.append(pkt)
+                        if len(collected) >= self.max_packets:
+                            break
+                self.packets = PacketList(collected)
+            logger.info(f"Loaded {len(self.packets)} packets from {self.pcap_path}"
+                        + (f" (capped at {self.max_packets})" if self.max_packets is not None else ""))
         except Exception as e:
             logger.error(f"Failed to load pcap file: {e}")
             raise
@@ -1535,6 +1555,7 @@ class PcapAnalyzer:
 def analyze_pcap_file(
     file_path: str,
     operation: str = "summary",
+    max_packets: Optional[int] = None,
     **kwargs
 ) -> Dict[str, Any]:
     """
@@ -1568,7 +1589,7 @@ def analyze_pcap_file(
         }
     
     try:
-        analyzer = PcapAnalyzer(file_path)
+        analyzer = PcapAnalyzer(file_path, max_packets=max_packets)
         
         if operation == "summary":
             return analyzer.get_summary()
