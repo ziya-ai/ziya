@@ -622,14 +622,10 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                 console.group('🎨 MERMAID-CONTRAST: Visibility Enhancement Results');
                 console.log(`Diagram Type: "${diagramType}"`);
                 console.log(`Dark Mode: ${isDarkMode}`);
-                console.log(`Elements Processed:`, result.elementsProcessed || 0);
-                console.log(`Elements Modified:`, result.elementsModified || 0);
+                console.log(`Text Fixed:`, result.textFixed);
+                console.log(`Shapes Fixed:`, result.shapesFixed);
+                console.log(`Lines Fixed:`, result.linesFixed);
                 console.log(`Details:`, result);
-
-                // Log any specific contrast issues found
-                if (result.contrastIssues && result.contrastIssues.length > 0) {
-                    console.warn(`⚠️ Contrast issues found:`, result.contrastIssues);
-                }
 
                 console.groupEnd();
             }, 500);

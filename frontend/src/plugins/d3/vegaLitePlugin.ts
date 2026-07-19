@@ -1,4 +1,8 @@
 import { type EmbedOptions } from 'vega-embed';
+import { D3RenderPlugin } from '../../types/d3';
+import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
+import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
+import { getZoomScript } from '../../utils/popupScriptUtils';
 
 // SSRF hardening (PenPal #83, CWE-918). A Vega-Lite spec's `data.url`
 // makes Vega's default loader issue an HTTP fetch. This plugin also drives
@@ -41,11 +45,6 @@ async function getRestrictedVegaLoader(): Promise<any> {
   }
   return _restrictedVegaLoaderPromise;
 }
-
-import { D3RenderPlugin } from '../../types/d3';
-import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
-import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
-import { getZoomScript } from '../../utils/popupScriptUtils';
 
 export interface VegaLiteSpec {
   type: 'vega-lite';
