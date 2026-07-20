@@ -308,9 +308,8 @@ class BedrockProvider(LLMProvider):
             content_blocks.append({"type": "text", "text": text.rstrip()})
         for tu in tool_uses:
             name = tu["name"]
-            # Bedrock expects names without mcp_ prefix
-            if name.startswith("mcp_"):
-                name = name[4:]
+            # Keep the mcp_ prefix: history tool_use names must match the
+            # prefixed names advertised to the model, or it loops "correcting" them.
             content_blocks.append({
                 "type": "tool_use",
                 "id": tu["id"],
