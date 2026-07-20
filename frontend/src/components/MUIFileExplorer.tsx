@@ -37,6 +37,8 @@ import ArrowDropDownIcon from '@mui/icons-material/ArrowDropDown';
 import ArrowRightIcon from '@mui/icons-material/ArrowRight';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import AddIcon from '@mui/icons-material/Add';
+import CheckBoxIcon from '@mui/icons-material/CheckBox';
+import CheckBoxOutlineBlankIcon from '@mui/icons-material/CheckBoxOutlineBlank';
 import FolderIcon from '@mui/icons-material/Folder';
 import InsertDriveFileIcon from '@mui/icons-material/InsertDriveFile';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
@@ -866,50 +868,6 @@ export const MUIFileExplorer = () => {
       return next;
     });
   }, []);
-  // Quick add single item
-  const handleQuickAdd = useCallback(async (path: string) => {
-    try {
-      const isDir = browseEntries.find(e => e.path === path)?.is_dir;
-
-      const projectPath = (window as any).__ZIYA_CURRENT_PROJECT_PATH__;
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (projectPath) headers['X-Project-Root'] = projectPath;
-      const response = await fetch('/api/add-explicit-paths', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          paths: [path],
-          // Files always go directly to context
-          // Directories use the current addMode setting
-          add_to_context: isDir ? (addMode === 'context') : true
-        })
-      });
-
-
-      if (response.ok) {
-        const result = await response.json();
-        message.success(`Added: ${path.split('/').pop()}`);
-
-        // Always refresh the folder tree so new entries are visible
-        window.dispatchEvent(new CustomEvent('refreshFolders'));
-
-        // If the backend returned context_keys, auto-select them
-        if (result.context_keys && result.context_keys.length > 0) {
-          setCheckedKeys(prev => {
-            const merged = new Set([...prev.map(String), ...result.context_keys]);
-            return Array.from(merged);
-          });
-        }
-      } else {
-        const error = await response.json();
-        message.error(error.detail || 'Failed to add path');
-      }
-    } catch (error) {
-      console.error('Error adding path:', error);
-      message.error('Failed to add path');
-    }
-  }, [addMode, browseEntries]);
-
   // Navigate up one directory
   const handleNavigateUp = useCallback(() => {
     const parentPath = browsePath.replace(/\/[^/]+\/?$/, '') || '/';
@@ -1621,7 +1579,7 @@ export const MUIFileExplorer = () => {
                       }}
                       secondary={entry.is_dir ? (
                         <Typography variant="caption" component="span" sx={{ fontSize: '0.7rem', opacity: 0.7 }}>
-                          Click to open • Click [+] to add directory
+                          Click to open • Check box to select for adding
                         </Typography>
                       ) : undefined}
                       secondaryTypographyProps={{
@@ -1632,20 +1590,17 @@ export const MUIFileExplorer = () => {
                       size="small"
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (entry.is_dir) {
-                          // For directories, toggle selection instead of quick add
-                          togglePathSelection(entry.path);
-                        } else {
-                          handleQuickAdd(entry.path);
-                        }
+                        togglePathSelection(entry.path);
                       }}
-                      title={`Add ${entry.name}`}
+                      title={selectedPaths.has(entry.path) ? `Deselect ${entry.name}` : `Select ${entry.name}`}
                       sx={{
                         opacity: 0.6,
                         '&:hover': { opacity: 1, color: 'primary.main' }
                       }}
                     >
-                      <AddIcon fontSize="small" />
+                      {selectedPaths.has(entry.path)
+                        ? <CheckBoxIcon fontSize="small" sx={{ color: 'primary.main' }} />
+                        : <CheckBoxOutlineBlankIcon fontSize="small" />}
                     </IconButton>
                   </ListItemButton>
                 ))}
