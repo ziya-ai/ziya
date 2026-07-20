@@ -49,7 +49,7 @@ const runWith = (
   blockStates: TaskRun['block_states'] = {},
 ): TaskRun => ({
   id: 'run1', card_id: 'c1', status,
-  cancel_requested: false, block_states: blockStates,
+  cancel_requested: false, pause_requested: false, block_states: blockStates,
   total_tokens: 0, total_tool_calls: 0,
   created_at: 0, updated_at: 0,
 });

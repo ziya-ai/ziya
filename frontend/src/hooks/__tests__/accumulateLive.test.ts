@@ -13,7 +13,7 @@
 import { accumulateLive, type LiveTaskState } from '../useTaskRunStream';
 
 const EMPTY: LiveTaskState = {
-  text: {}, toolCalls: [], events: [], iterations: [], variables: {},
+  text: {}, toolCalls: [], events: [], iterations: [], variables: {}, blockStatuses: {},
 };
 
 /**
