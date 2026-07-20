@@ -1,19 +1,28 @@
 #!/usr/bin/env python3
+"""
+Regression: unescape_backticks_from_llm must preserve escaped backticks
+that are genuine template-literal content.
 
+The chatApi.ts case: a diff edits a template literal whose content is
+literal backtick fences (escaped as backslash-backtick in the source).
+Unescaping those would turn ``\\`\\`\\`${...}`` into ```` ```${...} ````,
+producing quadruple backticks and a JavaScript syntax error.
+
+Without file content, the multiple-consecutive-escape heuristic must
+preserve; with file content supplied (the file genuinely containing the
+escaped form), the file-grounded decision must also preserve.
+"""
 import sys
 import os
 
-# Add project root to Python path
-project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.insert(0, project_root)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.utils.diff_utils.parsing.diff_parser import unescape_backticks_from_llm
 
-def test_backtick_escaping():
-    """Test the unescape_backticks_from_llm function with the problematic case"""
-    
-    # This is the diff content that's causing the issue
-    diff_content = '''diff --git a/frontend/src/apis/chatApi.ts b/frontend/src/apis/chatApi.ts
+_BT = chr(96)            # `
+_ESC = chr(92) + _BT     # \`
+
+_DIFF = '''diff --git a/frontend/src/apis/chatApi.ts b/frontend/src/apis/chatApi.ts
 index 1234567..89abcdef 100644
 --- a/frontend/src/apis/chatApi.ts
 +++ b/frontend/src/apis/chatApi.ts
@@ -26,32 +35,34 @@ index 1234567..89abcdef 100644
                  : result.content;
 
              // Clean formatting with title and indented content'''
-    
-    print("Original diff content:")
-    print(repr(diff_content))
-    print("\nOriginal diff content (readable):")
-    print(diff_content)
-    
-    # Process through the function
-    result = unescape_backticks_from_llm(diff_content)
-    
-    print("\nAfter unescape_backticks_from_llm:")
-    print(repr(result))
-    print("\nAfter unescape_backticks_from_llm (readable):")
-    print(result)
-    
-    # Check if the result contains the problematic quadruple backticks
-    if '````${' in result:
-        print("\n❌ ISSUE DETECTED: Function created quadruple backticks!")
-        print("This will cause JavaScript syntax errors.")
-        return False
-    elif '\\`\\`\\`${' in result:
-        print("\n✅ CORRECT: Escaped backticks preserved in template literal")
-        return True
-    else:
-        print("\n⚠️  UNEXPECTED: Neither quadruple backticks nor escaped backticks found")
-        return False
 
-if __name__ == '__main__':
-    success = test_backtick_escaping()
-    sys.exit(0 if success else 1)
+
+def test_template_literal_escapes_preserved_without_file():
+    """Heuristic path (no file content): consecutive escaped backticks
+    indicate genuine template-literal content and must be preserved."""
+    result = unescape_backticks_from_llm(_DIFF)
+    assert '````${' not in result, (
+        "Function created quadruple backticks — this corrupts the "
+        "template literal into a JavaScript syntax error.")
+    assert (_ESC * 3) + '${' in result.replace(_ESC * 4, _ESC * 3), \
+        "Escaped backticks should be preserved in template-literal content"
+    # The whole diff must round-trip unchanged.
+    assert result == _DIFF
+
+
+def test_template_literal_escapes_preserved_with_file():
+    """File-grounded path: the file genuinely contains the escaped form,
+    so the removal line matches the file verbatim -> preserve."""
+    file_content = (
+        "export const sendPayload = async (\n"
+        "    payload: any\n"
+        ") => {\n"
+        "            const resultContent = isCode\n"
+        "                ? `" + _ESC * 4 + "${result.language}\\n${result.content}\\n" + _ESC * 4 + "`\n"
+        "                : result.content;\n"
+        "};\n"
+    )
+    result = unescape_backticks_from_llm(_DIFF, file_content=file_content)
+    assert result == _DIFF, (
+        "File contains the escaped form verbatim; the diff must be "
+        "preserved as-is, not unescaped.")

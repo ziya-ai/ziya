@@ -1,0 +1,4 @@
+{
+  "description": "Reproduces a real-world apply failure (2026-07-19): a diff transmitted with chat-layer backslash-escaped backticks, whose ADDED JSDoc lines carry single \\` escapes and whose CONTEXT lines restate existing JSDoc containing double-backtick runs (\\`\\`). The doubled escapes trip the unescape_backticks_from_llm whole-diff preserve guard, so context lines no longer match the file's real (unescaped) content; the exact-match stages fail and the fuzzy fallback misplaces the hunk, duplicating normalizeBlockTree with a dangling '};' (invalid TypeScript, tsc TS1109 class) while the pipeline still reports success with changes_written=True. Correct behavior: the added lines' escapes unescape to real backticks and the hunk lands where its context says (expected.ts).",
+  "target_file": "frontend/src/utils/taskCardBlocks.ts"
+}

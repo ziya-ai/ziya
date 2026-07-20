@@ -18,13 +18,72 @@ from ..core.utils import normalize_escapes
 # for legitimate input.
 _MAX_HUNK_LINE_COUNT = 1_000_000
 
-def unescape_backticks_from_llm(text: str) -> str:
+def _decide_backtick_escaping_from_file(diff_text: str, file_content: str) -> Optional[str]:
+    """Decide preserve-vs-unescape for backslash-backtick sequences by
+    checking the diff against the target file's actual content.
+
+    A diff's context (' ') and removal ('-') lines must exist in the file,
+    so any such line containing a backslash-backtick is direct evidence:
+      - if the line matches the file verbatim, the file genuinely contains
+        backslash-backtick (e.g. a template-literal escape) -> 'preserve'
+      - if it matches only after replacing backslash-backtick with a real
+        backtick, the escaping is transport-layer artifact -> 'unescape'
+
+    Returns 'preserve', 'unescape', or None when the file gives no signal
+    (no matching lines, or conflicting evidence) — callers then fall back
+    to the content heuristics.  Matching is per whole line (rstripped) so
+    an incidental substring can't vote.
+    """
+    _bt = chr(96)           # backtick character
+    _esc = chr(92) + _bt    # backslash + backtick
+    file_lines = {l.rstrip() for l in file_content.splitlines()}
+    escaped_matches = 0
+    unescaped_matches = 0
+    for line in diff_text.splitlines():
+        if line.startswith(('--- ', '+++ ', 'diff ', 'index ', '@@')):
+            continue
+        if line.startswith(('-', ' ')) and _esc in line:
+            body = line[1:].rstrip()
+            if body in file_lines:
+                escaped_matches += 1
+            elif body.replace(_esc, _bt) in file_lines:
+                unescaped_matches += 1
+    if escaped_matches and not unescaped_matches:
+        return 'preserve'
+    if unescaped_matches and not escaped_matches:
+        return 'unescape'
+    return None
+
+
+def unescape_backticks_from_llm(text: str, file_content: Optional[str] = None) -> str:
     """Unescape backticks that were escaped for LLM context.
     
     Only unescape \\` when it's NOT part of a JavaScript/TypeScript template literal escape.
     In template literals, \\` is used to include a literal backtick.
     Multiple consecutive \\` (like \\`\\`\\`) represent literal backticks and should be preserved.
+
+    When ``file_content`` (the target file's current content) is provided,
+    the preserve-vs-unescape decision is grounded in the file itself via
+    _decide_backtick_escaping_from_file — the diff's context/removal lines
+    must exist in the file, so they disambiguate transport escaping from
+    genuine backslash-backtick content.  The content heuristics below only
+    apply when the file gives no signal.
     """
+    # File-grounded fast path: when the caller supplies the target file's
+    # content, context/removal lines settle the question directly and the
+    # content heuristics below (which are non-local: whether one line is
+    # unescaped can depend on unrelated lines elsewhere in the diff) are
+    # skipped entirely.
+    _bt0 = chr(96)
+    _esc0 = chr(92) + _bt0
+    if file_content is not None and _esc0 in text:
+        decision = _decide_backtick_escaping_from_file(text, file_content)
+        if decision == 'preserve':
+            return text
+        if decision == 'unescape':
+            return text.replace(_esc0, _bt0)
+        # None -> no signal from the file; fall through to heuristics.
+
     # Guard: when the only difference between a diff's removed and added
     # lines is the backslash-escaping itself, the backslash-backticks in
     # the '-' lines are genuine file content the diff intends to change
@@ -289,8 +348,19 @@ def parse_unified_diff_exact_plus(diff_content: str, target_file: str) -> List[D
     Returns:
         A list of dictionaries representing hunks
     """
-    # Unescape backticks that were escaped for LLM context
-    diff_content = unescape_backticks_from_llm(diff_content)
+    # Unescape backticks that were escaped for LLM context.  Ground the
+    # preserve-vs-unescape decision in the target file's actual content
+    # when the file exists (context/removal lines must match the file, so
+    # they disambiguate transport escaping from genuine backslash-backtick
+    # content).  Missing/unreadable file -> heuristics-only, as before.
+    _target_content = None
+    try:
+        if target_file and os.path.isfile(target_file):
+            with open(target_file, 'r', encoding='utf-8', errors='replace') as _f:
+                _target_content = _f.read()
+    except OSError:
+        _target_content = None
+    diff_content = unescape_backticks_from_llm(diff_content, file_content=_target_content)
     
     logger.debug(f"parse_unified_diff_exact_plus input diff first 10 lines:\n{diff_content.splitlines()[:10]}")
     lines = diff_content.splitlines()
