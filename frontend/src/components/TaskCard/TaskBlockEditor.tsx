@@ -3,7 +3,7 @@
  * Renders the blue-coded block style from design/task-cards.md.
  */
 
- import React, { useState } from 'react';
+ import React, { useState, useEffect } from 'react';
  import type { Block, TaskScope, ScopeEntry } from '../../types/task_card';
  import { useProject } from '../../context/ProjectContext';
  import { PermissionsDialog, PermissionEntry, PermissionsSavePayload } from '../Permissions/PermissionsDialog';
@@ -11,6 +11,7 @@
 import { ModelTierPicker } from './ModelTierPicker';
 import { AutoGrowTextarea } from './AutoGrowTextarea';
 import { DragHandle } from './DragContext';
+import { normalizeTaskScope, liftBlockModelFields } from '../../utils/taskCardBlocks';
 import './task-card-editor.css';
 
 interface Props {
@@ -39,10 +40,25 @@ const removeFromScopeList = (
 ): TaskScope => ({ ...scope, [key]: scope[key].filter(v => v !== value) });
 
 export const TaskBlockEditor: React.FC<Props> = ({ block, onChange, onDelete, isRoot }) => {
-  const scope: TaskScope = block.scope ?? { paths: [], tools: [], skills: [] };
+  // Repair a misplaced block-level model_* field (a common authoring
+  // slip: model_tier belongs inside scope, not on the block itself, so a
+  // block-level value renders as "Inherit" and is silently ignored).
+  // Lifting it makes the picker show the real tier; the one-shot effect
+  // below persists the correction so it doesn't recur on the next save.
+  const repaired = liftBlockModelFields(block);
+  // Normalize before any field access: a model-authored or hand-edited
+  // card can carry a scope object missing the array fields, and reading
+  // scope.tools.length on one crashed the whole editor.
+  const scope: TaskScope = normalizeTaskScope(repaired.scope);
   const { skills: availableSkills } = useProject();
-  const update = (patch: Partial<Block>) => onChange({ ...block, ...patch });
+  const update = (patch: Partial<Block>) => onChange({ ...repaired, ...patch });
   const updateScope = (s: TaskScope) => update({ scope: s });
+
+  useEffect(() => {
+    // Persist the lift once when a block-level model field was found.
+    if (repaired !== block) onChange(repaired);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── Permissions / cwd dialog state ───────────────────────
   const [permsOpen, setPermsOpen] = useState(false);

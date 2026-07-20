@@ -43,6 +43,7 @@ import { useMessageId } from '../context/MessageIdContext';
 import { taskCardApi } from '../services/taskCardApi';
 import { createBinding } from '../services/taskBindingApi';
 import type { TaskCard, TaskCardCreate } from '../types/task_card';
+import { normalizeBlockTree, normalizeTaskScope } from '../utils/taskCardBlocks';
 
 // \x60 is the backtick char; written this way so no literal backtick
 // appears in the source and fence-unaware tools don't mis-parse it.
@@ -107,8 +108,13 @@ function makeDraftCard(spec: TaskCardCreate): TaskCard {
     id: 'draft',
     name: spec.name,
     description: spec.description ?? '',
-    root: spec.root,
-    scope: spec.scope ?? null,
+    // The spec is raw model output parsed from a task-card fenced block —
+    // it never went through the backend pydantic model that fills scope
+    // defaults, so a block may carry a partial scope ({"paths": [...]}).
+    // Normalize the whole tree (and the card-level scope) so every editor
+    // sees well-formed scopes and cannot crash on scope.tools.length.
+    root: normalizeBlockTree(spec.root),
+    scope: spec.scope != null ? normalizeTaskScope(spec.scope) : null,
     tags: spec.tags ?? [],
     is_template: spec.is_template ?? false,
     source: 'ai',

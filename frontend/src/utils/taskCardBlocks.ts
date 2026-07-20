@@ -4,10 +4,82 @@
  * Kept out of React components so they can be unit-tested.
  */
 
-import type { Block, BlockType } from '../types/task_card';
+import type { Block, BlockType, TaskScope } from '../types/task_card';
 
 const nextId = (prefix: string = 'b'): string =>
   `${prefix}-${Math.random().toString(16).slice(2, 10)}`;
+
+/**
+ * Coerce a possibly-partial TaskScope (e.g. authored by a model via
+ * task_card_write, or from a hand-edited card file) into a fully
+ * populated one.  Missing array fields become empty arrays so the
+ * block editors can read .length / .map on them without crashing.
+ */
+export const normalizeTaskScope = (scope?: TaskScope | null): TaskScope => {
+  const raw = (scope ?? {}) as Partial<TaskScope>;
+  return {
+    ...raw,
+    paths: raw.paths ?? [],
+    tools: raw.tools ?? [],
+    skills: raw.skills ?? [],
+  } as TaskScope;
+};
+
+// The model-selection fields.  These belong INSIDE a block's scope
+// object (TaskScope), never at the block's top level.  Putting
+// model_tier on the block instead of in scope is a common authoring
+// slip: ModelTierPicker reads scope.model_tier, and the block model
+// allows extra fields, so a block-level value is silently kept as dead
+// junk and the block runs on the inherited model.  liftBlockModelFields
+// repairs it.
+const MODEL_SCOPE_FIELDS = [
+  'model_tier', 'model_name', 'model_id_override', 'model_endpoint',
+] as const;
+
+/**
+ * Lift any misplaced block-level model field into the block's scope.
+ *
+ * Moves each present top-level model field into scope (creating scope
+ * if absent), WITHOUT clobbering a value already correctly placed in
+ * scope, and strips the dead top-level copy.  Non-mutating: returns the
+ * same reference when nothing is misplaced, a new object otherwise.
+ */
+export const liftBlockModelFields = (block: Block): Block => {
+  const b = block as any;
+  const misplaced = MODEL_SCOPE_FIELDS.filter(f => b[f] != null);
+  if (misplaced.length === 0) return block;
+  const next: any = { ...block };
+  const scope: any = { ...(next.scope ?? {}) };
+  for (const f of misplaced) {
+    if (scope[f] == null) scope[f] = b[f];  // an existing scope value wins
+    delete next[f];
+  }
+  next.scope = scope;
+  return next as Block;
+};
+
+/**
+ * Recursively normalize every block's scope in a tree so a
+ * model-authored spec (parsed from a ``task-card`` fenced block, never
+ * validated through the backend pydantic model) is well-formed before
+ * it reaches any block editor.  A block carrying a partial scope like
+ * ``{"paths": [...]}`` (no tools/skills) would otherwise crash the
+ * editor on ``scope.tools.length``.  Only blocks that actually declare
+ * a scope are touched — a scope-less block stays scope-less (its
+ * default permissions are applied at execution time), so this never
+ * fabricates grants.  Returns a new tree; the input is not mutated.
+ */
+export const normalizeBlockTree = (block: Block): Block => {
+  const lifted = liftBlockModelFields(block);
+  const next: Block = { ...lifted };
+  if (next.scope != null) {
+    next.scope = normalizeTaskScope(next.scope);
+  }
+  if (next.body && next.body.length > 0) {
+    next.body = next.body.map(normalizeBlockTree);
+  }
+  return next;
+};
 
 export const makeTaskBlock = (name: string = 'New Task'): Block => ({
   block_type: 'task',
