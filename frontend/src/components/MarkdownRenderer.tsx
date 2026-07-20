@@ -122,6 +122,7 @@ const HunkScrollContainer: React.FC<{
 // by 2-4 seconds on average connections.
 const D3Renderer = lazyWithRetry(() => import('./D3Renderer').then(m => ({ default: m.D3Renderer })));
 const HTMLMockupRenderer = lazyWithRetry(() => import('./HTMLMockupRenderer').then(m => ({ default: m.HTMLMockupRenderer })));
+const SlidecastRenderer = lazyWithRetry(() => import('./SlidecastRenderer').then(m => ({ default: m.SlidecastRenderer })));
 
 // Global render queue — diagrams in a conversation register here and
 // wait their turn.  Processing one diagram at a time via requestIdleCallback
@@ -4061,7 +4062,7 @@ type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' |
     'd3' | 'mermaid' | 'plotly' | 'file-operation' | 'tool' |
     'joint' | 'jointjs' | 'code' | 'html' | 'text' | 'list' | 'table' | 'escape' | 'math' |
     'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' | 'packet' | 'drawio' | 'music' |
-    'circuitikz' | 'html-mockup' | 'delegate-tasks' | 'task-card' |
+    'circuitikz' | 'html-mockup' | 'delegate-tasks' | 'task-card' | 'slidecast' |
     'codespan' | 'strong' | 'em' | 'del' | 'link' | 'image' |
     'br' | 'list_item' |
     'unknown';
@@ -4150,6 +4151,10 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
 
         if (lang === 'drawio' || lang === 'draw.io') {
             return 'drawio';
+        }
+
+        if (lang === 'slidecast' || lang === 'slideshow' || lang === 'framechain') {
+            return 'slidecast';
         }
 
         // Check for HTML mockup blocks
@@ -4707,6 +4712,63 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             isStreaming={isStreaming}
                         />
                     );
+
+                case 'slidecast': {
+                    if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
+                    let slidecastSpec: any;
+                    try {
+                        slidecastSpec = JSON.parse(tokenWithText.text);
+                    } catch (err) {
+                        // Malformed JSON — degrade gracefully to a code block so
+                        // nothing is lost (mirrors the file-operation fallback).
+                        return <CodeBlock key={sk} token={{ ...tokenWithText, lang: 'json' }} index={index} />;
+                    }
+                    if (!slidecastSpec || !Array.isArray(slidecastSpec.frames) || slidecastSpec.frames.length === 0) {
+                        return <CodeBlock key={sk} token={{ ...tokenWithText, lang: 'json' }} index={index} />;
+                    }
+
+                    // Delegate each frame body back to the existing diagram
+                    // pipeline by synthesizing a token of the frame's type and
+                    // re-entering renderTokens. This reuses LazyD3Renderer for
+                    // every supported diagram type without duplicating specs.
+                    const renderFrame = (frame: any, frameKey: string): React.ReactNode => {
+                        const frameType = String(frame?.type || '').toLowerCase();
+                        const frameText = typeof frame?.spec === 'string' ? frame.spec : '';
+                        if (!frameText.trim()) return null;
+                        const frameToken: any = {
+                            type: frameType,
+                            lang: frameType,
+                            text: frameText,
+                            raw: frameText,
+                        };
+                        return (
+                            <React.Fragment key={frameKey}>
+                                {renderTokens([frameToken], enableCodeApply, isDarkMode, true, isStreaming, thinkingContentRef, onOpenShellConfig)}
+                            </React.Fragment>
+                        );
+                    };
+
+                    // Captions are full markdown: parse and re-enter renderTokens
+                    // so bold/tables/math/nested diagrams all work in narration.
+                    const renderCaption = (markdown: string): React.ReactNode => {
+                        try {
+                            const capTokens = marked.lexer(markdown);
+                            return renderTokens(capTokens as any, enableCodeApply, isDarkMode, true, isStreaming, thinkingContentRef, onOpenShellConfig);
+                        } catch {
+                            return <span>{markdown}</span>;
+                        }
+                    };
+
+                    return (
+                        <React.Suspense key={sk} fallback={<div style={{ padding: '1em', opacity: 0.5 }}>Loading slidecast…</div>}>
+                            <SlidecastRenderer
+                                spec={slidecastSpec}
+                                renderFrame={renderFrame}
+                                renderCaption={renderCaption}
+                            />
+                        </React.Suspense>
+                    );
+                }
 
                 case 'vega-lite':
                     if (!hasText(tokenWithText)) return null;
