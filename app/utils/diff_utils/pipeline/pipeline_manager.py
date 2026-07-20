@@ -194,7 +194,15 @@ def clean_duplicate_headers(diff_content: str) -> str:
         
         cleaned_lines.append(line)
     
-    return '\n'.join(cleaned_lines)
+    cleaned = '\n'.join(cleaned_lines)
+    # Preserve the input's trailing-newline property. splitlines()/join drops a
+    # trailing newline, which is load-bearing downstream: when a diff's final
+    # line is an addition replacing the file's last line, the OS patch binary
+    # reads a missing terminating newline as "no newline at end of file" and
+    # writes the target without its trailing newline, silently corrupting it.
+    if diff_content.endswith('\n') and cleaned and not cleaned.endswith('\n'):
+        cleaned += '\n'
+    return cleaned
 
 def _apply_diff_pipeline_locked(git_diff: str, file_path: str, request_id: Optional[str] = None, skip_already_applied_check: bool = False, user_codebase_dir: Optional[str] = None) -> Dict[str, Any]:
     """
@@ -412,6 +420,19 @@ def _apply_diff_pipeline_locked(git_diff: str, file_path: str, request_id: Optio
 
     # Parse the hunks to track
     try:
+        # Repair "idempotent additions": lines marked '+' that already exist in
+        # the target file, which offset a hunk's old-side and can cause silent
+        # misplacement when adjacent hunks are structurally similar. Runs before
+        # preprocess_diff so the repaired text flows through every stage.
+        # Conservative: only rewrites hunks that don't already match, and only
+        # when a single non-blank promotion yields a unique file match.
+        try:
+            from ..application.git_diff import _repair_idempotent_additions
+            git_diff = _repair_idempotent_additions(git_diff, file_path)
+            pipeline.current_diff = git_diff
+        except Exception as _rep_e:
+            logger.debug(f"idempotent-addition repair skipped: {_rep_e}")
+
         # Preprocess: fix additive-insert-instead-of-replace and wrong hunk counts
         preprocessed, additive_converted = preprocess_diff(git_diff)
         if preprocessed != git_diff:
