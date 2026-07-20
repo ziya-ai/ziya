@@ -135,6 +135,55 @@ function sanitizeSpec(obj: any): any {
   return obj;
 }
 
+// d3-format (used internally by Vega) only accepts `$` as its currency
+// placeholder. A literal symbol such as `£`, `€`, `¥` or `₹` in a format
+// string (e.g. "£,.0f") throws `invalid format: £,.0f`, which aborts the
+// Vega view build and surfaces downstream as the misleading
+// "Cannot read properties of undefined (reading 'marktype')" error.
+//
+// This walks the spec, rewrites the first-seen non-`$` currency symbol to
+// `$` in every `format` string, and returns that symbol so the caller can
+// install a matching d3 formatLocale (preserving the intended glyph in the
+// rendered output). Only string `format` values on objects that are NOT
+// declared as time/date formats are rewritten.
+export const CURRENCY_SYMBOL_RE = /[£€¥₹₩₪₫฿]/;
+export const rewriteCurrencyFormats = (node: any): string | null => {
+  let detected: string | null = null;
+  const walk = (obj: any): void => {
+    if (!obj || typeof obj !== 'object') return;
+    if (Array.isArray(obj)) {
+      obj.forEach(walk);
+      return;
+    }
+    if (typeof obj.format === 'string' && obj.formatType !== 'time' &&
+        obj.formatType !== 'utc') {
+      const m = obj.format.match(CURRENCY_SYMBOL_RE);
+      if (m) {
+        const symbol = m[0];
+        if (!detected) detected = symbol;
+        // Replace the detected symbol with the d3 currency placeholder.
+        obj.format = obj.format.split(symbol).join('$');
+      }
+    }
+    for (const key in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, key)) {
+        walk(obj[key]);
+      }
+    }
+  };
+  walk(node);
+  return detected;
+};
+
+// Build a complete en-US-style d3 format locale whose currency prefix is the
+// supplied symbol, so "$,.0f" renders as e.g. "£19,790".
+export const buildCurrencyLocale = (symbol: string): Record<string, unknown> => ({
+  decimal: '.',
+  thousands: ',',
+  grouping: [3],
+  currency: [symbol, ''],
+});
+
 // SSRF hardening (PenPal #83): recursively remove any `data.url` from a
 // spec before it reaches vegaEmbed, at every nesting level (top-level,
 // layer[], vconcat/hconcat/concat[], facet spec, named datasets). A
@@ -4543,6 +4592,14 @@ export const vegaLitePlugin: D3RenderPlugin = {
         delete vegaSpec.spec.resolve;
       }
 
+      // Rewrite literal currency symbols (£, €, ¥, …) in format strings to the
+      // d3 currency placeholder `$`, capturing the symbol so we can restore it
+      // via a matching formatLocale below. Prevents "invalid format" crashes.
+      const currencySymbol = rewriteCurrencyFormats(vegaSpec);
+      if (currencySymbol) {
+        console.log(`🔧 VEGA-POST-PROCESS: Rewrote currency symbol "${currencySymbol}" in format strings to "$" and installing matching formatLocale`);
+      }
+
       // Apply theme
       const embedOptions: EmbedOptions = {
         actions: false,
@@ -4551,6 +4608,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
         scaleFactor: 1,
         // SSRF hardening (PenPal #83): refuse all external data fetches.
         loader: await getRestrictedVegaLoader(),
+        ...(currencySymbol && { formatLocale: buildCurrencyLocale(currencySymbol) }),
         // Don't override width/height in embed options if they're set in the spec
         ...((!vegaSpec.width || vegaSpec.width === 0) && { width: availableWidth }),
         ...((!vegaSpec.height || vegaSpec.height === 0) && { height: availableHeight * 0.6 }),
