@@ -88,6 +88,15 @@ def preprocess_diff(diff_text: str, original_file_lines: Optional[List[str]] = N
     diff_text = _synthesize_missing_hunk_headers(diff_text)
     result, converted = _additive_to_replace(diff_text, original_file_lines)
     result = _recount_hunks(result)
+    # The passes above reconstruct the diff via "\n".join(...), which drops a
+    # trailing newline the input may have had. That newline is load-bearing:
+    # when the diff's final line is an addition replacing the file's last line,
+    # the OS patch binary interprets a missing terminating newline as
+    # "no newline at end of file" and writes the target without its trailing
+    # newline, silently corrupting the result. Preserve the input's
+    # trailing-newline property so downstream stages see a faithful diff.
+    if diff_text.endswith('\n') and result and not result.endswith('\n'):
+        result += '\n'
     return result, converted
 
 
