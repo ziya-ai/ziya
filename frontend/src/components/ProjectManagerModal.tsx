@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Modal, Button, Input, Tag, Space, message, Divider, Alert, Collapse, Empty, Popconfirm, Select, Tooltip, List, Radio } from 'antd';
+import { Modal, Button, Input, InputNumber, Tag, Space, message, Divider, Alert, Collapse, Empty, Popconfirm, Select, Tooltip, List, Radio } from 'antd';
 import {
     DeleteOutlined, SettingOutlined, MergeCellsOutlined,
     EditOutlined, CheckOutlined, CloseOutlined,
@@ -10,6 +10,7 @@ import { useProject } from '../context/ProjectContext';
 import { useTheme } from '../context/ThemeContext';
 import { useActiveChat } from '../context/ActiveChatContext';
 import { WritePolicy, ContextManagementSettings } from '../types/project';
+import { DEFAULT_AUTO_ADD_TOKEN_LIMIT } from '../utils/autoAddTokenLimit';
 
 const { Panel } = Collapse;
 
@@ -467,6 +468,26 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
                                 Disabled
                             </Radio.Button>
                         </Radio.Group>
+                    </div>
+
+                    <div>
+                        <strong>Auto-add token limit per file</strong>
+                        <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+                            Files larger than this token count are never auto-added to context
+                            (you can still add them manually). Set to 0 for no limit.
+                        </div>
+                        <InputNumber
+                            min={0}
+                            step={1000}
+                            style={{ width: 180 }}
+                            value={contextManagement.auto_add_token_limit ?? DEFAULT_AUTO_ADD_TOKEN_LIMIT}
+                            onChange={v => setContextManagement(prev => ({
+                                ...prev,
+                                auto_add_token_limit: typeof v === 'number' ? v : DEFAULT_AUTO_ADD_TOKEN_LIMIT
+                            }))}
+                            disabled={contextManagement.auto_add_diff_files === false}
+                            addonAfter="tokens"
+                        />
                     </div>
 
                     <Divider style={{ margin: '8px 0' }} />

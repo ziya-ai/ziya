@@ -15,6 +15,9 @@ class WritePolicy(BaseModel):
 class ContextManagementSettings(BaseModel):
     """Per-project automatic context management settings."""
     auto_add_diff_files: bool = True
+    # Per-file token cap for automatically added context files.
+    # Files larger than this are never auto-added.  0 disables the limit.
+    auto_add_token_limit: int = 35000
 
 class ProjectSettings(BaseModel):
     defaultContextIds: List[str] = []

@@ -8,6 +8,7 @@ import { useConfig } from "./ConfigContext";
 import { useProject } from "./ProjectContext";
 import { fetchDefaultIncludedFolders } from "../apis/folderApi";
 import { getTabState, setTabState } from '../utils/tabState';
+import { filterByAutoAddTokenLimit, DEFAULT_AUTO_ADD_TOKEN_LIMIT } from '../utils/autoAddTokenLimit';
 
 // convertToTreeData does a full recursive rebuild of the whole folder tree.
 // Calling it synchronously (as part of a setState) competes directly with
@@ -82,7 +83,7 @@ export interface FolderContextType {
   scanError: string | null;
   getFolderTokenCount: (path: string, folderData: Folders) => number;
   accurateTokenCounts: Record<string, { count: number; timestamp: number }>;
-  addFilesToContext: (filePaths: string[], options?: { isAutoAdd?: boolean }) => Promise<void>;
+  addFilesToContext: (filePaths: string[], options?: { isAutoAdd?: boolean }) => Promise<string[]>;
   autoAddedFiles: Set<string>;
   removeAutoAddedFiles: () => { removedCount: number; tokensRecovered: number };
 }
@@ -142,6 +143,9 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const accurateCountTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const lastProcessedSelectionRef = useRef<string>('');
   const accurateTokenCountsRef = useRef(accurateTokenCounts);
+  // Ref-mirror of folders for stable closures (addFilesToContext token-limit check)
+  const foldersRef = useRef(folders);
+  foldersRef.current = folders;
   const fileTreeWsRef = useRef<WebSocket | null>(null);
   const externalRefetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -1073,7 +1077,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   }, []);
 
   // Function to programmatically add files to context
-  const addFilesToContext = useCallback(async (filePaths: string[], options?: { isAutoAdd?: boolean }) => {
+  const addFilesToContext = useCallback(async (filePaths: string[], options?: { isAutoAdd?: boolean }): Promise<string[]> => {
     try {
       // Validate paths before adding — extractAllFilesFromDiff can produce garbage
       // paths from malformed diff content (e.g. code fragments concatenated with filenames)
@@ -1083,15 +1087,36 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         if (/[)(;{}!@#$%^&*+=<>?\s]/.test(p)) return false;
         return true;
       });
-      if (validPaths.length === 0) return;
+      if (validPaths.length === 0) return [];
       if (validPaths.length !== filePaths.length) {
         console.warn('📁 CONTEXT: Rejected invalid paths:', filePaths.filter(p => !validPaths.includes(p)));
       }
       console.log('📁 CONTEXT: Adding files to context:', validPaths);
 
+      // Enforce the per-file token limit for auto-added files.  Files the
+      // user selects manually are never filtered.
+      let pathsToAdd = validPaths;
+      if (options?.isAutoAdd) {
+        const limit = currentProjectRef.current?.settings?.contextManagement?.auto_add_token_limit
+          ?? DEFAULT_AUTO_ADD_TOKEN_LIMIT;
+        const { allowed, skipped } = filterByAutoAddTokenLimit(validPaths, limit, (p) => {
+          const accurate = accurateTokenCountsRef.current[p]?.count;
+          if (accurate && accurate > 0) return accurate;
+          return getFolderTokenCount(p, foldersRef.current);
+        });
+        if (skipped.length > 0) {
+          console.warn(
+            '📁 CONTEXT: Skipped ' + skipped.length + ' auto-add file(s) over the ' + limit + '-token limit:',
+            skipped.map(s => s.path + ' (~' + s.tokens + ' tokens)')
+          );
+        }
+        pathsToAdd = allowed;
+        if (pathsToAdd.length === 0) return [];
+      }
+
       // Add files to checked keys using the existing pattern
       setCheckedKeys(prev => {
-        const newKeys = [...prev, ...validPaths.filter(file => !prev.includes(file))];
+        const newKeys = [...prev, ...pathsToAdd.filter(file => !prev.includes(file))];
         console.log('📁 CONTEXT: Updated checked keys:', newKeys);
 
         // Save to localStorage immediately to persist the change
@@ -1104,18 +1129,19 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       if (options?.isAutoAdd) {
         setAutoAddedFiles(prev => {
           const next = new Set(prev);
-          validPaths.forEach(p => next.add(p));
+          pathsToAdd.forEach(p => next.add(p));
           setTabState('ZIYA_AUTO_ADDED_FILES', JSON.stringify([...next]));
           return next;
         });
       }
 
       console.log('📁 CONTEXT: Files added to context successfully');
+      return pathsToAdd;
     } catch (error) {
       console.error('Error adding files to context:', error);
       throw error;
     }
-  }, [setCheckedKeys]);
+  }, [setCheckedKeys, getFolderTokenCount]);
 
   // Remove all auto-added files from context and return stats
   const removeAutoAddedFiles = useCallback((): { removedCount: number; tokensRecovered: number } => {
@@ -1216,7 +1242,7 @@ export const useFolderContext = () => {
       scanError: null,
       getFolderTokenCount: () => 0,
       accurateTokenCounts: {} as Record<string, { count: number; timestamp: number }>,
-      addFilesToContext: async () => { },
+      addFilesToContext: async () => [],
       autoAddedFiles: new Set<string>(),
       removeAutoAddedFiles: () => ({ removedCount: 0, tokensRecovered: 0 }),
     };

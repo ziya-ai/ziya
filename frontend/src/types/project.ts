@@ -15,6 +15,8 @@ export interface WritePolicy {
 export interface ContextManagementSettings {
   /** Automatically add files referenced in diffs to the active context */
   auto_add_diff_files?: boolean;
+  /** Per-file token cap for auto-added files (0 = no limit). Default 35000. */
+  auto_add_token_limit?: number;
 }
 
 export interface ProjectSettings {
