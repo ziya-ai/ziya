@@ -600,7 +600,15 @@ class DiffRegressionTest(unittest.TestCase):
     def test_MRE_missing_newline_at_eof(self):
         """Test handling of missing newline at end of file"""
         self.run_diff_test('MRE_missing_newline_at_eof')
-        
+
+    def test_MRE_escaped_backtick_context_mismatch(self):
+        """LLM-escaped backticks in added lines + double-escaped runs in
+        context lines: the unescape preserve-guard fires on the doubles,
+        context stops matching the real file, and the fuzzy fallback
+        misplaces the hunk into duplicated/invalid code while reporting
+        success. See metadata.json for the 2026-07-19 real-world case."""
+        self.run_diff_test('MRE_escaped_backtick_context_mismatch')
+
     def test_MRE_mixed_line_endings(self):
         """Test handling of mixed line endings"""
         self.run_diff_test('MRE_mixed_line_endings')
