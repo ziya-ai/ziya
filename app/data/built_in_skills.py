@@ -282,9 +282,10 @@ other block (except Task and State, which are leaves with no body).
   "name": "Generate a random spec",
   "instructions": "Emit a random but plausible packet-diagram JSON spec.",
   "scope": {
-    "files": ["app/services/diagram_renderer.py"],
+    "paths": [{"path": "app/services/diagram_renderer.py", "read": true}],
     "tools": ["render_diagram"],
-    "skills": []
+    "skills": [],
+    "model_tier": "small"
   }
 }
 ```
@@ -452,6 +453,12 @@ sets its own:
   available model, so it never silently under-serves a task. `model_name`
   / `model_id_override` pin a SPECIFIC model instead — an escape hatch
   that is not portable across endpoints, so prefer `model_tier`.
+  PLACEMENT: model_tier and the model_name / model_id_override /
+  model_endpoint fields live INSIDE this scope object — never at the
+  block's top level. A model_tier placed on the block itself (a sibling
+  of "scope") is silently ignored and the block runs on the inherited
+  model. The same holds for container blocks: a container's tier goes in
+  the container's own scope.
 Omit `scope` entirely for a task that needs only its default (safe,
 read-mostly) permissions — most tasks don't need to set this.
 
