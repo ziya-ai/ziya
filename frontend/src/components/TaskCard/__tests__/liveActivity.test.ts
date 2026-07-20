@@ -33,7 +33,7 @@ describe('formatLastActivity', () => {
 
 // Minimal harness: run accumulateLive's functional updater against a
 // plain previous state, mirroring accumulateLive.test.ts conventions.
-const EMPTY: LiveTaskState = { text: {}, toolCalls: [], events: [], iterations: [], variables: {} };
+const EMPTY: LiveTaskState = { text: {}, toolCalls: [], events: [], iterations: [], variables: {}, blockStatuses: {} };
 function apply(prev: LiveTaskState, evt: unknown): LiveTaskState {
   let out = prev;
   const setLive = (f: any) => { out = typeof f === 'function' ? f(prev) : f; };
