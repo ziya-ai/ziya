@@ -3253,9 +3253,13 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded 
                     const currentFiles = Array.from(checkedKeys).map(String);
                     const response = checkFilesInContext(referencedFiles, currentFiles);
                     if (response.missingFiles.length > 0) {
-                        await addFilesToContext(response.missingFiles, { isAutoAdd: true });
-                        setMissingFilesList(response.missingFiles);
-                        setNeedsContextEnhancement(true);
+                        // Reflect only the files actually added — the token-limit
+                        // filter may drop some, and the overlay must not name those.
+                        const added = await addFilesToContext(response.missingFiles, { isAutoAdd: true });
+                        if (added.length > 0) {
+                            setMissingFilesList(added);
+                            setNeedsContextEnhancement(true);
+                        }
                     }
                 }
             };
@@ -3300,12 +3304,15 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded 
 
                 if (missingFiles.length > 0) {
 
-                    // Add files to context using the proper context method
-                    await addFilesToContext(missingFiles, { isAutoAdd: true });
+                    // Add files to context; the token-limit filter may drop
+                    // oversized ones, so the overlay reflects what was actually added.
+                    const added = await addFilesToContext(missingFiles, { isAutoAdd: true });
 
                     // Instead of interrupting, show enhancement overlay
-                    setMissingFilesList(missingFiles);
-                    setNeedsContextEnhancement(true);
+                    if (added.length > 0) {
+                        setMissingFilesList(added);
+                        setNeedsContextEnhancement(true);
+                    }
                 } else {
                     console.log('🔄 CONTEXT_ENHANCEMENT: No missing files found, all referenced files are already in context');
                 }
