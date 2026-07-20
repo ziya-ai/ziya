@@ -66,6 +66,7 @@ from app.api import projects, contexts, skills, chats, tokens, task_cards, task_
 from app.api import delegates as delegates_api
 from app.api import memory as memory_api
 from app.api import beads as beads_api
+from app.api import backlog as backlog_api
 from app.api import commands as commands_api
 from app.utils.paths import get_ziya_home
 from app.utils.logging_utils import logger as app_logger
@@ -1324,6 +1325,7 @@ app.include_router(tokens.router)
 app.include_router(delegates_api.router)
 app.include_router(memory_api.router)
 app.include_router(beads_api.router)
+app.include_router(backlog_api.router)
 app.include_router(task_cards.router)
 app.include_router(task_runs.router)
 app.include_router(task_bindings.router)
