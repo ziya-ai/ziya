@@ -10,10 +10,11 @@ import {
   type PacketSpec, type PacketSection, type PacketBracket,
   type LayoutConfig,
   computeDimensions, defaultLayout, resolveColor,
-  assignBracketDepths, escapeXml,
+  assignBracketDepths, escapeXml, computeBracketGutters, fitFieldLabel,
   normalizePacketSpec,
 } from '../../utils/d3Plugins/packetPlugin';
 import { getOptimalTextColor } from '../../utils/colorUtils';
+import { getZoomScript, getDownloadSvgScript } from '../../utils/popupScriptUtils';
 
 function renderError(container: HTMLElement, message: string, rawSpec: any, isDarkMode: boolean): void {
   const specStr = typeof rawSpec === 'string' ? rawSpec
@@ -76,18 +77,13 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
   const { width, height, layout: L } = computeDimensions(pkt);
   const GRID_W = bits * L.BIT_W;
 
-  // Compute bracket space on each side
-  let maxLeftDepth = 0, maxRightDepth = 0;
-  for (const sec of pkt.sections) {
-    for (const br of sec.brackets ?? []) {
-      const side = br.side ?? 'right';
-      const d = (br.depth ?? 0) + 1;
-      if (side === 'left') maxLeftDepth = Math.max(maxLeftDepth, d);
-      else maxRightDepth = Math.max(maxRightDepth, d);
-    }
-  }
-  const bracketLeftW = maxLeftDepth * L.BRACKET_W;
-  const gridX = L.LEFT_PAD + bracketLeftW + L.LABEL_W;
+  // Bracket gutters + side-placement decision — shared with computeDimensions
+  // so gridX and the SVG width agree. When no section uses right-side
+  // brackets, left brackets flip to the free right side (all-or-nothing
+  // across sections so alignment is preserved); otherwise they stay left,
+  // hugging the widest section label instead of the outer gutter edge.
+  const gutters = computeBracketGutters(pkt.sections, L);
+  const gridX = L.LEFT_PAD + gutters.left + L.LABEL_W;
 
   container.innerHTML = '';
   const svg = d3.select(container).append('svg')
@@ -164,8 +160,10 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
         .text(ln);
     });
 
-    // Brackets — auto-assign depths per side, then render
-    const allBrackets = sec.brackets ?? [];
+    // Brackets — flip left brackets to the free right side when the layout
+    // decision says so, then auto-assign depths per side and render.
+    const allBrackets = (sec.brackets ?? []).map(b =>
+      gutters.flipLeftToRight ? { ...b, side: 'right' as const } : b);
     const rightBrackets = assignBracketDepths(allBrackets, 'right');
     const leftBrackets  = assignBracketDepths(allBrackets, 'left');
 
@@ -211,7 +209,9 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
         if (side === 'right') {
           bx = gridX + GRID_W + offset;
         } else {
-          bx = gridX - L.LABEL_W + L.LABEL_W - offset - 12;
+          // Hug the widest section label (labels end at gridX - 8) rather
+          // than sitting at the outer edge of the reserved gutter.
+          bx = gridX - 16 - gutters.maxLabelW - offset;
         }
 
         // Bracket line
@@ -281,12 +281,16 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
         if (fw >= 20 && name) {
           // Use getOptimalTextColor against actual bg for accessibility
           const labelColor = getOptimalTextColor(c.bg);
+          // Scale the font to fit the cell (mirrors bracket-label scaling);
+          // truncate with an ellipsis only when even the minimum size cannot
+          // fit. The tooltip below always carries the full name.
+          const { fontSize, label } = fitFieldLabel(name, fw);
           g.append('text')
             .attr('x', fx + fw / 2).attr('y', ry + L.ROW_H / 2)
             .attr('text-anchor', 'middle').attr('dominant-baseline', 'central')
             .attr('fill', labelColor)
-            .style('font', 'bold 11px "Segoe UI", Arial, sans-serif')
-            .text(name);
+            .style('font', 'bold ' + fontSize + 'px "Segoe UI", Arial, sans-serif')
+            .text(label);
         }
 
         // Tooltip
@@ -300,11 +304,144 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
       });
     });
 
-    y += secH + L.SECTION_GAP;
+    // No gap after the final section — computeDimensions reserves only
+    // (numSections - 1) gaps, so a trailing one misplaced the bottom ruler.
+    y += secH + (sectionIdx < pkt.sections.length - 1 ? L.SECTION_GAP : 0);
   });
 
   // Bottom ruler
   drawRuler(y);
+
+  // ── Interactive controls (source toggle + export), matching other plugins ──
+  const svgNode = svg.node() as SVGSVGElement;
+  const sourceStr = typeof rawSpec === 'string' ? rawSpec
+    : typeof rawSpec?.definition === 'string' ? rawSpec.definition
+    : JSON.stringify(rawSpec, null, 2);
+
+  const actionsContainer = document.createElement('div');
+  actionsContainer.className = 'diagram-actions';
+
+  // Open: pop the diagram out into a standalone, zoomable window.
+  const openButton = document.createElement('button');
+  openButton.innerHTML = '↗️ Open';
+  openButton.className = 'diagram-action-button packet-open-button';
+  openButton.onclick = () => {
+    const svgData = new XMLSerializer().serializeToString(svgNode);
+    const winW = Math.max(width + 50, 400);
+    const winH = Math.max(height + 100, 300);
+    const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Packet Diagram</title>
+  <style>
+    body { margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh;
+      background-color: ${isDarkMode ? '#1e1e1e' : '#f8f9fa'};
+      font-family: system-ui, -apple-system, sans-serif; }
+    .toolbar { background-color: ${isDarkMode ? '#343a40' : '#f1f3f5'};
+      border-bottom: 1px solid ${isDarkMode ? '#495057' : '#dee2e6'};
+      padding: 8px; display: flex; justify-content: space-between; align-items: center; }
+    .toolbar button { background-color: #4361ee; color: white; border: none; border-radius: 4px;
+      padding: 6px 12px; cursor: pointer; margin-right: 8px; font-size: 14px; }
+    .toolbar button:hover { background-color: #3a0ca3; }
+    .container { flex: 1; display: flex; justify-content: center; align-items: center;
+      overflow: auto; padding: 20px; }
+    svg { max-width: 100%; max-height: 100%; height: auto; width: auto; }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <div>
+      <button onclick="zoomIn()">Zoom In</button>
+      <button onclick="zoomOut()">Zoom Out</button>
+      <button onclick="resetZoom()">Reset</button>
+    </div>
+    <div><button onclick="downloadSvg()">Download SVG</button></div>
+  </div>
+  <div class="container" id="svg-container">${svgData}</div>
+  <script>
+    document.querySelector('svg').setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    ${getZoomScript()}${getDownloadSvgScript(`packet-diagram-${Date.now()}.svg`)}
+  </script>
+</body>
+</html>`;
+    const blob = new Blob([htmlContent], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    const popupWindow = window.open(
+      url, 'PacketDiagram',
+      `width=${winW},height=${winH},resizable=yes,scrollbars=yes,status=no,toolbar=no,menubar=no,location=no`
+    );
+    if (popupWindow) popupWindow.focus();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  };
+  actionsContainer.appendChild(openButton);
+
+  // Source toggle: swap the rendered SVG for its raw definition and back.
+  let showingSource = false;
+  const sourcePre = document.createElement('pre');
+  sourcePre.style.cssText = `
+    display: none;
+    margin: 0;
+    padding: 16px;
+    background: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'};
+    border: 1px solid ${isDarkMode ? '#303030' : '#e1e4e8'};
+    border-radius: 6px;
+    color: ${isDarkMode ? '#e6e6e6' : '#24292e'};
+    font: 13px Monaco, Menlo, "Ubuntu Mono", monospace;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 500px;
+    overflow: auto;
+    width: 100%;
+    box-sizing: border-box;
+  `;
+  sourcePre.innerHTML = `<code>${escapeXml(sourceStr)}</code>`;
+  container.appendChild(sourcePre);
+
+  const sourceButton = document.createElement('button');
+  sourceButton.innerHTML = '📝 Source';
+  sourceButton.className = 'diagram-action-button packet-source-button';
+  sourceButton.onclick = () => {
+    showingSource = !showingSource;
+    sourceButton.innerHTML = showingSource ? '🎨 View' : '📝 Source';
+    svgNode.style.display = showingSource ? 'none' : '';
+    sourcePre.style.display = showingSource ? 'block' : 'none';
+  };
+  actionsContainer.appendChild(sourceButton);
+
+  // Save / export the rendered diagram as a standalone SVG file.
+  const saveButton = document.createElement('button');
+  saveButton.innerHTML = '💾 Save';
+  saveButton.className = 'diagram-action-button packet-save-button';
+  saveButton.onclick = () => {
+    const svgData = new XMLSerializer().serializeToString(svgNode);
+    const svgDoc = `<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+${svgData}`;
+    const blob = new Blob([svgDoc], { type: 'image/svg+xml' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `packet-diagram-${Date.now()}.svg`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+  actionsContainer.appendChild(saveButton);
+
+  // Theme: re-render the diagram with the opposite light/dark mode.
+  const themeButton = document.createElement('button');
+  themeButton.innerHTML = isDarkMode ? '☀️ Light' : '🌙 Dark';
+  themeButton.className = 'diagram-action-button packet-theme-button';
+  themeButton.onclick = () => {
+    render(container, d3, rawSpec, !isDarkMode);
+  };
+  actionsContainer.appendChild(themeButton);
+
+  container.appendChild(actionsContainer);
 }
 
 export const packetPlugin: D3RenderPlugin = {
