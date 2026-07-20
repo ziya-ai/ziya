@@ -403,8 +403,6 @@ def add_directory_to_folder_cache(rel_path: str, full_path: str, is_inside_works
                 return {'children': {}, 'token_count': 0}
             if real_dir in _scan_visited:
                 return {'children': {}, 'token_count': 0}
-            if real_dir.startswith(real_codebase + os.sep) or real_dir == real_codebase:
-                return {'children': {}, 'token_count': 0}
             _scan_visited.add(real_dir)
             result = {'children': {}, 'token_count': 0}
             total_tokens = 0
