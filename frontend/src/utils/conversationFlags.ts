@@ -27,6 +27,7 @@ export const CONVERSATION_FLAG_LABELS: ConversationFlagLabelDef[] = [
   { id: 'needs-review', label: 'Needs Review', emoji: '👀' },
   { id: 'follow-up', label: 'Follow Up', emoji: '📌' },
   { id: 'question', label: 'Has Open Question', emoji: '❓' },
+  { id: 'complete', label: 'Complete', emoji: '✅' },
 ];
 
 export interface ConversationFlagColorDef {
