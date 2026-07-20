@@ -42,38 +42,80 @@ type QueueEntry = { priority: number; task: () => void; scheduledAt: number; lab
 let __messageQueueSeq = 0;
 const __messageRenderQueue: QueueEntry[] = [];
 let __messageQueueProcessing = false;
-const __rIC: (cb: () => void, opts?: { timeout: number }) => number =
+const __rIC: (cb: (deadline?: IdleDeadline) => void, opts?: { timeout: number }) => number =
     (window as any).requestIdleCallback
         ? (window as any).requestIdleCallback.bind(window)
-        : ((cb: () => void) => window.setTimeout(cb, 16) as unknown as number);
+        : ((cb: (deadline?: IdleDeadline) => void) => window.setTimeout(cb, 16) as unknown as number);
 const __processMessageQueue = () => {
     if (__messageQueueProcessing) return;
     if (__messageRenderQueue.length === 0) return;
+    // Pause idle mounting while the tab is backgrounded. Everything in this
+    // queue is a SETTLED message (live streaming renders through
+    // StreamedContent.tsx, not this path), so these mounts are pure idle work
+    // the user cannot see. Running them while hidden burns CPU and allocates
+    // renderer memory for offscreen content, and — because requestIdleCallback
+    // is paused while hidden — is what produces the "barrage on refocus" drain.
+    // We resume on the visibilitychange listener below. Streaming is
+    // unaffected: it never enters this queue.
+    if (typeof document !== 'undefined' && document.hidden) return;
     __messageQueueProcessing = true;
-    __rIC(() => {
+    __rIC((deadline?: IdleDeadline) => {
         __messageRenderQueue.sort((a, b) => b.priority - a.priority);
-        const entry = __messageRenderQueue.shift();
         __messageQueueProcessing = false;
-        if (entry) {
+
+        // Drain a batch, not a single entry. When the tab is backgrounded,
+        // requestIdleCallback is paused, so entries pile up unmounted; on
+        // refocus a one-per-callback drain trickles hundreds of mounts out
+        // over tens of seconds AND emits one console line each — the
+        // "barrage on return" symptom. Draining within the idle deadline
+        // clears the backlog in a few frames; a single summary line per
+        // batch keeps the diagnostic without flooding the console.
+        const hasDeadline = !!deadline && typeof deadline.timeRemaining === 'function';
+        let processed = 0;
+        let slowCount = 0;
+        let maxWaitMs = 0;
+        while (__messageRenderQueue.length > 0) {
+            // Always do at least one; then stop when out of idle budget so a
+            // heavy mount can't overrun the frame. Fallback path (no rIC)
+            // caps the batch so setTimeout can't hog the main thread.
+            if (processed > 0 && hasDeadline && deadline!.timeRemaining() < 4) break;
+            if (processed > 0 && !hasDeadline && processed >= 5) break;
+            const entry = __messageRenderQueue.shift()!;
             const waitMs = performance.now() - entry.scheduledAt;
-            // A large wait here with FolderContext TREE_IDLE entries logged
-            // in the same window means a folder-tree rebuild is winning the
-            // idle-time race against this markdown mount — that's the
-            // "conversation text frozen during scan" bug class.
-            if (waitMs > 500) {
-                console.warn(`📝 MSG_QUEUE[${entry.label}] waited ${waitMs.toFixed(0)}ms for an idle slot — check FolderContext TREE_IDLE logs for contention in this window`);
-            } else {
-                console.log(`📝 MSG_QUEUE[${entry.label}] ran after wait=${waitMs.toFixed(0)}ms`);
-            }
+            if (waitMs > 500) { slowCount++; if (waitMs > maxWaitMs) maxWaitMs = waitMs; }
             try { entry.task(); } catch (e) { console.warn('deferred markdown render threw:', e); }
+            processed++;
         }
-        // Yield to scroll/input between mounts.  Without this delay the queue
-        // self-reschedules immediately and rIC fires back-to-back, blocking
-        // the main thread for hundreds of ms across consecutive heavy mounts.
-        // setTimeout yields a macrotask so any queued events run first.
-        if (__messageRenderQueue.length > 0) setTimeout(__processMessageQueue, 50);
+
+        // A large slowCount/maxWait with FolderContext TREE_IDLE entries in
+        // the same window means a folder-tree rebuild is winning the
+        // idle-time race — the "conversation text frozen during scan" class.
+        // A large backlog right after a refocus is expected (queue built up
+        // while the tab was hidden).
+        if (slowCount > 0) {
+            console.warn(`📝 MSG_QUEUE: mounted ${processed} deferred message(s), ${slowCount} waited >500ms (max ${maxWaitMs.toFixed(0)}ms) — check FolderContext TREE_IDLE logs for contention in this window`);
+        }
+
+        // Yield a macrotask between batches so queued scroll/input events run
+        // before the next idle slot.
+        // Don't self-reschedule while hidden — the visibilitychange listener
+        // resumes the drain on refocus, so we don't spin throttled timers or
+        // mount offscreen content the user can't see.
+        if (__messageRenderQueue.length > 0 &&
+            !(typeof document !== 'undefined' && document.hidden)) {
+            setTimeout(__processMessageQueue, 50);
+        }
     }, { timeout: 500 });
 };
+
+// Resume draining the moment the tab becomes visible again. Combined with the
+// batch-drain above, a backlog accumulated while hidden clears in a few frames
+// on refocus instead of trickling out one-per-idle-callback.
+if (typeof document !== 'undefined') {
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) __processMessageQueue();
+    });
+}
 
 // Small messages aren't worth the observer + queue overhead — render them
 // directly.  Threshold picked empirically; below this size the MarkdownRenderer
