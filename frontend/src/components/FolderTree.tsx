@@ -21,6 +21,9 @@ import AddCommentIcon from '@mui/icons-material/AddComment';
 import IconButton from '@mui/material/IconButton';
 import Tooltip from '@mui/material/Tooltip';
 
+// Lazy — bead backlog browser sidebar tab (see design/bead-backlog-browser.md)
+const BacklogBrowser = lazy(() => import('./BacklogBrowser'));
+
 interface FolderTreeProps {
     isPanelCollapsed: boolean;
 }
@@ -52,6 +55,9 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     const [showActionButtons, setShowActionButtons] = useState(true);
     const panelRef = useRef<HTMLDivElement>(null);
     const [activeTab, setActiveTab] = useState(() => localStorage.getItem(ACTIVE_TAB_KEY) || '1');
+    // Lazy parked-count badge — populated when BacklogBrowser first fetches
+    // and broadcasts BACKLOG_COUNT_EVENT ('ziya:backlog-count').
+    const [backlogCount, setBacklogCount] = useState(0);
 
     // Progressive collapse logic for tabs
     // Priority: Chats (3) > Files (1) > Contexts (2)
@@ -132,6 +138,16 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     useEffect(() => {
         localStorage.setItem(ACTIVE_TAB_KEY, activeTab);
     }, [activeTab]);
+
+    // Listen for the backlog's parked-count broadcast to drive the tab badge.
+    useEffect(() => {
+        const handler = (e: Event) => {
+            const detail = (e as CustomEvent).detail;
+            if (detail && typeof detail.count === 'number') setBacklogCount(detail.count);
+        };
+        window.addEventListener('ziya:backlog-count', handler);
+        return () => window.removeEventListener('ziya:backlog-count', handler);
+    }, []);
 
     // Update model info when it changes
     const updateModelInfo = useCallback(async () => {
@@ -271,6 +287,32 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                                         <ActiveContextBar />
                                         <MUIChatHistory />
                                     </>
+                                )}
+                            </div>
+                        )
+                    },
+                    {
+                        key: '4',
+                        label: (
+                            <span style={{ display: 'flex', alignItems: 'center', whiteSpace: 'nowrap', gap: getTabDisplayMode('4') === 'full' ? 6 : 0 }}>
+                                <span style={{ fontSize: 16 }}>📋</span>
+                                {getTabDisplayMode('4') === 'full' && <span>Backlog</span>}
+                                {backlogCount > 0 && (
+                                    <span style={{ background: '#2dd4bf', color: '#111', borderRadius: 8, padding: '0 6px', fontSize: 11, marginLeft: getTabDisplayMode('4') === 'full' ? 4 : 2 }}>{backlogCount}</span>
+                                )}
+                            </span>
+                        ),
+                        children: (
+                            <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                                {isSwitchingProject ? (
+                                    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%', flexDirection: 'column', gap: 12, opacity: 0.7 }}>
+                                        <Spin size="large" />
+                                        <span style={{ fontSize: 13 }}>{switchingLabel}</span>
+                                    </div>
+                                ) : (
+                                    <Suspense fallback={<div style={{ display: 'flex', justifyContent: 'center', padding: 20 }}><Spin /></div>}>
+                                        <BacklogBrowser />
+                                    </Suspense>
                                 )}
                             </div>
                         )

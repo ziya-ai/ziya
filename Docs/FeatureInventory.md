@@ -73,7 +73,12 @@ See `design/work-primitives-taxonomy.md` for the full rationale.
 | **Memory** | cross-session | *settled* — durable knowledge (facts, decisions, vocabulary, lessons) | user-owned, reviewable | shipped |
 
 - **Beads** are conversational debt the agent maintains silently to avoid
-  dropping threads; they live and die with the conversation.
+  dropping threads; they live and die with the conversation. The **Backlog
+  Browser** (sidebar tab) sweeps parked beads across every conversation in the
+  project — grouped-by-conversation or flat age-sorted views, staleness
+  indicators (amber ≥ 7 days, warning ≥ 14 days), and per-bead triage actions:
+  peek (context without opening), jump to the seam message, resume, branch,
+  and undoable abandon/restore.
 - **Work items** (planned) are a standalone, conversation-scoped queue of committed
   work — distinct from Task Cards (§2a), which are an *execution engine*, not a
   lightweight agreed-work record. Mirrors the standalone task queue pattern
