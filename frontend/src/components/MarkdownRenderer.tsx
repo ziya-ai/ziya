@@ -6126,7 +6126,9 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // Fix: Code fence directly concatenated to text with no newline at all
             // e.g. "some text:```vega-lite" → "some text:\n\n```vega-lite"
             // LLMs sometimes omit the newline before a code fence entirely
-            processedMarkdown = processedMarkdown.replace(/([^\n\`])(\`{3,}[a-zA-Z][a-zA-Z0-9_-]*)(?=\s|$)/g, '$1\n\n$2');
+            processedMarkdown = applyOutsideFences(processedMarkdown, (s) =>
+                s.replace(/([^\n`])(`{3,}[a-zA-Z][a-zA-Z0-9_-]*)(?=\s|$)/g, '$1\n\n$2')
+            );
 
     // Split JSON-spec blocks (plotly, vega-lite, …) whose fence was
     // never closed after the JSON value, so trailing prose — or an
