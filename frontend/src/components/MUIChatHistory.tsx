@@ -14,6 +14,7 @@ import SwarmRecoveryPanel from './SwarmRecoveryPanel';
 import { db } from '../utils/db';
 import { folderIsEffectivelyGlobal, conversationIsEffectivelyGlobal, globalMenuItemState } from '../utils/folderUtil';import { v4 as uuidv4 } from 'uuid';
 import { sortComparator } from '../utils/chatTreeSort';
+import { computeStructuralHash, fnv1a } from '../utils/chatTreeHash';
 import type { DelegateMeta, TaskPlan, DelegateStatus } from '../types/delegate';
 import { CONVERSATION_FLAG_LABELS, CONVERSATION_FLAG_COLORS, getFlagColorDef } from '../utils/conversationFlags';
 // MUI imports
@@ -578,20 +579,36 @@ const AntActionMenu = ({ isFolder, nodeId, onEdit, onDelete, onFork, onCompress,
         label: 'Flags',
         icon: <AntFlagOutlined />,
         children: [
-          ...CONVERSATION_FLAG_LABELS.map(f => ({
-            key: `flag-label-${f.id}`,
-            label: `${(flags || []).includes(f.id) ? '✅ ' : ''}${f.emoji} ${f.label}`,
-            onClick: (e) => { e.domEvent.stopPropagation(); onToggleFlag && onToggleFlag(nodeId, f.id); },
-          })),
+          // Selected flags are HIGHLIGHTED (accent background + bold label)
+          // rather than prefixed with ✅ — the old prefix was identical to
+          // the 'complete' flag's own ✅ emoji, so selection state and the
+          // flag glyph were indistinguishable.
+          ...CONVERSATION_FLAG_LABELS.map(f => {
+            const selected = (flags || []).includes(f.id);
+            return {
+              key: `flag-label-${f.id}`,
+              style: selected ? { backgroundColor: 'rgba(82, 196, 26, 0.15)' } : undefined,
+              label: (
+                <span style={{ fontWeight: selected ? 600 : 400, color: selected ? '#52c41a' : undefined }}>
+                  {f.emoji} {f.label}
+                </span>
+              ),
+              onClick: (e) => { e.domEvent.stopPropagation(); onToggleFlag && onToggleFlag(nodeId, f.id); },
+            };
+          }),
           { type: 'divider' as const },
-          ...CONVERSATION_FLAG_COLORS.map(c => ({
-            key: `flag-color-${c.id}`,
-            label: `${flagColor === c.id ? '✅ ' : ''}${c.label}`,
-            icon: <span style={{
-              display: 'inline-block', width: 10, height: 10, borderRadius: '50%', backgroundColor: c.hex,
-            }} />,
-            onClick: (e) => { e.domEvent.stopPropagation(); onSetFlagColor && onSetFlagColor(nodeId, flagColor === c.id ? null : c.id); },
-          })),
+          ...CONVERSATION_FLAG_COLORS.map(c => {
+            const selected = flagColor === c.id;
+            return {
+              key: `flag-color-${c.id}`,
+              style: selected ? { backgroundColor: 'rgba(82, 196, 26, 0.15)' } : undefined,
+              label: <span style={{ fontWeight: selected ? 600 : 400 }}>{c.label}</span>,
+              icon: <span style={{
+                display: 'inline-block', width: 10, height: 10, borderRadius: '50%', backgroundColor: c.hex,
+              }} />,
+              onClick: (e) => { e.domEvent.stopPropagation(); onSetFlagColor && onSetFlagColor(nodeId, selected ? null : c.id); },
+            };
+          }),
           { type: 'divider' as const },
           {
             key: 'flag-color-clear', label: 'Clear color',
@@ -2694,24 +2711,12 @@ const MUIChatHistory = () => {
       }
     }
     // fields change we skip the expensive tree assembly and only re-sort.
-    const fnv1a = () => {
-      let h = 0x811c9dc5;
-      return {
-        add(s: string) {
-          for (let i = 0; i < s.length; i++) {
-            h ^= s.charCodeAt(i);
-            h = Math.imul(h, 0x01000193);
-          }
-        },
-        value() { return h >>> 0; }
-      };
-    };
-
-    // Structural hash: identity, titles, folder placement, delegate status
-    const sh = fnv1a();
-    safeFolders.forEach(f => { sh.add(f.id || ''); sh.add(f.name || ''); sh.add(f.parentId || ''); sh.add(f.isGlobal ? 'g' : ''); sh.add(f.taskPlan?.source_conversation_id || ''); });
-    safeConversations.forEach(c => { sh.add(c.id || ''); sh.add(c.title || ''); sh.add(c.folderId || ''); sh.add(c.isActive === false ? '0' : '1'); sh.add(c.isGlobal ? 'g' : ''); sh.add(c.delegateMeta?.status || ''); sh.add(String((c as any).openBeadCount || 0)); sh.add(String((c as any).openWorkItemCount || 0)); sh.add((c as any).branchedFrom || ''); });
-    const structuralHash = sh.value();
+    // Structural hash: identity, titles, folder placement, delegate status,
+    // badge state (beads, flags, …).  Extracted to utils/chatTreeHash.ts so
+    // the "field omitted from the hash" bug class is unit-testable — a field
+    // that drives a row badge but is missing here leaves the cache valid and
+    // the row renders stale until an unrelated rebuild (the flags bug).
+    const structuralHash = computeStructuralHash(safeFolders, safeConversations);
 
     // Sort hash: activity times and pin state that only affect ordering
     const oh = fnv1a();
