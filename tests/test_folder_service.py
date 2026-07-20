@@ -573,3 +573,53 @@ class TestScanStateCharacterization:
                 "B must get its own scan thread"
         finally:
             slot_a["active"] = False
+
+
+class TestAddDirectoryToFolderCache:
+    """add_directory_to_folder_cache for inside-workspace directory imports."""
+
+    def setup_method(self):
+        import app.services.folder_service as svc
+        svc._folder_cache.clear()
+
+    def test_inside_workspace_directory_populates_children(self):
+        """An inside-workspace directory import must scan its contents, not
+        return an empty node that renders as a contentless file (regression:
+        the external-scan 'skip paths inside the root' guard fired at depth 0
+        on the target directory itself, so .ziya/pacer_test came back empty)."""
+        import app.services.folder_service as svc
+        with tempfile.TemporaryDirectory() as codebase:
+            sub = os.path.join(codebase, '.ziya', 'pacer_test')
+            os.makedirs(sub)
+            with open(os.path.join(sub, 'data.txt'), 'w') as f:
+                f.write('hello world content')
+
+            # The function requires a pre-existing root cache entry with data.
+            svc._folder_cache[codebase] = {
+                'timestamp': time.time(), 'data': {}, 'scan_complete': True,
+            }
+            with patch('app.context.get_project_root', return_value=codebase):
+                result = svc.add_directory_to_folder_cache(
+                    os.path.join('.ziya', 'pacer_test'),
+                    sub,
+                    is_inside_workspace=True,
+                )
+
+            assert result is True
+            data = svc._folder_cache[codebase]['data']
+            node = data['.ziya']['children']['pacer_test']
+            assert 'data.txt' in node['children'], \
+                "imported directory scanned as empty (contentless-file bug)"
+            assert node['children']['data.txt'].get('token_count', 0) > 0
+            assert node.get('token_count', 0) > 0
+
+    def test_missing_root_cache_entry_returns_false(self):
+        """No root cache entry (or None data) -> nothing to attach to."""
+        import app.services.folder_service as svc
+        with tempfile.TemporaryDirectory() as codebase:
+            with patch('app.context.get_project_root', return_value=codebase):
+                result = svc.add_directory_to_folder_cache(
+                    'somedir', os.path.join(codebase, 'somedir'),
+                    is_inside_workspace=True,
+                )
+            assert result is False
