@@ -1,5 +1,7 @@
 {
     "target_file": "test.py",
     "description": "Changes that modify indentation levels",
-    "date_added": "2024-01-17"
+    "date_added": "2024-01-17",
+    "expect_error": true,
+    "failure_reason": "Diff produces syntactically-invalid Python (unexpected indent at line 5); language validation correctly rejects it and leaves the file unchanged."
 }

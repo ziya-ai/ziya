@@ -1,3 +1,3 @@
 # Original content
-normal line
-end content
+normal_line = 1
+end_content = 2
