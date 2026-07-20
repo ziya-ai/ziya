@@ -215,27 +215,9 @@ export function computeDimensions(spec: PacketSpec): { width: number; height: nu
   const sections = spec.sections ?? [];
   const totalRows = sections.reduce((n, s) => n + (s.rows?.length ?? 0), 0);
   const numSections = sections.length;
-
-  // Compute max bracket nesting depth on each side to allocate space.
-  // Must run the same auto-depth assignment that the renderer uses,
-  // because input specs typically omit explicit depth values.
-  let maxLeftDepth = 0;
-  let maxRightDepth = 0;
-  for (const sec of sections) {
-    const allBrackets = sec.brackets ?? [];
-    const rightAssigned = assignBracketDepths(allBrackets, 'right');
-    const leftAssigned  = assignBracketDepths(allBrackets, 'left');
-    for (const br of rightAssigned) {
-      maxRightDepth = Math.max(maxRightDepth, (br.depth ?? 0) + 1);
-    }
-    for (const br of leftAssigned) {
-      maxLeftDepth = Math.max(maxLeftDepth, (br.depth ?? 0) + 1);
-    }
-  }
-  // Add 14px padding per side to accommodate label overlap shifts.
-  // The renderer shifts colliding labels outward by 14px each.
-  const bracketLeftW = maxLeftDepth * L.BRACKET_W + (maxLeftDepth > 0 ? 14 : 0);
-  const bracketRightW = Math.max(maxRightDepth, 1) * L.BRACKET_W + 14;
+  // Gutter widths on each side (shared with the renderer via a single helper
+  // so layout sizing and drawing can never drift out of agreement).
+  const { left: bracketLeftW, right: bracketRightW } = computeBracketGutters(sections, L);
 
   const GRID_W = bits * L.BIT_W;
   const width = L.LEFT_PAD + bracketLeftW + L.LABEL_W + GRID_W + bracketRightW + L.LEFT_PAD;
@@ -284,6 +266,118 @@ export function assignBracketDepths(brackets: PacketBracket[], side: 'left' | 'r
   }
 
   return assigned;
+}
+
+// Approximate glyph widths for the section-label fonts (bold 13px main line,
+// 10px sub lines) so bracket placement needs no DOM measurement.
+const SECTION_MAIN_CHAR_W = 8;
+const SECTION_SUB_CHAR_W = 6;
+
+/**
+ * Estimate the rendered pixel width of a section label (multi-line via \n;
+ * the first line renders bold/larger than subsequent lines).
+ */
+export function estimateSectionLabelWidth(label: string): number {
+  if (!label) return 0;
+  return label.split('\n').reduce((w, ln, i) =>
+    Math.max(w, ln.length * (i === 0 ? SECTION_MAIN_CHAR_W : SECTION_SUB_CHAR_W)), 0);
+}
+
+export interface BracketGutters {
+  left: number;
+  right: number;
+  /** All left brackets render on the (free) right side instead. */
+  flipLeftToRight: boolean;
+  /** Widest estimated section label, for close-in left placement. */
+  maxLabelW: number;
+}
+
+/**
+ * Compute bracket gutter widths and the side-placement decision.
+ *
+ * Section labels always occupy the left column, so the right side is the
+ * naturally free side: if no section uses right-side brackets, left brackets
+ * flip to the right (all-or-nothing across sections so alignment is
+ * preserved). When the right side is occupied, left brackets stay left but
+ * hug the widest section label; extra width is reserved only for what
+ * overflows the fixed label column. Runs assignBracketDepths so nested
+ * depth is counted correctly. Shared by computeDimensions and the render
+ * plugin so sizing and drawing can never disagree.
+ */
+export function computeBracketGutters(
+  sections: PacketSection[],
+  L: LayoutConfig,
+): BracketGutters {
+  let hasLeft = false;
+  let hasRight = false;
+  for (const sec of sections) {
+    for (const br of sec.brackets ?? []) {
+      if ((br.side ?? 'right') === 'left') hasLeft = true;
+      else hasRight = true;
+    }
+  }
+  const flipLeftToRight = hasLeft && !hasRight;
+
+  const maxLabelW = sections.reduce(
+    (w, s) => Math.max(w, estimateSectionLabelWidth(s.label ?? '')), 0);
+
+  let maxLeftDepth = 0;
+  let maxRightDepth = 0;
+  for (const sec of sections) {
+    const allBrackets = (sec.brackets ?? []).map(b =>
+      flipLeftToRight ? { ...b, side: 'right' as const } : b);
+    for (const br of assignBracketDepths(allBrackets, 'right')) {
+      maxRightDepth = Math.max(maxRightDepth, (br.depth ?? 0) + 1);
+    }
+    for (const br of assignBracketDepths(allBrackets, 'left')) {
+      maxLeftDepth = Math.max(maxLeftDepth, (br.depth ?? 0) + 1);
+    }
+  }
+
+  // Left brackets sit just left of the widest section label (labels end at
+  // gridX - 8): each depth level costs BRACKET_W, plus 14px for label-overlap
+  // shifts. Only the overflow past the fixed label column widens the SVG.
+  const leftNeeded = maxLeftDepth > 0
+    ? maxLabelW + 8 + maxLeftDepth * L.BRACKET_W + 14
+    : 0;
+  return {
+    left: Math.max(0, leftNeeded - L.LABEL_W),
+    right: Math.max(maxRightDepth, 1) * L.BRACKET_W + 14,
+    flipLeftToRight,
+    maxLabelW,
+  };
+}
+
+// ── Field-label fitting ─────────────────────────────────────────────────────
+
+// Average glyph width as a fraction of font size for the bold sans-serif
+// field-label font — an approximation so fitting needs no DOM measurement.
+const FIELD_CHAR_W_RATIO = 0.6;
+const FIELD_BASE_FONT = 11;
+const FIELD_MIN_FONT = 7;
+
+/**
+ * Fit a field label into a cell of the given pixel width: scale the font
+ * down (mirroring bracket-label scaling) and, only if even the minimum
+ * size cannot fit, truncate with an ellipsis. The renderer's cell tooltip
+ * always carries the full name, so truncation loses no information.
+ */
+export function fitFieldLabel(
+  name: string,
+  cellWidth: number,
+): { fontSize: number; label: string } {
+  const usableW = cellWidth - 6; // horizontal padding inside the cell
+  let fontSize = FIELD_BASE_FONT;
+  let label = name;
+  const textW = name.length * FIELD_CHAR_W_RATIO * FIELD_BASE_FONT;
+  if (textW > usableW && usableW > 0) {
+    fontSize = Math.max(FIELD_MIN_FONT, Math.floor(FIELD_BASE_FONT * usableW / textW));
+    const fitChars = Math.floor(usableW / (FIELD_CHAR_W_RATIO * fontSize));
+    if (name.length > fitChars && fitChars > 1) {
+      label = name.slice(0, fitChars - 1) + '…';
+    }
+  }
+  return { fontSize, label };
 }
 
 // ── XML escaping ────────────────────────────────────────────────────────────
