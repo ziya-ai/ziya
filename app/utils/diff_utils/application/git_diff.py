@@ -1009,6 +1009,124 @@ def extract_remaining_hunks(git_diff: str, hunk_status: Dict[int, bool]) -> str:
     logger.debug(f"Extracted diff for remaining hunks:\n{final_diff}")
     return final_diff
 
+def _repair_idempotent_additions(git_diff: str, file_path: str) -> str:
+    """
+    Repair hunks whose reconstructed old-block is offset because the diff marks
+    a line as an addition ('+') that ALREADY EXISTS in the target file (an
+    "idempotent addition").
+
+    Such a defect shifts the hunk's old-side by one line. When the hunk is also
+    structurally similar to a neighbour (identical adjacent blocks), the applier
+    can anchor both at colliding positions and silently scramble the output.
+
+    The repair is deliberately conservative and language-agnostic:
+      * Gate  - only touch a hunk whose old-block does NOT already match the
+                file exactly (working hunks are never modified).
+      * Promote a single already-present, non-blank '+' line to context and
+                keep it ONLY if that yields a UNIQUE exact match in the file.
+      * Never promote whitespace-only/blank added lines (they match everywhere
+                and carry no anchoring identity).
+      * If promotion yields zero or multiple matches, leave the hunk untouched
+                and let the normal matching / collision-guard paths handle it.
+
+    Returns the (possibly rewritten) diff text; returns the input unchanged if
+    nothing qualifies or parsing fails.
+    """
+    try:
+        file_lines = []
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                file_lines = f.read().splitlines()
+        except (FileNotFoundError, OSError):
+            return git_diff
+        if not file_lines:
+            return git_diff
+
+        def _norm(s: str) -> str:
+            return s.rstrip().replace('\t', '    ')
+
+        def _find_exact(block):
+            if not block:
+                return []
+            nb = [_norm(x) for x in block]
+            hits = []
+            for i in range(len(file_lines) - len(block) + 1):
+                if [_norm(x) for x in file_lines[i:i + len(block)]] == nb:
+                    hits.append(i)
+            return hits
+
+        body = git_diff.splitlines()
+        i = 0
+        out = []
+        while i < len(body) and not body[i].startswith('@@'):
+            out.append(body[i])
+            i += 1
+        if i >= len(body):
+            return git_diff  # no hunks
+
+        starts = [j for j in range(i, len(body)) if body[j].startswith('@@')]
+        starts.append(len(body))
+        changed = False
+        for hi in range(len(starts) - 1):
+            header = body[starts[hi]]
+            raw = body[starts[hi] + 1:starts[hi + 1]]
+            # classify: (type, content) for each raw body line
+            seq = []
+            for r in raw:
+                if r.startswith('+'):
+                    seq.append(('added', r[1:]))
+                elif r.startswith('-'):
+                    seq.append(('removed', r[1:]))
+                else:
+                    seq.append(('context', r[1:] if r.startswith(' ') else r))
+            old_block = [c for (t, c) in seq if t in ('context', 'removed')]
+            # Gate: skip hunks that already match the file exactly.
+            if _find_exact(old_block):
+                out.append(header)
+                out.extend(raw)
+                continue
+            # Try promoting each non-blank added line, one at a time.
+            promote_idx = None
+            for k, (t, c) in enumerate(seq):
+                if t != 'added' or c.strip() == '':
+                    continue
+                cand = [c2 for j2, (t2, c2) in enumerate(seq)
+                        if t2 in ('context', 'removed') or j2 == k]
+                if len(_find_exact(cand)) == 1:
+                    promote_idx = k
+                    break
+            if promote_idx is None:
+                out.append(header)
+                out.extend(raw)
+                continue
+            # Rewrite the promoted '+' line to context and recompute counts.
+            new_body = []
+            for k, r in enumerate(raw):
+                new_body.append((' ' + r[1:]) if k == promote_idx else r)
+            old_c = sum(1 for r in new_body if r.startswith(' ') or r.startswith('-'))
+            new_c = sum(1 for r in new_body if r.startswith(' ') or r.startswith('+'))
+            m = re.match(r'@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)', header)
+            if not m:
+                out.append(header)
+                out.extend(raw)
+                continue
+            new_header = f"@@ -{m.group(1)},{old_c} +{m.group(2)},{new_c} @@{m.group(3)}"
+            logger.info(f"Idempotent-addition repair: promoted already-present line "
+                        f"'{seq[promote_idx][1].strip()}' to context in hunk at {header.strip()}")
+            out.append(new_header)
+            out.extend(new_body)
+            changed = True
+
+        if not changed:
+            return git_diff
+        repaired = "\n".join(out)
+        if git_diff.endswith('\n') and not repaired.endswith('\n'):
+            repaired += '\n'
+        return repaired
+    except Exception as e:
+        logger.debug(f"Idempotent-addition repair skipped due to error: {e}")
+        return git_diff
+
 def use_git_to_apply_code_diff(git_diff: str, file_path: str) -> None:
     """
     Apply a git diff to the user's codebase.
