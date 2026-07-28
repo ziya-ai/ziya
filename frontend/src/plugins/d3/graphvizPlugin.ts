@@ -253,6 +253,24 @@ export const graphvizPlugin: D3RenderPlugin = {
             console.log('Starting with rawDefinition:', rawDefinition.substring(0, 100));
             console.log('processedDefinition initialized as:', processedDefinition.substring(0, 100));
 
+            // STRESS-GUARD (Issue 5): clamp degenerate layout-magnitude attributes before
+            // they reach the Viz.js/dot layout engine. `dot` inserts ONE virtual node per
+            // rank an edge spans, and `minlen` sets that rank count -- so minlen=1000000
+            // forces ~1e6 virtual nodes for a single edge and the (synchronous, watchdog-less)
+            // WASM layout hangs unboundedly (no image, no error -> total data loss). `weight`
+            // (network-simplex pull) and `peripheries` (nested border polygons per node) blow
+            // up similarly. Clamping to sane maxima is visually indistinguishable for
+            // legitimate specs (values within bounds pass through unchanged) and turns a
+            // total-data-loss hang into a graceful render. General across every graphviz spec.
+            // `width`/`height` are node dimensions in INCHES; with fixedsize=true a value like
+            // width=10000 is a 10000-inch (=720000pt) box that blows up SVG/PNG rasterization
+            // and hangs the render the same way. Clamp them (decimal-aware) to a sane maximum.
+            processedDefinition = processedDefinition
+                .replace(/(\bminlen\s*=\s*)(\d+)/gi, (_m, p, n) => p + Math.min(parseInt(n, 10), 50))
+                .replace(/(\bweight\s*=\s*)(\d+)/gi, (_m, p, n) => p + Math.min(parseInt(n, 10), 1000))
+                .replace(/(\bperipheries\s*=\s*)(\d+)/gi, (_m, p, n) => p + Math.min(parseInt(n, 10), 10))
+                .replace(/(\b(?:width|height)\s*=\s*)(\d+(?:\.\d+)?)/gi, (_m, p, n) => p + Math.min(parseFloat(n), 100));
+
             // Fix invalid arrow syntax and edge label format
             processedDefinition = processedDefinition.replace(
                 /(\w+)\s*-\.->\s*(\w+)\s*\[([^\]]+)\]/g,
@@ -557,15 +575,13 @@ export const graphvizPlugin: D3RenderPlugin = {
                         ${svgData}
                     </div>
                     <script>
-                        const svg = document.querySelector('svg');
-                        let currentScale = 1;
-                        
                         // Make sure SVG is responsive
-                        svg.setAttribute('width', '100%');
-                        svg.setAttribute('height', '100%');
-                        svg.style.maxWidth = '100%';
-                        svg.style.maxHeight = '100%';
-                        svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+                        const svgEl = document.querySelector('svg');
+                        svgEl.setAttribute('width', '100%');
+                        svgEl.setAttribute('height', '100%');
+                        svgEl.style.maxWidth = '100%';
+                        svgEl.style.maxHeight = '100%';
+                        svgEl.setAttribute('preserveAspectRatio', 'xMidYMid meet');
                         ${getZoomScript()}${getDownloadSvgScript('graphviz-diagram.svg')}
                     </script>
                 </body>
@@ -636,30 +652,30 @@ ${svgData}`;
                 if (showingSource) {
                     wrapper.innerHTML = `
                         <div style="
-                            backgroundColor: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'};
+                            background-color: ${isDarkMode ? '#1f1f1f' : '#f6f8fa'};
                             border: 1px solid ${isDarkMode ? '#303030' : '#e1e4e8'};
-                            borderRadius: '6px';
-                            padding: '16px';
-                            margin: '16px 0'
+                            border-radius: 6px;
+                            padding: 16px;
+                            margin: 16px 0;
                         ">
                             <div style="
-                                fontSize: '12px';
+                                font-size: 12px;
                                 color: ${isDarkMode ? '#8b949e' : '#586069'};
-                                marginBottom: '8px';
-                                fontWeight: 'bold'
+                                margin-bottom: 8px;
+                                font-weight: bold;
                             ">
                                 🔗 Graphviz Source:
                             </div>
                             <pre style="
                                 margin: 0;
                                 color: ${isDarkMode ? '#e6e6e6' : '#24292e'};
-                                fontSize: '13px';
-                                lineHeight: '1.45';
-                                whiteSpace: 'pre-wrap';
-                                wordBreak: 'break-word';
-                                fontFamily: 'Monaco, Menlo, \"Ubuntu Mono\", monospace';
-                                maxHeight: '500px';
-                                overflow: 'auto'
+                                font-size: 13px;
+                                line-height: 1.45;
+                                white-space: pre-wrap;
+                                word-break: break-word;
+                                font-family: Monaco, Menlo, 'Ubuntu Mono', monospace;
+                                max-height: 500px;
+                                overflow: auto;
                             "><code>${escapeHtml(spec.definition ?? '')}</code></pre>
                         </div>
                     `;

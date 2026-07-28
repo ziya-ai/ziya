@@ -11,7 +11,7 @@ import {
   type LayoutConfig,
   computeDimensions, defaultLayout, resolveColor,
   assignBracketDepths, escapeXml, computeBracketGutters, fitFieldLabel,
-  normalizePacketSpec,
+  normalizePacketSpec, sanitizeFieldBits,
 } from '../../utils/d3Plugins/packetPlugin';
 import { getOptimalTextColor } from '../../utils/colorUtils';
 import { getZoomScript, getDownloadSvgScript } from '../../utils/popupScriptUtils';
@@ -53,9 +53,57 @@ function renderError(container: HTMLElement, message: string, rawSpec: any, isDa
   `;
 }
 
+/**
+ * Bridge the mermaid-style `packet-beta` textual DSL into a loose PacketSpec
+ * (`{type,title,bitWidth,fields}`) that normalizePacketSpec understands.
+ *
+ * The `render_diagram` backend dispatches `type: 'packet'` straight to this
+ * JSON PacketSpec renderer; the `packet-beta` DSL converters otherwise live
+ * only on the mermaid path, so DSL text would previously fall through to
+ * renderError (no <svg>) and hang the capture harness. This makes the packet
+ * entry point accept BOTH representations. General across the whole class of
+ * `packet-beta` specs, not a single-spec special case.
+ *
+ * Each `START-END: label` line becomes a field of width END-START+1. Inverted
+ * (start > end), zero-width, non-finite and absurdly large ranges are clamped
+ * to a width in [1, 512] so a bad range can never produce a 0/negative or
+ * multi-million-pixel cell.
+ */
+function parsePacketBetaDsl(text: string): { type: 'packet'; title: string; bitWidth: number; fields: Array<{ name: string; bits: number }> } | null {
+  const trimmed = text.trim();
+  if (!/^packet(-beta)?/.test(trimmed)) return null;
+  const lines = trimmed.split('\n');
+  const titleLine = lines.find(l => l.trim().startsWith('title'));
+  const title = titleLine
+    ? titleLine.trim().replace(/^title\s+/, '').replace(/^"([\s\S]*)"$/, '$1')
+    : 'Packet';
+  const fields: Array<{ name: string; bits: number }> = [];
+  for (const line of lines) {
+    const m = line.trim().match(/^(-?\d+)\s*-\s*(-?\d+)\s*:\s*([\s\S]*)$/);
+    if (!m) continue;
+    let a = parseInt(m[1], 10);
+    let b = parseInt(m[2], 10);
+    const label = m[3].trim().replace(/^"([\s\S]*)"$/, '$1');
+    if (!Number.isFinite(a)) a = 0;
+    if (!Number.isFinite(b)) b = a;
+    let w = b - a + 1;
+    if (!Number.isFinite(w) || w < 1) w = 1;
+    if (w > 512) w = 512;
+    fields.push({ name: label, bits: w });
+  }
+  return fields.length > 0 ? { type: 'packet', title, bitWidth: 32, fields } : null;
+}
+
 function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boolean): void {
   // Accept either a direct PacketSpec or { definition: jsonString }
   let pkt: PacketSpec;
+  // If the definition is packet-beta DSL text, bridge it to a loose PacketSpec
+  // JSON string before the JSON.parse path below (normalizePacketSpec then
+  // wraps the flat fields into rows). Both representations now render.
+  if (typeof rawSpec?.definition === 'string') {
+    const dsl = parsePacketBetaDsl(rawSpec.definition);
+    if (dsl) rawSpec = { ...rawSpec, definition: JSON.stringify(dsl) };
+  }
   if (typeof rawSpec.definition === 'string') {
     try { pkt = JSON.parse(rawSpec.definition); }
     catch { renderError(container, 'Invalid JSON in definition', rawSpec, isDarkMode); return; }
@@ -258,7 +306,14 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
 
       row.forEach((field, fi) => {
         const name  = field[0] as string;
-        const fbits = field[1] as number;
+        const rawBits = field[1] as number;
+        // Clamp degenerate/overflowing bit-widths BEFORE they reach SVG
+        // geometry: negative → 0 (SVG forbids negative width), non-finite
+        // (NaN/Infinity, incl. huge values that overflow bits*BIT_W to
+        // Infinity) → 0, absurdly large → capped. Prevents invalid-attribute
+        // errors and stops the shared bitOff accumulator from inheriting a
+        // non-finite value that bleeds sibling fields off-canvas.
+        const fbits = sanitizeFieldBits(rawBits);
         const fieldColorSpec = field.length > 2 ? field[2] as string | undefined : undefined;
 
         // Resolve: field override → section color → auto

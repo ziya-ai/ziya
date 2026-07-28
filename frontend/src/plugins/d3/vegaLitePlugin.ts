@@ -1,5 +1,6 @@
 import { type EmbedOptions } from 'vega-embed';
 import { D3RenderPlugin } from '../../types/d3';
+import { applySizing, isCompositeSpec, resolveAutosize, resolveSpecWidth } from './vegaSizing';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 import { getZoomScript } from '../../utils/popupScriptUtils';
@@ -262,6 +263,33 @@ const isVegaLiteDefinitionComplete = (definition: string): boolean => {
 export const vegaLitePlugin: D3RenderPlugin = {
   name: 'vega-lite-renderer',
   priority: 8, // Higher priority than basic chart but lower than mermaid/graphviz
+
+  // This was the ONLY diagram plugin in the registry without a sizingConfig,
+  // and its absence is what made charts render small-and-centered. D3Renderer
+  // derives three things from it, each of which falls back to a fixed-size
+  // interpretation when the config is missing:
+  //   1. isFlexible — the ternary reads
+  //      "sizingConfig ? strategy !== 'fixed' : false", so no config means
+  //      FALSE, and the container is pinned to the width prop (600px default,
+  //      default, since MarkdownRenderer passes no explicit width).
+  //   2. containerStyles — falls through to the generic default instead of
+  //      the 'responsive' branch that forces width/maxWidth: 100%.
+  //   3. minWidth: '100%' on the outer container, which combined with the
+  //      d3-container's "alignItems: center" centered the 600px box and
+  //      produced symmetric wasted whitespace on both sides.
+  sizingConfig: {
+    sizingStrategy: 'responsive',
+    needsDynamicHeight: true,
+    needsOverflowVisible: true,
+    observeResize: false,
+    containerStyles: {
+      width: '100%',
+      maxWidth: '100%',
+      height: 'auto',
+      minHeight: 'unset',
+      overflow: 'visible',
+    },
+  },
 
   canHandle: (spec: any): boolean => {
     return isVegaLiteSpec(spec);
@@ -3048,28 +3076,26 @@ export const vegaLitePlugin: D3RenderPlugin = {
         throw new Error('Invalid Vega-Lite specification: spec must be an object');
       }
 
-      // Ensure required properties exist
-      // Data may live at the top level, in datasets, in layers, or in any
-      // sub-view of a composition (vconcat / hconcat / concat / facet / repeat).
-      // Only bail if we can't find data anywhere in the tree.
-      if (!hasVegaLiteDataAnywhere(vegaSpec)) {
-        throw new Error('Invalid Vega-Lite specification: missing data or datasets');
-      }
-
-      // Check for valid mark or composition
-      if (!vegaSpec.mark && !vegaSpec.layer && !vegaSpec.vconcat && !vegaSpec.hconcat &&
-        !vegaSpec.facet && !vegaSpec.repeat && !vegaSpec.transform) {
-        throw new Error('Invalid Vega-Lite specification: missing mark or composition');
-      }
-
-      // Get container dimensions for responsive sizing
+      // Measured container geometry. applySizing() decides whether the chart
+      // uses 'container' width or a pixel width, but it still needs a concrete
+      // fallback measurement, and availableHeight is used below and in the
+      // vega-embed options. The 400/300 floors keep a chart usable when the
+      // container has not been laid out yet and reports 0.
       const containerRect = container.getBoundingClientRect();
-      const availableWidth = Math.max(containerRect.width - 40, 400); // Account for padding, minimum 400px
-      const availableHeight = Math.max(containerRect.height || 400, 300); // Minimum 300px height
+      const availableWidth = Math.max(containerRect.width - 40, 400); // account for padding
+      const availableHeight = Math.max(containerRect.height || 400, 300);
 
-      // Only override dimensions if they're not explicitly set in the spec
-      if (!vegaSpec.width && vegaSpec.width !== 0) {
-        vegaSpec.width = availableWidth;
+      // Width + autosize are resolved by the pure helpers in ./vegaSizing so
+      // the decision is unit-testable without vegaEmbed/jsdom. See that module
+      // for why a fixed pixel width is never used for an inline chart, and why
+      // autosize must agree with the chosen width mode (Vega-Lite REJECTS
+      // autosize 'fit' together with width 'container').
+      const _sizing = applySizing(vegaSpec, availableWidth);
+      if (_sizing.replacedWidth !== null) {
+        console.log(
+          `🔧 VEGA-WIDTH: Replaced authored width ${_sizing.replacedWidth} ` +
+          `with '${_sizing.width}' (fixed widths are not used for inline charts)`
+        );
       }
 
       // Only set height if not explicitly specified and not using complex layouts
@@ -3078,23 +3104,18 @@ export const vegaLitePlugin: D3RenderPlugin = {
         vegaSpec.height = Math.min(availableHeight * 0.8, 500);
       }
 
-      // Only set autosize if not already configured
-      if (!vegaSpec.autosize) {
-        vegaSpec.autosize = {
-          type: 'fit',
-          contains: 'content'
-        };
-      } else if (vegaSpec.autosize && typeof vegaSpec.autosize === 'object') {
-        // Preserve existing autosize configuration
+      // autosize already set by applySizing() above, in lockstep with width.
+      // Autosize must agree with the width mode chosen above. Vega-Lite
+      // REJECTS \`autosize.type: 'fit'\` together with \`width: 'container'\`,
+      // and both of the previous branches set exactly that — so this is a
+      // correctness requirement of the container-width change, not a tidy-up.
+      // \`'container'\` requires \`type: 'pad'\` + \`contains: 'padding'\`.
+      if (vegaSpec.width === 'container') {
+        vegaSpec.autosize = { type: 'pad', contains: 'padding' };
+      } else if (!vegaSpec.autosize) {
+        vegaSpec.autosize = { type: 'fit', contains: 'content' };
+      } else if (typeof vegaSpec.autosize === 'object') {
         vegaSpec.autosize = { ...vegaSpec.autosize };
-      }
-
-      // For charts with explicit dimensions, use a more conservative autosize
-      if ((vegaSpec.width && vegaSpec.width > 0) || (vegaSpec.height && vegaSpec.height > 0)) {
-        vegaSpec.autosize = {
-          type: 'fit',
-          contains: 'content'
-        };
       }
 
       // Ensure axis labels are properly displayed without overriding user config
@@ -3123,19 +3144,12 @@ export const vegaLitePlugin: D3RenderPlugin = {
         vegaSpec.$schema = 'https://vega.github.io/schema/vega-lite/v5.json';
       }
 
-      // Fix radar chart specifications that use theta/radius encoding
+      // Normalize radial charts without replacing the fields selected by the
+      // caller. Replacing these encodings with hard-coded `level` and `skill`
+      // fields makes otherwise valid specs render as an empty chart.
       if (vegaSpec.encoding?.theta && vegaSpec.encoding?.radius) {
-        // Convert to proper radar chart using arc mark
-        vegaSpec.mark = { type: "arc", innerRadius: 20, outerRadius: 100 };
-        vegaSpec.encoding = {
-          theta: { field: "level", type: "quantitative", scale: { type: "linear", range: [0, 6.28] } },
-          radius: { field: "level", type: "quantitative", scale: { type: "linear", range: [20, 100] } },
-          color: { field: "skill", type: "nominal" },
-          tooltip: [
-            { field: "skill", type: "nominal" },
-            { field: "level", type: "quantitative", title: "Mastery Level" }
-          ]
-        };
+        const existingMark = typeof vegaSpec.mark === 'object' ? vegaSpec.mark : {};
+        vegaSpec.mark = { ...existingMark, type: 'arc' };
       }
 
       // Fix common violin plot specification issues - correct field mappings for density transform
@@ -3181,10 +3195,10 @@ export const vegaLitePlugin: D3RenderPlugin = {
         };
       }
 
-      // Ensure reasonable minimum dimensions for complex visualizations
-      if (vegaSpec.width && vegaSpec.width < 200) {
-        vegaSpec.width = 400;
-      }
+      // Minimum WIDTH clamp removed: width is now either 'container' (a
+      // string, so the numeric comparison was silently inert) or a measured
+      // container width that already has a 400px floor via availableWidth.
+      // Height keeps its floor — it is still a concrete pixel value.
       if (vegaSpec.height && vegaSpec.height < 250) {
         vegaSpec.height = 300;
       }
@@ -4750,6 +4764,48 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // Store the view for cleanup
       (container as any)._vegaView = result.view;
 
+      // width:'container' compiles to a width signal initialised from
+      // containerSize() === [el.clientWidth, el.clientHeight]. D3Renderer
+      // renders plugins into a DETACHED div and only appends it to the live
+      // DOM after render() resolves, so clientWidth is 0 at init time. Zero
+      // is finite, so Vega-Lite's `isFinite(...) ? ... : config.view.width`
+      // fallback does not fire and the view initialises at width 0 — which
+      // is why the chart appears as a vertical line segment until some later
+      // window:resize re-evaluates the signal.
+      //
+      // Re-measure once the node is actually attached and push the real
+      // width into the signal. Only needed for the 'container' width mode;
+      // a pixel width was never measured from the DOM.
+      if (finalSpec.width === 'container' && result.view) {
+        const view = result.view;
+        const syncContainerWidth = () => {
+          // view.container() is the element vega-embed initialised into.
+          const el: HTMLElement | null = typeof view.container === 'function'
+            ? view.container() : null;
+          const measured = el?.clientWidth ?? 0;
+          if (!measured) return false;
+          try {
+            if (view.signal('width') !== measured) {
+              view.signal('width', measured).run();
+            }
+          } catch (e) {
+            console.warn('Vega-Lite: could not sync container width', e);
+          }
+          return true;
+        };
+
+        if (!syncContainerWidth()) {
+          // Still detached (the normal D3Renderer case). Retry after the
+          // append + layout that follows this render's resolution.
+          let attempts = 0;
+          const retry = () => {
+            if (syncContainerWidth() || ++attempts > 20) return;
+            requestAnimationFrame(retry);
+          };
+          requestAnimationFrame(retry);
+        }
+      }
+
       // Post-render: add an HTML details panel for arc charts with descriptive text
       // The enhanceArcChartsWithTextLabels preprocessor stashes metadata on the spec
       // (__arcDescriptiveFields, __arcColorField, __arcColorScale).  We read it from
@@ -4807,25 +4863,13 @@ export const vegaLitePlugin: D3RenderPlugin = {
         console.log('🔧 ARC-DETAILS-PANEL: Added details panel with', dataValues.length, 'entries');
       }
 
-      // Simple fix: Make parent containers fit the Vega-Lite content
-      setTimeout(() => {
-        const vegaEmbedDiv = renderContainer.querySelector('.vega-embed') as HTMLElement;
-        if (vegaEmbedDiv) {
-          const vegaHeight = vegaEmbedDiv.offsetHeight;
-          const vegaWidth = vegaEmbedDiv.offsetWidth;
-
-          // Adjust parent d3-container to fit
-          let parent = container.parentElement;
-          while (parent && parent.classList.contains('d3-container')) {
-            const parentEl = parent as HTMLElement;
-            if (parentEl.offsetHeight < vegaHeight) {
-              parentEl.style.height = `${vegaHeight + 20}px`;
-              parentEl.style.minHeight = `${vegaHeight + 20}px`;
-            }
-            parent = parent.parentElement;
-          }
-        }
-      }, 100);
+      // Parent height propagation is owned SOLELY by the ResizeObserver in
+      // setupVegaLiteResizing() below. This 100ms timer was one of three
+      // mechanisms writing the same height/minHeight on the same parents
+      // (the others being forceContainerResize's 100ms + 500ms timers), which
+      // is why a single render logged duplicate resize lines per container.
+      // The observer is the only one that reacts to actual size change rather
+      // than guessing at a settling time, so it is the one kept.
 
       // Set up Vega-Lite specific resize handling
       const setupVegaLiteResizing = () => {
@@ -5357,45 +5401,17 @@ ${svgData}`;
         const svgElement = container.querySelector('svg');
         const vegaEmbedDiv = container.querySelector('.vega-embed') as HTMLElement;
 
-        // Determine upfront whether the spec has explicit dimensions.
-        // When it does, the SVG attributes must be preserved — stripping
-        // them causes height:100% to collapse to 0px on auto-height parents.
-        const hasExplicitWidth = vegaSpec.width && vegaSpec.width > 0;
+        // Width is delegated to Vega via "width: 'container'", so there is no
+        // longer an "explicit width" case to branch on. Height remains a
+        // concrete pixel value and still needs the auto-height treatment.
         const hasExplicitHeight = vegaSpec.height && vegaSpec.height > 0;
 
-        // Fix SVG scaling when content is smaller than container
-        // Skip for charts with explicit dimensions — Vega-Lite already
-        // rendered them at the correct size.
-        if (!hasExplicitWidth && !hasExplicitHeight && svgElement && vegaEmbedDiv) {
-          const containerRect = vegaEmbedDiv.getBoundingClientRect();
-          const svgRect = svgElement.getBoundingClientRect();
-
-          // Only scale if SVG is significantly smaller than container
-          const scaleX = svgRect.width > 0 ? containerRect.width / svgRect.width : 1;
-          const scaleY = svgRect.height > 0 ? containerRect.height / svgRect.height : 1;
-          const scale = Math.min(scaleX, scaleY) || 1;
-
-          if (scale > 1.2) { // Only scale if there's significant wasted space
-            const finalScale = Math.min(scale, 2.5); // Cap scaling
-            svgElement.style.transform = `scale(${finalScale})`;
-            svgElement.style.transformOrigin = 'center center';
-            console.log(`Scaled SVG by ${finalScale}x to reduce wasted space`);
-          }
-        }
-
-        // Fix SVG to fill vega-embed container properly
-        // Only strip SVG intrinsic dimensions for auto-sized charts.
-        // Charts with explicit width/height must keep their attributes
-        // so the SVG doesn't collapse to 0px height.
-        if (!hasExplicitWidth && !hasExplicitHeight && svgElement && vegaEmbedDiv) {
-          svgElement.style.width = '100%';
-          svgElement.style.height = '100%';
-          svgElement.removeAttribute('width');
-          svgElement.removeAttribute('height');
-          svgElement.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-
-          console.log('Made SVG responsive to fill vega-embed container (auto-sized chart)');
-        }
+        // The scale() transform that used to live here is deliberately gone.
+        // It measured the SVG against its parent and applied a CSS transform
+        // of up to 2.5x with "transformOrigin: center" — a visual scale that
+        // does not affect layout, so it could only ever mask a sizing bug
+        // while introducing a second, competing notion of the chart's size.
+        // With Vega sizing to the container there is no gap left to paper over.
 
         // Critical fix: Ensure vega-embed div doesn't exceed parent width
         if (vegaEmbedDiv) {
@@ -5404,11 +5420,8 @@ ${svgData}`;
         }
 
         if (svgElement) {
-
-          if (!hasExplicitWidth) {
-            svgElement.style.width = '100%';
-            svgElement.style.maxWidth = '100%';
-          }
+          svgElement.style.width = '100%';
+          svgElement.style.maxWidth = '100%';
 
           if (!hasExplicitHeight) {
             svgElement.style.height = 'auto';
@@ -5424,11 +5437,8 @@ ${svgData}`;
         }
 
         if (vegaEmbedDiv) {
-
-          if (!hasExplicitWidth) {
-            vegaEmbedDiv.style.width = '100%';
-            vegaEmbedDiv.style.maxWidth = '100%';
-          }
+          vegaEmbedDiv.style.width = '100%';
+          vegaEmbedDiv.style.maxWidth = '100%';
         }
 
         // Force parent containers to use full width
@@ -5541,13 +5551,16 @@ ${svgData}`;
           });
           container.dispatchEvent(finalRenderCompleteEvent);
 
-          const hasExplicitWidth = vegaSpec.width && vegaSpec.width > 0;
+          // No explicit-pixel-width branch here: width is always 'container'
+          // (a string, so the old "> 0" test was silently false) or a measured
+          // container width. The branch it guarded is now unconditional.
+          // Keeping the dead test would imply a fixed-width path still exists
+          // — the exact ambiguity that made the small-centered-chart bug hard
+          // to locate.
           const hasExplicitHeight = vegaSpec.height && vegaSpec.height > 0;
 
-          if (!hasExplicitWidth) {
-            svgElement.style.width = '100%';
-            svgElement.style.maxWidth = '100%';
-          }
+          svgElement.style.width = '100%';
+          svgElement.style.maxWidth = '100%';
 
           if (!hasExplicitHeight) {
             svgElement.style.height = 'auto';
@@ -5573,23 +5586,12 @@ ${svgData}`;
             vegaEmbedDiv.style.overflow = 'visible';
           }
 
-          // Force container and all parents to accommodate the content
-          const forceContainerResize = () => {
-            const actualHeight = svgElement.getBoundingClientRect().height;
-            let parent = container.parentElement;
-            while (parent && parent.classList.contains('d3-container')) {
-              const parentElement = parent as HTMLElement;
-              if (parentElement.getBoundingClientRect().height < actualHeight + 40) {
-                parentElement.style.height = `${actualHeight + 40}px`;
-                parentElement.style.minHeight = `${actualHeight + 40}px`;
-                console.log(`Force resized parent ${parentElement.className} to ${actualHeight + 40}px`);
-              }
-              parent = parent.parentElement;
-            }
-          };
-
-          setTimeout(forceContainerResize, 100);
-          setTimeout(forceContainerResize, 500);
+          // forceContainerResize's 100ms/500ms timers removed — they were the
+          // second and third writers of the same parent height/minHeight as
+          // the ResizeObserver, and the source of the duplicated
+          // "Force resized parent …" log lines. The observer covers this case
+          // (it fires on the SVG's actual size change) and additionally covers
+          // later resizes that fixed timers miss entirely, e.g. window resize.
 
           // Only adjust parent containers if height isn't explicitly set
           if (!hasExplicitHeight) {

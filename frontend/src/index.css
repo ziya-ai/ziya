@@ -1811,15 +1811,25 @@ body:not(.dark) .token.attr-name {
     overflow-y: visible;
 }
  
+/* These rules originally targeted only ".vega-lite-container", which
+   D3Renderer applies on its vegaContainerRef branch. The Vega-Lite PLUGIN
+   renders through the d3ContainerRef branch instead, whose class is
+   "vega-lite-renderer-container" (derived from the plugin name) —
+   so for every plugin-rendered chart these !important rules matched nothing.
+   That dead-CSS gap is why the plugin grew so much imperative JS sizing to
+   compensate. Both class names are now covered. */
 .vega-lite-container canvas,
-.vega-lite-container svg {
+.vega-lite-container svg,
+.vega-lite-renderer-container canvas,
+.vega-lite-renderer-container svg {
     max-width: 100% !important;
     width: 100% !important;
     height: auto !important;
 }
  
 /* Ensure Vega-Lite embeds are responsive */
-.vega-lite-container .vega-embed {
+.vega-lite-container .vega-embed,
+.vega-lite-renderer-container .vega-embed {
     width: 100% !important;
     max-width: 100% !important;
     height: auto !important;
@@ -1827,7 +1837,8 @@ body:not(.dark) .token.attr-name {
     overflow: visible !important;
 }
  
-.vega-lite-container .vega-embed > div {
+.vega-lite-container .vega-embed > div,
+.vega-lite-renderer-container .vega-embed > div {
     width: 100% !important;
     max-width: 100% !important;
     height: auto !important;

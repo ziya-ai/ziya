@@ -142,6 +142,38 @@ export interface LayoutConfig {
   SUBTITLE_H: number;
 }
 
+/**
+ * Maximum field bit-width the renderer will honour for geometry. A field's
+ * pixel width is `bits * BIT_W`; SVG rejects negative `width`/`x` and any
+ * non-finite value ("Infinity"). A single degenerate field bit-width (e.g.
+ * -8 → negative rect width that silently fails to paint, or 1e308 →
+ * `1e308 * BIT_W` overflows Number.MAX_VALUE to Infinity, corrupting the
+ * shared bit-offset accumulator and bleeding sibling fields off-canvas)
+ * therefore causes silent per-field data loss and layout corruption.
+ * 65536 bits is far beyond any real protocol field yet keeps
+ * `bits * BIT_W` (max 56) safely under Number.MAX_SAFE_INTEGER.
+ */
+export const PACKET_MAX_FIELD_BITS = 65536;
+
+/**
+ * Coerce a field bit-width to a value safe to feed SVG geometry arithmetic
+ * (`fx = base + off * BIT_W`, `fw = bits * BIT_W`). Pure and DOM-free so it
+ * is unit-testable in isolation.
+ *
+ * Rules (general, spec-agnostic — a no-op for every well-formed spec whose
+ * field widths are small positive integers):
+ *   - non-finite (NaN, Infinity, null→NaN) or non-number → 0 (renders as an
+ *     invisible zero-width marker instead of an invalid attribute)
+ *   - negative                                            → 0 (SVG forbids negative width)
+ *   - > PACKET_MAX_FIELD_BITS                             → clamped to the cap
+ *   - otherwise                                           → unchanged
+ */
+export function sanitizeFieldBits(bits: unknown): number {
+  const n = typeof bits === 'number' ? bits : Number(bits);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(n, PACKET_MAX_FIELD_BITS);
+}
+
 export function defaultLayout(bitWidth: number): LayoutConfig {
   // Scale bit cell width so total grid stays reasonable
   const BIT_W = bitWidth <= 8 ? 56 : bitWidth <= 16 ? 36 : bitWidth <= 32 ? 24 : 16;

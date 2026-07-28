@@ -49,8 +49,17 @@ const DEFAULT_GROUP_COLORS = [
 function isForceDirectedSpec(spec: any): boolean {
   if (typeof spec !== 'object' || spec === null) return false;
 
+  // "d3" is a renderer-FAMILY name, not a concrete diagram type. A spec of
+  // { type: "d3", layout: "force-directed"|"force", nodes, links } must map
+  // onto this concrete plugin — otherwise no plugin's canHandle matches,
+  // findPluginForSpec returns undefined, and the D3Renderer orchestrator
+  // retries to a ~35s timeout (silent data loss / hang). See ledger Issue 3.
   const type = spec.type;
-  if (type !== 'force-directed' && type !== 'force') return false;
+  const layout = spec.layout;
+  const isForceType = type === 'force-directed' || type === 'force';
+  const isD3Family =
+    type === 'd3' && (layout === 'force-directed' || layout === 'force');
+  if (!isForceType && !isD3Family) return false;
 
   // Nodes/links can be at top level or nested under data
   const nodes = spec.nodes || spec.data?.nodes;
@@ -77,7 +86,23 @@ export const forceDirectedPlugin: D3RenderPlugin = {
   render: (container: HTMLElement, d3: any, spec: any, isDarkMode: boolean): (() => void) => {
     // Normalize spec: extract nodes/links from either location
     const nodes: ForceNode[] = (spec.nodes || spec.data?.nodes || []).map((n: any) => ({ ...n }));
-    const links: ForceLink[] = (spec.links || spec.data?.links || []).map((l: any) => ({ ...l }));
+    const rawLinks: ForceLink[] = (spec.links || spec.data?.links || []).map((l: any) => ({ ...l }));
+
+    // Sanitize links against the actual node set. d3.forceLink().id() throws an
+    // uncaught "node not found" error when a link's source/target id does not
+    // resolve to a node — a single dangling reference aborts the entire render
+    // (silent hang to timeout). Drop links whose endpoints are not present so
+    // the whole class of malformed/dangling-edge specs renders the valid subset
+    // instead of failing. See ledger Issue 3.
+    const nodeIds = new Set<string>(
+      nodes.map((n) => (n && n.id != null ? String(n.id) : '')).filter((id) => id !== '')
+    );
+    const endpointId = (e: string | ForceNode): string =>
+      typeof e === 'object' && e !== null ? String((e as ForceNode).id) : String(e);
+    const links: ForceLink[] = rawLinks.filter(
+      (l) => nodeIds.has(endpointId(l.source)) && nodeIds.has(endpointId(l.target))
+    );
+
     const style: ForceStyle = spec.style || {};
 
     const width = spec.width || 700;
