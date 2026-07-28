@@ -16,7 +16,14 @@ Reproduces the two real trigger messages observed live in session:
 
 import pytest
 
-from app.cli import _response_looks_incomplete, _CLI_INTENT_PHRASES
+from unittest.mock import AsyncMock, patch
+
+from app.cli import (
+    _response_looks_incomplete,
+    _CLI_INTENT_PHRASES,
+    _adjudicate_continuation,
+    _looks_truncated,
+)
 
 
 class TestTruncationDetection:
@@ -148,6 +155,124 @@ class TestPhraseListIntegrity:
     def test_phrase_list_is_nonempty_and_lowercase(self):
         assert len(_CLI_INTENT_PHRASES) > 0
         assert all(p == p.lower() for p in _CLI_INTENT_PHRASES)
+
+
+# The substring prefilter above cannot tell a genuine dangling announcement
+# from an intent phrase in quoted content or one that was actually carried
+# out.  _adjudicate_continuation wraps it with cheap-model adjudication.
+# Every expected value below was measured against the real implementation.
+
+GENUINE_DANGLING = (
+    "I have applied the change to the handler.\n\n"
+    "Now let me run the test suite to confirm nothing regressed."
+)
+
+QUOTED_INTENT = (
+    "You asked about this line from the log:\n\n"
+    '    "Now let me run the test suite to confirm."\n\n'
+    "That phrase comes from the trace output, not from me. The counter is at five."
+)
+
+SATISFIED_INTENT = (
+    "Let me verify the running copy actually changed.\n\n"
+    "I ran the hash comparison and both files match at md5 966d2668. "
+    "The installed copy is current."
+)
+
+TRUNCATED_AND_INTENT = (
+    "Here is a long paragraph of explanation that easily exceeds one hundred "
+    "characters so the truncation trigger fires independently of anything "
+    "else at all.\n\nNow let me check the config"
+)
+
+PURELY_TRUNCATED = (
+    "Here is a long paragraph of explanation that easily exceeds one hundred "
+    "characters and simply stops without any terminal punctuation at all"
+)
+
+
+def _judge(**kwargs):
+    """Patch the judge at its source module.
+
+    _adjudicate_continuation imports judge_dangling_intent INSIDE the
+    function body, so the name is resolved at call time and patching the
+    source module is what takes effect.
+    """
+    return patch(
+        "app.services.intent_judge.judge_dangling_intent",
+        new=AsyncMock(**kwargs),
+    )
+
+
+class TestJudgeGate:
+    """The judge overrules the prefilter's intent verdict, not its
+    truncation verdict."""
+
+    async def test_genuine_dangling_intent_still_continues(self):
+        # The whole point of the feature: a real unexecuted announcement
+        # must survive the judge, or the gate has just disabled it.
+        assert _response_looks_incomplete(GENUINE_DANGLING) == (True, True)
+        with _judge(return_value=True):
+            assert await _adjudicate_continuation(GENUINE_DANGLING) == (True, True)
+
+    async def test_quoted_intent_phrase_is_suppressed(self):
+        # Prefilter matches the quoted phrase; judge overrules.
+        assert _response_looks_incomplete(QUOTED_INTENT) == (True, True)
+        with _judge(return_value=False):
+            assert await _adjudicate_continuation(QUOTED_INTENT) == (False, False)
+
+    async def test_satisfied_intent_is_suppressed(self):
+        # The live false positive: announces work in the opening line and
+        # then actually does it.
+        assert _response_looks_incomplete(SATISFIED_INTENT) == (True, True)
+        with _judge(return_value=False):
+            assert await _adjudicate_continuation(SATISFIED_INTENT) == (False, False)
+
+    async def test_truncation_survives_a_negative_judge_verdict(self):
+        # A response that is BOTH truncated and intent-matching must still
+        # continue on truncation alone after the judge drops the intent
+        # trigger.  Regression guard for collapsing both triggers into one
+        # boolean at the call site.
+        assert _response_looks_incomplete(TRUNCATED_AND_INTENT) == (True, True)
+        assert _looks_truncated(TRUNCATED_AND_INTENT) is True
+        with _judge(return_value=False):
+            assert await _adjudicate_continuation(TRUNCATED_AND_INTENT) == (True, False)
+
+
+class TestJudgeGateCost:
+    async def test_pure_truncation_makes_no_model_call(self):
+        # The judge is billable.  It must run ONLY when intent is the
+        # trigger, never on the common truncation path.
+        assert _response_looks_incomplete(PURELY_TRUNCATED) == (True, False)
+        mock = AsyncMock(return_value=True)
+        with patch("app.services.intent_judge.judge_dangling_intent", new=mock):
+            assert await _adjudicate_continuation(PURELY_TRUNCATED) == (True, False)
+        assert mock.await_count == 0
+
+    async def test_complete_response_makes_no_model_call(self):
+        mock = AsyncMock(return_value=True)
+        with patch("app.services.intent_judge.judge_dangling_intent", new=mock):
+            assert await _adjudicate_continuation(
+                "The change is applied and all 26 tests pass."
+            ) == (False, False)
+        assert mock.await_count == 0
+
+
+class TestJudgeGateFailsClosed:
+    async def test_judge_exception_does_not_abort_the_turn(self):
+        # judge_dangling_intent guards its own transport errors, but an
+        # ImportError on the inline import -- or anything else escaping it --
+        # would propagate out of ask() and kill the turn.  Losing one
+        # auto-continue is strictly better.
+        with _judge(side_effect=RuntimeError("transport exploded")):
+            assert await _adjudicate_continuation(GENUINE_DANGLING) == (False, False)
+
+    async def test_cancellation_still_propagates(self):
+        # CancelledError is a BaseException in 3.8+, so the fail-closed
+        # `except Exception` must NOT swallow genuine cancellation.
+        with _judge(side_effect=__import__("asyncio").CancelledError()):
+            with pytest.raises(__import__("asyncio").CancelledError):
+                await _adjudicate_continuation(GENUINE_DANGLING)
 
 
 if __name__ == "__main__":

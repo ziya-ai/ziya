@@ -22,6 +22,7 @@ except ImportError:
 del _sys
 
 import logging
+import unicodedata
 
 """
 Ziya CLI - Clean command-line interface.
@@ -118,6 +119,36 @@ _CLI_INTENT_PHRASES = (
 )
 
 
+def _strip_decorative(response: str) -> str:
+    """Drop trailing decoration so the real terminal punctuation is visible.
+
+    Emoji (So), modifier symbols such as skin tones (Sk), and format/joining
+    chars such as ZWJ and variation selectors (Cf, Mn): "shall we continue?
+    \U0001F604" hands the turn back to the user exactly as "shall we
+    continue?" does, and must not be misread as mid-sentence truncation.
+    """
+    stripped = response.rstrip()
+    while stripped and unicodedata.category(stripped[-1]) in ('So', 'Sk', 'Cf', 'Mn'):
+        stripped = stripped[:-1].rstrip()
+    return stripped
+
+
+def _looks_truncated(response: str) -> bool:
+    """True iff the response ends mid-thought -- the truncation trigger alone,
+    independent of the unexecuted-intent trigger.
+
+    Split out so the async call site can re-derive the truncation verdict
+    after the intent judge overrules the phrase prefilter, without
+    duplicating these conditions.
+    """
+    stripped = _strip_decorative(response)
+    return (
+        stripped.endswith(':') or
+        stripped.endswith('...') or
+        (len(stripped) > 100 and stripped[-1] not in '.!?)')
+    )
+
+
 def _response_looks_incomplete(response: str) -> Tuple[bool, bool]:
     """Decide whether a diff-free model response should be auto-continued.
 
@@ -130,19 +161,71 @@ def _response_looks_incomplete(response: str) -> Tuple[bool, bool]:
         tool call, and does NOT end in '?' (a question is the model handing
         the turn back to the user, not narrating unfinished work -- don't
         nudge that case).
+
+    The intent scan is restricted to the response TAIL (the same window
+    app/services/intent_judge.extract_tail hands the judge), not the whole
+    body.  A response that OPENS with "Let me verify X." and then actually
+    verifies X with tool calls is complete; matching the phrase anywhere in
+    the body fired on exactly that case and auto-continued a finished turn.
+    Only a phrase still present in the closing paragraphs is evidence of an
+    announcement the response never got back to.
+
+    Trailing emoji and other decorative symbols are stripped before the
+    punctuation checks: "shall we continue? \U0001F604" hands the turn back
+    to the user exactly as "shall we continue?" does, and must not be
+    misread as mid-sentence truncation.
     """
-    stripped = response.rstrip()
+    stripped = _strip_decorative(response)
     yields_to_user = stripped.endswith('?')
+    from app.services.intent_judge import extract_tail
     has_unexecuted_intent = (
         not yields_to_user
-        and any(p in stripped.lower() for p in _CLI_INTENT_PHRASES)
+        and any(p in extract_tail(stripped).lower() for p in _CLI_INTENT_PHRASES)
     )
-    looks_incomplete = (
-        stripped.endswith(':') or
-        stripped.endswith('...') or
-        (len(stripped) > 100 and not stripped[-1] in '.!?)') or
-        has_unexecuted_intent
-    )
+    looks_incomplete = _looks_truncated(response) or has_unexecuted_intent
+    return looks_incomplete, has_unexecuted_intent
+
+
+async def _adjudicate_continuation(response: str) -> Tuple[bool, bool]:
+    """Full continuation verdict for a diff-free response: cheap phrase
+    prefilter, then cheap-model adjudication of the intent trigger.
+
+    Returns (should_continue, intent_confirmed) -- the same shape as
+    _response_looks_incomplete, but with the judge applied.
+
+    Extracted from ask() so the judge gate is reachable from a unit test;
+    inline it could only be exercised by driving an entire turn.
+
+    The judge runs ONLY when intent is the trigger, so a purely truncated
+    response costs no model call.  A "no" verdict drops the intent trigger
+    and re-derives the truncation verdict alone, so a response that was
+    BOTH truncated and intent-matching still continues on truncation.
+    """
+    looks_incomplete, has_unexecuted_intent = _response_looks_incomplete(response)
+    if looks_incomplete and has_unexecuted_intent:
+        # Substring prefilter cannot tell a genuine dangling announcement
+        # from an intent phrase inside quoted content, a conditional-on-the-
+        # user future ("once you apply it, I'll run the suite"), or a
+        # negated/past-tense disclaimer -- all of which have false-positived
+        # here.  Mirror the executor's judge gate.
+        # Fail-closed: transport error or "no" drops the intent trigger
+        # (costing one lost auto-continue) rather than risking a wrong
+        # "continue" (a full-context primary-model round trip).
+        # judge_dangling_intent already returns False on transport failure,
+        # but guard the CALL too: an ImportError on the inline import, or any
+        # unexpected error escaping the judge, would otherwise propagate out
+        # of ask() and abort the turn -- a strictly worse outcome than
+        # skipping one auto-continue.
+        verdict = False
+        try:
+            from app.services.intent_judge import judge_dangling_intent
+            verdict = await judge_dangling_intent(response)
+        except Exception as e:
+            print(f"\033[90m[trace] intent judge unavailable ({type(e).__name__}), not continuing\033[0m", file=sys.stderr)
+        if not verdict:
+            print("\033[90m[trace] intent judge: response complete, not continuing\033[0m", file=sys.stderr)
+            has_unexecuted_intent = False
+            looks_incomplete = _looks_truncated(response)
     return looks_incomplete, has_unexecuted_intent
 
 
@@ -716,6 +799,28 @@ def resolve_files(paths: List[str], root: str) -> List[str]:
                     files.append(os.path.relpath(f, root))
     
     return sorted(set(files))
+
+
+def add_auto_included_docs(files: List[str], root: str) -> List[str]:
+    """Union AGENTS.md / README.md keys into ``files`` so CLI sessions get the
+    same auto-included project guidance the GUI seeds via
+    /api/default-included-folders (see folder_service.collect_documentation_file_keys
+    and frontend/src/context/FolderContext.tsx). AGENTS.md is collected
+    recursively; README.md only at the project root, mirroring that endpoint.
+    """
+    try:
+        from app.services.folder_service import collect_documentation_file_keys
+        doc_keys = collect_documentation_file_keys(
+            root, is_inside_workspace=True, user_codebase_dir=root, readme_root_only=True,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug("Could not collect auto-included docs for CLI session: %s", e)
+        return files
+    merged = list(files)
+    for dk in doc_keys:
+        if dk not in merged:
+            merged.append(dk)
+    return sorted(set(merged))
 
 
 def read_stdin_if_available() -> Optional[str]:
@@ -1510,7 +1615,7 @@ class CLI:
                 # its own bounded intent-continuation logic, but this OUTER
                 # loop has no visibility into whether that budget was
                 # exhausted, judged the turn complete, or never engaged.
-                looks_incomplete, _has_unexecuted_intent = _response_looks_incomplete(response)
+                looks_incomplete, _has_unexecuted_intent = await _adjudicate_continuation(response)
                 if looks_incomplete:
                     if _has_unexecuted_intent:
                         print("\033[90m[trace] response narrates unexecuted intent, auto-continuing\033[0m", file=sys.stderr)
