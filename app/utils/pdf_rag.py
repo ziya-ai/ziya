@@ -1035,6 +1035,12 @@ def should_use_pdf_rag(path: str, fast_token_estimate: Optional[int] = None) -> 
       2. If *fast_token_estimate* is provided and exceeds the threshold, use it.
       3. Otherwise do a cheap page-count check: anything over 60 pages is
          considered large (avoids extracting text twice just to decide).
+      4. A PDF under the page-count cutoff can still be pathologically
+         expensive for pdfplumber if its object graph is dense (many
+         annotations/embedded objects per page — each page's ``page.chars``
+         build walks and resolves every indirect object via
+         ``resolve_all``/``process_object``). Catch that case with a cheap
+         byte-level ``endobj`` count over a bounded prefix of the file.
     """
     if not path or not os.path.isfile(path) or not path.lower().endswith(".pdf"):
         return False
@@ -1053,6 +1059,60 @@ def should_use_pdf_rag(path: str, fast_token_estimate: Optional[int] = None) -> 
             return True
     except Exception:
         return False
+    if page_count > 0 and _has_dense_object_graph(path, page_count):
+        return True
+    return False
+
+
+# Objects-per-page ratio above which a PDF is considered "object-dense"
+# even though it's short on pages — a proxy for the per-object resolution
+# cost pdfplumber pays while building page.chars/page.objects. Override via
+# ZIYA_PDF_RAG_OBJECT_DENSITY_THRESHOLD.
+DEFAULT_OBJECT_DENSITY_PER_PAGE = 150
+
+# Cap the raw byte scan so a huge but sparse PDF doesn't cost a full read
+# just to answer this heuristic. Object density is assumed roughly uniform
+# across the file, so a prefix scan is representative.
+_OBJECT_SCAN_MAX_BYTES = 20 * 1024 * 1024  # 20 MiB
+
+
+def _get_object_density_threshold() -> int:
+    raw = ziya_env("ZIYA_PDF_RAG_OBJECT_DENSITY_THRESHOLD")
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            logger.warning(
+                f"Invalid ZIYA_PDF_RAG_OBJECT_DENSITY_THRESHOLD={raw!r}, using default"
+            )
+    return DEFAULT_OBJECT_DENSITY_PER_PAGE
+
+
+def _has_dense_object_graph(path: str, page_count: int) -> bool:
+    """Cheap heuristic: count ``endobj`` markers in a bounded byte scan and
+    compare objects-per-page against a threshold.
+
+    This intentionally avoids parsing the PDF a second time and avoids
+    reading arbitrarily large files in full — it's a single bounded
+    ``bytes.count`` pass, orders of magnitude cheaper than the per-object
+    ``resolve_all`` walk pdfplumber performs while extracting.
+    """
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read(_OBJECT_SCAN_MAX_BYTES)
+    except OSError as e:
+        logger.debug(f"Could not read {path} for object-density check: {e}")
+        return False
+    object_count = data.count(b"endobj")
+    density = object_count / page_count
+    if density >= _get_object_density_threshold():
+        logger.info(
+            f"PDF {path} has ~{object_count} objects (scanned "
+            f"{len(data)} bytes) over {page_count} pages ({density:.0f}/page) "
+            f"— routing through RAG stub despite being under the "
+            f"page-count cutoff"
+        )
+        return True
     return False
 
 

@@ -192,6 +192,13 @@ _VARS: List[EnvVar] = [
            cli_flag="--yolo"),
     EnvVar("ZIYA_PREFER_REGIONAL_INFERENCE", bool, False, EnvCategory.FEATURES,
            "Prefer regional inference profiles over cross-region for Bedrock."),
+    EnvVar("ZIYA_WHISPER_MODEL", str, "base", EnvCategory.FEATURES,
+           "Local faster-whisper model used for voice transcription."),
+    EnvVar("ZIYA_WHISPER_DEVICE", str, "cpu", EnvCategory.FEATURES,
+           "Device used for voice transcription: 'cpu', 'cuda', or 'auto'."),
+    EnvVar("ZIYA_WHISPER_COMPUTE_TYPE", str, "int8", EnvCategory.FEATURES,
+           "CTranslate2 compute type used by faster-whisper, such as 'int8', "
+           "'float16', or 'default'."),
 
     # ── Diff Application ──────────────────────────────────────────────────
     EnvVar("ZIYA_ENABLE_DIFF_VALIDATION", bool, True, EnvCategory.DIFF,
@@ -239,6 +246,10 @@ _VARS: List[EnvVar] = [
            "Local sentence-transformer model for PDF search."),
     EnvVar("ZIYA_PDF_RAG_TOKEN_THRESHOLD", int, None, EnvCategory.GROUNDING,
            "Token threshold above which PDF RAG activates."),
+    EnvVar("ZIYA_PDF_RAG_OBJECT_DENSITY_THRESHOLD", int, None, EnvCategory.GROUNDING,
+           "Indirect-objects-per-page ratio above which a PDF under the "
+           "page-count cutoff is still routed through PDF RAG (proxy for "
+           "pdfplumber per-object resolution cost)."),
 
     # ── Security ──────────────────────────────────────────────────────────
     EnvVar("ZIYA_ENCRYPTION_KEY", str, None, EnvCategory.SECURITY,
