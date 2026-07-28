@@ -64,7 +64,7 @@ class TestDeepSeekModelConfigs:
         assert family_cfg.get("supports_thinking") is True
 
     def test_v3_has_openai_wrapper_class(self):
-        cfg = MODEL_CONFIGS["bedrock"]["deepseek-v3"]
+        cfg = MODEL_CONFIGS["bedrock"]["deepseek-v3.1"]
         assert cfg.get("wrapper_class") == "OpenAIBedrock"
 
     def test_v3_2_has_openai_wrapper_class(self):
@@ -72,7 +72,7 @@ class TestDeepSeekModelConfigs:
         assert cfg.get("wrapper_class") == "OpenAIBedrock"
 
     def test_v3_region_locked_to_us_west_2(self):
-        cfg = MODEL_CONFIGS["bedrock"]["deepseek-v3"]
+        cfg = MODEL_CONFIGS["bedrock"]["deepseek-v3.1"]
         assert cfg.get("region") == "us-west-2"
 
     def test_v3_2_region_locked_to_us_west_2(self):
@@ -80,14 +80,14 @@ class TestDeepSeekModelConfigs:
         assert cfg.get("region") == "us-west-2"
 
     def test_all_deepseek_models_share_family(self):
-        for name in ["deepseek-r1", "deepseek-v3", "deepseek-v3.2"]:
+        for name in ["deepseek-r1", "deepseek-v3.1", "deepseek-v3.2"]:
             cfg = MODEL_CONFIGS["bedrock"][name]
             assert cfg.get("family") == "deepseek", (
                 f"{name} should have family 'deepseek'"
             )
 
     def test_all_deepseek_have_128k_context(self):
-        for name in ["deepseek-r1", "deepseek-v3", "deepseek-v3.2"]:
+        for name in ["deepseek-r1", "deepseek-v3.1", "deepseek-v3.2"]:
             cfg = MODEL_CONFIGS["bedrock"][name]
             assert cfg.get("context_window") == 128000
 
@@ -120,7 +120,7 @@ class TestDeepSeekFactoryRouting:
 
     def test_v3_routes_to_openai_provider(self):
         """V3 has wrapper_class=OpenAIBedrock → OpenAIBedrockProvider."""
-        assert self._route("deepseek-v3") == "OpenAIBedrockProvider"
+        assert self._route("deepseek-v3.1") == "OpenAIBedrockProvider"
 
     def test_v3_2_routes_to_openai_provider(self):
         """V3.2 has wrapper_class=OpenAIBedrock → OpenAIBedrockProvider."""
@@ -200,7 +200,7 @@ class TestDeepSeekNewlinePreservation:
         from app.providers.openai_bedrock import OpenAIBedrockProvider
         from app.providers.base import TextDelta, StreamEnd, UsageEvent
 
-        cfg = MODEL_CONFIGS["bedrock"]["deepseek-v3"]
+        cfg = MODEL_CONFIGS["bedrock"]["deepseek-v3.1"]
         mock_chunks = _make_openai_stream_chunks(self.MARKDOWN_WITH_NEWLINES)
 
         # The provider does getattr(self.bedrock, 'client', self.bedrock)
@@ -425,7 +425,7 @@ class TestDeepSeekToolSuppression:
         from app.providers.openai_bedrock import OpenAIBedrockProvider
         from app.providers.base import ProviderConfig
 
-        cfg = MODEL_CONFIGS["bedrock"]["deepseek-v3"]
+        cfg = MODEL_CONFIGS["bedrock"]["deepseek-v3.1"]
 
         with patch("app.providers.bedrock_client_cache.get_persistent_bedrock_client",
                    return_value=MagicMock(client=MagicMock())):
@@ -562,7 +562,7 @@ class TestDeepSeekRegionHandling:
         """OpenAIBedrockProvider should honor the region from model config."""
         from app.providers.openai_bedrock import OpenAIBedrockProvider
 
-        cfg = MODEL_CONFIGS["bedrock"]["deepseek-v3"]
+        cfg = MODEL_CONFIGS["bedrock"]["deepseek-v3.1"]
 
         with patch("app.providers.bedrock_client_cache.get_persistent_bedrock_client",
                    return_value=MagicMock(client=MagicMock())) as mock_get:
@@ -588,7 +588,7 @@ class TestDeepSeekRegionHandling:
 
     def test_v3_uses_direct_model_id(self):
         """V3 uses direct model ID (no cross-region prefix)."""
-        cfg = MODEL_CONFIGS["bedrock"]["deepseek-v3"]
+        cfg = MODEL_CONFIGS["bedrock"]["deepseek-v3.1"]
         model_id = cfg["model_id"]["us"]
         assert not model_id.startswith("us."), (
             f"V3 should use direct model ID, got: {model_id}"
