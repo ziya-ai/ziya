@@ -110,6 +110,8 @@ interface ChatContext {
     setFolderFileSelections: Dispatch<SetStateAction<Map<string, string[]>>>;
     deleteFolder: (id: string) => Promise<void>;
     setDisplayMode: (conversationId: string, mode: 'raw' | 'pretty') => void;
+    // Saved per-conversation model pin (alias, or null to clear).  Persists.
+    setConversationModelPreference: (conversationId: string, model: string | null) => void;
     toggleMessageMute: (conversationId: string, messageIndex: number) => void;
     editingMessageIndex: number | null;
     setEditingMessageIndex: (index: number | null) => void;
@@ -1824,6 +1826,40 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 ) as HTMLElement | null;
                 if (targetMessage) {
                     targetMessage.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    // The target exists now, but layout ABOVE it keeps changing
+                    // for a second or more after a cross-conversation jump:
+                    //   1. Conversation.tsx expands its render window in steps
+                    //      (8 → 20 → 50 → all) over successive rAFs, prepending
+                    //      messages above the target.
+                    //   2. LazyMarkdownRenderer mounts each settled message's
+                    //      real content off an idle queue, replacing rough
+                    //      estimatedHeight placeholders with real heights.
+                    // A single scrollIntoView therefore drifts off the seam and
+                    // lands at a "random" spot. Re-center until the target's
+                    // position stabilizes (or the settle window elapses) so the
+                    // final resting position is the actual seam.
+                    const settleStart = performance.now();
+                    let lastTop: number | null = null;
+                    let stableChecks = 0;
+                    const settle = () => {
+                        const el = chatContainer.querySelector(
+                            `[data-message-index="${messageIndex}"]`
+                        ) as HTMLElement | null;
+                        if (!el) return;
+                        // Measure drift since the previous re-center BEFORE
+                        // scrolling again; near-zero drift twice in a row means
+                        // layout above the seam has settled.
+                        const top = el.getBoundingClientRect().top;
+                        stableChecks = (lastTop !== null && Math.abs(top - lastTop) < 4)
+                            ? stableChecks + 1 : 0;
+                        lastTop = top;
+                        el.scrollIntoView({ behavior: 'auto', block: 'center' });
+                        if (stableChecks < 3 && (performance.now() - settleStart) < 3000) {
+                            setTimeout(settle, 150);
+                        }
+                    };
+                    // Start after the initial smooth scroll begins to settle.
+                    setTimeout(settle, 400);
                     targetMessage.style.transition = 'background-color 0.5s ease';
                     targetMessage.style.backgroundColor = isDarkMode ? 'rgba(24, 144, 255, 0.2)' : 'rgba(24, 144, 255, 0.1)';
                     setTimeout(() => { targetMessage.style.backgroundColor = ''; }, 2000);
@@ -3942,6 +3978,28 @@ export function ChatProvider({ children }: ChatProviderProps) {
         });
     }, [queueSave]);
 
+    // Saved per-conversation model pin.  Mirrors setDisplayMode: mutate the
+    // record + queueSave so it syncs to the server and survives restarts.
+    // model=null clears the saved pref (falls back to folder → project →
+    // server default).  The tab-ephemeral layer is handled separately in
+    // modelPins.ts; this is the durable layer.
+    const setConversationModelPreference = useCallback((conversationId: string, model: string | null) => {
+        setConversations(prev => {
+            const updated = prev.map(conv => {
+                if (conv.id === conversationId) {
+                    return {
+                        ...conv,
+                        modelPreference: model,
+                        _version: Date.now(),
+                    };
+                }
+                return conv;
+            });
+            queueSave(updated, { changedIds: [conversationId] }).catch(console.error);
+            return updated;
+        });
+    }, [queueSave]);
+
     const toggleMessageMute = useCallback((conversationId: string, messageIndex: number) => {
         setConversations(prev => {
             const updated = prev.map(conv => {
@@ -4458,6 +4516,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         updateFolder,
         deleteFolder,
         setDisplayMode,
+        setConversationModelPreference,
         moveConversationToFolder,
         dbError,
         isLoadingConversation,
@@ -4476,11 +4535,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
         forkConversation,
         setChatContexts,
     }), [
+        // NOTE: every field returned in the value object above must appear
+        // here.  An omitted field makes the memo return a stale object for
+        // that field until an unrelated listed dep happens to change --
+        // consumers (and the derived ActiveChat/ConversationList memos that
+        // key off these references) then never see the update.
         currentMessages,
         editingMessageIndex,
         dynamicTitleLength,
         lastResponseIncomplete,
         setDynamicTitleLength,
+        streamedContentMap,
+        reasoningContentMap,
         setStreamedContentMap,
         getProcessingState,
         updateProcessingState,
@@ -4489,13 +4555,16 @@ export function ChatProvider({ children }: ChatProviderProps) {
         streamingConversations,
         addStreamingConversation,
         removeStreamingConversation,
+        runningTaskConversations,
+        addRunningTaskConversation,
+        removeRunningTaskConversation,
         setConversations,
         setIsStreaming,
         conversations,
         currentConversationId,
-        currentMessages,
         setCurrentConversationId,
         addMessageToConversation,
+        loadConversationAndScrollToMessage,
         loadConversation,
         startNewChat,
         startNewEphemeralChat,
@@ -4516,17 +4585,19 @@ export function ChatProvider({ children }: ChatProviderProps) {
         updateFolder,
         deleteFolder,
         setDisplayMode,
+        setConversationModelPreference,
         moveConversationToFolder,
         dbError,
         isLoadingConversation,
+        isProjectSwitching,
         toggleMessageMute,
-        editingMessageIndex,
         setEditingMessageIndex,
         throttlingRecoveryData,
         setThrottlingRecoveryData,
         moveChatToGroup,
         toggleConversationGlobal,
         moveConversationToProject,
+        copyConversationToProject,
         moveFolderToProject,
         toggleFolderGlobal,
         forkConversation,
