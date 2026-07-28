@@ -45,11 +45,17 @@ const formatTs = (ts?: number): string => {
 };
 
 export const TaskRunInspector: React.FC<Props> = ({
-  live, onClear, defaultOpen = false,
+  live, onClear, defaultOpen = false, runStatus,
 }) => {
   const [open, setOpen] = useState(defaultOpen);
   const [tab, setTab] = useState<TabKey>('live');
 
+  // The tabs' honest "trace not retained after the run completed" branches
+  // were unreachable: this prop was declared and passed by the parent but
+  // never destructured, so isTerminal was always undefined and a finished
+  // run reported "No tool calls yet." as though it had been silent.
+  const isTerminal = runStatus != null
+    && ['done', 'failed', 'cancelled'].includes(runStatus);
   const eventCount = live.events.length;
   const toolCount = live.toolCalls.length;
   const blockCount = Object.keys(live.text).filter(k => live.text[k]?.length).length;
@@ -94,8 +100,8 @@ export const TaskRunInspector: React.FC<Props> = ({
 
       <div className="tc-tile__inspector-body">
         {tab === 'live' && <LiveTextTab text={live.text} iterations={live.iterations} />}
-        {tab === 'tools' && <ToolCallsTab calls={live.toolCalls} iterations={live.iterations} />}
-        {tab === 'events' && <EventsTab events={live.events} />}
+        {tab === 'tools' && <ToolCallsTab calls={live.toolCalls} iterations={live.iterations} isTerminal={isTerminal} />}
+        {tab === 'events' && <EventsTab events={live.events} isTerminal={isTerminal} />}
       </div>
     </details>
   );
