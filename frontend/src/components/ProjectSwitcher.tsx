@@ -202,7 +202,7 @@ export const ProjectSwitcher: React.FC = () => {
                       setIsOpen(false);
                       setSettingsProjectId(project.id);
                     }}
-                    onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.color = '#d4d4d4'; e.currentTarget.style.background = 'rgba(255,255,255,0.1)'; }}
+                    onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.color = isDarkMode ? '#d4d4d4' : '#333'; e.currentTarget.style.background = isDarkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)'; }}
                     onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.5'; e.currentTarget.style.color = '#888'; e.currentTarget.style.background = 'transparent'; }}
                     title="Project settings"
                   />

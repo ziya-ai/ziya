@@ -27,6 +27,7 @@ import {
 import FolderIcon from '@mui/icons-material/Folder';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import HomeIcon from '@mui/icons-material/Home';
+import { getParentDirectory } from '../utils/directoryPaths';
 
 interface DirectoryEntry {
   name: string;
@@ -94,8 +95,7 @@ export const DirectoryBrowserModal: React.FC<DirectoryBrowserModalProps> = ({
 
   // Navigate up one level
   const handleNavigateUp = () => {
-    const parentPath = browsePath.split('/').slice(0, -1).join('/') || '/';
-    browseDirectory(parentPath);
+    browseDirectory(getParentDirectory(browsePath));
   };
 
   // Handle path input submission
@@ -162,7 +162,6 @@ export const DirectoryBrowserModal: React.FC<DirectoryBrowserModalProps> = ({
         sx: { 
           height: '70vh', 
           maxHeight: 600,
-          bgcolor: '#1a1a1a',
           backgroundImage: 'none'
         } 
       }}
@@ -181,19 +180,19 @@ export const DirectoryBrowserModal: React.FC<DirectoryBrowserModalProps> = ({
         <Box sx={{ 
           px: 2, 
           py: 1.5, 
-          bgcolor: '#141414', 
+          bgcolor: 'background.default',
           borderBottom: 1, 
           borderColor: 'divider',
           overflow: 'auto',
           '&::-webkit-scrollbar': { height: 6 },
-          '&::-webkit-scrollbar-track': { background: '#0a0a0a' },
-          '&::-webkit-scrollbar-thumb': { background: '#333', borderRadius: 3 }
+          '&::-webkit-scrollbar-track': { backgroundColor: 'transparent' },
+          '&::-webkit-scrollbar-thumb': { backgroundColor: 'action.disabled', borderRadius: 3 }
         }}>
           <Breadcrumbs 
             separator="/" 
             sx={{ 
               fontSize: '12px',
-              '& .MuiBreadcrumbs-separator': { color: '#555' }
+              '& .MuiBreadcrumbs-separator': { color: 'text.disabled' }
             }}
           >
             <Link
@@ -215,7 +214,7 @@ export const DirectoryBrowserModal: React.FC<DirectoryBrowserModalProps> = ({
                 component="button"
                 onClick={() => navigateToBreadcrumb(idx)}
                 sx={{ 
-                  color: idx === getBreadcrumbs().length - 1 ? '#fff' : 'primary.main',
+                  color: idx === getBreadcrumbs().length - 1 ? 'text.primary' : 'primary.main',
                   textDecoration: 'none',
                   cursor: 'pointer',
                   fontWeight: idx === getBreadcrumbs().length - 1 ? 500 : 400,
