@@ -205,6 +205,10 @@ class GoogleDirectProvider(LLMProvider):
             return
 
         max_retries = 3
+        # True-doubling throttle backoff, 5s floor: 5, 10, 20, 40.
+        # (Previously 2*(2**attempt) undershot at low n — 2s, 4s, 8s —
+        # barely more than linear before it caught up.)
+        base_delay = 5
         for attempt in range(max_retries + 1):
             content_yielded = False
             try:
@@ -231,7 +235,7 @@ class GoogleDirectProvider(LLMProvider):
                     )
                     retryable = False
                 if retryable and attempt < max_retries:
-                    delay = 2 * (2 ** attempt)
+                    delay = base_delay * (2 ** attempt)
                     logger.warning(
                         f"GoogleDirectProvider: {classified.name} retry "
                         f"{attempt + 1}/{max_retries} in {delay}s"
