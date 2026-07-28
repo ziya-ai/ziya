@@ -198,7 +198,13 @@ class TestIntentionallyBroadHandlers:
         """streaming_tool_executor.py main iteration handler has comment."""
         import inspect
         from app.streaming_tool_executor import StreamingToolExecutor
-        source = inspect.getsource(StreamingToolExecutor.stream_with_tools)
+        # The handler this test guards lives in _stream_with_tools_impl, NOT
+        # in the public stream_with_tools wrapper.  The wrapper/impl split
+        # left this assertion pointing at a 3.7K-char shim that only manages
+        # pending_feedback refcounts and the CancelledError log, so the test
+        # would have passed even if the documented handler were deleted
+        # outright.  Assert against the method that actually contains it.
+        source = inspect.getsource(StreamingToolExecutor._stream_with_tools_impl)
         # Look for the documented broad handler
         assert 'Intentionally broad' in source or 'intentionally broad' in source
 

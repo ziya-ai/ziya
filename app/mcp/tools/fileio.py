@@ -67,14 +67,27 @@ def _resolve_and_validate(relative_path: str, workspace_path: str, allowed_absol
     try:
         lexical.relative_to(base)
     except ValueError:
+        resolved = Path(cleaned).resolve() if os.path.isabs(cleaned) else lexical
+        # The lexical check above can spuriously fail for an absolute path
+        # that IS legitimately inside the project when an ancestor of
+        # `workspace_path` resolves through a symlink (e.g. macOS
+        # /var/folders/... -> /private/var/folders/...): `base` is already
+        # resolved, but `lexical` (built from the raw absolute `cleaned`)
+        # is not, so `relative_to` compares an unresolved path against a
+        # resolved one. Re-check containment on the resolved path before
+        # falling through to the external-prefix / traversal-error path.
+        if os.path.isabs(cleaned):
+            try:
+                resolved.relative_to(base)
+                return resolved
+            except ValueError:
+                pass
         if allowed_absolute_prefixes and os.path.isabs(cleaned):
-            resolved = Path(cleaned).resolve()
             if _is_under_allowed_prefix(resolved, allowed_absolute_prefixes):
                 return resolved
         raise ValueError(
             f"resolved path escapes project root: {resolved} is not under {base}"
         )
-
     # Resolve symlinks for the actual I/O path, now that containment is confirmed.
     return lexical.resolve()
 
@@ -140,6 +153,71 @@ def _get_task_readable_prefixes() -> list:
         except Exception:
             continue
     return out
+
+
+def _get_include_dir_prefixes() -> list:
+    """Return absolute-path prefixes for user-approved external paths.
+
+    Two independent mechanisms feed this allowlist:
+
+    1. ``--include`` CLI flag / ``ZIYA_INCLUDE_DIRS`` env var — set once
+       at process launch.
+    2. The "Add External Path" feature exposed via Project Settings
+       (``/api/add-explicit-paths``), which is the mechanism actually
+       used in practice.  Approved paths live in the in-memory
+       ``app.services.folder_service._explicit_external_paths`` set,
+       which is populated both when a path is added during the running
+       session and when it is restored from persisted
+       ``ProjectStorage`` settings (``externalPaths``) at startup.
+       ``app/utils/file_utils.py`` already trusts this same set as the
+       allowlist for ``[external]``-prefixed chat-context paths — this
+       reuses that precedent rather than introducing a second source
+       of truth.
+
+    These paths are surfaced in the file tree and can be added to chat
+    context, but were not previously recognized by
+    ``_resolve_and_validate``, so read-only tools (``file_read``,
+    ``file_list``, ``pdf_outline``/``pdf_read_pages``/``pdf_search``)
+    rejected them as "outside the allowed directories" even after the
+    user explicitly approved them via Project Settings.
+    Relative entries are skipped: they resolve inside the project root
+    and are already permitted by the containment check.
+    """
+    raw = os.environ.get("ZIYA_INCLUDE_DIRS", "")
+    out: list = []
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        expanded = os.path.expanduser(entry)
+        if os.path.isabs(expanded):
+            out.append(expanded)
+
+    try:
+        from app.services.folder_service import _explicit_external_paths
+        for entry in _explicit_external_paths:
+            expanded = os.path.expanduser(str(entry).strip())
+            if expanded and os.path.isabs(expanded):
+                out.append(expanded)
+    except Exception:
+        pass
+
+    return out
+
+
+def _get_all_readable_prefixes() -> list:
+    """Return the full allowlist of absolute-path prefixes a caller may
+    read from: safe-write paths, active task-granted paths, and
+    user-approved external paths (``--include``/``ZIYA_INCLUDE_DIRS``
+    and Project Settings "Add External Path").
+
+    Any read-oriented tool (``file_read``, ``file_list``, the ``pdf_*``
+    tools, ``context_add_file``, and future tools) should build its
+    ``allowed_absolute_prefixes`` from this single function instead of
+    hand-assembling the three lists, so that a newly recognized path
+    source only needs to be added here once.
+    """
+    return _get_safe_write_paths() + _get_task_readable_prefixes() + _get_include_dir_prefixes()
 
 
 def _check_task_scope_write(relative_path: str, project_root: str) -> bool:
@@ -253,10 +331,7 @@ class FileReadTool(BaseMCPTool):
         offset: int = int(kwargs.get("offset") or 1)
 
         try:
-            allowed_prefixes = (
-                _get_safe_write_paths()
-                + _get_task_readable_prefixes()
-            )
+            allowed_prefixes = _get_all_readable_prefixes()
             resolved = _resolve_and_validate(path_str, project_root, allowed_absolute_prefixes=allowed_prefixes)
         except ValueError as e:
             return {"error": True, "message": str(e)}
@@ -585,7 +660,8 @@ class FileListTool(BaseMCPTool):
                     "message": "glob pattern may not contain '..' path segments"}
 
         try:
-            resolved = _resolve_and_validate(path_str, project_root, allowed_absolute_prefixes=_get_safe_write_paths())
+            allowed_prefixes = _get_all_readable_prefixes()
+            resolved = _resolve_and_validate(path_str, project_root, allowed_absolute_prefixes=allowed_prefixes)
         except ValueError as e:
             return {"error": True, "message": str(e)}
 
