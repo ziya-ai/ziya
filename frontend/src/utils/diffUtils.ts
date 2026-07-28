@@ -396,3 +396,62 @@ export function findSupersededDiffIndices(diffs: string[]): Set<number> {
     }
     return superseded;
 }
+
+/**
+ * Find superseded file sections across fenced diff blocks.
+ *
+ * A single ```diff fence may contain several `diff --git` sections. The
+ * lower-level detector intentionally operates on single-file diffs, so flatten
+ * every block into file sections before comparing them, then map matches back
+ * to their block and file-section indices. This prevents a correction to one
+ * file from superseding unrelated files that happened to share its fence.
+ */
+export function findSupersededDiffParts(
+    diffBlocks: string[]
+): Map<number, Set<number>> {
+    const flattened: {
+        blockIndex: number;
+        fileIndex: number;
+        text: string;
+    }[] = [];
+
+    diffBlocks.forEach((block, blockIndex) => {
+        const starts: number[] = [];
+        const headerRegex = /^diff --git .*$/gm;
+        let match: RegExpExecArray | null;
+
+        while ((match = headerRegex.exec(block)) !== null) {
+            starts.push(match.index);
+        }
+
+        // Headerless or single-file blocks remain one comparison unit.
+        if (starts.length <= 1) {
+            flattened.push({ blockIndex, fileIndex: 0, text: block });
+            return;
+        }
+
+        starts.forEach((start, fileIndex) => {
+            const end = starts[fileIndex + 1] ?? block.length;
+            flattened.push({
+                blockIndex,
+                fileIndex,
+                text: block.slice(start, end).trim(),
+            });
+        });
+    });
+
+    const supersededFlatIndices = findSupersededDiffIndices(
+        flattened.map(part => part.text)
+    );
+    const result = new Map<number, Set<number>>();
+
+    supersededFlatIndices.forEach(flatIndex => {
+        const part = flattened[flatIndex];
+        if (!result.has(part.blockIndex)) {
+            result.set(part.blockIndex, new Set());
+        }
+        result.get(part.blockIndex)!.add(part.fileIndex);
+    });
+
+    return result;
+}
