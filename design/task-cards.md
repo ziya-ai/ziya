@@ -121,6 +121,20 @@ Scope has three facets:
 At runtime these are the exact permissions the task has. Nothing
 inherited from parent, nothing intersected from card-level.
 
+### The tool floor
+
+One exception to "exactly what you listed": a small set of tools is
+always available regardless of scope — `emit_artifact`,
+`render_diagram`, and the bead bookkeeping tools. These are harness
+plumbing, not the task's permissions: the executor unconditionally
+instructs every task to declare its artifacts, so a scope that omits
+`emit_artifact` doesn't restrict the task, it breaks it (the model is
+told to emit and given nothing to emit with). None of them can write
+a file, run a command, or reach the network, so the floor widens no
+meaningful surface. Tool-name matching is prefix-tolerant: a scope
+listing `run_shell_command` matches the registered
+`mcp_run_shell_command`. See `app/utils/task_tool_floor.py`.
+
 ## Artifacts
 
 An artifact is what flows out of a task. Structure:

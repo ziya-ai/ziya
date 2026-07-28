@@ -3,6 +3,7 @@ Task run API endpoints.
 """
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import Response
 from typing import List, Optional, Dict, Any
 
 from ..models.task_card import Artifact
@@ -194,6 +195,70 @@ async def list_iterations(
         "offset": offset,
         "items": matches[offset:offset + limit],
     }
+
+
+@router.get("/{run_id}/artifacts/{filename}")
+async def get_artifact_blob(project_id: str, run_id: str, filename: str):
+    """Serve one frozen artifact blob for a run.
+
+    Reads through ``read_artifact_blob`` so at-rest-encrypted bytes are
+    decrypted transparently — the browser must never receive an ALE
+    envelope.
+
+    Security: ``filename`` is attacker-influenced (artifact names come
+    from model output), so path resolution goes through
+    ``resolve_artifact_blob_path``, which refuses separators, ``..``,
+    and any symlink resolving outside the run's own artifacts dir.
+    Content type is mapped from a fixed extension table and only
+    known-safe types are served ``inline``; everything else (notably
+    HTML/JS/SVG, which could execute in Ziya's origin) is forced to
+    ``application/octet-stream`` with ``Content-Disposition:
+    attachment``.
+    """
+    from ..utils.task_artifacts import (
+        INLINE_SAFE_MEDIA_TYPES,
+        media_type_for_filename,
+        read_artifact_blob,
+        resolve_artifact_blob_path,
+    )
+
+    storage = _get_storage(project_id)
+    run = storage.get(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Task run not found")
+
+    artifacts_dir = get_project_dir(project_id) / "task_runs" / run_id / "artifacts"
+    path, err = resolve_artifact_blob_path(str(artifacts_dir), filename)
+    if err:
+        # "not found" is a 404; every other rejection is a bad request.
+        if "not found" in err:
+            raise HTTPException(status_code=404, detail=err)
+        raise HTTPException(status_code=400, detail=err)
+
+    blob = read_artifact_blob(str(path))
+    if blob is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Artifact exists but could not be read or decrypted",
+        )
+
+    media_type = media_type_for_filename(filename)
+    if media_type in INLINE_SAFE_MEDIA_TYPES:
+        disposition = f'inline; filename="{path.name}"'
+    else:
+        media_type = "application/octet-stream"
+        disposition = f'attachment; filename="{path.name}"'
+
+    return Response(
+        content=blob,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": disposition,
+            # Frozen at emit time and never rewritten — safe to cache hard.
+            "Cache-Control": "private, max-age=31536000, immutable",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.get("/{run_id}/iterations/{block_id}/{index}", response_model=Artifact)

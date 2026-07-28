@@ -20,6 +20,7 @@ import { Spin } from 'antd';
 import type { Block, Artifact } from '../../types/task_card';
 import type { TaskRunBlockState } from '../../types/task_run';
 import { MarkdownRenderer } from '../MarkdownRenderer';
+import { ArtifactViewer } from './ArtifactViewer';
 import { blockConfigLines, blockEmoji, blockLabel } from './runMapModel';
 
 interface Props {
@@ -35,9 +36,14 @@ interface Props {
   iterationArtifact: Artifact | null;
   iterationLoading: boolean;
   iterationError: string | null;
+  /** Needed to resolve frozen-render blob URLs for emitted artifacts. */
+  projectId?: string;
+  runId?: string;
 }
 
-const ArtifactBody: React.FC<{ artifact: Artifact }> = ({ artifact }) => (
+const ArtifactBody: React.FC<{
+  artifact: Artifact; projectId?: string; runId?: string;
+}> = ({ artifact, projectId, runId }) => (
   <>
     {artifact.summary
       ? <MarkdownRenderer markdown={artifact.summary} enableCodeApply={false}
@@ -47,6 +53,18 @@ const ArtifactBody: React.FC<{ artifact: Artifact }> = ({ artifact }) => (
       <ul className="tc-detail__decisions">
         {artifact.decisions.slice(0, 12).map((d, i) => <li key={i}>{d}</li>)}
       </ul>
+    )}
+    {/* Emitted output artifacts.  Without this the parts a task
+        declared via emit_artifact are persisted, served by the API,
+        and then never shown for a focused block/iteration — the same
+        starved-render-path class as the run tile's earlier gap. */}
+    {artifact.outputs && artifact.outputs.length > 0 && projectId && runId && (
+      <div className="tc-detail__section">
+        <div className="tc-detail__section-label">
+          Output artifacts ({artifact.outputs.length})
+        </div>
+        <ArtifactViewer parts={artifact.outputs} projectId={projectId} runId={runId} />
+      </div>
     )}
   </>
 );
