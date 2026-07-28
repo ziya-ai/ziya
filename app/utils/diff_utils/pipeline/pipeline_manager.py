@@ -92,6 +92,30 @@ def _run_language_validation(pipeline: "DiffPipeline", file_path: str, original_
         )
         if is_valid:
             return
+        # Language-agnostic gate on rollback: the application stage is not a
+        # linter. If every succeeded hunk landed at an EXACT anchor
+        # (system_patch / git_apply), the written output faithfully realizes the
+        # diff the author wrote — any resulting syntactic invalidity is inherent
+        # to that diff, not introduced by us, so we must NOT roll back. Only when
+        # a FUZZY stage (difflib / LLM resolver) placed a hunk could the applier
+        # itself have mislaid a line and corrupted the result; that is the only
+        # case where post-hoc validity is our concern.
+        exact_stages = {PipelineStage.SYSTEM_PATCH, PipelineStage.GIT_APPLY}
+        applied_stages = {
+            tracker.current_stage
+            for tracker in pipeline.result.hunks.values()
+            if tracker.status == HunkStatus.SUCCEEDED
+        }
+        used_fuzzy = any(stage not in exact_stages for stage in applied_stages)
+        if not used_fuzzy:
+            logger.info(
+                f"Language validation found invalid syntax in {file_path}, but all "
+                f"succeeded hunks applied at exact anchors "
+                f"({[s.value for s in applied_stages] or 'none'}); treating the "
+                f"invalidity as inherent to the diff and keeping the faithfully "
+                f"applied result. ({lang_err})"
+            )
+            return
         logger.warning(f"Language validation failed for {file_path}: {lang_err}")
         # Roll the file back so the user is never left with broken code on disk.
         try:
