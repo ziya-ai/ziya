@@ -448,7 +448,17 @@ class TokenCalibrator:
     def _get_current_model_family(self) -> str:
         """Get the current model family being used."""
         try:
-            from app.agents.models import ModelManager
+            # A cold import of app.agents.models transitively pulls in
+            # langchain/transformers/torch (~6s). estimate_tokens_fast calls
+            # this from the directory-scan thread, so a cold import stalls the
+            # first file estimate of every fresh process. Only use
+            # ModelManager when it is ALREADY loaded (normal server case);
+            # otherwise fall back to default display ratios.
+            import sys
+            _mm_mod = sys.modules.get('app.agents.models')
+            if _mm_mod is None:
+                return 'default'
+            ModelManager = _mm_mod.ModelManager
             
             endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
             model_name = os.environ.get("ZIYA_MODEL")
@@ -836,9 +846,14 @@ class TokenCalibrator:
         is_structured_doc = ext in structured_doc_formats
         
         # Get model family from state
-        from app.agents.models import ModelManager
         try:
-            state = ModelManager.get_state()
+            # Same guard as _get_current_model_family: never trigger the
+            # heavy app.agents.models import chain from the estimate path.
+            import sys
+            _mm_mod = sys.modules.get('app.agents.models')
+            if _mm_mod is None:
+                raise RuntimeError('app.agents.models not loaded')
+            state = _mm_mod.ModelManager.get_state()
             model_id = state.get('model_id', '')
             model_family = self._extract_model_family(model_id)
         except Exception:
