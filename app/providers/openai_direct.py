@@ -87,7 +87,10 @@ class OpenAIDirectProvider(LLMProvider):
         request_kwargs = self._build_request(messages, system_content, tools, config)
 
         max_retries = 4
-        base_delay = 2
+        # True-doubling throttle backoff, 5s floor: 5, 10, 20, 40, 80s.
+        # (Previously base_delay*(2**n)+1 undershot at low n — 3s, 5s,
+        # 9s, 17s — barely more than linear before it caught up.)
+        base_delay = 5
 
         for retry_attempt in range(max_retries + 1):
             content_yielded = False
@@ -115,7 +118,7 @@ class OpenAIDirectProvider(LLMProvider):
                     )
                     retryable = False
                 if retryable and retry_attempt < max_retries:
-                    delay = base_delay * (2 ** retry_attempt) + 1
+                    delay = base_delay * (2 ** retry_attempt)
                     logger.warning(
                         f"OpenAIDirectProvider: {classified.name} retry "
                         f"{retry_attempt + 1}/{max_retries + 1} after {delay}s"
