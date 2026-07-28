@@ -95,6 +95,9 @@ Provider credentials are read directly from the environment (not the `ZIYA_*` na
 | `ZIYA_AST_RESOLUTION` | str | `medium` | `--ast-resolution` | AST context level: `disabled`, `minimal`, `medium`, `detailed`, `comprehensive` |
 | `ZIYA_EPHEMERAL_MODE` | bool | `false` | `--ephemeral` | Don't persist conversations beyond the current session |
 | `ZIYA_ENABLE_NOVA_GROUNDING` | bool | `false` | — | Enable the Nova Web Grounding tool for web search |
+| `ZIYA_WHISPER_MODEL` | str | `base` | — | Local faster-whisper model used for voice transcription |
+| `ZIYA_WHISPER_DEVICE` | str | `cpu` | — | Voice-transcription device: `cpu`, `cuda`, or `auto` |
+| `ZIYA_WHISPER_COMPUTE_TYPE` | str | `int8` | — | CTranslate2 compute type used for voice transcription |
 
 ## Diff Application
 
