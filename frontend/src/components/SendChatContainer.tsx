@@ -7,8 +7,8 @@ import { useScrollContext } from '../context/ScrollContext';
 import { useProject } from '../context/ProjectContext';
 import { useFolderContext } from '../context/FolderContext';
 import { useSendPayload } from '../hooks/useSendPayload';
-import { Button, message } from 'antd';
-import { SendOutlined, PictureOutlined, PaperClipOutlined } from '@ant-design/icons';
+import { Button, message, Tooltip } from 'antd';
+import { AudioOutlined, SendOutlined, PictureOutlined, PaperClipOutlined } from '@ant-design/icons';
 import { ImageAttachment, DocumentAttachment, Message } from '../utils/types';
 import { DocumentChip } from './FileChip';
 import { useTheme } from '../context/ThemeContext';
@@ -19,6 +19,8 @@ import { detectIncompleteResponse } from '../utils/responseUtils';
 import { parseSlashCommand, dispatchCommand } from '../services/commandApi';
 import { useServerStatus } from '../context/ServerStatusContext';
 import { v4 as uuidv4 } from 'uuid';
+import { COMPOSER_INJECT_EVENT, ComposerInjectDetail } from '../utils/composerInject';
+import { captureEditorRange, chooseRecordingMimeType, insertTranscript } from '../utils/voiceInput';
 
 interface SendChatContainerProps {
   fixed?: boolean;
@@ -36,9 +38,22 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   const [feedbackStatus, setFeedbackStatus] = useState<'idle' | 'pending' | 'queued' | 'delivered' | 'undelivered'>('idle');
   const [throttlingError, setThrottlingError] = useState<any>(null);
   const [showContinueButton, setShowContinueButton] = useState(false);
+  const [voiceStatus, setVoiceStatus] = useState<{
+    available: boolean;
+    install_hint?: string | null;
+  } | null>(null);
+  const [voiceState, setVoiceState] = useState<'idle' | 'installing' | 'recording' | 'transcribing'>('idle');
   const fileInputRef = useRef<HTMLInputElement>(null);
   const editorRef = useRef<HTMLDivElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const microphoneStreamRef = useRef<MediaStream | null>(null);
+  const recordingRangeRef = useRef<Range | null>(null);
+  const recordingConversationRef = useRef<string | null>(null);
   const draftsRef = useRef<Map<string, string>>(new Map());
+  // Pending composer injections keyed by conversation id — a resume/branch
+  // pickup message targeting a conversation we haven't finished switching
+  // to is stashed here and applied after the switch (post draft-restore).
+  const pendingInjectRef = useRef<Map<string, string>>(new Map());
   // Initialize with undefined to avoid circular dependency during initial render
   const prevConversationIdRef = useRef<string | undefined>(undefined);
 
@@ -71,8 +86,9 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
 
   // Disabled when: no content, OR this conversation is streaming, OR server is unreachable
   const isDisabled = useMemo(() =>
-    (!inputValue.trim() && attachedImages.length === 0 && attachedDocuments.length === 0) || isCurrentlyStreaming || !isServerReachable,
-    [inputValue, attachedImages.length, attachedDocuments.length, isCurrentlyStreaming, isServerReachable]
+    (!inputValue.trim() && attachedImages.length === 0 && attachedDocuments.length === 0)
+      || isCurrentlyStreaming || !isServerReachable || voiceState !== 'idle',
+    [inputValue, attachedImages.length, attachedDocuments.length, isCurrentlyStreaming, isServerReachable, voiceState]
   );
 
   // Memoized button title for accessibility
@@ -106,6 +122,24 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     window.addEventListener('modelChanged', onModelChanged);
     return () => window.removeEventListener('modelChanged', onModelChanged);
   }, [currentConversationId]);
+
+  // Probe the local transcription backend. If its dependency is absent, the
+  // microphone remains actionable and installs it into Ziya's own Python
+  // environment on first use.
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/transcribe/status')
+      .then(response => response.ok ? response.json() : Promise.reject())
+      .then(status => {
+        if (!cancelled) setVoiceStatus(status);
+      })
+      .catch(() => {
+        if (!cancelled) setVoiceStatus({ available: false });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Listen for tool feedback ready events
   useEffect(() => {
@@ -232,16 +266,49 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     // Clear images for the new conversation
     setAttachedImages([]);
 
-    // Restore draft for the conversation we're switching to, or clear
+    // Restore draft for the conversation we're switching to, or clear.
+    // A pending composer injection (resume/branch pickup message) wins over
+    // the saved draft — it was explicitly requested by a user action and
+    // must survive the restore that would otherwise clobber it.
     if (editorRef.current) {
-      const savedDraft = draftsRef.current.get(currentConversationId);
-      editorRef.current.innerHTML = savedDraft || '';
-      // Sync inputValue state with restored content
-      const { text } = serializeEditorContent();
-      setInputValue(text);
+      const pendingInject = pendingInjectRef.current.get(currentConversationId);
+      if (pendingInject != null) {
+        pendingInjectRef.current.delete(currentConversationId);
+        editorRef.current.textContent = pendingInject;
+        editorRef.current.focus();
+        setInputValue(pendingInject);
+      } else {
+        const savedDraft = draftsRef.current.get(currentConversationId);
+        editorRef.current.innerHTML = savedDraft || '';
+        // Sync inputValue state with restored content
+        const { text } = serializeEditorContent();
+        setInputValue(text);
+      }
     }
 
     prevConversationIdRef.current = currentConversationId;
+  }, [currentConversationId]);
+
+  // Composer injection — external surfaces (Backlog Browser resume, seam
+  // ribbon, branch pickup) drop text into the composer, focused but never
+  // auto-sent.  Applied immediately when the target conversation is already
+  // current; otherwise stashed for the conversation-switch effect above.
+  useEffect(() => {
+    const handleInject = (event: CustomEvent<ComposerInjectDetail>) => {
+      const detail = event.detail;
+      if (!detail?.conversationId || typeof detail.text !== 'string') return;
+      if (detail.conversationId === currentConversationId) {
+        if (editorRef.current) {
+          editorRef.current.textContent = detail.text;
+          editorRef.current.focus();
+        }
+        setInputValue(detail.text);
+      } else {
+        pendingInjectRef.current.set(detail.conversationId, detail.text);
+      }
+    };
+    document.addEventListener(COMPOSER_INJECT_EVENT, handleInject as unknown as EventListener);
+    return () => document.removeEventListener(COMPOSER_INJECT_EVENT, handleInject as unknown as EventListener);
   }, [currentConversationId]);
 
   // Process image files (from file input or drag-drop)
@@ -675,6 +742,176 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     const { text } = serializeEditorContent();
     setInputValue(text);
   }, [serializeEditorContent]);
+
+  const transcribeRecording = useCallback(async (
+    blob: Blob,
+    targetConversationId: string,
+  ) => {
+    if (!blob.size) {
+      setVoiceState('idle');
+      return;
+    }
+
+    setVoiceState('transcribing');
+    const loadingKey = `voice-transcription-${targetConversationId}`;
+    message.loading({
+      content: 'Transcribing locally…',
+      key: loadingKey,
+      duration: 0,
+    });
+
+    try {
+      const formData = new FormData();
+      const extension = blob.type.includes('ogg')
+        ? 'ogg'
+        : blob.type.includes('mp4')
+          ? 'mp4'
+          : 'webm';
+      formData.append('file', blob, `recording.${extension}`);
+
+      const response = await fetch('/api/transcribe', {
+        method: 'POST',
+        body: formData,
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.detail || 'Voice transcription failed');
+      }
+
+      const result = await response.json();
+      if (targetConversationId !== currentConversationId) {
+        message.warning({
+          content: 'The conversation changed before transcription completed; the transcript was not inserted.',
+          key: loadingKey,
+        });
+        return;
+      }
+
+      if (
+        editorRef.current
+        && insertTranscript(editorRef.current, result.text || '', recordingRangeRef.current)
+      ) {
+        handleInput();
+        message.success({ content: 'Transcription added', key: loadingKey });
+      } else {
+        message.info({ content: 'No speech detected', key: loadingKey });
+      }
+    } catch (error) {
+      message.error({
+        content: error instanceof Error ? error.message : 'Voice transcription failed',
+        key: loadingKey,
+      });
+    } finally {
+      recordingRangeRef.current = null;
+      recordingConversationRef.current = null;
+      setVoiceState('idle');
+    }
+  }, [currentConversationId, handleInput]);
+
+  const startVoiceRecording = useCallback(async () => {
+    if (voiceState !== 'idle' || voiceStatus === null) {
+      return;
+    }
+
+    if (typeof MediaRecorder === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      message.error('Microphone recording is not supported in this browser or context');
+      return;
+    }
+
+    if (!voiceStatus.available) {
+      setVoiceState('installing');
+      const loadingKey = 'voice-backend-install';
+      message.loading({
+        content: 'Installing local transcription support…',
+        key: loadingKey,
+        duration: 0,
+      });
+      try {
+        const response = await fetch('/api/transcribe/install', { method: 'POST' });
+        if (!response.ok) {
+          const error = await response.json().catch(() => ({}));
+          throw new Error(error.detail || 'Unable to install local transcription support');
+        }
+        const status = await response.json();
+        setVoiceStatus({ available: true });
+        message.success({
+          content: status.installed
+            ? 'Local transcription installed'
+            : 'Local transcription is ready',
+          key: loadingKey,
+        });
+      } catch (error) {
+        setVoiceState('idle');
+        message.error({
+          content: error instanceof Error
+            ? error.message
+            : 'Unable to install local transcription support',
+          key: loadingKey,
+        });
+        return;
+      }
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mimeType = chooseRecordingMimeType();
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      const chunks: BlobPart[] = [];
+      const targetConversationId = currentConversationId;
+
+      microphoneStreamRef.current = stream;
+      mediaRecorderRef.current = recorder;
+      recordingConversationRef.current = targetConversationId;
+      recordingRangeRef.current = editorRef.current
+        ? captureEditorRange(editorRef.current)
+        : null;
+
+      recorder.ondataavailable = event => {
+        if (event.data.size > 0) chunks.push(event.data);
+      };
+      recorder.onstop = () => {
+        const recordingType = recorder.mimeType || mimeType || 'audio/webm';
+        stream.getTracks().forEach(track => track.stop());
+        microphoneStreamRef.current = null;
+        mediaRecorderRef.current = null;
+        void transcribeRecording(new Blob(chunks, { type: recordingType }), targetConversationId);
+      };
+      recorder.onerror = () => {
+        stream.getTracks().forEach(track => track.stop());
+        microphoneStreamRef.current = null;
+        mediaRecorderRef.current = null;
+        setVoiceState('idle');
+        message.error('Microphone recording failed');
+      };
+
+      recorder.start();
+      setVoiceState('recording');
+    } catch (error) {
+      setVoiceState('idle');
+      message.error(
+        error instanceof DOMException && error.name === 'NotAllowedError'
+          ? 'Microphone permission was denied'
+          : 'Unable to access the microphone',
+      );
+    }
+  }, [currentConversationId, transcribeRecording, voiceState, voiceStatus]);
+
+  const stopVoiceRecording = useCallback(() => {
+    const recorder = mediaRecorderRef.current;
+    if (recorder?.state === 'recording') {
+      setVoiceState('transcribing');
+      recorder.stop();
+    }
+  }, []);
+
+  useEffect(() => () => {
+    const recorder = mediaRecorderRef.current;
+    if (recorder) {
+      recorder.onstop = null;
+      if (recorder.state === 'recording') recorder.stop();
+    }
+    microphoneStreamRef.current?.getTracks().forEach(track => track.stop());
+  }, []);
 
   // Remove an inline image element from the editor and clean up state
   const removeImageElement = useCallback((imgElement: HTMLElement) => {
@@ -1136,16 +1373,59 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
             )}
             {/* Attach file button (images need vision; documents always work) */}
             {!isCurrentlyStreaming && (
-              <Button
-                icon={supportsVision ? <PictureOutlined /> : <PaperClipOutlined />}
-                onClick={() => fileInputRef.current?.click()}
-                title={supportsVision ? "Attach image or document" : "Attach document"}
-                disabled={attachedImages.length >= 5}
-                style={{
-                  backgroundColor: 'transparent',
-                  borderColor: isDarkMode ? '#424242' : '#d9d9d9'
-                }}
-              />
+              <Tooltip title={supportsVision ? "Attach image or document" : "Attach document"}>
+                <span style={{ display: 'inline-flex' }}>
+                  <Button
+                    icon={supportsVision ? <PictureOutlined /> : <PaperClipOutlined />}
+                    onClick={() => fileInputRef.current?.click()}
+                    aria-label={supportsVision ? "Attach image or document" : "Attach document"}
+                    disabled={attachedImages.length >= 5}
+                    style={{
+                      backgroundColor: 'transparent',
+                      borderColor: isDarkMode ? '#424242' : '#d9d9d9'
+                    }}
+                  />
+                </span>
+              </Tooltip>
+            )}
+
+            {!isCurrentlyStreaming && (
+              <Tooltip
+                title={
+                  voiceState === 'recording'
+                    ? 'Stop recording and transcribe'
+                    : voiceStatus && !voiceStatus.available
+                      ? 'Install local transcription and start recording'
+                      : typeof MediaRecorder === 'undefined' || !navigator.mediaDevices?.getUserMedia
+                        ? 'Microphone recording is not supported in this browser or context'
+                        : 'Record voice input locally'
+                }
+              >
+                <span style={{ display: 'inline-flex' }}>
+                  <Button
+                    icon={<AudioOutlined />}
+                    onClick={voiceState === 'recording' ? stopVoiceRecording : startVoiceRecording}
+                    loading={voiceState === 'installing' || voiceState === 'transcribing'}
+                    danger={voiceState === 'recording'}
+                    disabled={
+                      voiceStatus === null
+                      || voiceState === 'installing'
+                      || voiceState === 'transcribing'
+                      || typeof MediaRecorder === 'undefined'
+                      || !navigator.mediaDevices?.getUserMedia
+                    }
+                    aria-label={voiceState === 'recording' ? 'Stop voice recording' : 'Start voice recording'}
+                    style={{
+                      backgroundColor: voiceState === 'recording'
+                        ? (isDarkMode ? '#431418' : '#fff1f0')
+                        : 'transparent',
+                      borderColor: voiceState === 'recording'
+                        ? '#ff4d4f'
+                        : (isDarkMode ? '#424242' : '#d9d9d9'),
+                    }}
+                  />
+                </span>
+              </Tooltip>
             )}
 
             {/* Stop button when streaming */}
