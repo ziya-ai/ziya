@@ -294,6 +294,20 @@ export const loadPrismLanguage = async (language: string): Promise<void> => {
                     loadedLanguages.add('objective-c');
                     break;
                 }
+                case 'cpp':
+                case 'c++': {
+                    // prism-cpp calls Prism.languages.extend('c', ...) at module
+                    // eval time, so prism-c MUST be loaded first. The default
+                    // case imports prism-cpp directly, leaving 'c' undefined and
+                    // throwing "Cannot set properties of undefined".
+                    if (!window.Prism?.languages?.c) {
+                        await import('prismjs/components/prism-c');
+                    }
+                    await import('prismjs/components/prism-cpp');
+                    loadedLanguages.add('cpp');
+                    loadedLanguages.add('c++');
+                    break;
+                }
                 default:
                     if (mappedLanguage !== 'plaintext') try {
                         await import(/* webpackChunkName: "prism-[request]" */ `prismjs/components/prism-${mappedLanguage}`);
