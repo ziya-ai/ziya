@@ -34,7 +34,7 @@ from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field
 
 from app.mcp.tools.base import BaseMCPTool
-from app.mcp.tools.fileio import _resolve_and_validate, _get_safe_write_paths
+from app.mcp.tools.fileio import _resolve_and_validate, _get_all_readable_prefixes
 from app.utils.logging_utils import logger
 
 
@@ -172,12 +172,14 @@ def _resolve_chat_for_request(_kwargs: Dict[str, Any]) -> Dict[str, Any]:
 def _validate_relative_path(path_str: str, project_root: str) -> Path:
     """
     Resolve 'path_str' relative to the project root with traversal
-    rejection.  Permits absolute paths under safe-write-paths.
+    rejection.  Permits absolute paths under the shared read-allowlist
+    (safe-write paths, active task-granted paths, and user-approved
+    external paths) — see ``_get_all_readable_prefixes``.
     """
     return _resolve_and_validate(
         path_str,
         project_root,
-        allowed_absolute_prefixes=_get_safe_write_paths(),
+        allowed_absolute_prefixes=_get_all_readable_prefixes(),
     )
 
 

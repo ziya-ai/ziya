@@ -938,7 +938,14 @@ def create_secure_mcp_tools() -> List[BaseTool]:
         except (ImportError, OSError, RuntimeError) as e:
             logger.error(f"Error adding conversation management tools: {e}")
             
-    except (ImportError, OSError, RuntimeError) as e:
+    # Deliberately broad: this factory's contract (see docstring and the
+    # not-initialized branch above) is to degrade gracefully and always
+    # return a tool list, even in degraded/no-MCP mode. The block above
+    # calls into MCP manager/connection-pool/plugin code whose failure
+    # modes cannot be fully enumerated, so narrowing this to specific
+    # exception types would let an unanticipated error (e.g. a bug in a
+    # third-party MCP client) crash agent startup instead of falling back.
+    except Exception as e:
         logger.warning(f"Failed to create secure MCP tools: {str(e)}")
         return []
     
