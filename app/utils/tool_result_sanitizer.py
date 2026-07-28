@@ -181,6 +181,37 @@ def _extract_text_from_base64(b64_data: str, suffix: str) -> Optional[str]:
                 pass
 
 
+def strip_shell_echo_header(result_text: str, tool_name: str = '') -> str:
+    """Strip the single echoed ``$ command`` header line that the shell
+    server prepends to ``run_shell_command`` output for shell-like display
+    (see app/mcp_servers/shell_server.py, ``output = f"$ {command}\\n"``).
+
+    The model-facing conversation history does not need the echo — the
+    command is already present in the model's own tool_use input.  Only
+    the LEADING header line is removed, and only for shell-tool results.
+
+    Replaces an inline executor heuristic that removed EVERY line
+    starting with ``$ `` from ANY tool result containing ``"$ "``,
+    which corrupted legitimate output (docs, Makefiles, shell
+    transcripts) that merely contains such lines.
+    """
+    if not isinstance(result_text, str) or not result_text.startswith('$ '):
+        return result_text
+    # Normalize away repeated mcp_ prefixes (mirrors the executor's
+    # _normalize_tool_name) so 'mcp_run_shell_command' matches too.
+    name = tool_name or ''
+    while name.startswith('mcp_'):
+        name = name[4:].lstrip('$_')
+    if name != 'run_shell_command':
+        return result_text
+    # Header only, no output: preserve the old empty-string behavior —
+    # the demarcation wrapper downstream turns this into an explicit
+    # "completed successfully with no output" note for the model.
+    if '\n' not in result_text:
+        return ''
+    return result_text.split('\n', 1)[1].strip()
+
+
 def _cap_size(text: str, tool_name: str) -> str:
     """Hard cap on result size with a note about truncation."""
     if len(text) <= MAX_CONTEXT_RESULT_CHARS:

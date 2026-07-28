@@ -8,6 +8,7 @@ import pytest
 
 from app.utils.tool_result_sanitizer import (
     sanitize_for_context,
+    strip_shell_echo_header,
     _replace_base64_blobs,
     _extract_text_from_base64,
     _detect_office_format,
@@ -243,3 +244,41 @@ class TestSanitizeForContext:
         text = '$ ls -la\ntotal 42\ndrwxr-xr-x  5 user  staff  160 Jan  1 12:00 .\n' * 10
         result = sanitize_for_context(text, 'run_shell_command')
         assert result == text
+
+
+class TestStripShellEchoHeader:
+    """strip_shell_echo_header — removes only the leading '$ command'
+    echo line from run_shell_command results, replacing the executor's
+    old strip-every-'$ '-line heuristic that corrupted legitimate
+    output containing such lines."""
+
+    def test_strips_leading_echo_from_shell_result(self):
+        text = '$ ls -la\ntotal 42\nfile.txt'
+        assert strip_shell_echo_header(text, 'run_shell_command') == 'total 42\nfile.txt'
+
+    def test_mcp_prefixed_tool_name_matches(self):
+        text = '$ git status\nclean'
+        assert strip_shell_echo_header(text, 'mcp_run_shell_command') == 'clean'
+
+    def test_header_only_result_becomes_empty(self):
+        # No output after the echo — old behavior produced '' here too.
+        assert strip_shell_echo_header('$ true', 'run_shell_command') == ''
+
+    def test_non_shell_tool_untouched(self):
+        text = '$ looks like shell\nbut is not'
+        assert strip_shell_echo_header(text, 'file_read') == text
+
+    def test_no_leading_echo_untouched(self):
+        text = 'total 42\n$ embedded line kept'
+        assert strip_shell_echo_header(text, 'run_shell_command') == text
+
+    def test_interior_dollar_lines_preserved(self):
+        # The regression the old heuristic caused: '$ ' lines INSIDE the
+        # output (Makefile docs, transcripts in files) must survive.
+        text = '$ cat README.md\nUsage:\n$ mytool --help\n$ mytool run\ndone'
+        expected = 'Usage:\n$ mytool --help\n$ mytool run\ndone'
+        assert strip_shell_echo_header(text, 'run_shell_command') == expected
+
+    def test_non_string_passthrough(self):
+        blocks = [{'type': 'image', 'source': {}}]
+        assert strip_shell_echo_header(blocks, 'run_shell_command') is blocks

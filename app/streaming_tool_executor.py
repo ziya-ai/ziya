@@ -10,7 +10,6 @@ import time
 from botocore.config import Config as BotoConfig
 from dataclasses import dataclass
 from typing import Dict, Any, List, AsyncGenerator, Optional
-from app.utils.conversation_filter import filter_conversation_for_model
 from app.utils.logging_utils import get_mode_aware_logger
 from app.config.env_registry import ziya_env
 from app.hallucination import scannable_line_indices
@@ -705,6 +704,19 @@ class StreamingToolExecutor:
                         and block_continue_stalls < self._BLOCK_CONTINUE_STALL_CAP):
                     return ('block_continue', 'no_prefill_block_continue',
                             ('NO_PREFILL_BLOCK', True, 'open_fence'))
+                # Inline sibling of the open-fence branch: a CLEAN stop whose
+                # text ends INSIDE an unclosed inline-code span (odd single-
+                # backtick count after paired fences are removed) is likewise
+                # objective truncation — a complete answer virtually never
+                # ends mid-span. Observed live on claude-fable-5: the 35-char
+                # reply 'The bug is clear: `DirectoryBrowser' cut mid-identifier
+                # inside an open backtick and was reported as end_turn. Same
+                # bounded continuation mechanism as open_fence.
+                if (not code_block_open and _clean_stop_blk
+                        and self._has_unclosed_inline_code(assistant_text)
+                        and block_continue_stalls < self._BLOCK_CONTINUE_STALL_CAP):
+                    return ('block_continue', 'no_prefill_block_continue',
+                            ('NO_PREFILL_BLOCK', True, 'open_inline'))
                 # Bug ① fix: a non-prefill model that announces intent to act
                 # ("Let me run the test first…") and stops on a CLEAN end_turn
                 # was previously cut off here — the intent-aware branches (b)/(e)
@@ -1270,9 +1282,18 @@ class StreamingToolExecutor:
             iteration=iteration,
         )
 
-    async def _load_and_prepare_tools(self, extra_tools=None):
+    async def _load_and_prepare_tools(self, extra_tools=None, tool_allowlist=None):
         """Load MCP tools, convert schemas, deduplicate, and prepare for provider.
-        
+
+        ``tool_allowlist`` is an optional iterable of tool names (a Task
+        block's ``scope.tools``).  When non-empty, the registered tool set is
+        narrowed to it plus the always-available floor — see
+        app/utils/task_tool_floor.py.  Enforcement lives HERE rather than at
+        the call site because this method re-derives the tool list from
+        ``create_secure_mcp_tools()``; a caller-side filter (which is what
+        task_executor did) was silently discarded, so every task ran with the
+        full tool set while its prompt claimed otherwise.
+
         Returns:
             tuple: (all_tools, bedrock_tools, builtin_tool_names, internal_tool_names, optional_only_tools)
         """
@@ -1283,6 +1304,19 @@ class StreamingToolExecutor:
         from app.mcp.enhanced_tools import DirectMCPTool, create_secure_mcp_tools
 
         all_tools = create_secure_mcp_tools()
+
+        # Apply the task-scope allowlist before anything else derives from
+        # all_tools (name sets, schemas, the provider payload) so no
+        # downstream structure can leak a filtered-out tool back in.
+        if tool_allowlist:
+            from app.utils.task_tool_floor import filter_tools_by_scope
+            _before = len(all_tools)
+            all_tools = filter_tools_by_scope(all_tools, tool_allowlist)
+            logger.info(
+                f"🔒 TOOL_SCOPE: task allowlist applied — "
+                f"{len(all_tools)}/{_before} tools exposed "
+                f"(requested: {sorted(tool_allowlist)})"
+            )
         
         builtin_tool_names = {tool.name for tool in all_tools if isinstance(tool, DirectMCPTool)}
         internal_tool_names = {
@@ -1499,7 +1533,11 @@ class StreamingToolExecutor:
             # retriable, NOT auth/credential failures.
             "UNEXPECTED_EOF_WHILE_READING", "EOF occurred in violation of protocol",
             "SSL validation failed", "SSLError", "Connection aborted",
-            "Connection broken", "EndpointConnectionError", "ConnectionClosedError"])
+            "Connection broken", "EndpointConnectionError", "ConnectionClosedError",
+            # urllib3 ProtocolError — socket closed mid-body. This list is
+            # independent of the providers' _classify_error, so the phrase must
+            # appear in BOTH or a retryable provider event still dies here.
+            "ended prematurely", "ProtocolError"])
         # Subset of is_read_timeout: the endpoint was unreachable outright
         # (refused/aborted/closed) rather than merely slow to respond. Both
         # buckets share the same retry/backoff handling below, but the
@@ -1997,7 +2035,7 @@ class StreamingToolExecutor:
         except (ImportError, KeyError, AttributeError, OSError, ValueError) as calib_error:
             logger.error(f"📊 CALIBRATION ERROR: {calib_error}")
 
-    async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None, tool_allowlist: Optional[List[str]] = None) -> AsyncGenerator[Dict[str, Any], None]:
         """Public entry point — wraps _stream_with_tools_impl with refcounted
         cleanup of the shared per-conversation pending-feedback list (see
         app.server.pending_feedback_lists).  Multiple concurrent generators
@@ -2008,6 +2046,21 @@ class StreamingToolExecutor:
         concurrent generator for that conversation_id exits, rather than
         leaking one empty list per conversation for the life of the server.
         No `await` in the `finally` — safe even during GeneratorExit teardown.
+
+        Cancellation instrumentation: CancelledError bypasses the in-loop
+        `except Exception`, so without this handler a cancelled turn leaves no
+        trace here. Logged at WARNING (not ERROR) because it has legitimate
+        origins — user cancellation and SSE client/proxy disconnect both
+        cancel the response task. It is a clue to correlate, not a fault by
+        itself.
+
+        GeneratorExit is deliberately NOT logged: the CLI consumer breaks out
+        of its `async for` on the `stream_end` chunk (app/cli.py:2128-2129),
+        which abandons this generator and raises GeneratorExit at the
+        suspended yield above. It therefore fires on every NORMAL turn and
+        means the opposite of a silent exit — an earlier revision of this
+        handler logged it at ERROR with the false claim "No stream_end was
+        emitted", firing on successful turns and burying the real signal.
         """
         if conversation_id:
             from app.server import pending_feedback_lists, pending_feedback_refcounts
@@ -2018,8 +2071,20 @@ class StreamingToolExecutor:
                 messages, tools=tools, conversation_id=conversation_id,
                 project_root=project_root, is_delegate=is_delegate,
                 extra_tools=extra_tools, cancel_event=cancel_event,
+                tool_allowlist=tool_allowlist,
             ):
                 yield chunk
+        except asyncio.CancelledError:
+            # Do NOT swallow: re-raise after logging so cancellation semantics
+            # are unchanged. This is observability only.
+            logger.warning(
+                "STREAM_CANCELLED: CancelledError propagated out of the tool "
+                "loop (conversation_id=%s). Expected on user cancellation or "
+                "client disconnect; correlate with the preceding iteration "
+                "log to tell those apart from an unintended cancellation.",
+                conversation_id,
+            )
+            raise
         finally:
             if conversation_id:
                 pending_feedback_refcounts[conversation_id] -= 1
@@ -2029,7 +2094,7 @@ class StreamingToolExecutor:
                         pending_feedback_lists.pop(conversation_id, None)
                     pending_feedback_refcounts.pop(conversation_id, None)
 
-    async def _stream_with_tools_impl(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def _stream_with_tools_impl(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None, tool_allowlist: Optional[List[str]] = None) -> AsyncGenerator[Dict[str, Any], None]:
         # --- Concurrent feedback monitor ---
         # Instead of relying solely on discrete polling points, run a
         # background task that continuously drains the feedback queue and
@@ -2745,7 +2810,7 @@ class StreamingToolExecutor:
                 # Stream via provider — yields normalized StreamEvent objects
                 from app.providers.base import (
                     TextDelta, ToolUseStart, ToolUseInput, ToolUseEnd,
-                    UsageEvent, ThinkingDelta, ErrorEvent, StreamEnd,
+                    UsageEvent, ThinkingDelta, ErrorEvent, ErrorType, StreamEnd,
                     ProcessingEvent)
                 async for stream_event in self.provider.stream_response(
                     conversation, system_content, bedrock_tools, provider_config
@@ -2846,7 +2911,22 @@ class StreamingToolExecutor:
                         else:
                             # Non-retryable (e.g. CONTEXT_LIMIT) — surface to user
                             non_retryable_error_surfaced = True
-                            yield {'type': 'error', 'content': stream_event.message}
+                            if stream_event.error_type == ErrorType.AUTH:
+                                # Route through the same credential-help
+                                # template every other auth-error surface
+                                # uses, instead of showing raw provider text.
+                                from app.plugins import get_active_auth_provider
+                                _auth_provider = get_active_auth_provider()
+                                _help = (_auth_provider.get_credential_help_message()
+                                          if _auth_provider else stream_event.message)
+                                yield {
+                                    'type': 'error', 'error': 'authentication_error',
+                                    'error_type': 'authentication_error',
+                                    'content': _help, 'detail': stream_event.message,
+                                    'can_retry': True, 'retry_message': _help,
+                                }
+                            else:
+                                yield {'type': 'error', 'content': stream_event.message}
                             break
                     elif isinstance(stream_event, StreamEnd):
                         chunk = {'type': 'message_stop',
@@ -3610,6 +3690,22 @@ Please retry the tool call with valid JSON. Ensure:
                 logger.debug(f"🔍 ITERATION_END_CHECK: tools_executed_this_iteration = {tools_executed_this_iteration}, tool_results count = {len(tool_results)}")
                 if tools_executed_this_iteration:
                     logger.debug(f"🔍 TOOL_RESULTS_PROCESSING: Adding {len(tool_results)} tool results to conversation")
+                    # Image-result lifecycle, phase 2: image content blocks
+                    # appended in a PRIOR iteration have now been seen by
+                    # exactly one model call — compact them to their text
+                    # summary so subsequent iterations don't re-send
+                    # hundreds of KB of base64 per diagram.
+                    from app.utils.image_result_compaction import (
+                        IMAGE_OMITTED_PLACEHOLDER, compact_prior_image_results,
+                        image_blocks_to_text,
+                    )
+                    _n_compacted = compact_prior_image_results(conversation)
+                    if _n_compacted:
+                        logger.info(
+                            f"🖼️ CONTEXT_COMPACT: compacted {_n_compacted} prior-iteration "
+                            f"image tool result(s) to text summaries"
+                        )
+                    _provider_takes_images = self.provider.supports_feature('image_tool_results')
                     provider_tool_results = []
                     iteration_had_block = False
                     for tool_result in tool_results:
@@ -3622,26 +3718,34 @@ Please retry the tool call with valid JSON. Ensure:
                         if (isinstance(raw_result, str)
                                 and "has been called repeatedly with similar arguments" in raw_result):
                             iteration_had_block = True
-                        # Structured image content (list of content blocks with
-                        # base64 images) was already shown to the model in this
-                        # iteration via tool_result_for_model.  For conversation
-                        # history (sent on every subsequent iteration), replace
-                        # with just the text summary to avoid bloating context
-                        # with hundreds of KB of base64 per diagram.
-                        if isinstance(raw_result, list):
-                            text_parts = [
-                                b.get('text', '') for b in raw_result
-                                if isinstance(b, dict) and b.get('type') == 'text'
-                            ]
-                            raw_result = ' '.join(text_parts) or '[Image result — content delivered inline above]'
-                            logger.info(f"🖼️ CONTEXT_COMPACT: Replaced image content blocks with text summary for conversation history")
+                        # Image-result lifecycle, phase 1: a FRESH image result
+                        # is appended INTACT so the NEXT model call actually
+                        # sees the image — the conversation append is the only
+                        # model-facing path (the tool_result_for_model stream
+                        # event is display plumbing that every consumer drops).
+                        # Providers whose tool-result format can't carry
+                        # content-block lists get the text summary immediately.
+                        if isinstance(raw_result, list) and not _provider_takes_images:
+                            raw_result = image_blocks_to_text(
+                                raw_result, IMAGE_OMITTED_PLACEHOLDER)
+                            logger.info(
+                                f"🖼️ CONTEXT_COMPACT: provider "
+                                f"{self.provider.provider_name!r} cannot accept image "
+                                f"tool results — sent text summary instead"
+                            )
 
                         if isinstance(raw_result, list):
                             pass  # already in correct format for provider
-                        elif isinstance(raw_result, str) and '$ ' in raw_result:
-                            lines = raw_result.split('\n')
-                            clean_lines = [line for line in lines if not line.startswith('$ ')]
-                            raw_result = '\n'.join(clean_lines).strip()
+                        elif isinstance(raw_result, str):
+                            # Strip only the LEADING '$ command' echo header
+                            # (added by shell_server for display), and only
+                            # from shell-tool results.  The previous heuristic
+                            # deleted EVERY '$ '-prefixed line from ANY result
+                            # containing '$ ', corrupting legitimate output
+                            # (README usage blocks, Makefile docs, transcripts).
+                            from app.utils.tool_result_sanitizer import strip_shell_echo_header
+                            raw_result = strip_shell_echo_header(
+                                raw_result, tool_result.get('tool_name', ''))
                         # ASR NF-002: wrap model-facing tool output in an
                         # explicit trust-labeled envelope so the model treats
                         # it as external data, not instructions.  Non-string
@@ -4314,6 +4418,37 @@ Please retry the tool call with valid JSON. Ensure:
                 logger.warning(f"⚠️  Throttled {len(throttle_events)} times during this conversation")
             
             logger.info("=" * 80 + "\n")
+
+    def _has_unclosed_inline_code(self, text: str) -> bool:
+        """True if ``text`` ends inside an unterminated inline-code span.
+
+        The fence tracker only accounts for ``` ``` ```-delimited blocks;
+        single-backtick inline spans are invisible to it. A CLEAN stop whose
+        text ends mid-span (e.g. ``The bug is clear: `DirectoryBrowser``) is
+        objective truncation — a finished answer virtually never ends inside
+        an open inline span. This is the inline sibling of the open_fence
+        evidence used by the NO_PREFILL_BLOCK continuation branch.
+
+        Conservative by construction: paired ``` ``` ``` fenced regions are
+        removed first (their inner backticks are literal, not delimiters),
+        then the remaining single-backtick delimiters are counted. An ODD
+        count means the last span was opened but never closed.
+        """
+        if not text or '`' not in text:
+            return False
+        # Drop complete fenced blocks so their contents don't skew the count.
+        # Only balanced fences are stripped; this branch is gated on the
+        # fence tracker already reporting no open fence, so any residue is
+        # inline-level.
+        without_fences = re.sub(r'```.*?```', '', text, flags=re.DOTALL)
+        # Remove any dangling fence marker (defensive; should not occur when
+        # code_block_open is False) so it can't contribute stray backticks.
+        without_fences = without_fences.replace('```', '')
+        # Count runs of backticks; inline spans open and close with runs of
+        # equal length, so a well-formed span contributes an even number of
+        # runs. An odd number of runs means one delimiter is unmatched.
+        runs = re.findall(r'`+', without_fences)
+        return len(runs) % 2 == 1
 
     def _update_code_block_tracker(self, text: str, tracker: Dict[str, Any]) -> None:
         """Update code block tracking state based on text content."""
