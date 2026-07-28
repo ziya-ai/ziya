@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, CSSProperties, useCallback
 import { useTheme } from '../context/ThemeContext';
 import { Spin, Modal } from 'antd';
 import { D3RenderPlugin } from '../types/d3';
-import { findPluginForSpec, loadPlugin } from '../plugins/d3/registry';
+import { findPluginForSpec, loadPlugin, getAvailablePlugins } from '../plugins/d3/registry';
 import { isDiagramDefinitionComplete } from '../utils/diagramUtils';
 import { ContainerSizingManager } from '../utils/containerSizing';
 import { isSafari } from '../utils/browserUtils';
@@ -422,7 +422,17 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 console.error('🔧 D3RENDERER: No compatible plugin found for spec:', spec);
                 const msg = `No compatible plugin found for visualization type "${spec?.type || 'unknown'}"`;
                 setRenderError(msg);
-                setErrorDetails([msg, 'Supported types: force-directed, network, bar, line, mermaid, graphviz, vega-lite, joint, d2, drawio, packet']);
+                // Derived from the registry, not hand-maintained: the previous
+                // literal had drifted and omitted music, latex, vega, plotly
+                // and chord, so a registered plugin looked unsupported and
+                // pointed diagnosis away from the real cause (a canHandle
+                // predicate rejecting the spec).
+                const registered = getAvailablePlugins()
+                    .map((p) => p.name.replace(/-(renderer|diagram)$/, ''))
+                    .sort()
+                    .join(', ');
+                setErrorDetails([msg, `Registered renderers: ${registered}`,
+                    'A registered renderer can still decline a spec whose shape it does not recognise.']);
                 setIsLoading(false);
                 return;
             }
@@ -1198,7 +1208,15 @@ ${svgData}`;
                             height: containerStyles.height || 'auto',
                             display: showRawContent ? 'none' : 'flex',
                             flexDirection: 'column',
-                            alignItems: 'center',
+                            // 'center' is only right for a child NARROWER than the
+                            // container — for a responsive plugin it converts any
+                            // width shortfall into symmetric wasted whitespace,
+                            // which is what made under-sized charts read as
+                            // "small, floating, centered". Responsive plugins
+                            // stretch to fill; content-driven ones (which have a
+                            // genuine intrinsic size) keep centering.
+                            alignItems: plugin?.sizingConfig?.sizingStrategy === 'content-driven'
+                                ? 'center' : 'stretch',
                             position: 'relative',
                             boxSizing: 'border-box',
                             // Apply remaining containerStyles (excluding width/height to avoid override)

@@ -89,6 +89,128 @@ const isDefinitionComplete = (definition: string): boolean => {
     return false;
 };
 
+/**
+ * STRESS-GUARD (Issue 8): sanitize degenerate / off-canvas-extreme drawio coordinates.
+ *
+ * A single cell or edge waypoint at an extreme coordinate (e.g. x=1e9, y=-1e9), or an
+ * absurd dimension (width=1000000), inflates the graph's content bounding box to the
+ * order of billions of px. maxGraph's FitPlugin.fitCenter then scales the WHOLE drawing
+ * so that box fits the output canvas, multiplying every real cell by ~1e-7 → every
+ * legitimate cell rasterizes to sub-pixel invisibility. The render still returns HTTP 200
+ * with a (near-)blank PNG: silent near-total data loss.
+ *
+ * A fixed absolute clamp (the previous Issue-4 `DRAWIO_COORD_LIMIT = 100000` cap) does NOT
+ * fix this class, for two reasons:
+ *   1. It only rewrote <mxGeometry> tags and missed <mxPoint> edge waypoints entirely
+ *      (so the ±1e9 waypoints still blew out the bbox / drew a stray sweep across the canvas).
+ *   2. The magnitude is RELATIVE, not absolute: a lone cell at x=100000 (exactly the old
+ *      cap) still squashes a cluster sitting at the origin to invisibility.
+ *
+ * The correct general fix is robust OUTLIER detection: compute the median position and the
+ * Median Absolute Deviation (MAD, which a single gross outlier barely moves) for x and y,
+ * and clamp only coordinates lying far outside the bulk to the cluster edge. Evenly-spread
+ * legitimate diagrams (even large ones spanning thousands of px) have a large MAD, so the
+ * allowed window is wide and nothing is touched; a tightly-clustered diagram with one
+ * runaway coordinate has a tiny MAD, so the runaway is pulled back to a small window —
+ * exactly the "one bad cell must not annihilate the other N" behavior we want. A hard
+ * finite cap and NaN/Infinity coercion remain as a backstop.
+ *
+ * Exported as a pure string→string helper so it is unit-testable without a DOM.
+ */
+export function sanitizeDrawioCoordinates(xml: string): string {
+    const ABSOLUTE_LIMIT = 100000;   // hard finite backstop (NaN/Infinity/overflow)
+    const POS_OUTLIER_K = 12;        // position window = max(MAD * K, MIN_POS_WINDOW)
+    const MIN_POS_WINDOW = 3000;     // floor; only binds when cells are tightly clustered
+    const MIN_DIM_CAP = 6000;        // keep legit large containers, kill absurd dimensions
+    // Shared value token: real numbers PLUS the non-finite literals Infinity/NaN, which
+    // an upstream numeric computation can emit and which maxGraph's parseFloat would turn
+    // into Infinity/NaN coordinates (→ fitCenter NaN scale). Matching them lets clampPos/
+    // clampDim coerce them to a finite value.
+    const NUM = /-?Infinity|NaN|-?\d+\.?\d*(?:[eE][+-]?\d+)?/; // shared value token
+    const numG = (attr: string) => new RegExp(`\\b${attr}="(${NUM.source})"`, 'g');
+
+    const finite = (s: string): number | null => {
+        const v = parseFloat(s);
+        return Number.isFinite(v) ? v : null;
+    };
+
+    // 1) Collect coordinate samples: absolute (non-relative) mxGeometry x/y + all mxPoint
+    //    x/y as POSITION samples; mxGeometry width/height as DIMENSION samples.
+    const xs: number[] = [];
+    const ys: number[] = [];
+    const dims: number[] = [];
+
+    const geomRe = /<mxGeometry\b[^>]*?>/g;
+    let mm: RegExpExecArray | null;
+    while ((mm = geomRe.exec(xml)) !== null) {
+        const tag = mm[0];
+        if (tag.includes('relative="1"')) continue; // edge-label geometries already clamped to [-1,1]
+        const gx = tag.match(new RegExp(`\\bx="(${NUM.source})"`));
+        const gy = tag.match(new RegExp(`\\by="(${NUM.source})"`));
+        const gw = tag.match(new RegExp(`\\bwidth="(${NUM.source})"`));
+        const gh = tag.match(new RegExp(`\\bheight="(${NUM.source})"`));
+        let v: number | null;
+        if (gx && (v = finite(gx[1])) !== null) xs.push(v);
+        if (gy && (v = finite(gy[1])) !== null) ys.push(v);
+        if (gw && (v = finite(gw[1])) !== null) dims.push(Math.abs(v));
+        if (gh && (v = finite(gh[1])) !== null) dims.push(Math.abs(v));
+    }
+    const ptRe = /<mxPoint\b[^>]*?>/g;
+    while ((mm = ptRe.exec(xml)) !== null) {
+        const tag = mm[0];
+        const px = tag.match(new RegExp(`\\bx="(${NUM.source})"`));
+        const py = tag.match(new RegExp(`\\by="(${NUM.source})"`));
+        let v: number | null;
+        if (px && (v = finite(px[1])) !== null) xs.push(v);
+        if (py && (v = finite(py[1])) !== null) ys.push(v);
+    }
+
+    const median = (arr: number[]): number => {
+        if (arr.length === 0) return 0;
+        const s = [...arr].sort((a, b) => a - b);
+        const mid = Math.floor(s.length / 2);
+        return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+    };
+    const mad = (arr: number[], med: number): number =>
+        arr.length === 0 ? 0 : median(arr.map(v => Math.abs(v - med)));
+
+    const mx = median(xs);
+    const my = median(ys);
+    const rx = Math.max(mad(xs, mx) * POS_OUTLIER_K, MIN_POS_WINDOW);
+    const ry = Math.max(mad(ys, my) * POS_OUTLIER_K, MIN_POS_WINDOW);
+    const dimCap = Math.min(Math.max(median(dims) * POS_OUTLIER_K, MIN_DIM_CAP), ABSOLUTE_LIMIT);
+
+    const clampPos = (raw: string, center: number, radius: number): string => {
+        let v = parseFloat(raw);
+        if (!Number.isFinite(v)) v = 0;
+        const lo = Math.max(center - radius, -ABSOLUTE_LIMIT);
+        const hi = Math.min(center + radius, ABSOLUTE_LIMIT);
+        return String(Math.max(lo, Math.min(hi, v)));
+    };
+    const clampDim = (raw: string): string => {
+        let v = parseFloat(raw);
+        if (!Number.isFinite(v)) v = 0;
+        return String(Math.max(0, Math.min(dimCap, v)));
+    };
+
+    // 2) Rewrite absolute mxGeometry tags (positions via outlier window, dims via cap).
+    let out = xml.replace(/<mxGeometry\b[^>]*?>/g, (tag) => {
+        if (tag.includes('relative="1"')) return tag;
+        return tag
+            .replace(numG('x'), (_a, n) => `x="${clampPos(n, mx, rx)}"`)
+            .replace(numG('y'), (_a, n) => `y="${clampPos(n, my, ry)}"`)
+            .replace(numG('width'), (_a, n) => `width="${clampDim(n)}"`)
+            .replace(numG('height'), (_a, n) => `height="${clampDim(n)}"`);
+    });
+    // 3) Rewrite mxPoint waypoints/terminal points (positions only).
+    out = out.replace(/<mxPoint\b[^>]*?>/g, (tag) =>
+        tag
+            .replace(numG('x'), (_a, n) => `x="${clampPos(n, mx, rx)}"`)
+            .replace(numG('y'), (_a, n) => `y="${clampPos(n, my, ry)}"`)
+    );
+    return out;
+}
+
 const normalizeDrawIOXml = (xml: string): string => {
     let normalized = xml.trim();
 
@@ -199,6 +321,17 @@ const normalizeDrawIOXml = (xml: string): string => {
         }
     );
     console.log('📐 DrawIO: Clamped relative geometry values to valid range');
+
+    // CRITICAL FIX (Issue 4 + Issue 8): sanitize degenerate / off-canvas-extreme coords.
+    // Superset of the original fixed-limit clamp: sanitizeDrawioCoordinates() uses robust
+    // median+MAD OUTLIER detection so a lone runaway coordinate/waypoint (x=1e9, a ±1e9
+    // mxPoint, width=1000000) is pulled back to the cluster edge WITHOUT squashing the rest
+    // of the diagram — and it also covers <mxPoint> waypoints, which the old <mxGeometry>-only
+    // clamp missed (those blew out fitCenter's bbox → every real cell rasterized sub-pixel →
+    // silent near-total data loss). Evenly-spread legitimate diagrams have a large MAD, so the
+    // window is wide and nothing is touched. A hard finite cap remains as a backstop.
+    normalized = sanitizeDrawioCoordinates(normalized);
+    console.log('📐 DrawIO: Sanitized coordinates (median/MAD outlier clamp, incl. mxPoint)');
 
     // Clean up any text content after closing tags (LLM sometimes adds descriptions)
     // Find the last proper closing tag (</mxfile>, </diagram>, or </mxGraphModel>)
@@ -3438,9 +3571,13 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
             // Multiple attempts with increasing delays to handle slow rendering
             const applyFitAndCenter = () => {
                 try {
-                    // fit() lives on the FitPlugin in maxGraph >=0.17; fitCenter both fits and centers
-                    const fitPlugin = graph.getPlugin('fit');
-                    fitPlugin?.fitCenter({ margin: 20 });
+                    // Zero-size guard and non-finite recovery both live in
+                    // safeFitCenter. A skip is not an error: the retry timeouts
+                    // and the ResizeObserver call this again once the container
+                    // has real dimensions.
+                    if (!safeFitCenter(graph, graphContainer, 'initial')) {
+                        return;
+                    }
 
                     // CRITICAL: After fit(), resize graphContainer to match content bounds
                     // This allows the parent container to center it properly
@@ -3457,7 +3594,11 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
 
                     // Refit now that the container has its final width so the
                     // diagram scales up to actually fill the available space.
-                    fitPlugin?.fitCenter({ margin: 20 });
+                    // Re-guarded rather than relying on the check above: the
+                    // width was just set to '100%', so if the parent is not yet
+                    // laid out clientWidth can read 0 here even though it was
+                    // non-zero moments ago.
+                    safeFitCenter(graph, graphContainer, 'refit-after-resize');
 
                     console.log('✅ DrawIO: Fit and center applied, container resized to content', {
                         contentBounds: { width: bounds.width, height: bounds.height }
@@ -3670,6 +3811,60 @@ function extractShapeIdsFromXml(xml: string): string[] {
     return shapeIds;
 }
 
+/**
+ * Call FitPlugin.fitCenter with a zero-size guard and a non-finite recovery.
+ *
+ * Every fitCenter call needs both, so they live here rather than being repeated
+ * (they were previously applied at one of three call sites).
+ *
+ * Why the guard: fitCenter computes
+ *   newScale = min(maxFitScale, clientWidth / width, clientHeight / height)
+ *   translateX = floor(translate.x + (clientWidth - width * newScale) / (2 * newScale) - ...)
+ * With clientWidth === 0, newScale is exactly 0 — which passes fitCenter's own
+ * `Number.isFinite(newScale)` check — and the division by (2 * newScale) then
+ * yields NaN. A container can legitimately be zero-size mid-resize, in a
+ * collapsed panel, or in a hidden tab.
+ *
+ * Why the recovery: GraphView.scaleAndTranslate assigns `this.translate.x = dx`
+ * directly, bypassing the Point setter's NaN check. So a NaN is stored silently
+ * and does not surface until the next mouse event, where updateMouseEvent runs
+ * `me.graphX = pt.x - getPanDx()` and the Point setter throws "Invalid x
+ * supplied." That throw originates in a DOM event handler, not a React render,
+ * so no component error boundary can catch it — it escapes to the root boundary
+ * and takes down the UI, and the view stays broken until remount.
+ *
+ * Returns true if the fit was applied, false if it was skipped.
+ */
+function safeFitCenter(graph: any, graphContainer: HTMLElement, label: string): boolean {
+    // Re-checked per call, never hoisted: a caller may change the container's
+    // width immediately before refitting, so an earlier passing check says
+    // nothing about this one.
+    if (graphContainer.clientWidth === 0 || graphContainer.clientHeight === 0) {
+        console.warn(`📐 DrawIO: Skipping fit/center (${label}) — container has zero size`);
+        return false;
+    }
+
+    // fit() lives on the FitPlugin in maxGraph >=0.17; fitCenter both fits and centers
+    const fitPlugin = graph.getPlugin('fit');
+    fitPlugin?.fitCenter({ margin: 20 });
+
+    // Belt-and-braces alongside the guard above: other arithmetic inside
+    // fitCenter could in principle also overflow to NaN/Infinity, and an
+    // unrecoverable view is a worse outcome than a reset one.
+    const viewScale = graph.view.scale;
+    const viewTranslate = graph.view.translate;
+    if (!Number.isFinite(viewScale) || viewScale <= 0 ||
+        !Number.isFinite(viewTranslate?.x) || !Number.isFinite(viewTranslate?.y)) {
+        console.warn(
+            `📐 DrawIO: Detected non-finite view state after fit (${label}) — resetting to identity`,
+            { scale: viewScale, translate: viewTranslate }
+        );
+        graph.view.scaleAndTranslate(1, 0, 0);
+    }
+
+    return true;
+}
+
 // Helper function to create zoom buttons
 function createZoomButton(label: string, onClick: () => void): HTMLButtonElement {
     const button = document.createElement('button');
@@ -3729,10 +3924,12 @@ function addZoomControls(graphContainer: HTMLElement, graph: any): void {
     reapplyAfterViewChange();
     const zoomFitBtn = createZoomButton('⊡', () => {
         try {
-            // fit() lives on the FitPlugin in maxGraph >=0.17; fitCenter both fits and centers
-            const fitPlugin = graph.getPlugin('fit');
-            fitPlugin?.fitCenter({ margin: 20 });
-            console.log('📐 DrawIO: Manual fit triggered from zoom button');
+            // Guarded: the try/catch here cannot help with the NaN failure mode.
+            // fitCenter does not throw — it silently stores NaN in the view, and
+            // the throw lands later in a mouse handler well outside this scope.
+            if (safeFitCenter(graph, graphContainer, 'zoom-fit-button')) {
+                console.log('📐 DrawIO: Manual fit triggered from zoom button');
+            }
         } catch (e) {
             console.warn('📐 DrawIO: Fit error from button:', e);
         }

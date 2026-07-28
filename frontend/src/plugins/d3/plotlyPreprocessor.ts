@@ -169,6 +169,37 @@ export function adjustAnnotationsForTitle(layout: any): any {
   return { ...layout, annotations: newAnnotations };
 }
 
+/**
+ * Demote WebGL trace types to their SVG equivalents when rendering under
+ * headless capture (Playwright sets `navigator.webdriver === true`).
+ *
+ * WebGL traces (`scattergl`, `scatterpolargl`, `heatmapgl`, ...) render to a
+ * <canvas> via a WebGL context. In the persistent single-browser headless
+ * capture path (app/services/diagram_renderer.py reuses ONE Chromium), those
+ * contexts accumulate and hit Chromium's active-WebGL-context ceiling ("Too
+ * many active WebGL contexts. Oldest context will be lost."), so the render
+ * page's completion handshake never settles -> the capture times out even
+ * though plotly.js rendered the plot correctly. A one-shot server-side PNG
+ * gains nothing from WebGL, so we swap `*gl` -> the SVG-backed trace by
+ * stripping the trailing `gl`. This is a no-op for the interactive UI, where
+ * `navigator.webdriver` is false and WebGL performance is preserved.
+ *
+ * General across the whole WebGL trace family, not one spec. Exported for
+ * unit testing.
+ */
+export function demoteWebglTracesForCapture(data: any[]): any[] {
+  if (!Array.isArray(data)) return data;
+  const isHeadlessCapture =
+    typeof navigator !== 'undefined' && (navigator as any).webdriver === true;
+  if (!isHeadlessCapture) return data;
+  return data.map(trace => {
+    if (trace && typeof trace.type === 'string' && /gl$/.test(trace.type)) {
+      return { ...trace, type: trace.type.replace(/gl$/, '') };
+    }
+    return trace;
+  });
+}
+
 /** Compose all preprocessors. Order matters: title fix first so subsequent
  *  passes see the adjusted title state. */
 export function preprocessPlotlySpec(spec: PlotlySpec): PlotlySpec {
@@ -178,6 +209,7 @@ export function preprocessPlotlySpec(spec: PlotlySpec): PlotlySpec {
   layout = adjustSceneDomainsForTitle(layout);
   layout = ensureSceneDomainGaps(layout);
   layout = adjustAnnotationsForTitle(layout);
-  const data = clampColorbars(spec.data || []);
+  let data = clampColorbars(spec.data || []);
+  data = demoteWebglTracesForCapture(data);
   return { ...spec, data, layout };
 }
