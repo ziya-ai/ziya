@@ -13,6 +13,7 @@ root, matching the conventions of ``FileReadTool``.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -21,21 +22,21 @@ from pydantic import BaseModel, Field
 
 from app.mcp.tools.base import BaseMCPTool
 from app.utils.logging_utils import logger
-from app.mcp.tools.fileio import _resolve_and_validate, _get_project_root, _get_safe_write_paths, _get_task_readable_prefixes
+from app.mcp.tools.fileio import _resolve_and_validate, _get_project_root, _get_all_readable_prefixes
 
 
 # --------------------------------------------------------------------------- #
 # Shared helpers
 # --------------------------------------------------------------------------- #
 
-def _load_index(path_arg: str, kwargs: Dict[str, Any]):
+async def _load_index(path_arg: str, kwargs: Dict[str, Any]):
     """
     Resolve *path_arg* and return a PdfIndex, or an error dict.
 
     Accepts both project-relative and absolute paths.  Both are routed
-    through the same traversal-safe validator used by FileReadTool, with
-    absolute paths gated to the safe-write and task-readable prefix
-    allowlists.  This closes an authorization bypass where an absolute
+    through the same traversal-safe validator used by FileReadTool,
+    using the shared read-allowlist (see ``_get_all_readable_prefixes``).
+    This closes an authorization bypass where an absolute
     path was previously accepted purely on existence + .pdf extension,
     with no directory-boundary check [PenPal #68, CWE-200].
     """
@@ -45,7 +46,7 @@ def _load_index(path_arg: str, kwargs: Dict[str, Any]):
     if not path_str:
         return None, {"error": True, "message": "path must not be empty"}
 
-    allowed_prefixes = _get_safe_write_paths() + _get_task_readable_prefixes()
+    allowed_prefixes = _get_all_readable_prefixes()
     try:
         resolved = _resolve_and_validate(
             path_str, project_root,
@@ -61,7 +62,13 @@ def _load_index(path_arg: str, kwargs: Dict[str, Any]):
         return None, {"error": True, "message": f"Not a file: {path_arg}"}
     if resolved.suffix.lower() != ".pdf":
         return None, {"error": True, "message": f"Not a PDF: {path_arg}"}
-    idx = PdfIndex.get_or_build(str(resolved))
+    # get_or_build(full=True) can trigger PdfIndex.build(), a full
+    # synchronous per-page pdfplumber/pypdf extraction over every page of
+    # the document when no cached index exists yet. For a large (e.g.
+    # 10k-page) PDF this is seconds-to-minutes of CPU work; run it off the
+    # event loop so it cannot block every other in-flight request on this
+    # process (see the incident that motivated this — app/routes/misc_routes.py).
+    idx = await asyncio.to_thread(PdfIndex.get_or_build, str(resolved))
     if idx is None:
         return None, {"error": True, "message": f"Could not index PDF: {path_arg}"}
     return idx, None
@@ -91,7 +98,7 @@ class PdfOutlineTool(BaseMCPTool):
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
         path_arg = kwargs.get("path", "")
-        idx, err = _load_index(path_arg, kwargs)
+        idx, err = await _load_index(path_arg, kwargs)
         if err:
             return err
         m = idx.meta
@@ -153,7 +160,7 @@ class PdfReadPagesTool(BaseMCPTool):
         include_images = bool(kwargs.get("include_images", False))
         max_pages = max(1, min(int(kwargs.get("max_pages", 20) or 20), 100))
 
-        idx, err = _load_index(path_arg, kwargs)
+        idx, err = await _load_index(path_arg, kwargs)
         if err:
             return err
 
@@ -237,10 +244,15 @@ class PdfSearchTool(BaseMCPTool):
             mode = "bm25"
         if not query:
             return {"error": True, "message": "query must not be empty"}
-        idx, err = _load_index(path_arg, kwargs)
+        idx, err = await _load_index(path_arg, kwargs)
         if err:
             return err
-        hits = idx.search(query, top_k=top_k, mode=mode)
+        # idx.search() unconditionally calls ensure_full(), which promotes a
+        # light stub index to a full one -- the same full per-page
+        # extraction cost as build() above -- the first time search is used
+        # on a document that was only lightly indexed. Must not run
+        # synchronously on the event loop.
+        hits = await asyncio.to_thread(idx.search, query, top_k=top_k, mode=mode)
         return {
             "path": path_arg,
             "query": query,

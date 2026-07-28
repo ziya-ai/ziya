@@ -40,7 +40,11 @@ def workspace(tmp_path):
 
 def run(coro):
     """Run an async function synchronously."""
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # asyncio.run() always creates a fresh event loop and closes it when
+    # done, unlike asyncio.get_event_loop(), which can return a stale/
+    # already-closed loop left behind by a prior test file in the same
+    # pytest process (e.g. one that calls asyncio.run() itself).
+    return asyncio.run(coro)
 
 
 # ── _resolve_and_validate ──────────────────────────────────────────
@@ -385,3 +389,184 @@ class TestFileListTool:
     def test_traversal_rejected(self, workspace):
         result = run(self.tool.execute(path="../../../", _workspace_path=workspace))
         assert result["error"] is True
+
+
+# ── _get_include_dir_prefixes / _get_all_readable_prefixes ─────────
+#
+# Regression coverage for the "External include" bug: a path added via
+# Project Settings ("Add External Path" -> app.services.folder_service.
+# _explicit_external_paths) or via --include/ZIYA_INCLUDE_DIRS was not
+# recognized by _resolve_and_validate's allowed_absolute_prefixes, so
+# file_read / file_list / pdf_* tools rejected it as "outside the
+# allowed directories" even though the user explicitly approved it.
+
+class TestIncludeDirPrefixes:
+
+    def test_empty_by_default(self, monkeypatch):
+        from app.mcp.tools.fileio import _get_include_dir_prefixes
+        monkeypatch.delenv("ZIYA_INCLUDE_DIRS", raising=False)
+        monkeypatch.setattr(
+            "app.services.folder_service._explicit_external_paths", set(), raising=False
+        )
+        assert _get_include_dir_prefixes() == []
+
+    def test_reads_ziya_include_dirs_env_var(self, monkeypatch):
+        from app.mcp.tools.fileio import _get_include_dir_prefixes
+        monkeypatch.setattr(
+            "app.services.folder_service._explicit_external_paths", set(), raising=False
+        )
+        monkeypatch.setenv("ZIYA_INCLUDE_DIRS", "/tmp/vendor-docs,/tmp/other-docs")
+        prefixes = _get_include_dir_prefixes()
+        assert "/tmp/vendor-docs" in prefixes
+        assert "/tmp/other-docs" in prefixes
+
+    def test_env_var_relative_entries_skipped(self, monkeypatch):
+        from app.mcp.tools.fileio import _get_include_dir_prefixes
+        monkeypatch.setattr(
+            "app.services.folder_service._explicit_external_paths", set(), raising=False
+        )
+        monkeypatch.setenv("ZIYA_INCLUDE_DIRS", "relative/dir,/tmp/absolute-dir")
+        prefixes = _get_include_dir_prefixes()
+        assert "/tmp/absolute-dir" in prefixes
+        assert "relative/dir" not in prefixes
+
+    def test_reads_explicit_external_paths_from_folder_service(self, monkeypatch):
+        """This is the actual mechanism behind Project Settings' 'Add
+        External Path' -- the bug reported against pdf_search."""
+        from app.mcp.tools.fileio import _get_include_dir_prefixes
+        monkeypatch.delenv("ZIYA_INCLUDE_DIRS", raising=False)
+        monkeypatch.setattr(
+            "app.services.folder_service._explicit_external_paths",
+            {"/Users/dcohn/Documents/Vendor Docs/Marvell Switching"},
+            raising=False,
+        )
+        prefixes = _get_include_dir_prefixes()
+        assert "/Users/dcohn/Documents/Vendor Docs/Marvell Switching" in prefixes
+
+    def test_combines_both_sources(self, monkeypatch):
+        from app.mcp.tools.fileio import _get_include_dir_prefixes
+        monkeypatch.setenv("ZIYA_INCLUDE_DIRS", "/tmp/from-env")
+        monkeypatch.setattr(
+            "app.services.folder_service._explicit_external_paths",
+            {"/tmp/from-explicit"},
+            raising=False,
+        )
+        prefixes = _get_include_dir_prefixes()
+        assert "/tmp/from-env" in prefixes
+        assert "/tmp/from-explicit" in prefixes
+
+    def test_missing_folder_service_attr_does_not_raise(self, monkeypatch):
+        """If folder_service is ever refactored and the set is renamed/
+        removed, this helper must degrade gracefully rather than 500
+        every read-oriented tool call."""
+        from app.mcp.tools.fileio import _get_include_dir_prefixes
+        import app.services.folder_service as folder_service
+        monkeypatch.delenv("ZIYA_INCLUDE_DIRS", raising=False)
+        monkeypatch.delattr(folder_service, "_explicit_external_paths", raising=False)
+        # Should not raise; env var absent too => empty list.
+        assert _get_include_dir_prefixes() == []
+
+
+class TestGetAllReadablePrefixes:
+    """``_get_all_readable_prefixes`` is the single consolidated
+    allowlist that file_read, file_list, pdf_* tools, and
+    context_add_file all now build from."""
+
+    def test_combines_all_three_sources(self, monkeypatch):
+        from app.mcp.tools.fileio import _get_all_readable_prefixes
+        from app.context import set_task_readable_paths, reset_task_readable_paths
+
+        monkeypatch.setattr(
+            "app.mcp.tools.fileio._get_safe_write_paths", lambda: ["/tmp/", ".ziya/"]
+        )
+        monkeypatch.setenv("ZIYA_INCLUDE_DIRS", "/tmp/external-include")
+        monkeypatch.setattr(
+            "app.services.folder_service._explicit_external_paths",
+            {"/tmp/external-approved"},
+            raising=False,
+        )
+        token = set_task_readable_paths([{"path": "/tmp/task-granted", "is_dir": True}])
+        try:
+            prefixes = _get_all_readable_prefixes()
+        finally:
+            reset_task_readable_paths(token)
+
+        assert "/tmp/" in prefixes
+        assert "/tmp/external-include" in prefixes
+        assert "/tmp/external-approved" in prefixes
+        assert "/tmp/task-granted" in prefixes
+
+
+# ── End-to-end: file_read / file_list against an externally-approved path ──
+
+class TestExternalPathEndToEnd:
+    """Mirrors the reported bug: a path added via Project Settings'
+    'Add External Path' feature must be readable by file_read and
+    file_list, not rejected as 'outside the allowed directories'."""
+
+    @pytest.fixture
+    def external_dir(self, tmp_path):
+        ext = tmp_path.parent / f"external-{tmp_path.name}"
+        ext.mkdir(exist_ok=True)
+        (ext / "datasheet.txt").write_text("EXTERNAL CONTENT\n")
+        return str(ext)
+
+    def test_file_read_rejects_unapproved_external_path(self, workspace, external_dir, monkeypatch):
+        monkeypatch.delenv("ZIYA_INCLUDE_DIRS", raising=False)
+        monkeypatch.setattr(
+            "app.services.folder_service._explicit_external_paths", set(), raising=False
+        )
+        tool = FileReadTool()
+        result = run(tool.execute(
+            path=f"{external_dir}/datasheet.txt", _workspace_path=workspace,
+        ))
+        assert result.get("error") is True
+        assert "escapes project root" in result["message"].lower()
+
+    def test_file_read_allows_approved_external_path(self, workspace, external_dir, monkeypatch):
+        monkeypatch.delenv("ZIYA_INCLUDE_DIRS", raising=False)
+        monkeypatch.setattr(
+            "app.services.folder_service._explicit_external_paths",
+            {external_dir},
+            raising=False,
+        )
+        tool = FileReadTool()
+        result = run(tool.execute(
+            path=f"{external_dir}/datasheet.txt", _workspace_path=workspace,
+        ))
+        assert result.get("error") is not True, result
+        assert "EXTERNAL CONTENT" in result["content"]
+
+    def test_file_list_allows_approved_external_path(self, workspace, external_dir, monkeypatch):
+        monkeypatch.delenv("ZIYA_INCLUDE_DIRS", raising=False)
+        monkeypatch.setattr(
+            "app.services.folder_service._explicit_external_paths",
+            {external_dir},
+            raising=False,
+        )
+        tool = FileListTool()
+        result = run(tool.execute(path=external_dir, _workspace_path=workspace))
+        assert result.get("error") is not True, result
+        assert "datasheet.txt" in result["content"]
+
+    def test_file_write_does_not_inherit_include_dir_grant(self, workspace, external_dir, monkeypatch):
+        """External-include approval is a read grant only; file_write
+        must remain restricted to the safe-write allowlist regardless
+        of what's in _explicit_external_paths -- an approved-for-read
+        external path must still fail at path resolution before
+        _check_write_allowed is ever consulted."""
+        monkeypatch.delenv("ZIYA_INCLUDE_DIRS", raising=False)
+        monkeypatch.setattr(
+            "app.services.folder_service._explicit_external_paths",
+            {external_dir},
+            raising=False,
+        )
+        tool = FileWriteTool()
+        result = run(tool.execute(
+            path=f"{external_dir}/evil.txt",
+            content="pwned",
+            _workspace_path=workspace,
+        ))
+        assert result.get("error") is True
+        assert "escapes project root" in result["message"].lower()
+        assert not Path(external_dir, "evil.txt").exists()
