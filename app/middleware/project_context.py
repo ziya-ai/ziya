@@ -70,10 +70,15 @@ class ProjectContextMiddleware(BaseHTTPMiddleware):
                 'error': None,
             })
 
-            patterns = get_ignored_patterns(abs_root)
             max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
 
             def _index_and_update_status():
+                # Build ignore patterns inside the worker thread: this walks
+                # the entire project tree looking for .gitignore files (up to
+                # ZIYA_GITIGNORE_TIMEOUT seconds). Calling it in dispatch()
+                # blocked the event loop — freezing every request — on the
+                # first request after a project switch.
+                patterns = get_ignored_patterns(abs_root)
                 result = initialize_ast_capabilities(abs_root, patterns, max_depth)
                 files = result.get("files_processed", 0)
                 if result.get("initialized") and files > 0:

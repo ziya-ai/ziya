@@ -60,9 +60,15 @@ _scan_lock = threading.Lock()
 _visited_directories = set()
 
 # Global cache for ignored patterns to avoid re-scanning on every API call
-_ignored_patterns_cache: Optional[List[Tuple[str, str]]] = None
-_ignored_patterns_cache_dir: Optional[str] = None
-_ignored_patterns_cache_time: float = 0
+# Keyed by directory so that concurrently-active projects (workspace-scoped
+# instances, project switches) don't evict each other's entries — the old
+# single-slot cache thrashed and re-walked the tree on every alternation.
+_ignored_patterns_cache: Dict[str, Tuple[List[Tuple[str, str]], float]] = {}
+_ignored_patterns_cache_lock = threading.Lock()
+# Per-directory build locks: concurrent requests for the SAME directory wait
+# for one build instead of duplicating a potentially 60s tree walk; requests
+# for DIFFERENT directories build in parallel.
+_ignored_patterns_build_locks: Dict[str, threading.Lock] = {}
 IGNORED_PATTERNS_CACHE_TTL = 3600  # 1 hour - gitignore files rarely change
 # Symlink traversal policy: follow up to N symlink hops by default. A shared
 # asset symlinked at the repo root counts as 1 hop; symlinks encountered
@@ -72,17 +78,47 @@ IGNORED_PATTERNS_CACHE_TTL = 3600  # 1 hour - gitignore files rarely change
 # Explicit --include overrides the budget.
 MAX_SYMLINK_HOPS = ziya_env("ZIYA_SYMLINK_HOPS")
 
-def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
-    global _ignored_patterns_cache, _ignored_patterns_cache_dir, _ignored_patterns_cache_time, _included_symlink_names
+def _get_cached_patterns(directory: str) -> Optional[List[Tuple[str, str]]]:
+    """Return fresh cached patterns for directory, or None if absent/stale."""
+    global _ignored_patterns_cache
+    with _ignored_patterns_cache_lock:
+        if not isinstance(_ignored_patterns_cache, dict):
+            # External cache-invalidation code may reset this to None; heal it.
+            _ignored_patterns_cache = {}
+            return None
+        entry = _ignored_patterns_cache.get(directory)
+    if entry and (time.time() - entry[1]) < IGNORED_PATTERNS_CACHE_TTL:
+        logger.debug(f"♻️ Using cached gitignore patterns ({len(entry[0])} patterns)")
+        return entry[0]
+    return None
 
-    # Check cache first - avoid rescanning entirely
-    current_time = time.time()
-    if (_ignored_patterns_cache is not None and 
-        _ignored_patterns_cache_dir == directory and
-        (current_time - _ignored_patterns_cache_time) < IGNORED_PATTERNS_CACHE_TTL):
-        logger.debug(f"♻️ Using cached gitignore patterns ({len(_ignored_patterns_cache)} patterns)")
-        return _ignored_patterns_cache
-    
+
+def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
+    """Per-directory cached wrapper around _build_ignored_patterns.
+
+    A per-directory build lock ensures concurrent callers for the same
+    directory share one (potentially slow) tree walk, while different
+    directories never block or evict each other.
+    """
+    cached = _get_cached_patterns(directory)
+    if cached is not None:
+        return cached
+    with _ignored_patterns_cache_lock:
+        build_lock = _ignored_patterns_build_locks.setdefault(directory, threading.Lock())
+    with build_lock:
+        # Another thread may have finished the build while we waited.
+        cached = _get_cached_patterns(directory)
+        if cached is not None:
+            return cached
+        patterns = _build_ignored_patterns(directory)
+        with _ignored_patterns_cache_lock:
+            _ignored_patterns_cache[directory] = (patterns, time.time())
+        return patterns
+
+
+def _build_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
+    global _included_symlink_names
+
     logger.info(f"🔍 Building gitignore patterns for {directory}...")
     # Use the directory argument as-is — it was already resolved by the caller.
     user_codebase_dir = directory
@@ -255,11 +291,6 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
     for pattern, base in ignored_patterns:
         logger.debug(f"Ignore pattern: {pattern} (base: {base})")
     
-    # Cache the results for future calls
-    _ignored_patterns_cache = ignored_patterns
-    _ignored_patterns_cache_dir = directory
-    _ignored_patterns_cache_time = time.time()
-
     def read_gitignore(path: str) -> List[Tuple[str, str]]:
         gitignore_patterns: List[Tuple[str, str]] = []
         
@@ -439,11 +470,6 @@ def get_ignored_patterns(directory: str) -> List[Tuple[str, str]]:
         if removed_count > 0:
             logger.info(f"Removed {removed_count} default exclusion patterns due to --include overrides")
             logger.info(f"Overridden patterns: {[p for p, _ in ignored_patterns if p in include_patterns_override]}")
-    
-    # Cache the results for future calls
-    _ignored_patterns_cache = ignored_patterns
-    _ignored_patterns_cache_dir = directory
-    _ignored_patterns_cache_time = time.time()
     
     return ignored_patterns
 
@@ -658,13 +684,13 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     
     # Update global progress
     global _scan_progress
-    # Per-directory progress slot for this scan. Writes below are mirrored to
-    # the legacy global so existing no-arg readers (folder_service serving, the
-    # routes) and cancel_scan() stay byte-identical until step 2 flips them to
-    # the per-dir slot. directory is this function's own first parameter.
+    # Per-directory progress slot for this scan. Progress fields are still
+    # mirrored to the legacy global for older no-arg readers, but CANCELLATION
+    # is per-slot only: this scan resets and checks its OWN slot, so starting
+    # a scan can no longer un-cancel (or be killed by) another project's scan.
+    # The no-arg cancel_scan() broadcasts to every slot instead.
     progress = _progress_slot(directory)
     progress["cancelled"] = False
-    _scan_progress["cancelled"] = False
     # Drop any partial tree from a previous scan so a poll during this scan's
     # startup can't be served a stale project's shallow tree.
     progress["partial_tree"] = None
@@ -676,9 +702,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     _scan_progress["last_update"] = _now
     
     # Check for early cancellation before expensive operations
-    # Transitional: honor this scan's per-dir slot OR the legacy global, so both
-    # cancel_scan(directory) and the legacy no-arg cancel_scan() take effect.
-    if progress.get("cancelled") or _scan_progress.get("cancelled"):
+    if progress.get("cancelled"):
         logger.info("Scan cancelled before starting")
         return {"error": "Scan cancelled by user", "cancelled": True}
     
@@ -696,7 +720,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
             estimated_total = estimate_directory_count(directory, ignored_patterns, progress=progress)
         
         # Check cancellation after estimation
-        if progress.get("cancelled") or _scan_progress.get("cancelled"):
+        if progress.get("cancelled"):
             logger.info("Scan cancelled during estimation")
             progress["active"] = False
             _scan_progress["active"] = False
@@ -721,9 +745,10 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     progress_interval = 2.0  # Log progress every 2 seconds
     last_stderr_progress_time = time.time()
 
-    # Clear visited directories at start of scan
-    global _visited_directories
-    _visited_directories.clear()
+    # Per-scan visited set. The old module-global set was shared by every
+    # concurrent scan and cleared at each scan start — a scan starting for
+    # project B mid-scan of project A wiped A's symlink-loop protection.
+    visited_dirs: set = set()
     
     # Process the root directory using breadth-first strategy:
     # Scan everything up to BFS_DEPTH_THRESHOLD first so the UI has a
@@ -734,13 +759,17 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     MAX_DEFERRED = 5000  # Prevent OOM on extremely wide trees
     MAX_ENTRIES_PER_DIR = 10000  # Skip pathologically large flat directories
 
-    def process_dir_bfs(path: str, depth: int, effective_max: int = 0, symlink_hops: int = 0) -> Dict[str, Any]:
+    def process_dir_bfs(path: str, depth: int, effective_max: int = 0, symlink_hops: int = 0,
+                        node: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Process a directory, deferring children beyond BFS_DEPTH_THRESHOLD.
 
         Args:
             effective_max: When > 0, overrides the global max_depth for this
                 subtree (set by DirectoryScanProvider customizations).
             symlink_hops: Count of symlink hops taken to reach this directory.
+            node: When provided, it is filled IN PLACE — the caller has
+                already attached it to the parent's children, so polls of the
+                live partial tree see this subtree populate progressively.
         """
         nonlocal last_progress_check
 
@@ -762,13 +791,13 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
             real_path = os.path.realpath(path)
         except (OSError, ValueError):
             return {'token_count': 0}
-        if real_path in _visited_directories:
+        if real_path in visited_dirs:
             return {'token_count': 0}
-        _visited_directories.add(real_path)
+        visited_dirs.add(real_path)
 
         dir_start_time = time.time()
 
-        if progress.get("cancelled") or _scan_progress.get("cancelled"):
+        if progress.get("cancelled"):
             progress["active"] = False
             _scan_progress["active"] = False
             return {'token_count': 0, 'cancelled': True}
@@ -799,7 +828,20 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
         progress["last_update"] = _pt
         _scan_progress["last_update"] = _pt
 
-        result = {'token_count': 0, 'children': {}}
+        # Yield the GIL so the uvicorn event loop -- which runs in this same
+        # process -- can serve requests while the scan proceeds. This walk is
+        # pure-Python CPU work with no I/O waits of its own, so without an
+        # explicit yield it starves static chunk fetches and /api handlers,
+        # making lazy-loaded UI components appear not to respond at all.
+        if scan_stats['directories_scanned'] % 32 == 0:
+            time.sleep(0.001)
+        else:
+            time.sleep(0)
+
+        # Fill the caller-attached node in place when given, so the live
+        # partial tree published to pollers populates as the scan proceeds.
+        result = node if node is not None else {'token_count': 0, 'children': {}}
+        result.setdefault('children', {})
         total_tokens = 0
 
         # Ask directory-scan providers for per-child customizations
@@ -835,7 +877,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
 
         for de in entries:
             entry = de.name
-            if progress.get("cancelled") or _scan_progress.get("cancelled"):
+            if progress.get("cancelled"):
                 break
 
             current_time = time.time()
@@ -911,10 +953,18 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
                         result['children'][entry] = {'token_count': 0, 'children': {}}
                         deferred_dirs.append((result['children'], entry, entry_path, depth + 1, child_max, entry_hops))
                     else:
-                        sub_result = process_dir_bfs(entry_path, depth + 1, child_max, entry_hops)
+                        # Attach the child node BEFORE recursing so the live
+                        # partial tree shows this directory (and its contents
+                        # as they are found) during the recursion, not only
+                        # after the whole subtree completes.
+                        child_node: Dict[str, Any] = {'token_count': 0, 'children': {}}
+                        result['children'][entry] = child_node
+                        sub_result = process_dir_bfs(entry_path, depth + 1, child_max, entry_hops, node=child_node)
                         if sub_result['token_count'] > 0 or sub_result.get('children'):
-                            result['children'][entry] = sub_result
                             total_tokens += sub_result['token_count']
+                            result['token_count'] = total_tokens
+                        else:
+                            result['children'].pop(entry, None)
             elif is_file:
                 tokens = estimate_tokens_fast(entry_path)
                 if tokens >= 0 or tokens == -1:
@@ -922,6 +972,7 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
                     result['children'][entry] = {'token_count': tokens}
                     if tokens > 0:
                         total_tokens += tokens
+                        result['token_count'] = total_tokens
 
         result['token_count'] = total_tokens
 
@@ -931,35 +982,64 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
 
         return result
 
-    # Phase 1: BFS — scan everything up to BFS_DEPTH_THRESHOLD
-    root_result = process_dir_bfs(directory, 1)
+    def _rollup_token_counts(node: Dict[str, Any], _depth: int = 0) -> int:
+        """Recompute directory token_counts bottom-up over the whole tree.
 
-    # Publish the Phase-1 shallow tree (everything to BFS_DEPTH_THRESHOLD, with
-    # deeper dirs present as expandable placeholders) so a concurrent poll can
-    # render breadth immediately instead of waiting for Phase 2 to finish. This
-    # is a LIVE reference: as Phase 2 fills placeholders below, the served tree
-    # progressively deepens. Read-only access during mutation is benign.
-    _children = root_result.get('children', {})
-    progress["partial_tree"] = _children
-    _scan_progress["partial_tree"] = _children
+        Phase-2 (deferred) subtrees fill their placeholder nodes in place,
+        but their totals were never propagated upward, so tokens found below
+        BFS_DEPTH_THRESHOLD were missing from every ancestor directory's
+        token_count. One in-memory pass after the walk fixes all totals.
+        Files (no 'children' key) keep their own counts; negative markers
+        (unreadable/binary, -1) contribute 0 to parent sums.
+        """
+        children = node.get('children')
+        if not children or _depth > 60:
+            tc = node.get('token_count', 0)
+            return tc if isinstance(tc, int) and tc > 0 else 0
+        total = 0
+        for child in list(children.values()):
+            if isinstance(child, dict):
+                total += _rollup_token_counts(child, _depth + 1)
+        node['token_count'] = total
+        return total
+
+    # Live tree: publish the root's children dict BEFORE the walk begins.
+    # process_dir_bfs fills nodes in place (attach-before-recurse), so a
+    # concurrent poll sees top-level entries within the first scandir and
+    # watches the tree deepen progressively, instead of waiting for all of
+    # Phase 1 (minutes on big trees) before the first paint.
+    root_result: Dict[str, Any] = {'token_count': 0, 'children': {}}
+    progress["partial_tree"] = root_result['children']
+    _scan_progress["partial_tree"] = root_result['children']
+
+    # Phase 1: BFS — scan everything up to BFS_DEPTH_THRESHOLD
+    process_dir_bfs(directory, 1, node=root_result)
 
     # Phase 2: Process deferred deep directories (breadth-first order)
     if deferred_dirs:
         logger.info(f"📂 BFS Phase 2: Processing {len(deferred_dirs)} deferred deep directories")
     while deferred_dirs:
-        if progress.get("cancelled") or _scan_progress.get("cancelled"):
+        if progress.get("cancelled"):
             break
         elapsed = time.time() - scan_stats['start_time']
         if elapsed > max_scan_time * 2:
             logger.warning(f"Timeout during BFS phase 2 at {elapsed:.1f}s, {len(deferred_dirs)} dirs remaining")
             break
         parent_children, entry_name, entry_path, depth, eff_max, hops = deferred_dirs.pop(0)
-        sub_result = process_dir_bfs(entry_path, depth, eff_max, hops)
-        if sub_result['token_count'] > 0 or sub_result.get('children'):
-            parent_children[entry_name] = sub_result
-        else:
+        # Fill the existing placeholder in place so polls of the live tree
+        # see deep directories populate progressively during Phase 2.
+        placeholder = parent_children.get(entry_name)
+        if not isinstance(placeholder, dict):
+            placeholder = {'token_count': 0, 'children': {}}
+            parent_children[entry_name] = placeholder
+        sub_result = process_dir_bfs(entry_path, depth, eff_max, hops, node=placeholder)
+        if not (sub_result['token_count'] > 0 or sub_result.get('children')):
             # Remove empty placeholder
             parent_children.pop(entry_name, None)
+
+    # Bubble Phase-2 subtree tokens up to ancestor directory totals (also
+    # corrects totals when Phase 2 was cut short by cancel/timeout).
+    _rollup_token_counts(root_result)
     
     # Check if we need to include external paths
     # Note: The ignore pattern override above handles paths within the codebase
@@ -1050,9 +1130,6 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
     _scan_progress["partial_tree"] = None
     
     # Return just the children of the root to match expected format
-    # Clear visited directories after scan
-    _visited_directories.clear()
-    
     total_time = time.time() - scan_stats['start_time']
     
     # Print completion message to stdout for visibility
@@ -1086,13 +1163,12 @@ def get_folder_structure(directory: str, ignored_patterns: List[Tuple[str, str]]
         }
     
     # Check if cancelled
-    if progress.get("cancelled") or _scan_progress.get("cancelled"):
+    if progress.get("cancelled"):
         return {
             **result,
             '_cancelled': True
         }
     
-    _visited_directories.clear()
     logger.debug(f"Returning folder structure with {len(result)} top-level entries")
     return result
 
@@ -1491,10 +1567,18 @@ def get_scan_progress(directory=None):
 def cancel_scan(directory=None):
     """Cancel a scan operation.
 
-    directory=None cancels the legacy global slot (unchanged behavior); a
-    directory cancels only that project's scan. Returns whether that slot was
-    active at cancel time.
+    directory=None is a cancel-all broadcast (used at server shutdown): it
+    sets the cancelled flag on the legacy global slot AND every per-directory
+    slot so all in-flight scans stop. A directory cancels only that project's
+    scan. Returns whether any addressed slot was active at cancel time.
     """
+    if directory is None:
+        _scan_progress["cancelled"] = True
+        any_active = bool(_scan_progress.get("active"))
+        for slot in list(_scan_progress_by_dir.values()):
+            slot["cancelled"] = True
+            any_active = any_active or bool(slot.get("active"))
+        return any_active
     slot = _progress_slot(directory)
     slot["cancelled"] = True
     return slot["active"]

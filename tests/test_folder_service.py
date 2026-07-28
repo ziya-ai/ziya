@@ -355,8 +355,10 @@ class TestServePartialTreeWhileScanning:
 
 
 class TestPhase1PartialPublish:
-    """Piece 1A: get_folder_structure publishes the Phase-1 shallow tree to
-    _scan_progress['partial_tree'] before Phase 2 and clears it on completion."""
+    """Live-tree scan: get_folder_structure publishes partial_tree BEFORE the
+    walk begins (an empty live dict filled in place as the scan proceeds), so
+    pollers see the tree populate progressively; it is cleared on completion.
+    """
 
     def setup_method(self):
         import app.utils.directory_util as du
@@ -381,13 +383,16 @@ class TestPhase1PartialPublish:
 
             captured = []
 
-            # Recording dict snapshots partial_tree at the publish instant
-            # (it is None before Phase 1 and None again after completion).
+            # Recording dict captures the LIVE partial_tree reference at the
+            # publish instant. It is published EMPTY before the walk begins
+            # (so we capture the reference, not a snapshot) and filled in
+            # place; by scan end it must contain the scanned entries. It is
+            # None before publish and None again after completion.
             class Rec(dict):
                 def __setitem__(self, k, v):
                     super().__setitem__(k, v)
-                    if k == 'partial_tree' and v:
-                        captured.append(copy.deepcopy(v))
+                    if k == 'partial_tree' and v is not None:
+                        captured.append(v)  # live reference, fills in place
 
             real = du._scan_progress
             rec = Rec(real)
@@ -401,7 +406,9 @@ class TestPhase1PartialPublish:
             assert captured, "Phase-1 partial tree was never published"
             assert rec.get('partial_tree') is None, "partial_tree not cleared on completion"
             assert 'lvl0' in result
-            assert any(('lvl0' in snap or 'top.py' in snap) for snap in captured)
+            # The captured live dict must have been filled in place during the
+            # scan with the real entries.
+            assert any(('lvl0' in snap and 'top.py' in snap) for snap in captured)
 
 
 class TestEstimationCancellation:

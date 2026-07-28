@@ -524,6 +524,30 @@ def collect_documentation_file_keys(dir_path: str, is_inside_workspace: bool, us
     return keys
 
 
+def _snapshot_tree(tree: Dict[str, Any], _depth: int = 0) -> Dict[str, Any]:
+    """Deep-copy a live scan tree that another thread is actively mutating.
+
+    The scan publishes its tree as a live reference and fills it in place;
+    serving it (dict unpacking, JSON serialization) iterates nested dicts and
+    can raise RuntimeError if the scan inserts during iteration. list() the
+    items first (atomic snapshot of keys under the GIL) and copy recursively.
+    """
+    if _depth > 50:
+        return {}
+    out: Dict[str, Any] = {}
+    for attempt in range(3):
+        try:
+            items = list(tree.items())
+            break
+        except RuntimeError:
+            continue
+    else:
+        return out
+    for k, v in items:
+        out[k] = _snapshot_tree(v, _depth + 1) if isinstance(v, dict) else v
+    return out
+
+
 def get_cached_folder_structure(directory: str, ignored_patterns, max_depth: int, synchronous: bool = False) -> Dict[str, Any]:
     """Get folder structure with caching and background scanning.
 
@@ -565,7 +589,10 @@ def get_cached_folder_structure(directory: str, ignored_patterns, max_depth: int
         partial_tree = scan_status.get("partial_tree")
         if partial_tree:
             logger.info(f"📂 Serving Phase-1 partial tree for in-progress scan of {directory} ({len(partial_tree)} top-level keys)")
-            result = {**partial_tree, "_stale_and_scanning": True}
+            # Snapshot: partial_tree is a live reference the scan thread is
+            # mutating; a shallow copy would share nested children dicts and
+            # crash JSON serialization mid-mutation.
+            result = {**_snapshot_tree(partial_tree), "_stale_and_scanning": True}
             if cache_entry['data'] and '[external]' in cache_entry['data']:
                 result.setdefault('[external]', cache_entry['data']['[external]'])
             return result
