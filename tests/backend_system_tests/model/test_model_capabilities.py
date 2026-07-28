@@ -32,8 +32,11 @@ def init_model(endpoint, model):
     os.environ["ZIYA_ENDPOINT"] = endpoint
     os.environ["ZIYA_MODEL"] = model
     if endpoint == "bedrock":
-        os.environ["ZIYA_AWS_PROFILE"] = "ziya"
-        os.environ["AWS_PROFILE"] = "ziya"
+        # Respect an externally supplied profile (e.g. kuiper-ziya for
+        # mantle-served models); fall back to the default "ziya" profile.
+        _profile = os.environ.get("ZIYA_AWS_PROFILE") or "ziya"
+        os.environ["ZIYA_AWS_PROFILE"] = _profile
+        os.environ["AWS_PROFILE"] = _profile
     ModelManager._reset_state()
     llm = ModelManager.initialize_model(force_reinit=True)
     model_config = ModelManager.get_model_config(endpoint, model)
@@ -78,7 +81,11 @@ def invoke_model(llm, messages):
         from app.providers.base import ProviderConfig
         async def _call_provider():
             cfg = ProviderConfig(max_output_tokens=200, temperature=None)
-            msgs = [{"role": m.type, "content": m.content} for m in messages]
+            # LangChain message .type is "human"/"ai"/"system"; providers
+            # expect API roles "user"/"assistant"/"system".
+            _role_map = {"human": "user", "ai": "assistant"}
+            msgs = [{"role": _role_map.get(m.type, m.type), "content": m.content}
+                    for m in messages]
             parts = []
             async for event in llm.stream_response(msgs, None, [], cfg):
                 if hasattr(event, 'content'):
@@ -135,8 +142,29 @@ def test_thinking_mode(endpoint, model):
 
 # --- Vision tests ---
 
-# 10x10 red PNG, properly encoded
-TINY_RED_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAIAAAACUFjqAAAAEklEQVR4nGP4z8CAB+GTG8HSALfKY52fTcuYAAAAAElFTkSuQmCC"
+def _make_solid_png(width, height, rgb):
+    """Generate a solid-color PNG as base64, no external deps.
+
+    Some vision front-ends (e.g. the GPT-5.6 family) cannot resolve
+    very small images — a 10x10 test image was reported as unseeable
+    by models that handle 100x100 fine — so keep this >= 100x100.
+    """
+    import base64 as _b64, struct as _struct, zlib as _zlib
+
+    def _chunk(typ, data):
+        c = _struct.pack('>I', len(data)) + typ + data
+        return c + _struct.pack('>I', _zlib.crc32(typ + data))
+
+    ihdr = _struct.pack('>IIBBBBB', width, height, 8, 2, 0, 0, 0)
+    scanline = b'\x00' + bytes(rgb) * width
+    idat = _zlib.compress(scanline * height)
+    png = (b'\x89PNG\r\n\x1a\n' + _chunk(b'IHDR', ihdr)
+           + _chunk(b'IDAT', idat) + _chunk(b'IEND', b''))
+    return _b64.b64encode(png).decode()
+
+
+# 100x100 solid red PNG
+TINY_RED_PNG = _make_solid_png(100, 100, (255, 0, 0))
 
 
 def get_vision_models():
@@ -166,7 +194,8 @@ def test_vision(endpoint, model):
     # Verify the model processed the image — it should respond with a color name.
     # We don't assert the exact color since tiny PNGs can be interpreted differently.
     color_words = ["red", "green", "blue", "black", "white", "cyan", "lime", "orange",
-                   "yellow", "purple", "pink", "gray", "grey", "brown", "magenta"]
+                   "yellow", "purple", "pink", "gray", "grey", "brown", "magenta",
+                   "teal", "maroon", "crimson", "scarlet"]
     response_lower = content.lower()
     assert any(c in response_lower for c in color_words), \
         f"Expected a color name in response from {endpoint}/{model}, got: {content[:200]}"
@@ -196,6 +225,23 @@ def test_streaming(endpoint, model):
         for chunk in llm.stream(prompt):
             if hasattr(chunk, 'content') and chunk.content:
                 chunks.append(_extract_text(chunk.content))
+    elif hasattr(llm, 'stream_response'):
+        # LLMProvider interface (e.g. mantle-served models) — no LangChain
+        # .stream(); consume the provider's native event stream instead.
+        from app.providers.base import ProviderConfig
+
+        async def _collect():
+            cfg = ProviderConfig(max_output_tokens=200, temperature=None)
+            _role_map = {"human": "user", "ai": "assistant"}
+            msgs = [{"role": _role_map.get(m.type, m.type), "content": m.content}
+                    for m in prompt]
+            out = []
+            async for event in llm.stream_response(msgs, None, [], cfg):
+                if type(event).__name__ == "TextDelta" and getattr(event, "content", ""):
+                    out.append(event.content)
+            return out
+
+        chunks = asyncio.run(_collect())
 
     full_response = "".join(chunks)
     assert len(chunks) >= 1, f"Expected at least 1 chunk from {endpoint}/{model}, got 0"

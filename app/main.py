@@ -520,18 +520,22 @@ def start_server(args):
                             print("=" * 80 + "\n")
                             sys.exit(1)
                     else:
-                        # Mantle model that does not require data sharing: reset the
-                        # mantle retention mode to 'inherit' so a prior sharing session
-                        # does not persist for models that don't need it. Best-effort —
-                        # warn, never block, since no retention change is required here.
+                        # Mantle model that does not explicitly require data sharing.
+                        # We deliberately keep the account/region-wide mantle switch on
+                        # 'provider_data_share' rather than resetting to 'inherit': the
+                        # switch is shared by every mantle model, and downgrading it here
+                        # would break a subsequent switch to fable5 (which mandates
+                        # provider_data_share) with a 'data retention mode not available'
+                        # 400. Best-effort — warn, never block, since this model states
+                        # no hard requirement of its own.
                         _ok, _err = ensure_mantle_data_retention_mode(
-                            required_mode="inherit",
+                            required_mode="provider_data_share",
                             region=_mantle_region,
                             profile_name=getattr(args, "profile", None),
                         )
                         if not _ok:
                             logger.warning(
-                                f"Could not reset Mantle data retention to 'inherit' "
+                                f"Could not set Mantle data retention to 'provider_data_share' "
                                 f"in {_region}: {_err}"
                             )
 

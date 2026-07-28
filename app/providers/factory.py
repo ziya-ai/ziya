@@ -85,6 +85,17 @@ def create_provider(
             # Clamp to the model's mantle-available regions — the caller's
             # session region (often us-west-2) may not host this model.
             _region = resolve_mantle_region(model_config, region)
+            # The mantle gateway serves two wire formats: the Anthropic
+            # Messages API (fable5/mythos5, the default) and the OpenAI
+            # Responses API (GPT-5.6 family), selected via "mantle_api".
+            if model_config.get("mantle_api") == "openai-responses":
+                from app.providers.openai_responses_mantle import OpenAIResponsesMantleProvider
+                return OpenAIResponsesMantleProvider(
+                    model_id=model_id,
+                    model_config=model_config,
+                    region=_region,
+                    aws_profile=aws_profile,
+                )
             return BedrockMantleProvider(
                 model_id=model_id,
                 model_config=model_config,
