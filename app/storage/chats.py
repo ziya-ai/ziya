@@ -239,6 +239,9 @@ class ChatStorage(BaseStorage[Chat]):
                 createdAt=data.get('createdAt') or 0,
                 lastActiveAt=data.get('lastActiveAt') or 0,
                 delegateMeta=delegate_meta,
+                branchedFrom=data.get('branchedFrom'),
+                branchedAtMessageIndex=data.get('branchedAtMessageIndex'),
+                branchedFromLabel=data.get('branchedFromLabel'),
                 openBeadCount=open_beads,
                 openWorkItemCount=open_work_items,
                 **({'_version': version} if version else {})
