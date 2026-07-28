@@ -292,7 +292,22 @@ async def set_model(request: SetModelRequest):
 
 
 async def _set_model_locked(request: SetModelRequest):
-    """Body of set_model; caller must hold _model_mutation_lock."""
+    """Offload the synchronous model-change body to a worker thread.
+
+    The reinitialization work below (gc.collect, ModelManager.initialize_model
+    with force_reinit, agent chain/executor recreation) is CPU-bound and had
+    been running directly on the event loop. A concurrent folder scan -- itself
+    offloaded to a worker thread by commit a491a51 but still GIL-bound -- would
+    then starve this event-loop-bound handler, so a model change appeared to
+    hang until the scan finished. Running the body as a peer worker thread lets
+    the two contend for the GIL cooperatively instead of blocking the loop.
+    Caller must hold _model_mutation_lock (still held across the offload).
+    """
+    return await asyncio.to_thread(_set_model_sync, request)
+
+
+def _set_model_sync(request: SetModelRequest):
+    """Synchronous body of set_model; caller must hold _model_mutation_lock."""
     
     try:
         # Force garbage collection at the start
