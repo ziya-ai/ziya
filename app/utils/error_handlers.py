@@ -105,6 +105,21 @@ async def handle_streaming_error(request: Request, exc: Exception) -> AsyncItera
     elif ("ExpiredToken" in error_message or "InvalidIdentityToken" in error_message or "InvalidClientTokenId" in error_message) and (
         "botocore" in error_message or "AWS" in error_message or "credentials" in error_message):
         error_type, detail, status_code, retry_after = _handle_aws_credential_error(error_message)
+    elif ("CredentialRetrievalError" in error_message and any(
+        ind in error_message.lower() for ind in (
+            'no such host', 'dial tcp', 'i/o timeout', 'context deadline exceeded',
+            'temporary failure in name resolution', 'name or service not known',
+            'connection refused', 'network is unreachable', 'connection reset',
+            # ada/iibs client-init failure from a corp-network hiccup -- see
+            # app/plugins/interfaces.py::AuthProvider.is_auth_error.
+            'unsupported protocol scheme', 'failed to initialize iibs client',
+        ))):
+        # A network/DNS outage while a credential_process tried to reach its
+        # endpoint (e.g. iibs-midway.corp.amazon.com) -- transient, NOT expired
+        # credentials. Do not send users to re-run mwinit.
+        detail = "Network error while retrieving credentials (the credential endpoint could not be reached). This is usually transient — check your connection and try again."
+        status_code = 503
+        retry_after = "10"
     elif "CredentialRetrievalError" in error_message or "You may need to authenticate" in error_message:
         error_type, detail, status_code, retry_after = _handle_aws_credential_error(error_message)
     elif "Resource has been exhausted" in error_message and "check quota" in error_message:

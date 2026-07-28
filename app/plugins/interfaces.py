@@ -48,8 +48,32 @@ class AuthProvider(ABC):
     
     def is_auth_error(self, error_str: str) -> bool:
         """Detect if error string indicates authentication failure."""
+        lowered = error_str.lower()
+        # Network/DNS failures during credential *retrieval* (e.g. a
+        # credential_process that must reach an endpoint like
+        # iibs-midway.corp.amazon.com) are wrapped by botocore in a
+        # CredentialRetrievalError whose message contains the word
+        # "credentials" -- but they are transient network outages, NOT
+        # expired credentials. Classifying them as auth errors surfaces a
+        # misleading "run mwinit" prompt. Exclude them first.
+        network_indicators = [
+            'no such host', 'dial tcp', 'lookup ', 'i/o timeout',
+            'context deadline exceeded', 'temporary failure in name resolution',
+            'name or service not known', 'connection refused',
+            'network is unreachable', 'could not connect to the endpoint',
+            'endpointconnectionerror', 'connection reset', 'connection aborted',
+            # ada's own iibs client failing to even form a request (e.g. a
+            # corp-network midway redirect that returned an empty body) --
+            # observed as "failed to initialize iibs client: Get \"\":
+            # unsupported protocol scheme \"\"". This happens before any
+            # auth exchange occurs, so it is a network/client-init glitch,
+            # not an expired/invalid token.
+            'unsupported protocol scheme', 'failed to initialize iibs client',
+        ]
+        if any(ind in lowered for ind in network_indicators):
+            return False
         indicators = ['credential', 'authentication', 'unauthorized', 'expired', 'token']
-        return any(ind in error_str.lower() for ind in indicators)
+        return any(ind in lowered for ind in indicators)
 
 
 class ConfigProvider(ABC):

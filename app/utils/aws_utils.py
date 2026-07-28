@@ -263,7 +263,10 @@ def check_aws_credentials(is_server_startup=True, profile_name=None, region_name
             # Check for network/connectivity errors before falling back to generic credentials message
             network_indicators = ["i/o timeout", "dial tcp", "connection refused", "no such host",
                                   "network is unreachable", "connection timed out", "timed out",
-                                  "timeout", "unreachable", "name resolution"]
+                                  "timeout", "unreachable", "name resolution",
+                                  # ada's own iibs client failing before it can form a
+                                  # request (corp-network midway redirect returning empty).
+                                  "unsupported protocol scheme", "failed to initialize iibs client"]
             error_lower = error_msg.lower()
             if any(indicator in error_lower for indicator in network_indicators):
                 return False, (

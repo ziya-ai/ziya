@@ -79,7 +79,10 @@ class AnthropicDirectProvider(LLMProvider):
             return
 
         max_retries = 4
-        base_delay = 2
+        # True-doubling throttle backoff, 5s floor: 5, 10, 20, 40, 80s.
+        # (Previously base_delay*(2**n)+2 undershot at low n — 4s, 6s,
+        # 10s, 18s — barely more than linear before it caught up.)
+        throttle_base_delay = 5
 
         for retry_attempt in range(max_retries + 1):
             content_yielded = False
@@ -110,7 +113,7 @@ class AnthropicDirectProvider(LLMProvider):
 
                 if retryable and retry_attempt < max_retries:
                     if classified == ErrorType.THROTTLE:
-                        delay = base_delay * (2 ** retry_attempt) + 2
+                        delay = throttle_base_delay * (2 ** retry_attempt)
                     else:
                         delay = 2 * (retry_attempt + 1)
                     logger.warning(
@@ -215,6 +218,9 @@ class AnthropicDirectProvider(LLMProvider):
             "extended_context": False,  # Anthropic direct has 200k natively
             "cache_control": True,
             "assistant_prefill": True,
+            # Anthropic tool_result blocks may carry image content blocks;
+            # deliverable only if the model itself has vision.
+            "image_tool_results": self.model_config.get("supports_vision", False),
         }
         return bool(feature_map.get(feature_name, False))
 
@@ -301,6 +307,13 @@ class AnthropicDirectProvider(LLMProvider):
         """Run a single streaming request and yield normalized events."""
         active_tools: Dict[int, Dict[str, Any]] = {}  # index -> {id, name, partial_json}
 
+        # The real stop reason arrives on the message_delta event, NOT on
+        # message_stop. Emitting a hardcoded "end_turn" at message_stop
+        # mislabels a max_tokens truncation as a clean turn-end, so the
+        # continuation decider ends the stream mid-answer (observed live on
+        # bedrock-mantle / claude-fable-5: a 35-char reply cut mid-token).
+        final_stop_reason = "end_turn"
+
         async with self.client.messages.stream(**request_kwargs) as stream:
             async for event in stream:
                 if event.type == "message_start" and hasattr(event, "message"):
@@ -316,6 +329,9 @@ class AnthropicDirectProvider(LLMProvider):
                     usage = getattr(event, "usage", None)
                     if usage:
                         yield UsageEvent(output_tokens=getattr(usage, "output_tokens", 0))
+                    delta = getattr(event, "delta", None)
+                    if delta is not None and getattr(delta, "stop_reason", None):
+                        final_stop_reason = delta.stop_reason
 
                 elif event.type == "content_block_start":
                     cb = event.content_block
@@ -360,7 +376,7 @@ class AnthropicDirectProvider(LLMProvider):
                         )
 
                 elif event.type == "message_stop":
-                    yield StreamEnd(stop_reason="end_turn")
+                    yield StreamEnd(stop_reason=final_stop_reason)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -448,7 +464,34 @@ class AnthropicDirectProvider(LLMProvider):
             return ErrorType.THROTTLE
         if "overloaded" in lowered or "529" in error_str:
             return ErrorType.OVERLOADED
+        # Transient mid-stream connection drops (httpx RemoteProtocolError /
+        # ChunkedEncodingError). Observed live on bedrock-mantle/fable-5:
+        # "peer closed connection without sending complete message body
+        # (incomplete chunked read)" — the gateway dropped the socket mid
+        # stream. This matched none of the substrings below, fell to UNKNOWN,
+        # and was surfaced as a fatal non-retryable error. It is transient, so
+        # classify as READ_TIMEOUT (already in every provider's retryable set).
+        if ("peer closed connection" in lowered or "incomplete chunked read" in lowered
+                or "connection reset" in lowered or "connection aborted" in lowered
+                or "server disconnected" in lowered or "remoteprotocolerror" in lowered
+                or "ended prematurely" in lowered or "protocolerror" in lowered):
+            return ErrorType.READ_TIMEOUT
         if "timeout" in lowered:
+            return ErrorType.READ_TIMEOUT
+        # Transient Anthropic HTTP 500 api_error. Observed live on
+        # bedrock-mantle/fable-5, twice:
+        #   "Error code: 500 - {...'type': 'api_error', 'message':
+        #    'The server had an error while processing your request...'}"
+        #   "{...'type': 'api_error', 'message': 'Internal server error'}"
+        # Anthropic documents 500 api_error as a transient server fault that
+        # should be retried with backoff. It matched nothing above, fell to
+        # UNKNOWN, and ended the stream as fatal. Classify as READ_TIMEOUT
+        # (already retryable). NOTE: deliberately NOT ErrorType.SERVER_ERROR,
+        # which is reserved as non-retryable for Bedrock's persistent
+        # InternalServerException ("internalserverexception", no spaces — so
+        # it does not collide with the spaced phrase matched here).
+        if ("api_error" in lowered or "internal server error" in lowered
+                or "the server had an error" in lowered):
             return ErrorType.READ_TIMEOUT
         if "prompt is too long" in lowered or "too large" in lowered:
             return ErrorType.CONTEXT_LIMIT
