@@ -40,7 +40,12 @@ async def calculate_tokens(project_id: str, request: TokenCalculationRequest):
     
     token_service = TokenService()
     context_storage = ContextStorage(get_project_dir(project_id), token_service)
-    skill_storage = SkillStorage(get_project_dir(project_id), token_service)
+    # Pass the code workspace root so file-discovered skills are counted;
+    # omitting it under-reports the token cost of any .agents/skills skill.
+    skill_storage = SkillStorage(
+        get_project_dir(project_id), token_service,
+        workspace_path=project.path if project.path else None,
+    )
     
     # Collect all files
     all_files: List[str] = list(request.files or [])

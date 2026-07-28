@@ -1130,7 +1130,14 @@ class DelegateManager:
             try:
                 from app.storage.skills import SkillStorage
                 from app.services.token_service import TokenService
-                skill_storage = SkillStorage(self.project_dir, TokenService())
+                # ``workspace_path`` is the CODE root; without it
+                # SkillStorage skips project discovery of file-backed
+                # SKILL.md skills (.agents/skills, .ziya/skills, …) and a
+                # delegate's assigned skill silently resolves to nothing.
+                skill_storage = SkillStorage(
+                    self.project_dir, TokenService(),
+                    workspace_path=project_root or None,
+                )
                 skill = skill_storage.get(spec.skill_id)
                 if skill:
                     skill_prompt = f"[Active Skill: {skill.name}]\n{skill.prompt}"
@@ -1138,7 +1145,12 @@ class DelegateManager:
                 logger.warning(f"Could not resolve skill {spec.skill_id}: {e}")
 
         conv_id = spec.conversation_id or f"delegate_{spec.delegate_id}"
-        lc_messages = build_messages_for_streaming(
+        # See app/server.py stream_chunks for rationale: this can run
+        # synchronous, CPU-bound document extraction (pdfplumber, etc.) and
+        # must not block the shared event loop that also services other
+        # requests/delegates on this process.
+        lc_messages = await asyncio.to_thread(
+            build_messages_for_streaming,
             question=messages[0]["content"] if messages else "",
             chat_history=[],
             files=spec.files,
