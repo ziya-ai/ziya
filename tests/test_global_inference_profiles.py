@@ -104,9 +104,19 @@ class TestRegionalOptOut:
         resolved_id, _ = _resolve(model_id, region="eu-west-1")
         assert resolved_id == "eu.anthropic.claude-opus-4-7"
 
-    def test_prefer_regional_only_on_value_1(self, monkeypatch):
-        """Anything other than '1' does not trigger the opt-out."""
+    def test_prefer_regional_truthy_string_true(self, monkeypatch):
+        """'true' triggers the opt-out (ziya_env bool parsing: true/1/yes)."""
         monkeypatch.setenv("ZIYA_PREFER_REGIONAL_INFERENCE", "true")
+        model_id = {
+            "us": "us.anthropic.claude-opus-4-8",
+            "global": "global.anthropic.claude-opus-4-8",
+        }
+        resolved_id, _ = _resolve(model_id, region="us-east-1")
+        assert resolved_id == "us.anthropic.claude-opus-4-8"
+
+    def test_prefer_regional_falsy_value_does_not_opt_out(self, monkeypatch):
+        """Non-truthy values ('0', 'false') keep the global profile."""
+        monkeypatch.setenv("ZIYA_PREFER_REGIONAL_INFERENCE", "0")
         model_id = {
             "us": "us.anthropic.claude-opus-4-8",
             "global": "global.anthropic.claude-opus-4-8",
@@ -162,7 +172,7 @@ class TestConfigIntegrity:
         bedrock = MODEL_CONFIGS.get("bedrock", {})
         models_requiring_global = [
             "sonnet4.0", "sonnet4.5", "sonnet4.6",
-            "opus4", "opus4.1", "opus4.6", "opus4.7", "opus4.8",
+            "opus4.1", "opus4.6", "opus4.7", "opus4.8",
             "haiku-4.5",
         ]
         for name in models_requiring_global:

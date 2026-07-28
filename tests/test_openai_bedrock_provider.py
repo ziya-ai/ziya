@@ -33,9 +33,9 @@ class TestFactoryRouting:
         """DeepSeek v3 has wrapper_class=OpenAIBedrock → OpenAIBedrockProvider."""
         from app.config.models_config import MODEL_CONFIGS
 
-        model_config = MODEL_CONFIGS["bedrock"]["deepseek-v3"]
+        model_config = MODEL_CONFIGS["bedrock"]["deepseek-v3.1"]
         assert model_config.get("wrapper_class") == "OpenAIBedrock", (
-            "deepseek-v3 should have wrapper_class='OpenAIBedrock'"
+            "deepseek-v3.1 should have wrapper_class='OpenAIBedrock'"
         )
 
         with patch(
@@ -108,7 +108,7 @@ class TestFactoryRouting:
             f"{openai_models}"
         )
         # Verify known models are in the list
-        for expected in ["deepseek-v3", "deepseek-v3.2", "kimi-k2.5"]:
+        for expected in ["deepseek-v3.1", "deepseek-v3.2", "kimi-k2.5"]:
             assert expected in openai_models, (
                 f"Expected '{expected}' in OpenAIBedrock models"
             )
@@ -151,9 +151,11 @@ class TestRequestBodyFormat:
             config=ProviderConfig(max_output_tokens=2048, temperature=0.5),
         )
         assert "messages" in body
-        assert "max_completion_tokens" in body
+        # Provider defaults to "max_tokens" (DeepSeek-style Bedrock models);
+        # "max_completion_tokens" is opt-in via the max_tokens_param config.
+        assert "max_tokens" in body
         assert "temperature" in body
-        assert body["max_completion_tokens"] == 2048
+        assert body["max_tokens"] == 2048
         assert body["temperature"] == 0.5
 
     def test_system_message_prepended(self):
@@ -200,7 +202,7 @@ class TestRequestBodyFormat:
             config=ProviderConfig(max_output_tokens=99999),
         )
         # Model config has max_output_tokens=4096
-        assert body["max_completion_tokens"] == 4096
+        assert body["max_tokens"] == 4096
 
 
 # ---------------------------------------------------------------------------
