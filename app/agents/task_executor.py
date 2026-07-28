@@ -59,13 +59,51 @@ def _validate_task_block(block: Block) -> None:
 validate_root_for_slice_c = _validate_task_block
 
 
+def _find_skill_by_name(storage, wanted: str):
+    """Find a skill by its human-readable ``name``.
+
+    Case-insensitive.  ``list()`` returns body-less records for
+    discovered skills, so the match is re-fetched by its real id to
+    load the prompt body.
+    """
+    target = (wanted or "").strip().lower()
+    if not target:
+        return None
+    try:
+        for s in storage.list():
+            if (s.name or "").strip().lower() == target:
+                # list() omits the body for discovered skills.
+                return storage.get(s.id) if not getattr(s, "prompt", "") else s
+    except Exception:  # noqa: BLE001 — a bad storage root must not abort
+        return None
+    return None
+
+
 def _load_skill_prompts(
     project_id: Optional[str], skill_ids: List[str],
+    project_root: Optional[str] = None,
 ) -> tuple[List[str], List[str]]:
     """Resolve a list of skill ids to their prompt bodies.
 
     Returns (prompts, warnings).  Warnings capture missing skills
     so the caller can surface them in the artifact's decisions.
+
+    Resolution accepts EITHER a stored/discovered skill id OR the
+    skill's human-readable ``name``.  File-discovered skills get a
+    derived id (``{prefix}-{name}-{sha256[:12]}`` — see
+    skill_discovery._stable_id) that a card author cannot know, so
+    requiring the id would make ``.agents/skills`` skills effectively
+    unreferenceable from a card.  Name matching is case-insensitive.
+
+    ``project_root`` is the CODE workspace root.  It must be passed for
+    file-discovered skills to resolve at all.  ``SkillStorage`` takes the
+    project metadata dir and the code workspace root as SEPARATE
+    arguments; project discovery of ``.agents/skills`` / ``.ziya/skills``
+    / ``.claude/skills`` only runs when ``workspace_path`` is supplied.
+    Omitting it (as this function originally did) made every
+    file-discovered skill invisible to Task Card runs while remaining
+    visible in the chat skills dialog, which passes it — see
+    app/api/skills.py::get_skill_storage.
     """
     prompts: List[str] = []
     warnings: List[str] = []
@@ -79,15 +117,26 @@ def _load_skill_prompts(
         from app.storage.skills import SkillStorage
         from app.services.token_service import TokenService
         from app.utils.paths import get_project_dir
-        storage = SkillStorage(get_project_dir(project_id), TokenService())
+        # Stored skills live under the project metadata dir; file-discovered
+        # skills are found by scanning ``workspace_path``.  One storage
+        # handles both when given both roots.
+        storage = SkillStorage(
+            get_project_dir(project_id), TokenService(),
+            workspace_path=project_root or None,
+        )
         for sid in skill_ids:
             try:
                 skill = storage.get(sid)
+                if not skill:
+                    skill = _find_skill_by_name(storage, sid)
             except (OSError, ValueError) as e:
                 warnings.append(f"skill {sid!r} load error: {e}")
                 continue
             if not skill:
-                warnings.append(f"skill {sid!r} not found in project")
+                warnings.append(
+                    f"skill {sid!r} not found in project (searched stored "
+                    f"skills and discovery roots by id and by name)"
+                )
                 continue
             prompts.append(f"[Active Skill: {skill.name}]\n{skill.prompt}")
     except (ImportError, OSError, AttributeError) as e:
@@ -419,12 +468,25 @@ async def execute_task_block(
     except Exception as e:
         logger.warning(f"📋 TASK_EXEC: self_assessment instruction inject failed (non-fatal): {e}")
 
+    # Teach the agent about artifact emission.  Phrased conditionally
+    # ("if an emit_artifact tool is available") because tool exposure
+    # is still subject to the scope's tools allowlist.
+    try:
+        from app.utils.task_artifacts import EMIT_ARTIFACT_INSTRUCTION
+        system_parts.append(EMIT_ARTIFACT_INSTRUCTION)
+    except Exception as e:
+        logger.warning(f"📋 TASK_EXEC: emit_artifact instruction inject failed (non-fatal): {e}")
+
     if cwd_warning:
         decisions.append(f"scope: {cwd_warning}")
         logger.warning(f"📋 TASK_EXEC: {block.name!r}: {cwd_warning}")
 
     # Skills: resolve ids to prompt bodies and prepend to system.
-    skill_prompts, skill_warnings = _load_skill_prompts(project_id, scope_skills)
+    # ``effective_root`` is the code workspace root — required for
+    # file-discovered skills (.agents/skills, .ziya/skills, …) to resolve.
+    skill_prompts, skill_warnings = _load_skill_prompts(
+        project_id, scope_skills, project_root=effective_root,
+    )
     for p in skill_prompts:
         system_parts.append(p)
     for w in skill_warnings:
@@ -465,18 +527,28 @@ async def execute_task_block(
         endpoint_override=scope_model_endpoint,
     )
 
-    # Load MCP tools and filter by scope.tools allowlist
+    # Resolve which tools this task may call.  We do NOT filter here and
+    # hand the result to the executor: ``stream_with_tools`` re-derives its
+    # tool list from ``create_secure_mcp_tools()`` internally and ignores the
+    # ``tools`` argument entirely, so a caller-side filter was dead code —
+    # every task ran with the full tool set while ``_format_tools_section``
+    # told the model "all other tools are filtered out of this run".  Pass
+    # the NAMES via ``tool_allowlist`` so enforcement happens where the list
+    # is actually built.  The always-available floor (emit_artifact,
+    # render_diagram, beads) is unioned in by the shared resolver.
     tools: List = []
     try:
         from ..mcp.enhanced_tools import create_secure_mcp_tools
+        from app.utils.task_tool_floor import (
+            filter_tools_by_scope, unmatched_scope_tools,
+        )
         all_tools = create_secure_mcp_tools()
-        tools = [t for t in all_tools if not scope_tools or t.name in scope_tools]
+        tools = filter_tools_by_scope(all_tools, scope_tools)
         if scope_tools:
-            exposed_names = {t.name for t in tools}
-            missing = [n for n in scope_tools if n not in exposed_names]
+            missing = unmatched_scope_tools(all_tools, scope_tools)
             if missing:
                 decisions.append(
-                    f"scope: tools requested but unavailable: {sorted(missing)}"
+                    f"scope: tools requested but unavailable: {missing}"
                 )
     except (ImportError, OSError, RuntimeError) as e:
         logger.warning(f"Task executor: MCP tool load failed, proceeding without: {e}")
@@ -519,6 +591,28 @@ async def execute_task_block(
     # policy would otherwise block — see app/mcp_servers/write_policy.py.
     shell_commands_grant = list(getattr(scope, "shell_commands", []) or [])
     shell_token = set_task_shell_commands(shell_commands_grant or None)
+    # Open the output-artifact collector for this task, alongside the
+    # permission grants and reset in the same ``finally``.  The
+    # emit_artifact builtin appends ArtifactPart-shaped dicts here;
+    # they are drained into ``Artifact.outputs`` below.  Rendered
+    # blobs persist under the run's artifacts dir when the run is
+    # known (encryption-aware — see app/utils/task_artifacts.py).
+    from app.utils.task_artifacts import (
+        start_artifact_collection, finish_artifact_collection,
+    )
+    _artifacts_dir = None
+    if project_id and run_id:
+        try:
+            from app.utils.paths import get_project_dir
+            _artifacts_dir = str(
+                get_project_dir(project_id) / "task_runs" / run_id / "artifacts"
+            )
+        except Exception as e:  # noqa: BLE001 — blob persistence is optional
+            logger.warning(f"📋 TASK_EXEC: artifacts dir resolution failed: {e}")
+    artifact_token = start_artifact_collection(
+        block_id=block.id, artifacts_dir=_artifacts_dir, run_id=run_id,
+    )
+    emitted_outputs: List[dict] = []
     if writable_grant:
         logger.info(
             f"📋 TASK_EXEC: {block.name!r} writable_grant={writable_grant!r}"
@@ -565,6 +659,10 @@ async def execute_task_block(
     try:
         async for chunk in executor.stream_with_tools(
             messages, tools=tools, project_root=effective_root,
+            # The list actually enforced.  ``tools`` above is retained only
+            # for the tests/callers that inspect what was resolved; the
+            # executor narrows its own tool set from these names.
+            tool_allowlist=(sorted(scope_tools) if scope_tools else None),
             # Without a conversation_id, app.context.set_conversation_id()
             # is never called for Task Card runs, so model-driven context
             # tools (context_add_file/context_remove_file/context_list_files)
@@ -681,6 +779,10 @@ async def execute_task_block(
         reset_task_writable_paths(scope_token)
         reset_task_readable_paths(read_token)
         reset_task_shell_commands(shell_token)
+        # Drain declared outputs in the same finally that resets the
+        # grants, so the collector can never leak across task
+        # boundaries even on error paths.
+        emitted_outputs = finish_artifact_collection(artifact_token)
 
     elapsed_ms = int((time.time() - start_time) * 1000)
     full_text = "".join(collected_text)
@@ -726,7 +828,10 @@ async def execute_task_block(
     artifact = Artifact(
         summary=truncate_summary(full_text.strip()),
         decisions=decisions,
-        outputs=[],
+        # Model-declared outputs collected via the emit_artifact tool.
+        # Dicts coerce into ArtifactPart; extra="allow" preserves
+        # group/label/seq and render metadata for the artifact viewer.
+        outputs=emitted_outputs,
         tokens=tokens_used,
         tool_calls=tool_call_count,
         duration_ms=elapsed_ms,

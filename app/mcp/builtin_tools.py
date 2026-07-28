@@ -98,6 +98,13 @@ BUILTIN_TOOL_CATEGORIES: Dict[str, Dict[str, any]] = {
         "requires_dependencies": [],
         "tools": [],
     },
+    "task_artifacts": {
+        "name": "Task Artifact Emission",
+        "description": "Declare durable task outputs (emit_artifact) — collected into the run's Artifact and shown in the run tile's artifact viewer",
+        "enabled_by_default": True,
+        "requires_dependencies": [],
+        "tools": [],
+    },
 }
 
 
@@ -251,6 +258,16 @@ def get_task_card_tools() -> List[Type[BaseMCPTool]]:
         return []
 
 
+def get_task_artifact_tools() -> List[Type[BaseMCPTool]]:
+    """Get task artifact emission tools."""
+    try:
+        from app.mcp.tools.emit_artifact import EmitArtifactTool
+        return [EmitArtifactTool]
+    except ImportError as e:
+        logger.warning(f"Could not import emit_artifact tool: {e}")
+        return []
+
+
 def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
     """Get builtin tools for a specific category."""
     tool_getters = {
@@ -266,6 +283,7 @@ def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
         "context_management": get_context_management_tools,
         "beads": get_bead_tools,
         "task_cards": get_task_card_tools,
+        "task_artifacts": get_task_artifact_tools,
     }
 
     getter = tool_getters.get(category)

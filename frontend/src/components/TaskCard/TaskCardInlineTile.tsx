@@ -20,7 +20,7 @@ import {
 import { useProject } from '../../context/ProjectContext';
 import type { TaskBinding } from '../../types/task_binding';
 import type { TaskRun, RunStatus, IterationsResponse } from '../../types/task_run';
-import type { TaskCard, Block, ArtifactPart, Artifact } from '../../types/task_card';
+import type { TaskCard, Block, Artifact } from '../../types/task_card';
 import { cancelTaskRun, pauseTaskRun, resumeTaskRun, listIterations, getIterationArtifact } from '../../services/taskRunApi';
 import { createBinding, deleteBinding, launchStagedBinding } from '../../services/taskBindingApi';
 import { TASK_BINDING_EVENT, TASK_CARD_OPEN_EVENT } from '../../hooks/useTaskBindings';
@@ -29,6 +29,7 @@ import { taskCardApi } from '../../services/taskCardApi';
 import { TaskRunInspector } from './TaskRunInspector';
 import { TaskRunMap } from './TaskRunMap';
 import { BlockDetailPanel } from './BlockDetailPanel';
+import { ArtifactViewer } from './ArtifactViewer';
 import { findBlockById, resolveBlockStatus } from './runMapModel';
 import FailureClusters from './FailureClusters';
 import { analyzeFailures } from '../../utils/iterationClusters';
@@ -117,37 +118,17 @@ const ArtifactSummary: React.FC<{ summary: string }> = ({ summary }) => {
 };
 
 /**
- * Render one typed output part from a task's artifact.  The design
- * doc (§Artifacts) defines three part types: text, file, data.  No
- * block type populates outputs today (Task leaves them empty; Repeat
- * and Parallel aggregate from children who likewise leave them empty),
- * but rendering is wired now so the path is exercised once leaves
- * start producing them.
+* One metric in the run's summary strip: value on top, label beneath.
+*
+* Equal-width cells so runtime / tokens / tool calls read as a scannable
+* row of figures rather than a sentence of inline spans.
  */
-const OutputPart: React.FC<{ part: ArtifactPart; idx: number }> = ({ part, idx }) => {
-  if (part.part_type === 'text' && part.text) {
-    return <div className="tc-tile__output-text">{part.text}</div>;
-  }
-  if (part.part_type === 'file' && part.file_uri) {
-    return (
-      <div className="tc-tile__output-file">
-        📎 <a href={part.file_uri} target="_blank" rel="noreferrer">
-          {part.file_uri.split('/').pop() || part.file_uri}
-        </a>
-        {part.media_type && <span className="tc-tile__output-meta"> · {part.media_type}</span>}
-      </div>
-    );
-  }
-  if (part.part_type === 'data' && part.data) {
-    return (
-      <details className="tc-tile__output-data">
-        <summary>data (part {idx + 1})</summary>
-        <pre>{JSON.stringify(part.data, null, 2)}</pre>
-      </details>
-    );
-  }
-  return null;
-};
+const MetricCell: React.FC<{ value: string; label: string }> = ({ value, label }) => (
+ <div className="tc-tile__metric">
+   <div className="tc-tile__metric-value">{value}</div>
+   <div className="tc-tile__metric-label">{label}</div>
+ </div>
+);
 
 /**
  * Render a single wrapper block as a one-line plain-language summary.
@@ -623,6 +604,8 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
                 status={resolveBlockStatus(fb.id, live.blockStatuses, run)}
                 blockState={run.block_states?.[fb.id]}
                 liveText={live.text[fb.id]}
+                projectId={projectId}
+                runId={run.id}
                 iterationIndex={focus.index}
                 iterationArtifact={iterArtifact}
                 iterationLoading={iterLoading}
@@ -686,15 +669,31 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
             )}
             {run.artifact.outputs && run.artifact.outputs.length > 0 && (
               <div className="tc-tile__outputs">
-                {run.artifact.outputs.map((p, i) => (
-                  <OutputPart key={i} part={p} idx={i} />
-                ))}
+                <div className="tc-tile__outputs-head">
+                  OUTPUT ARTIFACTS
+                  <span className="tc-tile__outputs-count">
+                    {run.artifact.outputs.length}
+                  </span>
+                </div>
+                <ArtifactViewer
+                  parts={run.artifact.outputs}
+                  projectId={projectId}
+                  runId={run.id}
+                />
               </div>
             )}
-            <div className="tc-tile__metrics">
-              {run.artifact.duration_ms > 0 && <span>⏱ {formatDuration(run.artifact.duration_ms)}</span>}
-              {run.artifact.tokens > 0 && <span>🔤 {run.artifact.tokens.toLocaleString()} tokens</span>}
-              {run.artifact.tool_calls > 0 && <span>🔧 {run.artifact.tool_calls} tool calls</span>}
+            {/* Metrics strip: equal-width cells with value-over-label so
+                run cost reads at a glance instead of as a text run-on. */}
+            <div className="tc-tile__metrics tc-tile__metrics--strip">
+              <MetricCell value={formatDuration(run.artifact.duration_ms)} label="⏱ runtime" />
+              <MetricCell value={run.artifact.tokens.toLocaleString()} label="🔤 tokens" />
+              <MetricCell value={String(run.artifact.tool_calls)} label="🔧 tool calls" />
+              {iterCounts && iterCounts.total > 0 && (
+                <MetricCell
+                  value={`${iterCounts.passed} / ${iterCounts.total}`}
+                  label="🎯 iterations"
+                />
+              )}
             </div>
           </div>
         )}
@@ -781,7 +780,7 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
           onClear={clearLive}
           defaultOpen={isRunning}
           persistedIterations={iterations}
-          runStatus={run.status}
+          runStatus={run.status as RunStatus}
         />
       </div>
     </div>
