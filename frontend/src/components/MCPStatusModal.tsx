@@ -1154,12 +1154,6 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                             const isServerEnabled = status?.server_configs?.[name]?.enabled !== false && server.connected;
                                                             const isEffectivelyActive = isToolEnabled && isServerEnabled;
                                                             const toolTokens = status.token_costs?.server_details?.[name]?.tool_tokens?.[tool.name];
-                                                                                {toolTokens != null && (
-                                                                                    <Tag color={isEffectivelyActive ? 'cyan' : 'default'}
-                                                                                         style={{ marginLeft: 8, opacity: isEffectivelyActive ? 1 : 0.5 }}>
-                                                                                        {formatTokenCount(toolTokens)} tokens
-                                                                                    </Tag>
-                                                                                )}
                                                             
                                                             return (
                                                                 <List.Item style={{ 
@@ -1171,6 +1165,12 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                                         title={
                                                                             <span style={{ textDecoration: isEffectivelyActive ? 'none' : 'line-through' }}>
                                                                                 {tool.name}
+                                                                                {toolTokens != null && (
+                                                                                    <Tag color={isEffectivelyActive ? 'cyan' : 'default'}
+                                                                                         style={{ marginLeft: 8, opacity: isEffectivelyActive ? 1 : 0.5 }}>
+                                                                                        {formatTokenCount(toolTokens)} tokens
+                                                                                    </Tag>
+                                                                                )}
                                                                             </span>
                                                                         }
                                                                         description={
