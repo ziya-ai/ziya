@@ -164,6 +164,31 @@ class PrecisionPromptSystem:
                         task_scope=None,
                         conv_start_iso=conv_start_iso,
                     )
+
+                    # CurrentDateTime changes on every request. Leaving it in
+                    # the cache-controlled system prompt invalidates the entire
+                    # cached prefix each turn. Move it to the current user
+                    # message so the model still receives the current time.
+                    current_time_match = re.search(
+                        r'^<CurrentDateTime value="[^"]+" />$',
+                        block,
+                        flags=re.MULTILINE,
+                    )
+                    if current_time_match:
+                        current_time_tag = current_time_match.group(0) + "\n"
+                        block = block.replace(current_time_match.group(0), "", 1)
+                        for current_message in reversed(messages):
+                            if current_message.get("role") != "user":
+                                continue
+                            content = current_message.get("content", "")
+                            if isinstance(content, str):
+                                current_message["content"] = current_time_tag + content
+                            elif isinstance(content, list):
+                                current_message["content"] = [
+                                    {"type": "text", "text": current_time_tag}
+                                ] + content
+                            break
+
                     messages[0]["content"] = block + messages[0]["content"]
                 except (ImportError, RuntimeError, OSError) as e:
                     logger.debug("Session context injection failed: %s", e)
