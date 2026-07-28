@@ -6,6 +6,7 @@ Extracted from server.py during Phase 3b refactoring.
 import os
 import time
 import logging
+import asyncio
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
@@ -163,30 +164,40 @@ async def get_accurate_token_counts(request: AccurateTokenCountRequest) -> Dict[
             raise ValueError("ZIYA_USER_CODEBASE_DIR not set")
         
         from app.utils.file_utils import resolve_external_path, ExternalPathNotAllowed
-        results = {}
-        for file_path in request.file_paths:
-            try:
-                full_path = resolve_external_path(file_path, user_codebase_dir)
-            except ExternalPathNotAllowed as e:
-                # Unapproved [external] path (CWE-22/200 fix) — report the
-                # same "not found" shape the client already handles, rather
-                # than a raw 500 that aborts the whole batch.
-                logger.warning(f"Skipping unapproved external path {file_path}: {e}")
-                results[file_path] = {"accurate_count": 0, "error": "File not found"}
-                continue
-            if os.path.exists(full_path) and os.path.isfile(full_path):
-                accurate_count = get_accurate_token_count(full_path)
-                # Get the estimated count for comparison
-                from app.utils.directory_util import estimate_tokens_fast
-                estimated_count = estimate_tokens_fast(full_path)
-                logger.debug(f"File: {file_path} - ACCURATE: {accurate_count} vs ESTIMATED: {estimated_count} (diff: {accurate_count - estimated_count})")
-                results[file_path] = {
-                    "accurate_count": accurate_count,
-                    "timestamp": int(time.time())
-                }
-            else:
-                results[file_path] = {"accurate_count": 0, "error": "File not found"}
-                
+
+        def _compute_counts() -> Dict[str, Any]:
+            # get_accurate_token_count does tiktoken encoding and, for
+            # PDF/DOCX/XLSX, full document text extraction — CPU-bound work
+            # that can take minutes for large files.  This endpoint is
+            # async def, so running it inline blocked the event loop and
+            # froze every other request (config modals, conversation sync)
+            # until the whole batch finished.
+            results: Dict[str, Any] = {}
+            for file_path in request.file_paths:
+                try:
+                    full_path = resolve_external_path(file_path, user_codebase_dir)
+                except ExternalPathNotAllowed as e:
+                    # Unapproved [external] path (CWE-22/200 fix) — report the
+                    # same "not found" shape the client already handles, rather
+                    # than a raw 500 that aborts the whole batch.
+                    logger.warning(f"Skipping unapproved external path {file_path}: {e}")
+                    results[file_path] = {"accurate_count": 0, "error": "File not found"}
+                    continue
+                if os.path.exists(full_path) and os.path.isfile(full_path):
+                    accurate_count = get_accurate_token_count(full_path)
+                    # Get the estimated count for comparison
+                    from app.utils.directory_util import estimate_tokens_fast
+                    estimated_count = estimate_tokens_fast(full_path)
+                    logger.debug(f"File: {file_path} - ACCURATE: {accurate_count} vs ESTIMATED: {estimated_count} (diff: {accurate_count - estimated_count})")
+                    results[file_path] = {
+                        "accurate_count": accurate_count,
+                        "timestamp": int(time.time())
+                    }
+                else:
+                    results[file_path] = {"accurate_count": 0, "error": "File not found"}
+            return results
+
+        results = await asyncio.to_thread(_compute_counts)
         return {"results": results, "debug_info": {"files_processed": len(results)}}
     except Exception as e:
         logger.error(f"Error getting accurate token counts: {str(e)}")
