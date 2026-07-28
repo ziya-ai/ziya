@@ -31,6 +31,11 @@ MODEL_ALIASES: dict[str, dict[str, str]] = {
         "opus": "opus4.8",
         "haiku": "haiku-4.5",
         "nova": "nova-pro",
+        "deepseek-v3": "deepseek-v3.1",
+        # End-of-life on Bedrock (entries removed 2026-07) — keep the old
+        # names resolving for users with saved settings:
+        "sonnet3.7": "sonnet4.6",
+        "opus4": "opus4.1",
     },
     "google": {
         "gemini": "gemini-3.1-pro",
@@ -513,8 +518,8 @@ MODEL_CONFIGS = {
                 "us-east-1", "us-east-2", "us-west-2"
             ],
             "preferred_region": "us-east-1",
-            "token_limit": 200000,
-            "max_output_tokens": 64000,
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
             "default_max_output_tokens": 36000,
             "supports_max_input_tokens": True,
             "supports_thinking": True,
@@ -525,44 +530,9 @@ MODEL_CONFIGS = {
             "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
             "supports_context_caching": True,
             "supports_assistant_prefill": False,
-            "supports_extended_context": True,
-            "extended_context_limit": 1000000,
-            "extended_context_header": "context-1m-2025-08-07"
-        },
-        "sonnet3.7": {
-            "model_id": "eu.anthropic.claude-3-7-sonnet-20250219-v1:0",
-            "available_regions": ["eu-west-1", "eu-central-1"],
-            "region_restricted": True,  # Only available in EU regions
-            "preferred_region": "eu-west-1",
-            "token_limit": 200000,  # Total context window size
-            "max_output_tokens": 64000,  # Maximum output tokens
-            "default_max_output_tokens": 10000,  # Default value for max_output_tokens
-            "supports_max_input_tokens": True,
-            "supports_thinking": True,  # Override global default
-            "supports_vision": True,  # Sonnet 3.7 supports vision
-            "family": "claude",
-            "supports_context_caching": True,
-            "region": "eu-west-1"  # Ensure sonnet3.7 uses EU region
-        },
-        "opus4": {
-            "max_output_tokens": 64000,  # Add explicit output token limits
-            "default_max_output_tokens": 32000,  # Higher default for opus4
-            "max_iterations": 8,  # Higher iteration limit for advanced model
-            "timeout_multiplier": 6,  # Longer timeouts for complex responses
-            "is_advanced_model": True,  # Flag for 4.0+ capabilities
-            "token_limit": 200000,  # Add context window
-            "supports_max_input_tokens": True,
-            "model_id": {
-                "us": "us.anthropic.claude-opus-4-20250514-v1:0",
-                "global": "global.anthropic.claude-opus-4-20250514-v1:0"
-            },
-            "available_regions": ["us-east-1", "us-east-2", "us-west-2"],
-            "region_restricted": True,  # Only available in US regions
-            "preferred_region": "us-east-1",
-            "family": "claude",
-            "supports_context_caching": True,
-            "supports_vision": True,
-            "supports_assistant_prefill": False,
+            # Live-verified 2026-07: Bedrock rejects temperature for Sonnet 5
+            # ("`temperature` is deprecated for this model"), same as Opus 4.8.
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
         },
         "opus4.1": {
             "model_id": {
@@ -665,8 +635,8 @@ MODEL_CONFIGS = {
             },
             "available_regions": ["us-east-1", "us-east-2", "us-west-2"],
             "preferred_region": "us-east-1",
-            "token_limit": 200000,
-            "max_output_tokens": 64000,
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
             "default_max_output_tokens": 32000,
             "max_iterations": 8,
             "timeout_multiplier": 6,
@@ -680,10 +650,38 @@ MODEL_CONFIGS = {
             "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
             "supports_vision": True,
             "supports_assistant_prefill": False,
-            "supports_extended_context": True,
-            "extended_context_limit": 1000000,
             "effort_beta_required": False,
             # Opus 4.8 inherits 4.7's sampling-parameter restrictions
+            # (temperature/top_p/top_k rejected with 400). Steer via
+            # prompting + the `effort` parameter instead.
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
+        "opus5": {
+            "tier": "large",
+            "model_id": {
+                "us": "us.anthropic.claude-opus-5",
+                "eu": "eu.anthropic.claude-opus-5",
+                "global": "global.anthropic.claude-opus-5"
+            },
+            "available_regions": ["us-east-1", "us-east-2", "us-west-2"],
+            "preferred_region": "us-east-1",
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32000,
+            "max_iterations": 8,
+            "timeout_multiplier": 6,
+            "is_advanced_model": True,
+            "supports_max_input_tokens": True,
+            "supports_thinking": True,
+            "family": "claude",
+            "supports_context_caching": True,
+            "supports_adaptive_thinking": True,
+            "thinking_effort_default": "medium",
+            "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+            "supports_vision": True,
+            "supports_assistant_prefill": False,
+            "effort_beta_required": False,
+            # Opus 5 inherits 4.7/4.8's sampling-parameter restrictions
             # (temperature/top_p/top_k rejected with 400). Steer via
             # prompting + the `effort` parameter instead.
             "unsupported_parameters": ["temperature", "top_k", "top_p"],
@@ -800,7 +798,7 @@ MODEL_CONFIGS = {
             "default_max_output_tokens": 4096,
             "region": "us-west-2"
         },
-        "deepseek-v3": {
+        "deepseek-v3.1": {
             "model_id": {
                 "us": "deepseek.v3-v1:0"
             },
@@ -817,9 +815,11 @@ MODEL_CONFIGS = {
             },
             "family": "kimi",
             "wrapper_class": "OpenAIBedrock",
-            "max_input_tokens": 128000,
-            "context_window": 128000,
+            "max_input_tokens": 256000,
+            "context_window": 256000,
+            "max_output_tokens": 16384,
             "default_max_output_tokens": 4096,
+            "supports_vision": True,
             "region": "us-west-2"
         },
         "kimi-k2-thinking": {
@@ -828,8 +828,9 @@ MODEL_CONFIGS = {
             },
             "family": "kimi",
             "wrapper_class": "OpenAIBedrock",
-            "max_input_tokens": 128000,
-            "context_window": 128000,
+            "max_input_tokens": 256000,
+            "context_window": 256000,
+            "max_output_tokens": 16384,
             "default_max_output_tokens": 4096,
             "region": "us-west-2"
         },
@@ -866,7 +867,7 @@ MODEL_CONFIGS = {
             "default_max_output_tokens": 4096,
             "region": "us-west-2"
         },
-        "qwen3-coder-next": {
+        "qwen3-next": {
             "model_id": {
                 "us": "qwen.qwen3-next-80b-a3b"
             },
@@ -876,6 +877,19 @@ MODEL_CONFIGS = {
             "context_window": 128000,
             "default_max_output_tokens": 4096,
             "region": "us-west-2"
+        },
+        "qwen3-coder-next": {
+            "model_id": {
+                "us": "qwen.qwen3-coder-next"
+            },
+            "available_regions": ["us-east-1"],
+            "preferred_region": "us-east-1",
+            "family": "oss_openai_gpt",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 128000,
+            "context_window": 128000,
+            "default_max_output_tokens": 4096,
+            "region": "us-east-1"
         },
         "nova-2-lite": {
             "model_id": {
@@ -902,7 +916,8 @@ MODEL_CONFIGS = {
                 "us": "us.meta.llama4-scout-17b-instruct-v1:0"
             },
             "family": "oss_openai_gpt",
-            "wrapper_class": "OpenAIBedrock",
+            # No wrapper_class: Llama 4 rejects the OpenAI Chat Completions
+            # invoke body ("required key [prompt] not found") — use Converse.
             "max_input_tokens": 128000,
             "context_window": 128000,
             "default_max_output_tokens": 4096,
@@ -912,7 +927,7 @@ MODEL_CONFIGS = {
                 "us": "us.meta.llama4-maverick-17b-instruct-v1:0"
             },
             "family": "oss_openai_gpt",
-            "wrapper_class": "OpenAIBedrock",
+            # No wrapper_class — same Converse routing as llama4-scout above.
             "max_input_tokens": 128000,
             "context_window": 128000,
             "default_max_output_tokens": 4096,
@@ -958,6 +973,131 @@ MODEL_CONFIGS = {
             "wrapper_class": "OpenAIBedrock",
             "max_input_tokens": 256000,
             "context_window": 256000,
+            "supports_vision": True,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
+        "qwen3-235b": {
+            "model_id": {
+                "us": "qwen.qwen3-235b-a22b-2507-v1:0"
+            },
+            "family": "oss_openai_gpt",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 256000,
+            "context_window": 256000,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
+        "qwen3-32b": {
+            "model_id": {
+                "us": "qwen.qwen3-32b-v1:0"
+            },
+            "family": "oss_openai_gpt",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 128000,
+            "context_window": 128000,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
+        "qwen3-coder-30b": {
+            "model_id": {
+                "us": "qwen.qwen3-coder-30b-a3b-v1:0"
+            },
+            "family": "oss_openai_gpt",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 256000,
+            "context_window": 256000,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
+        "minimax-m2": {
+            "model_id": {
+                "us": "minimax.minimax-m2"
+            },
+            "family": "minimax",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 1000000,
+            "context_window": 1000000,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
+        "nemotron-nano-9b": {
+            "model_id": {
+                "us": "nvidia.nemotron-nano-9b-v2"
+            },
+            "family": "oss_openai_gpt",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 128000,
+            "context_window": 128000,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
+        "nemotron-nano-12b-vl": {
+            "model_id": {
+                "us": "nvidia.nemotron-nano-12b-v2"
+            },
+            "family": "oss_openai_gpt",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 128000,
+            "context_window": 128000,
+            "supports_vision": True,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
+        "nemotron-nano-3-30b": {
+            "model_id": {
+                "us": "nvidia.nemotron-nano-3-30b"
+            },
+            "family": "oss_openai_gpt",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 128000,
+            "context_window": 128000,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
+        "nemotron-super-3-120b": {
+            "model_id": {
+                "us": "nvidia.nemotron-super-3-120b"
+            },
+            "family": "oss_openai_gpt",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 128000,
+            "context_window": 128000,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
+        "gemma3-27b": {
+            "model_id": {
+                "us": "google.gemma-3-27b-it"
+            },
+            "family": "oss_openai_gpt",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 128000,
+            "context_window": 128000,
+            "supports_vision": True,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
+        "gemma3-12b": {
+            "model_id": {
+                "us": "google.gemma-3-12b-it"
+            },
+            "family": "oss_openai_gpt",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 128000,
+            "context_window": 128000,
+            "supports_vision": True,
+            "default_max_output_tokens": 4096,
+            "region": "us-west-2"
+        },
+        "gemma3-4b": {
+            "model_id": {
+                "us": "google.gemma-3-4b-it"
+            },
+            "family": "oss_openai_gpt",
+            "wrapper_class": "OpenAIBedrock",
+            "max_input_tokens": 128000,
+            "context_window": 128000,
             "supports_vision": True,
             "default_max_output_tokens": 4096,
             "region": "us-west-2"
@@ -1027,6 +1167,73 @@ MODEL_CONFIGS = {
             "preview": True,
             "endpoint_override": "bedrock-mantle",
             "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
+        # GPT-5.6 family (Sol/Terra/Luna) — served exclusively through the
+        # bedrock-mantle gateway on its OpenAI Responses API path
+        # (/openai/v1/responses).  This is neither bedrock-runtime
+        # invoke_model (the OpenAIBedrock wrapper path) nor the Anthropic
+        # Messages path fable5/mythos5 use; "mantle_api" routes these to
+        # OpenAIResponsesMantleProvider in the factory/ModelManager.
+        "gpt-5.6-sol": {
+            "model_id": "openai.gpt-5.6-sol",
+            "available_regions": ["us-east-1", "us-east-2"],
+            "preferred_region": "us-east-1",
+            "family": "openai-gpt",
+            "token_limit": 272000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32768,
+            "supports_thinking": True,
+            "thinking_effort_default": "medium",
+            "supported_efforts": ["low", "medium", "high"],
+            "supports_vision": True,
+            "native_function_calling": True,
+            "supports_assistant_prefill": False,
+            "endpoint_override": "bedrock-mantle",
+            "mantle_api": "openai-responses",
+            # Mantle is an account/region-wide retention switch shared with
+            # fable5/mythos5.  Declaring the same 'provider_data_share' mode
+            # keeps all mantle models on one mode so selecting gpt-5.6 never
+            # resets the switch out from under fable5 (main.py startup hook).
+            "requires_provider_data_share": True,
+            "unsupported_parameters": ["temperature"],
+        },
+        "gpt-5.6-terra": {
+            "model_id": "openai.gpt-5.6-terra",
+            "available_regions": ["us-east-1", "us-east-2", "us-west-2"],
+            "preferred_region": "us-east-1",
+            "family": "openai-gpt",
+            "token_limit": 272000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32768,
+            "supports_thinking": True,
+            "thinking_effort_default": "medium",
+            "supported_efforts": ["low", "medium", "high"],
+            "supports_vision": True,
+            "native_function_calling": True,
+            "supports_assistant_prefill": False,
+            "endpoint_override": "bedrock-mantle",
+            "mantle_api": "openai-responses",
+            "requires_provider_data_share": True,
+            "unsupported_parameters": ["temperature"],
+        },
+        "gpt-5.6-luna": {
+            "model_id": "openai.gpt-5.6-luna",
+            "available_regions": ["us-east-1", "us-east-2", "us-west-2"],
+            "preferred_region": "us-east-1",
+            "family": "openai-gpt",
+            "token_limit": 272000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32768,
+            "supports_thinking": True,
+            "thinking_effort_default": "medium",
+            "supported_efforts": ["low", "medium", "high"],
+            "supports_vision": True,
+            "native_function_calling": True,
+            "supports_assistant_prefill": False,
+            "endpoint_override": "bedrock-mantle",
+            "mantle_api": "openai-responses",
+            "requires_provider_data_share": True,
+            "unsupported_parameters": ["temperature"],
         },
     },
     "google": {
@@ -1350,6 +1557,19 @@ MODEL_CONFIGS = {
             "model_id": "claude-opus-4-8",
             "family": "claude",
             "token_limit": 200000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 16384,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "supports_adaptive_thinking": True,
+            "native_function_calling": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
+        "claude-opus-5": {
+            "tier": "large",
+            "model_id": "claude-opus-5",
+            "family": "claude",
+            "token_limit": 1000000,
             "max_output_tokens": 128000,
             "default_max_output_tokens": 16384,
             "supports_vision": True,
@@ -1864,7 +2084,7 @@ _VALID_MODEL_CONFIG_KEYS = frozenset({
     "default_max_output_tokens", "effort_beta_required", "endpoint_override",
     "enforce_size_limit", "extended_context_header", "extended_context_limit",
     "family", "inference_parameters", "internal_parameters",
-    "is_advanced_model", "max_input_tokens", "max_iterations",
+    "is_advanced_model", "mantle_api", "max_input_tokens", "max_iterations",
     "max_output_tokens", "max_request_size_mb", "max_thinking_tokens", "max_tokens",
     "message_format", "model_id", "model_name", "native_function_calling",
     "parameter_mappings", "parameter_ranges", "parent", "preferred_region",
@@ -1885,15 +2105,17 @@ _VALID_MODEL_CONFIG_KEYS = frozenset({
 _VALID_FAMILY_KEYS = frozenset({
     "available_regions", "context_window", "default_max_output_tokens",
     "family", "inference_parameters", "max_output_tokens", "model_id",
-    "native_function_calling", "parameter_mappings", "parent",
-    "preferred_region", "stop_sequences", "supported_efforts",
+    "internal_parameters", "message_format", "native_function_calling",
+    "parameter_mappings", "parameter_ranges", "parent", "preferred_region",
+    "region", "stop_sequences", "supported_efforts",
     "reasoning_request", "supports_reasoning_effort",
     "supported_parameters", "supports_adaptive_thinking",
     "supports_assistant_prefill", "supports_context_caching",
     "supports_extended_context", "supports_function_calling",
-    "supports_multimodal", "supports_streaming", "supports_thinking",
-    "supports_vision", "thinking_effort_default", "token_limit",
-    "unsupported_parameters",
+    "supports_max_input_tokens", "supports_multimodal", "supports_streaming",
+    "supports_thinking", "supports_vision", "thinking_effort_default",
+    "thinking_level", "token_limit", "unsupported_parameters",
+    "wrapper_class",
 })
 
 
