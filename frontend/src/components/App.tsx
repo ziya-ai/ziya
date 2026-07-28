@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useLayoutEffect, useCallback, Suspense } from 'react';import { FolderTree } from './FolderTree';
 import { SendChatContainer } from './SendChatContainer';
 import { StreamedContent } from './StreamedContent';
-import { Button, Tooltip, ConfigProvider } from "antd";
+import { Button, Tooltip, ConfigProvider, Spin } from "antd";
 import {
     MenuFoldOutlined,
     MenuUnfoldOutlined,
@@ -42,6 +42,25 @@ const AstStatusIndicator = lazyWithRetry(() => import("./AstStatusIndicator"));
 const TaskCardsLibrary = lazyWithRetry(() => import("./TaskCard/TaskCardsLibrary"));
 const GraphPanel = lazyWithRetry(() => import("./ConversationGraph/GraphPanel"));
 const BeadTree = lazyWithRetry(() => import("./BeadTree"));
+
+// Suspense fallback for the lazily-loaded modals.  A null fallback makes a
+// slow chunk fetch indistinguishable from a dead button: the click updates
+// state, React suspends, and nothing renders.  This is deliberately a
+// non-interactive indicator rather than a spinner inside a Modal -- if the
+// chunk never arrives, a non-closable modal would trap the user, which is
+// worse than the silent failure it replaces.
+const ChunkLoadingFallback: React.FC = () => (
+    <div style={{
+        position: 'fixed', top: 12, left: '50%', transform: 'translateX(-50%)',
+        zIndex: 2000, display: 'flex', alignItems: 'center', gap: 8,
+        padding: '6px 14px', borderRadius: 6,
+        background: 'rgba(0, 0, 0, 0.75)', color: '#fff', fontSize: 13,
+        pointerEvents: 'none'
+    }}>
+        <Spin size="small" />
+        <span>Loading…</span>
+    </div>
+);
 
 // Error boundary component to catch extension context errors
 class ExtensionErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean }> {
@@ -563,7 +582,7 @@ export const App: React.FC = () => {
                         </Suspense>
                     )}
 
-                    <Suspense fallback={null}>
+                    <Suspense fallback={<ChunkLoadingFallback />}>
                         {mcpEnabled && (
                             <>
                                 {showShellConfig && <ShellConfigModal
@@ -583,17 +602,17 @@ export const App: React.FC = () => {
                         )}
                     </Suspense>
 
-                    <Suspense fallback={null}>
+                    <Suspense fallback={<ChunkLoadingFallback />}>
                         {showExportModal && <ExportConversationModal visible={showExportModal} onClose={() => setShowExportModal(false)} />}
                     </Suspense>
 
-                    {showMemoryBrowser && <Suspense fallback={null}>
+                    {showMemoryBrowser && <Suspense fallback={<ChunkLoadingFallback />}>
                         <MemoryBrowser
                             visible={showMemoryBrowser}
                             onClose={() => setShowMemoryBrowser(false)} />
                     </Suspense>}
 
-                    {showTaskCards && <Suspense fallback={null}>
+                    {showTaskCards && <Suspense fallback={<ChunkLoadingFallback />}>
                         <TaskCardsLibrary
                             visible={showTaskCards}
                             onClose={() => { setShowTaskCards(false); setTaskCardInitialId(undefined); }}
