@@ -893,6 +893,51 @@ class ModelManager:
                 model_config,
                 os.environ.get("AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", region)),
             )
+            # Enforce the account/region-wide mantle data-retention switch here,
+            # at the shared init seam, rather than only in start_server(): the
+            # CLI (`ziya chat`) hands off to cli_main() and never runs the
+            # server startup hook, so on that path the switch would otherwise
+            # keep whatever value a prior session left (commonly 'default'),
+            # and fable5/gpt-5.6 reject 'default' with a 400 on the FIRST call.
+            # Placing it here covers CLI first-call, server init, and runtime
+            # /model switches (all route through initialize_model). Every mantle
+            # model is driven to 'provider_data_share' — the switch is shared,
+            # so all mantle models must agree on one mode.
+            try:
+                from app.utils.aws_utils import ensure_mantle_data_retention_mode
+                _ret_ok, _ret_err = ensure_mantle_data_retention_mode(
+                    required_mode="provider_data_share",
+                    region=_mantle_region,
+                    profile_name=aws_profile,
+                )
+                if not _ret_ok:
+                    _msg = (f"Could not set Mantle data retention to "
+                            f"'provider_data_share' in {_mantle_region}: {_ret_err}")
+                    if model_config.get("requires_provider_data_share"):
+                        # Model hard-requires the sharing mode; invoking under
+                        # the wrong mode fails at request time anyway, so surface
+                        # the cause now instead of a downstream 400.
+                        raise RuntimeError(_msg)
+                    logger.warning(_msg)
+            except RuntimeError:
+                raise
+            except Exception as _ret_exc:
+                logger.warning(f"Mantle data-retention enforcement skipped: {_ret_exc}")
+            # The mantle gateway serves two wire formats: the Anthropic
+            # Messages API (fable5/mythos5, the default) and the OpenAI
+            # Responses API (GPT-5.6 family), selected via "mantle_api".
+            if model_config.get("mantle_api") == "openai-responses":
+                from app.providers.openai_responses_mantle import OpenAIResponsesMantleProvider
+                logger.info(
+                    f"Routing {model_id} to OpenAIResponsesMantleProvider "
+                    f"(region={_mantle_region})"
+                )
+                return OpenAIResponsesMantleProvider(
+                    model_id=model_id,
+                    model_config=model_config,
+                    region=_mantle_region,
+                    aws_profile=aws_profile,
+                )
             logger.info(
                 f"Routing {model_id} to BedrockMantleProvider "
                 f"(region={_mantle_region})"
