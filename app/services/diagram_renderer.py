@@ -165,9 +165,50 @@ class DiagramRenderer:
             diag["dom_eval_error"] = repr(e)
         return diag
 
+    @staticmethod
+    def _classify_console_log(console_log: list[str]) -> dict[str, list[str]]:
+        """Split the raw ``[type] text`` console log into warning/error
+        buckets, dropping routine ``[log]``/``[info]``/``[debug]`` noise.
+
+        This is what lets a caller distinguish "rendered, but the mermaid
+        plugin logged a fixup warning" from a clean render — the console
+        listener was already wired up (for the timeout/error diagnostic
+        dump), but nothing surfaced it on the SUCCESS path, so a render
+        that completes with warnings looked identical to one with none.
+        """
+        warnings: list[str] = []
+        errors: list[str] = []
+        for entry in console_log:
+            if entry.startswith("[warning]") or entry.startswith("[warn]"):
+                warnings.append(entry)
+            elif entry.startswith("[error]"):
+                errors.append(entry)
+        return {"warnings": warnings, "errors": errors}
+
     # -- Rendering ----------------------------------------------------
 
     async def render_diagram(
+        self,
+        spec: dict[str, Any],
+        *,
+        format: Literal["png", "svg"] = "png",
+        viewport_width: int = 1280,
+        viewport_height: int = 960,
+        timeout_ms: int = 30_000,
+    ) -> bytes:
+        """Render a diagram spec and return image bytes only.
+
+        Back-compat wrapper around ``render_diagram_with_diagnostics`` for
+        callers (HTTP route, conversation exporter) that only want the
+        image and have no use for console diagnostics.
+        """
+        image_bytes, _diagnostics = await self.render_diagram_with_diagnostics(
+            spec, format=format, viewport_width=viewport_width,
+            viewport_height=viewport_height, timeout_ms=timeout_ms,
+        )
+        return image_bytes
+
+    async def render_diagram_with_diagnostics(
         self,
         spec: dict[str, Any],
         *,
@@ -295,6 +336,19 @@ class DiagramRenderer:
                 )
                 raise RuntimeError(f"Diagram render failed: {error_msg}")
 
+            # Console diagnostics for a render that DID complete. A
+            # successful render can still log fixup-layer warnings/errors
+            # (e.g. drawio ELK layout fallback, mermaid auto-quote repair)
+            # that indicate the output may not faithfully represent the
+            # spec even though it produced an image. Surface them here
+            # rather than only on the timeout/error diagnostic path.
+            console_summary = self._classify_console_log(console_log)
+            diagnostics: dict[str, Any] = {
+                "console_warnings": console_summary["warnings"],
+                "console_errors": console_summary["errors"],
+                "pageerrors": pageerror_log,
+            }
+
             # Capture the output
             container = page.locator("#diagram-render-container")
 
@@ -306,12 +360,12 @@ class DiagramRenderer:
                     }"""
                 )
                 if svg_content:
-                    return svg_content.encode("utf-8")
+                    return svg_content.encode("utf-8"), diagnostics
                 # Fall through to PNG if no SVG found
                 logger.info("No SVG element found, falling back to PNG screenshot")
 
             # PNG screenshot of just the diagram container
-            return await container.screenshot(type="png")
+            return await container.screenshot(type="png"), diagnostics
 
         finally:
             await page.close()

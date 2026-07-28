@@ -25,7 +25,9 @@ class TestRenderDiagramToolUnit:
 
         with patch("app.services.diagram_renderer.get_diagram_renderer") as mock_get:
             mock_renderer = AsyncMock()
-            mock_renderer.render_diagram = AsyncMock(return_value=fake_png)
+            mock_renderer.render_diagram_with_diagnostics = AsyncMock(
+                return_value=(fake_png, {"console_warnings": [], "console_errors": [], "pageerrors": []})
+            )
             mock_get.return_value = mock_renderer
 
             tool = RenderDiagramTool()
@@ -60,7 +62,9 @@ class TestRenderDiagramToolUnit:
 
         with patch("app.services.diagram_renderer.get_diagram_renderer") as mock_get:
             mock_renderer = AsyncMock()
-            mock_renderer.render_diagram = AsyncMock(return_value=fake_svg)
+            mock_renderer.render_diagram_with_diagnostics = AsyncMock(
+                return_value=(fake_svg, {"console_warnings": [], "console_errors": [], "pageerrors": []})
+            )
             mock_get.return_value = mock_renderer
 
             tool = RenderDiagramTool()
@@ -124,7 +128,7 @@ class TestRenderDiagramToolUnit:
 
         with patch("app.services.diagram_renderer.get_diagram_renderer") as mock_get:
             mock_renderer = AsyncMock()
-            mock_renderer.render_diagram = AsyncMock(
+            mock_renderer.render_diagram_with_diagnostics = AsyncMock(
                 side_effect=RuntimeError("Browser crashed")
             )
             mock_get.return_value = mock_renderer
@@ -167,11 +171,11 @@ class TestRenderDiagramToolUnit:
 
         async def capture_render(spec, **kw):
             captured_spec.update(spec)
-            return fake_png
+            return fake_png, {"console_warnings": [], "console_errors": [], "pageerrors": []}
 
         with patch("app.services.diagram_renderer.get_diagram_renderer") as mock_get:
             mock_renderer = AsyncMock()
-            mock_renderer.render_diagram = capture_render
+            mock_renderer.render_diagram_with_diagnostics = capture_render
             mock_get.return_value = mock_renderer
 
             tool = RenderDiagramTool()
@@ -198,7 +202,9 @@ class TestRenderDiagramToolUnit:
 
         with patch("app.services.diagram_renderer.get_diagram_renderer") as mock_get:
             mock_renderer = AsyncMock()
-            mock_renderer.render_diagram = AsyncMock(return_value=fake_png)
+            mock_renderer.render_diagram_with_diagnostics = AsyncMock(
+                return_value=(fake_png, {"console_warnings": [], "console_errors": [], "pageerrors": []})
+            )
             mock_get.return_value = mock_renderer
 
             tool = RenderDiagramTool()
