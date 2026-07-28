@@ -78,6 +78,16 @@ const pluginMetadata: PluginMetadata[] = [
     name: 'music-renderer',
     priority: 6,
     loader: async () => (await import('./musicPlugin')).musicPlugin
+  },
+  {
+    // Unlike every other entry here, this plugin renders SERVER-side: it POSTs
+    // to /api/render-latex, which drives a local TeX installation, and mounts
+    // the returned SVG (or PNG).  The dynamic chunk is therefore tiny -- no
+    // LaTeX engine ships to the browser -- but the render is async and takes
+    // 0.5-3s, so the plugin owns a spinner and an abortable request.
+    name: 'latex-renderer',
+    priority: 6,
+    loader: async () => (await import('./latexPlugin')).latexPlugin
   }
 ];
 

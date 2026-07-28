@@ -2,8 +2,13 @@
 API routes for headless diagram rendering.
 
 POST /api/render-diagram  — render a diagram spec to PNG or SVG.
+POST /api/render-latex    — render a LaTeX diagram (TikZ, CircuiTikZ, ...) to SVG or PNG.
+GET  /api/latex-capability — report which LaTeX render paths are available.
 
-Requires Playwright to be installed (optional dependency).
+/api/render-diagram requires Playwright (optional dependency) and drives a
+headless browser, reusing the frontend's own plugins.  /api/render-latex is a
+separate pipeline: it shells out to a local TeX installation, so it shares no
+machinery with the browser renderer and degrades independently.
 """
 from __future__ import annotations
 
@@ -13,10 +18,15 @@ from typing import Any, Literal, Optional
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["diagrams"])
+
+#: Cap on a single LaTeX body.  The renderer enforces its own limit too; this
+#: one rejects an oversized payload before it is parsed into a model.
+MAX_LATEX_BODY_CHARS = 64_000
 
 
 class DiagramRenderRequest(BaseModel):
@@ -111,5 +121,152 @@ async def render_diagram(request: DiagramRenderRequest) -> Response:
         media_type=content_type,
         headers={
             "Content-Disposition": f'inline; filename="diagram.{request.format}"',
+        },
+    )
+
+
+class LatexRenderRequest(BaseModel):
+    """Request body for POST /api/render-latex."""
+
+    type: str = Field(
+        ...,
+        description="LaTeX diagram type: circuitikz, tikz, chemfig, tikz-cd.",
+    )
+    definition: str = Field(
+        ...,
+        max_length=MAX_LATEX_BODY_CHARS,
+        description="LaTeX body.  The preamble is supplied by the server-side profile.",
+    )
+    format: Literal["auto", "svg", "png"] = Field(
+        default="auto",
+        description=(
+            "Output format.  'auto' prefers SVG when dvisvgm is installed, "
+            "because SVG keeps text selectable and recolourable for dark mode."
+        ),
+    )
+
+
+@router.get("/api/latex-capability")
+async def latex_capability() -> dict[str, Any]:
+    """Report what the local TeX installation can render.
+
+    The frontend calls this before rendering so it can show install
+    instructions inline instead of firing a request that is certain to fail.
+    Per-profile availability is included because the toolchain can be present
+    while an individual package (circuitikz, chemfig) is not.
+    """
+    from app.services.latex_profiles import PROFILES, install_command
+    from app.services.latex_renderer import latex_renderer
+
+    # probe() is cached after the first call, but it shells out to kpsewhich on
+    # a cold start, so keep it off the event loop.
+    cap = await run_in_threadpool(latex_renderer.probe)
+
+    profiles: dict[str, Any] = {}
+    for key, profile in PROFILES.items():
+        missing = await run_in_threadpool(latex_renderer.missing_for_profile, profile)
+        profiles[key] = {
+            "available": cap.available and not missing,
+            "missing_packages": list(missing),
+            "install_command": install_command(list(missing)) if missing else "",
+        }
+
+    return {
+        "available": cap.available,
+        "preferred_format": cap.preferred_format,
+        "sandboxed": cap.has_sandbox,
+        "tex_distribution": cap.tex_distribution,
+        "missing_toolchain": list(cap.missing_toolchain),
+        "profiles": profiles,
+    }
+
+
+@router.post("/api/render-latex")
+async def render_latex(request: LatexRenderRequest) -> Response:
+    """Compile a LaTeX diagram body to SVG or PNG.
+
+    Error handling is deliberately granular: the frontend renders a very
+    different affordance for "you need to install circuitikz" (actionable, with
+    a command to copy) than for "your TikZ has a syntax error" (show the TeX
+    log) or "this input was rejected" (show why, do not offer a retry).  A flat
+    500 would collapse all three into an unhelpful failure.
+    """
+    from app.services.latex_renderer import latex_renderer
+
+    # The render is synchronous and takes 0.5-3s, so running it inline would
+    # block the event loop for every other request for that whole duration.
+    result = await run_in_threadpool(
+        latex_renderer.render,
+        request.type,
+        request.definition,
+        request.format,
+    )
+
+    if result.ok:
+        media_type = "image/svg+xml" if result.fmt == "svg" else "image/png"
+        return Response(
+            content=result.content,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f'inline; filename="diagram.{result.fmt}"',
+                # Content-addressed by construction: the same body always
+                # produces the same bytes, so it is safe to cache hard.
+                "Cache-Control": "private, max-age=3600",
+                "X-Ziya-Latex-Cached": "1" if result.cached else "0",
+                "X-Ziya-Latex-Duration-Ms": str(result.duration_ms),
+            },
+        )
+
+    # 501 Not Implemented: the request was valid but the server lacks the
+    # capability.  Distinct from 400 (bad input) so the frontend can offer
+    # install instructions rather than blaming the diagram.
+    if result.error_kind == "not_installed":
+        raise HTTPException(
+            status_code=501,
+            detail={
+                "kind": "not_installed",
+                "message": result.error,
+                "install_command": result.install_hint,
+                "missing_packages": list(result.missing_packages),
+            },
+        )
+
+    if result.error_kind == "rejected":
+        # Log at warning: a rejection means model-authored LaTeX tried
+        # something disallowed, which is worth seeing in the server log even
+        # though the layered defences stopped it.
+        logger.warning(
+            "LaTeX render rejected (type=%s): %s", request.type, result.error
+        )
+        raise HTTPException(
+            status_code=400,
+            detail={"kind": "rejected", "message": result.error},
+        )
+
+    if result.error_kind == "internal":
+        # Unknown diagram type — the caller asked for a profile that does not
+        # exist, which is a client error, not a server fault.
+        raise HTTPException(
+            status_code=400,
+            detail={"kind": "unsupported_type", "message": result.error},
+        )
+
+    if result.error_kind == "timeout":
+        # 504: the document is pathological rather than malformed.  Retrying
+        # the identical input will time out identically, so say so.
+        raise HTTPException(
+            status_code=504,
+            detail={"kind": "timeout", "message": result.error},
+        )
+
+    # Compile failure: surface the extracted message plus the log tail, which
+    # is what makes a TeX error diagnosable at all.
+    logger.info("LaTeX compile failed (type=%s): %s", request.type, result.error)
+    raise HTTPException(
+        status_code=422,
+        detail={
+            "kind": "compile",
+            "message": result.error,
+            "log_excerpt": result.log_excerpt,
         },
     )

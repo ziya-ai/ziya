@@ -285,8 +285,76 @@ Ziya renders inline diagrams from fenced code blocks. Supported formats:
 | Vega-Lite | `` ```vega-lite `` | JSON data visualization specs. |
 | HTML Mockup | `` ```html-mockup `` | Interactive UI prototypes in sandboxed iframes. |
 | Packet | `` ```packet `` | Bit-level protocol frame layouts. |
+| TikZ | `` ```tikz `` | General LaTeX vector drawing. Rendered server-side. |
+| CircuiTikZ | `` ```circuitikz `` | Electronic circuit schematics. |
+| chemfig | `` ```chemfig `` | Chemical structures, reaction schemes, stereochemistry. |
+| tikz-cd | `` ```tikz-cd `` | Commutative diagrams. |
 
 Rendered diagrams include **Open** (popup with zoom/pan), **Save** (SVG download), and **Source** (view/edit definition) buttons.
+
+### LaTeX diagrams (server-side)
+
+The four LaTeX-family types above are compiled by a local TeX installation rather
+than in the browser, so they need one to be present. When TeX is missing, the
+diagram is not lost: the block renders as a notice with the exact `tlmgr install`
+command for the packages that type needs, and the LaTeX source stays visible.
+
+Output is **SVG** when `dvisvgm` is installed — text stays selectable and is
+recoloured for dark mode — and **PNG** otherwise.
+
+To install a minimal working toolchain:
+
+```bash
+# macOS (BasicTeX), then the packages Ziya's profiles use
+sudo tlmgr install standalone dvisvgm pgf circuitikz siunitx chemfig tikz-cd
+```
+
+**Chemistry.** The `chemfig` type draws structures on its own. Two extras are
+worth installing alongside it:
+
+```bash
+sudo tlmgr install mhchem      # \ce{} chemical equations, \pu{} units
+```
+
+`mhchem` is optional and loaded only if present, so its absence disables `\ce{}`
+without affecting structure rendering. Lewis dot structures (`\lewis`, `\Lewis`)
+need no extra package — they come from a module chemfig already ships, which Ziya
+loads for you.
+
+`\ce{}` also works in ordinary prose math (`$...$` / `$$...$$`) with no TeX
+installation at all, since the browser's KaTeX renderer loads the mhchem
+extension.
+
+**Electron-pushing arrows.** Diagrams using `\chemmove` (or TikZ
+`remember picture` overlays) are always rendered as PNG. These resolve
+coordinates recorded during a previous compilation pass, which the DVI→SVG
+driver places incorrectly — an SVG would render successfully but silently omit
+the arrow. PNG is chosen instead, at the cost of selectable text and dark-mode
+recolouring for those particular diagrams.
+
+**Ring-closure lint.** chemfig ring specifications are checked before
+compilation, because an under-specified ring is not a syntax error: chemfig
+draws the bonds it was given, leaves the ring open, and the pipeline reports
+success — so the output is a picture of a *different molecule* with nothing in
+the TeX log to indicate it. The rule is that a standalone `*n(...)` ring needs
+`n` bonds while a **fused** one needs `n-1` (it inherits its closing edge from
+the ring it is nested in), and a ring nested inside a *branch* is pendant
+rather than fused, so it still needs all `n`.
+
+The count ignores branches, bond options and brace groups, since each can
+legitimately contain a bond character that is not a ring bond — `(-OH)` is a
+substituent, `-[:-30]` carries a negative angle, and `SO_{4}^{2-}` ends in a
+minus sign. This is the trap in practice: `*5(-(=O)-(=O)-)` looks like five
+bonds but has three, so a carbonyl-rich ring reads as complete when it is short.
+
+Rings missing exactly one bond in an unambiguous case — an even ring whose
+bonds strictly alternate, i.e. a Kekulé aromatic ring — are closed
+automatically, which is positionally safe (substituents keep their relative
+placement, so a para pair stays para). Everything else is reported and left
+alone: the bond *order* of an added bond is genuinely ambiguous for odd rings,
+and guessing would trade a visibly broken ring for a plausible-looking wrong
+structure. Both corrections and warnings are returned alongside the image, so
+a model iterating on a diagram sees the defect rather than only the success.
 
 **Skip-edge rerouting**: For Mermaid diagrams with feedback/control-loop edges that span multiple nodes, a post-render rerouter automatically arcs those paths above or below intermediate nodes instead of drawing them straight through. Arcs are nested by skip distance — shorter-range arcs sit closer to the node row, longer-range arcs arc further out — so overlapping edges remain visually distinct even when several skip edges share the same side.
 
@@ -379,6 +447,29 @@ curl -X POST http://localhost:6969/api/export/to-target \
 Plugin export targets are registered via the `ExportProvider` interface. See `app/plugins/interfaces.py` for the contract.
 
 ---
+
+## Local Voice Input
+
+The web composer supports microphone input using local `faster-whisper`
+transcription. Recorded audio is sent only to the local Ziya server and is
+never submitted to a browser speech service or AI model provider.
+
+No separate installation command is required. On first use, clicking the
+microphone installs `faster-whisper` through the exact Python interpreter
+running Ziya, so virtual environments and pipx installations are handled
+correctly. Recording begins immediately after installation completes. The first
+transcription also downloads the selected Whisper model into
+`~/.ziya/models/whisper/`; subsequent recordings reuse it. The default `base`
+model runs on CPU with `int8` computation.
+
+| Variable | Default | Description |
+|---|---|---|
+| `ZIYA_WHISPER_MODEL` | `base` | faster-whisper model name or local model path |
+| `ZIYA_WHISPER_DEVICE` | `cpu` | CTranslate2 device: `cpu`, `cuda`, or `auto` |
+| `ZIYA_WHISPER_COMPUTE_TYPE` | `int8` | Compute type such as `int8`, `float16`, or `default` |
+
+Microphone capture requires a secure browser context. `http://localhost:6969`
+qualifies, but a plain-HTTP LAN address generally does not.
 
 ## Thinking Mode
 
