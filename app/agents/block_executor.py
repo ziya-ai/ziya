@@ -450,8 +450,21 @@ async def _execute_sequence(
     blocks: List[Block], ctx: ExecutionContext,
     on_failure: str = "continue",
 ) -> Artifact:
-    """Implicit sequence: run top-to-bottom, return the last block's
-    artifact.  Cancel is checked between siblings.
+    """Implicit sequence: run top-to-bottom.  Cancel is checked between
+    siblings.
+
+    The returned artifact is the LAST block's artifact (per
+    design/task-cards.md §Runtime semantics) with one deliberate
+    deviation: ``outputs`` and ``decisions`` accumulate across every
+    sibling instead of being discarded with the earlier artifacts.
+
+    Rationale: an artifact's ``summary`` is a return value — last-wins
+    is right for it.  But ``outputs`` are declared durable deliverables
+    (emit_artifact parts: frozen renders, files, findings), and
+    ``decisions`` are an audit trail.  Returning only the last
+    sibling's silently dropped every earlier step's work: a Group root
+    whose stages each emitted artifacts reported ``outputs=[]`` at the
+    run level while the per-iteration records held them correctly.
 
     Threads each completed sibling's artifact into ctx.sibling_stack so
     the next sibling can see it (prose auto-context + {{previous_sibling}}).
@@ -470,6 +483,11 @@ async def _execute_sequence(
     if not blocks:
         return Artifact(summary="", created_at=time.time())
     last: Optional[Artifact] = None
+    # Accumulated across siblings; folded into the returned artifact.
+    # Kept separate from ``last`` so the stop-path model_copy below
+    # cannot clobber them.
+    acc_outputs: List[ArtifactPart] = []
+    acc_decisions: List[str] = []
     ctx.sibling_stack.append(None)
     try:
         for i, child in enumerate(blocks):
@@ -478,18 +496,19 @@ async def _execute_sequence(
                 if ctx.cancel_requested():
                     raise BlockExecutionCancelled()
             last = await execute_block(child, ctx)
+            acc_outputs.extend(last.outputs or [])
+            acc_decisions.extend(last.decisions or [])
             # Make this sibling's result visible to the next sibling.
             ctx.sibling_stack[-1] = last
             if on_failure == "stop" and last.failed and i < len(blocks) - 1:
                 skipped = len(blocks) - 1 - i
                 label = child.name or child.id or child.block_type
-                last = last.model_copy(update={
-                    "decisions": list(last.decisions or []) + [
-                        f"sequence stopped: step {i + 1}/{len(blocks)} "
-                        f"({label}) failed; {skipped} remaining step(s) "
-                        f"skipped (on_failure=stop)"
-                    ],
-                })
+                acc_decisions.append(
+                    f"sequence stopped: step {i + 1}/{len(blocks)} "
+                    f"({label}) failed; {skipped} remaining step(s) "
+                    f"skipped (on_failure=stop)"
+                )
+                last = last.model_copy(update={"decisions": list(acc_decisions)})
                 ctx.sibling_stack[-1] = last
                 # Mark never-run siblings as skipped so the run map can
                 # distinguish them from queued/failed blocks.
@@ -499,7 +518,12 @@ async def _execute_sequence(
     finally:
         ctx.sibling_stack.pop()
     assert last is not None
-    return last
+    # Fold the accumulated deliverables onto the last sibling's
+    # artifact.  ``summary``/``failed``/``signature`` stay last-wins.
+    return last.model_copy(update={
+        "outputs": acc_outputs,
+        "decisions": acc_decisions,
+    })
 
 
 async def _execute_parallel(
