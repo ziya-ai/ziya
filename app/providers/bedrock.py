@@ -389,6 +389,9 @@ class BedrockProvider(LLMProvider):
             "extended_context": self.model_config.get("supports_extended_context", False),
             "cache_control": True,  # Bedrock Claude always supports caching
             "assistant_prefill": self.model_config.get("supports_assistant_prefill", True),
+            # Anthropic-format tool_result blocks may carry image content
+            # blocks; deliverable only if the model itself has vision.
+            "image_tool_results": self.model_config.get("supports_vision", False),
         }
         return bool(feature_map.get(feature_name, False))
 
@@ -790,6 +793,27 @@ class BedrockProvider(LLMProvider):
             return ErrorType.THROTTLE
         if any(s in error_str for s in ("Input is too long", "too large", "prompt is too long")):
             return ErrorType.CONTEXT_LIMIT
+        # Credential-retrieval failures from a configured credential_process
+        # (e.g. ada/midway). Botocore's CredentialRetrievalError formats as
+        # "Error when retrieving credentials from {provider}: {error_msg}" --
+        # the exception CLASS NAME never appears in str(exc), only the lower-
+        # case word "credentials", so match on that phrase instead of the
+        # (never-present) class name. A failure to even reach the auth
+        # endpoint (DNS/network/client-init issues, including ada's own
+        # "failed to initialize iibs client: Get \"\": unsupported protocol
+        # scheme \"\"" when a corp-network redirect returns empty) is a
+        # transient network problem, not an expired/invalid token. Route
+        # those to READ_TIMEOUT (retryable) instead of leaving them
+        # unclassified as UNKNOWN/non-retryable with the raw Go error text.
+        _is_cred_retrieval = "retrieving credentials" in lowered or "credentialretrievalerror" in lowered
+        if _is_cred_retrieval and any(ind in lowered for ind in (
+                "no such host", "dial tcp", "i/o timeout", "context deadline exceeded",
+                "temporary failure in name resolution", "name or service not known",
+                "connection refused", "network is unreachable", "connection reset",
+                "unsupported protocol scheme", "failed to initialize iibs client")):
+            return ErrorType.READ_TIMEOUT
+        if _is_cred_retrieval:
+            return ErrorType.AUTH
         if any(s in error_str for s in ("Read timed out", "ReadTimeoutError")) or "timeout" in lowered:
             return ErrorType.READ_TIMEOUT
         # Connection-quality drops (flaky/unreliable networks): TLS socket severed
@@ -799,6 +823,20 @@ class BedrockProvider(LLMProvider):
             "SSL validation failed", "SSLError", "Connection reset by peer",
             "ConnectionResetError", "Connection aborted", "Connection broken",
             "EndpointConnectionError", "ConnectionClosedError")):
+            return ErrorType.READ_TIMEOUT
+        # httpx-style mid-stream drops (RemoteProtocolError / ChunkedEncodingError).
+        # Matched case-insensitively so phrasing variants are covered. bedrock
+        # normally rides botocore/urllib3 (caught above), but a shared/wrapped
+        # httpx transport can surface these; align with AnthropicDirectProvider
+        # so the same transient drop is retriable on either path.
+        # "response ended prematurely" is the urllib3 spelling of the SAME
+        # fault (urllib3.exceptions.ProtocolError, response.py:1344 — socket
+        # closed mid-body). It was absent here, so an identical mid-stream
+        # drop was retriable over httpx but fatal over urllib3; observed
+        # killing a 2.5h task card at iteration 5 of 20 with 4 passes banked.
+        if ("peer closed connection" in lowered or "incomplete chunked read" in lowered
+                or "remoteprotocolerror" in lowered or "server disconnected" in lowered
+                or "ended prematurely" in lowered or "protocolerror" in lowered):
             return ErrorType.READ_TIMEOUT
         if "InternalServerException" in error_str:
             return ErrorType.SERVER_ERROR

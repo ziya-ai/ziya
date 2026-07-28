@@ -153,14 +153,35 @@ def _format_tools_section(task_scope: Optional[Any]) -> List[str]:
 
     Only emitted when the task scope narrows the tool list.  The
     chat path doesn't filter tools, so for chat this is a no-op.
+
+    The listed names are the EFFECTIVE set — the author's request plus
+    the always-available floor (emit_artifact, render_diagram, bead
+    bookkeeping).  Listing only the author's request understated what the
+    task could do, and models read the accompanying "all other tools are
+    filtered out" line literally: one reported that "no render_diagram /
+    emit_artifact-diagram tooling was available in this task scope" and
+    wrote prose instead of calling the tool it was actually holding.
     """
     if task_scope is None:
         return []
     tools = list(getattr(task_scope, "tools", None) or [])
     if not tools:
         return []
+    try:
+        from app.utils.task_tool_floor import (
+            ALWAYS_AVAILABLE_TOOLS, effective_tool_names,
+        )
+        effective = sorted(effective_tool_names(tools))
+        floor = sorted(ALWAYS_AVAILABLE_TOOLS)
+    except ImportError:
+        effective, floor = sorted(tools), []
     lines = ["### Allowed tools (task scope)"]
-    lines.append("  - " + ", ".join(f"`{t}`" for t in sorted(tools)))
+    lines.append("  - " + ", ".join(f"`{t}`" for t in effective))
+    if floor:
+        lines.append(
+            "  - Always available regardless of scope: "
+            + ", ".join(f"`{t}`" for t in floor)
+        )
     lines.append("  - All other tools are filtered out of this run.")
     return lines
 

@@ -249,6 +249,8 @@ class LLMProvider(ABC):
           - ``extended_context``    — larger-than-default context window
           - ``cache_control``       — prompt caching
           - ``assistant_prefill``   — conversation ending with assistant msg
+          - ``image_tool_results``  — tool_result messages may carry image
+            content blocks (vision input from tools like render_diagram)
 
         Default returns False.  Providers override to report their caps.
         """
