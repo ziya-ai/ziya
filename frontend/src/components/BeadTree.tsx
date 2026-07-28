@@ -10,8 +10,7 @@ import { Popover, Button, Empty, message, Tooltip, Spin } from 'antd';
 import { BranchesOutlined } from '@ant-design/icons';
 import { useTheme } from '../context/ThemeContext';
 import { useStreamingContext } from '../context/StreamingContext';
-import { useActiveChat } from '../context/ActiveChatContext';
-import { useConversationList } from '../context/ConversationListContext';
+import { useBranchFromBead } from '../hooks/useBranchFromBead';
 import * as beadApi from '../api/beadApi';
 import type { BeadItem, BeadTreeResponse } from '../api/beadApi';
 
@@ -151,8 +150,7 @@ const BeadNode: React.FC<{
 const BeadTree: React.FC<BeadTreeProps> = ({ conversationId, onResume }) => {
   const { isDarkMode } = useTheme();
   const { streamingConversations } = useStreamingContext();
-  const { loadConversation } = useActiveChat();
-  const { conversations, setConversations } = useConversationList();
+  const branchFromBead = useBranchFromBead();
   const [tree, setTree] = useState<BeadTreeResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
@@ -199,50 +197,17 @@ const BeadTree: React.FC<BeadTreeProps> = ({ conversationId, onResume }) => {
 
   // "Split from here" — fork the conversation at this parked bead's seam into
   // a new branched conversation (design/bead-branching.md, Mode 1), then
-  // navigate to it.  The source is left intact; the new chat opens with this
-  // thread active.  Mirrors handleResume's shape (optimistic toast, reload),
-  // but switches conversations rather than staying in place.
+  // navigate to it.  The fork + shell-insert + navigate + composer pickup
+  // sequence lives in the shared useBranchFromBead hook (also used by the
+  // Backlog Browser and the seam ribbon).
   const handleSplit = useCallback(async (beadId: string) => {
     try {
-      const result = await beadApi.forkFromBead(conversationId, beadId);
-      // The fork endpoint wrote the branch to the server's chat dir, but the
-      // frontend conversation list knows nothing about it — without an
-      // explicit insert, the branch is invisible until the ~30s server sync,
-      // and loadConversation navigates to an id not in state (the "banner but
-      // no branch" symptom).  Insert a shell stamped with lineage now; the
-      // _isShell marker makes loadConversation hydrate its messages from the
-      // server.  branchedFrom/At/Label drive the sidebar nesting under the
-      // parent conversation (MUIChatHistory tree builder).  projectId/folderId
-      // are copied from the parent so the branch lands in the same scope.
-      const parent = conversations.find(c => c.id === conversationId);
-      const now = Date.now();
-      const branchShell: any = {
-        id: result.new_chat_id,
-        title: result.branchedFromLabel || 'Branch',
-        messages: [],
-        projectId: parent?.projectId,
-        folderId: parent?.folderId ?? null,
-        lastAccessedAt: now,
-        isActive: true,
-        _version: now,
-        _isShell: true,
-        hasUnreadResponse: false,
-        branchedFrom: result.branchedFrom,
-        branchedAtMessageIndex: result.branchedAtMessageIndex,
-        branchedFromLabel: result.branchedFromLabel,
-      };
-      setConversations(prev =>
-        prev.some(c => c.id === branchShell.id) ? prev : [...prev, branchShell]
-      );
-      message.success(
-        `Branched: ${result.branchedFromLabel || 'thread'} — original preserved`
-      );
       setOpen(false);
-      loadConversation(result.new_chat_id);
+      await branchFromBead(conversationId, beadId);
     } catch (e) {
       message.error('Failed to split from bead');
     }
-  }, [conversationId, conversations, setConversations, loadConversation]);
+  }, [conversationId, branchFromBead]);
 
   // Compute display state.
   const beadCount = tree?.beads.length ?? 0;

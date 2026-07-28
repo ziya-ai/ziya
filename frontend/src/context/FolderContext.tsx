@@ -1023,11 +1023,37 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         console.log('📂 CONTEXT_SYNC: Backend removed files from context:', removed);
       }
 
+      // Enforce the per-file auto-add token limit on backend-synced additions.
+      // This path (diff-validation context enhancement, etc.) previously
+      // bypassed the limit entirely, so a huge file — e.g. a failed CHANGELOG.md
+      // diff pulling in the whole 182k-token file — could get pinned into
+      // context permanently. Explicit model-driven adds (context_add_file,
+      // reason 'model_context_management') are a deliberate choice and are
+      // never filtered, matching the "auto-add" scope of the setting.
+      let addedToApply = added;
+      if (added.length > 0 && reason !== 'model_context_management') {
+        const limit = currentProjectRef.current?.settings?.contextManagement?.auto_add_token_limit
+          ?? DEFAULT_AUTO_ADD_TOKEN_LIMIT;
+        const { allowed, skipped } = filterByAutoAddTokenLimit(added, limit, (p) => {
+          const accurate = accurateTokenCountsRef.current[p]?.count;
+          if (accurate && accurate > 0) return accurate;
+          return getFolderTokenCount(p, foldersRef.current);
+        });
+        if (skipped.length > 0) {
+          console.warn(
+            '📂 CONTEXT_SYNC: Skipped ' + skipped.length + ' backend auto-add file(s) over the ' +
+            limit + '-token limit:',
+            skipped.map(s => s.path + ' (~' + s.tokens + ' tokens)')
+          );
+        }
+        addedToApply = allowed;
+      }
+
       // Update checkedKeys: union of (existing - removed) + added.
       setCheckedKeys(prev => {
         const removedSet = new Set(removed);
         const newKeys = prev.filter(k => !removedSet.has(k as string));
-        added.forEach((file: string) => {
+        addedToApply.forEach((file: string) => {
           if (!newKeys.includes(file)) newKeys.push(file);
         });
         return newKeys;
@@ -1035,7 +1061,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
       const reasonLabel = reason ? ` (${reason})` : '';
       console.log(
-        `✅ UI synced${reasonLabel}: +${added.length} / -${removed.length} file(s)`
+        `✅ UI synced${reasonLabel}: +${addedToApply.length} / -${removed.length} file(s)`
       );
     };
 

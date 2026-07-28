@@ -42,5 +42,7 @@ export const STATUS_GLYPH: Record<string, string> = {
   completed: '\u2713',
 };
 
-export const COMPOSER_INJECT_EVENT = 'ziya:composer-inject';
+// Canonical definition moved to utils/composerInject (it now has a real
+// consumer outside this module); re-exported for back-compat.
+export { COMPOSER_INJECT_EVENT } from '../../utils/composerInject';
 export const BACKLOG_COUNT_EVENT = 'ziya:backlog-count';

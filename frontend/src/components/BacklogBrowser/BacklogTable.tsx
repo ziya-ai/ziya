@@ -11,9 +11,11 @@ import { STATUS_GLYPH, formatAge, stalenessColor, stalenessMarker } from './stal
 interface BacklogTableProps {
   items: BacklogItem[];
   onPeek: (item: BacklogItem) => void;
+  /** Bead last peeked/acted on — row stays highlighted for orientation. */
+  selectedBeadId?: string | null;
 }
 
-const BacklogTable: React.FC<BacklogTableProps> = ({ items, onPeek }) => {
+const BacklogTable: React.FC<BacklogTableProps> = ({ items, onPeek, selectedBeadId }) => {
   const { isDarkMode } = useTheme();
   const subtle = isDarkMode ? '#94a3b8' : '#64748b';
   const faint = isDarkMode ? '#64748b' : '#94a3b8';
@@ -43,10 +45,17 @@ const BacklogTable: React.FC<BacklogTableProps> = ({ items, onPeek }) => {
           const ageColor = stalenessColor(it.age_ms, isDarkMode);
           const marker = stalenessMarker(it.age_ms);
           const abandoned = it.bead.status === 'abandoned';
+          const selected = it.bead.id === selectedBeadId;
           return (
             <tr
               key={it.bead.id}
-              style={{ borderTop: `1px solid ${rowBorder}`, cursor: 'pointer', opacity: abandoned ? 0.55 : 1 }}
+              style={{
+                borderTop: `1px solid ${rowBorder}`, cursor: 'pointer',
+                opacity: abandoned ? 0.55 : 1,
+                background: selected
+                  ? (isDarkMode ? 'rgba(245,158,11,0.12)' : 'rgba(245,158,11,0.10)')
+                  : 'transparent',
+              }}
               onClick={() => onPeek(it)}
             >
               <td style={{ ...cell, color: ageColor || subtle, whiteSpace: 'nowrap' }}>

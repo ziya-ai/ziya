@@ -13,10 +13,13 @@ import { useConversationList } from '../../context/ConversationListContext';
 import * as backlogApi from '../../api/backlogApi';
 import type { BacklogItem, BacklogResponse } from '../../api/backlogApi';
 import * as beadApi from '../../api/beadApi';
+import { useBranchFromBead } from '../../hooks/useBranchFromBead';
+import { dispatchComposerInject } from '../../utils/composerInject';
+import { setSeamHighlight } from '../../utils/seamHighlight';
 import BacklogList from './BacklogList';
 import BacklogTable from './BacklogTable';
 import BeadPeekDrawer from './BeadPeekDrawer';
-import { BACKLOG_COUNT_EVENT, COMPOSER_INJECT_EVENT } from './staleness';
+import { BACKLOG_COUNT_EVENT } from './staleness';
 
 type StatusFilter = 'parked' | 'abandoned';
 type ViewMode = 'grouped' | 'flat';
@@ -35,6 +38,7 @@ const BacklogBrowser: React.FC = () => {
   const { loadConversation, loadConversationAndScrollToMessage } = useActiveChat();
   const { streamingConversations } = useStreamingContext();
   const { conversations, setConversations } = useConversationList();
+  const branchFromBead = useBranchFromBead();
 
   const projectId = currentProject?.id || (window as any).__ZIYA_CURRENT_PROJECT_ID__ || 'default';
 
@@ -46,6 +50,8 @@ const BacklogBrowser: React.FC = () => {
   const [drawerItem, setDrawerItem] = useState<BacklogItem | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [actionBusy, setActionBusy] = useState(false);
+  // Retained row highlight — the bead last peeked/acted on.
+  const [selectedBeadId, setSelectedBeadId] = useState<string | null>(null);
   const [statusOverride, setStatusOverride] = useState<Record<string, beadApi.BeadItem['status']>>({});
 
   useEffect(() => { localStorage.setItem(VIEW_KEY, view); }, [view]);
@@ -96,30 +102,51 @@ const BacklogBrowser: React.FC = () => {
   const openPeek = useCallback((item: BacklogItem) => {
     setDrawerItem(item);
     setDrawerOpen(true);
+    setSelectedBeadId(item.bead.id);
   }, []);
   const closePeek = useCallback(() => setDrawerOpen(false), []);
+
+  // Record the seam marker so Conversation.tsx renders the persistent
+  // in-place ribbon (utils/seamHighlight) at the parked message.
+  const markSeam = useCallback((item: BacklogItem, mode: 'jump' | 'resumed') => {
+    if (item.bead.message_index == null) return;
+    setSeamHighlight({
+      conversationId: item.conversation_id,
+      seamIndex: item.bead.message_index - 1,
+      beadId: item.bead.id,
+      label: item.bead.content,
+      contextHint: item.bead.context_hint,
+      canBranch: item.can_branch,
+      mode,
+    });
+  }, []);
 
   const handleJump = useCallback(async (item: BacklogItem) => {
     if (item.bead.message_index == null) return;
     setDrawerOpen(false);
+    markSeam(item, 'jump');
     try {
       await loadConversationAndScrollToMessage(item.conversation_id, item.bead.message_index - 1);
     } catch (e) {
       message.error('Failed to jump to seam');
     }
-  }, [loadConversationAndScrollToMessage]);
+  }, [loadConversationAndScrollToMessage, markSeam]);
 
   const handleResume = useCallback(async (item: BacklogItem) => {
     setActionBusy(true);
     try {
       const result = await beadApi.resumeBead(item.conversation_id, item.bead.id);
       setDrawerOpen(false);
-      loadConversation(item.conversation_id);
-      window.setTimeout(() => {
-        document.dispatchEvent(new CustomEvent(COMPOSER_INJECT_EVENT, {
-          detail: { conversationId: item.conversation_id, text: result.suggested_message },
-        }));
-      }, 250);
+      markSeam(item, 'resumed');
+      // Inject BEFORE navigating: SendChatContainer stashes injections for
+      // non-current conversations and applies them after the switch, past
+      // the draft-restore — no timing race, unlike the old setTimeout.
+      dispatchComposerInject(item.conversation_id, result.suggested_message);
+      if (item.bead.message_index != null) {
+        await loadConversationAndScrollToMessage(item.conversation_id, item.bead.message_index - 1);
+      } else {
+        loadConversation(item.conversation_id);
+      }
       message.success(`Resumed: ${result.resumed_bead.content}`);
       fetchBacklog();
     } catch (e) {
@@ -127,42 +154,21 @@ const BacklogBrowser: React.FC = () => {
     } finally {
       setActionBusy(false);
     }
-  }, [loadConversation, fetchBacklog]);
+  }, [loadConversation, loadConversationAndScrollToMessage, fetchBacklog, markSeam]);
 
   const handleBranch = useCallback(async (item: BacklogItem) => {
     if (!item.can_branch) return;
     setActionBusy(true);
     try {
-      const result = await beadApi.forkFromBead(item.conversation_id, item.bead.id);
-      const parent = conversations.find(c => c.id === item.conversation_id);
-      const now = Date.now();
-      const branchShell: any = {
-        id: result.new_chat_id,
-        title: result.branchedFromLabel || 'Branch',
-        messages: [],
-        projectId: (parent as any)?.projectId,
-        folderId: (parent as any)?.folderId ?? null,
-        lastAccessedAt: now,
-        isActive: true,
-        _version: now,
-        _isShell: true,
-        hasUnreadResponse: false,
-        branchedFrom: result.branchedFrom,
-        branchedAtMessageIndex: result.branchedAtMessageIndex,
-        branchedFromLabel: result.branchedFromLabel,
-      };
-      setConversations(prev =>
-        prev.some(c => c.id === branchShell.id) ? prev : [...prev, branchShell]
-      );
       setDrawerOpen(false);
-      message.success(`Branched: ${result.branchedFromLabel || 'thread'} - original preserved`);
-      loadConversation(result.new_chat_id);
+      await branchFromBead(item.conversation_id, item.bead.id);
+      fetchBacklog();
     } catch (e) {
       message.error('Failed to branch from thread');
     } finally {
       setActionBusy(false);
     }
-  }, [conversations, setConversations, loadConversation]);
+  }, [branchFromBead, fetchBacklog]);
 
   const flipStatus = useCallback(async (item: BacklogItem, next: backlogApi.BacklogStatus) => {
     const prev = item.bead.status;
@@ -273,9 +279,9 @@ const BacklogBrowser: React.FC = () => {
             style={{ marginTop: 40 }}
           />
         ) : view === 'grouped' ? (
-          <BacklogList items={filteredItems} onPeek={openPeek} />
+          <BacklogList items={filteredItems} onPeek={openPeek} selectedBeadId={selectedBeadId} />
         ) : (
-          <BacklogTable items={filteredItems} onPeek={openPeek} />
+          <BacklogTable items={filteredItems} onPeek={openPeek} selectedBeadId={selectedBeadId} />
         )}
       </div>
 
