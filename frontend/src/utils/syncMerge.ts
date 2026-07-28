@@ -22,6 +22,9 @@ export interface ServerChatSummary {
     isGlobal?: boolean;
     lastActiveAt?: number;
     messageCount?: number;
+    branchedFrom?: string;
+    branchedAtMessageIndex?: number;
+    branchedFromLabel?: string;
     openBeadCount?: number;
     openWorkItemCount?: number;
     _version?: number;
@@ -38,6 +41,9 @@ export interface LocalShell {
     isGlobal?: boolean;
     lastAccessedAt?: number;
     lastActiveAt?: number;
+    branchedFrom?: string;
+    branchedAtMessageIndex?: number;
+    branchedFromLabel?: string;
     _isShell?: boolean;
     _fullMessageCount?: number;
     openBeadCount?: number;
@@ -49,11 +55,19 @@ export interface LocalShell {
 // Fetch decision: does this server chat need a full-body fetch?
 // ---------------------------------------------------------------------------
 
+// How long after a local edit an active conversation is still considered
+// "possibly mid-edit" and therefore exempt from the periodic full-fetch.
+// Comfortably above the 2s dual-write debounce; well below the 30s poll
+// interval, so a genuinely idle-but-open tab still catches up promptly.
+const ACTIVE_CONV_IDLE_GRACE_MS = 15_000;
+
 export interface FetchDecisionCtx {
     /** sc.id === the conversation the user is actively viewing (polling only). */
     isActiveConv: boolean;
     /** sc.id is in recentlyFetchedFullIds (already fetched this session). */
     alreadyFetchedThisSession: boolean;
+    /** Date.now() at decision time (injected for testability). */
+    now?: number;
 }
 
 /**
@@ -72,10 +86,24 @@ export function shouldFetchFull(
         return !ctx.alreadyFetchedThisSession;
     }
     if (ctx.isActiveConv) {
-        // The active conversation is authoritative in React state during
-        // polling.  Fetching stale server data just creates merge risk.
-        // Metadata (delegateMeta, title) is updated via summary.
-        return false;
+        // The active conversation is authoritative in React state only
+        // while an edit could plausibly still be in flight (recent local
+        // write, dual-write debounce, etc.) — fetching stale server data
+        // during that window just creates merge risk. Metadata
+        // (delegateMeta, title) is updated via summary regardless.
+        //
+        // If the tab has simply had this conversation open and IDLE for a
+        // while, there's no in-flight edit to protect: refusing to ever
+        // pull lets this tab's local copy silently rot arbitrarily far
+        // behind the server (a second tab could have appended dozens of
+        // messages), and the next local edit here would overwrite that
+        // server state outright. So only suppress the fetch inside the
+        // grace window; fall through to the normal comparison otherwise.
+        const lastTouch = local.lastAccessedAt || local._version || 0;
+        const now = ctx.now ?? Date.now();
+        if (!lastTouch || now - lastTouch < ACTIVE_CONV_IDLE_GRACE_MS) {
+            return false;
+        }
     }
     // Always fetch full data if server has delegate metadata
     // or folder assignment that local is missing.
@@ -223,6 +251,9 @@ export function mergeServerChat(
                 record: {
                     id: sc.id,
                     title: sc.title || 'Loading...',
+                    branchedFrom: sc.branchedFrom,
+                    branchedAtMessageIndex: sc.branchedAtMessageIndex,
+                    branchedFromLabel: sc.branchedFromLabel,
                     messages: [],
                     _isShell: true,
                     _fullMessageCount: typeof sc.messageCount === 'number' ? sc.messageCount : 0,
@@ -325,6 +356,9 @@ export function mergeServerChat(
                     : (local.folderId ?? null),
                 lastActiveAt: sc.lastActiveAt || local.lastActiveAt,
                 isGlobal: sc.isGlobal ?? local.isGlobal,
+                branchedFrom: sc.branchedFrom ?? local.branchedFrom,
+                branchedAtMessageIndex: sc.branchedAtMessageIndex ?? local.branchedAtMessageIndex,
+                branchedFromLabel: sc.branchedFromLabel ?? local.branchedFromLabel,
                 _version: contentBehind ? local._version : serverVersion,
                 _isShell: local._isShell,
                 openBeadCount: sc.openBeadCount ?? local.openBeadCount ?? 0,

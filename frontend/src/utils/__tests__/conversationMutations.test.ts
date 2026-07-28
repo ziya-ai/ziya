@@ -23,6 +23,7 @@ jest.mock('../projectSync', () => ({
 jest.mock('../../api/conversationSyncApi', () => ({
     bulkSync: jest.fn(),
     conversationToServerChat: jest.fn(),
+    getChat: jest.fn(),
 }));
 
 import { db } from '../db';
@@ -34,6 +35,7 @@ const mockDb = db as jest.Mocked<typeof db>;
 const mockPost = projectSync.post as jest.Mock;
 const mockBulkSync = syncApi.bulkSync as jest.Mock;
 const mockConvert = syncApi.conversationToServerChat as jest.Mock;
+const mockGetChat = syncApi.getChat as jest.Mock;
 
 const NOW = 1_750_000_000_000;
 
@@ -53,6 +55,7 @@ beforeEach(() => {
     mockDb.getConversation.mockResolvedValue(fullConv() as any);
     mockDb.saveConversation.mockResolvedValue(undefined as any);
     mockBulkSync.mockResolvedValue(undefined);
+    mockGetChat.mockResolvedValue(null);
     mockConvert.mockImplementation((c: any, p: string) => ({ ...c, projectId: p, __converted: true }));
 });
 
@@ -138,6 +141,49 @@ describe('mutateConversationMeta — hydration', () => {
         mockDb.getConversation.mockRejectedValue(new Error('idb broken'));
         const r = await mutateConversationMeta('conv-1', { title: 'X' }, { fallback: fullConv() as any });
         expect(r.ok).toBe(true);
+    });
+
+    it('hydrates from the server when IDB misses and the fallback is a shell', async () => {
+        mockDb.getConversation.mockResolvedValue(null as any);
+        mockGetChat.mockResolvedValue({
+            id: 'conv-1',
+            title: 'Server title',
+            projectId: 'proj-1',
+            groupId: 'folder-9',
+            messages: [{ role: 'human' }, { role: 'assistant' }],
+        });
+        const fb = fullConv({ _isShell: true, messages: [], _fullMessageCount: 2 });
+        const r = await mutateConversationMeta('conv-1', { title: 'Renamed' }, { fallback: fb as any });
+        expect(mockGetChat).toHaveBeenCalledWith('proj-1', 'conv-1');
+        expect(r.ok).toBe(true);
+        expect(r.conversation?.title).toBe('Renamed');
+        // Full server body adopted — never the shell's stripped messages.
+        expect(r.conversation?.messages).toHaveLength(2);
+        expect((r.conversation as any).folderId).toBe('folder-9');
+        expect((r.conversation as any)._isShell).toBeUndefined();
+        // The hydrated+patched record heals IDB.
+        expect(mockDb.saveConversation).toHaveBeenCalled();
+    });
+
+    it('shell fallback folderId (even null) wins over server groupId', async () => {
+        mockDb.getConversation.mockResolvedValue(null as any);
+        mockGetChat.mockResolvedValue({
+            id: 'conv-1', title: 'T', projectId: 'proj-1',
+            groupId: 'folder-9', messages: [{ role: 'human' }],
+        });
+        const fb = fullConv({ _isShell: true, messages: [], folderId: null });
+        const r = await mutateConversationMeta('conv-1', { title: 'X' }, { fallback: fb as any });
+        expect(r.ok).toBe(true);
+        expect((r.conversation as any).folderId).toBeNull();
+    });
+
+    it('fails when IDB misses, the fallback is a shell, and the server has no record', async () => {
+        mockDb.getConversation.mockResolvedValue(null as any);
+        mockGetChat.mockResolvedValue(null);
+        const fb = fullConv({ _isShell: true, messages: [] });
+        const r = await mutateConversationMeta('conv-1', { title: 'X' }, { fallback: fb as any });
+        expect(r.ok).toBe(false);
+        expect(mockDb.saveConversation).not.toHaveBeenCalled();
     });
 });
 

@@ -13,8 +13,8 @@ describe('filterByAutoAddTokenLimit', () => {
   };
   const getTokens = (p: string) => counts[p] ?? 0;
 
-  it('default limit is 35000 tokens', () => {
-    expect(DEFAULT_AUTO_ADD_TOKEN_LIMIT).toBe(35000);
+  it('default limit is 12500 tokens', () => {
+    expect(DEFAULT_AUTO_ADD_TOKEN_LIMIT).toBe(12500);
   });
 
   it('skips files over the limit and keeps the rest', () => {

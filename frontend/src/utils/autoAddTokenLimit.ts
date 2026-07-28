@@ -8,7 +8,7 @@
  */
 
 /** Default per-file cap for auto-added files, in tokens. */
-export const DEFAULT_AUTO_ADD_TOKEN_LIMIT = 35000;
+export const DEFAULT_AUTO_ADD_TOKEN_LIMIT = 12500;
 
 export interface TokenLimitFilterResult {
   /** Paths that passed the limit (or whose size is unknown). */

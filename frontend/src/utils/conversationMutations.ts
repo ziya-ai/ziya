@@ -95,6 +95,48 @@ export async function mutateConversationMeta(
     if (!full && opts.fallback && !(opts.fallback as any)._isShell) {
         full = opts.fallback;
     }
+    // 1b. Server hydration for server-only conversations.  A conversation
+    //     can be visible in the sidebar purely as a SHELL — server-known
+    //     but never hydrated into this browser's IndexedDB (created on
+    //     another machine, or its deferred hydration hasn't completed).
+    //     IDB then has no record, and the shell fallback is correctly
+    //     rejected above (its body is stripped; pushing it would truncate
+    //     the server record).  Without this step every metadata mutation
+    //     on such a conversation fails with "not found" even though it is
+    //     perfectly valid.  Fetch the authoritative full record from the
+    //     server and hydrate from that; the IDB write in step 3 then
+    //     heals the local copy as a side effect.
+    if (!full) {
+        const fb: any = opts.fallback;
+        const pid = fb?.projectId || opts.projectId;
+        if (pid) {
+            try {
+                const sc: any = await syncApi.getChat(pid, conversationId);
+                if (sc && Array.isArray(sc.messages)) {
+                    full = {
+                        ...sc,
+                        // Absent-vs-null is load-bearing for folder moves
+                        // (see conversationToServerChat): a local move to
+                        // ROOT sets folderId === null and must win over
+                        // the server's groupId; only fall back to the
+                        // server's value when the shell carries no
+                        // folderId at all.
+                        folderId: fb?.folderId !== undefined
+                            ? fb.folderId
+                            : (sc.groupId ?? sc.folderId ?? null),
+                        projectId: sc.projectId || pid,
+                        isActive: sc.isActive !== false,
+                        lastAccessedAt: sc.lastAccessedAt || sc.lastActiveAt,
+                        _version: sc._version || 0,
+                    } as Conversation;
+                    delete (full as any)._isShell;
+                    delete (full as any)._fullMessageCount;
+                }
+            } catch (e) {
+                console.warn('mutateConversationMeta: server hydration failed:', e);
+            }
+        }
+    }
     if (!full) {
         return { ok: false, serverPushed: false, error: new Error(`conversation ${conversationId} not found`) };
     }
