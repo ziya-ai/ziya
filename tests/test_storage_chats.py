@@ -193,6 +193,9 @@ class TestListSummaries:
             "createdAt": int(time.time() * 1000),
             "lastActiveAt": int(time.time() * 1000),
             "_version": 1719900000000,
+            "branchedFrom": "parent-chat",
+            "branchedAtMessageIndex": 4,
+            "branchedFromLabel": "follow the queued work",
         }
         (storage.chats_dir / f"{chat_id}.json").write_text(json.dumps(chat_data))
 
@@ -201,6 +204,9 @@ class TestListSummaries:
         # _version should be preserved via extra fields
         summary_dump = summaries[0].model_dump()
         assert summary_dump.get("_version") == 1719900000000
+        assert summary_dump["branchedFrom"] == "parent-chat"
+        assert summary_dump["branchedAtMessageIndex"] == 4
+        assert summary_dump["branchedFromLabel"] == "follow the queued work"
 
 
 # ── Update ─────────────────────────────────────────────────────────
