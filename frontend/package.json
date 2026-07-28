@@ -1,12 +1,13 @@
 {
   "name": "frontend",
-  "version": "0.8.3",
+  "version": "0.8.4",
   "private": true,
   "engines": {
     "node": ">=20.0.0",
     "npm": ">=10.0.0"
   },
   "dependencies": {
+    "katex": "^0.16.42",
     "@ant-design/icons": "^5.5.2",
     "@emotion/react": "^11.13.5",
     "@emotion/styled": "^11.13.5",
