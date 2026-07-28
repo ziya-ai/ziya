@@ -17,7 +17,7 @@ class ContextManagementSettings(BaseModel):
     auto_add_diff_files: bool = True
     # Per-file token cap for automatically added context files.
     # Files larger than this are never auto-added.  0 disables the limit.
-    auto_add_token_limit: int = 35000
+    auto_add_token_limit: int = 12500
 
 class ProjectSettings(BaseModel):
     defaultContextIds: List[str] = []
@@ -25,6 +25,10 @@ class ProjectSettings(BaseModel):
     writePolicy: Optional[WritePolicy] = None
     contextManagement: Optional[ContextManagementSettings] = None
     externalPaths: List[str] = []
+    # Saved project-wide model pin (alias string).  Outermost model
+    # scope — inherited by conversations/folders with no more-specific
+    # pin.  None = follow the server global model.
+    modelPreference: Optional[str] = None
     # Deck-level (project-wide) Task Card permissions baseline.  Merged
     # additively with each card's own scope and every block's ancestor
     # chain (see app.models.task_card.merge_scopes and

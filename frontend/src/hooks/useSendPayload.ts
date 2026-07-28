@@ -19,6 +19,7 @@ import { useCallback, useRef } from 'react';
 import { useActiveChat } from '../context/ActiveChatContext';
 import { useProject } from '../context/ProjectContext';
 import { useFolderContext } from '../context/FolderContext';
+import { useResolvedModelPin } from './useResolvedModelPin';
 import { sendPayload } from '../apis/chatApi';
 import { convertKeysToStrings } from '../utils/types';
 import type { Message, ImageAttachment } from '../utils/types';
@@ -67,6 +68,9 @@ export function useSendPayload(): SendPayloadHandle {
     const activeChat = useActiveChat();
     const { checkedKeys } = useFolderContext();
     const project = useProject();
+    // Effective model-pin resolver (conversation → folder → project →
+    // server), layering tab pins over saved record prefs.
+    const { resolveFor: resolveModelPinFor } = useResolvedModelPin();
 
     // Store everything in a ref so the returned `send` callback is
     // truly stable — its closure reads .current at call time.
@@ -74,11 +78,12 @@ export function useSendPayload(): SendPayloadHandle {
         activeChat,
         checkedKeys,
         project,
+        resolveModelPinFor,
     });
-    ref.current = { activeChat, checkedKeys, project };
+    ref.current = { activeChat, checkedKeys, project, resolveModelPinFor };
 
     const send = useCallback(async (options: SendPayloadOptions): Promise<string> => {
-        const { activeChat: ac, checkedKeys: ck, project: pj } = ref.current;
+        const { activeChat: ac, checkedKeys: ck, project: pj, resolveModelPinFor: rmp } = ref.current;
 
         const conversationId = options.conversationId ?? ac.currentConversationId;
         const messages = options.messages ?? ac.currentMessages.filter(m => !m.muted);
@@ -86,6 +91,10 @@ export function useSendPayload(): SendPayloadHandle {
         const skills = options.activeSkillPrompts ?? pj.activeSkillPrompts;
         const isCurrentConv = options.isStreamingToCurrentConversation
             ?? (conversationId === ac.currentConversationId);
+
+        // Resolve the effective pin for THIS conversation (not necessarily
+        // the active one — delegates/background sends target others).
+        const resolvedModelPin = rmp(conversationId);
 
         return sendPayload(
             messages,
@@ -104,6 +113,7 @@ export function useSendPayload(): SendPayloadHandle {
             options.includeReasoning ? ac.setReasoningContentMap : undefined,
             undefined, // throttlingRecoveryDataRef
             pj.currentProject ?? null,
+            resolvedModelPin,
         );
     }, []); // stable — reads from ref.current
 

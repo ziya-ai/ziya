@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Modal, Form, Slider, Switch, Button, Typography, Tooltip, Select, message, Space } from 'antd';
+import { Modal, Form, Radio, Checkbox, Slider, Switch, Button, Typography, Tooltip, Select, message, Space } from 'antd';
 import { SettingOutlined, InfoCircleOutlined } from '@ant-design/icons';
 import { useTheme } from '../context/ThemeContext';
 
@@ -10,6 +10,13 @@ export interface ModelInfo {
   name: string;
 }
 
+/**
+ * Where a model change applies: the global server default, a per-project
+ * pin, or a per-conversation pin.  Pins are per-browser-tab and
+ * non-persisted (see frontend/src/utils/modelPins.ts).
+ */
+export type ModelScope = 'server' | 'project' | 'folder' | 'conversation';
+
 interface ModelConfigModalProps {
   visible: boolean;
   onClose: () => void;
@@ -19,7 +26,17 @@ interface ModelConfigModalProps {
   displayModelId?: string; // New prop for the actual model ID to display
   inferenceEndpoint?: string; // The actual string sent to the Bedrock API
   availableModels: ModelInfo[];
-  onModelChange: (modelId: string) => Promise<boolean>;
+  onModelChange: (modelId: string, scope: ModelScope, persistent: boolean) => Promise<boolean>;
+  /**
+   * Scope the modal opens with — callers pass the currently-active pin
+   * scope so an Apply that only tweaks settings doesn't silently clear
+   * an existing pin.  Defaults to 'server'.
+   */
+  initialScope?: ModelScope;
+  /** Whether the active conversation is in a folder (folder scope enabled). */
+  folderAvailable?: boolean;
+  /** Whether the currently-active pin is a saved (persistent) pref. */
+  initialPersistent?: boolean;
   capabilities: ModelCapabilities | null; // Use the imported type
   onSave: (settings: ModelSettings) => Promise<void>;
   currentSettings: ModelSettings;
@@ -72,6 +89,9 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
   inferenceEndpoint,
   availableModels,
   onModelChange,
+  initialScope,
+  folderAvailable,
+  initialPersistent,
   capabilities,
   onSave,
   currentSettings
@@ -129,6 +149,20 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
   const [isLoadingCapabilities, setIsLoadingCapabilities] = useState(false);
   const [selectedModelCapabilities, setSelectedModelCapabilities] = useState<ModelCapabilities | null>(capabilities);
   const capabilitiesCheckedRef = useRef<boolean>(false);
+
+  // Scope for the model change: server default vs project/conversation
+  // pin.  Re-seeded from initialScope each time the modal opens.
+  const [pinScope, setPinScope] = useState<ModelScope>(initialScope || 'server');
+  // Whether the pin should be saved (persists across tabs & restarts) vs
+  // tab-only.  Re-seeded from the active pin's layer on open.
+  const [persist, setPersist] = useState<boolean>(!!initialPersistent);
+
+  useEffect(() => {
+    if (visible) {
+      setPinScope(initialScope || 'server');
+      setPersist(!!initialPersistent);
+    }
+  }, [visible, initialScope, initialPersistent]);
 
   // Debug logging for props and state changes
   const propsLoggedRef = useRef(false);
@@ -319,9 +353,14 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
       const currentModelIdSafe = typeof modelId === 'object' ? JSON.stringify(modelId) : String(modelId);
       console.log('Comparing models - current:', currentModelIdSafe, 'new:', values.model);
 
-      if (values.model !== currentModelIdSafe) {
-        console.log('Model changed, calling onModelChange');
-        const success = await onModelChange(values.model);
+      // Route through onModelChange when the model changed, when a pin
+      // scope is selected (pinning the currently-selected model is
+      // meaningful), or when the scope moved back to server (clears pins).
+      const scopeChanged = pinScope !== (initialScope || 'server');
+      const persistChanged = persist !== !!initialPersistent;
+      if (values.model !== currentModelIdSafe || pinScope !== 'server' || scopeChanged || persistChanged) {
+        console.log('Model/scope changed, calling onModelChange');
+        const success = await onModelChange(values.model, pinScope, persist);
         if (!success) {
           console.log('Model change failed, aborting');
           setIsUpdating(false);
@@ -368,6 +407,47 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
         initialValues={settings}
         onValuesChange={handleValuesChange}
       >
+        <Form.Item
+          label={
+            <Space align="center">
+              <span>
+                Apply model to <Tooltip title="Server default changes the model for everything and clears any pin here. Pinning to this project or conversation affects only requests from that scope, lasts for this browser tab only, and is forgotten on reload.">
+                  <InfoCircleOutlined style={{ marginLeft: 5 }} />
+                </Tooltip>
+              </span>
+            </Space>
+          }
+        >
+          <Radio.Group
+            value={pinScope}
+            onChange={(e) => setPinScope(e.target.value)}
+            size="small"
+          >
+            <Radio.Button value="server">Server default</Radio.Button>
+            <Radio.Button value="project">This project</Radio.Button>
+            <Radio.Button value="folder" disabled={!folderAvailable}>
+              {folderAvailable
+                ? <span>This folder</span>
+                : <Tooltip title="The active conversation is not in a folder"><span>This folder</span></Tooltip>}
+            </Radio.Button>
+            <Radio.Button value="conversation">This conversation</Radio.Button>
+          </Radio.Group>
+        </Form.Item>
+        {pinScope !== 'server' && (
+          <Form.Item style={{ marginTop: -8 }}>
+            <Checkbox
+              checked={persist}
+              onChange={(e) => setPersist(e.target.checked)}
+            >
+              Persist to this {pinScope === 'conversation' ? 'conversation' : pinScope}
+              <Text type="secondary" style={{ display: 'block', fontSize: 11 }}>
+                {persist
+                  ? 'Saved — persists across tabs & server restarts.'
+                  : 'This tab only — forgotten on reload.'}
+              </Text>
+            </Checkbox>
+          </Form.Item>
+        )}
         <Form.Item
           label={
             <Space align="center">

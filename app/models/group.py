@@ -18,6 +18,10 @@ class ChatGroup(BaseModel):
     updatedAt: Optional[int] = None
     # Task description for folder-sticky context (was deferred; now used by TaskPlans)
     systemInstructions: Optional[str] = None
+    # Saved per-folder model pin (alias string, e.g. "opus4.5").
+    # Conversations in this folder with no conversation-level pin inherit
+    # it.  None = inherit project → server default.
+    modelPreference: Optional[str] = None
     # TaskPlan fields — None for regular folders. See design/newux-context.md.
     taskPlan: Optional[Dict[str, Any]] = None
 
@@ -33,6 +37,8 @@ class ChatGroupUpdate(BaseModel):
     defaultSkillIds: Optional[List[str]] = None
     collapsed: Optional[bool] = None
     order: Optional[int] = None
+    # Saved per-folder model pin (see ChatGroup.modelPreference).
+    modelPreference: Optional[str] = None
 
 class ChatGroupsFile(BaseModel):
     """The _groups.json file structure."""

@@ -287,7 +287,7 @@ def _inject_task_results(processed_chat_history: List, conversation_id: str) -> 
             processed_chat_history.insert(idx, synth)
 
 
-def build_messages_for_streaming(question: str, chat_history: List, files: List, conversation_id: str, use_langchain_format: bool = False, system_prompt_addition: str = "") -> List:
+def build_messages_for_streaming(question: str, chat_history: List, files: List, conversation_id: str, use_langchain_format: bool = False, system_prompt_addition: str = "", model_override: Optional[str] = None) -> List:
     """
     Build messages for streaming using the extended prompt template.
     This centralizes message construction to avoid duplication.
@@ -338,6 +338,13 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     from app.agents.prompts_manager import get_model_info_from_config
 
     model_info = get_model_info_from_config()
+    # Per-request model pin (per-conversation / per-project): re-point the
+    # prompt metadata at the pinned model so family-specific prompt
+    # extensions follow the model that will actually stream, not the
+    # global default (see app/utils/model_override.py).
+    if model_override:
+        from app.utils.model_override import apply_model_info_override
+        model_info = apply_model_info_override(model_info, model_override)
     request_path = "/streaming_tools"  # Default for streaming
     
     # Process chat history to format images properly
@@ -1085,15 +1092,30 @@ async def chat_endpoint(request: Request):
         
         logger.debug(f"🔍 CHAT_ENDPOINT: question='{question[:50]}...', messages={len(messages)}, files={len(files)}")
         
-        # Check current model to determine routing
-        current_model = ModelManager.get_model_alias()
+        # Per-conversation / per-project model pin — resolved by the
+        # frontend (conversation pin → project pin → none) and sent
+        # per-request as modelSelection.  Validated against the same gates
+        # /api/set-model enforces; never mutates global model state.
+        model_selection = body.get('modelSelection') or {}
+        pinned_model = model_selection.get('model') if isinstance(model_selection, dict) else None
+        _endpoint = ziya_env("ZIYA_ENDPOINT")
+        if pinned_model:
+            from app.utils.model_override import validate_model_override
+            _pin_err = validate_model_override(pinned_model, _endpoint)
+            if _pin_err:
+                logger.warning(f"🎯 MODEL_PIN: rejected pin '{pinned_model}': {_pin_err}")
+                return JSONResponse({"error": _pin_err, "error_type": "model_pin"}, status_code=400)
+            logger.info(f"🎯 MODEL_PIN: request pinned to '{pinned_model}'")
+
+        # Check current model to determine routing.  The pin, when present,
+        # is the model that will actually stream.
+        current_model = pinned_model or ModelManager.get_model_alias()
         logger.debug(f"🔍 CHAT_ENDPOINT: current_model={current_model}")
         # Routability is owned by the provider factory — the single source of
         # truth for which endpoints can be streamed. Do NOT re-derive a local
         # predicate list here; that duplication is what silently dropped new
         # endpoints (fable5/mythos5, zai, openrouter). A model streams iff the
         # factory can build a provider for its endpoint.
-        _endpoint = ziya_env("ZIYA_ENDPOINT")
         model_cfg = ModelManager.get_model_config(_endpoint, current_model) if current_model else {}
         from app.providers.factory import is_endpoint_supported
         use_direct_streaming = is_endpoint_supported(_endpoint, model_cfg)
@@ -1188,6 +1210,7 @@ async def chat_endpoint(request: Request):
                     'project_root': project_root,
                     'modelOverrides': body.get('modelOverrides', {}),
                     'preferredToolIds': body.get('preferredToolIds', []),
+                    'modelSelection': model_selection,
                 }
             }
             
@@ -1361,6 +1384,9 @@ app.include_router(diff_router)
 from app.routes.page_routes import router as page_router
 app.include_router(page_router)
 
+from app.routes.transcription_routes import router as transcription_router
+app.include_router(transcription_router)
+
 from app.routes.misc_routes import router as misc_router
 app.include_router(misc_router)
 
@@ -1475,6 +1501,17 @@ async def stream_chunks(body):
     system_prompt_addition = body.get("config", {}).get("systemPromptAddition", "")
     model_overrides = body.get("config", {}).get("modelOverrides", {})
     preferred_tool_ids = body.get("config", {}).get("preferredToolIds", [])
+    # Per-conversation / per-project model pin.  Validated at the /api/chat
+    # boundary; re-validated here defensively (stream_chunks has other
+    # callers) — an invalid pin is dropped with a warning, not fatal.
+    model_selection = body.get("config", {}).get("modelSelection", {}) or {}
+    pinned_model = model_selection.get("model") if isinstance(model_selection, dict) else None
+    if pinned_model:
+        from app.utils.model_override import validate_model_override
+        _pin_err = validate_model_override(pinned_model, ziya_env("ZIYA_ENDPOINT"))
+        if _pin_err:
+            logger.warning(f"🎯 MODEL_PIN: dropping invalid pin in stream_chunks: {_pin_err}")
+            pinned_model = None
     
     # Use request-scoped context (set by ProjectContextMiddleware) if no explicit body param.
     # Fall back to body param for backwards compatibility with older frontends.
@@ -1552,7 +1589,19 @@ async def stream_chunks(body):
                 logger.debug(f"🔍 DIRECT_STREAMING_DEBUG: About to call build_messages_for_streaming with {len(files)} files")
                 # Build messages with full context using the same function as LangChain path - use langchain format like 0.3.0
                 logger.debug(f"🔍 CALLING_BUILD_MESSAGES: About to call build_messages_for_streaming")
-                messages = build_messages_for_streaming(question, chat_history, files, conversation_id, use_langchain_format=True, system_prompt_addition=system_prompt_addition)
+                # build_messages_for_streaming (via extract_codebase ->
+                # read_file_content -> extract_document_text) can run
+                # synchronous, CPU-bound document parsing (e.g. pdfplumber on
+                # a PDF with a dense/malformed object graph) that takes
+                # seconds to minutes. Run it in a worker thread so it cannot
+                # block the single-threaded asyncio event loop and starve
+                # every other in-flight request on this process.
+                messages = await asyncio.to_thread(
+                    build_messages_for_streaming, question, chat_history, files,
+                    conversation_id, use_langchain_format=True,
+                    system_prompt_addition=system_prompt_addition,
+                    model_override=pinned_model,
+                )
                 logger.debug(f"🔍 DIRECT_STREAMING_PATH: Built {len(messages)} messages with full context")
                 
                 # Debug the system message content
@@ -1561,8 +1610,14 @@ async def stream_chunks(body):
                     logger.debug(f"🔍 DIRECT_STREAMING_DEBUG: System message length = {system_content_length}")
                     logger.debug(f"🔍 DIRECT_STREAMING_DEBUG: System message preview = {messages[0].content[:200]}...")
                 
-                executor = StreamingToolExecutor(profile_name=aws_profile, region=current_region)
-                logger.debug(f"🚀 DIRECT_STREAMING: Created StreamingToolExecutor with profile={aws_profile}, region={current_region}")
+                executor = StreamingToolExecutor(
+                    profile_name=aws_profile, region=current_region,
+                    model_override=pinned_model,
+                )
+                logger.debug(
+                    f"🚀 DIRECT_STREAMING: Created StreamingToolExecutor with "
+                    f"profile={aws_profile}, region={current_region}, "
+                    f"model_override={pinned_model}")
                 
                 # Apply per-request model overrides from active skills
                 if model_overrides:

@@ -24,6 +24,10 @@ export interface ProjectSettings {
   defaultSkillIds: string[];
   writePolicy?: WritePolicy;
   contextManagement?: ContextManagementSettings;
+  // Saved project-wide model pin (alias string).  The outermost model
+  // scope: conversations/folders with no more-specific pin inherit it.
+  // Absent = follow the server default.
+  modelPreference?: string | null;
   // Deck-level (project-wide) Task Card permissions baseline.  Merged
   // additively with each card's own scope and every ancestor block's
   // scope (see app/models/task_card.py::merge_scopes and

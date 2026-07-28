@@ -36,6 +36,12 @@ class Chat(BaseModel):
     hasUnreadResponse: Optional[bool] = False
     displayMode: Optional[str] = None
     lastAccessedAt: Optional[int] = None
+    # Saved per-conversation model pin (alias string, e.g. "opus4.5").
+    # Durable layer of per-conversation model selection — survives
+    # restarts and is shared across tabs.  Declared explicitly (rather
+    # than relying on extra="allow") to match the folderId/lineageRootId
+    # round-trip convention.  None = inherit folder → project → default.
+    modelPreference: Optional[str] = None
     # Delegate fields — None for regular conversations.
     # See design/newux-context.md for DelegateMeta schema.
     delegateMeta: Optional[DelegateMeta] = None
@@ -88,6 +94,9 @@ class ChatSummary(BaseModel):
     createdAt: int
     lastActiveAt: int
     delegateMeta: Optional[DelegateMeta] = None
+    branchedFrom: Optional[str] = None
+    branchedAtMessageIndex: Optional[int] = None
+    branchedFromLabel: Optional[str] = None
     # Cheap derived "open work" counts for the sidebar indicators.  Always
     # present (default 0); recomputed from the chat record's _beads /
     # _work_items on each summary build.  openWorkItemCount is a correct

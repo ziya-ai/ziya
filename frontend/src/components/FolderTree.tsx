@@ -7,6 +7,7 @@ import { useProject } from '../context/ProjectContext';
 import { TokenCountDisplay } from "./TokenCountDisplay";
 import { FolderOutlined } from '@ant-design/icons'; // Import icons
 import { ModelConfigButton } from './ModelConfigButton';
+import { useResolvedModelPin } from '../hooks/useResolvedModelPin';
 import { MessageOutlined } from '@ant-design/icons';
 import MUIChatHistory from './MUIChatHistory';
 import { MUIFileExplorer } from './MUIFileExplorer';
@@ -195,6 +196,12 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
         };
     }, [fetchModelId, updateModelInfo]);
 
+    // Effective model for the ACTIVE conversation, resolved across all
+    // scopes (conversation → folder → project) and both layers (tab pin
+    // over saved pref).  The hook re-resolves on pin-store mutations and
+    // record changes, so no manual event wiring is needed here.
+    const { pin: activePin } = useResolvedModelPin();
+
     return (
         <div ref={panelRef} className={`folder-tree-panel ${isPanelCollapsed ? 'collapsed' : ''}`}>
             <ProjectSwitcher />
@@ -323,7 +330,36 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                 display: 'flex',
                 alignItems: 'center',
             }}>
-                {modelId && <span style={{ flex: 1 }}>Model: {modelDisplayName || modelId}</span>}
+                {modelId && (
+                    <span style={{ flex: 1 }}>
+                        Model: {activePin ? activePin.model : (modelDisplayName || modelId)}
+                        {activePin && (() => {
+                            // Higher-resolution pin indicator: the scope word
+                            // ({conv|folder|proj}) says which hierarchy level
+                            // the effective pin lives at; the style says
+                            // whether it's tab-only (dashed, ephemeral) or
+                            // saved (solid, persists across tabs/restarts).
+                            const scopeLabel = { conversation: 'conv', folder: 'folder', project: 'proj' }[activePin.scope];
+                            const persisted = activePin.persistent;
+                            const icon = persisted ? '📍' : '📌';
+                            const layer = persisted ? 'saved' : 'tab';
+                            const title = persisted
+                                ? `Pinned to this ${activePin.scope} — saved, persists across tabs & restarts (server default: ${modelDisplayName || modelId})`
+                                : `Pinned to this ${activePin.scope} — this tab only (server default: ${modelDisplayName || modelId})`;
+                            return (
+                                <span
+                                    title={title}
+                                    style={{
+                                        marginLeft: 6, padding: '0 6px', fontSize: 10.5,
+                                        borderRadius: 9, cursor: 'default', whiteSpace: 'nowrap',
+                                        border: persisted ? '1px solid #2a5b38' : '1px dashed #6b5a1a',
+                                        color: persisted ? '#4ac76a' : '#e8d44a',
+                                    }}
+                                >{icon} {scopeLabel} · {layer}</span>
+                            );
+                        })()}
+                    </span>
+                )}
                 {modelId && <ModelConfigButton modelId={modelId} />}
             </div>
         </div>

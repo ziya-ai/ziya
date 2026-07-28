@@ -1,9 +1,17 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Button, message, Form } from 'antd';
 import { SettingOutlined } from '@ant-design/icons';
-import { ModelConfigModal, ModelCapabilities, ModelSettings, ModelInfo } from './ModelConfigModal';
+import { ModelConfigModal, ModelCapabilities, ModelSettings, ModelInfo, ModelScope } from './ModelConfigModal';
 import { isSafari } from '../utils/browserUtils';
 import { modelCapabilitiesService } from '../services/modelCapabilitiesService';
+import { useActiveChat } from '../context/ActiveChatContext';
+import { useProject } from '../context/ProjectContext';
+import { useChatContext } from '../context/ChatContext';
+import { useResolvedModelPin } from '../hooks/useResolvedModelPin';
+import {
+  setConversationModelPin, setFolderModelPin,
+  setProjectModelPin, clearContextModelPins,
+} from '../utils/modelPins';
 
 // Extend the ModelInfo interface to include display_name property
 interface ExtendedModelInfo extends ModelInfo {
@@ -17,6 +25,13 @@ interface ModelConfigButtonProps {
 
 export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Element => {
   const [modalVisible, setModalVisible] = useState(false);
+  // Context for per-conversation / per-project model pins.  Rendered
+  // inside FolderTree, which sits under both providers.
+  const { currentConversationId } = useActiveChat();
+  const { currentProject, updateProject } = useProject();
+  const { folders, updateFolder, setConversationModelPreference } = useChatContext();
+  // Effective pin + the active conversation's folder id (for folder scope).
+  const { pin: activePin, folderId: activeFolderId } = useResolvedModelPin();
   const [settings, setSettings] = useState<ModelSettings>({
     temperature: 0,
     top_k: 15,
@@ -249,7 +264,97 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
   // Fetch available models with correct endpoint on mount
   useEffect(() => { verifyCurrentModel(); }, []);
 
-  const handleModelChange = async (selectedModelId: string): Promise<boolean> => {
+  const handleModelChange = async (
+    selectedModelId: string, scope: ModelScope = 'server', persistent = false,
+  ): Promise<boolean> => {
+    if (scope !== 'server') {
+      // Pin path — never touches the server's global model.  Two layers:
+      // tab-only (modelPins store) or saved (record modelPreference, which
+      // syncs + survives restarts).  chatApi/useSendPayload resolve the
+      // effective pin at send time.
+      const effectiveBefore = activePin?.model || currentModelId;
+
+      // Validate the target scope has an anchor id before pinning.
+      if (scope === 'conversation' && !currentConversationId) {
+        message.error('No active conversation to pin a model to');
+        return false;
+      }
+      if (scope === 'folder' && !activeFolderId) {
+        message.error('The active conversation is not in a folder');
+        return false;
+      }
+      if (scope === 'project' && !currentProject?.id) {
+        message.error('No active project to pin a model to');
+        return false;
+      }
+
+      try {
+        if (persistent) {
+          // Saved layer: write modelPreference onto the record.  Clear any
+          // tab-only pin at the same scope so the saved value is what
+          // resolves (tab would otherwise shadow it).
+          if (scope === 'conversation') {
+            setConversationModelPin(currentConversationId, null);
+            setConversationModelPreference(currentConversationId, selectedModelId);
+          } else if (scope === 'folder') {
+            setFolderModelPin(activeFolderId, null);
+            const folder = folders.find(f => f.id === activeFolderId);
+            if (folder) await updateFolder({ ...folder, modelPreference: selectedModelId, updatedAt: Date.now() });
+          } else {
+            setProjectModelPin(currentProject!.id, null);
+            await updateProject(currentProject!.id, {
+              settings: { ...currentProject!.settings, modelPreference: selectedModelId },
+            });
+          }
+        } else {
+          // Tab-only layer: in-memory store, dropped on reload.
+          if (scope === 'conversation') {
+            setConversationModelPin(currentConversationId, selectedModelId);
+          } else if (scope === 'folder') {
+            setFolderModelPin(activeFolderId, selectedModelId);
+          } else {
+            setProjectModelPin(currentProject!.id, selectedModelId);
+          }
+        }
+      } catch (e) {
+        console.error('Failed to persist model pin:', e);
+        message.error('Failed to save model pin');
+        return false;
+      }
+
+      const layer = persistent ? 'saved' : 'this tab only';
+      if (effectiveBefore !== selectedModelId) {
+        window.dispatchEvent(new CustomEvent('modelChanged', {
+          detail: {
+            previousModel: effectiveBefore,
+            newModel: `${selectedModelId} (pinned: this ${scope}, ${layer})`,
+            modelId: selectedModelId,
+            previousModelId: effectiveBefore,
+          },
+        }));
+      }
+      message.success(`Model pinned for this ${scope} (${layer}): ${selectedModelId}`);
+      return true;
+    }
+    // Server-default scope: this context follows the global model again.
+    // Clear BOTH layers (tab pins + saved prefs) covering it.
+    clearContextModelPins(currentConversationId, activeFolderId, currentProject?.id);
+    if (currentConversationId) setConversationModelPreference(currentConversationId, null);
+    if (activeFolderId) {
+      const folder = folders.find(f => f.id === activeFolderId);
+      if (folder && folder.modelPreference) {
+        await updateFolder({ ...folder, modelPreference: null, updatedAt: Date.now() }).catch(console.error);
+      }
+    }
+    if (currentProject?.id && (currentProject.settings as any)?.modelPreference) {
+      await updateProject(currentProject.id, {
+        settings: { ...currentProject.settings, modelPreference: null },
+      }).catch(console.error);
+    }
+    if (selectedModelId === currentModelId) {
+      // Apply was a pin-clear (or a no-op) — no global change needed.
+      return true;
+    }
     try {
       console.log('Attempting to change model to:', selectedModelId);
       // First try to set the model
@@ -450,7 +555,15 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
       <ModelConfigModal
         visible={modalVisible}
         onClose={() => setModalVisible(false)}
-        modelId={typeof currentModelId === 'object' ? JSON.stringify(currentModelId) : currentModelId}
+        modelId={
+          // Open on the effective (pinned) model so an untouched Apply
+          // re-affirms the pin instead of silently replacing it.
+          activePin?.model
+          ?? (typeof currentModelId === 'object' ? JSON.stringify(currentModelId) : currentModelId)
+        }
+        initialScope={activePin?.scope ?? 'server'}
+        initialPersistent={activePin?.persistent ?? false}
+        folderAvailable={!!activeFolderId}
         displayModelId={displayModelId}
         inferenceEndpoint={inferenceEndpoint}
         capabilities={capabilities}
