@@ -97,7 +97,12 @@ async def extract_document(file: UploadFile = File(...), request: Request = None
         if ext == '.pdf':
             try:
                 from app.utils.pdf_rag import should_use_pdf_rag
-                if should_use_pdf_rag(tmp_path):
+                # should_use_pdf_rag opens the file with pypdf to get a page
+                # count (and, for large files, does further parsing) — CPU
+                # work that must not block the event loop. Offload to a
+                # worker thread; this route serves every other in-flight
+                # request on the same asyncio loop while it runs.
+                if await asyncio.to_thread(should_use_pdf_rag, tmp_path):
                     project_root = get_project_root()
                     uploads_dir = os.path.join(project_root, ".ziya", "pdf_uploads")
                     os.makedirs(uploads_dir, exist_ok=True)
@@ -120,7 +125,13 @@ async def extract_document(file: UploadFile = File(...), request: Request = None
                 logger.warning(f"PDF RAG pre-check failed for {filename}: {e}")
 
         extract_source = kept_path if rag_used else tmp_path
-        result = handler(extract_source, filename)
+        # handler() runs the actual document extraction (pdfplumber/pypdf
+        # for PDFs, python-docx/openpyxl/python-pptx for other types). For
+        # a large PDF this involves parsing the full xref/object table
+        # (pdfplumber.open()/pypdf.PdfReader()) even on the "light" RAG
+        # stub path — seconds to minutes of pure CPU work. Must run off
+        # the event loop or it blocks every other request on this process.
+        result = await asyncio.to_thread(handler, extract_source, filename)
         return JSONResponse({"filename": filename, "rag": rag_used,
                              **({"indexed_path": kept_path} if rag_used else {}),
                              **result})
