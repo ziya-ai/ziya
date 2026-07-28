@@ -26,7 +26,7 @@ import {
     undoDiff,
     parseHunkStatuses
 } from '../apis/chatApi';
-import { extractAllFilesFromDiff, checkFilesInContext, findSupersededDiffIndices } from '../utils/diffUtils';
+import { extractAllFilesFromDiff, checkFilesInContext, findSupersededDiffParts } from '../utils/diffUtils';
 import { formatMCPOutput } from '../utils/mcpFormatter';
 import { useProject } from '../context/ProjectContext';
 import { useSendPayload } from '../hooks/useSendPayload';
@@ -151,17 +151,44 @@ const __processDiagramQueue = () => {
     }, { timeout: 2000 });
 };
 
+// A diagram must never wait on unrelated startup work.  requestIdleCallback
+// only fires when the main thread is IDLE, and its `timeout` option guarantees
+// the callback is *scheduled*, not that it preempts running JavaScript.  During
+// startup the thread is not idle for many seconds (rehydrating hundreds of
+// conversations, the background folder scan), so a queued diagram would sit
+// unrendered showing "Diagram queued for render…" the whole time even though
+// its own work is unrelated and already complete.
+//
+// This deadline is the escape hatch: a plain timer fires regardless of idle
+// state, so the diagram renders on schedule and only *coordination* with other
+// diagrams is best-effort.  Kept above one animation frame so the common
+// idle-thread case still drains through the queue in priority order.
+const DIAGRAM_RENDER_DEADLINE_MS = 300;
+
 const LazyD3Renderer = (props: React.ComponentProps<typeof D3Renderer>) => {
     const streaming = (props as any)?.isStreaming === true;
     const [ready, setReady] = React.useState<boolean>(streaming);
     React.useEffect(() => {
         if (streaming) { setReady(true); return; }
         let cancelled = false;
-        const task = () => { if (!cancelled) setReady(true); };
+        let done = false;
+        // Idempotent: whichever of the queue or the deadline wins, the other
+        // becomes a no-op rather than a redundant state update.
+        const task = () => {
+            if (cancelled || done) return;
+            done = true;
+            setReady(true);
+        };
         __diagramRenderQueue.push(task);
         __processDiagramQueue();
+        const deadline = window.setTimeout(() => {
+            const idx = __diagramRenderQueue.indexOf(task);
+            if (idx >= 0) __diagramRenderQueue.splice(idx, 1);
+            task();
+        }, DIAGRAM_RENDER_DEADLINE_MS);
         return () => {
             cancelled = true;
+            window.clearTimeout(deadline);
             const idx = __diagramRenderQueue.indexOf(task);
             if (idx >= 0) __diagramRenderQueue.splice(idx, 1);
         };
@@ -595,6 +622,24 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
 
     // Check if content should be rendered as markdown (contains markdown formatting)
     const shouldRenderAsMarkdown = useMemo(() => {
+        // Serialized JSON (a tool result like a Slack/conversation dump) must
+        // never be markdown-parsed. Such a blob starts with '[' or '{' and can
+        // contain a substring that triggers catastrophic backtracking in
+        // marked's inline link tokenizer (link.exec() never returns, pegging
+        // the main thread — an unrecoverable UX freeze). '[' alone is a poor
+        // "is markdown" signal precisely because every JSON array matches it.
+        const trimmed = content.trimStart();
+        if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+            try {
+                JSON.parse(content);
+                return false; // valid JSON → render as plain/structured text, not markdown
+            } catch {
+                // Not parseable JSON (e.g. truncated); fall through, but the
+                // size cap below still protects against a large hostile blob.
+            }
+        }
+        // Hard size cap: never hand an oversized blob to the markdown lexer.
+        if (content.length > 50000) return false;
         return content.includes('**') || content.includes('[') || content.includes('###') || content.includes('<a href');
     }, [content]);
 
@@ -1168,6 +1213,13 @@ export interface DiffViewProps {
     fileIndex?: number;
     elementId: string;
     forceRender?: boolean;
+    /**
+     * Whether the MESSAGE that owns this diff is still streaming.  Threaded
+     * down from the owning MarkdownRenderer rather than read from context:
+     * both the global boolean and per-conversation Set membership describe the
+     * CURRENT turn, and so wrongly gate settled diffs in earlier turns.
+     */
+    isStreaming?: boolean;
 }
 
 interface DiffControlsProps {
@@ -1758,7 +1810,7 @@ const detectLanguage = (filePath: string): string => {
     return languageMap[extension || ''] || 'plaintext';
 };
 
-const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode, showLineNumbers, elementId, fileIndex }) => {
+const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode, showLineNumbers, elementId, fileIndex, isStreaming: isMessageStreaming = false }) => {
     const [isLoading, setIsLoading] = useState(true);
     const { isDarkMode } = useTheme();
     const parsedFilesRef = useRef<any[]>([]);
@@ -2537,12 +2589,15 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
                                     fileIndex={fileIndex}
                                     diffElementId={elementId}
                                     filePath={file.type === 'delete' ? file.oldPath : (file.newPath || file.oldPath)}
-                                    // Gate on THIS conversation's streaming state, not the
-                                    // global isStreaming boolean. The global boolean can
-                                    // desync from streamingConversations and stay stuck true
-                                    // (empty Set + isStreaming===true), permanently greying
-                                    // the Apply button across turns. The Set is authoritative.
-                                    isStreaming={streamingConversations.has(currentConversationId)}
+                                    // Gate on THIS MESSAGE's streaming state.  Neither the
+                                    // global isStreaming boolean nor Set membership works
+                                    // here: both describe the CURRENT turn, so on the next
+                                    // turn every already-settled diff in the history was
+                                    // re-gated and re-greyed (and only the subset whose
+                                    // shape isDiffComplete's heuristic rejected stayed
+                                    // grey, which is why the symptom looked arbitrary).
+                                    // A committed history message is never streaming.
+                                    isStreaming={isMessageStreaming}
                                     setHunkStatuses={setInstanceHunkStatusMap}
                                     enabled={window.enableCodeApply === 'true'}
                                 />
@@ -3205,8 +3260,13 @@ interface DiffTokenProps {
     isStreaming?: boolean;
 }
 
-const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded = false }: DiffTokenProps): JSX.Element => {
-    const { isStreaming, streamingConversations, currentConversationId } = useStreamingContext();
+// isStreaming is a PROP, deliberately not read from context here: the props
+// version is per-message (false for every committed history message), while
+// the context version is global and true whenever any turn is in flight.
+// Shadowing the prop with the context value is what re-greyed prior turns'
+// Apply buttons on every subsequent turn.
+const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded = false, isStreaming = false }: DiffTokenProps): JSX.Element => {
+    const { streamingConversations, currentConversationId } = useStreamingContext();
     // Lazy ref to ChatContext — only accessed when the user clicks "Apply".
     // Avoids subscribing DiffToken to conversations changes (which caused
     // 80+ re-renders per setConversations call in delegate conversations).
@@ -3516,7 +3576,7 @@ interface DiffViewWrapperProps {
     elementId?: string;
 }
 
-const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, index, elementId }: DiffViewWrapperProps) => {
+const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, index, elementId, isStreaming: isMessageStreaming = false }: DiffViewWrapperProps) => {
     const [viewType, setViewType] = useState<'unified' | 'split'>(window.diffViewType || 'unified');
     const [showLineNumbers, setShowLineNumbers] = useState<boolean>(window.diffShowLineNumbers || false);
     const { currentConversationId, isStreaming: isGlobalStreaming } = useStreamingContext();
@@ -3764,6 +3824,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, inde
                             initialDisplayMode={displayMode}
                             showLineNumbers={showLineNumbers}
                             fileIndex={fileIndex}
+                            isStreaming={isMessageStreaming}
                             elementId={`${stableElementIdRef.current}-file-${fileIndex}`}
                         />
                     ))}
@@ -3817,6 +3878,7 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, inde
                         initialDisplayMode={displayMode}
                         key={stableElementIdRef.current}
                         forceRender={isGlobalStreaming} // Force render during streaming
+                        isStreaming={isMessageStreaming}
                         elementId={stableElementIdRef.current!}
                         showLineNumbers={showLineNumbers}
                     />
@@ -4187,10 +4249,15 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         if (lang === 'graphviz' || lang === 'dot') {
             return 'graphviz';
         }
-        if (lang === 'circuitikz' || lang === 'tikz' || lang === 'latex') {
-            return 'circuitikz';
-        }
-        if (lang === 'latex-circuit') {
+        // Every server-rendered LaTeX profile must be listed here, or its fence
+        // falls through to the generic 'code' case and the user sees the raw
+        // source instead of a diagram.  ``chemfig`` and ``tikz-cd`` were absent
+        // while being fully supported by the backend profile registry AND by
+        // latexPlugin's own LATEX_TYPES, so the two ends worked and only this
+        // middle routing step was missing.  Keep in sync with
+        // ``LATEX_DIAGRAM_TYPES`` in app/services/latex_profiles.py.
+        if (lang === 'circuitikz' || lang === 'tikz' || lang === 'latex'
+            || lang === 'latex-circuit' || lang === 'chemfig' || lang === 'tikz-cd') {
             return 'circuitikz';
         }
         if (lang === 'd3') return 'd3';
@@ -4277,8 +4344,13 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
 
         // Enhanced tool block detection by content
         // Look for tool block markers that might have been missed by lang detection
+        //
+        // Deliberately no bare "mcp_" substring test here: it is unanchored, so it
+        // misclassifies ordinary code that merely contains the sequence (tcp_port,
+        // scp_dest, dhcp_lease) or that discusses a tool name in passing. A real
+        // tool block is identified by its fence marker, a shell prompt, or an
+        // explicit emoji marker -- all covered below.
         if (trimmedText.startsWith('\`\`\`tool:mcp_') ||
-            trimmedText.includes('\cp_') ||
             (trimmedText.startsWith('$ ') && trimmedText.length > 10 &&
                 !trimmedText.includes('\n') && // Single line commands only
                 !trimmedText.includes('ERROR:') && // Not error messages
@@ -4429,7 +4501,7 @@ const decodeHtmlEntities = (text: string): string => {
         .replace(/&trade;/g, '™');
 };
 
-const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false, thinkingContentRef?: React.MutableRefObject<string>, onOpenShellConfig?: () => void): React.ReactNode => {
+const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false, thinkingContentRef?: React.MutableRefObject<string>, onOpenShellConfig?: () => void, forcedSuperseded: boolean = false): React.ReactNode => {
     const shouldLog = isDebugLoggingEnabled() &&
         (Date.now() - lastLogTimestamp > 10000);
 
@@ -4438,9 +4510,9 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
         debugLog(`Processing ${tokens.length} tokens`);
     }
 
-    // Pre-scan diff tokens to detect superseded diffs (earlier revision for
-    // the same file with overlapping hunk ranges).
-    let supersededIndices = new Set<number>();
+    // Pre-scan diff tokens to detect superseded individual file sections.
+    // Map: rendered token index → superseded file-section indices.
+    const supersededParts = new Map<number, Set<number>>();
     // headed diff.  LLMs (especially Opus) sometimes emit multiple ```diff
     const absorbedDiffIndices = new Set<number>();
 
@@ -4486,6 +4558,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 diffTexts.push({ index, text: (token as TokenWithText).text });
             }
         });
+
         if (diffTexts.length > 1) {
             // Synthesize numeric headers first so supersede detection sees the
             // same form the apply pipeline does. On raw bare-header diffs
@@ -4493,8 +4566,15 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
             // same-file pair look like duplicate new-file creations — and the
             // ZIYA_NOPOS locators are absent, so the locator-aware branch never
             // runs. Both effects wrongly grey out earlier diffs to the file.
-            const rawSuperseded = findSupersededDiffIndices(diffTexts.map(d => synthesizeMissingHunkHeaders(d.text)));
-            rawSuperseded.forEach(di => supersededIndices.add(diffTexts[di].index));
+            const rawSuperseded = findSupersededDiffParts(
+                diffTexts.map(d => synthesizeMissingHunkHeaders(d.text))
+            );
+            rawSuperseded.forEach((fileIndices, diffBlockIndex) => {
+                supersededParts.set(
+                    diffTexts[diffBlockIndex].index,
+                    fileIndices
+                );
+            });
         }
     }
 
@@ -4565,12 +4645,14 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         });
                     }
 
+                    const supersededFileIndices = supersededParts.get(index);
+                    const singleFileSuperseded = forcedSuperseded || supersededFileIndices?.has(0) === true;
                     // Check if this is a multi-file diff and not already a sub-render
                     if (!isSubRender) {
                         const fileDiffs = splitMultiFileDiffs(cleanedDiff);
                         if (fileDiffs.length > 1) {
                             console.log('🎨 MarkdownRenderer - Rendering multi-file diff');
-                            return renderMultiFileDiff(diffToken, index, enableCodeApply, isDarkMode, onOpenShellConfig, supersededIndices.has(index));
+                            return renderMultiFileDiff(diffToken, index, enableCodeApply, isDarkMode, onOpenShellConfig, supersededFileIndices, isStreaming);
                         }
                     }
 
@@ -4578,7 +4660,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     if (isDebugLoggingEnabled() && false) {
                         debugLog('Rendering single DiffToken component');
                     }
-                    return <DiffToken key={sk} token={diffToken} index={index} enableCodeApply={enableCodeApply} isDarkMode={isDarkMode} superseded={supersededIndices.has(index)} />;
+                    return <DiffToken key={sk} token={diffToken} index={index} enableCodeApply={enableCodeApply} isDarkMode={isDarkMode} superseded={singleFileSuperseded} isStreaming={isStreaming} />;
 
                 case 'html-mockup':
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
@@ -4690,13 +4772,48 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     );
 
                 case 'circuitikz':
-                    // No visual circuit-schematic renderer is implemented yet (no
-                    // D3 plugin registered for this type). Render as a
-                    // syntax-highlighted LaTeX/TikZ code block rather than
-                    // falling through to the unhandled-token fallback, which
-                    // rendered raw, unformatted text.
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
-                    return <CodeBlock key={sk} token={{ ...tokenWithText, lang: 'latex' }} index={index} />;
+                    // determineTokenType folds every LaTeX-family lang into
+                    // this case.  Each must map to a backend profile name here;
+                    // an unmapped lang silently degrades to a code block, which
+                    // is how ```chemfig came to render as literal source.
+                    //
+                    // A bare ```latex block deliberately stays a code block: it
+                    // is usually raw math or prose, and compiling it inside a
+                    // circuitikz environment would fail.
+                    {
+                        const latexLang = (tokenWithText.lang || '').toLowerCase().trim();
+                        const LATEX_LANG_TO_PROFILE: Record<string, string> = {
+                            'tikz': 'tikz',
+                            'circuitikz': 'circuitikz',
+                            'latex-circuit': 'circuitikz',
+                            'chemfig': 'chemfig',
+                            'tikz-cd': 'tikz-cd',
+                        };
+                        const latexProfile = LATEX_LANG_TO_PROFILE[latexLang] || null;
+                        if (!latexProfile) {
+                            return <CodeBlock key={sk} token={{ ...tokenWithText, lang: 'latex' }} index={index} />;
+                        }
+                        // latexPlugin renders server-side via /api/render-latex.
+                        // It is the only plugin that depends on the backend, so
+                        // it owns its own spinner, abortable fetch, and (when TeX
+                        // is not installed) an install notice that keeps the
+                        // source visible rather than losing the content.
+                        return (
+                            <LazyD3Renderer
+                                key={sk}
+                                spec={{
+                                    type: latexProfile,
+                                    definition: tokenWithText.text,
+                                    isStreaming: isStreaming,
+                                    isMarkdownBlockClosed: true,
+                                    forceRender: true,
+                                }}
+                                type="d3"
+                                isStreaming={isStreaming}
+                            />
+                        );
+                    }
 
                 case 'drawio':
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
@@ -5526,7 +5643,7 @@ const splitMultiFileDiffs = (diffText: string): string[] => {
 };
 
 // Function to handle multi-file diffs with proper recursive rendering
-const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeApply: boolean, isDarkMode: boolean, onOpenShellConfig?: () => void, superseded: boolean = false): JSX.Element => {
+const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeApply: boolean, isDarkMode: boolean, onOpenShellConfig?: () => void, supersededFileIndices: Set<number> = new Set(), isStreaming: boolean = false): JSX.Element => {
     // Split the diff into separate file diffs
     const fileDiffs = splitMultiFileDiffs(token.text);
 
@@ -5539,24 +5656,14 @@ const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeAppl
                 index={index}
                 enableCodeApply={enableCodeApply}
                 isDarkMode={isDarkMode}
+                isStreaming={isStreaming}
             />
         );
     }
 
     // Render each file diff as a complete component with its own controls
     return (
-        <div key={index} className={`multi-file-diff${superseded ? ' diff-superseded' : ''}`}
-            style={superseded ? { opacity: 0.45, position: 'relative' } : undefined}
-        >
-            {superseded && (
-                <div style={{
-                    padding: '6px 12px', background: '#faad14', color: '#000',
-                    fontSize: '12px', fontWeight: 500, borderRadius: '4px 4px 0 0',
-                    textAlign: 'center', pointerEvents: 'auto',
-                }}>
-                    ⊘ Superseded by a later revision below
-                </div>
-            )}
+        <div key={index} className="multi-file-diff">
             {fileDiffs.map((diffContent, fileIndex) => {
                 // Create a stable key for each file diff
                 const stableKey = `diff-${index}-file-${fileIndex}`;
@@ -5572,6 +5679,11 @@ const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeAppl
                             enableCodeApply={enableCodeApply}
                             onOpenShellConfig={onOpenShellConfig}
                             forceRender={true}
+                            superseded={supersededFileIndices.has(fileIndex)}
+                            // Without this the nested renderer defaults to false and a
+                            // genuinely mid-stream multi-file diff would offer an Apply
+                            // button for a half-arrived patch.
+                            isStreaming={isStreaming}
                             // isMarkdownBlockClosed will be true by default for sub-renders if they get a complete diff
                             isSubRender={true}
                         />
@@ -5594,6 +5706,7 @@ interface MarkdownRendererProps {
     breaks?: boolean;
     onOpenShellConfig?: () => void;
     role?: 'human' | 'assistant' | 'system';
+    superseded?: boolean;
 }
 
 // Configure marked options
@@ -5690,6 +5803,16 @@ const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, 
         const loadKatex = async () => {
             try {
                 const katexModule = await import('katex');
+                // mhchem extends KaTeX with \ce{} / \pu{} for chemical
+                // equations and units.  It mutates the KaTeX singleton by
+                // registering macros, so it must be imported AFTER katex and
+                // its return value is intentionally unused.  Failure to load
+                // is non-fatal: math still renders, only \ce{} degrades.
+                try {
+                    await import('katex/contrib/mhchem');
+                } catch (e) {
+                    console.warn('mhchem extension unavailable; \\ce{} will not render', e);
+                }
                 setKatex(katexModule);
             } catch (error) {
                 console.warn('Failed to load KaTeX:', error);
@@ -5783,57 +5906,92 @@ const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, 
  *
  * dsl is VexFlow EasyScore note syntax, e.g. "C4/q, D4/q ^\"Cmaj7\"".
  */
-const MusicInlineRenderer: React.FC<{ dsl: string; isDarkMode: boolean }> = ({ dsl, isDarkMode }) => {
+// Exported for testing: the markdown path to this component runs through
+// ``marked``, which is ESM-only and must be stubbed in jest, so a test that
+// went through the full pipeline could not reach it.  Driving the component
+// directly is what makes its ref-mount lifecycle testable at all.
+export const MusicInlineRenderer: React.FC<{ dsl: string; isDarkMode: boolean }> = ({ dsl, isDarkMode }) => {
     const containerRef = useRef<HTMLSpanElement>(null);
-    const [isLoading, setIsLoading] = useState(true);
+    const [isReady, setIsReady] = useState(false);
     const [hasError, setHasError] = useState(false);
 
     useEffect(() => {
         let cancelled = false;
         const renderInline = async () => {
             try {
-                const [{ Factory }, d3mod] = await Promise.all([
+                const [vexMod, d3mod] = await Promise.all([
                     import('vexflow'),
                     import('d3'),
                 ]);
+                const { Factory, Renderer, Voice } = vexMod as any;
                 if (cancelled || !containerRef.current) return;
                 containerRef.current.innerHTML = '';
                 const width = Math.max(140, 40 + dsl.split(',').length * 32);
                 const height = 60;
                 const factory = new (Factory as any)({
-                    renderer: { elementId: containerRef.current, width, height, backend: 1 },
+                    // 1 is CANVAS and throws on a <span> container; SVG is 2.
+                    renderer: {
+                        elementId: containerRef.current, width, height,
+                        backend: Renderer.Backends.SVG,
+                    },
                 });
                 const score = factory.EasyScore();
                 const system = factory.System({ width: width - 10 });
                 const notes = score.notes(dsl, { clef: 'treble' });
-                system.addStave({ voices: [score.voice(notes)] });
+                if (notes.length === 0) {
+                    throw new Error(`EasyScore parsed no notes from "${dsl}"`);
+                }
+                // SOFT + an explicit voice so a phrase that does not fill a
+                // 4/4 bar still renders; an inline snippet is a fragment by
+                // nature and almost never sums to a whole measure.
+                const voice = new Voice({ numBeats: 4, beatValue: 4 })
+                    .setMode(Voice.Mode.SOFT)
+                    .addTickables(notes);
+                system.addStave({ voices: [voice] });
                 factory.draw();
+                if (!cancelled) setIsReady(true);
             } catch (error) {
                 console.debug('MusicInlineRenderer: VexFlow render failed (handled):', error);
                 if (!cancelled) setHasError(true);
-            } finally {
-                if (!cancelled) setIsLoading(false);
             }
         };
         renderInline();
         return () => { cancelled = true; };
     }, [dsl]);
 
-    if (isLoading || hasError) {
-        // Fallback while loading or on error — same monospace-text pattern
-        // MathRenderer uses for its own loading/error fallback.
-        return <span className="music-inline-fallback" style={{ fontFamily: 'monospace' }}>{dsl}</span>;
-    }
-
+    // The container is mounted UNCONDITIONALLY and merely hidden until the
+    // draw succeeds, rather than being swapped in once loading finishes.
+    // Returning the fallback instead of the container while loading means the
+    // ref'd element does not exist when the effect runs, so
+    // containerRef.current is null, the effect returns early, and nothing is
+    // ever drawn -- then the (now empty) container replaces the fallback,
+    // rendering neither notation nor text.  MathRenderer can get away with the
+    // swap because KaTeX returns a markup string it hands to
+    // dangerouslySetInnerHTML during render; VexFlow needs a live DOM node to
+    // draw into, so the node must precede the draw.
+    //
+    // The container also deliberately has no JSX children: React must not
+    // reconcile a subtree that VexFlow owns imperatively.
+    const showFallback = !isReady || hasError;
     return (
-        <span
-            ref={containerRef}
-            className="music-inline"
-            role="img"
-            aria-label={`Music notation: ${dsl}`}
-            title={dsl}
-            style={{ display: 'inline-block', verticalAlign: 'middle' }}
-        />
+        <>
+            <span
+                ref={containerRef}
+                className="music-inline"
+                role="img"
+                aria-label={`Music notation: ${dsl}`}
+                title={dsl}
+                style={{
+                    display: showFallback ? 'none' : 'inline-block',
+                    verticalAlign: 'middle',
+                }}
+            />
+            {showFallback && (
+                <span className="music-inline-fallback" style={{ fontFamily: 'monospace' }}>
+                    {dsl}
+                </span>
+            )}
+        </>
     );
 };
 
@@ -5949,7 +6107,7 @@ function _installThrottleObserver(scanFn: () => void) {
     });
 }
 
-export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false, forceRender = false, isSubRender = false, breaks = false, onOpenShellConfig, role }) => {
+export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdown, enableCodeApply, isStreaming: externalStreaming = false, forceRender = false, isSubRender = false, breaks = false, onOpenShellConfig, role, superseded = false }) => {
     const { isDarkMode } = useTheme();
     const containerRef = useRef<HTMLDivElement>(null);
 
@@ -6472,6 +6630,37 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
 
     const lexedTokens = marked.lexer(processedMarkdown, { ...markedOptions, breaks });
+    // ReDoS guard for marked's inline link tokenizer.
+    //
+    // marked 16.4.2's inline.link regex backtracks catastrophically on a
+    // dense run of unclosed "[x](" openers on a single line: ~500 reps take
+    // 220ms, 1000 reps 1.6s, 2000 reps never returns (a single link.exec()
+    // pegs the main thread forever). Content pasted into conversations
+    // (stack traces, serialized arrays, truncated link fragments) can hit
+    // this shape. Well-formed closed links "[a](url)" do NOT backtrack, so a
+    // conservative per-line cap on "](" density defuses the pathological
+    // input without altering legitimate markdown. Fenced code is skipped
+    // because its content is never fed to the inline lexer.
+    const MAX_LINK_OPENERS_PER_LINE = 40;
+    if (processedMarkdown.includes('](')) {
+        let inFence = false;
+        processedMarkdown = processedMarkdown.split('\n').map((line) => {
+            const fenceToggle = /^\s*(`{3,}|~{3,})/.test(line);
+            if (fenceToggle) { inFence = !inFence; return line; }
+            if (inFence) return line;
+            // Count "](" adjacencies — the marker of chained link openers.
+            const openers = (line.match(/\]\(/g) || []).length;
+            if (openers <= MAX_LINK_OPENERS_PER_LINE) return line;
+            console.warn(
+                `🛡️ Link ReDoS guard: neutralized line with ${openers} "](" ` +
+                `sequences (cap ${MAX_LINK_OPENERS_PER_LINE}) to prevent lexer hang`
+            );
+            // Escape every unescaped "[" on this line so marked treats them
+            // as literal text instead of link-label starts.
+            return line.replace(/(^|[^\\])\[/g, '$1\\[');
+        }).join('\n');
+    }
+
     // Debug: capture what reaches the lexer when a vega/vega-lite block is present.
     // Remove after root cause is confirmed.
     if (processedMarkdown.includes('$schema') &&
@@ -6522,8 +6711,11 @@ useEffect(() => {
 
 // Only memoize the rendered content when not streaming or when streaming completes
 const renderedContent = useMemo(() => {
-    return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender, externalStreaming, thinkingContentRef, onOpenShellConfig);
-}, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender]); // Use forceRender to trigger re-renders
+    return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender, externalStreaming, thinkingContentRef, onOpenShellConfig, superseded);
+// externalStreaming is a real input to renderTokens (it reaches the Apply
+// button gate), so omitting it froze the tokens rendered mid-stream: the
+// true→false transition at stream end produced no re-render.
+}, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender, superseded, externalStreaming]); // Use forceRender to trigger re-renders
 
 // Attach event listeners to throttle retry buttons after render
 const { currentConversationId, currentMessages,
@@ -6754,9 +6946,9 @@ useLayoutEffect(() => {
 
 const isMultiFileDiff = markdown?.includes('diff --git') && markdown.split('diff --git').length > 2;
 return isMultiFileDiff && !isSubRender && displayTokens.length === 1 && displayTokens[0].type === 'code' && (displayTokens[0] as TokenWithText).lang === 'diff' ?
-    renderMultiFileDiff(displayTokens[0] as TokenWithText, 0, enableCodeApply, isDarkMode, onOpenShellConfig) :
+    renderMultiFileDiff(displayTokens[0] as TokenWithText, 0, enableCodeApply, isDarkMode, onOpenShellConfig, undefined, externalStreaming) :
     <div ref={containerRef}>{renderedContent}</div>;
-}, (prevProps, nextProps) => prevProps.markdown === nextProps.markdown && prevProps.enableCodeApply === nextProps.enableCodeApply && prevProps.role === nextProps.role);
+}, (prevProps, nextProps) => prevProps.markdown === nextProps.markdown && prevProps.enableCodeApply === nextProps.enableCodeApply && prevProps.role === nextProps.role && prevProps.isStreaming === nextProps.isStreaming);
 // Note: forceRender prop is intentionally not included in the memo comparison to ensure re-rendering during streaming
 
 const cleanDiffContent = (content: string): string => {
@@ -6771,15 +6963,18 @@ const cleanDiffContent = (content: string): string => {
             return line;
         }
 
-        // Reverse escapeNestedBacktickFences' ` escaping. That pass
-        // neutralizes the leading backtick run of every fence-shaped
-        // CONTENT line inside a diff block (e.g. a context line closing
-        // a nested \`\`\`bash block quoted from the file being patched) so
-        // marked's lexer doesn't prematurely close the outer \`\`\`diff
-        // fence. The diff rendering path never re-decoded them, so
-        // without this the user saw literal "`" text instead of the
-        // original backticks.
-        line = line.replace(/`/g, '\`');
+        // Reverse escapeNestedBacktickFences' escaping. That pass rewrites
+        // the leading backtick run of every fence-shaped CONTENT line inside
+        // a diff block to &#96; entities (fenceScanner.ts) so marked's lexer
+        // doesn't prematurely close the outer diff fence. The diff rendering
+        // path never decodes entities -- rawDiffText reaches us straight off
+        // the token -- so without this the user sees literal "&#96;&#96;&#96;bash"
+        // instead of the original backticks.
+        //
+        // Only &#96;/&#x60; are decoded here: this runs on diff bodies, where
+        // a general entity decode would corrupt legitimate content such as an
+        // HTML file's own &amp; or &lt; being added or removed by the patch.
+        line = line.replace(/&#96;/g, '`').replace(/&#x60;/gi, '`');
 
         // Fix any MATH_INLINE expansions that might have slipped through
         // This handles cases like $1 in regex replacements being converted to ⟨MATH_INLINE:1⟩
