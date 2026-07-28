@@ -56,6 +56,8 @@ Durable, cross-session work units anchored to a chat. Distinct from chat streami
 | **Permissions snapshot at launch** | Effective permissions captured once at run start and stored on the run record; later edits to the card don't rewrite history, so post-mortem can reconstruct exactly what scope a failed run had |
 | **Hierarchical permissions UI** | Permissions dialog shows folder rows in primary-color when any descendant has a configured grant (mirrors `MUIFileExplorer`'s "change at a lower level" convention); Files/Tools/Skills/Shell tabs with inheritance overlays for project-policy grants |
 | **Structured self-assessment as completion criterion** | Task agent must emit `<self_assessment objective_met="true|false|partial|unknown" rationale="..."/>` at the end of its response; `objective_met="false"` flips the run's `ok` flag regardless of whether the stream ended cleanly, catching tasks that abandoned their stated goal mid-run |
+| **Declared output artifacts (`emit_artifact`)** | Task agents declare durable outputs mid-run — text, files, JSON data, or diagrams rendered-and-frozen as PNGs at emit time (a failed render preserves the error evidence instead); parts carry neutral `group`/`label`/`seq` grouping plus automatic block/iteration attribution, and flow into `Artifact.outputs` for the run tile |
+| **Artifact viewer with shape-selected layout** | Frozen diagram renders display inline in the run tile (served through a hardened, decryption-aware blob route that refuses script-capable types inline). Layout is a pure function of group *shape* — 1 part → card, 2 labeled → side-by-side, `seq` present → ordered sequence, ≤6 → grid, else list — so no label string is magic and artifact shapes nobody anticipated still render sensibly. Any group can be forced to the plain list, so a layout misfire cannot hide data |
 | **Diff fallback hint on write rejection** | When `file_write` rejects a path outside the writable scope, the rejection text reminds the agent to emit a git diff in its response instead — closes the failure pattern where agents would give up on writing changes after a single denial |
 
 ---
@@ -148,6 +150,8 @@ settled knowledge).
 | **Google Gemini** | Gemini 3.1 Pro, Gemini 3 Pro *(deprecated)*/Flash, Gemini 2.5 Pro/Flash Lite, Gemini 2.0 Flash/Lite |
 | **OpenAI** | GPT-4.1/Mini/Nano, GPT-4o/Mini, o3, o3-mini, o4-mini |
 | **Mid-conversation model switching** | Change models at any point without losing history |
+| **Per-conversation / per-project model pinning** | Pin a model to one conversation or project without changing the server default; requests resolve conversation pin → project pin → server default (per-tab, non-persisted — reload falls back to server default) |
+| **Folder-scoped & persistent model pins** | Model pins also apply at folder scope (greyed when not in a folder), and each pin can be tab-only (ephemeral) or persisted to the conversation/folder/project record (syncs, survives restarts). Resolution: conversation → folder → project → server; tab pin overrides saved pref at the same level. Sidebar chip shows scope (`conv`/`folder`/`proj`) and layer (`tab`/`saved`) |
 | **Adaptive / extended thinking** | Sonnet 4.6, Opus 4.6: configurable reasoning effort (`low`–`max`); Sonnet 3.7, 4.0–4.5, Nova Pro/Premier: extended thinking toggle |
 | **Gemini thinking levels** | `low`, `medium`, `high` per-request on all Gemini 3.x family models (3 Pro, 3.1 Pro, 3 Flash) |
 | **Model parameter tuning** | Temperature, top-p, top-k, max output tokens — configurable in UI without restart |
@@ -169,7 +173,7 @@ settled knowledge).
 | **Excel (XLSX) input** | Native reading |
 | **PowerPoint (PPTX) input** | Native reading |
 | **Dynamic context helpers** | For obscure file types (e.g., network pcap), Ziya loads format-appropriate parsers |
-| **Voice input** | *(roadmap — Nova Sonic available on Bedrock)* |
+| **Voice input** | Microphone capture in the web composer with fully local faster-whisper transcription; optional dependency |
 
 ---
 
@@ -183,7 +187,8 @@ Ziya supports a wide range of inline visualization formats. All renderers have a
 | **Graphviz** | Dependency graphs, call graphs, complex networks |
 | **VegaLite** | Data charts, plots, statistical visualizations. Preprocessing fixes: encoding datum/field swaps, fold transform mismatches, gradient repair, log scale corrections, arc label enhancement, grouped bar fix, and 20+ other LLM-generated spec normalizations. |
 | **DrawIO** | Architecture diagrams, system design, exportable `.drawio` files |
-| **MathML / KaTeX** | Inline and display math (`$...$` / `$$...$$`) |
+| **MathML / KaTeX** | Inline and display math (`$...$` / `$$...$$`), including `\ce{}` chemical equations via the mhchem extension |
+| **LaTeX / TikZ** | `tikz`, `circuitikz` (circuit schematics), `chemfig` (chemical structures), `tikz-cd` (commutative diagrams). Compiled by a local TeX install; SVG when `dvisvgm` is present, PNG otherwise. A missing package produces an actionable `tlmgr install` notice rather than an error, and never discards the source |
 | **HTML mockups** | Interactive UI previews in an isolated iframe; inherits theme; CSS isolated |
 | **Packet diagrams** | Bit-level protocol frame / header / wire-format layouts with rulers and bracket annotations |
 | **Architecture shape catalog** | Searchable library of AWS and generic shapes for DrawIO/Mermaid/Graphviz |
@@ -295,7 +300,6 @@ Format per row: the gap, who has it, and notes for context.
 
 | Gap | Who Has It | Notes |
 |---|---|---|
-| **Voice input** | Aki (Nova Sonic, multilingual), GitHub Copilot Voice | Nova Sonic is available on Bedrock; not yet implemented |
 | **Native desktop app** | Aki (macOS + Windows), Cursor, Windsurf, VS Code | Browser-only; no Electron/native app |
 | **IDE plugin / inline suggestions** | GitHub Copilot, Cursor, Cline, Tabnine, Codeium | No VS Code / JetBrains extension; Ziya is a standalone UI, not embedded in the editor |
 | **Inline autocomplete (tab completion)** | GitHub Copilot, Cursor, Codeium, Supermaven | No keystroke-level code completion; Ziya operates at conversation/diff granularity |
