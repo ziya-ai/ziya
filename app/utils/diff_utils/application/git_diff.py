@@ -783,12 +783,40 @@ def apply_diff_atomically(file_path: str, git_diff: str) -> Dict[str, Any]:
     # Check if all hunks are already applied
     all_already_applied = True
     already_applied_hunks = []
-    
+    from ..validation.validators import normalize_line_for_comparison
+    # Normalize the file ONCE and thread it through every probe. Without
+    # this, each position probe re-normalized the entire file inside
+    # _check_pure_addition_already_applied, making the scan O(N^2) in file
+    # size — ~50s on a 275KB changelog for a fresh add-only diff. And the
+    # worst case is the NORMAL case: a fresh (not-yet-applied) hunk never
+    # matches, so the loop never breaks early.
+    _file_normalized = [normalize_line_for_comparison(l) for l in original_lines]
+    _file_norm_joined = "\n".join(_file_normalized)
+
     for i, hunk in enumerate(hunks, 1):
         hunk_applied = False
         _malformed = detect_malformed_state(original_lines, hunk)
+
+        # Fast negative for pure additions: if the normalized added block
+        # does not occur anywhere in the file, no position can report
+        # "already applied" — skip the full position scan. (Presence of the
+        # block as consecutive lines implies substring presence in the
+        # joined normalized text, so substring absence proves absence; a
+        # substring false-positive merely falls through to the full scan.)
+        hunk_lines = hunk.get('lines', [])
+        _removed = [l for l in hunk_lines if l.startswith('-') and not l.startswith('---')]
+        _added = [l[1:] for l in hunk_lines if l.startswith('+') and not l.startswith('+++')]
+        if not _removed and _added:
+            _added_norm = [normalize_line_for_comparison(l) for l in _added]
+            while _added_norm and _added_norm[-1] == '':
+                _added_norm.pop()
+            if _added_norm and "\n".join(_added_norm) not in _file_norm_joined:
+                all_already_applied = False
+                break
+
         for pos in range(len(original_lines) + 1):  # +1 to allow checking at EOF
-            if is_hunk_already_applied(original_lines, hunk, pos, ignore_whitespace=True, _malformed=_malformed):
+            if is_hunk_already_applied(original_lines, hunk, pos, ignore_whitespace=True,
+                                       _malformed=_malformed, _file_normalized=_file_normalized):
                 already_applied_hunks.append(i)
                 hunk_applied = True
                 break
