@@ -1220,20 +1220,13 @@ const parseJointDefinition = (definition: string): { elements: JointElement[]; c
         }
     }
 
-    // If no elements were parsed, create a simple test case
-    if (elements.length === 0 && definition.trim()) {
-        console.log('No elements parsed from definition, creating default test elements');
-        elements.push({
-            id: 'A', type: 'rect', position: [100, 100],
-            size: { width: 120, height: 80 }, text: 'Element A'
-        });
-        elements.push({
-            id: 'B', type: 'circle', position: [300, 100],
-            size: { width: 80, height: 80 }, text: 'Element B'
-        });
-        links.push({ id: 'A-B', source: 'A', target: 'B', label: 'connection' });
-    }
-
+    // NOTE: Deliberately NO "default test elements" fallback here.
+    // Previously, a definition that produced zero parsed elements was silently
+    // replaced with a hardcoded "Element A -> Element B (connection)" placeholder.
+    // That masked real parse failures (e.g. a JSON spec mis-routed into this
+    // line-DSL parser) as a plausible-looking 2-node diagram — the worst kind of
+    // silent data loss. We now return the (possibly empty) result and let the
+    // caller throw "No elements found in specification", surfacing the failure.
     return { elements, connections: links };
 };
 
@@ -1682,31 +1675,101 @@ export const jointPlugin: D3RenderPlugin = {
                 }
             }
 
-            // Parse the specification
+            // Parse the specification.
+            //
+            // IMPORTANT: the render tool wrapper (app/mcp/tools/diagram_render.py)
+            // always packs the caller's payload into `spec.definition` as a STRING.
+            // For a structured JSON joint spec that means the real elements/connections
+            // arrive as a JSON blob inside `definition`, NOT as `spec.elements`.
+            // Historically this routed straight into the line-oriented
+            // parseJointDefinition() mini-DSL, which cannot parse JSON, produced zero
+            // elements, and silently substituted a hardcoded "Element A/Element B"
+            // placeholder — total, invisible data loss.
+            //
+            // Fix: prefer STRUCTURED input whenever it is available. If `definition`
+            // is (or contains) JSON with an `elements` field, parse it and merge those
+            // structured fields into the spec so the object branch handles them. Only
+            // fall back to the line-DSL for genuinely non-JSON textual definitions.
             let elements: JointElement[], connections: JointLink[];
-            if (spec.definition) {
-                const definition = extractDefinitionFromYAML(spec.definition, 'joint');
-                const parsed = parseJointDefinition(definition);
-                elements = parsed.elements;
-                connections = parsed.connections;
 
-                console.log('Parsed from definition:', {
+            // Normalize `elements` (array OR id-keyed object) + `connections` into
+            // the array form the element/link creation loops expect.
+            const normalizeStructured = (
+                rawElements: any,
+                rawConnections: any
+            ): { elements: JointElement[]; connections: JointLink[] } => {
+                let els: JointElement[] = [];
+                if (Array.isArray(rawElements)) {
+                    els = rawElements.map((e: any) => ({ type: e?.type || e?.shape || 'rect', ...e }));
+                } else if (rawElements && typeof rawElements === 'object') {
+                    els = Object.keys(rawElements).map(id => ({
+                        type: 'rect',
+                        id,
+                        ...rawElements[id]
+                    }));
+                }
+                let conns: JointLink[] = [];
+                if (Array.isArray(rawConnections)) {
+                    conns = rawConnections as JointLink[];
+                } else if (rawConnections && typeof rawConnections === 'object') {
+                    conns = Object.keys(rawConnections).map(id => ({ id, ...rawConnections[id] }));
+                }
+                return { elements: els, connections: conns };
+            };
+
+            // Try to recover structured input from a JSON `definition` string.
+            let structuredFromDefinition: { elements: JointElement[]; connections: JointLink[] } | null = null;
+            if (spec.definition) {
+                const rawDef = extractDefinitionFromYAML(spec.definition, 'joint');
+                const trimmed = (rawDef || '').trim();
+                if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+                    try {
+                        const parsedJson = JSON.parse(trimmed);
+                        const obj = Array.isArray(parsedJson) ? { elements: parsedJson } : parsedJson;
+                        if (obj && (obj.elements || obj.cells)) {
+                            // Also lift structural hints (autoLayout/grid/layout/theme)
+                            // that would otherwise be lost when they arrive JSON-encoded.
+                            if (obj.autoLayout !== undefined && spec.autoLayout === undefined) spec.autoLayout = obj.autoLayout;
+                            if (obj.grid !== undefined && spec.grid === undefined) spec.grid = obj.grid;
+                            if (obj.layout !== undefined && spec.layout === undefined) spec.layout = obj.layout;
+                            if (obj.theme !== undefined && spec.theme === undefined) spec.theme = obj.theme;
+                            structuredFromDefinition = normalizeStructured(
+                                obj.elements || obj.cells,
+                                obj.connections || obj.links
+                            );
+                        }
+                    } catch (e) {
+                        // Not valid JSON — fall through to the line-DSL / raw definition path.
+                        console.warn('joint: definition looked like JSON but failed to parse; using text parser', e);
+                    }
+                }
+            }
+
+            if (structuredFromDefinition && structuredFromDefinition.elements.length > 0) {
+                elements = structuredFromDefinition.elements;
+                connections = structuredFromDefinition.connections;
+                console.log('Parsed from structured JSON definition:', {
                     elements: elements.length,
                     connections: connections.length
                 });
             } else if (spec.elements) {
-                // Handle object format
-                elements = Object.keys(spec.elements).map(id => ({
-                    ...{ type: 'rect' }, // Default type
-                    id,
-                    ...spec.elements![id]
-                }));
-                connections = spec.connections || [];
-
-                console.log('Parsed from object format:', {
+                // Structured object/array passed directly on the spec.
+                const norm = normalizeStructured(spec.elements, spec.connections);
+                elements = norm.elements;
+                connections = norm.connections;
+                console.log('Parsed from structured spec.elements:', {
                     elements: elements.length,
                     elementIds: elements.map(e => e.id),
-                    elementTypes: elements.map(e => e.type || 'undefined'),
+                    connections: connections.length
+                });
+            } else if (spec.definition) {
+                // Genuinely non-JSON textual definition: use the line-oriented mini-DSL.
+                const definition = extractDefinitionFromYAML(spec.definition, 'joint');
+                const parsed = parseJointDefinition(definition);
+                elements = parsed.elements;
+                connections = parsed.connections;
+                console.log('Parsed from text definition (DSL):', {
+                    elements: elements.length,
                     connections: connections.length
                 });
             } else {
@@ -1768,7 +1831,22 @@ export const jointPlugin: D3RenderPlugin = {
                 connectionPointNamespace: connectionPoints,
                 routerNamespace: routers,
                 connectorNamespace: connectors,
-                interactive: spec.interactive !== false,
+                // Every element factory sets attrs.body.magnet = true, which makes the
+                // shape body a valid link-drag source. Combined with a blanket
+                // `interactive: true`, a plain pointerdown on any shape ran
+                // dragMagnetStart -> dragLinkStart -> addLinkFromMagnet -> addTo(graph),
+                // and the synchronous view flush that follows could throw
+                // "LinkView: invalid target cell." from LinkView.checkEndModel — an
+                // uncaught error outside React, escaping to the root error boundary.
+                //
+                // These diagrams are read-only renderings inside a chat message, so
+                // authoring new links by dragging is not a wanted capability. Disabling
+                // just that feature removes the crashing path while leaving element
+                // dragging, clicks, and context menus intact. `labelMove: false` matches
+                // JointJS's own default, which the object form would otherwise discard.
+                interactive: spec.interactive === false
+                    ? false
+                    : { addLinkFromMagnet: false, labelMove: false },
                 snapLinks: { radius: 30 },
                 linkPinning: false,
                 defaultAnchor: { name: 'modelCenter' },
