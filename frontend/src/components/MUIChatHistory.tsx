@@ -3429,7 +3429,6 @@ const MUIChatHistory = () => {
     folderConfigForm.setFieldsValue({
       name: folder?.name || '',
       useGlobalContext: folder?.useGlobalContext !== false, // Default to true if undefined
-      useGlobalModel: folder?.useGlobalModel !== false, // Default to true if undefined
       systemInstructions: folder?.systemInstructions || ''
     });
 
@@ -3437,7 +3436,6 @@ const MUIChatHistory = () => {
       isEditing,
       name: folder?.name || '',
       useGlobalContext: folder?.useGlobalContext !== false,
-      useGlobalModel: folder?.useGlobalModel !== false,
       systemInstructions: folder?.systemInstructions || ''
     });
 
@@ -3484,20 +3482,6 @@ const MUIChatHistory = () => {
             </Form.Item>
 
 
-            <AntDivider style={{ borderColor: isDarkMode ? '#303030' : '#f0f0f0' }} />
-
-            <Form.Item
-              name="useGlobalModel"
-              label={<span style={{ color: isDarkMode ? '#ffffff' : '#000000' }}>Use Global Model Configuration</span>}
-              valuePropName="checked"
-              tooltip="When enabled, this folder will use the global model configuration. When disabled, you can set a specific model for this folder."
-            >
-              <Switch
-                className={isDarkMode ? 'dark-theme-switch' : ''}
-              />
-            </Form.Item>
-
-
             <Form.Item
               name="systemInstructions"
               label={<span style={{ color: isDarkMode ? '#ffffff' : '#000000' }}>Additional System Instructions</span>}
@@ -3530,7 +3514,6 @@ const MUIChatHistory = () => {
               ...folder,
               name: values.name,
               useGlobalContext: values.useGlobalContext,
-              useGlobalModel: values.useGlobalModel,
               systemInstructions: values.systemInstructions,
               updatedAt: Date.now()
             };
@@ -3552,7 +3535,6 @@ const MUIChatHistory = () => {
               name: values.name,
               parentId: currentFolderId,
               useGlobalContext: values.useGlobalContext,
-              useGlobalModel: values.useGlobalModel,
               systemInstructions: values.systemInstructions,
               createdAt: Date.now(),
               updatedAt: Date.now()
