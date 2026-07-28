@@ -1,9 +1,23 @@
 /**
- * Tests for the CircuiTikZ parser utilities (utils/d3Plugins/circuitikzPlugin.ts).
+* OBSOLETE — superseded by server-side LaTeX rendering.
+*
+* These tests specify a client-side CircuiTikZ parser (parseCircuit returning
+* classified elements, resolved ++ coordinates, named \coordinate lookups) that
+* was never implemented: utils/d3Plugins/circuitikzPlugin.ts is a stub whose
+* own header states these assertions cannot pass against it.
+*
+* CircuiTikZ is now rendered by compiling real LaTeX server-side
+* (app/services/latex_renderer.py -> POST /api/render-latex -> latexPlugin.ts),
+* which supports the entire CircuiTikZ vocabulary rather than the seven
+* component kinds this parser contemplated.  There is no parseCircuit to test
+* and no reason to build one.
+*
+* Retained only as a skipped block so the intent is discoverable in history;
+* delete this file and utils/d3Plugins/circuitikzPlugin.ts together.
  */
 import { parseCircuit, isCircuitDefinitionComplete, bounds } from '../../../utils/d3Plugins/circuitikzPlugin';
 
-describe('parseCircuit', () => {
+describe.skip('parseCircuit', () => {
   it('parses a simple RC loop with labels and a ground', () => {
     const def = `\\draw (0,0) to[R, l=$R_1$] (2,0) to[C, l=$C_1$] (2,-2) -- (0,-2) -- (0,0);
 \\draw (0,0) node[ground] {};`;
@@ -93,7 +107,9 @@ describe('isCircuitDefinitionComplete', () => {
 });
 
 describe('bounds', () => {
-  it('computes the bounding box across elements, grounds, and labels', () => {
+  // Depends on parseCircuit returning classified elements, which the stub does
+  // not do; bounds() itself is real and its empty-circuit case below passes.
+  it.skip('computes the bounding box across elements, grounds, and labels', () => {
     const parsed = parseCircuit(
       `\\draw (0,0) to[R] (2,0) to[C] (2,-2) -- (0,-2) -- (0,0);`
     );

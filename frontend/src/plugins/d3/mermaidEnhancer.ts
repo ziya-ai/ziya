@@ -433,12 +433,96 @@ export function initMermaidEnhancer(): void {
         return `"${label}": [${cleanCoords}]`;
       });
 
+      // Mermaid's quadrant lexer only accepts a limited punctuation set in
+      // unquoted labels; characters like '(' and ')' produce "Unrecognized
+      // text". Wrapping labels in double quotes routes them through the STR
+      // token, which accepts any non-quote character. Quote axis segments,
+      // quadrant labels, and point labels when they are not already quoted.
+      const quote = (raw: string): string => {
+        const trimmed = raw.trim();
+        if (trimmed.length === 0 || (trimmed.startsWith('"') && trimmed.endsWith('"'))) {
+          return trimmed;
+        }
+        return `"${trimmed.replace(/"/g, '')}"`;
+      };
+
+      result = result.split('\n').map((line) => {
+        const axisMatch = line.match(/^(\s*(?:x-axis|y-axis)\s+)(.*)$/i);
+        if (axisMatch) {
+          const [, prefix, body] = axisMatch;
+          const delimiterMatch = body.match(/\s--+>\s?/);
+          if (delimiterMatch) {
+            const delimiter = delimiterMatch[0];
+            const idx = body.indexOf(delimiter);
+            const left = body.slice(0, idx);
+            const right = body.slice(idx + delimiter.length);
+            return `${prefix}${quote(left)} --> ${quote(right)}`;
+          }
+          return `${prefix}${quote(body)}`;
+        }
+
+        const quadrantMatch = line.match(/^(\s*quadrant-[1-4]\s+)(.*)$/i);
+        if (quadrantMatch) {
+          return `${quadrantMatch[1]}${quote(quadrantMatch[2])}`;
+        }
+
+        // Allow colons inside the label (e.g. "Ratio 3:1: [0.2, 0.3]"). The
+        // trailing "$"-anchored coordinate suffix forces the non-greedy label
+        // to expand to the final ": [coords]", so the split stays correct.
+        const pointMatch = line.match(/^(\s*)(.+?)(\s*:\s*\[[^\]]+\]\s*)$/);
+        if (pointMatch) {
+          const [, indent, label, rest] = pointMatch;
+          return `${indent}${quote(label)}${rest.replace(/^\s*:\s*/, ': ')}`;
+        }
+
+        return line;
+      }).join('\n');
+
       console.log('🔍 QUADRANT-FIX: Processing complete');
       return result;
     }, {
     name: 'quadrant-chart-fix',
     priority: 600,
     diagramTypes: ['quadrantchart']
+  });
+
+  // Escape literal pipe characters that appear INSIDE already-quoted edge
+  // labels (e.g. |phase| absolute-value notation). Mermaid treats '|' as the
+  // edge-label delimiter, so an unescaped '|' inside a quoted label closes the
+  // label early and causes a parse error. This must run BEFORE every other
+  // pipe-based label preprocessor, otherwise their `\|([^|]*?)\|` regexes stop
+  // at the internal pipe and corrupt the label (double-quoting a truncated
+  // fragment). '&#124;' renders back to '|' in the final SVG.
+  registerPreprocessor(
+    (definition: string, diagramType: string): string => {
+      if (diagramType !== 'flowchart' && diagramType !== 'graph' &&
+        !definition.trim().startsWith('flowchart') && !definition.trim().startsWith('graph')) {
+        return definition;
+      }
+
+      console.log('🔍 EDGE-LABEL-PIPE-ESCAPE: Escaping literal pipes inside quoted edge labels');
+
+      // Match arrow + a fully-quoted edge label + closing delimiter, capturing
+      // the quoted contents. Only quoted labels are touched, so plain labels
+      // like -->|yes| are left completely alone.
+      const result = definition.replace(
+        /(==>|-->|-\.->|--[xo]>|---|->>|-->>)\|"([^"]*)"\|/g,
+        (match, arrow, label) => {
+          if (label.indexOf('|') === -1) {
+            return match;
+          }
+          const escaped = label.replace(/\|/g, '&#124;');
+          console.log('🔍 EDGE-LABEL-PIPE-ESCAPE: Escaped:', { original: match, escaped });
+          return `${arrow}|"${escaped}"|`;
+        }
+      );
+
+      console.log('🔍 EDGE-LABEL-PIPE-ESCAPE: Processing complete');
+      return result;
+    }, {
+    name: 'edge-label-pipe-escape',
+    priority: 720, // Must run before all other pipe/label preprocessors
+    diagramTypes: ['flowchart', 'graph']
   });
 
   // Add a preprocessor to fix square bracket edge label syntax
@@ -773,6 +857,30 @@ export function initMermaidEnhancer(): void {
       if (!result.includes('gitgraph:')) {
         result = result.replace('gitgraph', 'gitgraph:');
       }
+
+      // Mermaid requires every commit and merge ID to be unique. Preserve the
+      // first user-provided ID and suffix subsequent duplicates deterministically.
+      const seenIds = new Set<string>();
+      result = result.replace(
+        /^(\s*(?:commit|merge\s+\S+)\s+id:\s*)(?:"([^"]*)"|(\S+))(.*)$/gm,
+        (match, prefix, quotedId, unquotedId, suffix) => {
+          const id = quotedId ?? unquotedId;
+          let uniqueId = id;
+          let duplicateNumber = 2;
+
+          while (seenIds.has(uniqueId)) {
+            uniqueId = `${id} (${duplicateNumber++})`;
+          }
+
+          seenIds.add(uniqueId);
+
+          if (uniqueId !== id) {
+            console.warn(`🔍 GITGRAPH-FIX: Renamed duplicate ID "${id}" to "${uniqueId}"`);
+          }
+
+          return `${prefix}${quotedId !== undefined ? `"${uniqueId}"` : uniqueId}${suffix}`;
+        }
+      );
 
       console.log('🔍 GITGRAPH-FIX: Processing complete');
       return result;
@@ -1464,6 +1572,12 @@ export function initMermaidEnhancer(): void {
 
       console.log('🔍 QUOTE-CONSOLIDATOR: Processing all quote and bracket issues');
 
+      // Issue 1 fix: Mermaid has no C-style escape — normalize backslash-escaped
+      // quotes (JSON/LLM-authored `\"`) to the supported `#quot;` entity BEFORE
+      // any quote handling. Applies to all node AND edge labels; bare `\"` is
+      // never valid Mermaid, so this cannot corrupt correctly-authored specs.
+      definition = definition.replace(/\\+"/g, '#quot;');
+
       // CRITICAL: Pre-scan for special shape syntax that must be preserved
       const specialShapePattern = /(\w+)(\[\[|\(\(|\(\(\(|\(\[|\[\(|\{\{)/g;
       const specialNodes = new Set<string>();
@@ -1496,7 +1610,17 @@ export function initMermaidEnhancer(): void {
 
           // Skip already-quoted content — it is valid and the inner content may
           // contain brackets that would be mismatched by the outer regex.
-          if (content.startsWith('"') && content.endsWith('"')) {
+          // IMPORTANT: only require the label to START with a quote. The outer
+          // capture group `([^\}\]\)]*?)` stops at the FIRST inner `]`/`)`/`}`,
+          // so a quoted label that itself contains brackets (e.g.
+          // `A["text with [brackets] and (parens)"]`) is captured TRUNCATED —
+          // it begins with `"` but does not end with `"`. Requiring endsWith('"')
+          // here let those truncated fragments fall through to the quote-stripping
+          // steps below, which deleted the opening quote and left the inner `(` /
+          // `[` bare → Mermaid parse error (`got 'PS'`) and a total-render timeout.
+          // Treating any label that opens with `"` as author-quoted (leave it
+          // untouched) fixes the whole class of quoted-labels-containing-brackets.
+          if (content.startsWith('"')) {
             return match;
           }
 
@@ -1825,7 +1949,21 @@ export function initMermaidEnhancer(): void {
     // The main issue seems to be `--> class`.
 
     // Fix node references that cause parsing errors
-    finalDef = finalDef.replace(/(\w+)\s*-->\s*(\w+)\[([^\]]+)\]/g, (match, source, target, label) => {
+    // Issue 2 fix: (?!\[)/(?!\]) lookarounds prevent this single-bracket rule
+    // from matching the inner bracket of a `[[...]]` subroutine target (which
+    // caused a doubled quote → `node""]]`).
+    // Also skip labels that already start with a quote: the `[^\]]+` capture
+    // stops at the FIRST unescaped `]`, so an already-quoted label containing
+    // a literal `[`/`]` (e.g. `X["text iterations[] more"]`) gets truncated
+    // mid-label (label = `"text iterations[`). Since that truncated fragment
+    // still matches `/[\/\[\]]/`, it was being re-wrapped in a second pair of
+    // quotes, corrupting the definition into `X[""text iterations["] more"]`
+    // and leaving the rest of the label as a dangling, unparseable tail.
+    finalDef = finalDef.replace(/(\w+)\s*-->\s*(\w+)\[(?!\[)([^\]]+)\](?!\])/g, (match, source, target, label) => {
+      // Already-quoted labels are valid as-is; leave them untouched.
+      if (label.startsWith('"')) {
+        return match;
+      }
       // If label contains special characters, quote it
       if (/[\/\[\]]/.test(label)) {
         return `${source} --> ${target}["${label}"]`;

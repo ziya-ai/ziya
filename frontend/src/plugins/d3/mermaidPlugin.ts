@@ -614,12 +614,13 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             rawDefinition.includes('color:');
 
         if (!hasExplicitColors) {
-            setTimeout(() => {
-                console.log('🎨 DELAYED-VISIBILITY-FIX: Starting universal enhancement');
+            const runVisibilityFix = (phase: string) => {
+                console.log(`🎨 VISIBILITY-FIX (${phase}): Starting universal enhancement`);
                 const result = enhanceSVGVisibility(svgElement, isDarkMode, { debug: true });
-                console.log('🎨 DELAYED-VISIBILITY-FIX: Complete');
+                console.log(`🎨 VISIBILITY-FIX (${phase}): Complete`);
 
                 console.group('🎨 MERMAID-CONTRAST: Visibility Enhancement Results');
+                console.log(`Phase: ${phase}`);
                 console.log(`Diagram Type: "${diagramType}"`);
                 console.log(`Dark Mode: ${isDarkMode}`);
                 console.log(`Text Fixed:`, result.textFixed);
@@ -628,7 +629,14 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                 console.log(`Details:`, result);
 
                 console.groupEnd();
-            }, 500);
+            };
+            // Run synchronously so contrast fixes cannot be lost when a
+            // re-render races the delayed timer. The SVG's embedded <style>
+            // is already applied at this point, so background detection via
+            // getComputedStyle works. Re-run at 500ms (idempotent) to catch
+            // late CSS/theme mutations.
+            runVisibilityFix('immediate');
+            setTimeout(() => runVisibilityFix('delayed'), 500);
         } else {
             console.log('🎨 VISIBILITY-FIX: Skipping post-processing - diagram has explicit color styles');
         }
