@@ -185,6 +185,58 @@ class TestContextAddFile:
 
 # ── ContextRemoveFileTool ───────────────────────────────────────────
 
+class TestContextAddFileExternalPath:
+    """Regression coverage for the 4th call site of the same bug: an
+    absolute path outside the project root -- approved via Project
+    Settings' 'Add External Path' feature or --include/
+    ZIYA_INCLUDE_DIRS -- must be usable with context_add_file, not just
+    file_read/file_list/pdf_*.  _validate_relative_path now builds its
+    allowlist from _get_all_readable_prefixes()."""
+
+    @pytest.fixture
+    def external_file(self, tmp_path):
+        ext_dir = tmp_path.parent / f"external-{tmp_path.name}"
+        ext_dir.mkdir(exist_ok=True)
+        f = ext_dir / "vendor-spec.txt"
+        f.write_text("VENDOR SPEC CONTENT\n")
+        return str(f), str(ext_dir)
+
+    def test_rejects_unapproved_external_path(self, chat_env, external_file, monkeypatch):
+        ext_path, _ext_dir = external_file
+        monkeypatch.delenv("ZIYA_INCLUDE_DIRS", raising=False)
+        monkeypatch.setattr(
+            "app.services.folder_service._explicit_external_paths", set(), raising=False
+        )
+        result = run(ContextAddFileTool().execute(path=ext_path))
+        assert result.get("error") is True
+
+    def test_allows_approved_external_path(self, chat_env, external_file, monkeypatch):
+        ext_path, ext_dir = external_file
+        monkeypatch.delenv("ZIYA_INCLUDE_DIRS", raising=False)
+        monkeypatch.setattr(
+            "app.services.folder_service._explicit_external_paths",
+            {ext_dir},
+            raising=False,
+        )
+        result = run(ContextAddFileTool().execute(path=ext_path))
+        assert result.get("error") is not True, result
+        assert result.get("success") is True
+        assert "VENDOR SPEC CONTENT" in result["content"]
+        chat = _read_chat(chat_env)
+        assert ext_path in chat["additionalFiles"]
+        assert ext_path in chat[_OWNERSHIP_FIELD]
+
+    def test_allows_include_dirs_env_var_path(self, chat_env, external_file, monkeypatch):
+        ext_path, ext_dir = external_file
+        monkeypatch.setattr(
+            "app.services.folder_service._explicit_external_paths", set(), raising=False
+        )
+        monkeypatch.setenv("ZIYA_INCLUDE_DIRS", ext_dir)
+        result = run(ContextAddFileTool().execute(path=ext_path))
+        assert result.get("error") is not True, result
+        assert "VENDOR SPEC CONTENT" in result["content"]
+
+
 class TestContextRemoveFile:
 
     def test_removes_model_added_file(self, chat_env):
