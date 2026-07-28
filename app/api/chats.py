@@ -56,6 +56,9 @@ def _chat_to_summary(chat: Chat) -> ChatSummary:
         createdAt=chat.createdAt,
         lastActiveAt=chat.lastActiveAt,
         delegateMeta=chat.delegateMeta,
+        branchedFrom=chat.branchedFrom,
+        branchedAtMessageIndex=chat.branchedAtMessageIndex,
+        branchedFromLabel=chat.branchedFromLabel,
         **({'_version': version} if version else {}),
         **({'isGlobal': True}),
     )
