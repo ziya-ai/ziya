@@ -75,6 +75,29 @@ export interface ArtifactPart {
   file_uri?: string | null;
   media_type?: string | null;
   data?: Record<string, unknown> | null;
+  /** Short identifier the emitting agent gave this part. */
+  name?: string | null;
+  /**
+   * Grouping vocabulary (see app/utils/task_artifacts.py).  Deliberately
+   * neutral: `group` links parts, `label` names one within its group,
+   * `seq` orders them.  The viewer selects a layout from the SHAPE these
+   * imply — no label value is special-cased.
+   */
+  group?: string | null;
+  label?: string | null;
+  seq?: number | null;
+  /** Factual outcome recorded at emit time ('ok' | 'error'). */
+  status?: string | null;
+  /** True when this part is a diagram rendered and frozen at emit time. */
+  rendered?: boolean | null;
+  /** Renderer console warnings captured during the emit-time render. */
+  render_warnings?: string[] | null;
+  /** Diagram spec that produced a rendered part (for "view spec"). */
+  diagram_type?: string | null;
+  diagram_definition?: string | null;
+  /** Hierarchy stamps: which block/iteration emitted this part. */
+  block_id?: string | null;
+  iteration?: number | null;
 }
 
 export interface Artifact {
