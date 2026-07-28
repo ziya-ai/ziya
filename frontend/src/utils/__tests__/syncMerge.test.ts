@@ -18,9 +18,10 @@ import {
 const NOW = 1_750_000_000_000;
 const STALE_AGE = 10 * 60 * 1000; // mirrors STALE_SHELL_AGE_MS semantics
 
-const fetchCtx = (over: Partial<{ isActiveConv: boolean; alreadyFetchedThisSession: boolean }> = {}) => ({
+const fetchCtx = (over: Partial<{ isActiveConv: boolean; alreadyFetchedThisSession: boolean; now: number }> = {}) => ({
     isActiveConv: false,
     alreadyFetchedThisSession: false,
+    now: NOW,
     ...over,
 });
 
@@ -60,10 +61,24 @@ describe('shouldFetchFull', () => {
         expect(shouldFetchFull(sc(), undefined, fetchCtx({ alreadyFetchedThisSession: true }))).toBe(false);
     });
 
-    it('never fetches the active conversation during polling', () => {
-        // Active conv is authoritative in React state; server _version newer.
+    it('does not fetch the active conversation while a local edit is still recent (in-flight-edit protection)', () => {
+        // Active conv is authoritative in React state right after a local edit;
+        // server _version newer. Explicitly set lastAccessedAt/_version to 5s
+        // before `now`, well inside the ACTIVE_CONV_IDLE_GRACE_MS window (15s) —
+        // local()'s own default (NOW - 30_000) is actually OUTSIDE that window.
         const server = sc({ _version: NOW, messageCount: 99 });
-        expect(shouldFetchFull(server, local(), fetchCtx({ isActiveConv: true }))).toBe(false);
+        const recentEdit = local({ lastAccessedAt: NOW - 5_000, _version: NOW - 5_000 });
+        expect(shouldFetchFull(server, recentEdit, fetchCtx({ isActiveConv: true, now: NOW }))).toBe(false);
+    });
+
+    it('does fetch the active conversation once it has been idle past the grace window', () => {
+        // Same server-ahead scenario, but local() was last touched long enough
+        // ago (via now advancing) that no edit could plausibly still be
+        // in-flight -- a second tab may have appended messages in the meantime,
+        // so this tab must catch up instead of freezing on stale local state.
+        const server = sc({ _version: NOW, messageCount: 99 });
+        const farFuture = NOW + 60_000; // well past ACTIVE_CONV_IDLE_GRACE_MS (15s)
+        expect(shouldFetchFull(server, local(), fetchCtx({ isActiveConv: true, now: farFuture }))).toBe(true);
     });
 
     it('fetches when server has delegateMeta that local lacks', () => {
@@ -177,7 +192,10 @@ describe('mergeServerChat — server-only (no local copy)', () => {
     });
 
     it('creates a shell placeholder when full fetch was deferred', () => {
-        const server = sc({ messageCount: 12, _version: NOW - 1_000 });
+        const server = sc({
+            messageCount: 12, _version: NOW - 1_000,
+            branchedFrom: 'parent-conversation', branchedAtMessageIndex: 7, branchedFromLabel: 'Investigate latency',
+        });
         const d = mergeServerChat(server, undefined, undefined, mergeCtx());
         expect(d.action).toBe('set');
         if (d.action !== 'set') return;
@@ -186,6 +204,9 @@ describe('mergeServerChat — server-only (no local copy)', () => {
         expect(d.record.messages).toEqual([]);
         expect(d.record._version).toBe(NOW - 1_000);
         expect(d.record.title).toBe('Hello');
+        expect(d.record.branchedFrom).toBe('parent-conversation');
+        expect(d.record.branchedAtMessageIndex).toBe(7);
+        expect(d.record.branchedFromLabel).toBe('Investigate latency');
     });
 
     it('drops empty "New Conversation" shells (GC re-import guard)', () => {
