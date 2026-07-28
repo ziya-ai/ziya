@@ -257,6 +257,174 @@ class TestDiagramRendererUnit:
         assert result == b"\x89PNG_fallback"
 
 
+class TestConsoleClassification:
+    """Tests for _classify_console_log — the warning/error bucketing that
+    lets a SUCCESSFUL render still surface fixup-layer JS diagnostics."""
+
+    def test_classifies_warning_and_error_separately(self):
+        import app.services.diagram_renderer as mod
+
+        log = [
+            "[log] React DevTools message",
+            "[warning] ELK layout failed, falling back to simple layout",
+            "[error] Failed to load @maxgraph/core",
+            "[info] some info line",
+            "[debug] verbose trace",
+        ]
+        result = mod.DiagramRenderer._classify_console_log(log)
+        assert result["warnings"] == ["[warning] ELK layout failed, falling back to simple layout"]
+        assert result["errors"] == ["[error] Failed to load @maxgraph/core"]
+
+    def test_warn_prefix_variant_also_classified(self):
+        import app.services.diagram_renderer as mod
+
+        log = ["[warn] short-form warning prefix"]
+        result = mod.DiagramRenderer._classify_console_log(log)
+        assert result["warnings"] == ["[warn] short-form warning prefix"]
+        assert result["errors"] == []
+
+    def test_empty_log_returns_empty_buckets(self):
+        import app.services.diagram_renderer as mod
+
+        result = mod.DiagramRenderer._classify_console_log([])
+        assert result == {"warnings": [], "errors": []}
+
+    def test_routine_log_types_are_dropped(self):
+        """[log]/[info]/[debug] noise must not appear in either bucket."""
+        import app.services.diagram_renderer as mod
+
+        log = ["[log] a", "[info] b", "[debug] c"]
+        result = mod.DiagramRenderer._classify_console_log(log)
+        assert result["warnings"] == []
+        assert result["errors"] == []
+
+
+class TestRenderDiagramWithDiagnostics:
+    """Tests for render_diagram_with_diagnostics — the 2-tuple contract
+    that surfaces console warnings/errors even on a completed render."""
+
+    @staticmethod
+    def _build_mock_page(png_bytes=b"\x89PNG_fake"):
+        """Build a mock page whose registered console/pageerror callbacks
+        are captured so tests can fire them manually (page.on() itself is
+        mocked and never dispatches real browser events)."""
+        callbacks = {}
+
+        def _on(event_name, cb):
+            callbacks[event_name] = cb
+
+        mock_page = AsyncMock()
+        mock_page.on = MagicMock(side_effect=_on)
+        mock_page.evaluate = AsyncMock(return_value=True)
+        mock_page.wait_for_function = AsyncMock()
+        mock_page.get_attribute = AsyncMock(return_value="complete")
+
+        mock_locator = AsyncMock()
+        mock_locator.screenshot = AsyncMock(return_value=png_bytes)
+        mock_locator.evaluate = AsyncMock(return_value=None)
+        mock_page.locator = MagicMock(return_value=mock_locator)
+
+        return mock_page, callbacks
+
+    @pytest.mark.asyncio
+    async def test_returns_bytes_and_diagnostics_tuple(self):
+        import app.services.diagram_renderer as mod
+
+        mock_page, _callbacks = self._build_mock_page()
+        mock_browser = AsyncMock()
+        mock_browser.is_connected.return_value = True
+        mock_browser.new_page = AsyncMock(return_value=mock_page)
+
+        renderer = mod.DiagramRenderer()
+        renderer._browser = mock_browser
+        renderer._base_url = "http://localhost:6969"
+
+        image_bytes, diagnostics = await renderer.render_diagram_with_diagnostics(
+            {"type": "mermaid", "definition": "graph LR\n  A-->B"},
+        )
+        assert image_bytes == b"\x89PNG_fake"
+        assert diagnostics == {"console_warnings": [], "console_errors": [], "pageerrors": []}
+
+    @pytest.mark.asyncio
+    async def test_captures_warning_on_successful_render(self):
+        """A render that completes successfully but logged a console
+        warning must surface that warning in diagnostics — this is the
+        gap that made a completed-but-flawed render indistinguishable
+        from a clean one."""
+        import app.services.diagram_renderer as mod
+
+        mock_page, callbacks = self._build_mock_page()
+        mock_browser = AsyncMock()
+        mock_browser.is_connected.return_value = True
+        mock_browser.new_page = AsyncMock(return_value=mock_page)
+
+        renderer = mod.DiagramRenderer()
+        renderer._browser = mock_browser
+        renderer._base_url = "http://localhost:6969"
+
+        # Fire the console handler as Playwright would, before the
+        # render_diagram_with_diagnostics call reads console_log — do it
+        # via a wrapped evaluate so it happens "during" navigation.
+        async def _evaluate_and_fire(*_args, **_kwargs):
+            fake_msg = MagicMock(type="warning", text="ELK layout failed, falling back")
+            callbacks["console"](fake_msg)
+            return True
+
+        mock_page.evaluate = AsyncMock(side_effect=_evaluate_and_fire)
+
+        _bytes, diagnostics = await renderer.render_diagram_with_diagnostics(
+            {"type": "drawio", "definition": "<mxfile></mxfile>"},
+        )
+        assert diagnostics["console_warnings"] == ["[warning] ELK layout failed, falling back"]
+        assert diagnostics["console_errors"] == []
+
+    @pytest.mark.asyncio
+    async def test_captures_pageerror_on_successful_render(self):
+        import app.services.diagram_renderer as mod
+
+        mock_page, callbacks = self._build_mock_page()
+        mock_browser = AsyncMock()
+        mock_browser.is_connected.return_value = True
+        mock_browser.new_page = AsyncMock(return_value=mock_page)
+
+        renderer = mod.DiagramRenderer()
+        renderer._browser = mock_browser
+        renderer._base_url = "http://localhost:6969"
+
+        async def _evaluate_and_fire(*_args, **_kwargs):
+            callbacks["pageerror"](RuntimeError("uncaught render exception"))
+            return True
+
+        mock_page.evaluate = AsyncMock(side_effect=_evaluate_and_fire)
+
+        _bytes, diagnostics = await renderer.render_diagram_with_diagnostics(
+            {"type": "mermaid", "definition": "graph LR\n  A-->B"},
+        )
+        assert diagnostics["pageerrors"] == ["uncaught render exception"]
+
+    @pytest.mark.asyncio
+    async def test_render_diagram_unwraps_to_bytes_only(self):
+        """The back-compat render_diagram() wrapper must still return
+        bare bytes (not the tuple) for existing callers (HTTP route,
+        conversation exporter)."""
+        import app.services.diagram_renderer as mod
+
+        mock_page, _callbacks = self._build_mock_page()
+        mock_browser = AsyncMock()
+        mock_browser.is_connected.return_value = True
+        mock_browser.new_page = AsyncMock(return_value=mock_page)
+
+        renderer = mod.DiagramRenderer()
+        renderer._browser = mock_browser
+        renderer._base_url = "http://localhost:6969"
+
+        result = await renderer.render_diagram(
+            {"type": "mermaid", "definition": "graph LR\n  A-->B"},
+        )
+        assert result == b"\x89PNG_fake"
+        assert not isinstance(result, tuple)
+
+
 class TestSingletonLifecycle:
     """Test the module-level singleton management."""
 
