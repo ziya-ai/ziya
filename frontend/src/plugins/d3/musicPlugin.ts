@@ -55,8 +55,16 @@ async function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode:
     spec = rawSpec as MusicSpec;
   }
 
-  if (!spec.notes || !Array.isArray(spec.notes) || spec.notes.length === 0) {
-    renderError(container, 'Requires a "notes" array with at least one note', rawSpec, isDarkMode);
+  // Reuse isMusicSpec rather than re-checking `notes` here: a grand staff has
+  // no top-level `notes` (they live in staves[].notes), so a local check
+  // duplicating that assumption rejects valid multi-staff specs even once
+  // canHandle has admitted them.
+  if (!isMusicSpec(spec)) {
+    renderError(
+      container,
+      'Requires a "notes" array with at least one note, or a "staves" list whose staves have notes',
+      rawSpec, isDarkMode,
+    );
     return;
   }
 
