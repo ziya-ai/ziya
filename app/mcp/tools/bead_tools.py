@@ -107,6 +107,17 @@ class BeadCreateTool(BaseMCPTool):
             # resolvable (CLI / not-yet-synced), which simply disables
             # branching for that bead.  See design/bead-branching.md.
             seam_index = get_conversation_message_count(conversation_id)
+            # Anchor the seam AFTER the in-flight assistant turn.  At capture
+            # time the persisted record ends at the HUMAN turn that triggered
+            # this response; the assistant turn now deciding to spawn the bead
+            # is still streaming and not yet persisted, so the raw count is
+            # short by exactly that one turn.  Without the +1 the seam lands
+            # one exchange early — the ribbon renders after the human message
+            # and branch-from-bead excludes the turn that actually raised the
+            # thread.  None (unresolvable chat: CLI / not-yet-synced) stays
+            # None so branching remains disabled rather than coerced to 1.
+            if seam_index is not None:
+                seam_index += 1
 
             new_bead = Bead(
                 parent_id=parent_id,

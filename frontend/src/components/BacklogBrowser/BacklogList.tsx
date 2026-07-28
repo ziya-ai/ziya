@@ -9,6 +9,8 @@ import { STATUS_GLYPH, formatAge, stalenessColor, stalenessMarker } from './stal
 interface BacklogListProps {
   items: BacklogItem[];
   onPeek: (item: BacklogItem) => void;
+  /** Bead last peeked/acted on — row stays highlighted for orientation. */
+  selectedBeadId?: string | null;
 }
 
 interface Group {
@@ -17,7 +19,7 @@ interface Group {
   items: BacklogItem[];
 }
 
-const BacklogList: React.FC<BacklogListProps> = ({ items, onPeek }) => {
+const BacklogList: React.FC<BacklogListProps> = ({ items, onPeek, selectedBeadId }) => {
   const { isDarkMode } = useTheme();
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
 
@@ -67,6 +69,7 @@ const BacklogList: React.FC<BacklogListProps> = ({ items, onPeek }) => {
                   const ageColor = stalenessColor(it.age_ms, isDarkMode);
                   const marker = stalenessMarker(it.age_ms);
                   const abandoned = it.bead.status === 'abandoned';
+                  const selected = it.bead.id === selectedBeadId;
                   return (
                     <div
                       key={it.bead.id}
@@ -76,7 +79,12 @@ const BacklogList: React.FC<BacklogListProps> = ({ items, onPeek }) => {
                         display: 'flex', alignItems: 'center', gap: 6,
                         padding: '5px 6px', marginBottom: 2, borderRadius: 6,
                         cursor: 'pointer', opacity: abandoned ? 0.55 : 1,
-                        background: 'transparent',
+                        background: selected
+                          ? (isDarkMode ? 'rgba(245,158,11,0.12)' : 'rgba(245,158,11,0.10)')
+                          : 'transparent',
+                        outline: selected
+                          ? `1px solid ${isDarkMode ? '#f59e0b55' : '#f59e0b44'}`
+                          : 'none',
                       }}
                     >
                       <span style={{ color: abandoned ? '#ef4444' : '#f59e0b', fontSize: 12, flexShrink: 0 }}>

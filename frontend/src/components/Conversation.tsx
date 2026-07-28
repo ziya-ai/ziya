@@ -9,6 +9,8 @@ import { RedoOutlined, SoundOutlined, MutedOutlined, PictureOutlined, CodeOutlin
 import { DocumentChip, ImageChip } from './FileChip';
 import ModelChangeNotification from './ModelChangeNotification';
 import LineageBar from './LineageBar';
+import SeamRibbon from './SeamRibbon';
+import { getSeamHighlight, SEAM_HIGHLIGHT_EVENT, SeamHighlight } from '../utils/seamHighlight';
 import { useSetQuestion } from '../context/QuestionContext';
 import { useFolderContext } from '../context/FolderContext';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
@@ -74,7 +76,20 @@ const __processMessageQueue = () => {
         let processed = 0;
         let slowCount = 0;
         let maxWaitMs = 0;
+        const sliceStart = performance.now();
+        // Hard cap on mounts flipped per batch. Each task() only calls
+        // setMounted(true) — a cheap state flip — while the expensive
+        // MarkdownRenderer render happens later in React's commit phase,
+        // AFTER this loop. So timeRemaining() stays high (we're timing the
+        // wrong phase) and the idle-budget break below never trips: without
+        // this cap the entire queue drains in one pass and React commits N
+        // heavy mounts in a SINGLE synchronous commit — the multi-second
+        // 'message' handler with zero paints (rAF ticks: 0). Capping the
+        // batch forces the flips into separate, setTimeout(50)-separated
+        // commits so the compositor paints between groups.
+        const MAX_MOUNTS_PER_BATCH = 4;
         while (__messageRenderQueue.length > 0) {
+            if (processed >= MAX_MOUNTS_PER_BATCH) break;
             // Always do at least one; then stop when out of idle budget so a
             // heavy mount can't overrun the frame. Fallback path (no rIC)
             // caps the batch so setTimeout can't hog the main thread.
@@ -92,8 +107,15 @@ const __processMessageQueue = () => {
         // idle-time race — the "conversation text frozen during scan" class.
         // A large backlog right after a refocus is expected (queue built up
         // while the tab was hidden).
-        if (slowCount > 0) {
-            console.warn(`📝 MSG_QUEUE: mounted ${processed} deferred message(s), ${slowCount} waited >500ms (max ${maxWaitMs.toFixed(0)}ms) — check FolderContext TREE_IDLE logs for contention in this window`);
+        // Warn on slice DURATION, not queue WAIT. The MAX_MOUNTS_PER_BATCH cap
+        // deliberately paces mounts across many setTimeout(50) slices to keep
+        // frames alive, so back-of-queue messages routinely wait seconds —
+        // that's the fix working, not contention, and warning on it cried wolf
+        // on every large conversation. A slice that itself runs >16ms (one
+        // frame) is the thing that actually janks; that's what we flag now.
+        const sliceMs = performance.now() - sliceStart;
+        if (processed > 0 && sliceMs > 16) {
+            console.warn(`📝 MSG_QUEUE: slice mounted ${processed} message(s) in ${sliceMs.toFixed(0)}ms (>1 frame — possible jank); ${slowCount} waited >500ms (max ${maxWaitMs.toFixed(0)}ms, expected under paced drain)`);
         }
 
         // Yield a macrotask between batches so queued scroll/input events run
@@ -633,6 +655,18 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
         return () => clearTimeout(timer);
     }, [currentConversationId]);
 
+    // Seam-ribbon marker — set by the Backlog Browser's Jump/Resume actions
+    // (utils/seamHighlight).  Snapshot + event subscription; renders inline
+    // below the seam message when it belongs to this conversation.
+    const [seamHighlight, setSeamHighlightState] = useState<SeamHighlight | null>(getSeamHighlight());
+    useEffect(() => {
+        const onSeamChange = () => setSeamHighlightState(getSeamHighlight());
+        window.addEventListener(SEAM_HIGHLIGHT_EVENT, onSeamChange);
+        return () => window.removeEventListener(SEAM_HIGHLIGHT_EVENT, onSeamChange);
+    }, []);
+    const activeSeam = seamHighlight?.conversationId === currentConversationId
+        ? seamHighlight : null;
+
     const previousStreamingStateRef = useRef<Set<string>>(new Set());
 
     // Apply progressive window: show only the tail during initial render,
@@ -1011,6 +1045,11 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                             ) : null
                         )}
                     </div>
+                    {/* Seam ribbon — persistent marker below the message where
+                        the highlighted bead thread was parked. */}
+                    {activeSeam && activeSeam.seamIndex === actualIndex && (
+                        <SeamRibbon seam={activeSeam} />
+                    )}
                     {anchorBindings?.map(binding => (
                         <Suspense key={binding.id} fallback={null}>
                             <TaskCardInlineTile binding={binding} />

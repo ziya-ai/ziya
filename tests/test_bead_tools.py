@@ -355,7 +355,15 @@ def test_message_count_none_when_messages_not_list():
 
 @pytest.mark.asyncio
 async def test_bead_create_stamps_message_index():
-    """bead_create records the seam from the live message count."""
+    """bead_create anchors the seam AFTER the in-flight assistant turn.
+
+    At capture time the persisted record ends at the HUMAN turn that
+    triggered this response; the assistant turn deciding to spawn the
+    bead is still streaming and not yet persisted, so the raw count is
+    short by exactly one.  bead_create adds +1 so the seam lands after
+    the assistant turn (ribbon renders below it; branch-from-bead
+    includes it) rather than one exchange early.
+    """
     with patch("app.mcp.tools.bead_tools._is_ephemeral_context", return_value=False), \
          patch("app.storage.beads.load_bead_tree", return_value=BeadTree()), \
          patch("app.storage.beads.get_conversation_message_count", return_value=7), \
@@ -366,7 +374,26 @@ async def test_bead_create_stamps_message_index():
 
     assert result["ok"] is True
     saved_tree = mock_save.call_args[0][0]
-    assert saved_tree.beads[0].message_index == 7
+    # count=7 (record ends at the human turn) → seam=8 (after the
+    # assistant turn that will become messages[7] once it persists).
+    assert saved_tree.beads[0].message_index == 8
+
+
+@pytest.mark.asyncio
+async def test_bead_create_seam_is_count_plus_one():
+    """Regression guard for the seam off-by-one: the recorded seam is
+    exactly count+1 for every non-None count, so the ribbon lands after
+    the assistant turn that raised the thread, not after the prior human
+    turn.  A negative control on this asserting ``== count`` would fail
+    on the fixed code (it asserted the bug)."""
+    for count in (1, 4, 42):
+        with patch("app.mcp.tools.bead_tools._is_ephemeral_context", return_value=False), \
+             patch("app.storage.beads.load_bead_tree", return_value=BeadTree()), \
+             patch("app.storage.beads.get_conversation_message_count", return_value=count), \
+             patch("app.storage.beads.save_bead_tree") as mock_save:
+            from app.mcp.tools.bead_tools import BeadCreateTool
+            await BeadCreateTool().execute(content="x", status="parked")
+        assert mock_save.call_args[0][0].beads[0].message_index == count + 1
 
 
 @pytest.mark.asyncio

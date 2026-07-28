@@ -82,6 +82,12 @@ export interface Conversation {
     _editInProgress?: boolean;
     displayMode?: 'raw' | 'pretty';
     delegateMeta?: DelegateMeta | null;
+    // Saved per-conversation model pin (alias string, e.g. "opus4.5").
+    // The durable layer of model pinning: syncs to the server, survives
+    // restarts, shared across tabs on this conversation.  A tab-ephemeral
+    // pin (frontend/src/utils/modelPins.ts) overrides it when present.
+    // Absent/undefined = follow folder → project → server default.
+    modelPreference?: string | null;
     // Cheap derived counts for the sidebar open-work indicators.  Populated
     // by the server summary path (ChatSummary) and carried through the sync
     // merge; never authored on the frontend.  openWorkItemCount is currently
@@ -130,6 +136,11 @@ export interface ConversationFolder {
     createdAt: number;
     updatedAt: number;
     taskPlan?: TaskPlan | null;
+    // Saved per-folder model pin (alias string).  Conversations in this
+    // folder with no conversation-level pin inherit it.  Distinct from the
+    // legacy ``useGlobalModel`` boolean (never wired; slated for removal) —
+    // this is a real model alias, not a toggle.
+    modelPreference?: string | null;
 }
 
 // Add _edited and _truncatedAfter to Message type
