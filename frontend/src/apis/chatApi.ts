@@ -9,6 +9,7 @@ import { projectSync } from '../utils/projectSync';
 import { escapeHtml } from '../utils/htmlSanitize';
 
 import { extractSingleFileDiff } from '../utils/diffUtils';
+import { resolveModelPin, ResolvedModelPin } from '../utils/modelPins';
 // WebSocket for real-time feedback
 class FeedbackWebSocket {
     private ws: WebSocket | null = null;
@@ -759,7 +760,8 @@ export const sendPayload = async (
     setProcessingState?: (state: ProcessingState) => void,
     setReasoningContentMap?: Dispatch<SetStateAction<Map<string, string>>>,
     throttlingRecoveryDataRef?: { toolResults?: any[]; partialContent?: string },
-    currentProject?: { id: string; name: string; path: string } | null
+    currentProject?: { id: string; name: string; path: string } | null,
+    resolvedModelPin?: ResolvedModelPin | null
 ): Promise<string> => {
     let eventSource: any = null;
     let currentContent = '';
@@ -946,26 +948,8 @@ export const sendPayload = async (
         // Filter out empty messages
         const messagesToSend = messages.filter(isValidMessage);
 
-        // Log connection health to help diagnose silent queuing from pool exhaustion
-        if (typeof performance !== 'undefined' && performance.getEntriesByType) {
-            const resources = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
-            const pending = resources.filter(r => r.responseStart === 0 && r.startTime > performance.now() - 30000);
-            if (pending.length > 0) {
-                console.warn(`⚠️ CONN_POOL: ${pending.length} recent requests still awaiting response — possible connection pool saturation`);
-            }
-        }
-
-        // Log message count before and after filtering
-        if (messages.length !== messagesToSend.length) {
-            console.log("Filtered out empty messages:", {
-                before: messages.length,
-                after: messagesToSend.length,
-                dropped: messages.length - messagesToSend.length
-            });
-        }
-
         setIsStreaming(true);
-        let response = await getApiResponse(messagesToSend, question, checkedItems, conversationId, signal, currentProject, activeSkillPrompts);
+        let response = await getApiResponse(messagesToSend, question, checkedItems, conversationId, signal, currentProject, activeSkillPrompts, undefined, undefined, resolvedModelPin);
         console.log("Initial API response:", response.status, response.statusText);
 
         if (!response.ok) {
@@ -975,7 +959,7 @@ export const sendPayload = async (
                 // Add a small delay before retrying
                 await new Promise(resolve => setTimeout(resolve, 2000));
                 // Retry the request once
-                let retryResponse = await getApiResponse(messagesToSend, question, checkedItems, conversationId, signal, currentProject, activeSkillPrompts);
+                let retryResponse = await getApiResponse(messagesToSend, question, checkedItems, conversationId, signal, currentProject, activeSkillPrompts, undefined, undefined, resolvedModelPin);
                 if (!retryResponse.ok) {
                     throw await handleStreamError(retryResponse);
                 }
@@ -3325,7 +3309,7 @@ function handleSequentialThinkingDisplay(
 }
 */
 
-async function getApiResponse(messages: any[], question: string, checkedItems: string[], conversationId: string, signal?: AbortSignal, currentProject?: { id: string; name: string; path: string } | null, activeSkillPrompts?: string, modelOverrides?: Record<string, any>, preferredToolIds?: string[]) {
+async function getApiResponse(messages: any[], question: string, checkedItems: string[], conversationId: string, signal?: AbortSignal, currentProject?: { id: string; name: string; path: string } | null, activeSkillPrompts?: string, modelOverrides?: Record<string, any>, preferredToolIds?: string[], resolvedModelPin?: ResolvedModelPin | null) {
     const messageTuples: string[][] = [];
 
     // Messages are already filtered in SendChatContainer, no need to filter again
@@ -3377,6 +3361,14 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
     // Include active skill prompts from caller
     const systemPromptAddition = activeSkillPrompts ? `\n\n${activeSkillPrompts}` : '';
 
+    // Per-conversation / -folder / -project model pin.  The effective
+    // model is resolved upstream in useSendPayload (which has the loaded
+    // records needed to read SAVED prefs) and passed in as
+    // resolvedModelPin; fall back to a tab-only resolve here for callers
+    // that don't provide it.
+    const modelPin = resolvedModelPin
+      ?? resolveModelPin({ conversationId, projectId: currentProject?.id });
+
     const payload = {
         question,
         messages: messageTuples,
@@ -3385,7 +3377,8 @@ async function getApiResponse(messages: any[], question: string, checkedItems: s
         preferredToolIds: preferredToolIds || [],
         conversation_id: conversationId,
         files: checkedItems,
-        project_root: currentProject?.path
+        project_root: currentProject?.path,
+        ...(modelPin ? { modelSelection: { model: modelPin.model } } : {})
     };
 
     return fetch('/api/chat', {
