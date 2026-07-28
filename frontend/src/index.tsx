@@ -165,11 +165,11 @@ window.addEventListener('error', (event) => {
     } catch { /* non-fatal */ }
 });
 
-// Load internal formatters if available (created by internal build)
+// Load enterprise plugin formatters if available (provided by an optional enterprise build)
 try {
-    require('./formatters/internal-formatters');
+    require('./formatters/enterprise-formatters');
 } catch (e) {
-    // Not an internal build - this is fine
+    // No enterprise plugin present - this is fine
 }
 
 const root = ReactDOM.createRoot(
