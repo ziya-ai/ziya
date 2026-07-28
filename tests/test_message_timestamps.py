@@ -65,6 +65,29 @@ def _iso(ms):
     return datetime.datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def test_current_time_does_not_change_cache_controlled_system_prompt():
+    first_block = (
+        '\n\n## Session Context\n'
+        '<CurrentDateTime value="2026-01-02 03:04:05" />'
+    )
+    second_block = (
+        '\n\n## Session Context\n'
+        '<CurrentDateTime value="2026-01-02 03:04:06" />'
+    )
+
+    with mock.patch(
+        "app.utils.session_context_prompt.build_session_context_section",
+        side_effect=[first_block, second_block],
+    ):
+        first = _build([])
+        second = _build([])
+
+    assert first[0]["content"] == second[0]["content"]
+    assert "<CurrentDateTime" not in first[0]["content"]
+    assert first[-1]["content"] == '<CurrentDateTime value="2026-01-02 03:04:05" />\ncurrent question'
+    assert second[-1]["content"] == '<CurrentDateTime value="2026-01-02 03:04:06" />\ncurrent question'
+
+
 # ---------------------------------------------------------------------------
 # precision_prompt_system: per-message tag + directive (diff #4)
 # ---------------------------------------------------------------------------
