@@ -367,10 +367,35 @@ export function formatMCPOutput(
     };
   }
 
-  // Handle error responses
-  if (result && typeof result === 'object' && result.error) {
+  // Handle error responses.
+  //
+  // Backends signal failure two ways: `error` as a human-readable string, or
+  // `error: true` paired with the text in `message`.  Interpolating `error`
+  // directly renders the useless "Error: true" for the latter (132 such
+  // returns across app/mcp), discarding the real reason, so prefer `message`
+  // whenever `error` is not itself a string.
+  //
+  // Runs before per-tool dispatch and claims every failing result, so it has
+  // to carry the context the per-tool formatters used to add themselves:
+  //
+  //   1. A JSON *string* result slips past an object-only guard.  MarkdownRenderer
+  //      routes plain-text file_* / ast_* output straight here, so an unparsed
+  //      error object used to leak to the user as raw JSON.  Parse it first.
+  //   2. `input.path` is appended when the message does not already name the
+  //      file, preserving the context formatFileWrite's local branch provided.
+  let errResult = result;
+  if (typeof errResult === 'string' && errResult.trimStart().startsWith('{')) {
+    try { errResult = JSON.parse(errResult); } catch { /* not JSON — leave as-is */ }
+  }
+  if (errResult && typeof errResult === 'object' && errResult.error) {
+    const errText =
+      typeof errResult.error === 'string'
+        ? errResult.error
+        : (errResult.message || errResult.detail || 'Unknown error');
+    const detail = errResult.detail && errResult.detail !== errText ? `\n${errResult.detail}` : '';
+    const pathCtx = input?.path && !errText.includes(input.path) ? ` (${input.path})` : '';
     return {
-      content: `❌ Error: ${result.error}\n${result.detail || ''}`,
+      content: `❌ Error: ${errText}${pathCtx}${detail}`,
       type: 'error',
       collapsed: false
     };
@@ -739,15 +764,6 @@ function formatFileRead(result: any, input: any, options: any): FormattedOutput 
     }
   }
 
-  // Handle error responses (structured object)
-  if (result?.error) {
-    return {
-      content: `❌ ${result.message || 'File read failed'}`,
-      type: 'error',
-      collapsed: false,
-    };
-  }
-
   // Handle structured result: {content, metadata, path}
   const filePath = result.path || input?.path || '';
   const metadata = result.metadata || '';
@@ -795,16 +811,6 @@ function formatFileWrite(result: any, input: any, options: any): FormattedOutput
     }
   }
 
-  if (result?.error) {
-    const msg = result.message || 'File write failed';
-    const pathCtx = input?.path && !msg.includes(input.path) ? ` (${input.path})` : '';
-    return {
-      content: `❌ ${msg}${pathCtx}`,
-      type: 'error',
-      collapsed: false,
-    };
-  }
-
   const filePath = result.path || input?.path || '';
   const bytesWritten = result.bytes_written;
   const message = result.message || '';
@@ -829,29 +835,6 @@ function formatFileWrite(result: any, input: any, options: any): FormattedOutput
     summary += ' (new file)';
   }
 
-  // Build an expandable body showing what was written.  For full writes,
-  // show the file content; for patches, show the find/replace pair so the
-  // reader can see exactly what changed without diffing.  The bytes-only
-  // summary line lacked any way to inspect the actual content.
-  const writtenContent = typeof input?.content === 'string' ? input.content : '';
-  const patchFind = typeof input?.patch === 'string' ? input.patch : '';
-  let body = '';
-  if (isPatch && patchFind) {
-    body =
-      `--- find ---\n${patchFind}\n` +
-      `--- replace ---\n${writtenContent}`;
-  } else if (writtenContent) {
-    body = writtenContent;
-  }
-
-  if (!body) {
-    // Nothing to expand into — keep prior compact, non-collapsible form.
-    return {
-      content: summary,
-      type: 'text',
-      showInput: false,
-      collapsed: false,
-    };
   // Build an expandable body so the reader can inspect what was actually
   // written, not just the byte count.  Two cases:
   //
@@ -902,16 +885,11 @@ function formatFileWrite(result: any, input: any, options: any): FormattedOutput
   }
 
   // No content available (odd backend response) — keep prior compact form.
-  }
-
-  const lines = body.split('\n');
-  const shouldCollapse = body.length > 600 || lines.length > 8;
   return {
-    content: body,
+    content: summary,
     type: 'text',
     showInput: false,
-    collapsed: shouldCollapse && defaultCollapsed,
-    summary,
+    collapsed: false,
   };
 }
 
@@ -928,14 +906,6 @@ function formatFileList(result: any, input: any, options: any): FormattedOutput 
     } catch {
       // Plain text listing — use as-is
     }
-  }
-
-  if (result?.error) {
-    return {
-      content: `❌ ${result.message || 'File list failed'}`,
-      type: 'error',
-      collapsed: false,
-    };
   }
 
   const listContent = result.content || (typeof result === 'string' ? result : '');
@@ -967,10 +937,6 @@ function formatFileList(result: any, input: any, options: any): FormattedOutput 
 
 function formatAstTool(toolName: string, result: any, input: any, options: any): FormattedOutput {
   const { defaultCollapsed = true } = options;
-
-  if (result.error) {
-    return { content: `❌ ${result.message || 'AST tool error'}`, type: 'error', collapsed: false };
-  }
 
   const content = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
   const lines = content.split('\n');
