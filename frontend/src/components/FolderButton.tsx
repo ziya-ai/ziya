@@ -12,7 +12,7 @@ export const FolderButton: React.FC = () => {
   
   const handleCreateFolder = async (values: any) => {
     try {
-      const { name, useGlobalContext, useGlobalModel, systemInstructions } = values;
+      const { name, useGlobalContext, systemInstructions } = values;
       await createFolder(name, currentFolderId);
       setIsModalVisible(false);
       form.resetFields();
@@ -53,7 +53,6 @@ export const FolderButton: React.FC = () => {
           onFinish={handleCreateFolder}
           initialValues={{
             useGlobalContext: true,
-            useGlobalModel: true,
             systemInstructions: ''
           }}
         >
@@ -79,15 +78,6 @@ export const FolderButton: React.FC = () => {
             label="Use Global File Context"
             valuePropName="checked"
             tooltip="When enabled, this folder will use the global file context. When disabled, you can set a specific file context for this folder."
-          >
-            <Switch />
-          </Form.Item>
-          
-          <Form.Item
-            name="useGlobalModel"
-            label="Use Global Model Configuration"
-            valuePropName="checked"
-            tooltip="When enabled, this folder will use the global model configuration. When disabled, you can set a specific model for this folder."
           >
             <Switch />
           </Form.Item>
