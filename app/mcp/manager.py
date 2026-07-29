@@ -12,7 +12,7 @@ import secrets
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 
-from app.mcp.client import MCPClient, MCPResource, MCPTool, MCPPrompt # Assuming MCPClient is in the same directory or sys.path is configured
+from app.mcp.client import MCPClient, MCPResource, MCPTool, MCPPrompt, _detect_dependency_mismatch # Assuming MCPClient is in the same directory or sys.path is configured
 from app.config.env_registry import ziya_env
 from app.utils.logging_utils import logger
 from app.mcp.dynamic_tools import get_dynamic_loader
@@ -1408,11 +1408,14 @@ class MCPManager:
             else:
                 logger.error(f"Failed to connect to MCP server: {server_name}")
                 
-                # Log captured server logs for diagnostics
+                # client.connect() already logged its own failure detail
+                # (readable log tail + any dependency hint) for this
+                # server -- avoid dumping the same raw log lines a second
+                # time here; only add a hint if one wasn't already found.
                 if client.logs:
-                    logger.error(f"  Server logs for {server_name}:")
-                    for log_entry in client.logs[-10:]:  # Last 10 log entries
-                        logger.error(f"    {log_entry}")
+                    dep_hint = _detect_dependency_mismatch(' '.join(client.logs[-10:]))
+                    if dep_hint:
+                        logger.error(f"  Hint for '{server_name}': {dep_hint}")
                 else:
                     logger.error(f"  No server logs captured for {server_name}")
                     
