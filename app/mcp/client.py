@@ -94,6 +94,47 @@ def build_mcp_subprocess_env(
     return filtered
 
 
+def _format_log_tail(logs: List[str], n: int = 5) -> str:
+    """Render the last *n* captured log lines as readable indented text
+    instead of a raw Python list repr (which shows quotes, commas, and
+    literal ``\\n`` escapes and is unreadable in a terminal)."""
+    tail = logs[-n:]
+    lines: List[str] = []
+    for entry in tail:
+        for sub in (entry.splitlines() or [entry]):
+            lines.append(f"    {sub}")
+    return "\n".join(lines) if lines else "    (no output captured)"
+
+
+# Substrings that indicate a broken/incompatible dependency install rather
+# than a config or auth problem — surfaced with an actionable hint instead
+# of a raw traceback dump (e.g. "cannot import name 'McpError' from
+# 'mcp.shared.exceptions'" when an MCP server package and the installed
+# 'mcp' SDK version have drifted apart).
+_DEPENDENCY_MISMATCH_INDICATORS = (
+    "importerror", "modulenotfounderror", "cannot import name",
+    "no module named",
+)
+
+
+def _detect_dependency_mismatch(log_text: str) -> Optional[str]:
+    """Return a short remediation hint if *log_text* looks like a Python
+    import/dependency mismatch (stale or incompatible package versions),
+    else None."""
+    lower = log_text.lower()
+    if any(ind in lower for ind in _DEPENDENCY_MISMATCH_INDICATORS):
+        return (
+            "Detected a Python import/dependency mismatch in this server's "
+            "environment (an incompatible package version was likely "
+            "resolved by its launcher, e.g. uvx/npx). This server was "
+            "skipped — other MCP servers are unaffected. Try pinning the "
+            "conflicting dependency for this server (e.g. "
+            "'uvx --with \"<pkg><version-constraint>\" <server>') or "
+            "reinstalling its environment."
+        )
+    return None
+
+
 def _resolve_relative_script(script: str, trusted_roots: List[str]) -> Optional[str]:
     """Resolve a relative ``.py`` MCP server script against trusted roots only.
 
@@ -439,10 +480,16 @@ class MCPClient:
                     self.is_connected = False
                     # Try to capture any error output
                     if self.logs:
-                        logger.error(f"  Last logs: {self.logs[-5:]}")
+                        logger.error(
+                            f"  Server '{self.server_config.get('name', 'unknown')}' output:\n"
+                            f"{_format_log_tail(self.logs, 5)}"
+                        )
                         
                         # Check for npm authentication failures in captured logs
                         log_text = ' '.join(self.logs[-10:])  # Check last 10 log entries
+                        dep_hint = _detect_dependency_mismatch(log_text)
+                        if dep_hint:
+                            logger.error(f"  Hint: {dep_hint}")
                         auth_indicators = ['FETCH_ERROR', 'authentication', 'login', 'unauthorized', '401', '403']
                         
                         if any(indicator in log_text for indicator in auth_indicators):
