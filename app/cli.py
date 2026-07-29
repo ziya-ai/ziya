@@ -1133,6 +1133,11 @@ class CLI:
         self._session_shell_commands = None  # Session-local shell command overrides
         self._session_yolo = False  # Session-local yolo mode (never persisted)
         self._session_timeout = None  # Session-local command timeout override
+        # True while this CLI is serving a human at a prompt, which selects the
+        # tighter interactive iteration budget. `ziya task` reuses this same
+        # class for unattended batch work and clears it, so batch runs keep the
+        # full ZIYA_MAX_TOOL_ITERATIONS budget.
+        self._interactive = True
         # Remember the project root as it stood at startup so /reset can undo
         # any mid-session /root (/cd) change instead of letting it persist.
         self._initial_root = os.environ.get("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
@@ -1926,7 +1931,11 @@ class CLI:
         self._cancel_event = cancel_event
         
         async def stream_task():
-            async for chunk in executor.stream_with_tools(openai_messages, tools, conversation_id=self.conversation_id, cancel_event=cancel_event):
+            # Interactive prompts use the tighter iteration budget; `ziya task`
+            # reaches this same method with _interactive cleared and keeps the
+            # full batch budget. Task Cards and /goal never arrive here at all
+            # (they run via app/agents/task_executor.py).
+            async for chunk in executor.stream_with_tools(openai_messages, tools, conversation_id=self.conversation_id, cancel_event=cancel_event, interactive=self._interactive):
                 if self._cancellation_requested:
                     raise asyncio.CancelledError("User cancelled operation")
                 yield chunk
@@ -3407,8 +3416,17 @@ class CLI:
         except Exception as e:
             print(f"\033[31mGoal command error: {e}\033[0m")
 
+    # Default is read through ziya_env (which falls back to the env registry)
+    # rather than duplicated as a literal here. A hardcoded literal silently
+    # misreports the real default in /tune output once the registry changes.
+    #
+    # /tune is only reachable from the interactive REPL, so `iterations` targets
+    # the interactive budget -- the one that actually governs the session the
+    # user is typing in. The batch budget is set via the environment.
     _TUNABLES = {
-        'iterations': ('ZIYA_MAX_TOOL_ITERATIONS', '200', 'Max tool iterations per response'),
+        'iterations': ('ZIYA_MAX_TOOL_ITERATIONS_INTERACTIVE',
+                       str(ziya_env('ZIYA_MAX_TOOL_ITERATIONS_INTERACTIVE')),
+                       'Max tool iterations per interactive response'),
     }
 
     def _handle_tune(self, arg: str):
@@ -4558,6 +4576,9 @@ def cmd_task(args):
         _init_and_authenticate(args, skip_setup_env=True)
 
         cli = CLI(files=[])  # Tasks don't use file context
+        # Unattended batch work: no human is waiting at a prompt, so use the
+        # full ZIYA_MAX_TOOL_ITERATIONS budget rather than the interactive one.
+        cli._interactive = False
         asyncio.run(_run_with_mcp(cli.ask(task_def["prompt"], stream=not args.no_stream)))
     finally:
         reset_task_shell_commands(_sc_token)
