@@ -152,8 +152,14 @@ _VARS: List[EnvVar] = [
            "Maximum tool calls the model may make in a single round."),
     EnvVar("ZIYA_SECURE_MCP", bool, False, EnvCategory.MCP,
            "Enforce strict MCP result signing and verification."),
-    EnvVar("ZIYA_MAX_TOOL_ITERATIONS", int, 200, EnvCategory.MCP,
+    EnvVar("ZIYA_MAX_TOOL_ITERATIONS", int, 1000, EnvCategory.MCP,
            "Maximum agentic loop iterations per streaming response."),
+    EnvVar("ZIYA_MAX_TOOL_ITERATIONS_INTERACTIVE", int, 200, EnvCategory.MCP,
+           "Maximum agentic loop iterations for an interactive prompt, where a "
+           "human is waiting on the result. Applies only to the interactive CLI "
+           "chat path; task cards, goals and delegates are batch work and use "
+           "ZIYA_MAX_TOOL_ITERATIONS. Setting ZIYA_MAX_TOOL_ITERATIONS "
+           "explicitly overrides this and applies to both modes."),
     EnvVar("ZIYA_MAX_TOOLS_PER_TURN", int, 1000, EnvCategory.MCP,
            "Per-turn circuit breaker: maximum tool invocations allowed within "
            "a single streaming response (one user turn) before further calls "

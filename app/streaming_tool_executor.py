@@ -799,7 +799,15 @@ class StreamingToolExecutor:
             return ('end', 'stream_end', None)
 
         # No text below this point.
-        if iteration >= 100:
+        # The loop is range(max_iterations), so the last valid index is
+        # max_iterations-1; only there is there no budget left to recover in.
+        # This was previously a hardcoded 100, which ignored the configured
+        # limit entirely: past iteration 100 a single transient empty
+        # completion ended the turn outright, discarding the still-unused
+        # nudge/retry budget below. Those paths are each independently
+        # bounded (grace cap, retry cap, blocked_tools runaway guard), so
+        # they -- not this check -- are what prevent a runaway loop.
+        if iteration >= max_iterations - 1:
             return ('end', 'max_iterations', None)
 
         # (g)/(h) No text, no tools.
@@ -2035,7 +2043,7 @@ class StreamingToolExecutor:
         except (ImportError, KeyError, AttributeError, OSError, ValueError) as calib_error:
             logger.error(f"📊 CALIBRATION ERROR: {calib_error}")
 
-    async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None, tool_allowlist: Optional[List[str]] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def stream_with_tools(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None, tool_allowlist: Optional[List[str]] = None, interactive: bool = False) -> AsyncGenerator[Dict[str, Any], None]:
         """Public entry point — wraps _stream_with_tools_impl with refcounted
         cleanup of the shared per-conversation pending-feedback list (see
         app.server.pending_feedback_lists).  Multiple concurrent generators
@@ -2071,7 +2079,7 @@ class StreamingToolExecutor:
                 messages, tools=tools, conversation_id=conversation_id,
                 project_root=project_root, is_delegate=is_delegate,
                 extra_tools=extra_tools, cancel_event=cancel_event,
-                tool_allowlist=tool_allowlist,
+                tool_allowlist=tool_allowlist, interactive=interactive,
             ):
                 yield chunk
         except asyncio.CancelledError:
@@ -2094,7 +2102,7 @@ class StreamingToolExecutor:
                         pending_feedback_lists.pop(conversation_id, None)
                     pending_feedback_refcounts.pop(conversation_id, None)
 
-    async def _stream_with_tools_impl(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None, tool_allowlist: Optional[List[str]] = None) -> AsyncGenerator[Dict[str, Any], None]:
+    async def _stream_with_tools_impl(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None, tool_allowlist: Optional[List[str]] = None, interactive: bool = False) -> AsyncGenerator[Dict[str, Any], None]:
         # --- Concurrent feedback monitor ---
         # Instead of relying solely on discrete polling points, run a
         # background task that continuously drains the feedback queue and
@@ -2374,7 +2382,17 @@ class StreamingToolExecutor:
                 _feedback_monitor_task.cancel()
             return
 
-        max_iterations = ziya_env("ZIYA_MAX_TOOL_ITERATIONS")
+        # Interactive prompts get a tighter budget than batch work: a human is
+        # waiting on the result, so running hundreds of tool calls is a worse
+        # outcome than stopping early with a summary. `ziya task`, Task Cards,
+        # goals and delegates are unattended and keep the full batch budget.
+        #
+        # The two limits are independent: each mode reads only its own variable,
+        # so raising one never moves the other.
+        _budget_var = ("ZIYA_MAX_TOOL_ITERATIONS_INTERACTIVE" if interactive
+                       else "ZIYA_MAX_TOOL_ITERATIONS")
+        max_iterations = ziya_env(_budget_var)
+        logger.debug(f"🔁 ITERATION_BUDGET: {_budget_var}={max_iterations} (interactive={interactive})")
         # Counts iterations that ended with text-only output (no tools, no
         # structured blocks) where the heuristic would otherwise have called
         # the response "complete". Biased toward granting an extra cycle so
@@ -2382,6 +2400,11 @@ class StreamingToolExecutor:
         # to actually run. Bounded to avoid infinite text-only loops when the
         # model legitimately has nothing more to do.
         textonly_grace_used = 0
+
+        # Proportional budget notices already emitted this turn. Each tier
+        # fires at most once; without this a single tier would re-fire on
+        # every subsequent iteration once its threshold is crossed.
+        _pct_warnings_fired = set()
 
         def _grace_probe(branch: str, *, says_continue: bool, decider: str = "phrase"):
             # Instrumentation only — does NOT influence the decision. Logs what
@@ -2629,7 +2652,7 @@ class StreamingToolExecutor:
             # WARNING: Approaching iteration limit - notify model to wrap up
             iterations_remaining = max_iterations - iteration
             warning_message = None
-            
+
             if iterations_remaining == 5:
                 warning_message = (
                     "\n\n⚠️ **Iteration Limit Notice:** You have 5 iterations remaining in this cycle. "
@@ -2650,10 +2673,57 @@ class StreamingToolExecutor:
                     "any remaining recommendations. Do not attempt to use tools in this iteration.\n\n"
                 )
                 logger.warning(f"🔔 ITERATION_WARNING: Final iteration, notifying model")
+            elif iterations_remaining > 5 and max_iterations > 0:
+                # Proportional tier. The absolute 5/2/1 countdown above owns the
+                # endgame; this tier only covers the run-up to it, so at small
+                # caps (where 75% can already be inside the countdown window)
+                # the two never both fire on the same iteration.
+                _consumed = iteration / max_iterations
+                _crossed = [p for p in (0.75, 0.90, 0.95, 0.99)
+                            if _consumed >= p and p not in _pct_warnings_fired]
+                if _crossed:
+                    _pct = max(_crossed)
+                    # Mark every crossed tier, not just the one being reported,
+                    # so a coarse step never re-reports a tier already passed.
+                    _pct_warnings_fired.update(_crossed)
+                    _guidance = {
+                        0.75: "Consider narrowing your remaining investigation to what matters most.",
+                        0.90: "Prioritize finishing current work over opening new lines of investigation.",
+                        0.95: "Stop opening new investigations and begin consolidating your findings.",
+                        0.99: "Finish now and summarize; you are nearly out of budget.",
+                    }[_pct]
+                    warning_message = (
+                        f"\n\n⚠️ **Iteration Budget:** You have used {int(_pct * 100)}% of this "
+                        f"cycle's iteration budget ({iteration} of {max_iterations}); "
+                        f"{iterations_remaining} remain. {_guidance}\n\n"
+                    )
+                    logger.warning(
+                        f"🔔 ITERATION_WARNING: {int(_pct * 100)}% of budget consumed "
+                        f"({iteration}/{max_iterations}), notifying model"
+                    )
             
             # Inject warning message into conversation if needed
             if warning_message:
                 yield track_yield({'type': 'text', 'content': warning_message})
+                # The yield above only reaches the user's screen. Without also
+                # placing the notice in the conversation the model never sees
+                # it and cannot react to it.
+                _notice = f"[System: {warning_message.strip()}]"
+                _last = conversation[-1] if conversation else None
+                if _last is not None and _last.get("role") == "user":
+                    _prev = _last.get("content")
+                    if isinstance(_prev, list):
+                        # user[tool_result] turn from the previous iteration:
+                        # append inside it rather than creating a second
+                        # consecutive user turn, which some models answer with
+                        # an empty completion.
+                        _prev.append({"type": "text", "text": _notice})
+                    elif isinstance(_prev, str):
+                        _last["content"] = _prev + "\n\n" + _notice
+                    else:
+                        _last["content"] = str(_prev) + "\n\n" + _notice
+                else:
+                    conversation.append({"role": "user", "content": _notice})
                 await asyncio.sleep(0.1)  # Ensure message is sent
             
             # Check for user feedback at the start of each iteration

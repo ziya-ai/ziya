@@ -299,10 +299,34 @@ class TestEmptyCompletionRetry:
 
 
 class TestMaxIterations:
-    def test_no_text_high_iteration_ends(self, decide):
-        v = _call(decide, assistant_text="", iteration=100,
+    def test_no_text_last_iteration_ends(self, decide):
+        """The cap fires on the loop's last valid index (max_iterations-1)."""
+        v = _call(decide, assistant_text="", iteration=199, max_iterations=200,
                   prev_is_tool_result=False, empty_completion_retry_used=2)
         assert v[:2] == ('end', 'max_iterations')
+
+    def test_cap_scales_with_configured_limit(self, decide):
+        """The cap tracks max_iterations rather than a hardcoded 100."""
+        v = _call(decide, assistant_text="", iteration=999, max_iterations=1000,
+                  prev_is_tool_result=False, empty_completion_retry_used=2)
+        assert v[:2] == ('end', 'max_iterations')
+
+    def test_mid_budget_empty_is_not_attributed_to_max_iterations(self, decide):
+        """Regression: a hardcoded 100 ended turns mid-budget as 'max_iterations'.
+
+        With retries already spent the turn still ends, but the reason must
+        reflect the real cause (no_activity), not an iteration cap that has
+        900 iterations of budget left.
+        """
+        v = _call(decide, assistant_text="", iteration=100, max_iterations=1000,
+                  prev_is_tool_result=False, empty_completion_retry_used=2)
+        assert v[:2] == ('end', 'no_activity')
+
+    def test_mid_budget_empty_after_tools_still_recovers(self, decide):
+        """The severe case: recovery must remain available past iteration 100."""
+        v = _call(decide, assistant_text="", iteration=100, max_iterations=1000,
+                  prev_is_tool_result=True, empty_completion_retry_used=0)
+        assert v[0] != 'end'
 
 
 if __name__ == "__main__":
