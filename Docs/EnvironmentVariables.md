@@ -83,7 +83,8 @@ Provider credentials are read directly from the environment (not the `ZIYA_*` na
 | `ZIYA_TOOL_SENTINEL` | str | `TOOL_SENTINEL` | — | XML tag name for tool call boundaries in streaming |
 | `ZIYA_MAX_TOOLS_PER_ROUND` | int | `5` | — | Maximum tool calls the model may make in a single round |
 | `ZIYA_SECURE_MCP` | bool | `false` | — | Enforce strict MCP result signing and verification |
-| `ZIYA_MAX_TOOL_ITERATIONS` | int | `200` | — | Maximum agentic loop iterations per streaming response |
+| `ZIYA_MAX_TOOL_ITERATIONS` | int | `1000` | — | Maximum agentic loop iterations per streaming response for unattended/batch work: `ziya task`, Task Cards, `/goal` runs, delegates and web chat |
+| `ZIYA_MAX_TOOL_ITERATIONS_INTERACTIVE` | int | `200` | — | Iteration budget for interactive CLI commands where a human is waiting (`ziya chat`, `ask`, `review`, `explain`); also what `/tune iterations` sets. Independent of `ZIYA_MAX_TOOL_ITERATIONS` — changing one never affects the other |
 | `ZIYA_MAX_TOOLS_PER_TURN` | int | `1000` | — | Per-turn circuit breaker: max tool invocations within one streaming response before further calls are refused. Resets each turn, so long conversations are never locked out. `0` disables (ASR F-010) |
 | `ZIYA_MCP_ENV_PASSTHROUGH` | str | — | — | Comma-separated allowlist of extra parent env vars to forward to MCP server subprocesses. By default credential-bearing vars (AWS_*/MIDWAY_*/TOKEN/SECRET/…) are stripped before launch (ASR F-003) |
 
