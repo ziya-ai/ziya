@@ -412,6 +412,26 @@ const REST_PITCH_FOR_CLEF: Readonly<Record<string, string>> = {
   percussion: 'B4',
 };
 
+/**
+ * Split a spec duration such as "h." into the noteStruct form VexFlow's
+ * Note constructor accepts.
+ *
+ * EasyScore's *string* grammar takes a trailing "." for an augmentation dot,
+ * but Note.parseDuration -- which every noteStruct-based note (GhostNote,
+ * TextDynamics) goes through -- matches /(\d*\/?\d+|[a-z])(d*)([nrhms]|$)/,
+ * where dots are "d" characters and a trailing "." matches nothing.  Passing
+ * "h." there throws "BadArguments: Invalid note initialization object", so
+ * the dots must be lifted out into the separate `dots` field.
+ */
+export function toNoteStructDuration(
+  duration: string,
+): { duration: string; dots: number } {
+  const raw = String(duration).trim();
+  const parsed = /^([a-z0-9/]+?)(\.*)$/i.exec(raw);
+  if (!parsed) return { duration: raw, dots: 0 };
+  return { duration: parsed[1], dots: parsed[2].length };
+}
+
 /** Build the EasyScore note list for a spec, parenthesising chords. */
 export function buildNoteString(notes: MusicNoteSpec[], clef: string = 'treble'): string {
   const restPitch = REST_PITCH_FOR_CLEF[clef] ?? REST_PITCH_FOR_CLEF.treble;
@@ -843,11 +863,15 @@ export async function renderMusicSpec(
     if (specNotes.some((n) => n.dynamic)) {
       const markFor = (specNote: MusicNoteSpec) => {
         const mark = specNote.dynamic;
+        // "h." is legal in the EasyScore string grammar the melody voice uses,
+        // but noteStruct-based notes need the dots split out or the Note
+        // constructor rejects the object outright.
+        const { duration, dots } = toNoteStructDuration(specNote.duration);
         if (mark && DYNAMIC_MARKS.has(mark)) {
-          return factory.TextDynamics({ text: mark, duration: specNote.duration });
+          return factory.TextDynamics({ text: mark, duration, dots });
         }
         if (mark) problems.push(`unknown dynamic "${mark}"`);
-        return new GhostNote({ duration: specNote.duration });
+        return new GhostNote({ duration, dots });
       };
       // The dynamics voice must carry a BarNote at every position the melody
       // voice does, or the two desynchronise after the first barline: a mark
