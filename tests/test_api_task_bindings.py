@@ -321,7 +321,14 @@ def test_get_enriches_run_status_via_launch_endpoint(client):
         "GET /task-bindings must enrich bindings with run_status; "
         "without it the frontend running-task gear never shows"
     )
-    assert rows[0]["run_status"] in ("queued", "running", "done", "failed", "cancelled")
+    # Derived from the model rather than hardcoded: the docstring promises
+    # "any legal status", but a literal tuple silently stops meaning that
+    # the moment a status is added.  It listed 5 of 8 — omitting paused,
+    # partial and held — so a run that legitimately reached one of those
+    # failed a test that intended to accept it.
+    from app.models.task_run import RunStatus
+    import typing
+    assert rows[0]["run_status"] in typing.get_args(RunStatus)
 
 
 def test_run_status_tracks_run_lifecycle(client, ziya_home, project_dir):

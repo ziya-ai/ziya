@@ -7,12 +7,15 @@ with the run_id.  Clients poll GET /task-runs/{run_id} for status.
 """
 
 import asyncio
+import os
 import time
 from fastapi import APIRouter, HTTPException, Query
 from typing import List
 
 from ..models.task_card import (
-    Block, TaskCard, TaskCardCreate, TaskCardUpdate, TaskCardRun,
+    # ``Artifact`` is needed to coerce mid-loop resume iteration records,
+    # which arrive as plain dicts when read back off disk.
+    Artifact, Block, TaskCard, TaskCardCreate, TaskCardUpdate, TaskCardRun,
 )
 from ..models.task_run import TaskRun, TaskRunCreate, TaskRunBlockState
 from ..storage.projects import ProjectStorage
@@ -98,12 +101,17 @@ def _denial_reason_message(reason: str) -> str:
 async def get_card_scope_status(project_id: str, card_id: str):
     """Per-block escalation-approval status for a card (ASR F-001).
 
-    For every block whose EFFECTIVE scope (deck-level project scope +
-    the card's own scope + every ancestor block's scope + its own,
-    merged additively — see app.models.task_card.merge_scopes) grants a
-    privilege escalation (shell_commands or writable paths), report
-    whether a signed approval record matches the CURRENT effective-scope
-    hash. Drives the "needs approval" banner in TaskCardEditor.
+    For every LEAF TASK block whose EFFECTIVE scope (deck-level project
+    scope + the card's own scope + every ancestor block's scope + its
+    own, merged additively — see app.models.task_card.merge_scopes)
+    grants a privilege escalation (shell_commands or writable paths),
+    report whether a signed approval record matches the CURRENT
+    effective-scope hash. Drives the "needs approval" banner in
+    TaskCardEditor.
+
+    Container blocks are not reported: only leaf tasks are gated at
+    runtime (see the walk below). Their scopes still count, arriving via
+    each descendant's ancestor chain.
     Blocks with no escalation (or restriction-only scopes) are omitted — they
     run at the floor and need no approval. The signCommand is the exact
     ``ziya-approve`` invocation that mints the missing record.
@@ -138,6 +146,25 @@ async def get_card_scope_status(project_id: str, card_id: str):
     blocks = []
     staged_scopes = {}  # "project:card:block" -> {name, scope} for the signer
     for block, ancestor_scopes in _walk_blocks(card.root):
+        # Only LEAF task blocks are reportable.  The runtime gate lives in
+        # execute_task_block (authorize_scope keyed on block.id), and
+        # block_executor calls that for block_type == "task" only — a
+        # container's own scope is never hashed under the container's id.
+        #
+        # Reporting a container therefore emitted a signCommand for an id
+        # nothing ever checks: signing it wrote a record the gate never
+        # reads, so the operator saw "✓ Signed" and the card still ran at
+        # the floor.  Worse, because an ancestor's scope is merged into
+        # each descendant's effective scope, the container and its leaf
+        # produce the SAME hash — so the editor showed one escalation
+        # twice, and only one of the two sign commands had any effect.
+        #
+        # Containers still contribute their privileges: they arrive here
+        # via ``ancestor_scopes`` in the merge below, which is what makes
+        # the leaf's hash cover them.  Skipping the container drops the
+        # duplicate row, not the grant.
+        if getattr(block, "block_type", None) != "task":
+            continue
         own_scope = getattr(block, "scope", None)
         scope = merge_scopes(deck_scope, card.scope, *ancestor_scopes, own_scope)
         escalation = sc.task_escalation_block(scope)
@@ -257,6 +284,16 @@ async def _launch_run_for_card(
     card_id: str,
     source_conversation_id=None,
     parameter_overrides=None,
+    resume_root: Block = None,
+    resume_from_block_id: str = None,
+    resume_artifacts: dict = None,
+    parent_run_id: str = None,
+    root_run_id: str = None,
+    attempt: int = 1,
+    resume_kind: str = None,
+    resumed_from_block_id: str = None,
+    resume_from_iteration: int = None,
+    resume_iteration_artifacts: dict = None,
 ) -> TaskRun:
     """Shared helper: validates the card, creates a TaskRun, seeds
     block_states, and schedules the background executor task.
@@ -264,11 +301,39 @@ async def _launch_run_for_card(
 
     Used by the plain /launch endpoint and by the binding-creation
     endpoint, which needs the run_id before recording the binding.
+
+    Resume mode (the three ``resume_*`` args, set together by the
+    resume-from-block endpoint) creates a NEW run rather than reviving
+    the old one, keeping the source run as an immutable record.  It
+    differs from a normal launch in three ways:
+
+    * ``resume_root`` is the source run's ``card_snapshot`` tree, not
+      the live card — the snapshot carries the same block ids the source
+      run's ``block_states`` are keyed by, and it is immune to card
+      edits made since that run.
+    * ``resume_artifacts`` maps block id → the source run's recorded
+      Artifact.  Blocks ahead of the target replay these instead of
+      executing, so the resumed blocks still see prior deck state via
+      {{sibling("id")}} / {{previous_sibling}}.
+    * ``resume_from_block_id`` is where real execution begins; see the
+      gate in block_executor.execute_block.
+
+    The five lineage args are recorded on the run so the GUI can state
+    the relationship between attempts rather than showing an unexplained
+    second tile.  ``resumed_from_block_id`` is the block the USER
+    pointed at, which for a continue is deliberately NOT
+    ``resume_from_block_id`` (that is its successor) — see
+    app.utils.resume_targets.
     """
     storage = _get_storage(project_id)
     card = storage.get(card_id)
     if not card:
         raise HTTPException(status_code=404, detail="Task card not found")
+
+    # The tree this run actually executes.  Resume uses the source
+    # run's snapshot so block ids line up with the artifacts being
+    # replayed; a normal launch uses the live card.
+    root_block = resume_root if resume_root is not None else card.root
 
     # Deck-level (project-wide) permissions baseline — the outermost
     # scope layer, merged additively with the card's own scope and
@@ -281,9 +346,27 @@ async def _launch_run_for_card(
     run = run_storage.create(TaskRunCreate(
         card_id=card_id,
         source_conversation_id=source_conversation_id,
+        # Recorded on the run alongside card_snapshot so the run is
+        # reproducible from its own record.  ExecutionContext.overrides
+        # (seeded below) is in-memory only and outranks State blocks, so
+        # a resume that could not read these back would silently fall
+        # back to the card's authored baselines.
+        parameter_overrides=dict(parameter_overrides or {}),
+        parent_run_id=parent_run_id,
+        root_run_id=root_run_id,
+        attempt=attempt,
+        resume_kind=resume_kind,
+        resumed_from_block_id=resumed_from_block_id,
+        # Mid-loop resume position, recorded on the run so the attempt is
+        # reproducible from its own record and the UI can say which
+        # iteration was resumed rather than only which block.
+        resume_from_iteration=resume_from_iteration,
+        resume_iteration_artifacts={
+            int(k): v for k, v in (resume_iteration_artifacts or {}).items()
+        },
     ))
     storage.record_run(card_id)
-    _seed_block_states(run_storage, run.id, card.root)
+    _seed_block_states(run_storage, run.id, root_block)
 
     # Snapshot the card definition at launch so later edits to the card
     # cannot retroactively rewrite what this run is displayed to have
@@ -293,7 +376,12 @@ async def _launch_run_for_card(
         run_storage.set_card_snapshot(run.id, {
             "name": card.name,
             "description": card.description,
-            "root": card.root.model_dump(),
+            # ``root_block``, not ``card.root``: a resumed run must
+            # snapshot the tree it actually executes (the source run's
+            # snapshot), or its own block_states would be keyed by ids
+            # from a tree its snapshot does not describe — and a later
+            # resume-of-a-resume would read a mismatched tree.
+            "root": root_block.model_dump(),
         })
     except Exception as e:
         logger.warning(f"📋 TASK_LAUNCH: card_snapshot capture failed: {e}")
@@ -308,7 +396,7 @@ async def _launch_run_for_card(
     try:
         from ..utils.permissions_snapshot import build_permissions_snapshot
         snapshot = build_permissions_snapshot(
-            root_block=card.root, project_root=project_root,
+            root_block=root_block, project_root=project_root,
             deck_scope=deck_scope, card_scope=card.scope,
         )
         run_storage.set_permissions_snapshot(run.id, snapshot)
@@ -318,6 +406,64 @@ async def _launch_run_for_card(
 
     async def _run(run_id: str, block, project_root):
         logger.info(f"🚀 TASK_RUN: _run coroutine entered for {run_id[:8]}")
+        # ── Launch preflight ────────────────────────────────────────
+        # Two of ten runs of one long campaign card died at 0.0 minutes
+        # because they were relaunched straight into a dead endpoint,
+        # producing a run record whose only content was the error.  A
+        # cheap check first turns that into an explicit held run.
+        #
+        # Deliberately mints a HELD run rather than refusing the launch:
+        # a refusal at the HTTP layer would leave no record the user
+        # could see, resume, or reason about, whereas 'held' is exactly
+        # "the work never started because the infrastructure was down".
+        #
+        # Bedrock-only, opt-out-able, and best-effort.  The STS
+        # round-trip is NOT free — measured at ~10s cold — so it is
+        # skipped for every non-Bedrock endpoint, and
+        # ZIYA_SKIP_LAUNCH_PREFLIGHT=1 disables it for callers that know
+        # no model call will occur: a stubbed executor under test, a card
+        # doing only shell/file work, or an offline environment.  Without
+        # that escape hatch the check holds runs that would have
+        # succeeded — the one outcome worse than not checking — while
+        # billing every launch ~10s for an answer it did not need.
+        #
+        # Any failure of the check ITSELF proceeds to launch: "cannot
+        # verify" is not "invalid".
+        try:
+            _skip = os.environ.get(
+                "ZIYA_SKIP_LAUNCH_PREFLIGHT", "",
+            ).strip().lower() in ("1", "true", "yes")
+            if _skip:
+                _endpoint = ""   # sentinel: no endpoint check performed
+                logger.debug(
+                    "Launch preflight skipped (ZIYA_SKIP_LAUNCH_PREFLIGHT)"
+                )
+            else:
+                from ..agents.models import ModelManager
+                _endpoint = (ModelManager.get_state() or {}).get("endpoint", "bedrock")
+            if _endpoint == "bedrock":
+                from ..utils.aws_utils import check_aws_credentials
+                _ok, _msg = check_aws_credentials(is_server_startup=False)
+                if not _ok:
+                    run_storage.mark_held(
+                        run_id, reason="authentication_error",
+                        block_id=getattr(block, "id", "") or "",
+                        error=(
+                            f"Launch preflight failed — the run did not start. "
+                            f"{_msg or 'AWS credentials are not valid.'}"
+                        ),
+                    )
+                    await _relay.safe_push(run_id, {
+                        "type": "run_completed", "run_id": run_id,
+                        "status": "held", "at": time.time(),
+                        "error": _msg or "credentials invalid",
+                    })
+                    logger.warning(
+                        f"⏸️ Task run held before start (preflight): {run_id[:8]}"
+                    )
+                    return
+        except Exception as e:  # noqa: BLE001 — never block a launch on the check
+            logger.debug("Launch preflight skipped: %s", e)
         # Defense in depth: re-set the request-scoped ContextVar inside
         # the spawned task.  asyncio.create_task copies the current
         # Context, so this is normally redundant — but if project_root
@@ -355,35 +501,90 @@ async def _launch_run_for_card(
                 overrides=dict(parameter_overrides or {}),
                 deck_scope=deck_scope,
                 card_scope=card.scope,
+                # Resume state.  ``resume_skipping`` starts True only
+                # when a target was given, so a normal launch is
+                # untouched: the gate in execute_block is inert unless
+                # resume_skipping is set.
+                resume_from_block_id=resume_from_block_id,
+                resume_skipping=bool(resume_from_block_id),
+                resume_artifacts=dict(resume_artifacts or {}),
+                # Mid-loop resume.  Coerced to Artifact here rather than
+                # at the endpoint so a record read straight off disk (a
+                # plain dict) and one passed in-process behave the same.
+                resume_from_iteration=resume_from_iteration,
+                resume_iteration_artifacts={
+                    int(k): (v if isinstance(v, Artifact) else Artifact(**v))
+                    for k, v in (resume_iteration_artifacts or {}).items()
+                    if v is not None
+                },
             )
             logger.info(f"🚀 TASK_RUN: {run_id[:8]} → execute_block start (type={block.block_type})")
+
+            def _terminal(base: str) -> str:
+                """Reclassify a terminal status against what completed.
+
+                Reads block_states back from disk rather than tracking
+                progress here: the executor already persists every
+                block's outcome, and re-deriving keeps this to one
+                lookup instead of a parallel accounting scheme that
+                could drift from the durable record.
+                """
+                from ..utils.run_outcome import classify_terminal_status
+                fresh = run_storage.get(run_id)
+                return classify_terminal_status(
+                    base, fresh.block_states if fresh else None,
+                )
+
             artifact = await execute_block(block, ctx)
             logger.info(
                 f"🚀 TASK_RUN: {run_id[:8]} → execute_block returned "
                 f"(summary_len={len(artifact.summary)}, failed={artifact.failed})"
             )
             run_storage.set_artifact(run_id, artifact)
-            final_status = "failed" if artifact.failed else "done"
+            final_status = _terminal("failed" if artifact.failed else "done")
             run_storage.update_status(run_id, final_status)
             await _emit_run(final_status)
             logger.info(f"✅ Task run complete: {run_id[:8]}")
         except BlockExecutionCancelled:
-            run_storage.update_status(run_id, "cancelled")
-            await _emit_run("cancelled")
+            # A user-stopped run that got partway carries the same
+            # workspace hazard as a crash-partway.
+            _st = _terminal("cancelled")
+            run_storage.update_status(run_id, _st)
+            await _emit_run(_st)
             logger.info(f"🛑 Task run cancelled: {run_id[:8]}")
         except TaskExecutorError as e:
-            run_storage.update_status(run_id, "failed", error=str(e))
-            await _emit_run("failed", error=str(e))
-            logger.warning(f"❌ Task run failed: {run_id[:8]}: {e}")
+            # An infrastructure fault is not a verdict on the work: the
+            # card never reached a decision, so recording it as
+            # "failed" both misdescribes it and throws away the
+            # position the run had reached.  Detected by attribute
+            # rather than by importing TaskInfraError, keeping this
+            # module's import surface unchanged.
+            _kind = getattr(e, "infra_kind", "")
+            if _kind:
+                _blk = getattr(e, "block_id", "") or ""
+                run_storage.mark_held(
+                    run_id, reason=_kind, block_id=_blk, error=str(e),
+                )
+                await _emit_run("held", error=str(e))
+                logger.warning(
+                    f"⏸️ Task run held ({_kind}): {run_id[:8]} at block "
+                    f"{_blk[:14] or '?'} — {e}"
+                )
+            else:
+                _st = _terminal("failed")
+                run_storage.update_status(run_id, _st, error=str(e))
+                await _emit_run(_st, error=str(e))
+                logger.warning(f"❌ Task run failed: {run_id[:8]}: {e}")
         except Exception as e:  # Broad: background task must not bubble
-            run_storage.update_status(run_id, "failed", error=str(e))
-            await _emit_run("failed", error=str(e))
+            _st = _terminal("failed")
+            run_storage.update_status(run_id, _st, error=str(e))
+            await _emit_run(_st, error=str(e))
             logger.error(f"❌ Task run crashed: {run_id[:8]}: {e}", exc_info=True)
         finally:
             # Always drop from the active-runs set, even on error.
             run_storage.mark_inactive(run_id)
 
-    asyncio.create_task(_run(run.id, card.root, project_root))
+    asyncio.create_task(_run(run.id, root_block, project_root))
     logger.info(f"🚀 Task card launched: {card.name} → run {run.id[:8]} (task scheduled)")
     return run
 

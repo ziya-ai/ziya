@@ -100,6 +100,21 @@ def test_writable_path_makes_a_hash_readonly_does_not():
     assert sc.task_scope_hash(rw) != ""
 
 
+def test_in_floor_command_is_not_an_escalation():
+    """A command already in the base shell allowlist grants nothing extra.
+
+    ``task_escalation_block`` subtracts the privilege FLOOR before
+    hashing, so an in-allowlist command with no further runtime gate is a
+    no-op grant and hashes to "".  This is why the tests below use
+    ``wget`` (absent from the allowlist) rather than ``curl`` (present):
+    an in-floor command makes every "escalation denied" assertion
+    vacuously false.  If the allowlist ever gains ``wget`` or loses
+    ``curl``, this fails loudly instead of quietly gutting the file.
+    """
+    assert sc.task_scope_hash(TaskScope(shell_commands=["curl"])) == ""
+    assert sc.task_scope_hash(TaskScope(shell_commands=["wget"])) != ""
+
+
 def test_hash_is_order_independent():
     a = TaskScope(shell_commands=["pytest", "make test"])
     b = TaskScope(shell_commands=["make test", "pytest"])
@@ -108,7 +123,7 @@ def test_hash_is_order_independent():
 
 def test_widening_changes_hash():
     narrow = TaskScope(shell_commands=["pytest"])
-    wide = TaskScope(shell_commands=["pytest", "curl"])
+    wide = TaskScope(shell_commands=["pytest", "wget"])
     assert sc.task_scope_hash(narrow) != sc.task_scope_hash(wide)
 
 
@@ -121,7 +136,7 @@ def test_non_escalating_scope_authorized_without_record(env):
 
 
 def test_escalating_scope_denied_without_record(env):
-    scope = TaskScope(shell_commands=["curl"])
+    scope = TaskScope(shell_commands=["wget"])
     assert sa.is_scope_authorized("b-1", scope) is False
     authd = sa.authorize_scope("b-1", scope)
     assert authd is not scope
@@ -129,7 +144,7 @@ def test_escalating_scope_denied_without_record(env):
 
 
 def test_signed_record_authorizes(env, root_key):
-    scope = TaskScope(shell_commands=["curl"], paths=[ScopeEntry(path="o/", write=True, is_dir=True)])
+    scope = TaskScope(shell_commands=["wget"], paths=[ScopeEntry(path="o/", write=True, is_dir=True)])
     _write_signed_record("b-1", scope, root_key)
     assert sa.is_scope_authorized("b-1", scope) is True
     assert sa.authorize_scope("b-1", scope) is scope
@@ -139,26 +154,26 @@ def test_editing_scope_after_approval_denies(env, root_key):
     # Approve a narrow scope, then widen it -> stored hash no longer matches.
     approved = TaskScope(shell_commands=["pytest"])
     _write_signed_record("b-1", approved, root_key)
-    widened = TaskScope(shell_commands=["pytest", "curl"])
+    widened = TaskScope(shell_commands=["pytest", "wget"])
     assert sa.is_scope_authorized("b-1", widened) is False
 
 
 def test_forged_signature_denied(env, wrong_key):
     # A record signed by a non-root key must not verify against the real pubkey.
-    scope = TaskScope(shell_commands=["curl"])
+    scope = TaskScope(shell_commands=["wget"])
     _write_signed_record("b-1", scope, wrong_key)
     assert sa.is_scope_authorized("b-1", scope) is False
 
 
 def test_record_for_other_task_does_not_authorize(env, root_key):
-    scope = TaskScope(shell_commands=["curl"])
+    scope = TaskScope(shell_commands=["wget"])
     _write_signed_record("b-OTHER", scope, root_key)
     # Same scope, different task_id -> no record under b-1.
     assert sa.is_scope_authorized("b-1", scope) is False
 
 
 def test_deleted_record_denies(env, root_key):
-    scope = TaskScope(shell_commands=["curl"])
+    scope = TaskScope(shell_commands=["wget"])
     rec = _write_signed_record("b-1", scope, root_key)
     assert sa.is_scope_authorized("b-1", scope) is True
     sa._record_path("b-1").unlink()
@@ -175,7 +190,7 @@ def test_record_path_rejects_traversal(env):
 
 def test_unauthorized_scope_strips_escalations_keeps_restrictions(env):
     orig = TaskScope(
-        shell_commands=["curl", "make deploy"],
+        shell_commands=["wget", "make deploy"],
         tools=["file_read"], skills=["k"], cwd="sub",
         paths=[
             ScopeEntry(path="out/", write=True, is_dir=True),

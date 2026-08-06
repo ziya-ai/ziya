@@ -293,6 +293,120 @@ Hard cancel (interrupting a mid-stream LLM invocation) is deferred;
 it requires plumbing `asyncio.CancelledError` through
 `StreamingToolExecutor` and is not needed for any committed use case.
 
+### Partial outcomes
+
+A run that completed four of seven stages — writing files and running
+commands along the way — is not the same event as one that died on
+stage one having touched nothing.  Reporting both as `failed` is
+actively harmful: it reads as "nothing happened" for a run that may
+have **materially changed the workspace**, discouraging the user from
+looking for the changes it left behind.
+
+`RunStatus` therefore has a fifth terminal value, `partial`, meaning
+the run both **made progress** and **left work unfinished**.  A
+zero-progress stop stays `failed` / `cancelled`, so a genuine total
+loss keeps its own distinct signal.
+
+It is **derived, not authored**.  The executor's error paths are
+untouched and still write `failed` / `cancelled`; reclassification
+happens once, at the terminal write, from the per-block record already
+being kept (`app/utils/run_outcome.py::classify_terminal_status`).
+A new terminal status therefore costs no new branches in
+`block_executor`, and a run whose `block_states` are empty degrades to
+exactly the previous behaviour.
+
+Progress means either shape of evidence, since the two are recorded
+differently:
+
+* a structural block that reached `done` (`TaskRunBlockState.status`)
+* a loop iteration that `passed` (`IterationSummary.status`)
+
+The second matters: a Repeat's inner Task shares **one**
+`block_states` entry across every iteration (last-write-wins), so a
+loop whose 3rd of 10 iterations failed leaves that entry `failed` with
+the two successes visible only in `iteration_summaries`.  Counting
+blocks alone would call that run a total loss.
+
+A cancelled run that got partway is also `partial` — a user-stopped
+run carries the same workspace hazard as a crash — which makes
+`cancelled` rare by design: it now means only "stopped before anything
+completed".
+
+### Continuing a stopped run
+
+`POST /task-runs/{id}/resume-from/{block_id}?mode=retry|continue`
+
+Two user-facing acts, one mechanism.  The difference is purely *which
+block becomes the resume point*:
+
+* **retry from X** — re-execute X.  Resume point = X.
+* **continue from X** — accept X's recorded outcome and start at the
+  block after it.  Resume point = X's successor.
+
+That symmetry is why `continue` needs no executor change.  The resume
+gate replays every block ahead of the resume point, so pointing it at
+X's successor makes X itself replay — which *is* "accept the recorded
+outcome", including when that outcome was a failure.  Continuing past
+a failed block is how a user says "I fixed it by hand, move on";
+retrying would undo the fix.
+
+`continue` on the last block in the deck is rejected (422) rather than
+launching a run that replays everything and executes nothing, which
+would look like a resume that silently did nothing.
+
+Target normalization is shared by both modes
+(`app/utils/resume_targets.py`): only structural blocks have durable
+per-block state, so a block inside a loop body resolves to its
+**outermost** enclosing loop.
+
+### Attempt lineage
+
+A resume creates a **new run** and leaves the source intact, so the
+source stays an immutable record alongside `card_snapshot` and
+`permissions_snapshot`.  Prior state is genuinely preserved — every
+completed block replays, and `state` blocks re-execute to rebuild
+`{{var.NAME}}` — but nothing *recorded* the relationship, so the GUI
+could only show a second tile materializing beside the first with no
+stated connection.  The user could not tell whether prior state had
+been kept or thrown away.
+
+Five fields close that gap:
+
+| Field | Meaning |
+|---|---|
+| `root_run_id` | Lineage key — every attempt shares the **first** run's id, so a chain is one filter rather than a parent-pointer walk.  Self on an initial run. |
+| `parent_run_id` | Immediate predecessor; the run whose artifacts this one replays. |
+| `attempt` | 1-based position, displayed as "attempt N of M". |
+| `resume_kind` | `initial` / `retry_from` / `continue_from` / `rerun`. |
+| `resumed_from_block_id` | The block the **user** pointed at.  For a continue this is deliberately *not* the resume point (that is its successor), so the UI names the right stage. |
+
+`GET /task-runs/{id}/lineage` returns every attempt, oldest first.
+The GUI collapses a lineage to **one tile** showing the newest attempt,
+with the others on an attempt rail — so the history is visibly retained
+rather than scattered across sibling tiles.  Runs written before
+lineage tracking have no `root_run_id`; the id-fallback makes each its
+own single-attempt lineage.
+
+The collapse is decided client-side from fields the **bindings list**
+already carries: `GET /task-bindings` loads every run to stamp
+`run_status`, so `root_run_id` and `attempt` ride along on that same
+read (`app/api/task_bindings.py`) and
+`components/TaskCard/lineageCollapse.ts` folds them synchronously.
+
+A per-binding run fetch would have been wrong twice over.  It is a
+request burst on every binding change, and it must pick a project id —
+for a **global chat** the correct one is the chat's *owning* project,
+not the project being viewed, which is why the list endpoint has a
+cross-project fallback at all.  A client fetch keyed on the viewing
+project would have 404'd for exactly the chats most likely to have
+accumulated attempts, silently disabling the collapse there.
+
+Anchor reuse is deliberately non-fatal and is resolved **before** the
+binding is created rather than inline as an argument to it: an escape
+from the anchor lookup would otherwise skip creation entirely, leaving
+a run that executes but can never be rendered — losing the run over a
+purely cosmetic failure.
+
 ### Relationship to the delegate substrate
 
 The block executor uses `StreamingToolExecutor` directly — the same

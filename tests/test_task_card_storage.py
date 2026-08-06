@@ -115,6 +115,30 @@ class TestDuplicate:
         assert clone.root.repeat_count == 3
         assert clone.tags == ["x"]
 
+    def test_duplicate_regenerates_every_block_id(self, storage):
+        # A collision here means one card's scope-approval or run-state
+        # record silently governs the other card's block too — see
+        # _assign_block_ids in app/storage/task_cards.py.
+        original = storage.create(TaskCardCreate(
+            name="Original", root=_loop(),
+        ))
+        clone = storage.duplicate(original.id)
+
+        def _ids(block) -> set[str]:
+            out = {block.id}
+            for child in block.body or []:
+                out |= _ids(child)
+            return out
+
+        original_ids = _ids(original.root)
+        clone_ids = _ids(clone.root)
+        assert len(original_ids) > 1, "fixture should have a nested block"
+        assert original_ids.isdisjoint(clone_ids)
+        # Same shape and content, only the identities differ.
+        assert clone.root.block_type == original.root.block_type
+        assert clone.root.repeat_count == original.root.repeat_count
+        assert len(clone.root.body) == len(original.root.body)
+
     def test_duplicate_as_template(self, storage):
         card = storage.create(TaskCardCreate(name="Task", root=_simple_task()))
         t = storage.duplicate(card.id, as_template=True)

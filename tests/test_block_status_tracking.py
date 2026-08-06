@@ -24,7 +24,18 @@ class FakeStorage:
         self.artifacts = {}     # block_id -> persisted Artifact
 
     def get(self, run_id):
-        return SimpleNamespace(cancel_requested=False)
+        # Must carry every flag the executor reads off a run record.  The
+        # stub predates pause/step, so it lacked ``pause_requested`` and
+        # ``step_budget`` — and ExecutionContext.pause_requested() reads
+        # the former unconditionally, so all four status-tracking tests in
+        # this file died with AttributeError before reaching a single
+        # assertion.  Listing the flags explicitly (rather than reaching
+        # for a permissive Mock) keeps the stub honest: the next field the
+        # executor starts reading fails loudly here instead of silently
+        # returning a truthy Mock and quietly changing what is tested.
+        return SimpleNamespace(
+            cancel_requested=False, pause_requested=False, step_budget=0,
+        )
 
     def update_block_status(self, run_id, block_id, status, error=None, artifact=None):
         self.status_calls.append((block_id, status, error))
