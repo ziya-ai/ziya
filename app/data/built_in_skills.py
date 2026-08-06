@@ -92,6 +92,44 @@ Take time to build understanding, not just provide solutions.''',
         'color': '#8b5cf6',
     },
     {
+        'id': 'continuous_documentation',
+        'name': 'Continuous Documentation',
+        'description': 'Keep Docs/ and CHANGELOG.md current as changes land',
+        'visibility': USER_SELECTABLE,
+        'keywords': ['docs', 'documentation', 'changelog', 'readme', 'writeup'],
+        'prompt': '''Keep the files in Docs/ up to date and organized after changes are
+applied. They should be readable by users to help them understand the
+capabilities and operation of the system.
+
+- Keep docs concise. Avoid creating new documentation files for a particular
+  enhancement unless a genuinely new CATEGORY of documentation is required.
+- When adding changelog entries, ALWAYS add them to the ## [Unreleased]
+  section at the top of CHANGELOG.md — never to a numbered version section,
+  which is already published.
+- The version in pyproject.toml is the LAST PUBLISHED version, not the next
+  one. Do not bump it to describe unreleased work.''',
+        'color': '#0891b2',
+    },
+    {
+        'id': 'test_everything',
+        'name': 'Tests for Everything',
+        'description': 'Test every feature added, enhanced, or repaired',
+        'visibility': USER_SELECTABLE,
+        'keywords': ['test', 'tests', 'coverage', 'pytest', 'jest', 'regression'],
+        'prompt': '''Create and validate test cases for every feature and function that
+is added, enhanced, or repaired.
+
+- Periodically evaluate the test architecture as a whole to ensure it stays
+  organized and usable and that coverage is maintained.
+- Do NOT run tests against a diff patch you have no evidence has been
+  applied. Providing a diff is not evidence that it was applied; only
+  directly writing the file, or observing the change already present in the
+  file content, is sufficient.
+- Do NOT mark a test that demonstrates a legitimate bug as expected-to-fail.
+  A failing test reflecting a real defect is a finding, not a nuisance.''',
+        'color': '#65a30d',
+    },
+    {
         'id': 'web_research',
         'name': 'Web Research',
         'description': 'Ground responses in current web information with citations',
@@ -248,7 +286,8 @@ Rules:
                      'batch', 'iteration', 'explore', 'sweep', 'schedule',
                      'recurring', 'cron', 'daily', 'every hour', 'stages',
                      'multi-step', 'multi-stage', 'pipeline', 'state', 'artifact',
-                     'variables', 'given', 'assume'],
+                     'variables', 'given', 'assume', 'call', 'reuse',
+                     'subtask', 'invoke', 'another card', 'named task'],
         'prompt': '''You can author a **Task Card** — a small block tree the user launches
 from the conversation.  A task card runs inline in the chat and reports live
 status; the user can cancel, inspect, and query it.  Use a task card when:
@@ -414,6 +453,52 @@ known state rather than drifting.
 }
 ```
 
+**Call** — invoke a SEPARATELY-DEFINED unit of work by name: another task
+card in this project, or a named file task from `tasks.yaml`.  A leaf (empty
+`body`); the callee's tree is resolved at run time and runs inline in this
+run, and the callee's artifact becomes the Call block's artifact, so a later
+sibling sees it through `{{previous_sibling}}` exactly as if the work had
+been written here.
+
+Use a Call — rather than copying the callee's blocks into this card — when
+the same work is already defined elsewhere and should stay defined in ONE
+place.  Editing the callee then changes every caller, which a copied
+subtree cannot do.  Copy instead when the work only *resembles* the callee
+and will diverge.
+
+```
+{
+  "block_type": "call",
+  "name": "Run the shared test sweep",
+  "call_target": "Full test sweep",
+  "call_target_kind": "card"
+}
+```
+
+`call_target_kind` is `"card"` (the default, omit it) or `"file_task"`.  A
+card target is addressed by card id or by card name (case-insensitive); a
+file task by its name in `tasks.yaml`:
+
+```
+{
+  "block_type": "call",
+  "name": "Cut the release",
+  "call_target": "release",
+  "call_target_kind": "file_task"
+}
+```
+
+Two constraints to author within:
+- **Permissions do not cross the call.** The callee runs with its OWN
+  approved scope; the caller's grants are not visible to it, and the
+  caller cannot lend it permissions.  Do not put a scope on the Call block
+  expecting the callee to receive it — grant what the callee needs on the
+  callee itself.
+- **Calls cannot be parameterized yet**, so a callee must already be
+  self-sufficient.  The only things that reach it are run-scoped State
+  givens and prior-sibling results.  A callee needing per-call inputs is a
+  sign the work belongs inline in this card instead.
+
 ## Propagation (templating)
 
 A block's `instructions` may reference prior results via `{{ }}` templates,
@@ -481,6 +566,31 @@ A task declares one by calling the `emit_artifact` tool, which accepts:
   evidence is preserved as the artifact instead — for a broken spec the
   failure IS the output worth keeping.
 
+**`render_diagram` vs `emit_artifact` — look vs keep.** These are not
+interchangeable and their image lifetimes differ:
+
+- `render_diagram` is a SCRATCH LOOK. It returns the image so you can
+  judge it. That image stays in your context for a short window of tool
+  iterations and is then replaced by its text summary, because a task
+  card run is one turn made of many iterations and re-sending every
+  render forever would exhaust the context.
+- `emit_artifact(diagram=...)` is the DURABLE record. Pixels are frozen
+  with the run and survive indefinitely.
+
+When a render is elided you will see a placeholder in place of the
+image. It means only that the pixels were dropped to save context — you
+DID see that image, and a judgement you made while it was in view was
+based on direct observation and still stands. Do not retract or
+re-litigate a visual finding because the image is no longer displayed.
+
+The placeholder carries a handle like `img-3f9a1c04`. To see those exact
+pixels again — not a re-render — call `recall_image(handle=...)`. Use it
+when you need NEW detail from an earlier render or want to compare it
+against a current one, never merely to reassure yourself about a
+conclusion you already reached. If you know up front that you will be
+comparing successive attempts, pass `retain="turn"` to `render_diagram`
+so several stay in view at once and no recall is needed.
+
 **Granting the tool.** `tools` is a strict allowlist: a Task that lists
 any tools must list `emit_artifact` explicitly, or the task will be told
 to declare artifacts and have no tool to do it with. Tasks that omit
@@ -516,6 +626,48 @@ For before/after work, emit both halves into one `group` with distinct
 group=\\"issue-<N>\\": the failing spec with label=\\"broken\\" and the
 fixed one with label=\\"fixed\\", each passing diagram={type, definition}
 so the rendered form is frozen with the run."
+```
+
+## Carrying state between iterations (the run blackboard)
+
+A loop iteration can only see the PREVIOUS iteration's summary via
+`{{previous}}`. It cannot read an earlier iteration's artifacts. So a
+backlog established in an early stage is invisible three iterations
+later, and each iteration re-derives what it should have been told —
+re-running builds, re-checking deploy hashes, re-litigating a defect an
+earlier iteration already fixed.
+
+Fix this with a plain file. `.ziya/` is writable by default, no scope
+grant needed. Give the loop a file and instruct every iteration to read
+it first and update it last:
+
+```
+"instructions": "FIRST: file_read .ziya/<card>-state.json (it may not
+exist yet — treat a missing file as an empty backlog). It holds
+{\\"backlog\\": [...], \\"done\\": [...], \\"facts\\": {...}}. Work the
+highest-priority item in backlog that is NOT in done. LAST: file_write
+the file back with your item moved to done, any newly discovered defect
+appended to backlog, and any durable fact (a deployed bundle hash, a
+verified path) recorded in facts so the next iteration does not have to
+re-derive it."
+```
+
+This is what keeps a long loop from re-treading ground: the file is the
+iteration-to-iteration memory that `{{previous}}` cannot be.
+
+## Long-running commands
+
+If any task runs a command that legitimately takes minutes — a
+production frontend build, a full test sweep — set
+`scope.shell_timeout_secs` on that task (or on a container, since it
+merges as a MAXIMUM). The base ceiling is 300s; a command that exceeds
+it is killed mid-flight and the failure surfaces as an opaque timeout
+that the model will usually retry, burning the same minutes again.
+Declaring the need once in scope is far more reliable than hoping the
+model passes `timeout` on every invocation:
+
+```
+"scope": {"shell_commands": ["npm"], "shell_timeout_secs": 1200}
 ```
 
 ## Output format
@@ -678,6 +830,10 @@ for math:
 Duration codes: `w` whole, `h` half, `q` quarter, `8` eighth, `16` sixteenth.
 Append `.` for dotted (`q.`). Write the pitch as letter + optional accidental
  + octave with NO slash: `C4` is middle C, `C#5` and `Bb4` carry accidentals.
+The duration MUST be one of those codes -- any other value (a bare number like
+`4`, an out-of-range code like `999`, or a huge integer) is treated as an error:
+the fenced block falls back to a quarter note with a console warning, and the
+inline form declines to render, rather than freezing the staff.
 
 The inline form supports notes only -- there is no annotation syntax. Text
 above or below a note requires the fenced block below, whose `annotations`
@@ -798,6 +954,105 @@ warned about rather than guessed at.
 sound; a slur groups DIFFERENT pitches into a phrase.  They look similar but
 mean different things, so pick by meaning, not appearance.
 
+## Tuplets (triplets, quintuplets, ...)
+
+A tuplet fits an unusual number of notes into a beat -- three eighths in the
+time of two (an eighth triplet), five in the time of four, and so on.  There is
+no duration code for "an eighth of a triplet", so write the notes at their FACE
+value and add a `tuplets` span; the renderer both draws the number bracket and
+rescales the notes so the group occupies the right amount of time.
+
+```
+{
+  "type": "music", "timeSignature": "4/4", "autoBeam": true,
+  "notes": [
+    {"keys": ["c/5"], "duration": "8"},
+    {"keys": ["d/5"], "duration": "8"},
+    {"keys": ["e/5"], "duration": "8"},
+    {"keys": ["f/5"], "duration": "q"},
+    {"keys": ["g/5"], "duration": "q"},
+    {"keys": ["a/5"], "duration": "q"}
+  ],
+  "tuplets": [{"from": 0, "to": 2}]
+}
+```
+
+`from`/`to` are 0-based indices into the note list (counting rests), inclusive,
+same as `slurs` and `beams`.  A bare span is a triplet: `num` defaults to the
+number of notes and `inSpaceOf` to 2.  For other tuplets give both:
+
+```
+"tuplets": [{"from": 0, "to": 4, "num": 5, "inSpaceOf": 4}]   // quintuplet
+```
+
+`ratioed: true` prints the full "5:4" instead of just "5"; `bracketed` forces
+the enclosing bracket on or off (default: on for unbeamed notes, off for
+beamed); `position` is `above` (default) or `below`.  Beam a tuplet with
+`autoBeam` or an explicit `beams` span exactly as you would any other notes --
+tuplets and beams are independent.
+
+## Grace notes (appoggiatura, acciaccatura, ornamental runs)
+
+Attach `graceNotes` to any note for small notes played BEFORE it.  They carry
+no beat time, so adding them never shifts where the main notes fall.  Each
+grace note gives `keys` and `duration` just like a normal note; set
+`slash: true` for the acciaccatura (the "crushed" grace, drawn with a slash
+through its stem), and leave it off for the appoggiatura.
+
+```music
+{
+  "type": "music", "clef": "treble", "timeSignature": "4/4",
+  "notes": [
+    {"keys": ["c/5"], "duration": "q", "graceNotes": [{"keys": ["b/4"], "duration": "8"}]},
+    {"keys": ["d/5"], "duration": "q", "graceNotes": [{"keys": ["e/5"], "duration": "8", "slash": true}]},
+    {"keys": ["e/5"], "duration": "q", "graceNotes": [{"keys": ["f/5"], "duration": "16"}, {"keys": ["g/5"], "duration": "16"}]},
+    {"keys": ["c/5"], "duration": "q"}
+  ]
+}
+```
+
+Give two or more grace notes to write an ornamental run; they are beamed
+together automatically.  A grace chord uses several `keys` in one grace note,
+exactly like a normal chord.
+
+## Lyrics (vocal underlay)
+
+Attach a `lyric` to any sounding note to underlay a sung syllable beneath it.
+A bare string is the common case; the object form adds verses, word hyphens
+and melisma extenders:
+
+```
+"notes": [
+  {"keys": ["c/5"], "duration": "q", "lyric": {"text": "Twin", "syllabic": "begin"}},
+  {"keys": ["c/5"], "duration": "q", "lyric": {"text": "kle", "syllabic": "end"}},
+  {"keys": ["g/5"], "duration": "q", "lyric": {"text": "lit", "syllabic": "begin"}},
+  {"keys": ["g/5"], "duration": "q", "lyric": {"text": "tle", "syllabic": "end"}}
+]
+```
+
+One syllable per note.  The renderer aligns every syllable on a single
+baseline below the staff (below the dynamics band when a `dynamic` is present),
+so the underlay reads as one line across the system.
+
+Split a word across notes with `syllabic`: `begin` on the first syllable,
+`middle` on any interior ones, `end` on the last.  `begin`/`middle` draw the
+connecting hyphen ("Twin-kle"); `single` (the default) and `end` do not — use
+`single` for a whole word sung on one note, and never leave a trailing hyphen
+on the last syllable of a word.
+
+For a word held across several notes (a melisma), set `"extend": true` on the
+syllable to draw the held extender line to the next note:
+
+```
+{"keys": ["a/5"], "duration": "8", "lyric": {"text": "joy", "extend": true}}
+```
+
+Multiple verses stack: put `"verse": 2` (3, ...) on the second verse's
+syllables and they render on their own line below the first.  Hyphens only
+join syllables within the SAME verse.
+
+Do not put a `lyric` on a rest — attach syllables to the sounding notes.
+
 ## Fingering and string numbers (per note)
 
 ```
@@ -859,6 +1114,30 @@ Pair it with a `trill` ornament on the first note for a full `tr~~~~~`:
 `sawtooth`.  A per-note `trill` ornament marks ONE note; a trill line spans a
 range — use both together, not one instead of the other.
 
+## Title block (title, subtitle, composer, lyricist)
+
+Give a complete score a published-style title block with four spec-level
+fields.  `title` is centred above the system in large type; `subtitle` is a
+smaller centred line beneath it; `composer` is right-aligned and `lyricist`
+left-aligned on a credits line below the title.  Any subset may be given —
+supply only `title`, or a title with just a composer.
+
+```
+{
+  "type": "music", "clef": "treble", "keySignature": "D", "timeSignature": "4/4",
+  "title": "Ode to Joy",
+  "subtitle": "Theme from Symphony No. 9",
+  "composer": "Ludwig van Beethoven",
+  "lyricist": "Friedrich Schiller",
+  "notes": [ ... ]
+}
+```
+
+These belong on the top-level spec, not on a staff or a note.  On a grand
+staff the block spans the whole system.  The renderer reserves the headroom
+and pushes the first system down, so the title never collides with the staff,
+tempo mark or brackets above it.
+
 ## Structural markings (spec level, not per note)
 
 ```
@@ -868,7 +1147,7 @@ range — use both together, not one instead of the other.
   "mark": "to-coda",              // navigation mark, see list below
   "beginBar": "repeat-begin",     // opening barline
   "endBar": "repeat-end",         // closing barline
-  "volta": {"type": "begin", "label": "1."},
+  "volta": {"type": "begin-end", "label": "1.", "measures": [2, 2]},
   "measureNumber": 12,
   "section": "B",                  // rehearsal-mark style label
   "notes": [ ... ]
@@ -876,8 +1155,20 @@ range — use both together, not one instead of the other.
 ```
 
 `tempo` renders "Allegro (♩ = 132)".  Give `name` alone for a word-only
-marking, or `duration` + `bpm` alone for a metronome mark; `dots` puts
+marking, or `bpm` alone (`{"bpm": 120}`) for a plain "♩ = 120" -- the beat
+unit defaults to a quarter, so `duration` is only needed for a non-quarter
+metronome mark (e.g. `{"duration": "8", "bpm": 160}`); `dots` puts
 augmentation dots on the beat unit.
+
+A `volta` is a repeat-ending bracket ("1.", "2.").  It is scoped to the
+measures of ONE ending, not the whole line, so anchor it with a 1-based
+inclusive measure range: `"volta": {"type": "begin-end", "label": "1.",
+"measures": [2, 2]}` draws the "1." bracket over measure 2 only.  `type`
+chooses the end-hooks: `begin` (left hook, ending continues), `end` (right
+hook), `begin-end` (both — a fully-enclosed ending), `mid` (no hooks).  If
+`measures` is omitted the bracket falls on the measure carrying a
+`repeat-end` barline, or the last measure.  For a 1st AND 2nd ending, anchor
+each with its own range over its own bars.
 
 ## Measures and barlines
 
@@ -934,10 +1225,60 @@ tie may cross a barline.
 Prefer a flat `notes` list for a single bar; reach for `measures` as soon as
 there are two.
 
+### Long scores wrap onto several systems
+
+A score with many measures no longer stretches into one ever-wider line.  Once
+a system exceeds a width budget the renderer starts a new one below it,
+re-printing clef, key and time signature exactly as a printed score does at a
+line break.  Write the whole movement as ONE spec and let it wrap:
+
+```
+{
+  "type": "music", "timeSignature": "4/4", "keySignature": "G",
+  "measures": [ ...as many bars as the music needs... ]
+}
+```
+
+Controls, all optional:
+
+- `maxSystemWidth` — px budget for one system (default 1200).  Larger fits
+  more bars per line at smaller scale.  The budget is spent by note DURATION,
+  not note count: a bar of beamed 16ths or 32nds packs tight and several such
+  dense bars share one line, just as they do in engraved scores — you do not
+  need a wider budget or manual breaks to keep fast passagework from wrapping
+  one-bar-per-line.
+- `systemSpacing` — px gap between stacked systems (default 36).
+- `"systemBreak": true` on a measure — force a new system there, for a break
+  at a musical seam the width budget would not have chosen.
+- `width` on the spec — pins the canvas and turns wrapping OFF entirely, on
+  the basis that an explicit width is you choosing the layout.  A pinned
+  width that is too narrow crowds the notes rather than breaking the line.
+
+One real constraint: a span cannot cross a system break.  `slurs`, `ties`,
+`glissandos`, `hairpins`, `brackets`, `trillLines`, `tuplets` and explicit
+`beams` are drawn between two notes on the SAME line — the underlying
+renderer has no way to split one into two partial arcs, and given endpoints on
+different systems it would draw a single arc sprawling down the page.  Such a
+span is skipped and reported rather than drawn wrongly, so keep phrase marks
+inside a line or move the break (`systemBreak`) to suit the phrasing.
+
+On a multi-staff score, give each staff a `shortName` alongside `name`:
+the full name is printed beside the first system and the short form beside
+each continuation system, as published scores do.
+
+```
+"staves": [
+  {"clef": "treble", "name": "Flute", "shortName": "Fl.", "measures": [...]},
+  {"clef": "bass",   "name": "Cello", "shortName": "Vc.", "measures": [...]}
+]
+```
+
 Navigation marks (`mark`): `coda segno fine to-coda da-capo
 da-capo-al-coda da-capo-al-fine dal-segno dal-segno-al-coda
 dal-segno-al-fine`, plus `coda-right` / `segno-right` to place the symbol at
-the right of the measure instead of the left.  Only ONE mark per spec.
+the right of the measure instead of the left.  Only ONE mark per spec.  A
+`tempo` and a `mark` may be given together: the tempo is lifted onto its own
+row above the navigation mark so the two never overprint.
 
 Fermata is an ARTICULATION, not a structural mark: put `fermata-above` in a
 note's `articulations`.
@@ -963,6 +1304,24 @@ Span indices are per staff: a slur in the bass staff indexes the bass
 staff's own `notes`.  Omitting `clef` defaults the first staff to treble and
 the rest to bass, which is the common piano case.
 
+Give a staff a `name` to print its instrument / part label in the left gutter
+— essential for any ensemble score, where several staves are otherwise
+indistinguishable.  The label is right-aligned before the clef and vertically
+centred on the staff; the system insets automatically to make room, so a long
+name does not run off the edge.  For a single-staff spec put `name` at the top
+level instead (it falls through to the lone staff like `clef` does).
+
+```
+{
+  "type": "music", "timeSignature": "4/4",
+  "staves": [
+    {"name": "Violin", "clef": "treble", "notes": [ ... ]},
+    {"name": "Viola",  "clef": "alto",   "notes": [ ... ]},
+    {"name": "Cello",  "clef": "bass",   "notes": [ ... ]}
+  ]
+}
+```
+
 Harp pedal diagrams: attach a `harpPedal` string to any note using LilyPond's
 compact encoding — `^` flat, `-` natural, `v` sharp, one character per pedal
 in order D C B | E F G A (the `|` divides left-foot from right-foot pedals).
@@ -976,5 +1335,159 @@ Guidance:
 - Don't fabricate `harpPedal` strings unless the user's context specifies
   actual pedal positions; it's a niche feature, not a default decoration.''',
         'color': '#9333ea',
+    },
+    {
+        'id': 'circuit_diagrams',
+        'visibility': MODEL_DISCOVERABLE,
+        'catalog_description': 'Render circuit / RF / signal-chain schematics with circuitikz (server-side LaTeX)',
+        'name': 'Circuit Diagrams',
+        'description': 'Generate electronic, RF and signal-chain schematics using circuitikz',
+        'keywords': ['circuit', 'schematic', 'circuitikz', 'rf', 'analog', 'transceiver',
+                     'mixer', 'amplifier', 'filter', 'oscillator', 'antenna', 'signal-chain',
+                     'heterodyne', 'superhet', 'adc', 'dac', 'transistor', 'opamp'],
+        'prompt': '''Render circuits with a ```circuitikz``` fenced block.  Compiled by a local
+TeX install; the body is auto-wrapped in `circuitikz` (don't add
+\\documentclass, \\usepackage or \\begin{document} -- they are rejected).
+
+THE ONE RULE THAT CAUSES MOST FAILURES
+--------------------------------------
+circuitikz has two different kinds of component and they are NOT
+interchangeable.  Using the wrong form fails SILENTLY -- the label renders and
+the symbol does not, so you get a valid-looking diagram with invisible parts.
+
+  BIPOLES  -> two terminals, drawn ALONG a path:  \\draw (a) to[amp] (b);
+  SHAPES   -> multi-terminal, placed as a NODE:   \\node[mixer] (m) at (x,y){};
+
+Bipoles (use `to[...]`):
+  passive    R, C, L, D, switch, battery1, V, I, piezoelectric
+  RF/signal  amp, iamp, vamp, bandpass, bandstop, lowpass, highpass, allpass,
+             adc, dac, dsp, fft, detector, phaseshifter, vco,
+             piattenuator, tattenuator, biast, fiber
+  Label a bipole with `l=` (label above/left) or `l_=` (below/right):
+      \\draw (0,0) to[amp,l=$LNA$] (2,0) to[bandpass,l_={IF BPF}] (4,0);
+
+Shapes (use `\\node[...]`):
+  mixer, adder, oscillator, circulator, wilkinson, splitter, coupler, gyrator,
+  antenna, txantenna, rxantenna, bareantenna, dinantenna,
+  transistors (nmos, pmos, npn, pnp, njfet, hemt...), logic gates, ground
+
+ANCHORS (getting these wrong puts wires on the wrong side)
+----------------------------------------------------------
+  mixer / circulator / oscillator -- numbered ports, counter-clockwise from west:
+      .1 = west (left)   .2 = south (bottom)   .3 = east (right)   .4 = north (top)
+    mixer:      .1 RF in, .3 IF out, .2/.4 LO injection
+    circulator: circulates .1 -> .3 -> .2 (clockwise).  For a T/R duplexer:
+                antenna on .1, receiver on .3, transmitter on .2
+  antenna     -- feed point is `.south`, NOT `.center`:
+                    \\node[antenna,anchor=south] (a) at (0,0){};
+                    \\draw (a.south) -- (next);
+  ground      -- a node placed at the end of a wire: `-- (0,-2) node[ground]{};`
+
+DIRECTIONAL SYMBOLS MIRROR -- draw them left-to-right
+-----------------------------------------------------
+A bipole whose glyph contains lettering or an arrow is drawn in the direction
+of its path, so drawing right-to-left MIRRORS it.  Verified: `to[dac]` drawn
+right-to-left renders the letters as "A/D", i.e. it silently becomes an ADC
+symbol -- a factually wrong diagram that compiles cleanly.
+
+For a right-to-left signal chain (a transmit path under a receive path), draw
+that one segment left-to-right and let the arrows convey flow:
+    \\draw (16.7,-2.5) to[dac,l={DAC}] (18.7,-2.5);   % correct D/A glyph
+Always label ADC/DAC explicitly so orientation is never the only cue.
+
+ROUTING
+-------
+Use `|-` / `-|` for orthogonal (Manhattan) routing.  A plain `--` between
+points that differ in both x and y draws a DIAGONAL, which looks wrong on a
+schematic:
+    \\draw[-{Latex[length=2mm]}] (lo.4) |- (7.3,1.5) -| (m.2);   % right
+    \\draw (lo.4) -- (m.2);                                      % diagonal
+
+Arrowheads: `\\draw[->]` or `\\draw[-{Latex[length=2mm]}]` for a filled head.
+
+CROSSINGS: EVERY INTERSECTION MUST SAY WHETHER IT CONNECTS
+----------------------------------------------------------
+Two wires meeting at a point is ambiguous unless marked, and on a schematic
+that ambiguity changes what the circuit DOES.  Mark every intersection:
+
+  CONNECTED     -> `\\node[circ] at (x,y){};`   a filled junction dot
+  NOT CONNECTED -> a hop (bridge/bypass) in one of the two wires
+
+Draw the hop as an ARC inside the travelling wire's own `\\draw`.  The radius
+0.3 matches the default component scale:
+
+    % horizontal traveller hopping a vertical wire at x=xc
+    \\draw (x0,y) -- (xc-0.3,y) arc (180:0:0.3) -- (x1,y);
+    % vertical traveller hopping a horizontal wire at y=yc
+    \\draw (x,y0) -- (x,yc-0.3) arc (270:90:0.3) -- (x,y1);
+
+Arcs chain, so one traveller can hop a whole bus in a single `\\draw`:
+    \\draw (0,0) -- (0.7,0) arc (180:0:0.3) -- (1.7,0) arc (180:0:0.3) -- (3,0);
+
+TRAP: `\\node[jump crossing]` is a DECORATION, not a cut.  It paints a hop
+glyph on top of whatever is already there -- if you drew the crossed wire with
+an ordinary `\\draw`, that wire is still painted straight through the gap and
+the crossing stays just as ambiguous as before.  Verified: a `\\draw (0,-1) --
+(0,1)` with a `jump crossing` node on top renders the vertical line
+continuously THROUGH the arc.  To use the shape you must break the wire
+yourself:
+    \\draw (0,-1) -- (0,-0.3);          % stop short
+    \\node[jump crossing] at (0,0){};
+    \\draw (0,0.3) -- (0,1);            % resume past it
+Three statements and two magic numbers versus one `\\draw` for the arc form,
+which is why the arc is preferred.  (`plain crossing` draws no hop at all --
+it is the deliberately-unmarked case, not a bridge.)
+
+T-junctions (three wires, an L or T shape) cannot mean anything but a
+connection, so a dot there is technically redundant -- but add it anyway.  Once
+EVERY intersection carries either a dot or a hop, a bare crossing is visibly a
+mistake instead of something the reader has to reason about.  Two shorthands
+place a dot without a separate node:
+    \\draw (a) to[C,*-] (b);      % `*` = dot at that end of a bipole
+    \\draw (a) to[short,-*] (b);
+
+SIZING AND LABELS
+-----------------
+    \\ctikzset{RF/scale=0.8}                                    % shape size
+    \\tikzset{every node/.append style={font=\\scriptsize}}      % label size
+`siunitx` is loaded, so `\\SI{4.7}{\\kilo\\ohm}` works in labels.
+
+Component aliases already provided: `quartz`, `crystal` and `xtal` all resolve
+to circuitikz's real `piezoelectric` key.
+
+EXAMPLE -- superheterodyne receiver front end
+```circuitikz
+\\ctikzset{RF/scale=0.8}
+\\tikzset{every node/.append style={font=\\scriptsize}}
+\\node[antenna,anchor=south] (ant) at (0,0) {};
+\\draw (ant.south) -- (1,0);
+\\draw (1,0) to[amp,l={LNA}] (3,0) to[bandpass,l={image BPF}] (5,0);
+\\node[mixer] (m) at (6.3,0) {};
+\\draw (5,0) -- (m.1);
+\\node[oscillator] (lo) at (6.3,-2) {};
+\\node[below=3pt] at (lo.south) {LO};
+\\draw[-{Latex[length=2mm]}] (lo.4) -- (m.2);
+\\draw (m.3) -- (7.6,0);
+\\draw (7.6,0) to[bandpass,l={IF BPF}] (9.6,0) to[amp,l={IF amp}] (11.6,0)
+      to[adc,l={ADC}] (13.6,0);
+```
+
+Guidance:
+- Dark mode is handled automatically -- black TeX ink is recoloured on the
+  client.  Don't hand-colour components to compensate; if you use colour, use
+  it to carry meaning (distinguishing signal paths), and it will be lightened
+  for contrast with its hue preserved.
+- Plan the layout so wires cross as little as possible, then mark the crossings
+  that remain.  A diagram needing many hops usually wants a different layout --
+  moving a component or routing a bus around the outside is better than a row
+  of bridges.
+- Prefer `to[...]` bipoles for anything in a signal chain: the label placement
+  is automatic and the wire routing follows the path.
+- If a symbol renders as a bare label with no glyph, you almost certainly used
+  a bipole as a `\\node` or a shape in a `to[...]`.  Check the lists above
+  before assuming the name is wrong.
+- For a schematic that is mostly boxes and arrows rather than real components,
+  Mermaid or Graphviz is a better fit than circuitikz.''',
+        'color': '#14b8a6',
     },
 ]
