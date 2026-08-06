@@ -28,7 +28,10 @@ def _scope_dict() -> dict:
     return {
         "shell_commands": ["jq", "perl"],
         "paths": [
-            {"path": "/tmp/out", "write": True},
+            # NOT under /tmp: the safe-write floor includes "/tmp/", so a
+            # writable grant there is subtracted as a no-op and produces
+            # no writable_paths key at all.
+            {"path": "out/", "write": True},
             {"path": "/etc", "write": False},
         ],
     }
@@ -77,7 +80,7 @@ def test_resolve_staged_block_returns_block_like(staged_on_disk):
 
     escalation = sc.task_escalation_block(block.scope)
     assert escalation["shell_commands"] == ["jq", "perl"]
-    assert escalation["writable_paths"] == ["/tmp/out"]  # /etc (write=False) excluded
+    assert escalation["writable_paths"] == ["out/"]  # /etc (write=False) excluded
 
     h = sc.task_scope_hash(block.scope)
     assert isinstance(h, str) and len(h) == 64

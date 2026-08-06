@@ -297,7 +297,11 @@ def test_task_widened_after_signing_is_denied(task_env):
                 {"shell_commands": ["make deploy"], "paths": []})
     ziya_approve.main(["--project", "p1", "--task", "c1", "--block", "b-step1", "--yes"])
     # the record approved {make deploy}; a widened scope must NOT be authorized
-    widened = TaskScope(shell_commands=["make deploy", "curl"])
+    # ``wget`` not ``curl``: the floor subtraction in
+    # task_escalation_block drops in-allowlist commands, so adding
+    # ``curl`` does not widen the hash at all and the scope still
+    # matches the signed record — the denial under test never fires.
+    widened = TaskScope(shell_commands=["make deploy", "wget"])
     out = sa.authorize_scope("b-step1", widened)
     assert out is not widened
     assert list(getattr(out, "shell_commands", [])) == []

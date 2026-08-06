@@ -142,10 +142,20 @@ class TestCmdTask:
     """Test the cmd_task command handler."""
 
     def _make_args(self, **kwargs):
+        # MagicMock auto-creates any attribute as a truthy Mock, so every
+        # flag cmd_task reads MUST be set explicitly.  cmd_task checks the
+        # task-CARD flags (list_cards / card) BEFORE the file-task ones, so
+        # leaving them unset sent every test down the card path and out via
+        # sys.exit — the failure looked like a broken file-task runner but
+        # was an unset mock attribute.  spec_set would be a stronger fix;
+        # this stays with MagicMock to match the rest of the file.
         args = MagicMock()
         args.task_name = kwargs.get("task_name", None)
         args.list_tasks = kwargs.get("list_tasks", False)
         args.show = kwargs.get("show", None)
+        # Task-card surface (checked first in cmd_task).
+        args.list_cards = kwargs.get("list_cards", False)
+        args.card = kwargs.get("card", None)
         args.no_stream = kwargs.get("no_stream", False)
         args.profile = kwargs.get("profile", None)
         args.debug = False

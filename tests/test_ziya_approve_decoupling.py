@@ -45,7 +45,11 @@ def _card_dict(card_id: str = "card-1") -> dict:
                     "scope": {
                         "shell_commands": ["jq", "perl"],
                         "paths": [
-                            {"path": "/tmp/out", "write": True},
+                            # NOT under /tmp: task_escalation_block subtracts
+                            # the safe-write floor, which includes "/tmp/", so
+                            # a writable grant there is a no-op and yields no
+                            # writable_paths key for this test to assert on.
+                            {"path": "out/", "write": True},
                             {"path": "/etc", "write": False},
                         ],
                     },
@@ -127,7 +131,7 @@ def test_resolved_card_roundtrips_through_scope_hash(card_on_disk):
     escalation = sc.task_escalation_block(block.scope)
     assert escalation  # non-empty: shell_commands + one writable path
     assert escalation["shell_commands"] == ["jq", "perl"]
-    assert escalation["writable_paths"] == ["/tmp/out"]  # /etc (write=False) excluded
+    assert escalation["writable_paths"] == ["out/"]  # /etc (write=False) excluded
 
     h = sc.task_scope_hash(block.scope)
     assert isinstance(h, str) and len(h) == 64  # sha256 hex
