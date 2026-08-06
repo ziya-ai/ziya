@@ -79,6 +79,37 @@ export function resolveNetworkSpec(spec: any): any {
 export const NETWORK_MAX_NODE_SIZE = 1000;
 /** Max link stroke width; guards huge/negative `weight`. */
 export const NETWORK_MAX_LINK_WIDTH = 40;
+/** Default node radius when `size` is missing or degenerate. */
+export const NETWORK_DEFAULT_NODE_SIZE = 10;
+/**
+ * Fraction of the smaller canvas dimension a single node radius may occupy.
+ * A node radius must stay a small fraction of the canvas, otherwise a huge
+ * (but finite) clamped size still paints a circle that covers the whole
+ * viewport — the "flat teal rectangle" total-data-loss anomaly (Issue 21):
+ * `NETWORK_MAX_NODE_SIZE` (1000) is >> a 600x400 canvas, so a clamped hub
+ * (1e12 -> 1000) drew a radius-1000 circle over everything, hiding all other
+ * nodes/edges. The cap must therefore be derived from the canvas, not a
+ * standalone constant.
+ */
+export const NETWORK_NODE_SIZE_CANVAS_FRACTION = 0.15;
+
+/**
+ * Compute the effective per-node radius cap for a given canvas.
+ *
+ * Returns a value that is BOTH <= `NETWORK_MAX_NODE_SIZE` (the absolute guard)
+ * and <= a small fraction of the smaller canvas dimension, so a single node can
+ * never cover the whole viewport. Falls back to a sane floor when the canvas is
+ * missing/degenerate. Pure/DOM-free for unit testing.
+ *
+ * Exported for regression testing.
+ */
+export function networkNodeSizeCap(width?: number, height?: number): number {
+    const w = Number.isFinite(Number(width)) && Number(width) > 0 ? Number(width) : 600;
+    const h = Number.isFinite(Number(height)) && Number(height) > 0 ? Number(height) : 400;
+    const canvasCap = Math.min(w, h) * NETWORK_NODE_SIZE_CANVAS_FRACTION;
+    // Never below the default radius, never above the absolute guard.
+    return Math.max(NETWORK_DEFAULT_NODE_SIZE, Math.min(NETWORK_MAX_NODE_SIZE, canvasCap));
+}
 
 /**
  * Coerce a raw network graph into safe, renderable arrays:
@@ -88,18 +119,29 @@ export const NETWORK_MAX_LINK_WIDTH = 40;
  *    (an unresolved endpoint would otherwise draw a line to (0,0) or crash a
  *    force lookup — mirrors the Issue-3 forceLink dangling-edge filter)
  *  - clamps degenerate link `weight` used for stroke-width
+ * `maxNodeSize` is the effective node-radius cap (defaults to the absolute
+ * guard, but callers should pass a canvas-relative cap from
+ * `networkNodeSizeCap()` so a huge finite size cannot cover the viewport).
  * Returns new arrays; does not mutate input. Pure/DOM-free for unit testing.
  *
  * Exported for regression testing.
  */
-export function sanitizeNetworkGraph(rawNodes: any[], rawLinks: any[]): { nodes: any[]; links: any[] } {
+export function sanitizeNetworkGraph(
+    rawNodes: any[],
+    rawLinks: any[],
+    maxNodeSize: number = NETWORK_MAX_NODE_SIZE
+): { nodes: any[]; links: any[] } {
+    // Guard the cap itself: non-finite/<=0 collapses to the absolute guard.
+    const nodeCap = Number.isFinite(maxNodeSize) && maxNodeSize > 0
+        ? Math.min(maxNodeSize, NETWORK_MAX_NODE_SIZE)
+        : NETWORK_MAX_NODE_SIZE;
     const nodes = (Array.isArray(rawNodes) ? rawNodes : []).map((n: any) => {
         const out = { ...n };
         const size = Number(n?.size);
         if (!Number.isFinite(size) || size <= 0) {
             out.size = undefined; // fall back to the render default (10)
-        } else if (size > NETWORK_MAX_NODE_SIZE) {
-            out.size = NETWORK_MAX_NODE_SIZE;
+        } else if (size > nodeCap) {
+            out.size = nodeCap;
         } else {
             out.size = size;
         }
@@ -169,9 +211,13 @@ export const networkDiagramPlugin: D3RenderPlugin = {
         const rawNodes = (resolved as any).nodes || (resolved as any).data?.nodes || [];
         const rawLinks = (resolved as any).links || (resolved as any).edges
             || (resolved as any).data?.links || (resolved as any).data?.edges || [];
-        const { nodes: safeNodes, links: safeLinks } = sanitizeNetworkGraph(rawNodes, rawLinks);
         const width = (resolved as any).width || 600;
         const height = (resolved as any).height || 400;
+        // Cap node radius relative to the canvas so a single huge (but finite,
+        // post-clamp) node cannot paint a circle over the whole viewport
+        // (Issue 21: hub 1e12 -> radius-1000 circle filled a 600x400 canvas).
+        const { nodes: safeNodes, links: safeLinks } =
+            sanitizeNetworkGraph(rawNodes, rawLinks, networkNodeSizeCap(width, height));
 
         console.debug('Network diagram render:', {
             nodeCount: safeNodes.length,
