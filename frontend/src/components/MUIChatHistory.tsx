@@ -779,6 +779,19 @@ function flattenVisibleNodes(
 
 const VIRTUAL_ROW_HEIGHT = 36;
 
+/**
+ * Stable element type for the virtualized tree's rows.
+ *
+ * react-window renders rows via createElement(children, ...), so passing an
+ * inline arrow as the children prop gives every render a NEW component type
+ * and React unmounts/remounts every visible row.  That reset each
+ * ChatTreeItem's local hover / action-menu-open state, so an open
+ * conversation menu closed on every streamed chunk and tool-call boundary.
+ * Keeping the element type module-constant and passing the per-row closure
+ * through itemData makes those renders ordinary updates instead of remounts.
+ */
+const VirtualRow = ({ index, style, data }: any) => data.renderRow(index, style);
+
 const MoveToFolderMenu = ({
   anchorEl,
   open,
@@ -943,6 +956,7 @@ const MUIChatHistory = () => {
   const {
     conversations,
     isProjectSwitching,
+    hasLoadedConversations,
     setConversations,
     isLoadingConversation,
     toggleConversationGlobal,
@@ -1297,7 +1311,13 @@ const MUIChatHistory = () => {
         conversationId, { flags: next }, { projectId: currentProject?.id, fallback: conv }
       );
       if (!result.ok) throw result.error;
-      setConversations(conversations.map(c =>
+      // Functional update, NOT a map over the captured `conversations`.
+      // mutateConversationMeta awaits an IDB write and a bulkSync network
+      // round-trip; during that window a live stream commits assistant
+      // messages via addMessageToConversation.  Writing back the array
+      // captured before the await discards those commits, so flagging a
+      // streaming conversation silently reverts its in-flight response.
+      setConversations(prev => prev.map(c =>
         c.id === conversationId ? { ...c, flags: next, _version: result.conversation?._version } : c
       ));
     } catch (error) {
@@ -1317,7 +1337,9 @@ const MUIChatHistory = () => {
         conversationId, { flagColor: colorId }, { projectId: currentProject?.id, fallback: conv }
       );
       if (!result.ok) throw result.error;
-      setConversations(conversations.map(c =>
+      // Functional update — same post-await staleness hazard as
+      // handleToggleFlag above.
+      setConversations(prev => prev.map(c =>
         c.id === conversationId ? { ...c, flagColor: colorId, _version: result.conversation?._version } : c
       ));
     } catch (error) {
@@ -3805,6 +3827,30 @@ const MUIChatHistory = () => {
               Searching...
             </Typography>
           </Box>
+        ) : !hasLoadedConversations && flatNodes.length === 0 ? (
+          // Conversations have not been committed for this project yet.  The
+          // tree memo returns [] in this window (it holds the last tree, which
+          // is empty on a cold start), so without this branch the sidebar
+          // renders as a blank panel with no indication anything is happening.
+          // Gated on flatNodes.length === 0 so a project that already has rows
+          // on screen — e.g. from the IDB preload while the server sync runs —
+          // keeps showing them rather than flipping to a spinner.
+          <Box sx={{ p: 4, textAlign: 'center' }}>
+            <Spin size="small" />
+            <Typography variant="caption" sx={{ display: 'block', mt: 1, color: isDarkMode ? '#888' : '#666' }}>
+              Loading conversations…
+            </Typography>
+          </Box>
+        ) : hasLoadedConversations && flatNodes.length === 0 ? (
+          // Genuinely empty: the list has loaded and there is nothing in it.
+          // Previously indistinguishable from the loading case above — both
+          // rendered as an empty panel.
+          <Box sx={{ p: 4, textAlign: 'center', color: isDarkMode ? '#888' : '#666' }}>
+            <Typography variant="body2">No conversations yet</Typography>
+            <Typography variant="caption" sx={{ display: 'block', mt: 0.5, opacity: 0.8 }}>
+              Start a new chat to begin.
+            </Typography>
+          </Box>
         ) : (
           <div ref={treeContainerRef} style={{ flexGrow: 1, overflow: 'hidden', paddingTop: 8, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             {/* Root-level drop zone: visible only during drag when first item is a folder */}
@@ -3833,8 +3879,8 @@ const MUIChatHistory = () => {
               overscanCount={8}
               className="chat-history-tree"
               itemKey={(index) => flatNodes[index].id}
-            >
-              {({ index, style: rowStyle }) => {
+              itemData={{
+                renderRow: (index: number, rowStyle: React.CSSProperties) => {
                 const flat = flatNodes[index];
                 const node = flat.node;
                 const isFolder = flat.isFolder;
@@ -3994,7 +4040,10 @@ const MUIChatHistory = () => {
                     />
                   </div>
                 );
+                },
               }}
+            >
+              {VirtualRow}
             </FixedSizeList>
             {/* Export/Import — below the list, scrolls with content */}
             <Box sx={{

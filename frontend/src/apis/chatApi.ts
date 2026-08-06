@@ -10,6 +10,13 @@ import { escapeHtml } from '../utils/htmlSanitize';
 
 import { extractSingleFileDiff } from '../utils/diffUtils';
 import { resolveModelPin, ResolvedModelPin } from '../utils/modelPins';
+import {
+    applyThinkingEvent,
+    thinkingMarker,
+    newThinkingTurnId,
+    evictOldThinkingTurns,
+    ThinkingBlockData,
+} from '../utils/thinkingBlocks';
 // WebSocket for real-time feedback
 class FeedbackWebSocket {
     private ws: WebSocket | null = null;
@@ -758,7 +765,7 @@ export const sendPayload = async (
     addMessageToConversation: (message: Message, conversationId: string, isNonCurrentConversation?: boolean) => void,
     isStreamingToCurrentConversation: boolean = true,
     setProcessingState?: (state: ProcessingState) => void,
-    setReasoningContentMap?: Dispatch<SetStateAction<Map<string, string>>>,
+    setReasoningContentMap?: Dispatch<SetStateAction<Map<string, ThinkingBlockData[]>>>,
     throttlingRecoveryDataRef?: { toolResults?: any[]; partialContent?: string },
     currentProject?: { id: string; name: string; path: string } | null,
     resolvedModelPin?: ResolvedModelPin | null
@@ -769,6 +776,13 @@ export const sendPayload = async (
     let containsDiff = false;
     let errorOccurred = false;
     let errorAlreadyDisplayed = false;  // Track if we've shown an error to prevent duplicates
+    // Thinking state for THIS turn.  ``thinkingLocal`` is the synchronous
+    // source of truth for index assignment -- deriving indices from React
+    // state inside a setState callback let two chunks in one batch read the
+    // same length and emit duplicate markers.  React state is a mirror,
+    // written after the index is already fixed.
+    const thinkingTurnId = newThinkingTurnId();
+    let thinkingLocal: ThinkingBlockData[] = [];
     // Throttle BroadcastChannel relay to avoid flooding other tabs
     let lastBroadcastTime = 0;
     let hallucinationDetected = false;  // Failsafe: track if model is generating fake tool output
@@ -1502,6 +1516,39 @@ export const sendPayload = async (
                     return;
                 }
 
+                // Reasoning arrives as its own chunk type and is kept OUT of
+                // currentContent: only a positional marker enters the text,
+                // with the content held in an ephemeral per-turn sidecar.
+                // That preserves where the reasoning occurred relative to
+                // tool calls -- a single per-conversation blob would hoist it
+                // all above the answer -- while guaranteeing it can never be
+                // resubmitted as context, because it never enters
+                // message.content at all.
+                if (unwrappedData.type === 'thinking') {
+                    const reduction = applyThinkingEvent(thinkingLocal, {
+                        content: unwrappedData.content,
+                        done: unwrappedData.done,
+                    });
+                    thinkingLocal = reduction.blocks;
+                    if (reduction.openedIndex !== null) {
+                        // Marker emitted at the point the reasoning began.
+                        currentContent +=
+                            `\n\n${thinkingMarker(thinkingTurnId, reduction.openedIndex)}\n\n`;
+                    }
+                    if (setReasoningContentMap) {
+                        const snapshot = thinkingLocal;
+                        setReasoningContentMap(prev => {
+                            const next = new Map(prev);
+                            next.set(thinkingTurnId, snapshot);
+                            return evictOldThinkingTurns(next);
+                        });
+                    }
+                    // Flush so an in-progress block renders live rather than
+                    // appearing only once its closing chunk arrives.
+                    flushStreamedContent();
+                    return;
+                }
+
                 // Handle done marker
                 if (unwrappedData.done) {
 
@@ -1887,43 +1934,105 @@ export const sendPayload = async (
                         const overlap = overlapRaw
                             .replace(/```[\s\S]*?```/g, '')
                             .replace(/`[^`]+`/g, '');
-                        const scanText = candidateContent + '\n' + overlap;
-                        const matchedPattern = HALLUCINATION_PATTERNS.find(p => p.test(scanText));
+                        // The overlap holds OUR OWN markers, emitted by the
+                        // tool_display handler below -- so a naive scan of it
+                        // reports the frontend's legitimate output as a model
+                        // fabrication, then trims from `currentContent.search()`
+                        // (the FIRST such marker in the whole message) and drops
+                        // the chunk.  The result is a silently vanished tool
+                        // block welded to the following sentence with no space
+                        // and no trace, because HTML comments render invisibly.
+                        // It fires only on the hierarchicalResults path (search
+                        // -style tools): the plain path emits a ```` fence whose
+                        // markers the fence-strip above removes first.
+                        //
+                        // Concatenating candidate + overlap was also backwards
+                        // for the split-marker case it exists to catch: the tail
+                        // of the stream precedes the new chunk, so "<!-- TOOL_BL"
+                        // + "OCK_START:" only reassembles in overlap-first order.
+                        //
+                        // Scan overlap-then-candidate and accept a match only
+                        // when it EXTENDS INTO the new chunk.  A complete marker
+                        // already in currentContent lies wholly inside the
+                        // overlap and is ignored; a split marker, or one the
+                        // model fabricated in this chunk, still matches.
+                        const scanText = overlap + candidateContent;
+                        const matchedPattern = HALLUCINATION_PATTERNS.find(p => {
+                            const m = scanText.match(p);
+                            return m != null
+                                && m.index !== undefined
+                                && m.index + m[0].length > overlap.length;
+                        });
 
                         if (matchedPattern) {
                             if (!hallucinationDetected) {
-                                hallucinationDetected = true;
                                 console.warn('⚠️ HALLUCINATION FAILSAFE: Detected fake tool output in content stream', {
                                     pattern: matchedPattern.toString(),
                                     chunkPreview: contentToAdd.substring(0, 200),
                                 });
-
+                            }
+                            // Log once per message; clean up on EVERY occurrence.
+                            // Gating the cleanup on this flag meant a second
+                            // fabrication in the same response was dropped from
+                            // the stream but its committed remnant was left in
+                            // place, which is the orphan-comment state the
+                            // cleanup exists to prevent.
+                            hallucinationDetected = true;
+                            {
                                 // Strip contaminated content but DON'T abort —
                                 // backend handles retry.  Two trim strategies:
                                 //
                                 //   1. Marker patterns (TOOL_BLOCK_START/END,
                                 //      TOOL_MARKER, TOOL_SENTINEL, tool:mcp_,
                                 //      <name>mcp_, <n>mcp_, <arguments>) —
-                                //      trim from the marker itself.  An orphan
-                                //      <!-- TOOL_BLOCK_START: with no matching
-                                //      --> turns marked.js into "everything
-                                //      after this is HTML comment", which
-                                //      renders all subsequent real tool blocks
-                                //      and prose as literal text.  The marker
-                                //      MUST go regardless of what trails it.
+                                //      remove only the part of the marker that
+                                //      STRADDLES the chunk boundary (see below).
                                 //
                                 //   2. Shell-output fabrications ($ ..., ERROR:,
                                 //      SECURITY BLOCK, Allowed commands:, 📋)
                                 //      — trim back to the last paragraph break
-                                //      iff the tail matches those cues.
+                                //      iff the tail matches those cues.  Kept
+                                //      as-is: such a fabrication can be committed
+                                //      across several chunks before its pattern
+                                //      completes, so the paragraph-break trim is
+                                //      the only thing that removes the earlier
+                                //      lines (e.g. a preceding "$ rm -rf ...").
                                 const patSrc = matchedPattern.source;
                                 const isMarkerPattern = MARKER_SOURCES.some(
                                     m => patSrc.indexOf(m) >= 0
                                 );
                                 if (isMarkerPattern) {
-                                    const markerIdx = currentContent.search(matchedPattern);
-                                    if (markerIdx >= 0) {
-                                        currentContent = currentContent.substring(0, markerIdx).trimEnd();
+                                    // The contaminated chunk is dropped below and
+                                    // never appended, so the ONLY contamination in
+                                    // currentContent is a partial marker straddling
+                                    // the boundary.  ``search(matchedPattern)`` was
+                                    // wrong in both directions: for a fabrication
+                                    // contained wholly in this chunk it found the
+                                    // FIRST *legitimate* marker in the message and
+                                    // deleted from there, destroying every real tool
+                                    // block and all prose after it; for a split
+                                    // marker it returned -1 and no-opped, leaving the
+                                    // dangling "<!-- TOOL_BL" fragment that turns
+                                    // marked.js into "everything after this is an
+                                    // HTML comment".
+                                    //
+                                    // ``endsWith`` is load-bearing: the overlap is
+                                    // fence-stripped, so its indices can be shifted
+                                    // relative to currentContent.  If it fails we
+                                    // leave content alone — dropping the chunk is
+                                    // already the primary defence, and deleting the
+                                    // wrong prose is worse than leaving a fragment.
+                                    const scanMatch = scanText.match(matchedPattern);
+                                    if (scanMatch && scanMatch.index !== undefined
+                                            && scanMatch.index < overlap.length) {
+                                        const straddled = scanMatch[0].slice(
+                                            0, overlap.length - scanMatch.index,
+                                        );
+                                        if (straddled && currentContent.endsWith(straddled)) {
+                                            currentContent = currentContent.substring(
+                                                0, currentContent.length - straddled.length,
+                                            );
+                                        }
                                     }
                                 } else {
                                     const lastBreak = currentContent.lastIndexOf('\n\n');
@@ -2420,20 +2529,11 @@ export const sendPayload = async (
                         // Note: State will auto-reset to 'idle' when removeStreamingConversation is called
                         // No return needed here, continue to next op
                     }
-                    if (op.op === 'add' && op.path.endsWith('/reasoning_content/-')) {
-                        // Handle reasoning content separately
-                        const reasoningContent = op.value || '';
-                        if (reasoningContent && setReasoningContentMap) {
-                            console.log('ChatAPI: Adding reasoning content:', reasoningContent);
-                            setReasoningContentMap((prev: Map<string, string>) => {
-                                const next = new Map(prev);
-                                const existing = next.get(conversationId) || '';
-                                next.set(conversationId, existing + reasoningContent);
-                                return next;
-                            });
-                        }
-                        // No return needed here, continue to next op
-                    }
+                    // A '/reasoning_content/-' op handler lived here.  Removed as
+                    // dead code: no backend ever emitted that op (grepped the whole
+                    // of app/ for it), so this branch never ran and the sidecar it
+                    // fed was never populated.  Reasoning now arrives as a discrete
+                    // 'thinking' chunk handled far earlier in this function.
                     if (op.op === 'add' && op.path.endsWith('/streamed_output_str/-')) {
                         let newContent = op.value || '';
                         if (!newContent) return;
