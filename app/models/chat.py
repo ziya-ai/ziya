@@ -97,6 +97,18 @@ class ChatSummary(BaseModel):
     branchedFrom: Optional[str] = None
     branchedAtMessageIndex: Optional[int] = None
     branchedFromLabel: Optional[str] = None
+    # Conversation triage flags (frontend-authored; see
+    # frontend/src/utils/conversationFlags.ts).  Declared HERE and not only
+    # on Chat because the sidebar renders them from the SUMMARY listing:
+    # Chat round-trips them via extra="allow", but ChatSummary is built
+    # field-by-field from the raw record, so an undeclared field is dropped
+    # on the one path the sidebar actually reads.  A flag set in another
+    # browser was therefore invisible until something forced a full fetch.
+    # flagColor is single-select (or None); flags is the multi-select label
+    # id list.  Both default to the "unset" value rather than being absent
+    # so a consumer never has to distinguish absent from empty.
+    flags: List[str] = []
+    flagColor: Optional[str] = None
     # Cheap derived "open work" counts for the sidebar indicators.  Always
     # present (default 0); recomputed from the chat record's _beads /
     # _work_items on each summary build.  openWorkItemCount is a correct
