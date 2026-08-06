@@ -212,3 +212,85 @@ async def test_builtin_registered_after_first_tick(home):
     with patch("app.config.env_registry.ziya_env", return_value=False):
         await sj.tick_system_jobs(now_ms=1)
     assert any(j.name == "memory_organize" for j in sj._JOBS)
+
+
+# ── memory_lifecycle gate policy ───────────────────────────────────
+#
+# The gate carries the whole cost policy: run_lifecycle_pass() is cheap
+# (no model calls) but not free, and firing it every 30 min on an install
+# with an empty queue is pure waste.  Non-empty queue is the only trigger.
+
+def _patch_proposals(open_rows):
+    store = MagicMock()
+    store.list_open = MagicMock(return_value=open_rows)
+    return patch("app.storage.proposals.get_proposals_store",
+                 MagicMock(return_value=store))
+
+
+def test_lifecycle_gate_disabled_when_memory_off(home):
+    with patch("app.config.env_registry.ziya_env", return_value=False):
+        assert sj._memory_lifecycle_gate() is False
+
+
+def test_lifecycle_gate_fires_when_proposals_open(home):
+    with patch("app.config.env_registry.ziya_env", return_value=True), \
+         _patch_proposals([{"id": "prop_a"}, {"id": "prop_b"}]):
+        assert sj._memory_lifecycle_gate() is True
+
+
+def test_lifecycle_gate_declines_on_empty_queue(home):
+    # An idle install must not sweep: nothing to promote or archive.
+    with patch("app.config.env_registry.ziya_env", return_value=True), \
+         _patch_proposals([]):
+        assert sj._memory_lifecycle_gate() is False
+
+
+def test_lifecycle_gate_survives_store_failure(home):
+    # Fails closed.  A gate exception is already isolated by tick(), but
+    # returning False keeps the failure from reading as "queue non-empty".
+    with patch("app.config.env_registry.ziya_env", return_value=True), \
+         patch("app.storage.proposals.get_proposals_store",
+               side_effect=RuntimeError("store unavailable")):
+        assert sj._memory_lifecycle_gate() is False
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_registered_after_first_tick(home):
+    sj._reset_for_tests()
+    with patch("app.config.env_registry.ziya_env", return_value=False):
+        await sj.tick_system_jobs(now_ms=1)
+    assert any(j.name == "memory_lifecycle" for j in sj._JOBS)
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_run_invokes_pass(home):
+    # The job must call run_lifecycle_pass — the whole point of registering
+    # it.  Pins the wiring, not the promotion rules (those are covered by
+    # tests/test_memory_lifecycle.py).
+    fake = AsyncMock(return_value={"scanned": 3, "promoted": 1,
+                                   "archived": 1, "noop": 1})
+    with patch("app.memory.lifecycle.run_lifecycle_pass", fake):
+        await sj._memory_lifecycle_run()
+    fake.assert_awaited_once()
+
+
+def test_lifecycle_interval_is_30_min(home):
+    # Interval is a deliberate cost/latency tradeoff, not an arbitrary
+    # constant: the extractor's post-pass call handles the responsive case,
+    # so this only needs to bound how long a proposal can sit unadjudicated
+    # when extraction never runs.
+    assert sj.MEMORY_LIFECYCLE_INTERVAL_S == 30 * 60
+
+
+@pytest.mark.asyncio
+async def test_both_builtins_registered_and_independent(home):
+    # Per-job isolation matters here specifically: organize calls the LLM
+    # and can fail on credentials/network, and it must never prevent the
+    # (free, local) lifecycle sweep from running.
+    sj._reset_for_tests()
+    with patch("app.config.env_registry.ziya_env", return_value=True), \
+         patch.object(sj, "_memory_organize_gate", side_effect=RuntimeError("boom")), \
+         patch.object(sj, "_memory_lifecycle_gate", return_value=True), \
+         patch.object(sj, "_memory_lifecycle_run", new=AsyncMock()):
+        ran = await sj.tick_system_jobs(now_ms=2_000_000)
+    assert ran == ["memory_lifecycle"]
