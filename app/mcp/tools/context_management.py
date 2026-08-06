@@ -1,4 +1,4 @@
-"""
+r"""
 Builtin MCP tools for model-driven context management.
 
 Lets the model add/remove/list files in the current chat's
@@ -12,8 +12,15 @@ Lifecycle:
     \`additionalFiles\` (server-side), tags it with a sentinel
     \`_modelAddedFiles\` list for removal-scope enforcement, AND
     immediately reads the file's content into the tool result so the
-    model sees it on this turn (ephemeral — next turn picks it up via
-    the normal context pipeline).
+    model sees it on this turn.  On subsequent turns the file is picked
+    up by \`build_messages_for_streaming\`, which unions the chat
+    record's \`additionalFiles\` into the user-pinned \`files\` for every
+    caller (web, CLI, delegates) — see app/utils/chat_context_files.py.
+    A file over the project's \`contextManagement.auto_add_token_limit\`
+    is refused here rather than stored, because a stored file is re-sent
+    on every following turn; the refusal tells the model to read the
+    relevant part instead.  The user's own file-tree selections are
+    never subject to that limit.
   - \`context_remove_file\`: removes the path *only if* the model added
     it.  User-pinned files are off-limits to keep the trust model clear.
   - \`context_list_files\`: returns the current chat's \`additionalFiles\`
@@ -246,6 +253,45 @@ class ContextAddFileTool(BaseMCPTool):
         chat_data = ctx["chat_data"]
         additional = list(chat_data.get("additionalFiles") or [])
         owned = list(chat_data.get(_OWNERSHIP_FIELD) or [])
+
+        # Per-file token limit, enforced BEFORE persisting.  Files pinned
+        # here are re-read into the prompt on every subsequent turn (see
+        # build_messages_for_streaming), so an oversized file added once
+        # would cost its tokens indefinitely until explicitly removed.
+        # Rejecting at write time keeps it out of the store entirely
+        # rather than relying on a read-time filter, and the refusal is
+        # explained so the model can fall back to a targeted read.
+        #
+        # The user's own file-tree selections are never subject to this —
+        # a deliberate manual choice to include a huge file is honoured.
+        try:
+            from app.utils.chat_context_files import (
+                exceeds_auto_add_limit, resolve_auto_add_token_limit,
+            )
+            _limit = resolve_auto_add_token_limit(ctx["project_root"])
+            _over, _tokens = exceeds_auto_add_limit(str(resolved), _limit)
+        except Exception as e:
+            logger.debug(f"context_add_file: limit check skipped: {e}")
+            _over, _tokens, _limit = False, 0, 0
+        if _over:
+            logger.info(f"context_add_file: refused {rel_path} "
+                        f"(~{_tokens} tokens > limit {_limit})")
+            return {
+                "error": True,
+                "limit_exceeded": True,
+                "path": rel_path,
+                "estimated_tokens": _tokens,
+                "token_limit": _limit,
+                "message": (
+                    f"'{rel_path}' is ~{_tokens} tokens, over this project's "
+                    f"{_limit}-token per-file context limit, so it was NOT "
+                    f"added. It would cost those tokens on every following "
+                    f"turn. Read the part you need instead (file_read with "
+                    f"offset/max_lines, or a targeted search), or ask the "
+                    f"user to pin the file manually if the whole file is "
+                    f"genuinely required."
+                ),
+            }
 
         if rel_path in additional:
             return {

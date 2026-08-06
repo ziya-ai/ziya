@@ -160,17 +160,49 @@ class TestContextAddFile:
         result = run(tool.execute(path=""))
         assert result.get("error") is True
 
-    def test_truncates_large_inline_content(self, chat_env, tmp_path):
-        # Create a file just over the inline limit
+    def test_refuses_file_over_token_limit(self, chat_env, tmp_path):
+        """A file over auto_add_token_limit is refused, not stored.
+
+        Supersedes the previous test_truncates_large_inline_content, which
+        used a 65KB file to reach the inline-truncation path.  That file is
+        ~16k estimated tokens, over the 12500 default limit, so it is now
+        refused before the read — the intended behaviour, since a stored
+        file is re-sent on every subsequent turn.
+        """
         from app.mcp.tools.context_management import _MAX_INLINE_BYTES
         big = Path(chat_env["project_root"]) / "big.txt"
         big.write_text("x" * (_MAX_INLINE_BYTES + 1024))
         tool = ContextAddFileTool()
         result = run(tool.execute(path="big.txt"))
-        assert result["success"] is True
-        assert result.get("content_truncated") is True
-        assert len(result["content"]) <= _MAX_INLINE_BYTES
+        assert result["error"] is True
+        assert result["limit_exceeded"] is True
+        assert result["estimated_tokens"] > result["token_limit"]
+        # Refusal must not persist anything — the whole point is that an
+        # oversized file never enters the store.
+        chat = json.loads(Path(chat_env["chat_file"]).read_text())
+        assert "big.txt" not in chat["additionalFiles"]
+        assert "big.txt" not in (chat.get(_OWNERSHIP_FIELD) or [])
+        # And the message must tell the model what to do instead.
+        assert "file_read" in result["message"]
 
+    def test_truncates_large_inline_content_when_limit_raised(self, chat_env, tmp_path):
+        """The inline-truncation path, reachable only above the token limit.
+
+        _MAX_INLINE_BYTES (64KB) and auto_add_token_limit (12500 tokens,
+        ~50KB) were chosen independently, and the limit is the stricter of
+        the two — so with default settings the content_truncated branch is
+        dead code.  Raising the limit is the only way to exercise it.
+        """
+        from app.mcp.tools.context_management import _MAX_INLINE_BYTES
+        big = Path(chat_env["project_root"]) / "big.txt"
+        big.write_text("x" * (_MAX_INLINE_BYTES + 1024))
+        tool = ContextAddFileTool()
+        with patch("app.utils.chat_context_files.resolve_auto_add_token_limit",
+                   return_value=0):  # 0 disables the limit
+            result = run(tool.execute(path="big.txt"))
+        assert result["success"] is True
+        assert result["content_truncated"] is True
+        assert len(result["content"]) == _MAX_INLINE_BYTES
     def test_no_conversation_id_returns_error(self, chat_env):
         from app.context import _request_conversation_id
         token = _request_conversation_id.set(None)

@@ -1,5 +1,31 @@
 """
 Chat and chat group API endpoints.
+
+Handlers in this module are deliberately plain ``def``, NOT ``async def``.
+
+Every one of them does synchronous file I/O against the on-disk chat records
+(read, JSON-parse, decrypt, write-and-rename) and none of them awaits
+anything.  Declared ``async def``, that work executes directly on the asyncio
+event loop with nothing to yield at, so for its whole duration no other
+request in the process is serviced — including the folder scan progress poll,
+conversation sync, and chat lazy-loads.
+
+That is not a latent concern: on a project with ~1500 chat files,
+``list_chats`` measured 225 ms on a quiet loop but 20.6 s while a background
+folder scan was running, because the scan is CPU-bound Python that holds the
+GIL in bursts and an un-yielding coroutine cannot get out of its way.  The
+user-visible result was an empty conversation list for minutes on a cold
+start into a large project.
+
+As plain ``def``, Starlette dispatches each handler to its AnyIO worker
+threadpool, which is exactly the offload ``asyncio.to_thread`` would give —
+without needing to restructure the bodies.  ``HTTPException`` raised from a
+worker thread propagates identically.
+
+If you add a handler here, keep it ``def`` unless it genuinely needs to
+await something; if it does, wrap the blocking work in
+``await asyncio.to_thread(...)`` rather than calling it inline.
+``tests/test_chat_api_not_event_loop_blocking.py`` enforces this.
 """
 from fastapi import APIRouter, HTTPException, Query
 from typing import List, Optional
@@ -59,6 +85,11 @@ def _chat_to_summary(chat: Chat) -> ChatSummary:
         branchedFrom=chat.branchedFrom,
         branchedAtMessageIndex=chat.branchedAtMessageIndex,
         branchedFromLabel=chat.branchedFromLabel,
+        # Via the dump, not attribute access: Chat carries these as extras
+        # (extra="allow"), so \`chat.flags\` raises AttributeError on any
+        # record that has never been flagged.
+        flags=chat_extra.get('flags') if isinstance(chat_extra.get('flags'), list) else [],
+        flagColor=chat_extra.get('flagColor'),
         **({'_version': version} if version else {}),
         **({'isGlobal': True}),
     )
@@ -92,7 +123,7 @@ def _strip_terminal_taskplans(groups):
 
 
 @router.get("/api/v1/projects/{project_id}/chat-groups", response_model=List[ChatGroup])
-async def list_chat_groups(project_id: str):
+def list_chat_groups(project_id: str):
     """List all chat groups, including global groups from other projects.
 
     Heavy taskPlan fields (task_list, delegate_specs, crystals, task_graph)
@@ -113,13 +144,13 @@ async def list_chat_groups(project_id: str):
     return _strip_terminal_taskplans(sorted(groups, key=lambda g: g.order))
 
 @router.post("/api/v1/projects/{project_id}/chat-groups", response_model=ChatGroup)
-async def create_chat_group(project_id: str, data: ChatGroupCreate):
+def create_chat_group(project_id: str, data: ChatGroupCreate):
     """Create a chat group."""
     storage = get_group_storage(project_id)
     return storage.create(data)
 
 @router.put("/api/v1/projects/{project_id}/chat-groups/{group_id}", response_model=ChatGroup)
-async def update_chat_group(project_id: str, group_id: str, data: ChatGroupUpdate):
+def update_chat_group(project_id: str, group_id: str, data: ChatGroupUpdate):
     """Update a chat group."""
     storage = get_group_storage(project_id)
     group = storage.update(group_id, data)
@@ -130,7 +161,7 @@ async def update_chat_group(project_id: str, group_id: str, data: ChatGroupUpdat
     return group
 
 @router.post("/api/v1/projects/{project_id}/chat-groups/{group_id}/global")
-async def set_chat_group_global(project_id: str, group_id: str, body: dict):
+def set_chat_group_global(project_id: str, group_id: str, body: dict):
     """Atomically set a folder's isGlobal flag.
 
     Single source of truth for the global flag.  Frontend calls this
@@ -169,7 +200,7 @@ async def set_chat_group_global(project_id: str, group_id: str, body: dict):
 
 
 @router.delete("/api/v1/projects/{project_id}/chat-groups/{group_id}")
-async def delete_chat_group(project_id: str, group_id: str):
+def delete_chat_group(project_id: str, group_id: str):
     """Delete a chat group (chats become ungrouped)."""
     storage = get_group_storage(project_id)
     chat_storage = get_chat_storage(project_id)
@@ -184,13 +215,13 @@ async def delete_chat_group(project_id: str, group_id: str):
     return {"deleted": True}
 
 @router.put("/api/v1/projects/{project_id}/chat-groups/reorder")
-async def reorder_chat_groups(project_id: str, ordered_ids: List[str]):
+def reorder_chat_groups(project_id: str, ordered_ids: List[str]):
     """Reorder chat groups."""
     storage = get_group_storage(project_id)
     return storage.reorder(ordered_ids)
 
 @router.post("/api/v1/projects/{project_id}/chat-groups/bulk-sync")
-async def bulk_sync_groups(project_id: str, data: ChatGroupBulkSync):
+def bulk_sync_groups(project_id: str, data: ChatGroupBulkSync):
     """
     Bulk upsert chat groups/folders from frontend (cross-port sync).
     For each group: if server version is newer, skip. Otherwise upsert.
@@ -238,7 +269,7 @@ async def bulk_sync_groups(project_id: str, data: ChatGroupBulkSync):
 # Chats
 
 @router.get("/api/v1/projects/{project_id}/chats")
-async def list_chats(
+def list_chats(
     project_id: str,
     group_id: Optional[str] = Query(None),
     limit: Optional[int] = Query(None),
@@ -296,7 +327,7 @@ async def list_chats(
     return summaries
 
 @router.get("/api/v1/projects/{project_id}/chats/search")
-async def search_chats_endpoint(
+def search_chats_endpoint(
     project_id: str,
     q: str = Query(..., min_length=1),
     all_projects: bool = Query(False),
@@ -324,7 +355,7 @@ async def search_chats_endpoint(
     )
 
 @router.post("/api/v1/projects/{project_id}/chats", response_model=Chat)
-async def create_chat(project_id: str, data: ChatCreate):
+def create_chat(project_id: str, data: ChatCreate):
     """Create a new chat."""
     storage = get_chat_storage(project_id)
     group_storage = get_group_storage(project_id)
@@ -350,7 +381,7 @@ async def create_chat(project_id: str, data: ChatCreate):
     return storage.create(data, default_context_ids, default_skill_ids)
 
 @router.post("/api/v1/projects/{project_id}/chats/bulk-sync")
-async def bulk_sync_chats(project_id: str, data: ChatBulkSync):
+def bulk_sync_chats(project_id: str, data: ChatBulkSync):
     """
     Bulk upsert chats from frontend (IndexedDB migration).
     For each chat: if it exists on server and server version is newer, skip.
@@ -505,7 +536,7 @@ async def bulk_sync_chats(project_id: str, data: ChatBulkSync):
     
     return results
 @router.get("/api/v1/projects/{project_id}/chats/{chat_id}", response_model=Chat)
-async def get_chat(project_id: str, chat_id: str):
+def get_chat(project_id: str, chat_id: str):
     """Get full chat including messages.
 
     This is a pure read — it does not update any timestamps.
@@ -526,7 +557,7 @@ async def get_chat(project_id: str, chat_id: str):
     raise HTTPException(status_code=404, detail="Chat not found")
 
 @router.post("/api/v1/projects/{project_id}/chats/bulk-get")
-async def bulk_get_chats(project_id: str, body: dict):
+def bulk_get_chats(project_id: str, body: dict):
     """Fetch many chats in a single request.
 
     Per-request /chats/{id} fetches show ~14ms when isolated but ~900ms
@@ -592,7 +623,7 @@ async def bulk_get_chats(project_id: str, body: dict):
 
 
 @router.put("/api/v1/projects/{project_id}/chats/{chat_id}", response_model=Chat)
-async def update_chat(project_id: str, chat_id: str, data: ChatUpdate):
+def update_chat(project_id: str, chat_id: str, data: ChatUpdate):
     """Update chat metadata."""
     storage = get_chat_storage(project_id)
     chat = storage.update(chat_id, data)
@@ -604,7 +635,7 @@ async def update_chat(project_id: str, chat_id: str, data: ChatUpdate):
 
 
 @router.post("/api/v1/projects/{project_id}/chats/{chat_id}/global")
-async def set_chat_global(project_id: str, chat_id: str, body: dict):
+def set_chat_global(project_id: str, chat_id: str, body: dict):
     """Atomically set a chat's isGlobal flag.
 
     Single source of truth for the global flag.  Frontend calls this
@@ -643,7 +674,7 @@ async def set_chat_global(project_id: str, chat_id: str, body: dict):
 # ── Retention policy endpoint ────────────────────────────────────────
 
 @router.get("/api/v1/retention-policy")
-async def get_retention_policy():
+def get_retention_policy():
     """
     Return the effective data retention policy.
 
@@ -667,7 +698,7 @@ async def get_retention_policy():
     }
 
 @router.delete("/api/v1/projects/{project_id}/chats/{chat_id}")
-async def delete_chat(project_id: str, chat_id: str):
+def delete_chat(project_id: str, chat_id: str):
     """Delete a chat."""
     storage = get_chat_storage(project_id)
     
@@ -677,7 +708,7 @@ async def delete_chat(project_id: str, chat_id: str):
     return {"deleted": True}
 
 @router.post("/api/v1/projects/{project_id}/chats/{chat_id}/messages", response_model=Chat)
-async def add_message(project_id: str, chat_id: str, message_data: Message):
+def add_message(project_id: str, chat_id: str, message_data: Message):
     """Add a message to a chat."""
     storage = get_chat_storage(project_id)
     
@@ -695,7 +726,7 @@ async def add_message(project_id: str, chat_id: str, message_data: Message):
 # ── Timestamp repair ───────────────────────────────────────────────
 
 @router.post("/api/v1/projects/{project_id}/chats/repair-timestamps")
-async def repair_timestamps(project_id: str, dry_run: bool = Query(True)):
+def repair_timestamps(project_id: str, dry_run: bool = Query(True)):
     """
     Repair inflated lastActiveAt / lastAccessedAt / _version timestamps.
 
@@ -756,7 +787,7 @@ async def repair_timestamps(project_id: str, dry_run: bool = Query(True)):
 # ── Cross-project chat integrity ─────────────────────────────────────
 
 @router.get("/api/v1/chat-integrity")
-async def get_chat_integrity():
+def get_chat_integrity():
     """Report cross-project chat shadow copies (read-only).
 
     Scans every project for chat ids that appear in more than one project
@@ -771,7 +802,7 @@ async def get_chat_integrity():
 
 
 @router.post("/api/v1/chat-integrity/reconcile")
-async def reconcile_chat_integrity_endpoint(dry_run: bool = Query(True)):
+def reconcile_chat_integrity_endpoint(dry_run: bool = Query(True)):
     """Reconcile cross-project chat shadow copies.
 
     Keeps the canonical copy of each duplicated chat, salvages any grouping/
