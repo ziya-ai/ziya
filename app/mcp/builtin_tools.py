@@ -192,8 +192,12 @@ def get_nova_grounding_tools() -> List[Type[BaseMCPTool]]:
 def get_diagram_render_tools() -> List[Type[BaseMCPTool]]:
     """Get diagram rendering tools."""
     try:
-        from app.mcp.tools.diagram_render import RenderDiagramTool
-        return [RenderDiagramTool]
+        from app.mcp.tools.diagram_render import (
+            RecallImageTool, RenderDiagramTool,
+        )
+        # recall_image ships with render_diagram because it is only
+        # reachable via a handle that a render produced.
+        return [RenderDiagramTool, RecallImageTool]
     except ImportError as e:
         logger.warning(f"Could not import diagram render tools: {e}")
         return []
