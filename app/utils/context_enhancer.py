@@ -218,23 +218,18 @@ def initialize_ast_if_enabled():
 
 
 def _broadcast_ast_complete(files_processed: int) -> None:
-    """Push an ast_indexing_complete event to all ws/file-tree clients."""
+    """Push an ast_indexing_complete event to all ws/file-tree clients.
+
+    Both callers run in a background indexing thread, so there is no running
+    loop here and the WebSockets belong to the main (uvicorn) loop.  Driving
+    them from a second loop raises "attached to a different loop" and the
+    event is silently dropped, so delegate to folder_service._schedule_broadcast
+    which hands the coroutine to the main loop via run_coroutine_threadsafe.
+    """
     try:
-        import asyncio
-        from app.services.folder_service import broadcast_file_tree_update
+        from app.services.folder_service import _schedule_broadcast
 
-        loop = None
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            pass
-
-        if loop and loop.is_running():
-            loop.create_task(broadcast_file_tree_update("ast_indexing_complete", "", files_processed))
-        else:
-            loop = asyncio.new_event_loop()
-            loop.run_until_complete(broadcast_file_tree_update("ast_indexing_complete", "", files_processed))
-            loop.close()
+        _schedule_broadcast("ast_indexing_complete", "", files_processed)
     except Exception as e:
         logger.debug(f"Could not broadcast AST completion event: {e}")
 
