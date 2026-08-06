@@ -136,13 +136,20 @@ class TestBuildRequestBody:
         assert "temperature" not in body
 
     def test_adaptive_thinking(self, bedrock_provider):
-        """Adaptive thinking should set thinking.type=adaptive and effort."""
+        """Adaptive thinking sets type, display and effort.
+
+        ``display`` is not optional: it defaults to "omitted" on Opus
+        4.7/4.8/5, Sonnet 5, Fable 5 and Mythos 5, and omitted suppresses
+        every thinking_delta while still billing for the reasoning.  A
+        measured opus-5 response billed 680 thinking tokens and delivered
+        zero characters before this was set.
+        """
         thinking = ThinkingConfig(enabled=True, mode="adaptive", effort="high")
         config = ProviderConfig(thinking=thinking)
         messages = [{"role": "user", "content": "Hi"}]
         body = bedrock_provider._build_request_body(messages, None, [], config)
         
-        assert body["thinking"] == {"type": "adaptive"}
+        assert body["thinking"] == {"type": "adaptive", "display": "summarized"}
         assert body["output_config"]["effort"] == "high"
         assert "effort-2025-11-24" in body["anthropic_beta"]
 

@@ -153,13 +153,20 @@ class TestBuildRequest:
         assert request["temperature"] == 0.7
 
     def test_adaptive_thinking(self, anthropic_provider):
-        """Adaptive thinking should set thinking with budget."""
+        """Adaptive thinking sets type and display (no budget_tokens).
+
+        ``display: "summarized"`` is required or the omitted-default models
+        emit no thinking_delta at all.  This path is also the mantle
+        gateway's — BedrockMantleProvider inherits _build_request — where
+        fable-5 went from 0 thinking deltas to 47 with this field.
+        """
         thinking = ThinkingConfig(enabled=True, mode="adaptive", budget_tokens=16000)
         config = ProviderConfig(thinking=thinking)
         messages = [{"role": "user", "content": "Hi"}]
         request = anthropic_provider._build_request(messages, None, [], config)
         
-        assert request["thinking"] == {"type": "adaptive"}
+        assert request["thinking"] == {"type": "adaptive", "display": "summarized"}
+
     def test_standard_thinking(self, anthropic_provider):
         """Standard thinking should set thinking.type=enabled with budget."""
         thinking = ThinkingConfig(enabled=True, mode="enabled", budget_tokens=32000)
