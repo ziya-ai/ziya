@@ -13,8 +13,30 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { TaskRun } from '../types/task_run';
 import { getTaskRun } from '../services/taskRunApi';
+import {
+  emptyLagStats, foldSample, formatLagStats, isLagProbeEnabled, LAG_LOG_EVERY,
+} from './streamLagProbe';
 
-const TERMINAL: ReadonlyArray<TaskRun['status']> = ['done', 'failed', 'cancelled'];
+// Must include 'partial' or the safety-net poll never stops and the WS
+// is never closed for a run that has already finished.
+const TERMINAL: ReadonlyArray<TaskRun['status']> =
+  ['done', 'partial', 'failed', 'cancelled'];
+
+/**
+ * Statuses for which the EXECUTOR has unwound — i.e. nothing can still
+ * be streaming.  Deliberately WIDER than ``TERMINAL`` above: 'held'
+ * belongs here (an infra fault unwound the coroutine, so no iteration
+ * can still be running) but must NOT join ``TERMINAL``, because that
+ * list also governs the recency exemption in shouldAcceptFetchedRun,
+ * where a held snapshot legitimately carries no authority — the work
+ * continues as a NEW run.  See useTaskRunStream.ordering.test.ts.
+ *
+ * Two lists rather than one because they answer different questions:
+ * "should we stop polling / trust this snapshot?" vs "can anything
+ * still be producing output?".
+ */
+const EXECUTOR_STOPPED: ReadonlyArray<TaskRun['status']> =
+  ['done', 'partial', 'failed', 'cancelled', 'held'];
 
 /**
 * In-flight observability for a task run.  Accumulated
@@ -77,16 +99,96 @@ export interface LiveTaskState {
    * Latest server-derived progress note (``task_progress`` event) —
    * e.g. "ran run_shell_command: git status".  Freshest source; the
    * tile falls back to run.progress_note from REST when absent.
+   *
+   * B8a fix: this now holds the latest note of EITHER kind (model or
+   * tool-derived), matching the pre-fix behavior for callers that don't
+   * care about the distinction.  ``modelProgressNote`` below holds only
+   * the model-authored kind, which the tile prefers as its headline —
+   * without that split, a rich model note like "reviewed 12/30 diffs;
+   * grouping into 3 commits" was overwritten by the very next tool call
+   * (usually 1-2 seconds later) with a generic "ran grep: ...", even
+   * though the two events carry a ``source`` field that already
+   * distinguishes them.
    */
   progressNote?: string;
+  /** Latest note where ``source === 'model'`` — see progressNote above. */
+  modelProgressNote?: string;
   /** Epoch seconds of the most recent event seen on this stream. */
   lastActivityTs?: number;
 }
 
+/**
+ * Event types that indicate a TASK is actually executing, and so may
+ * lazily open an iteration bucket for a block that has none yet.
+ *
+ * The auto-open used to fire for ANY block-scoped event, which meant a
+ * container's own lifecycle (``block_status`` for a Repeat, Group,
+ * Parallel, Until…) minted a phantom "Iteration 0" bucket for a block
+ * that never runs a task directly.  Those buckets are empty by
+ * construction — a container emits no text and no tool calls — so they
+ * survived only because the inspector filters empty ones out of the Live
+ * and Tools tabs.  The Events tab does not filter, and the data was
+ * wrong regardless: ``live.iterations`` is the iteration model, and a
+ * container is not an iteration.
+ *
+ * Restricting the auto-open to task-scoped traffic keeps the lazy path
+ * doing what it was for — covering a bare Task block that streams
+ * without emitting ``iteration_started`` — while a container's status
+ * transitions stay where they belong, on the flat event timeline and in
+ * ``blockStatuses``.
+ */
+const TASK_SCOPED_EVENTS: ReadonlySet<string> = new Set([
+  'task_started', 'task_text_delta', 'task_text_delta_run',
+  'task_tool_call', 'task_progress', 'task_finished',
+]);
+
 const EMPTY_LIVE: LiveTaskState = { text: {}, toolCalls: [], events: [], iterations: [], variables: {}, blockStatuses: {} };
+
+/**
+ * Seal every still-'running' iteration bucket.
+ *
+ * Once a run is over, NOTHING can still be executing, so a bucket left
+ * at 'running' is a dangling artifact of a lost event — and it is what
+ * leaves the Live tab showing a spinner and a streaming cursor under a
+ * finished run, with no cue that the work has moved on.
+ *
+ * Returns the SAME array reference when there is nothing to seal, so a
+ * caller can use identity to skip a pointless state update.
+ *
+ * 'passed' is the neutral seal: a genuinely failed iteration already
+ * sealed itself via task_finished(ok=false) / iteration_completed, so
+ * this only catches buckets nothing else closed.
+ */
+export function sealRunningIterations(
+  iterations: LiveTaskState['iterations'],
+): LiveTaskState['iterations'] {
+  if (!iterations.some(it => it.status === 'running')) return iterations;
+  return iterations.map(it =>
+    it.status === 'running' ? { ...it, status: 'passed' as const } : it);
+}
+
+/**
+ * Fold a terminal run status into live state, sealing dangling buckets.
+ *
+ * Exists because the seal previously lived ONLY in the ``run_completed``
+ * branch of accumulateLive — i.e. it required the WS event to arrive.
+ * When the terminal state is instead discovered by the safety-net REST
+ * poll (exactly the dropped-event case the poll was added to heal, and
+ * the case that follows any socket drop), no seal ever ran and the Live
+ * tab kept a spinner going indefinitely on a run that had finished.
+ */
+export function sealLiveForTerminal(prev: LiveTaskState): LiveTaskState {
+  const iterations = sealRunningIterations(prev.iterations);
+  return iterations === prev.iterations ? prev : { ...prev, iterations };
+}
 const MAX_EVENTS = 500;       // hard cap so a long run can't unbound memory
 const MAX_TOOL_CALLS = 200;
 const POLL_INTERVAL_MS = 15000; // safety-net REST poll cadence while a WS is open
+// Reconnect backoff for an unexpectedly-dropped (non-terminal) socket.
+// Capped low: the relay's history buffer makes reconnect cheap, so there
+// is no reason to back off as aggressively as a typical retry policy.
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_MAX_MS = 10000;
 /**
  * Action returned by dispatchTaskRunEvent — what the stream loop
  * should do in response to an incoming event.  Extracted as a pure
@@ -108,6 +210,11 @@ export function dispatchTaskRunEvent(
     case 'run_started':
     case 'run_paused':
     case 'run_resumed':
+    // Emitted instead of run_resumed when a step credit is spent: the
+    // run crossed a boundary but is still held.  Distinct on purpose,
+    // and it must refetch — step_budget and the crossed block's status
+    // both changed on disk.
+    case 'run_stepped':
     case 'iteration_completed':
     case 'block_completed':
       // State has changed — persisted snapshot is the source of
@@ -125,6 +232,61 @@ export function dispatchTaskRunEvent(
     default:
       return { kind: 'ignore' };
   }
+}
+
+/**
+ * Decide whether a freshly-fetched snapshot may replace the one in state.
+ *
+ * ``ws.onmessage`` is an ``async`` handler that awaits ``fetchOnce()``, and
+ * WebSocket message handlers are NOT serialized — each invocation returns an
+ * unawaited promise.  Several ``getTaskRun`` requests are therefore in flight
+ * at once during a busy run, and ``setRun`` would otherwise apply whichever
+ * RESOLVED last rather than whichever was REQUESTED last.  A slow earlier GET
+ * could then overwrite a newer snapshot with an older one, letting
+ * ``updated_at`` — and with it ``status``, ``progress_note`` and
+ * ``last_activity_at`` — run backwards.
+ *
+ * That regression is not merely cosmetic.  TaskCardInlineTile's live-progress
+ * line chooses between the WS stream and the REST snapshot by comparing
+ * ``run.last_activity_at`` against ``live.lastActivityTs``, which assumes the
+ * run side advances monotonically; a regressing snapshot flips that
+ * comparison back to a stale value and reintroduces the frozen status line
+ * the comparison was added to fix.
+ *
+ * Pure so the ordering rules are testable without a WebSocket, fake timers,
+ * or a React render.
+ */
+export function shouldAcceptFetchedRun(
+  prev: TaskRun | null,
+  next: TaskRun,
+  expectedRunId: string | undefined,
+): boolean {
+  // Identity first, and deliberately BEFORE recency: timestamps are only
+  // comparable within a single run.  The attempt rail can switch runId while
+  // a GET is in flight, so a response for the run we are no longer watching
+  // must be discarded outright — accepting it would render one attempt's
+  // data under another's heading.
+  if (expectedRunId && next.id && next.id !== expectedRunId) return false;
+  if (!prev) return true;
+  // State still holds the PREVIOUS attempt (selectAttempt just switched).
+  // That run may carry a much larger ``updated_at``, so a recency-first
+  // ordering would make the new attempt permanently unloadable.
+  if (prev.id !== next.id) return true;
+  // A terminal status is the run's final word.  Subjecting it to the recency
+  // check would let a lost race on the last write leave the tile spinning
+  // forever on a run that had already finished — the exact "stuck running"
+  // failure the safety-net poll exists to heal.  ``paused`` and ``held`` are
+  // excluded by construction: both are non-final for THIS run (held
+  // continues as a NEW run), so an older one carries no such authority.
+  if (TERMINAL.includes(next.status)) return true;
+  // Absent coerces to 0, never to now: a malformed or pre-field record must
+  // not be able to win against a real one.  Ties are ACCEPTED —
+  // ``updated_at`` has millisecond resolution and the backend stamps it on
+  // every mutation, so two writes can legitimately share a value and
+  // rejecting ties would discard genuinely newer content.
+  const prevTs = prev.updated_at ?? 0;
+  const nextTs = next.updated_at ?? 0;
+  return nextTs >= prevTs;
 }
 
 export interface UseTaskRunStreamResult {
@@ -152,12 +314,30 @@ export function useTaskRunStream(
   const mountedRef = useRef<boolean>(true);
   const terminalFetchedRef = useRef<boolean>(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Pending reconnect timer (B2).  A dropped-but-not-terminal socket must
+  // not leave the client silently degraded to the 15s REST poll for the
+  // rest of the run — reconnecting is cheap because the relay's history
+  // buffer lets a fresh connection replay everything it missed.
+  const reconnectRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptRef = useRef<number>(0);
+  // Diagnostic receipt-lag accounting.  A ref (not state) so the probe
+  // can never itself cause the re-render storm it exists to measure.
+  // Inert unless localStorage['ziya.debug.taskRunLag'] === '1'.
+  const lagRef = useRef(emptyLagStats());
+
 
   const fetchOnce = useCallback(async () => {
     if (!projectId || !runId) return;
     try {
       const r = await getTaskRun(projectId, runId);
-      if (mountedRef.current) setRun(r);
+      // Guarded rather than unconditional: concurrent in-flight GETs resolve
+      // in completion order, so an unguarded setRun can regress the snapshot.
+      // Applied inside the updater so the comparison reads the CURRENT state
+      // — reading ``run`` from the closure would compare against whatever was
+      // current when this callback was created, which is the same race again.
+      if (mountedRef.current) {
+        setRun(prev => (shouldAcceptFetchedRun(prev, r, runId) ? r : prev));
+      }
     } catch (e) {
       if (mountedRef.current) setError(String(e));
     }
@@ -166,8 +346,19 @@ export function useTaskRunStream(
   const clearLive = useCallback(() => setLive(EMPTY_LIVE), []);
 
   useEffect(() => {
+    // Reset ``run`` to null on every runId change, BEFORE the fetch below
+    // lands.  Without this, switching attempts (the rail, resume-from)
+    // leaves ``run`` holding the PREVIOUS (often terminal) run's object
+    // while ``runId`` has already moved to the new one.  The WS-gating
+    // effect below re-runs on that same tick, sees a non-null ``run``
+    // whose status is terminal, and returns early — permanently, since
+    // its deps ([projectId, runId, run != null, fetchOnce]) don't change
+    // again once the new run's snapshot lands.  The tile then shows a
+    // frozen view of the new attempt until a full remount.
+    setRun(null);
     mountedRef.current = true;
     terminalFetchedRef.current = false;
+    lagRef.current = emptyLagStats();
     setLive(EMPTY_LIVE);              // reset live buffers per runId
     if (!projectId || !runId) return () => { mountedRef.current = false; };
     setLoading(true);
@@ -181,18 +372,16 @@ export function useTaskRunStream(
 
   useEffect(() => {
     if (!projectId || !runId || !run) return;
+    // Only act on the run we are actually watching.  ``setRun(null)`` in
+    // the reset effect above is batched, so within the SAME commit as a
+    // runId change this effect still closes over the PREVIOUS run object
+    // while ``runId`` has already advanced — it would otherwise open a
+    // socket for the new id while deciding liveness from the old run's
+    // status.  That is the same stale-object confusion B1 is about, one
+    // commit earlier, and it also spawned a transient socket that was
+    // closed again microseconds later.
+    if (run.id && run.id !== runId) return;
     if (TERMINAL.includes(run.status)) return;
-
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = `${protocol}//${window.location.host}/ws/task-runs/${encodeURIComponent(runId)}`;
-    let ws: WebSocket;
-    try {
-      ws = new WebSocket(url);
-    } catch (e) {
-      console.warn('useTaskRunStream: WebSocket ctor failed:', e);
-      return;
-    }
-    wsRef.current = ws;
 
     // Safety-net poll: the terminal run_completed WS event can be lost
     // (dropped relay frame, dead-but-open socket, backgrounded tab),
@@ -205,10 +394,46 @@ export function useTaskRunStream(
       if (mountedRef.current) fetchOnce();
     }, POLL_INTERVAL_MS);
 
-    ws.onmessage = async (evt) => {
+    let disposed = false;
+
+    const openSocket = () => {
+      if (disposed || !mountedRef.current) return;
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const url = `${protocol}//${window.location.host}/ws/task-runs/${encodeURIComponent(runId)}`;
+      let ws: WebSocket;
+      try {
+        ws = new WebSocket(url);
+      } catch (e) {
+        console.warn('useTaskRunStream: WebSocket ctor failed:', e);
+        scheduleReconnect();
+        return;
+      }
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        // A successful connection proves the transport is healthy again;
+        // don't let a prior failure's backoff linger into the next drop.
+        reconnectAttemptRef.current = 0;
+      };
+
+      ws.onmessage = async (evt) => {
       if (!mountedRef.current) return;
       let data: unknown;
       try { data = JSON.parse(evt.data); } catch { return; }
+      // Receipt-lag probe.  Measured BEFORE accumulateLive so the sample
+      // reflects transport + queue delay, not our own render cost.  If
+      // lag grows monotonically the stream is backlogged (batching is
+      // the fix); if it stays near zero while events are sparse, frames
+      // are being dropped instead (a transport problem).
+      if (isLagProbeEnabled()) {
+        lagRef.current = foldSample(lagRef.current, data);
+        if (lagRef.current.total % LAG_LOG_EVERY === 0) {
+          console.log(
+            `📡 TASK_RUN_LAG[${(runId ?? '').slice(0, 8)}] `
+            + formatLagStats(lagRef.current),
+          );
+        }
+      }
       // Accumulate live observability *before* dispatch — even
       // ignored events (block_started, whisper_received, task_*)
       // populate the timeline.
@@ -223,24 +448,57 @@ export function useTaskRunStream(
         }
         try { ws.close(); } catch { /* ignore */ }
       }
-    };
+      };
 
-    ws.onerror = () => {
-      // onclose handles cleanup; REST fetch already gave caller state.
-    };
+      ws.onerror = () => {
+        // onclose handles cleanup and reconnect scheduling below; REST
+        // fetch already gave the caller a state snapshot in the meantime.
+      };
 
-    ws.onclose = () => {
-      if (wsRef.current === ws) wsRef.current = null;
-      // Drop without terminal event → fetch once so state reflects
-      // whatever the server settled on.
-      if (mountedRef.current && !terminalFetchedRef.current) {
+      ws.onclose = () => {
+        if (wsRef.current === ws) wsRef.current = null;
+        if (disposed || !mountedRef.current || terminalFetchedRef.current) return;
+        // Drop without a terminal event → fetch once so state reflects
+        // whatever the server settled on, THEN try to reconnect.  A
+        // dropped-but-not-terminal socket (relay hiccup, idle-timeout
+        // proxy, laptop sleep/wake) previously left the client silently
+        // degraded to the 15s REST poll for the remainder of the run —
+        // no more streaming text, tool calls, or progress notes, with
+        // nothing on screen indicating anything had changed.  Since the
+        // relay keeps a bounded replay buffer per run, reconnecting is
+        // cheap and recovers the live buffers as if nothing happened.
         fetchOnce();
-      }
+        scheduleReconnect();
+      };
     };
+
+    const scheduleReconnect = () => {
+      if (disposed || !mountedRef.current) return;
+      if (reconnectRef.current) clearTimeout(reconnectRef.current);
+      const attempt = reconnectAttemptRef.current + 1;
+      reconnectAttemptRef.current = attempt;
+      const delay = Math.min(RECONNECT_BASE_MS * attempt, RECONNECT_MAX_MS);
+      reconnectRef.current = setTimeout(() => {
+        reconnectRef.current = null;
+        openSocket();
+      }, delay);
+    };
+
+    reconnectAttemptRef.current = 0;
+    openSocket();
 
     return () => {
-      try { ws.close(); } catch { /* ignore */ }
-      if (wsRef.current === ws) wsRef.current = null;
+      disposed = true;
+      if (reconnectRef.current) { clearTimeout(reconnectRef.current); reconnectRef.current = null; }
+      if (wsRef.current) {
+        try { wsRef.current.close(); } catch { /* ignore */ }
+        // Cleared here rather than compared against a captured ``ws``:
+        // the socket variable is now scoped inside ``openSocket``, so a
+        // reconnect replaces wsRef.current and the effect-level cleanup
+        // has no single socket to identify.  ``disposed`` already stops
+        // onclose from scheduling another reconnect.
+        wsRef.current = null;
+      }
       if (pollRef.current) {
         clearInterval(pollRef.current);
         pollRef.current = null;
@@ -260,9 +518,26 @@ export function useTaskRunStream(
   // event still self-heals within one poll interval instead of leaving
   // the tile stuck "running" forever.
   useEffect(() => {
-    if (run && TERMINAL.includes(run.status)) {
+    if (!run) return;
+    // Seal dangling 'running' buckets whenever the EXECUTOR has stopped,
+    // which is a wider condition than ``TERMINAL`` (it includes 'held').
+    // Done here, not only in the ``run_completed`` event branch, because
+    // this effect is the one place that observes the run ending however
+    // that was learned — WS event, safety-net poll, or the fetch after a
+    // socket drop.  Without it, the exact cases the poll exists to heal
+    // (lost terminal frame, dead-but-open socket) left the Live tab
+    // spinning on a run that had already finished.
+    if (EXECUTOR_STOPPED.includes(run.status)) {
+      setLive(sealLiveForTerminal);
+    }
+    if (TERMINAL.includes(run.status)) {
       terminalFetchedRef.current = true;
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      // A reconnect may already be scheduled from a drop that happened
+      // moments before this terminal snapshot arrived; without clearing
+      // it, the timer would fire and open a socket for a run that is
+      // already done.
+      if (reconnectRef.current) { clearTimeout(reconnectRef.current); reconnectRef.current = null; }
       if (wsRef.current) {
         try { wsRef.current.close(); } catch { /* ignore */ }
         wsRef.current = null;
@@ -316,11 +591,7 @@ export function useTaskRunStream(
     // sealed itself via task_finished(ok=false)/iteration_completed
     // above; this only catches buckets left dangling.
     if (type === 'run_completed' || type === 'run_failed') {
-      const sealed = iterations.some(it => it.status === 'running');
-      if (sealed) {
-        iterations = iterations.map(it =>
-          it.status === 'running' ? { ...it, status: 'passed' } : it);
-      }
+      iterations = sealRunningIterations(iterations);
     }
 
      const findIterIdx = (predicate: (it: LiveTaskState['iterations'][number]) => boolean): number =>
@@ -395,10 +666,9 @@ export function useTaskRunStream(
        // iteration; the timeline already recorded it via `events`.
      } else if (blockId && !isRunScope) {
        // Block-scoped event — route to the current (last running)
-       // iteration of that block, opening a synthetic iteration 0 if
-       // none exists yet.  Inside Repeat/Until iterations the server
-       // re-tags task_text_delta / task_tool_call with the iteration
-       // owner's block_id (see app/agents/task_executor.py and
+       // iteration of that block.  Inside Repeat/Until iterations the
+       // server re-tags task_text_delta / task_tool_call with the
+       // iteration owner's block_id (see app/agents/task_executor.py and
        // block_executor.py iteration-context plumbing) so this match
        // hits the correct bucket.
        let target = -1;
@@ -407,8 +677,22 @@ export function useTaskRunStream(
            target = i; break;
          }
        }
-       if (target < 0) {
-         // No running iteration for this block — auto-open index 0.
+       // Creation is gated; ROUTING into an existing bucket is not.
+       //
+       // ``block_status`` is emitted for EVERY structural block, so an
+       // unconditional auto-open minted a phantom "Iteration 0" for
+       // every Repeat / Group / Parallel / Until in the card — blocks
+       // that never run a task directly.  Those buckets are empty by
+       // construction (a container emits no text and no tool calls) and
+       // survived only because the Live and Tools tabs filter empty ones
+       // out; ``live.iterations`` was still carrying entries that are
+       // not iterations.
+       //
+       // Once a bucket DOES exist for a block, that block's own status
+       // transitions are legitimate content for it, so only creation
+       // consults TASK_SCOPED_EVENTS.  Either way the flat timeline and
+       // ``blockStatuses`` below record the event.
+       if (target < 0 && TASK_SCOPED_EVENTS.has(type)) {
          iterations = [...iterations, {
            index: 0, blockId,
            streamText: '', toolCalls: [], events: [],
@@ -416,12 +700,39 @@ export function useTaskRunStream(
          }];
          target = iterations.length - 1;
        }
-       iterations = iterations.map((it, i) => i === target
-         ? bucketEventIntoIteration(it, type, e)
-         : it);
+       if (target >= 0) {
+         iterations = iterations.map((it, i) => i === target
+           ? bucketEventIntoIteration(it, type, e)
+           : it);
+       }
      }
 
-    if (type === 'task_text_delta') {
+    // Mirror of the backend seam (app/agents/task_executor.py,
+    // ``tool_display`` branch): no text event crosses a tool boundary, so
+    // naive concatenation welds the sentence before the call onto the one
+    // after it.  The backend fix repairs ``full_text`` / the persisted
+    // summary, but live text is accumulated here from the raw deltas and
+    // needs the same break.  Only applied when the text doesn't already end
+    // in a newline, so a model that emitted its own break is untouched.
+    if (type === 'task_tool_call') {
+      const tcBlock = typeof e.block_id === 'string' ? e.block_id : '';
+      const soFar = tcBlock ? (prev.text[tcBlock] ?? '') : '';
+      if (soFar && !/\n$/.test(soFar)) {
+        text = { ...prev.text, [tcBlock]: soFar + '\n\n' };
+      }
+    }
+
+    // ``task_text_delta_run`` is the relay's REPLAY shape for the same
+    // content.  The server folds adjacent same-block deltas into one
+    // entry as it records history (app/agents/task_run_stream_relay.py
+    // ``_record``), concatenating ``content`` verbatim, while LIVE pushes
+    // stay raw.  A client therefore receives the collapsed form for
+    // everything that streamed before it attached and raw deltas after —
+    // never both for the same text, so accepting both cannot double-count.
+    // Handling only the raw type silently discarded every character
+    // produced before the WebSocket connected: the Live tab appeared to
+    // start mid-run (or empty) on any reload or late attach.
+    if (type === 'task_text_delta' || type === 'task_text_delta_run') {
       const blockId = typeof e.block_id === 'string' ? e.block_id : '';
       const content = typeof e.content === 'string' ? e.content : '';
       if (blockId && content) {
@@ -460,11 +771,18 @@ export function useTaskRunStream(
     }
 
     let progressNote = prev.progressNote;
+    let modelProgressNote = prev.modelProgressNote;
     if (type === 'task_progress' && typeof e.note === 'string' && e.note) {
       progressNote = e.note;
+      if (e.source === 'model') {
+        modelProgressNote = e.note;
+      }
     }
 
-     return { text, toolCalls, events, iterations, variables, blockStatuses, progressNote, lastActivityTs };
+     return {
+       text, toolCalls, events, iterations, variables, blockStatuses,
+       progressNote, modelProgressNote, lastActivityTs,
+     };
   });
 }
 
@@ -481,10 +799,19 @@ export function useTaskRunStream(
  ): LiveTaskState['iterations'][number] {
    let streamText = it.streamText;
    let toolCalls = it.toolCalls;
-   if (type === 'task_text_delta') {
+   // Both the live raw delta and the relay's collapsed replay entry
+   // carry block-scoped text in ``content``; the per-iteration bucket
+   // needs the replayed form too or a reloaded run shows empty
+   // iteration bodies while the Events tab still lists the traffic.
+   if (type === 'task_text_delta' || type === 'task_text_delta_run') {
      const content = typeof e.content === 'string' ? e.content : '';
      if (content) streamText = streamText + content;
    } else if (type === 'task_tool_call') {
+     // Same seam as the flat ``text`` map above — the per-iteration bucket
+     // concatenates independently, so it needs its own break.
+     if (streamText && !/\n$/.test(streamText)) {
+       streamText = streamText + '\n\n';
+     }
      toolCalls = [...toolCalls, {
        block_id: typeof e.block_id === 'string' ? e.block_id : undefined,
        tool_name: typeof e.tool_name === 'string' ? e.tool_name : undefined,

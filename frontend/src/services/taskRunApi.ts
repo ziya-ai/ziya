@@ -5,6 +5,7 @@
  */
 
 import type { Artifact } from '../types/task_card';
+import type { TaskBinding } from '../types/task_binding';
 import type {
   TaskRun, IterationsQuery, IterationsResponse,
 } from '../types/task_run';
@@ -97,6 +98,137 @@ export async function resumeTaskRun(
   return res.json();
 }
 
+/**
+ * Advance a held run by ``count`` block boundaries, then hold again.
+ *
+ * Differs from resume in that ``pause_requested`` stays set, so the
+ * run does not run to completion.  Credits accumulate, so calling this
+ * repeatedly queues that many boundary crossings.  Granularity is a
+ * block: stepping past a Task runs that entire Task including all its
+ * LLM iterations and tool calls.
+ *
+ * A step on a run that is merely *running* (not yet paused) is
+ * meaningful rather than a no-op — the server sets the pause flag too,
+ * so the run advances to its next boundary and holds there.
+ */
+export async function stepTaskRun(
+  projectId: string, runId: string, count = 1,
+): Promise<TaskRun> {
+  const url = new URL(
+    `${runsBase(projectId)}/${encodeURIComponent(runId)}/step`,
+    window.location.origin,
+  );
+  url.searchParams.set('count', String(count));
+  const res = await fetch(url.toString(), {
+    method: 'POST', headers: projectHeaders(),
+  });
+  if (!res.ok) throw new Error(`stepTaskRun ${runId} failed: ${res.status}`);
+  return res.json();
+}
+
+/** Server response for a resume-from-block request. */
+export interface ResumeFromResult {
+  /** The NEW run.  The source run is left untouched as a record. */
+  run: TaskRun;
+  /**
+   * Binding created for the new run, so a tile renders for it.  Null
+   * when the source run had no chat to bind to — the run still executes,
+   * it just has no anchor in any conversation.
+   */
+  binding: TaskBinding | null;
+}
+
+/**
+ * ``retry`` re-executes the named block; ``continue`` accepts its
+ * recorded outcome and starts at the block after it.  Both replay every
+ * earlier block from record, so prior deck state is preserved either
+ * way — the only difference is whether the named block runs again.
+ */
+export type ResumeMode = 'retry' | 'continue';
+
+/**
+ * Re-run a finished run from ``blockId`` onward, replaying the earlier
+ * blocks' recorded artifacts instead of re-executing them.
+ *
+ * Creates a NEW run; the source run stays an immutable record.  The
+ * server resolves the target — a block inside a loop body normalizes up
+ * to the outermost enclosing loop, because only structural blocks have
+ * persisted per-block state — so the resolved id may differ from
+ * ``blockId``.  Compare ``result.run`` against what you asked for if
+ * that matters to the caller.
+ *
+ * Errors: 404 unknown run or block not in the run's snapshot; 409 the
+ * source run is still running/paused; 422 either the run predates
+ * card_snapshot, or ``continue`` was asked for on the last block (there
+ * is nothing to continue to, and launching anyway would execute
+ * nothing).
+ */
+export async function resumeRunFromBlock(
+  projectId: string, runId: string, blockId: string,
+  mode: ResumeMode = 'retry',
+): Promise<ResumeFromResult> {
+  const res = await fetch(
+    `${runsBase(projectId)}/${encodeURIComponent(runId)}` +
+    `/resume-from/${encodeURIComponent(blockId)}` +
+    `?mode=${encodeURIComponent(mode)}`,
+    { method: 'POST', headers: projectHeaders() },
+  );
+  if (!res.ok) {
+    // The status codes carry distinct, actionable meanings here, so
+    // surface the server's own detail rather than a bare code.
+    const detail = await res.json().then(b => b?.detail).catch(() => null);
+    throw new Error(
+      `resumeRunFromBlock ${runId} failed: ${res.status}` +
+      (detail ? ` — ${detail}` : ''),
+    );
+  }
+  return res.json();
+}
+
+/**
+ * ``retry_iteration`` re-runs the named iteration; ``continue_iteration``
+ * accepts its recorded result and runs the next one.  Iterations before
+ * the resume point replay from record, so the first executed iteration
+ * still receives its ``{{previous}}`` / ``{{all}}`` bindings.
+ */
+export type IterationResumeMode = 'retry_iteration' | 'continue_iteration';
+
+/**
+ * Resume a finished run from a point INSIDE a loop.
+ *
+ * Distinct endpoint rather than a mode on ``resumeRunFromBlock`` because
+ * the resume point is an iteration INDEX, which has no block id to name:
+ * a loop's iterations share one ``block_states`` entry and are recorded
+ * only as ``iteration_summaries``.
+ *
+ * Errors worth surfacing verbatim — each names an actionable refusal:
+ * 404 unknown run, or the block has no recorded state in this run; 409
+ * the run is still live; 422 either the run predates ``card_snapshot``,
+ * the block is not a loop, the loop is PARALLEL (its iterations do not
+ * depend on each other, so there is no ordering to resume into), or the
+ * predecessor's full artifact was dropped past the 50-pass retention cap
+ * (so ``{{previous}}`` would replay empty).
+ */
+export async function resumeRunFromIteration(
+  projectId: string, runId: string, blockId: string, index: number,
+  mode: IterationResumeMode = 'retry_iteration',
+): Promise<ResumeFromResult> {
+  const res = await fetch(
+    `${runsBase(projectId)}/${encodeURIComponent(runId)}` +
+    `/resume-iteration/${encodeURIComponent(blockId)}/${index}` +
+    `?mode=${encodeURIComponent(mode)}`,
+    { method: 'POST', headers: projectHeaders() },
+  );
+  if (!res.ok) {
+    const detail = await res.json().then(b => b?.detail).catch(() => null);
+    throw new Error(
+      `resumeRunFromIteration ${runId}#${index} failed: ${res.status}` +
+      (detail ? ` — ${detail}` : ''),
+    );
+  }
+  return res.json();
+}
+
 export async function deleteTaskRun(
   projectId: string, runId: string,
 ): Promise<void> {
@@ -107,6 +239,26 @@ export async function deleteTaskRun(
   if (!res.ok && res.status !== 404) {
     throw new Error(`deleteTaskRun ${runId} failed: ${res.status}`);
   }
+}
+
+/**
+ * Every attempt in a run's lineage, oldest first.
+ *
+ * The tile collapses a lineage to one threaded tile showing the newest
+ * attempt; this feeds the attempt rail that lists the rest.  Always
+ * contains at least the requested run.
+ */
+export async function getRunLineage(
+  projectId: string, runId: string,
+): Promise<TaskRun[]> {
+  const res = await fetch(
+    `${runsBase(projectId)}/${encodeURIComponent(runId)}/lineage`,
+    { headers: projectHeaders() },
+  );
+  if (!res.ok) {
+    throw new Error(`getRunLineage ${runId} failed: ${res.status}`);
+  }
+  return res.json();
 }
 
 export async function listIterations(

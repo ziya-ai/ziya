@@ -292,6 +292,13 @@
 
 .tc-tile--running { border-color: #1f6feb; animation: tc-pulse 2s ease-in-out infinite; }
 .tc-tile--done    { border-color: #3fb950; }
+/* Partial gets a heavier left rule than the other states: the whole
+   point is that it is NOT a plain failure and NOT a success, and a
+   border-colour change alone reads as a shade of red at a glance. */
+.tc-tile--partial {
+  border-color: #d29922;
+  border-left: 4px solid #d29922;
+}
 .tc-tile--failed  { border-color: #f85149; }
 .tc-tile--cancelled { border-color: #d29922; }
 .tc-tile--loading, .tc-tile--error {
@@ -326,7 +333,33 @@
   border-bottom: 1px solid rgba(128,128,128,0.15);
 }
 .tc-tile__header:hover { background: rgba(255,255,255,0.04); }
-.tc-tile__title { font-weight: 600; font-size: 12px; }
+/* The title must yield before the controls do.  Flex items default to
+ * flex-shrink:1 with min-width:auto, so a long title holds its
+ * min-content width and pushes the trailing control buttons past the
+ * right edge — where .tc-tile--expanded's overflow:hidden clips them
+ * outright, silently removing every affordance on the tile.  The
+ * collapsed receipt's .tc-tile__text already carried this protection;
+ * the expanded header never did. */
+.tc-tile__title {
+  font-weight: 600; font-size: 12px;
+  flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Run controls never shrink and never wrap.  They are the tile's only
+ * affordances, so truncating the title is strictly preferable to
+ * losing a button off the edge. */
+.tc-tile__edit,
+.tc-tile__pause,
+.tc-tile__step,
+.tc-tile__resume,
+.tc-tile__cancel,
+.tc-tile__rerun { flex: none; white-space: nowrap; }
+
+/* Icon+label controls, matching .tc-tile__rerun's existing shape. */
+.tc-tile__pause, .tc-tile__step, .tc-tile__resume {
+  display: inline-flex; align-items: center; gap: 4px;
+}
 
 .tc-tile__cancel {
   background: transparent; border: 1px solid #f85149;
@@ -346,6 +379,30 @@
 }
 .tc-tile__pause:hover { background: rgba(137,87,229,0.12); }
 .tc-tile__pause:disabled { opacity: 0.5; cursor: progress; }
+
+/* Step button — sibling of .tc-tile__pause.  Shares the violet "held"
+ * accent because stepping and pausing produce the same held state;
+ * only the duration of the hold differs.  Disabled while the executor
+ * is still inside a block, so a user can't queue credits by
+ * click-spamming faster than boundaries arrive. */
+.tc-tile__step {
+  background: transparent; border: 1px solid #8957e5;
+  color: #a371f7; border-radius: 4px; padding: 2px 6px;
+  cursor: pointer; font-size: 11px; line-height: 1;
+}
+.tc-tile__step:hover { background: rgba(137,87,229,0.12); }
+.tc-tile__step:disabled { opacity: 0.5; cursor: progress; }
+
+/* Held chip — sits beside the status Tag.  Needed because the Tag
+ * reads "running" for the whole time a stepped block executes, which
+ * on its own hides the fact that the run is still under manual
+ * control. */
+.tc-tile__held {
+  font-size: 10px; line-height: 1; padding: 2px 5px; border-radius: 3px;
+  border: 1px solid rgba(137,87,229,0.55);
+  background: rgba(137,87,229,0.14);
+  color: #a371f7; font-weight: 600; flex: none;
+}
 
 /* Resume button — shown while a run is paused. */
 .tc-tile__resume {
@@ -636,6 +693,17 @@
   border-radius: 4px; color: #f85149; font-size: 11px;
 }
 
+/* Dismiss affordance on a control-action error.  These are transient
+ * and user-triggered (unlike run.error, which is part of the record),
+ * so they must be clearable without collapsing the tile. */
+.tc-tile__error-dismiss {
+  margin-left: 8px; background: transparent;
+  border: 1px solid rgba(248,81,73,0.4); border-radius: 3px;
+  color: #f85149; font-size: 10px; line-height: 1;
+  padding: 1px 5px; cursor: pointer;
+}
+.tc-tile__error-dismiss:hover { background: rgba(248,81,73,0.15); }
+
 .tc-tile__description {
   font-size: 12px;
   opacity: 0.75;
@@ -775,34 +843,267 @@
   display: flex; align-items: center; gap: 6px;
   padding: 3px 8px; border-radius: 4px;
 }
-.tc-map__row--running { background: rgba(31,111,235,0.09); }
+/* Running stage.  A 9%-alpha tint over the map's own translucent panel
+ * was the sole cue: invisible on a light theme, and clobbered by the
+ * .tc-map__row:hover rule further down.  Four independent cues now
+ * carry it so the state survives monochrome and disabled animation. */
+.tc-map__row--running {
+  background: rgba(31,111,235,0.2);
+  /* inset, not border-left: no layout shift against the depth padding */
+  box-shadow: inset 3px 0 0 #58a6ff;
+}
 .tc-map__icon { width: 14px; text-align: center; font-weight: 700; flex: none; }
 .tc-map__icon--done { color: #3fb950; }
 .tc-map__icon--failed { color: #f85149; }
+/* Pulse by growing, not fading.  The old keyframe dropped opacity to
+ * 0.35, so the glyph identifying the active stage spent half of every
+ * cycle closer to invisible than legible — motion that cost salience. */
 .tc-map__icon--running {
   color: #58a6ff;
-  animation: tc-map-blink 1.4s ease-in-out infinite;
+  animation: tc-map-throb 1.6s ease-in-out infinite;
 }
 .tc-map__icon--queued, .tc-map__icon--skipped { color: #7d8590; }
 .tc-map__icon--cancelled { color: #d29922; }
-@keyframes tc-map-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@keyframes tc-map-throb {
+  0%, 100% { transform: scale(1);   text-shadow: 0 0 0 rgba(88,166,255,0); }
+  50%      { transform: scale(1.3); text-shadow: 0 0 7px rgba(88,166,255,0.85); }
+}
 .tc-map__emoji { flex: none; }
 .tc-map__label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tc-map__row--skipped .tc-map__label { opacity: 0.45; text-decoration: line-through; }
 .tc-map__row--queued .tc-map__label { opacity: 0.6; }
+.tc-map__row--running .tc-map__label { font-weight: 600; color: #cfe4ff; }
 .tc-map__tag { margin-left: auto; font-size: 10px; color: #7d8590; font-style: italic; flex: none; }
+
+/* Per-block "resume from here".  Low-emphasis but ALWAYS VISIBLE, then
+ * full strength on hover/focus.
+ *
+ * It was previously opacity:0 until hover, on the reasoning that it
+ * launches a real run and should not compete with the status glyphs.
+ * That reasoning fails for the case the control exists to serve: a run
+ * that stopped partway is waiting on a decision, and the affordance for
+ * making it was undiscoverable unless the user happened to hover the
+ * right row — reported as "there is no resume button". A control that
+ * cannot be found is equivalent to one that was never shipped, which
+ * outweighs the visual quiet of hiding it. */
+.tc-map__resume {
+  margin-left: 6px; flex: none;
+  background: transparent; border: 1px solid rgba(88,166,255,0.45);
+  color: #58a6ff; border-radius: 3px;
+  font-size: 10px; line-height: 1.4; padding: 1px 5px;
+  cursor: pointer; opacity: 0.62; transition: opacity 0.12s;
+}
+.tc-map__row:hover .tc-map__resume,
+.tc-map__resume:focus-visible { opacity: 1; }
+.tc-map__resume:hover { background: rgba(88,166,255,0.14); }
+.tc-map__resume:disabled { cursor: progress; }
+/* An in-flight request must stay visible after the pointer leaves. */
+.tc-map__resume:disabled { opacity: 1; }
+
+/* A row carrying a resume button has no room for an auto-margin tag to
+ * also claim the right edge, so push the button to the edge instead. */
+.tc-map__row .tc-map__resume:only-of-type { margin-left: auto; }
+.tc-map__tag + .tc-map__resume,
+.tc-map__dots + .tc-map__resume { margin-left: 6px; }
+
+/* Continue-past-here.  Same low-emphasis-until-hover treatment as
+ * .tc-map__resume — including its always-visible baseline, for the same
+ * discoverability reason — in the neutral grey of a non-destructive
+ * move rather than the blue of a re-run. */
+.tc-map__continue {
+  margin-left: 4px; flex: none;
+  background: transparent; border: 1px solid rgba(128,128,128,0.4);
+  color: rgba(160,160,160,0.95); border-radius: 3px;
+  font-size: 10px; line-height: 1.4; padding: 1px 5px;
+  cursor: pointer; opacity: 0.55; transition: opacity 0.12s;
+}
+.tc-map__row:hover .tc-map__continue,
+.tc-map__continue:focus-visible { opacity: 1; }
+.tc-map__continue:hover { background: rgba(128,128,128,0.14); }
+.tc-map__continue:disabled { cursor: progress; opacity: 1; }
+
+/* ── Partial banner ───────────────────────────────────────────── */
+/* Leads the tile body: a user arriving at a stopped run needs the
+ * verdict before the per-block detail. */
+.tc-partial {
+  background: rgba(210,153,34,0.09);
+  border: 1px solid rgba(210,153,34,0.35);
+  border-radius: 6px; padding: 9px 11px; margin-bottom: 10px;
+}
+.tc-partial__head {
+  font-weight: 600; color: #e3b341; margin-bottom: 4px;
+}
+.tc-partial__body { line-height: 1.55; }
+.tc-partial__error {
+  margin-top: 5px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px; background: rgba(248,81,73,0.12);
+  color: #f0a0a0; padding: 4px 6px; border-radius: 3px;
+  white-space: pre-wrap; word-break: break-word;
+}
+/* Separated by a rule, not just spacing: this is the line the user came
+ * for, and it must not read as a continuation of the prose above. */
+.tc-partial__hazard {
+  margin-top: 7px; padding-top: 6px;
+  border-top: 1px solid rgba(210,153,34,0.25);
+  color: #e3b341; line-height: 1.5;
+}
+
+/* ── Progress trail (the run's narrative) ─────────────────────────
+ * The live progress line is one slot, overwritten constantly; this is
+ * the durable history.  Collapsed by default because on a long run it is
+ * reference material, not the headline. */
+.tc-trail {
+  margin-top: 8px;
+  font-size: 12px;
+  border: 1px solid rgba(128, 128, 128, 0.2);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+.tc-trail__summary {
+  cursor: pointer;
+  font-size: 11px;
+  opacity: 0.8;
+  padding: 2px 0;
+  user-select: none;
+}
+.tc-trail__hint { opacity: 0.65; font-style: italic; }
+.tc-trail__list {
+  list-style: none;
+  margin: 6px 0 2px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.tc-trail__item {
+  display: grid;
+  grid-template-columns: 68px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 11px;
+  line-height: 1.45;
+  padding: 1px 0;
+}
+/* A model-authored phase note is the richer kind and the one worth
+ * scanning for, so it gets weight and an accent rule rather than being
+ * averaged in with a wall of "ran grep: ...". */
+.tc-trail__item--model {
+  border-left: 2px solid rgba(45, 212, 191, 0.7);
+  padding-left: 6px;
+  margin-left: -8px;
+}
+.tc-trail__item--model .tc-trail__note {
+  color: #2dd4bf;
+  font-weight: 500;
+}
+.tc-trail__at {
+  opacity: 0.5;
+  font-variant-numeric: tabular-nums;
+  font-size: 10px;
+}
+.tc-trail__note { word-break: break-word; }
+
+/* ── Provenance ("where the work came from") ──────────────────── */
+.tc-prov {
+  background: rgba(88,166,255,0.07);
+  border: 1px solid rgba(88,166,255,0.28);
+  border-radius: 6px; padding: 8px 11px; margin-bottom: 10px;
+}
+.tc-prov__head {
+  color: #58a6ff; font-weight: 600; margin-bottom: 3px;
+}
+.tc-prov__list {
+  margin: 0; padding-left: 18px; line-height: 1.6;
+}
+
+/* ── Attempt rail ─────────────────────────────────────────────── */
+.tc-rail {
+  border: 1px solid rgba(128,128,128,0.18);
+  border-radius: 6px; margin-bottom: 10px; overflow: hidden;
+}
+.tc-rail__head {
+  padding: 5px 9px; font-size: 9px; letter-spacing: 0.6px;
+  color: #7d8590; border-bottom: 1px solid rgba(128,128,128,0.14);
+}
+.tc-rail__hint { color: #5a626b; letter-spacing: 0; }
+.tc-rail__row {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 5px 9px; background: transparent; border: none;
+  color: #8b949e; font-size: 12px; text-align: left; cursor: pointer;
+  font-family: inherit;
+}
+.tc-rail__row:hover { background: rgba(128,128,128,0.08); }
+.tc-rail__row:focus-visible { outline: 1px solid #58a6ff; outline-offset: -1px; }
+/* The shown attempt gets an accent bar as well as a tint, so which
+ * attempt is on screen survives a monochrome rendering. */
+.tc-rail__row--current {
+  background: rgba(88,166,255,0.08);
+  box-shadow: inset 3px 0 0 #58a6ff;
+  color: var(--tc-card-text, #e0e0e0);
+}
+.tc-rail__num {
+  width: 14px; font-size: 10px; font-variant-numeric: tabular-nums;
+  flex: none;
+}
+.tc-rail__row--current .tc-rail__num { font-weight: 700; }
+.tc-rail__icon { flex: none; }
+.tc-rail__label {
+  flex: 1; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.tc-rail__kind {
+  border: 1px solid rgba(88,166,255,0.4); color: #58a6ff;
+  border-radius: 3px; padding: 0 4px; font-size: 9px;
+}
+.tc-rail__shown {
+  flex: none; color: #3fb950; font-size: 10px; font-weight: 600;
+}
+
+/* Attempt ordinal in the header. */
+.tc-tile__attempt {
+  flex: none; font-size: 10px; color: #8b949e;
+  border: 1px solid rgba(128,128,128,0.3);
+  border-radius: 3px; padding: 1px 6px;
+}
+
+/* "running" chip — the cue that survives no-colour and no-motion. */
+.tc-map__tag--running {
+  color: #a6d2ff; font-style: normal; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  border: 1px solid rgba(88,166,255,0.5);
+  background: rgba(88,166,255,0.16);
+  border-radius: 3px; padding: 1px 5px; line-height: 1.4;
+}
 .tc-map__dots { margin-left: auto; display: inline-flex; gap: 3px; align-items: center; flex: none; }
 .tc-map__dot {
   width: 8px; height: 8px; border-radius: 50%;
   display: inline-block; border: none; padding: 0;
 }
 .tc-map__dot--passed { background: #3fb950; }
-.tc-map__dot--failed { background: #f85149; cursor: pointer; }
-.tc-map__dot--failed:hover, .tc-map__dot--selected { outline: 2px solid #58a6ff; outline-offset: 1px; }
+.tc-map__dot--failed { background: #f85149; }
 .tc-map__dot--cancelled { background: #d29922; }
+
+/* Openable vs inert.  A dot whose artifact was retained is the only one
+ * a click does anything to, and the difference used to be carried ONLY
+ * by the disabled attribute — invisible on an 8px circle, so a user
+ * clicking across a row of dots got silence and read the UI as broken.
+ * Inert dots are dimmed and take the default cursor; openable ones stay
+ * full-strength, take a pointer, and ring on hover/focus. */
+.tc-map__dot--openable { cursor: pointer; }
+.tc-map__dot:disabled { opacity: 0.4; cursor: default; }
+.tc-map__dot--openable:hover,
+.tc-map__dot--openable:focus-visible,
+.tc-map__dot--selected { outline: 2px solid #58a6ff; outline-offset: 1px; }
+/* Expanding ring rather than a fade, for the same reason as the row
+ * icon: the in-flight iteration must never be the dimmest dot. */
 .tc-map__dot--running {
   background: #58a6ff;
-  animation: tc-map-blink 1.4s ease-in-out infinite;
+  width: 10px; height: 10px;
+  animation: tc-map-ring 1.4s ease-in-out infinite;
+}
+@keyframes tc-map-ring {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(88,166,255,0.75); }
+  70%      { box-shadow: 0 0 0 5px rgba(88,166,255,0); }
 }
 .tc-map__dot-count { font-size: 10px; color: #7d8590; margin-left: 2px; }
 .tc-map__detail {
@@ -843,6 +1144,10 @@
 /* ── Clickable rows + focused block detail ────────────────────── */
 .tc-map__row { cursor: pointer; }
 .tc-map__row:hover { background: rgba(255,255,255,0.05); }
+/* Declared after the generic :hover so hovering a running row can't
+ * strip its tint — .tc-map__row:hover (0,2,0) otherwise outranks
+ * .tc-map__row--running (0,1,0) purely on specificity. */
+.tc-map__row--running:hover { background: rgba(31,111,235,0.3); }
 .tc-map__row--selected { background: rgba(88,166,255,0.14); }
 .tc-map__row:focus-visible { outline: 1px solid #58a6ff; outline-offset: -1px; }
 
@@ -863,11 +1168,65 @@
 .tc-detail__head {
   display: flex; align-items: center; gap: 6px; margin-bottom: 6px;
 }
-.tc-detail__title { font-weight: 600; }
+/* Yields before the badges do.  A flex item defaults to min-width:auto,
+ * so a long block label would hold its min-content width and push the
+ * provenance badges past the panel edge — the same shape of bug the
+ * expanded tile header had with its controls. */
+.tc-detail__title {
+  font-weight: 600;
+  flex: 0 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .tc-detail__status {
   margin-left: auto; font-size: 10px; text-transform: uppercase;
   letter-spacing: 0.04em; padding: 1px 6px; border-radius: 3px; font-weight: 600;
 }
+/* ── Focused-block temporal provenance ─────────────────────────────
+ * Answers "is this from the past run or this one?" — the question the
+ * panel previously left open by showing state with no "when". */
+.tc-detail__origin {
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  color: #8b949e;
+  flex: none;
+}
+
+/* Amber, matching the partial-run banner: both mean "this is not what a
+ * clean single-attempt run looks like", so they should read as one idea. */
+.tc-detail__origin--replayed {
+  border-color: rgba(210, 153, 34, 0.55);
+  background: rgba(210, 153, 34, 0.14);
+  color: #e3b341;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+/* Wall-clock, not a relative age: a resume that lands quickly makes
+ * "2 minutes ago" identical for replayed and fresh output. */
+.tc-detail__when {
+  font-size: 10px;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+.tc-detail__origin-note {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  color: #e3b341;
+  opacity: 0.9;
+}
+
+/* Replayed is its own display status — 'skipped' is true of this run's
+ * executor but reads as "no result" to someone looking at a result. */
+.tc-detail__status--replayed { color: #e3b341; }
 .tc-detail__status--running { color: #58a6ff; }
 .tc-detail__status--done { color: #3fb950; }
 .tc-detail__status--failed { color: #f85149; }
@@ -907,7 +1266,112 @@
 }
 .tc-detail__error-box pre { margin: 0; white-space: pre-wrap; font-size: 11px; }
 
+/* ── Mid-loop resume, in the focused-iteration panel ───────────────
+ * Always visible (never hover-gated): a stopped loop is waiting on a
+ * decision, and the same discoverability argument that un-hid the
+ * per-block buttons applies with more force here — this panel is
+ * reached deliberately, by clicking an iteration dot. */
+.tc-iter-resume {
+  margin: 6px 0 8px;
+  padding: 7px 9px;
+  border: 1px solid rgba(88, 166, 255, 0.3);
+  border-radius: 5px;
+  background: rgba(88, 166, 255, 0.06);
+}
+
+/* The sentence a dot has no room for.  This is why the buttons live
+ * here: "replayed from record" is the whole reason a mid-loop resume is
+ * cheap, and a user who does not know it will assume the loop restarts. */
+.tc-iter-resume__note {
+  font-size: 11px;
+  line-height: 1.45;
+  color: #8b949e;
+  margin-bottom: 6px;
+}
+.tc-iter-resume__note strong { color: #adbac7; font-weight: 600; }
+
+.tc-iter-resume__actions { display: flex; gap: 6px; flex-wrap: wrap; }
+
+.tc-iter-resume__btn {
+  background: transparent;
+  border: 1px solid rgba(88, 166, 255, 0.5);
+  color: #58a6ff;
+  border-radius: 3px;
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-variant-numeric: tabular-nums;
+}
+.tc-iter-resume__btn:hover:not(:disabled) {
+  background: rgba(88, 166, 255, 0.14);
+}
+.tc-iter-resume__btn:disabled { cursor: progress; opacity: 0.6; }
+
+/* Neutral grey for continue, matching .tc-map__continue: accepting a
+ * recorded result is a non-destructive move, not a re-run. */
+.tc-iter-resume__btn--continue {
+  border-color: rgba(128, 128, 128, 0.45);
+  color: rgba(170, 170, 170, 0.95);
+}
+.tc-iter-resume__btn--continue:hover:not(:disabled) {
+  background: rgba(128, 128, 128, 0.14);
+}
+
 @media (prefers-color-scheme: light) {
   .tc-map__row:hover { background: rgba(0,0,0,0.04); }
   .tc-map__row--selected { background: rgba(31,111,235,0.1); }
+  .tc-map__row--running { background: rgba(31,111,235,0.14); }
+  .tc-map__row--running:hover { background: rgba(31,111,235,0.22); }
+  .tc-map__row--running .tc-map__label { color: #0b4ea2; }
+  .tc-map__tag--running { color: #0b4ea2; background: rgba(31,111,235,0.12); }
+  /* The amber-on-dark foregrounds fall below usable contrast on white,
+     so the banner's text darkens while its fill stays amber. */
+  .tc-partial__head, .tc-partial__hazard { color: #8a5a00; }
+  .tc-partial__error { background: rgba(248,81,73,0.1); color: #8c1f1f; }
+  .tc-prov__head { color: #0b4ea2; }
+  .tc-rail__row--current { color: #1f2328; }
 }
+
+/* With motion suppressed the animated cues carry nothing, so the static
+ * ones (accent bar, tint, weighted label, "running" chip) are the whole
+ * signal — which is why the running state does not rely on animation. */
+@media (prefers-reduced-motion: reduce) {
+  .tc-tile--running,
+  .tc-map__icon--running,
+  .tc-map__dot--running { animation: none; }
+}
+
+/* ── Inspector completion footer ────────────────────────────────────
+ * The "stop watching, it's over" cue.  A top border rather than a card:
+ * it terminates the trace above it, so it should read as the end of that
+ * list rather than as a new element competing with it.
+ * Colour comes from the status class and matches the tile border palette
+ * above, so the two surfaces agree at a glance. */
+.tc-tile__inspector-done {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 6px 4px 2px;
+  border-top: 1px solid var(--tc-border, #30363d);
+  font-size: 11.5px;
+  color: var(--tc-muted, #8b949e);
+}
+
+.tc-tile__inspector-done-dot { font-size: 9px; line-height: 1; }
+
+/* Pushed to the right edge and dimmed: it explains the row rather than
+ * being the message, so it must not compete with the status wording. */
+.tc-tile__inspector-done-hint {
+  margin-left: auto;
+  opacity: 0.65;
+  font-style: italic;
+}
+
+.tc-tile__inspector-done--done      { color: #3fb950; }
+.tc-tile__inspector-done--partial   { color: #d29922; }
+.tc-tile__inspector-done--failed    { color: #f85149; }
+.tc-tile__inspector-done--cancelled { color: #d29922; }
+/* Violet like the tile's held/paused treatment: stopped, not broken. */
+.tc-tile__inspector-done--held      { color: #8957e5; }

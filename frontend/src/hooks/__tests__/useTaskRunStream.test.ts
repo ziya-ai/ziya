@@ -38,6 +38,22 @@ describe('dispatchTaskRunEvent', () => {
       .toEqual({ kind: 'refetch' });
   });
 
+  it('refetches on run_paused and run_resumed', () => {
+    expect(dispatchTaskRunEvent({ type: 'run_paused', run_id: 'r1' }))
+      .toEqual({ kind: 'refetch' });
+    expect(dispatchTaskRunEvent({ type: 'run_resumed', run_id: 'r1' }))
+      .toEqual({ kind: 'refetch' });
+  });
+
+  // Distinct from run_resumed on purpose (the run is still held), but
+  // it is still a persisted-state change: step_budget dropped and the
+  // crossed block's status advanced.  Ignoring it would leave the tile
+  // stale until the 15s safety-net poll.
+  it('refetches on run_stepped', () => {
+    expect(dispatchTaskRunEvent({ type: 'run_stepped', run_id: 'r1' }))
+      .toEqual({ kind: 'refetch' });
+  });
+
   it('refetches and closes on run_completed', () => {
     expect(dispatchTaskRunEvent({
       type: 'run_completed', status: 'done', run_id: 'r1',

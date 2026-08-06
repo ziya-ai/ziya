@@ -12,6 +12,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useProject } from '../context/ProjectContext';
 import type { TaskBinding } from '../types/task_binding';
 import { listBindings } from '../services/taskBindingApi';
+import { collapseLineages } from '../components/TaskCard/lineageCollapse';
 
 /**
  * Window event dispatched by any component that creates or modifies a
@@ -75,16 +76,36 @@ export function useTaskBindings(chatId: string | undefined) {
     return () => window.removeEventListener('task-binding-created', handler);
   }, [chatId]);
 
+  /**
+   * Collapse each attempt lineage to its newest attempt.
+   *
+   * A resume creates a new run AND a new binding, so a card retried
+   * twice previously rendered three tiles side by side with nothing
+   * stating their relationship — the confusion this whole change exists
+   * to remove.  One tile per lineage, showing the newest attempt, with
+   * the rest reachable from its attempt rail.
+   *
+   * Derived synchronously from ``root_run_id`` / ``attempt``, which the
+   * list endpoint stamps from the run lookup it already performs for
+   * ``run_status``.  The previous version fetched a run per binding,
+   * which was both a request burst and wrong for a cross-project global
+   * chat: it used the VIEWING project id, while the server resolves
+   * bindings from the chat's OWNING project.  Being synchronous also
+   * removes the first-paint window in which every attempt rendered.
+   */
+  const supersededIds = useMemo(() => collapseLineages(bindings), [bindings]);
+
   const bindingsByAnchor = useMemo(() => {
     const map = new Map<string, TaskBinding[]>();
     for (const b of bindings) {
+      if (supersededIds.has(b.id)) continue;
       const key = b.anchor_message_id ?? '__no_anchor__';
       const arr = map.get(key) ?? [];
       arr.push(b);
       map.set(key, arr);
     }
     return map;
-  }, [bindings]);
+  }, [bindings, supersededIds]);
 
   return { bindingsByAnchor, loading, refresh };
 }

@@ -24,6 +24,21 @@ export interface TaskBinding {
    * "cancelled").  Absent for staged bindings with no run.
    */
   run_status?: string;
+  /**
+   * Server-enriched on GET /task-bindings, from the same run lookup
+   * that produces ``run_status``.  Lets the client collapse an attempt
+   * lineage to a single tile without a round trip per binding — see
+   * components/TaskCard/lineageCollapse.ts.
+   *
+   * Absent for staged bindings, and for runs written before lineage
+   * tracking existed; the collapse falls back to ``run_id`` as the
+   * lineage key so those remain their own single-attempt lineages.
+   */
+  root_run_id?: string | null;
+  /** 1-based position in the lineage.  Absent is treated as 1. */
+  attempt?: number;
+  /** Which project the binding actually lives in (cross-project globals). */
+  project_id?: string;
 }
 
 export interface TaskBindingCreateRequest {
