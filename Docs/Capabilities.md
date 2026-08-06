@@ -302,6 +302,20 @@ command for the packages that type needs, and the LaTeX source stays visible.
 Output is **SVG** when `dvisvgm` is installed — text stays selectable and is
 recoloured for dark mode — and **PNG** otherwise.
 
+**Dark mode.** TeX draws black on transparent, which measures 1.27:1 against the
+dark diagram background — invisible. SVG output is recoloured on the client:
+TeX's default black becomes a light ink, and any colour you authored is lightened
+only as far as it takes to clear a 3:1 contrast floor, with its hue preserved so
+`\draw[red]` still reads as red. Stroke widths are never altered, because TeX's
+hairline weights are part of the engraving. PNG output cannot be recoloured
+selectively, so it is inverted instead.
+
+**Sizing.** Diagrams render at their natural size rather than being stretched to
+the width of the chat column. dvisvgm reports an absolute size in points, which
+becomes the diagram's width, capped at the container so it still shrinks on a
+narrow viewport. This matters most for small structures: a lone benzene ring is
+intrinsically 70px wide, so filling an 820px column would scale it nearly 12×.
+
 To install a minimal working toolchain:
 
 ```bash
@@ -320,6 +334,30 @@ sudo tlmgr install mhchem      # \ce{} chemical equations, \pu{} units
 without affecting structure rendering. Lewis dot structures (`\lewis`, `\Lewis`)
 need no extra package — they come from a module chemfig already ships, which Ziya
 loads for you.
+
+**Charges and lone pairs.** `\charge` separates the angle from the symbol with
+`=`, not `:` — `\charge{90=\|,180=\|}{O}` — because `:` is already taken for the
+optional radial offset. Both mistakes are **repaired automatically**, so either
+form renders, but the rule is worth knowing since the raw errors name the wrong
+cause: chemfig uses `:` for *bond* angles (`-[:30]`), so the wrong separator is
+the natural first guess, and it fails with `Argument of \charge_g has an extra
+}` — pointing at brace balance and never mentioning the separator. The charge
+argument is also not math mode, so `\ominus` and friends fail with `Missing $
+inserted`, which likewise doesn't say which argument was at fault.
+
+The repair promotes a stand-in `:` to `=` and wraps a math symbol in `$...$`,
+reporting each correction alongside the image. It is deliberately conservative
+in two ways. The math wrap fires **only** for payloads containing a TeX control
+word, because wrapping is not always neutral — `\charge{90=-}` renders
+*differently* in math mode (a text hyphen is not a math minus), while `\|`, `+`
+and `2+` are byte-identical either way, so blanket wrapping would silently
+alter diagrams that already worked. And a genuine offset survives: in
+`45:2pt:\|` only the *last* colon is promoted. An undefined command such as
+`\+` is left to fail, since that is a different error and guessing at intent
+would trade a clear message for a wrong structure.
+
+For plain lone pairs `\lewis{1:5:7:,O}` is usually less fiddly than stacking
+`\|` marks by angle.
 
 `\ce{}` also works in ordinary prose math (`$...$` / `$$...$$`) with no TeX
 installation at all, since the browser's KaTeX renderer loads the mhchem
@@ -566,6 +604,104 @@ The agent iterates (up to 15 times by default), re-evaluating whether the goal i
 > and in-memory context, and **Resume** continues it. An in-flight Task/LLM
 > step always finishes before the hold takes effect. A held run shows a
 > distinct non-terminal `paused` status.
+
+#### Step-debugging a run
+
+Alongside **Pause** and **Resume**, a live run tile has a labelled **Step**
+button: it advances
+the run by exactly one block and holds again, which is how you walk a complex
+card while building it rather than launching it and watching it die. Clicking
+repeatedly queues more steps (the tile shows `held +N` for unspent ones).
+
+Stepping works on a run that is already going, not just a paused one — the step
+takes control, so the run advances to its next boundary and stops there.
+
+Granularity is a whole block, because Step reuses the same three hold points as
+Pause and Cancel (sequence siblings, Repeat iterations, `until` loops) and adds
+none. Stepping past a Task runs that entire Task, including all of its LLM
+iterations and tool calls; there is no mid-Task stop. One step buys one unit of
+real work at any nesting depth — descending into a group or starting a new loop
+iteration is free.
+
+A held run keeps its `held` chip when the tile is collapsed to its one-line
+receipt, so a run waiting on you is distinguishable from a finished one — but
+the receipt carries no buttons, so expand the tile to reach Step and Resume.
+
+#### When a finished tile folds itself away
+
+A tile that finishes while you are not touching it collapses to its receipt
+after 8 seconds. Interacting with it — clicking, typing, selecting trace text —
+pushes that out by a quiet period, so reading is never interrupted mid-sentence.
+
+Expanding a tile **by hand** does more: it pins the tile open, and only
+collapsing it yourself closes it again. A run held on an infrastructure fault
+never auto-collapses at all, since the receipt offers no way to resume it.
+
+#### Resuming a finished run from a block
+
+A run that died partway through used to be unrecoverable: the only option was
+relaunching the card, discarding every block that had already succeeded. Hover
+any row in a finished run's block map and a **↻ from here** button appears —
+it starts a **new** run that replays the earlier blocks' recorded results
+instead of re-running them, and resumes real execution at the block you picked.
+
+What this preserves, and why:
+
+- Earlier blocks are marked `skipped` but keep their original summaries, so
+  `{{sibling("id")}}` and `{{previous_sibling}}` still resolve.
+- A replayed block's failure flag is cleared — otherwise an `on_failure="stop"`
+  sequence would halt before ever reaching your target.
+- `state` blocks are genuinely re-run (they only write authored literals), which
+  is how `{{var.NAME}}` is rebuilt.
+- The original run's launch-time variable overrides are carried forward.
+
+The source run is kept as an immutable record, so the resumed run appears as a
+second tile next to it rather than replacing it. Picking a block inside a loop
+body resumes from the **whole enclosing loop**, because only structural blocks
+carry per-block state — so you can click any row and let the server decide.
+Runs created before run snapshotting existed cannot be resumed, and show no
+button.
+
+#### Resuming inside a loop
+
+A loop was the one shape resume could not help. Picking any row inside a
+Repeat or Until body resumes the **whole enclosing loop**, because only
+structural blocks carry per-block state — so a five-iteration campaign that
+lost its last iteration to an expired credential had to re-pay all five, and
+the four banked passes were discarded. That is the most expensive lost work
+the task system had, since a long loop is precisely where a run is most
+likely to outlive a credential.
+
+Iteration dots on a loop row now carry the same two actions the block rows
+do, applied to one iteration:
+
+Click an iteration dot to focus it; the detail panel below then offers:
+
+- **↻ re-run #N** re-runs that iteration.
+- **▶ continue from #N+1** accepts its recorded result and runs the next one.
+
+The buttons live in the detail panel rather than on the dot itself because
+they need a sentence explaining that earlier iterations are replayed — a
+user who doesn't know that will assume the loop restarts from zero.
+
+Earlier iterations are **replayed from record** rather than re-executed, so
+the first iteration that actually runs receives the same `{{previous}}` and
+`{{all}}` bindings it saw originally. Blocks before the loop replay through
+the existing block-level mechanism, exactly as any other resume.
+
+Two cases are refused rather than half-supported, because both would produce
+a run that looks successful while feeding empty input to the work:
+
+- **A parallel loop.** Its iterations cannot see each other, so there is no
+  ordering for "resume at 3" to mean — the earlier iterations were never
+  prerequisites. Retry the whole loop instead.
+- **A predecessor whose full result was dropped.** Only the first 50 passing
+  iterations of a loop keep their complete artifact; past that there is
+  nothing to replay into `{{previous}}`.
+
+While stepping, the status tag briefly reads `running`, because the executor
+genuinely is running the block your step bought. The `held` chip beside it is
+the thing to watch: it stays lit for as long as the run is under your control.
 
 ### /join — Continue a GUI Conversation from the Terminal
 
