@@ -26,6 +26,7 @@ from app.providers.base import (
     ToolUseStart,
     UsageEvent,
 )
+from app.providers.error_scrub import scrub_request_id
 from app.config.env_registry import ziya_env
 from app.utils.logging_utils import get_mode_aware_logger
 
@@ -288,8 +289,16 @@ class AnthropicDirectProvider(LLMProvider):
 
         if config.thinking:
             if config.thinking.mode == "adaptive":
-                # Anthropic direct API: adaptive takes no budget_tokens
-                kwargs["thinking"] = {"type": "adaptive"}
+                # Adaptive takes no budget_tokens.  display MUST be set:
+                # it defaults to "omitted" on Opus 4.7+/Sonnet 5/Fable 5/
+                # Mythos 5, and omitted suppresses every thinking_delta
+                # while still billing for the reasoning.  Verified on the
+                # bedrock-mantle gateway (which subclasses this provider):
+                # fable-5 went from 0 deltas to 47 with this one field.
+                # A no-op on models that already default to "summarized".
+                kwargs["thinking"] = {
+                    "type": "adaptive", "display": "summarized",
+                }
             elif config.thinking.mode == "enabled":
                 # Standard extended thinking requires budget_tokens
                 kwargs["thinking"] = {"type": "enabled", "budget_tokens": config.thinking.budget_tokens}
@@ -459,7 +468,45 @@ class AnthropicDirectProvider(LLMProvider):
 
     @staticmethod
     def _classify_error(error_str: str) -> ErrorType:
+        # Strip the server-generated request_id before ANY substring test.
+        # It is opaque random alphanumerics and can itself contain "429" /
+        # "rate" / "too many", silently misclassifying any error as THROTTLE
+        # — unreproducibly, since the id differs per request. See
+        # app/providers/error_scrub.py.
+        error_str = scrub_request_id(error_str)
         lowered = error_str.lower()
+        # Genuine AWS credential expiry, checked BEFORE the signature-expiry
+        # branch below because the two are opposite outcomes from adjacent
+        # wording. An expired SIGNATURE is repaired by re-signing on retry;
+        # an expired TOKEN cannot be, so retrying it four times only delays
+        # the honest answer and hides the action the user must take. AUTH
+        # routes to the credential-help template, which here is correct.
+        if ("expiredtoken" in lowered or "invalidclienttokenid" in lowered
+                or "security token included in the request is expired" in lowered
+                or "the security token included in the request is invalid" in lowered):
+            return ErrorType.AUTH
+        # SigV4 signature expiry. The request carried a valid X-Amz-Date, but
+        # more than AWS's 5-minute window elapsed before the server evaluated
+        # it ("Signature expired: <signed> is now earlier than <now - 5 min>").
+        # Observed live on bedrock-mantle at iteration 5 with a 1.27 MB body
+        # and a 10m14s sign-to-validate gap.
+        #
+        # Retrying is not merely safe here but SUFFICIENT: signing happens
+        # per-attempt inside _AsyncSigV4Transport.handle_async_request, so the
+        # next attempt stamps a fresh timestamp. The 401 also arrives before
+        # any content is yielded, so the duplicate-producing-retry guard above
+        # does not fire.
+        #
+        # Deliberately NOT ErrorType.AUTH: the credentials are valid, and AUTH
+        # is both non-retryable AND rewritten into the "run mwinit" credential
+        # help template by the orchestrator, pointing the user at the wrong
+        # problem. Checked FIRST because the message embeds a random
+        # request_id, which could otherwise collide with the "429"/"rate"
+        # substrings below. "SignatureDoesNotMatch" is excluded on purpose --
+        # that is a wrong secret key, which no retry can repair.
+        if ("signature expired" in lowered or "requestexpired" in lowered
+                or "requesttimetooskewed" in lowered):
+            return ErrorType.READ_TIMEOUT
         if "rate" in lowered or "429" in error_str or "too many" in lowered:
             return ErrorType.THROTTLE
         if "overloaded" in lowered or "529" in error_str:

@@ -70,6 +70,11 @@ class UsageEvent(StreamEvent):
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    # Reasoning tokens billed WITHIN output_tokens (not additional to it).
+    # Providers that do not report a breakdown leave this 0, which is
+    # indistinguishable from "no thinking" -- deliberately, since neither
+    # case has a figure to display.
+    thinking_tokens: int = 0
 
 
 @dataclass(frozen=True, slots=True)

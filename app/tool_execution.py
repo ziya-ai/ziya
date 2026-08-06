@@ -24,8 +24,73 @@ import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncGenerator, Callable, Dict, List, Optional, Set
+from app.utils.feedback_directives import is_stop_directive, is_stop_feedback
 
 logger = logging.getLogger(__name__)
+
+
+class ToolStopRequested(Exception):
+    """Raised when a stop directive arrives while a tool is still running.
+
+    Distinct from asyncio.CancelledError so the broad handler in
+    execute_single_tool does not report it as a tool failure: nothing failed,
+    the user asked to stop.
+    """
+
+    def __init__(self, message: str = ""):
+        super().__init__(message or "user requested stop")
+        self.feedback_message = message
+
+
+async def _await_tool_result(coro, timeout: float, ctx) -> Any:
+    """Await *coro* with a timeout, aborting early on a stop directive.
+
+    Previously a bare ``asyncio.wait_for``, which meant a single tool call was
+    a total blind spot: the only feedback checks are before execution and
+    after it, so a stop sent 5 seconds into a 5-minute command was not acted
+    on until the command finished on its own.
+
+    PEEKS rather than drains.  Draining here would pull non-stop feedback out
+    of the shared pending list at a point where it cannot be injected — a
+    user text message may not sit between an assistant ``tool_use`` block and
+    its matching ``tool_result`` — so it would have to be re-appended,
+    scrambling arrival order against newly arriving items.  Leaving it pending
+    lets the post-execution drain handle it a moment later with correct
+    framing.  Only the stop decision is made here, and that needs no framing.
+
+    Falls back to plain ``wait_for`` when no peek function is supplied, so
+    callers that never wired one up are unaffected.
+    """
+    if getattr(ctx, "peek_feedback_fn", None) is None:
+        return await asyncio.wait_for(coro, timeout=timeout)
+
+    from app.utils.feedback_directives import is_stop_feedback
+
+    task = asyncio.ensure_future(coro)
+    deadline = time.monotonic() + timeout
+    try:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise asyncio.TimeoutError()
+            done, _ = await asyncio.wait({task}, timeout=min(0.3, remaining))
+            if task in done:
+                return task.result()
+            try:
+                pending = list(ctx.peek_feedback_fn() or ())
+            except Exception as peek_err:  # noqa: BLE001 — never fail a tool on the peek
+                logger.debug(f"Feedback peek during tool await failed: {peek_err}")
+                continue
+            for fb in pending:
+                if is_stop_feedback(fb):
+                    logger.info(
+                        f"🛑 TOOL_STOP_MIDFLIGHT: stop directive during "
+                        f"{ctx.actual_tool_name}; abandoning the call"
+                    )
+                    raise ToolStopRequested(fb.get("message", ""))
+    finally:
+        if not task.done():
+            task.cancel()
 
 
 @dataclass
@@ -61,6 +126,13 @@ class ToolExecContext:
 
     # Reference to the executor for helper methods
     executor: Any = None
+
+    # Non-destructive view of the shared pending-feedback list.  Used only to
+    # spot a stop directive while a tool is mid-flight; draining there would
+    # remove items at a point where they cannot legally be injected into the
+    # conversation.  Optional so callers that don't supply it keep the old
+    # (blind-during-execution) behaviour rather than breaking.
+    peek_feedback_fn: Optional[Callable] = None
 
     # --- Mutable output flags (written by execute_single_tool) ---
     deferred_feedback: List[str] = field(default_factory=list)
@@ -169,21 +241,32 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
         try:
             from app.context import (
                 get_task_writable_paths, get_task_readable_paths,
-                get_task_shell_commands,
+                get_task_shell_commands, get_task_shell_timeout,
             )
             _twp = get_task_writable_paths()
             _trp = get_task_readable_paths()
             _tsc = get_task_shell_commands()
+            _tst = get_task_shell_timeout()
         except Exception:
-            _twp, _trp, _tsc = None, None, None
+            _twp, _trp, _tsc, _tst = None, None, None, None
         task_scope_payload: Optional[Dict[str, Any]] = None
-        if _twp or _trp or _tsc:
+        if _twp or _trp or _tsc or _tst:
             task_scope_payload = {
                 "writable": _twp or [],
                 "readable": _trp or [],
                 "shell_commands": list(_tsc) if _tsc else [],
+                "shell_timeout_secs": _tst,
                 "project_root": ctx.project_root or "",
             }
+        # A grant must also lift the OUTERMOST guard.  Without this the
+        # shell server would honour a 1200 s command while
+        # asyncio.wait_for below cancelled the call at 300 s — the
+        # build would be killed mid-flight and the failure would
+        # surface as an opaque tool timeout rather than as anything the
+        # card could act on.  Buffered so the inner layer always fires
+        # first and produces the descriptive error.
+        if _tst:
+            TOOL_EXEC_TIMEOUT = max(TOOL_EXEC_TIMEOUT, int(_tst) + 30)
 
         if builtin_tool:
             logger.info(f"🔧 Calling builtin tool directly: {ctx.actual_tool_name}")
@@ -242,9 +325,9 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
                 # bypass the MCP manager's normalize/coerce path).
                 from app.mcp.tools.base import coerce_json_string_args
                 ctx.args = coerce_json_string_args(builtin_tool.tool_instance, ctx.args)
-                result = await asyncio.wait_for(
+                result = await _await_tool_result(
                     builtin_tool.tool_instance.execute(**ctx.args),
-                    timeout=TOOL_EXEC_TIMEOUT,
+                    TOOL_EXEC_TIMEOUT, ctx,
                 )
             # Sign builtin results (external tools are signed in MCPClient)
             if result and not isinstance(result, dict):
@@ -270,11 +353,21 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
 
             if ctx.project_root:
                 ctx.args['_workspace_path'] = ctx.project_root
+            # Propagate the conversation id the same way the builtin branch
+            # above does. MCPManager.call_tool reads the conversation from
+            # arguments and uses it as the session_id keying workspace-scoped
+            # client instances (f"{workspace_path}::{session_id}"). Omitted,
+            # session_id is None, the key collapses to the bare workspace
+            # path, and every conversation shares ONE shell subprocess whose
+            # request loop is serial -- so a slow command in one conversation
+            # blocks all others. The manager strips this key before dispatch.
+            if ctx.conversation_id:
+                ctx.args['conversation_id'] = ctx.conversation_id
             if task_scope_payload is not None:
                 ctx.args['_task_scope'] = task_scope_payload
-            result = await asyncio.wait_for(
+            result = await _await_tool_result(
                 ctx.mcp_manager.call_tool(ctx.actual_tool_name, ctx.args, server_name=target_server_name),
-                timeout=TOOL_EXEC_TIMEOUT,
+                TOOL_EXEC_TIMEOUT, ctx,
             )
 
         # --- Signature verification ---
@@ -434,13 +527,13 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
         # --- Post-execution feedback drain ---
         await asyncio.sleep(0)
         for fb in ctx.drain_feedback_fn():
-            if fb['type'] == 'interrupt':
+            fb_msg = fb.get('message', '')
+            if fb.get('type') == 'interrupt':
                 yield ctx.track_yield_fn({'type': 'text', 'content': '\n\n**User requested stop.**\n\n'})
                 yield ctx.track_yield_fn({'type': 'stream_end'})
                 ctx.should_stop_stream = True
                 return
-            fb_msg = fb.get('message', '')
-            if any(w in fb_msg.lower() for w in ['stop', 'halt', 'abort', 'cancel', 'quit']):
+            if is_stop_directive(fb_msg):
                 yield ctx.track_yield_fn({'type': 'text', 'content': f"\n\n**User feedback:** {fb_msg}\n**Stopping execution as requested.**\n\n"})
                 yield ctx.track_yield_fn({'type': 'stream_end'})
                 ctx.should_stop_stream = True
@@ -455,6 +548,23 @@ async def execute_single_tool(ctx: ToolExecContext) -> AsyncGenerator[Dict[str, 
             })
             ctx.feedback_received = True
 
+    except ToolStopRequested as stop_req:
+        # A stop arrived while the tool was still running.  Handled before the
+        # broad handler below so it is not reported to the model as a tool
+        # failure — the call was abandoned deliberately, and telling the model
+        # the tool "errored" would prompt a retry of work the user just
+        # cancelled.  No _tool_result is emitted: should_stop_stream ends the
+        # turn before any assistant/tool_result message is assembled, matching
+        # the existing post-execution stop paths above.
+        _sm = stop_req.feedback_message
+        yield ctx.track_yield_fn({
+            'type': 'text',
+            'content': (f"\n\n**User feedback:** {_sm}\n**Stopping as requested.**\n\n"
+                        if _sm else "\n\n**User requested stop.**\n\n"),
+        })
+        yield ctx.track_yield_fn({'type': 'stream_end'})
+        ctx.should_stop_stream = True
+        return
     except asyncio.TimeoutError:
         TOOL_EXEC_TIMEOUT = int(os.environ.get('TOOL_EXEC_TIMEOUT', '300'))
         error_msg = f"Tool '{ctx.actual_tool_name}' timed out after {TOOL_EXEC_TIMEOUT}s. The tool may be unresponsive."

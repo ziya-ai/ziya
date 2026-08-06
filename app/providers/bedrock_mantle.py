@@ -27,6 +27,31 @@ logger = get_mode_aware_logger(__name__)
 # Base-URL template. The Anthropic SDK appends /v1/messages automatically.
 _MANTLE_BASE_URL = "https://bedrock-mantle.{region}.api.aws/anthropic"
 
+# Explicit transport budget. Without a timeout= argument the Anthropic SDK
+# applies its own default (connect=5, read/write/pool=600), so a stalled
+# write of a large body could absorb TEN MINUTES before failing — which is
+# how a request signed at 18:34:02 came to be evaluated at 18:44:16 and
+# rejected as "Signature expired" (a 10m14s sign-to-validate gap on a
+# 1.27 MB body). A write budget shorter than SigV4's own 5-minute validity
+# window means a stalled write now fails as a timeout — retryable, and
+# retried BEFORE the signature it carries can expire — instead of
+# surfacing later as a misleading authentication error.
+#
+# read stays long: extended thinking legitimately produces multi-minute
+# silences mid-stream, and shortening it would abort healthy generations.
+_MANTLE_TIMEOUT = httpx.Timeout(connect=10.0, write=120.0, read=600.0, pool=60.0)
+
+# httpx pools connections with a 5s keepalive by default and never probes
+# liveness before reuse, so a connection the gateway has already dropped can
+# be selected and absorb the whole write. Capping the pool bounds how many
+# such connections can be held, and the explicit expiry documents the reuse
+# window rather than leaving it implicit.
+_MANTLE_LIMITS = httpx.Limits(
+    max_connections=10,
+    max_keepalive_connections=5,
+    keepalive_expiry=30.0,
+)
+
 
 def resolve_mantle_region(model_config: Optional[Dict[str, Any]], region: Optional[str] = None) -> str:
     """Clamp a requested region to the model's mantle-available regions.
@@ -63,8 +88,28 @@ class _AsyncSigV4Transport(httpx.AsyncBaseTransport):
         creds = session.get_credentials()
         if creds is None:
             raise ValueError("No AWS credentials available for Bedrock Mantle")
-        self._creds = creds.get_frozen_credentials()
+        # Hold the credential RESOLVER, not a frozen snapshot of it.
+        #
+        # get_frozen_credentials() once at construction pinned whatever the
+        # chain returned for the transport's whole lifetime. A Ziya process
+        # outlives short-lived STS/SSO credentials, so once those expired
+        # EVERY subsequent request failed permanently with no recovery path
+        # short of restarting the server — while the credential chain was
+        # perfectly capable of vending fresh ones.
+        #
+        # botocore's own docstring is explicit that a frozen credential
+        # "should be used immediately and then discarded", and on a
+        # RefreshableCredentials the getter calls self._refresh() internally.
+        # Deferring the call to signing time therefore fixes the expiry for
+        # free, and simultaneously closes the inconsistent-key race the
+        # frozen form exists to prevent (each signature is taken from one
+        # atomic snapshot).
+        self._cred_resolver = creds
         self._inner = httpx.AsyncHTTPTransport()
+
+    def _frozen_credentials(self):
+        """Snapshot credentials for a single signature, refreshing if due."""
+        return self._cred_resolver.get_frozen_credentials()
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         # Remove the x-api-key header the SDK injects; it conflicts with SigV4.
@@ -76,7 +121,7 @@ class _AsyncSigV4Transport(httpx.AsyncBaseTransport):
             headers=dict(request.headers),
             data=request.content,
         )
-        SigV4Auth(self._creds, "bedrock", self._region).add_auth(aws_req)
+        SigV4Auth(self._frozen_credentials(), "bedrock", self._region).add_auth(aws_req)
         request.headers.update(dict(aws_req.headers))
         return await self._inner.handle_async_request(request)
 
@@ -110,7 +155,14 @@ class BedrockMantleProvider(AnthropicDirectProvider):
         self.client = anthropic.AsyncAnthropic(
             api_key="unused",  # Required by SDK init but SigV4 transport replaces auth.
             base_url=base_url,
-            http_client=httpx.AsyncClient(transport=transport),
+            # The SDK adopts a caller client's timeout only when it differs
+            # from httpx's own 5s default sentinel; ours does, so these
+            # budgets are what actually apply.
+            http_client=httpx.AsyncClient(
+                transport=transport,
+                timeout=_MANTLE_TIMEOUT,
+                limits=_MANTLE_LIMITS,
+            ),
         )
         logger.info(f"BedrockMantleProvider: model={model_id} base_url={base_url}")
 

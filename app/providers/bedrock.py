@@ -537,13 +537,86 @@ class BedrockProvider(LLMProvider):
             body["tools"] = tools
             body["tool_choice"] = {"type": "auto"}
 
+        # Diagnostic: dump the session-dependent request components to disk so
+        # an offline probe (scripts/bisect_refusal.py) can reproduce the exact
+        # payload. The system prompt and tool schemas are assembled at runtime
+        # from MCP server state and cannot be reconstructed from a stored
+        # conversation, so a refusal that depends on them is otherwise
+        # impossible to bisect. Writes once per process; set the env var to a
+        # directory path.
+        _dump_dir = ziya_env("ZIYA_DUMP_REQUEST_PARTS")
+        if _dump_dir and not getattr(BedrockProvider, "_parts_dumped", False):
+            try:
+                BedrockProvider._parts_dumped = True
+                _dd = os.path.expanduser(str(_dump_dir))
+                os.makedirs(_dd, exist_ok=True)
+                _sys = body.get("system")
+                if _sys:
+                    _text = "".join(
+                        b.get("text", "") for b in _sys
+                    ) if isinstance(_sys, list) else str(_sys)
+                    with open(os.path.join(_dd, "system.txt"), "w",
+                              encoding="utf-8") as _f:
+                        _f.write(_text)
+                if body.get("tools"):
+                    with open(os.path.join(_dd, "tools.json"), "w",
+                              encoding="utf-8") as _f:
+                        json.dump(body["tools"], _f, indent=2)
+                with open(os.path.join(_dd, "params.json"), "w",
+                          encoding="utf-8") as _f:
+                    json.dump({
+                        "model_id": self.model_id,
+                        "max_tokens": body.get("max_tokens"),
+                        "thinking": body.get("thinking"),
+                        "output_config": body.get("output_config"),
+                        "anthropic_beta": body.get("anthropic_beta"),
+                        "tool_choice": body.get("tool_choice"),
+                        "message_count": len(body.get("messages") or []),
+                    }, _f, indent=2)
+                logger.info("🗒️ REQUEST_PARTS: dumped to %s", _dd)
+            except Exception as _de:
+                logger.warning("🗒️ REQUEST_PARTS dump failed: %s", _de)
+
+        # Diagnostic: size census of every top-level body component. The
+        # tool schemas are the one large component absent from all
+        # ESTIMATE_ACCURACY buckets, so their true cost is unmeasured.
+        try:
+            _sizes = {k: len(json.dumps(v)) for k, v in body.items()}
+            _tools_n = len(body.get("tools") or [])
+            _biggest = sorted(
+                ((len(json.dumps(t)), t.get("name", "?")) for t in (body.get("tools") or [])),
+                reverse=True,
+            )[:5]
+            logger.info(
+                "🧮 BODY_CENSUS total=%d parts=%s tools_n=%d biggest_tools=%s "
+                "thinking=%s output_config=%s max_tokens=%s",
+                sum(_sizes.values()), _sizes, _tools_n, _biggest,
+                body.get("thinking"), body.get("output_config"),
+                body.get("max_tokens"),
+            )
+        except Exception as _ce:
+            logger.warning("🧮 BODY_CENSUS failed: %s", _ce)
+
         return body
 
     def _apply_thinking(self, body: Dict[str, Any], thinking: "ThinkingConfig") -> None:
         from app.providers.base import ThinkingConfig  # avoid circular at module level
 
         if thinking.mode == "adaptive":
-            body["thinking"] = {"type": "adaptive"}
+            # display defaults to "omitted" on Opus 4.7/4.8/5, Sonnet 5,
+            # Fable 5 and Mythos 5 (Anthropic's adaptive-thinking docs), and
+            # with display=omitted the API emits NO thinking_delta events at
+            # all -- only the closing signature_delta.  The reasoning is
+            # still billed via output_tokens_details.thinking_tokens, so
+            # leaving this unset means paying for reasoning that can never
+            # be shown: one measured opus-5 response billed 680 thinking
+            # tokens (37% of its output) and delivered zero characters.
+            #
+            # Set unconditionally rather than per-model: the older models
+            # (Sonnet 4.6, Opus 4.6, Haiku 4.5) already default to
+            # "summarized", so passing it explicitly is a no-op for them
+            # and there is no list to keep in sync as models are added.
+            body["thinking"] = {"type": "adaptive", "display": "summarized"}
             supported = self.model_config.get("supported_efforts", ["low", "medium", "high", "max"])
             effort = thinking.effort if thinking.effort in supported else self.model_config.get("thinking_effort_default", "medium")
             if effort != thinking.effort:
@@ -583,6 +656,29 @@ class BedrockProvider(LLMProvider):
 
         # Active tool tracking within this single response
         active_tools: Dict[str, Dict[str, Any]] = {}  # tool_id -> {name, partial_json, index}
+
+        # Diagnostic: chunk types seen, and any block/delta type the parser
+        # does not recognize. Without this an unhandled block type is
+        # indistinguishable from an empty completion.
+        _chunk_types: Dict[str, int] = {}
+
+        # Thinking-visibility census.  ``output_tokens_details.thinking_tokens``
+        # is BILLED reasoning; ``_thinking_chars`` is what actually streamed
+        # back as thinking_delta content.  Nothing else in the codebase reads
+        # the former, so a model that bills for reasoning it does not emit is
+        # invisible — the two must be compared to tell "we are not displaying
+        # thinking" from "the API never sent it".
+        _thinking_deltas = 0
+        _thinking_chars = 0
+        _text_deltas = 0
+        _text_chars = 0
+        _tool_json_chars = 0
+        _reported_thinking_tokens: Optional[int] = None
+        _reported_output_tokens: Optional[int] = None
+
+        # The true stop_reason arrives on message_delta, which this parser
+        # never handled — Bedrock's message_stop carries only metrics.
+        _delta_stop_reason: Optional[str] = None
 
         stream_iter = iter(stream_body)
         in_thinking_block = False
@@ -706,9 +802,19 @@ class BedrockProvider(LLMProvider):
                     output_tokens=m.get("outputTokenCount", 0),
                     cache_read_tokens=m.get("cacheReadInputTokenCount", 0),
                     cache_write_tokens=m.get("cacheWriteInputTokenCount", 0),
+                    # Reasoning tokens billed inside output_tokens.  Carried
+                    # on the EXISTING event rather than a second one:
+                    # _handle_usage_event runs calibration unguarded on
+                    # iteration 0, so an extra UsageEvent would record the
+                    # same iteration twice.  Live-verified safe -- Bedrock
+                    # sends message_delta (which carries thinking_tokens)
+                    # before message_stop (which carries these metrics), so
+                    # the value is already known here.
+                    thinking_tokens=_reported_thinking_tokens or 0,
                 )
 
             chunk_type = chunk.get("type", "")
+            _chunk_types[chunk_type or "<none>"] = _chunk_types.get(chunk_type or "<none>", 0) + 1
 
             if chunk_type == "content_block_start":
                 cb = chunk.get("content_block", {})
@@ -716,6 +822,20 @@ class BedrockProvider(LLMProvider):
                 block_type = cb.get("type", "")
                 if block_type == "thinking":
                     in_thinking_block = True
+                elif block_type in ("text", "redacted_thinking"):
+                    # Known and deliberately inert.  A text block needs no
+                    # action — its content arrives as text_delta — and a
+                    # redacted_thinking block carries only opaque bytes we
+                    # never echo back.  Whitelisted explicitly rather than
+                    # left to fall through to the warning below: an adaptive
+                    # thinking response opens a text block on EVERY
+                    # iteration, so the warning fired several times per turn
+                    # and taught readers to disregard the channel that is
+                    # supposed to flag genuinely unknown block types.
+                    logger.debug(
+                        "content_block_start type=%r index=%s (no-op)",
+                        block_type, idx,
+                    )
                 elif block_type == "tool_use":
                     tool_id = cb.get("id", "")
                     tool_name = cb.get("name", "")
@@ -725,6 +845,11 @@ class BedrockProvider(LLMProvider):
                         "index": idx,
                     }
                     yield ToolUseStart(id=tool_id, name=tool_name, index=idx)
+                elif block_type:
+                    logger.warning(
+                        "🔍 UNHANDLED content_block_start type=%r index=%s keys=%s",
+                        block_type, idx, sorted(cb.keys()),
+                    )
 
             elif chunk_type == "content_block_delta":
                 delta = chunk.get("delta", {})
@@ -732,19 +857,47 @@ class BedrockProvider(LLMProvider):
                 delta_type = delta.get("type", "")
 
                 if delta_type == "text_delta":
-                    yield TextDelta(content=delta.get("text", ""))
+                    _text = delta.get("text", "")
+                    _text_deltas += 1
+                    _text_chars += len(_text)
+                    yield TextDelta(content=_text)
 
                 elif delta_type == "thinking_delta":
-                    yield ThinkingDelta(content=delta.get("thinking", ""))
+                    _thinking = delta.get("thinking", "")
+                    _thinking_deltas += 1
+                    _thinking_chars += len(_thinking)
+                    yield ThinkingDelta(content=_thinking)
+
+                elif delta_type == "signature_delta":
+                    # Closes a thinking block with a cryptographic signature
+                    # that lets the API verify the block if it is echoed back
+                    # in a later turn.  Deliberately dropped: the assistant
+                    # message is rebuilt from text and tool_use blocks only
+                    # (see streaming_tool_executor's content_block handling),
+                    # so no thinking block — and therefore no signature — is
+                    # ever sent upstream.  Should this change, capture the
+                    # signature here and attach it to the thinking block, or
+                    # the API will reject the turn.
+                    logger.debug(
+                        "signature_delta index=%s dropped (thinking blocks "
+                        "are not round-tripped)", idx,
+                    )
 
                 elif delta_type == "input_json_delta":
                     partial = delta.get("partial_json", "")
+                    _tool_json_chars += len(partial)
                     # Accumulate for ToolUseEnd
                     for tid, tdata in active_tools.items():
                         if tdata["index"] == idx:
                             tdata["partial_json"] += partial
                             break
                     yield ToolUseInput(partial_json=partial, index=idx)
+
+                else:
+                    logger.warning(
+                        "🔍 UNHANDLED content_block_delta type=%r index=%s keys=%s",
+                        delta_type, idx, sorted(delta.keys()),
+                    )
 
             elif chunk_type == "content_block_stop":
                 idx = chunk.get("index", 0)
@@ -770,8 +923,92 @@ class BedrockProvider(LLMProvider):
                         index=idx,
                     )
 
+            elif chunk_type == "message_delta":
+                _d = chunk.get("delta", {}) or {}
+                if _d.get("stop_reason"):
+                    _delta_stop_reason = _d.get("stop_reason")
+                _u = chunk.get("usage", {}) or {}
+                if "output_tokens" in _u:
+                    _reported_output_tokens = _u.get("output_tokens")
+                _otd = _u.get("output_tokens_details", {}) or {}
+                if "thinking_tokens" in _otd:
+                    _reported_thinking_tokens = _otd.get("thinking_tokens")
+                logger.info("🔍 MESSAGE_DELTA raw=%s", json.dumps(chunk)[:400])
+
             elif chunk_type == "message_stop":
-                stop_reason = chunk.get("stop_reason", chunk.get("amazon-bedrock-stop-reason", "end_turn"))
+                stop_reason = (
+                    _delta_stop_reason
+                    or chunk.get("stop_reason")
+                    or chunk.get("amazon-bedrock-stop-reason")
+                    or "end_turn"
+                )
+                if not any(k.startswith("content_block") for k in _chunk_types):
+                    logger.warning(
+                        "🔍 NO_CONTENT_BLOCKS model=%s stop_reason=%r chunk_types=%s raw_message_stop=%s",
+                        self.model_id, stop_reason, _chunk_types, json.dumps(chunk)[:600],
+                    )
+                # Thinking-visibility census.  Answers a question no other
+                # log line can: whether reasoning we are BILLED for was
+                # actually streamed to us.  ``billed`` is the API's own
+                # output_tokens_details.thinking_tokens, which nothing else
+                # in the codebase reads — it reached a human only
+                # incidentally, inside the raw MESSAGE_DELTA dump.  A large
+                # billed figure with streamed=0 means the API summarised or
+                # withheld the reasoning, NOT that Ziya dropped it; the two
+                # diagnoses call for opposite fixes, so they must be
+                # distinguishable at a glance.
+                #
+                # Gated on either signal being present, so an ordinary
+                # non-thinking turn gains no log noise — the same mistake
+                # the UNHANDLED warnings above were making.
+                if _reported_thinking_tokens or _thinking_deltas:
+                    _billed = _reported_thinking_tokens
+                    # Self-calibrating chars/token, derived from THIS
+                    # response rather than a constant.  Live measurement on
+                    # sonnet4.6 gave 1.58 / 2.27 / 3.63 chars-per-token
+                    # across three requests, so any fixed divisor is wrong
+                    # most of the time: 3.5 scored fully-delivered streams
+                    # at 0.25-0.72 and would have been read as the API
+                    # withholding reasoning it had in fact sent -- the exact
+                    # false alarm this census exists to rule out.
+                    #
+                    # Visible tokens = out_tok - billed_thinking, and their
+                    # char count is known, so the ratio falls out with no
+                    # guessing.  Gated because quantization dominates on
+                    # short samples (a 19-char thinking block cannot be
+                    # measured to 2 decimal places); below the gate the
+                    # ratio reads n/a rather than a number to over-trust.
+                    _ratio = "n/a"
+                    _est = 0
+                    _vis_chars = _text_chars + _tool_json_chars
+                    _vis_tok = (
+                        (_reported_output_tokens or 0) - (_billed or 0)
+                    )
+                    if _billed and not _thinking_chars:
+                        # Nothing streamed at all: exact, not an estimate.
+                        # Deliberately ahead of the small-sample gate --
+                        # gating the definitive withheld case would hide the
+                        # one signal the census exists to surface.
+                        _ratio = "0.00"
+                    elif _vis_tok > 0 and _vis_chars > 0:
+                        _cpt = _vis_chars / _vis_tok
+                        _est = round(_thinking_chars / _cpt) if _cpt else 0
+                        if _billed and _thinking_chars >= 200 and _vis_tok >= 50:
+                            _ratio = f"{_est / _billed:.2f}"
+                        elif _billed:
+                            _ratio = "n/a(small)"
+                    logger.info(
+                        "🧠 THINKING_CENSUS model=%s billed_thinking_tok=%s "
+                        "streamed_deltas=%d streamed_chars=%d est_tok=%d "
+                        "est/billed=%s out_tok=%s text_deltas=%d text_chars=%d "
+                        "visible=%s",
+                        self.model_id, _billed if _billed is not None else "?",
+                        _thinking_deltas, _thinking_chars, _est, _ratio,
+                        _reported_output_tokens
+                        if _reported_output_tokens is not None else "?",
+                        _text_deltas, _text_chars,
+                        "yes" if _thinking_deltas else "NO",
+                    )
                 yield StreamEnd(stop_reason=stop_reason)
 
     # ------------------------------------------------------------------
@@ -806,11 +1043,23 @@ class BedrockProvider(LLMProvider):
         # those to READ_TIMEOUT (retryable) instead of leaving them
         # unclassified as UNKNOWN/non-retryable with the raw Go error text.
         _is_cred_retrieval = "retrieving credentials" in lowered or "credentialretrievalerror" in lowered
-        if _is_cred_retrieval and any(ind in lowered for ind in (
-                "no such host", "dial tcp", "i/o timeout", "context deadline exceeded",
-                "temporary failure in name resolution", "name or service not known",
-                "connection refused", "network is unreachable", "connection reset",
-                "unsupported protocol scheme", "failed to initialize iibs client")):
+        # "failed to initialize iibs client" is ada's generic wrapper and is
+        # NOT itself proof of a transient network fault -- it also wraps a
+        # genuine expired/invalid Midway session, where the IDP redirect
+        # completes (reaches the server) but returns an explicit 401 and
+        # tells the user to run mwinit. That case must classify as AUTH so
+        # the concise credential-help template is shown instead of silently
+        # retrying a login that will never succeed without user action.
+        _is_expired_session = _is_cred_retrieval and (
+            "did not redirect. status code: 401" in lowered or "you may need to authenticate" in lowered
+        )
+        if _is_cred_retrieval and (
+                any(ind in lowered for ind in (
+                    "no such host", "dial tcp", "i/o timeout", "context deadline exceeded",
+                    "temporary failure in name resolution", "name or service not known",
+                    "connection refused", "network is unreachable", "connection reset",
+                    "unsupported protocol scheme"))
+                or ("failed to initialize iibs client" in lowered and not _is_expired_session)):
             return ErrorType.READ_TIMEOUT
         if _is_cred_retrieval:
             return ErrorType.AUTH

@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Dict, Any, List, AsyncGenerator, Optional
 from app.utils.logging_utils import get_mode_aware_logger
 from app.config.env_registry import ziya_env
+from app.utils.sanitizer_util import sanitize_message_content
 from app.hallucination import scannable_line_indices
 logger = get_mode_aware_logger(__name__)
 
@@ -811,6 +812,14 @@ class StreamingToolExecutor:
             return ('end', 'max_iterations', None)
 
         # (g)/(h) No text, no tools.
+        # A refusal is a deterministic classifier verdict on the payload, not a
+        # transient empty completion: re-issuing the identical body is rejected
+        # identically while re-writing the whole cache prefix each attempt. Stop
+        # immediately so the caller can surface it instead of burning the retry
+        # budget on three guaranteed-identical rejections.
+        if last_stop_reason == 'refusal':
+            return ('end', 'refusal', None)
+
         # Option A: gate the empty-after-tools nudge on stop_reason. A clean
         # end_turn/stop/None means the model signaled "done" — nudge at most
         # ONCE then respect it; only a genuine cutoff (max_tokens/length)
@@ -1435,6 +1444,7 @@ class StreamingToolExecutor:
                         f"turn at index {i} before sending to model."
                     )
                     continue
+                content = sanitize_message_content(content, f"{bedrock_role} message {i}")
                 conversation.append({"role": bedrock_role, "content": content})
         # Merge any consecutive same-role turns left behind (e.g. after an
         # empty assistant turn was dropped, leaving user→user). The Anthropic
@@ -1556,7 +1566,22 @@ class StreamingToolExecutor:
             "ConnectionClosedError", "ConnectionResetError", "Connection reset by peer"])
         is_transient = any(ind in error_str for ind in [
             "internalServerException", "ServiceUnavailableException",
-            "The system encountered an unexpected error"])
+            "The system encountered an unexpected error",
+            # Model-side generation glitch: the sampler emitted a malformed
+            # toolUse token sequence and Bedrock aborted the stream. Arrives
+            # as a botocore EventStreamError raised out of the provider's
+            # stream iterator (nova_bedrock._parse_converse_stream), so it
+            # reaches here as an unclassified exception rather than an
+            # ErrorEvent. Re-issuing usually succeeds on a fresh sample, and
+            # the retry is safe because the failed turn's assistant message is
+            # never appended to ``conversation`` (that happens only after a
+            # clean stream). Note the retry consumes an iteration and runs at
+            # the reduced max_output_tokens set below, so it is not byte-
+            # identical to the failed request.
+            # Previously fell through to 'generic', which killed the whole
+            # Task Card deck run on a single recoverable hiccup.
+            "modelStreamErrorException",
+            "Model produced invalid sequence"])
         
         auth_provider = get_active_auth_provider()
         is_auth = (
@@ -2197,6 +2222,13 @@ class StreamingToolExecutor:
                 except (KeyError, NameError):
                     pass
 
+        # Shared stop classification.  Bound once here so every drain point in
+        # this function uses the SAME rule: the six sites previously each
+        # inlined a substring scan, which drifted (one checked 'interrupt',
+        # another didn't) and mis-fired on redirection like "stop reading that
+        # file and check the tests instead".
+        from app.utils.feedback_directives import is_stop_directive, is_stop_feedback
+
         def _drain_pending_feedback() -> List[dict]:
             """Atomically drain all pending feedback messages."""
             if not _pending_feedback:
@@ -2739,7 +2771,7 @@ class StreamingToolExecutor:
                             _feedback_monitor_task.cancel()
                         return
                     feedback_message = fb.get('message', '')
-                    if any(w in feedback_message.lower() for w in ['stop', 'halt', 'abort', 'cancel', 'quit']):
+                    if is_stop_directive(feedback_message):
                         yield track_yield({'type': 'text', 'content': f"\n\n**User feedback:** {feedback_message}\n**Stopping execution as requested.**\n\n"})
                         yield track_yield({'type': 'stream_end'})
                         if _feedback_monitor_task:
@@ -2910,9 +2942,7 @@ class StreamingToolExecutor:
                             return
                         _stop_fb = next(
                             (fb for fb in _pending_feedback
-                             if fb.get('type') == 'feedback' and any(
-                                 w in fb.get('message', '').lower()
-                                 for w in ['stop', 'halt', 'abort', 'cancel', 'quit'])),
+                             if fb.get('type') == 'feedback' and is_stop_directive(fb.get('message', ''))),
                             None)
                         if _stop_fb is not None:
                             _fb_msg = _stop_fb.get('message', '')
@@ -3090,14 +3120,16 @@ class StreamingToolExecutor:
                                 _td_state.assistant_text = assistant_text
                                 continue
 
-                            # Close thinking tag if transitioning from thinking to text
+                            # Close the open thinking block when the model
+                            # transitions to answer text.  Explicit rather than
+                            # inferred by the frontend: a block must collapse
+                            # the moment ITS reasoning is done, not when the
+                            # whole turn ends.
                             if thinking_tag_opened:
                                 thinking_tag_opened = False
-                                closing = '</thinking-data>'
-                                assistant_text += closing
                                 yield track_yield({
-                                    'type': 'text',
-                                    'content': closing,
+                                    'type': 'thinking',
+                                    'done': True,
                                     'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms",
                                 })
                             text = delta.get('text', '')
@@ -3230,19 +3262,26 @@ class StreamingToolExecutor:
                                 logger.debug(f"🔍 JSON_DELTA: Tool {tool_id} received delta: '{delta.get('partial_json', '')}'")
                                 logger.debug(f"🔍 JSON_ACCUMULATED: Tool {tool_id} total: '{active_tools[tool_id]['partial_json']}'")
                         elif delta.get('type') == 'thinking_delta':
-                            # Native thinking events (e.g. DeepSeek R1, Claude thinking)
-                            # Wrap in <thinking-data> tags for frontend presentation
+                            # Native thinking events (Claude adaptive/extended
+                            # thinking, DeepSeek R1 reasoning).
+                            #
+                            # Emitted as its OWN chunk type, never mixed into
+                            # the text stream.  The previous form wrapped it in
+                            # tags and appended it to assistant_text -- the
+                            # variable the assistant turn is rebuilt from -- so
+                            # each later iteration re-read the model's own
+                            # chain-of-thought as ordinary prose, billed again
+                            # as input tokens every turn.
+                            #
+                            # No index in the payload: the frontend assigns one
+                            # by array position, so marker and content cannot
+                            # desync.
                             thinking_content = delta.get('thinking', '')
                             if thinking_content:
-                                output = ''
-                                if not thinking_tag_opened:
-                                    thinking_tag_opened = True
-                                    output = '<thinking-data>'
-                                output += thinking_content
-                                assistant_text += output
+                                thinking_tag_opened = True
                                 yield track_yield({
-                                    'type': 'text',
-                                    'content': output,
+                                    'type': 'thinking',
+                                    'content': thinking_content,
                                     'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms",
                                 })
 
@@ -3537,6 +3576,10 @@ Retry with the 'command' parameter included."""
                                     iteration_start_time=iteration_start_time,
                                     track_yield_fn=track_yield,
                                     drain_feedback_fn=_drain_pending_feedback,
+                                    # Non-destructive view so a stop sent while
+                                    # this tool is running is acted on within
+                                    # ~0.3s instead of after the tool finishes.
+                                    peek_feedback_fn=lambda: list(_pending_feedback),
                                     executor=self,
                                 )
                                 logger.debug(f"🔍 EXECUTING_TOOL: {actual_tool_name} with args {args}")
@@ -3761,19 +3804,56 @@ Please retry the tool call with valid JSON. Ensure:
                 if tools_executed_this_iteration:
                     logger.debug(f"🔍 TOOL_RESULTS_PROCESSING: Adding {len(tool_results)} tool results to conversation")
                     # Image-result lifecycle, phase 2: image content blocks
-                    # appended in a PRIOR iteration have now been seen by
-                    # exactly one model call — compact them to their text
-                    # summary so subsequent iterations don't re-send
-                    # hundreds of KB of base64 per diagram.
+                    # appended in a PRIOR iteration have been seen at least
+                    # once — compact all but a short retention window so
+                    # subsequent iterations don't re-send hundreds of KB of
+                    # base64 per diagram.
+                    #
+                    # The window is mode-aware.  Compacting to ZERO is
+                    # defensible for an interactive turn (the user sees the
+                    # render in the UI, and the next human message
+                    # re-anchors the thread) but wrong for a batch run: a
+                    # Task Card run is ONE turn made of many iterations, so
+                    # keep-nothing killed each image one iteration after
+                    # birth and left the model re-judging its own valid
+                    # observations. `interactive` is already threaded here
+                    # for the iteration budget (see _budget_var above) and
+                    # is False for Task Cards, delegates and goals.
                     from app.utils.image_result_compaction import (
+                        DEFAULT_KEEP_RECENT_BATCH,
+                        DEFAULT_KEEP_RECENT_INTERACTIVE,
+                        DEFAULT_MAX_IMAGE_BYTES,
                         IMAGE_OMITTED_PLACEHOLDER, compact_prior_image_results,
                         image_blocks_to_text,
                     )
-                    _n_compacted = compact_prior_image_results(conversation)
+                    from app.utils.image_pin_context import take_image_retain_floor
+                    _keep_recent = (DEFAULT_KEEP_RECENT_INTERACTIVE if interactive
+                                    else DEFAULT_KEEP_RECENT_BATCH)
+                    # A tool that asked to hold its render raises the floor
+                    # for this sweep only; it can widen the window but never
+                    # narrow it below the mode default.
+                    _keep_recent = max(_keep_recent, take_image_retain_floor())
+                    _n_compacted = compact_prior_image_results(
+                        conversation,
+                        keep_recent=_keep_recent,
+                        max_bytes=DEFAULT_MAX_IMAGE_BYTES,
+                        # Elided bytes are retained in RAM and the handle is
+                        # embedded in the replacement text, so leaving the
+                        # context window no longer means being forgotten.
+                        # Scoped to this conversation/run so one thread can
+                        # never recall another's renders, and so the recall
+                        # store's per-scope budget is charged to the right
+                        # conversation.  A missing id degrades to
+                        # destructive compaction rather than to an unscoped
+                        # (shared-budget) store.
+                        recall_scope=conversation_id,
+                    )
                     if _n_compacted:
                         logger.info(
                             f"🖼️ CONTEXT_COMPACT: compacted {_n_compacted} prior-iteration "
-                            f"image tool result(s) to text summaries"
+                            f"image tool result(s) to text summaries "
+                            f"(kept newest {_keep_recent}, "
+                            f"interactive={interactive})"
                         )
                     _provider_takes_images = self.provider.supports_feature('image_tool_results')
                     provider_tool_results = []
@@ -3918,6 +3998,10 @@ Please retry the tool call with valid JSON. Ensure:
                 logger.info(
                     f"🧭 ITER_BRANCH iteration={iteration} "
                     f"text_len={len(assistant_text.strip())} "
+                    f"raw_text_len={len(assistant_text)} "
+                    f"events_seen={event_count} "
+                    f"out_tok={iteration_usage.output_tokens} "
+                    f"cache_w={iteration_usage.cache_write_tokens} "
                     f"halluc={hallucination_this_iteration} "
                     f"tools_exec={tools_executed_this_iteration} "
                     f"stop_reason={last_stop_reason!r} "
@@ -4030,7 +4114,7 @@ Please retry the tool call with valid JSON. Ensure:
                                 _feedback_monitor_task.cancel()
                             return
                         fb_msg = fb.get('message', '')
-                        if any(w in fb_msg.lower() for w in ['stop', 'halt', 'abort', 'cancel', 'quit']):
+                        if is_stop_directive(fb_msg):
                             yield track_yield({'type': 'text', 'content': f"\n\n**User feedback:** {fb_msg}\n**Stopping execution as requested.**\n\n"})
                             yield track_yield({'type': 'stream_end'})
                             if _feedback_monitor_task:
@@ -4409,6 +4493,31 @@ Please retry the tool call with valid JSON. Ensure:
         # turn's monitor re-captures and delivers it rather than losing it.
         if conversation_id:
             _leftover = _drain_pending_feedback()
+            # Recover feedback that was STAGED but never injected.  A tool
+            # boundary drain POPS an item out of the shared pending list into
+            # deferred_feedback_messages, and the sole injection point is the
+            # end-of-iteration append.  A turn that ends between those two
+            # points discarded it silently — the drain above cannot see it,
+            # because it is no longer in the shared list.  Three real paths do
+            # exactly that: the mid-stream-continuation break, the
+            # non-retryable-provider-error break, and any exception unwinding
+            # the iteration.  The user had already been shown a
+            # 'feedback_delivered' ack by then, so the loss was silent AND
+            # actively misreported.
+            try:
+                _staged = list(deferred_feedback_messages)
+            except NameError:
+                _staged = []  # loop body never ran; nothing could be staged
+            if _staged:
+                deferred_feedback_messages.clear()
+                logger.warning(
+                    f"🔄 FEEDBACK_STAGED_RECOVERY: {len(_staged)} feedback "
+                    f"item(s) were staged at a tool boundary but the turn ended "
+                    f"before injection for {conversation_id}; recovering."
+                )
+                _leftover.extend(
+                    {'type': 'feedback', 'message': _m} for _m in _staged
+                )
             if _leftover:
                 logger.warning(
                     f"🔄 FEEDBACK_STRAGGLER: {len(_leftover)} feedback item(s) "

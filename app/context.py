@@ -63,6 +63,16 @@ _task_shell_commands: contextvars.ContextVar[Optional[List[str]]] = contextvars.
     'task_shell_commands', default=None
 )
 
+# Per-task shell timeout grant, in seconds.  When set (by
+# ``task_executor`` while a Task block is running) it raises both the
+# ceiling a shell command may request and the default it receives when
+# it requests none.  Consulted only as a RAISE — ``max`` against the
+# base ceiling — so a grant can never shorten the base timeout, and
+# None preserves pre-grant behaviour exactly.
+_task_shell_timeout: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
+    'task_shell_timeout', default=None
+)
+
 
 # Per-task iteration context.  Set by ``block_executor`` while a body
 # runs inside a Repeat / Until iteration so streaming events emitted
@@ -177,6 +187,31 @@ def get_task_shell_commands() -> Optional[List[str]]:
     """Return the active task shell-command allowlist, or None if not set."""
     return _task_shell_commands.get()
 
+
+def set_task_shell_timeout(seconds: Optional[int]) -> contextvars.Token:
+    """Set the task-scoped shell timeout grant; returns a reset token.
+
+    Pass ``None`` to clear.  Non-positive values are normalised to
+    ``None`` so a scope authored with ``0`` does not read as a grant
+    that would then ``max`` to no effect but still travel over the wire.
+    """
+    try:
+        value = int(seconds) if seconds else None
+    except (TypeError, ValueError):
+        value = None
+    if value is not None and value <= 0:
+        value = None
+    return _task_shell_timeout.set(value)
+
+
+def reset_task_shell_timeout(token: contextvars.Token) -> None:
+    """Restore the previous task shell-timeout grant using ``token``."""
+    _task_shell_timeout.reset(token)
+
+
+def get_task_shell_timeout() -> Optional[int]:
+    """Return the active task shell-timeout grant, or None if not set."""
+    return _task_shell_timeout.get()
 
 def set_task_iteration_context(
     block_id: Optional[str], index: Optional[int],

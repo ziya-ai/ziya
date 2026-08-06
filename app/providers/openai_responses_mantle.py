@@ -41,7 +41,12 @@ from app.providers.base import (
     ToolUseStart,
     UsageEvent,
 )
-from app.providers.bedrock_mantle import _AsyncSigV4Transport
+from app.providers.bedrock_mantle import (
+    _AsyncSigV4Transport,
+    _MANTLE_LIMITS,
+    _MANTLE_TIMEOUT,
+)
+from app.providers.error_scrub import scrub_request_id
 from app.utils.logging_utils import get_mode_aware_logger
 
 logger = get_mode_aware_logger(__name__)
@@ -103,7 +108,14 @@ class OpenAIResponsesMantleProvider(LLMProvider):
         self.client = AsyncOpenAI(
             api_key="unused",  # Required by SDK init; SigV4 transport replaces auth.
             base_url=base_url,
-            http_client=httpx.AsyncClient(transport=transport),
+            # Same reasoning as BedrockMantleProvider: an unbounded write can
+            # outlive the SigV4 signature it carries, turning a stalled
+            # connection into a misleading authentication error.
+            http_client=httpx.AsyncClient(
+                transport=transport,
+                timeout=_MANTLE_TIMEOUT,
+                limits=_MANTLE_LIMITS,
+            ),
         )
         logger.info(
             f"OpenAIResponsesMantleProvider: model={model_id} base_url={base_url}"
@@ -506,7 +518,22 @@ class OpenAIResponsesMantleProvider(LLMProvider):
 
     @staticmethod
     def _classify_error(error_str: str) -> ErrorType:
+        # See app/providers/error_scrub.py — a request_id containing "429"
+        # or "rate" would otherwise force the THROTTLE branch below.
+        error_str = scrub_request_id(error_str)
         lowered = error_str.lower()
+        # This provider shares _AsyncSigV4Transport with BedrockMantleProvider,
+        # so it is exposed to the same two SigV4 faults, and had a branch for
+        # neither. Expired TOKEN is fatal (retrying cannot mint credentials);
+        # expired SIGNATURE is retryable because signing happens per-attempt
+        # inside the transport, so the next attempt stamps a fresh timestamp.
+        # Both precede the "429"/"rate" ladder so neither can be shadowed.
+        if ("expiredtoken" in lowered or "invalidclienttokenid" in lowered
+                or "security token included in the request is expired" in lowered):
+            return ErrorType.AUTH
+        if ("signature expired" in lowered or "requestexpired" in lowered
+                or "requesttimetooskewed" in lowered):
+            return ErrorType.READ_TIMEOUT
         if "429" in error_str or "rate" in lowered or "too many" in lowered or "throttl" in lowered:
             return ErrorType.THROTTLE
         if "503" in error_str or "529" in error_str or "overloaded" in lowered:
