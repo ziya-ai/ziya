@@ -60,6 +60,22 @@ def manager(monkeypatch):
     mgr._tools_cache = None
     mgr._tools_cache_timestamp = 0
     mgr._tool_fingerprints = {}
+    # restart_server acquires the lifecycle lock via _get_lifecycle_lock(),
+    # which reads this attribute lazily.  __new__ bypasses __init__, so
+    # anything __init__ establishes has to be restated here — this one was
+    # added to __init__ after the fixture was written, and the resulting
+    # AttributeError fires on every test in this file rather than only on
+    # some orderings.
+    mgr._lifecycle_lock = None
+    # restart_server acquires the lifecycle lock via _get_lifecycle_lock(),
+    # which reads this attribute lazily.  __new__ bypasses __init__, so
+    # every attribute __init__ establishes has to be restated here; this one
+    # was added to __init__ after the fixture was written, so the resulting
+    # AttributeError fires on EVERY test in this file, not just on some
+    # orderings.  23 of __init__'s 34 attributes are still unset -- this
+    # fixture only works because restart_server happens to touch a narrow
+    # slice, and it will drift again the next time that slice widens.
+    mgr._lifecycle_lock = None
     return mgr
 
 
