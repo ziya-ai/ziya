@@ -17,6 +17,7 @@ import {
     stripBareProseFences,
     applyOutsideFences,
     splitJsonSpecTrailingContent,
+    repairAtomicFenceRuns,
 } from '../fenceScanner';
 
 const BT = '`'.repeat(3);
@@ -644,5 +645,134 @@ describe('splitJsonSpecTrailingContent', () => {
     it('does not split when only whitespace trails the JSON', () => {
         const md = [BT + 'plotly', '{"data": [1]}   ', '', BT].join('\n');
         expect(splitJsonSpecTrailingContent(md)).toBe(md);
+    });
+});
+
+describe('repairAtomicFenceRuns', () => {
+    const openers = (md: string): string[] =>
+        classifyFenceLines(md)
+            .filter((c): c is Extract<typeof c, { kind: 'open' }> => c.kind === 'open')
+            .map(c => c.info);
+
+    it('recovers a whole run when one atomic close is missing', () => {
+        // The observed failure: html-mockup never closed, stray bare fences
+        // between the following blocks. Raw input classifies only
+        // html-mockup + two PHANTOM bare openers; packet is swallowed.
+        const md = [
+            BT + 'html-mockup',
+            '<div>hello</div>',
+            '',
+            BT + 'graphviz',
+            'digraph { a -> b; }',
+            BT,
+            '',
+            BT,
+            '',
+            BT + 'packet',
+            '{"title": "III", "bitWidth": 32}',
+            BT,
+            '',
+            BT,
+            '',
+            BT + 'mermaid',
+            'graph LR',
+            BT,
+        ].join('\n');
+
+        // Pin the broken baseline so a future scanner change cannot make this
+        // test pass vacuously.
+        expect(openers(md)).toEqual(['html-mockup', '', '']);
+
+        const fixed = repairAtomicFenceRuns(md);
+        expect(openers(fixed)).toEqual(['html-mockup', 'graphviz', 'packet', 'mermaid']);
+    });
+
+    it('synthesizes the close immediately before the interrupting opener', () => {
+        const md = [BT + 'mermaid', 'graph LR', BT + 'packet', '{}', BT].join('\n');
+        const fixed = repairAtomicFenceRuns(md).split('\n');
+        expect(fixed).toEqual([BT + 'mermaid', 'graph LR', BT, BT + 'packet', '{}', BT]);
+    });
+
+    it('matches the opener run length when synthesizing a close', () => {
+        const md = [BT4 + 'mermaid', 'graph LR', BT4 + 'packet', '{}', BT4].join('\n');
+        const fixed = repairAtomicFenceRuns(md).split('\n');
+        expect(fixed[2]).toBe(BT4);
+        expect(openers(fixed.join('\n'))).toEqual(['mermaid', 'packet']);
+    });
+
+    it('leaves a well-formed run untouched', () => {
+        const md = [
+            BT + 'mermaid', 'graph LR', BT,
+            '',
+            BT + 'packet', '{}', BT,
+            '',
+            BT + 'vega-lite', '{"mark": "bar"}', BT,
+        ].join('\n');
+        expect(repairAtomicFenceRuns(md)).toBe(md);
+    });
+
+    it('leaves an unterminated atomic block alone while streaming', () => {
+        // No interrupting opener: the close has simply not arrived yet, so
+        // repairing would close and reopen the block on every stream chunk.
+        const md = [BT + 'mermaid', 'graph LR', '  A-->B'].join('\n');
+        expect(repairAtomicFenceRuns(md)).toBe(md);
+    });
+
+    it('does not treat a col-0 fence inside a diff body as an opener', () => {
+        const md = [
+            BT + 'diff',
+            'diff --git a/x.md b/x.md',
+            '--- a/x.md',
+            '+++ b/x.md',
+            '@@ -1 +1 @@',
+            '+' + BT + 'mermaid',
+            '+graph LR',
+            '+' + BT,
+            BT,
+            '',
+            BT + 'mermaid',
+            'graph TD',
+            BT,
+        ].join('\n');
+        expect(repairAtomicFenceRuns(md)).toBe(md);
+    });
+
+    it('does not repair a markdown block that legitimately nests a diagram', () => {
+        const md = [
+            BT4 + 'markdown',
+            '# Example',
+            BT + 'mermaid',
+            'graph LR',
+            BT,
+            BT4,
+        ].join('\n');
+        expect(repairAtomicFenceRuns(md)).toBe(md);
+    });
+
+    it('keeps a bare fence that opens a real untagged code block', () => {
+        const md = [
+            BT + 'mermaid', 'graph LR', BT,
+            '',
+            BT,
+            'plain preformatted text',
+            BT,
+        ].join('\n');
+        expect(repairAtomicFenceRuns(md)).toBe(md);
+    });
+
+    it('is idempotent', () => {
+        const md = [
+            BT + 'html-mockup', '<div/>', '',
+            BT + 'graphviz', 'digraph { a }', BT,
+            '', BT, '',
+            BT + 'packet', '{}', BT,
+        ].join('\n');
+        const once = repairAtomicFenceRuns(md);
+        expect(repairAtomicFenceRuns(once)).toBe(once);
+    });
+
+    it('leaves fence-free prose untouched', () => {
+        const md = 'Just prose.\n\nWith a second paragraph.';
+        expect(repairAtomicFenceRuns(md)).toBe(md);
     });
 });

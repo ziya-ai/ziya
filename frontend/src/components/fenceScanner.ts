@@ -598,3 +598,158 @@ export function upgradeNestedFences(markdown: string): string {
     }
     return lines.join('\n');
 }
+
+/**
+ * Languages whose fenced body is a self-contained diagram/spec/markup
+ * source and can therefore NEVER legitimately contain a column-0
+ * lang-tagged fence of its own.
+ *
+ * This property is what makes repairAtomicFenceRuns safe: encountering
+ * such an opener while one of these blocks is open is positive proof the
+ * close is missing, not evidence of legal nesting. Languages whose bodies
+ * CAN carry fences (diff, markdown, md, and any prose/code language) are
+ * deliberately absent and are skipped wholesale by the pass.
+ *
+ * Keep in sync with the diagram cases in determineTokenType
+ * (MarkdownRenderer.tsx) — a language present there but missing here only
+ * loses the repair, never renders wrongly.
+ */
+const ATOMIC_FENCE_LANGS = new Set([
+    'mermaid', 'graphviz', 'dot',
+    'vega-lite', 'vegalite', 'vega', 'plotly',
+    'drawio', 'draw.io', 'designinspector',
+    'packet', 'packet-diagram', 'bytefield',
+    'music', 'sheet-music', 'vexflow',
+    'joint', 'jointjs', 'diagram', 'd2', 'chord',
+    'force-directed', 'forcedirected', 'network', 'd3',
+    'html-mockup', 'ui-mockup', 'mockup',
+    'circuitikz', 'tikz', 'tikz-cd', 'chemfig', 'latex-circuit',
+    'slidecast', 'slideshow', 'framechain',
+    'basic-chart', 'chart',
+]);
+
+/** A column-0 backtick fence carrying a language tag, or null. */
+function col0TaggedOpener(
+    line: string,
+): { char: FenceChar; len: number; info: string; indent: number } | null {
+    const o = matchFenceOpen(line);
+    if (!o || o.char !== '`' || o.indent !== 0 || o.info === '') return null;
+    return o;
+}
+
+/** A column-0 bare backtick run (a fence with no info string). */
+function isBareCol0Fence(line: string): boolean {
+    return /^`{3,}[ \t]*$/.test(line);
+}
+
+/**
+ * Repair a run of atomic (diagram/mockup) fenced blocks in which an
+ * opener's closing fence is missing.
+ *
+ * Models emitting several visualization blocks in sequence sometimes drop
+ * one closing fence and leave stray bare fences between the blocks. Under
+ * CommonMark that single omission inverts every fence that follows: the
+ * NEXT block's opener is absorbed as content, its close is consumed as the
+ * unterminated block's close, and the following bare fence becomes an
+ * opener. One missing line silently destroys an unbounded number of
+ * downstream diagrams — the packet block reports "Invalid JSON" because it
+ * is being handed the tail of an html-mockup.
+ *
+ * Two repairs, both driven by the atomic property above:
+ *
+ *   1. An atomic block interrupted by another column-0 lang-tagged opener
+ *      gets a synthesized close inserted immediately before that opener.
+ *   2. An orphan bare fence left between a now-closed atomic block and the
+ *      next lang-tagged opener is dropped, since it can only be the
+ *      residue of the same mis-pairing.
+ *
+ * Deliberately conservative:
+ *   - Non-atomic blocks (diff, markdown, python, …) are skipped whole, so
+ *     a column-0 fence inside a diff body is never misread as an opener.
+ *   - An atomic block with no close AND no interrupting opener is the
+ *     streaming case and is left untouched, so a diagram mid-stream is not
+ *     repeatedly closed and reopened as it arrives.
+ *   - Orphan removal requires a following lang-tagged opener, so a bare
+ *     fence that legitimately opens an untagged code block survives.
+ */
+export function repairAtomicFenceRuns(markdown: string): string {
+    const lines = markdown.split('\n');
+    const out: string[] = [];
+    let i = 0;
+
+    while (i < lines.length) {
+        const open = col0TaggedOpener(lines[i]);
+        if (!open) {
+            out.push(lines[i]);
+            i += 1;
+            continue;
+        }
+
+        const active = { char: open.char, len: open.len, info: open.info, indent: 0 };
+
+        // Non-atomic opener: its body may legally contain fences. Copy the
+        // whole block through untouched so nothing inside it is examined.
+        if (!ATOMIC_FENCE_LANGS.has(open.info.toLowerCase())) {
+            let j = i + 1;
+            while (j < lines.length && !matchFenceClose(lines[j], active)) j += 1;
+            if (j >= lines.length) {
+                // Unterminated non-atomic block (streaming): emit the opener
+                // and continue scanning normally from the next line.
+                out.push(lines[i]);
+                i += 1;
+                continue;
+            }
+            for (let k = i; k <= j; k += 1) out.push(lines[k]);
+            i = j + 1;
+            continue;
+        }
+
+        // Atomic opener: find its close, or the opener that proves the close
+        // is missing, whichever comes first.
+        let closeIdx = -1;
+        let interruptIdx = -1;
+        for (let j = i + 1; j < lines.length; j += 1) {
+            if (matchFenceClose(lines[j], active)) {
+                closeIdx = j;
+                break;
+            }
+            if (col0TaggedOpener(lines[j])) {
+                interruptIdx = j;
+                break;
+            }
+        }
+
+        if (interruptIdx !== -1) {
+            // Repair 1: synthesize the missing close before the next opener.
+            for (let k = i; k < interruptIdx; k += 1) out.push(lines[k]);
+            out.push(open.char.repeat(open.len));
+            i = interruptIdx;
+            continue;
+        }
+
+        if (closeIdx === -1) {
+            // Streaming tail — the close simply has not arrived yet.
+            out.push(lines[i]);
+            i += 1;
+            continue;
+        }
+
+        for (let k = i; k <= closeIdx; k += 1) out.push(lines[k]);
+        i = closeIdx + 1;
+
+        // Repair 2: drop an orphan bare fence sitting between this closed
+        // block and the next lang-tagged opener.
+        let p = i;
+        while (p < lines.length && lines[p].trim() === '') p += 1;
+        if (p < lines.length && isBareCol0Fence(lines[p])) {
+            let q = p + 1;
+            while (q < lines.length && lines[q].trim() === '') q += 1;
+            if (q < lines.length && col0TaggedOpener(lines[q])) {
+                for (let k = i; k < p; k += 1) out.push(lines[k]);
+                i = p + 1;
+            }
+        }
+    }
+
+    return out.join('\n');
+}
