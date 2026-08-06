@@ -321,9 +321,22 @@ export function useDelegateStreaming({
       }
     }
 
+    // Browsers cap concurrent connections per origin at 6 (HTTP/1.1), and
+    // WebSockets consume that same budget.  This tab already holds
+    // /ws/file-tree, /ws/feedback, the SSE /chat stream and this delegate's
+    // own socket — 4 slots.  DEFAULT_MAX_CONCURRENCY is 8 server-side, so an
+    // uncapped sibling loop would request 11 sockets against a limit of 6.
+    // Oversubscribing starves ordinary requests: a lazy-chunk <script> gets
+    // no socket, fires neither load nor error, and dies on webpack's 120s
+    // chunkLoadTimeout as a ChunkLoadError.  Cap siblings at the 2 remaining
+    // slots; delegates beyond that still stream server-side and their output
+    // is delivered when a slot frees or on completion.
+    const MAX_SIBLING_SOCKETS = 2;
+
     // Open connections for newly-running delegates (skip if already attempted)
     for (const sib of siblings) {
       if (siblingMap.has(sib.id) || siblingConnectedIdsRef.current.has(sib.id)) continue;
+      if (siblingMap.size >= MAX_SIBLING_SOCKETS) break;
       siblingConnectedIdsRef.current.add(sib.id);
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
