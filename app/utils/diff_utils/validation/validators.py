@@ -666,9 +666,15 @@ def is_hunk_already_applied(file_lines: List[str], hunk: Dict[str, Any], pos: in
                 # Check if the distinctive added lines also appear in the removed lines.
                 # If so, this is a code-move diff and finding them in the file is expected
                 # (they exist at their OLD location), not evidence of already-applied state.
+                # Use the trivial-filtered (non_trivial_lines) form for this comparison
+                # rather than the raw distinctive block: a lone trailing/leading brace or
+                # similar trivial token that is genuinely NEW (e.g. the closing brace of a
+                # newly introduced else-block) is not part of removed_lines and would
+                # otherwise defeat the substring match, causing an unmodified tail of
+                # removed_lines (re-nested one level deeper) to be misread as new content.
                 removed_normalized = [normalize_line_for_comparison(line) for line in removed_lines]
                 removed_as_str = "\n".join(removed_normalized)
-                distinctive_as_str = "\n".join(distinctive_normalized)
+                distinctive_as_str = "\n".join(non_trivial_lines)
                 is_code_move = distinctive_as_str in removed_as_str
                 # Re-add pattern: every removed line also appears among added lines
                 # (e.g. context is re-stated in the added block). In that case the

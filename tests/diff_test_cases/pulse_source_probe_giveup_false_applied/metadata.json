@@ -1,0 +1,6 @@
+{
+    "target_file": "pulse_sync.c",
+    "description": "Minimal reproducible example (MRE, no product/project-specific naming) of a false 'already applied' detection. The file already declares and references pulseProbeGaveUp/pulseSourceSwitches elsewhere (mux-switch bookkeeping in pulseSourceSelect() and the status dump in showStatus()), which are distractors that can fool a context/identifier-based already-applied heuristic. The specific hunk content (the !pulseProbeGaveUp guard, the pulseHaveGoodPhase reset, and the giveup branch inside pulseMeasure()'s bad-streak handling) has NOT actually been applied anywhere in original.c. Applying changes.diff to original.c must produce expected.c with changes_written=True and a non-already_applied status.",
+    "date_added": "2026-07-31",
+    "issue_reference": "MRE derived from swm_clk_discipline.c false already-applied case, sanitized of product-specific identifiers"
+}
