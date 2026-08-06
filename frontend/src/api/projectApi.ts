@@ -4,6 +4,10 @@
 import { api } from './index';
 import { Project, ProjectCreate, ProjectUpdate, ProjectListItem, StartupInfo } from '../types/project';
 
+// Template endpoints live in their own client module because they are not
+// project-scoped (they read/write ~/.ziya/templates.json).
+export * as templates from './projectTemplateApi';
+
 export async function listProjects(): Promise<ProjectListItem[]> {
   return api.get<ProjectListItem[]>('/projects');
 }

@@ -35,7 +35,7 @@ interface ProjectContextType {
   updateProject: (id: string, updates: ProjectUpdate) => Promise<void>;
   deleteProject: (id: string) => Promise<void>;
   mergeProjects: (sourceId: string, targetId: string) => Promise<void>;
-  createProject: (path: string, name?: string) => Promise<Project>;
+  createProject: (path: string, name?: string, templateId?: string) => Promise<Project>;
   
   // Context state
   contexts: Context[];
@@ -523,8 +523,12 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     setProjects(allProjects);
   }, []);
   
-  const createProjectFn = useCallback(async (path: string, name?: string) => {
-    const newProject = await projectApi.createProject({ path, name });
+  // templateId is optional and omitted rather than passed as undefined-in-a-
+  // key so the server sees no field at all and runs its own detection —
+  // autodetect is the default path, not a fallback for a failed lookup.
+  const createProjectFn = useCallback(async (path: string, name?: string, templateId?: string) => {
+    const newProject = await projectApi.createProject(
+      templateId ? { path, name, templateId } : { path, name });
     
     // Add to projects list
     setProjects(prev => [...prev, {

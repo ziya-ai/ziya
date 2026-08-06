@@ -165,13 +165,38 @@ class ProjectStorage(BaseStorage[Project]):
         
         path = data.path or ""
         
+        # Seed settings from a project template.  Apply-once: the resolved
+        # template's values are stamped into the record here and never
+        # consulted again, so every later settings read stays literal.
+        #
+        # Wrapped because template resolution reads a user-editable file
+        # (~/.ziya/templates.json) and sniffs a directory that may be
+        # unreadable — neither is allowed to fail project creation, which
+        # is why the fallback is a plain empty settings object.
+        seeded = {"defaultContextIds": [], "defaultSkillIds": []}
+        try:
+            from ..utils.project_templates import (
+                apply_template, detect_template, resolve_template_id,
+            )
+            from ..utils.template_store import (
+                all_templates, get_default_template_id, get_template,
+            )
+            template_id = resolve_template_id(
+                requested=data.templateId,
+                detected=detect_template(path, templates=all_templates()),
+                global_default=get_default_template_id(),
+            )
+            seeded = apply_template(seeded, get_template(template_id))
+        except Exception as e:  # noqa: BLE001 — see comment above
+            logger.warning("Project template not applied: %s", e)
+
         project = Project(
             id=project_id,
             name=name,
             path=path,
             createdAt=now,
             lastAccessedAt=now,
-            settings=ProjectSettings(defaultContextIds=[], defaultSkillIds=[])
+            settings=ProjectSettings(**seeded),
         )
         
         # Create project directory structure

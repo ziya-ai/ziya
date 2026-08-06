@@ -34,6 +34,14 @@ class ProjectSettings(BaseModel):
     # chain (see app.models.task_card.merge_scopes and
     # app/agents/block_executor.py) — this is the outermost layer.
     taskScope: Optional[TaskScope] = None
+    # Which project template seeded these settings, recorded at creation.
+    # PROVENANCE ONLY — deliberately NOT consulted when reading settings.
+    # Template semantics are apply-once: the values above were stamped in
+    # at creation and the project owns them from then on.  This exists so
+    # "why is this skill on by default?" is answerable, and so a future
+    # explicit "re-apply template" action has something to key off.
+    # None means the project predates templates or was created without one.
+    templateId: Optional[str] = None
 
 class Project(BaseModel):
     id: str
@@ -46,6 +54,11 @@ class Project(BaseModel):
 class ProjectCreate(BaseModel):
     path: Optional[str] = None
     name: Optional[str] = None
+    # Explicit template choice from the create dialog.  Omit to let the
+    # server autodetect from the directory's build markers, then fall back
+    # to the user's default-template preference.  See
+    # app.utils.project_templates.resolve_template_id for precedence.
+    templateId: Optional[str] = None
 
 class ProjectUpdate(BaseModel):
     name: Optional[str] = None
