@@ -18,13 +18,13 @@
  *      re-compile it server-side.
  *
  * Output is SVG when dvisvgm is installed (text stays selectable and can be
- * recoloured for dark mode via enhanceSVGVisibility, exactly as graphvizPlugin
- * does) and PNG otherwise, in which case dark mode gets a CSS filter because
- * raster pixels cannot be selectively recoloured.
+ * recoloured for dark mode -- see applyLatexDarkTheme) and PNG otherwise, in
+ * which case dark mode gets a CSS filter because raster pixels cannot be
+ * selectively recoloured.
  */
 import { D3RenderPlugin } from '../../types/d3';
-import { enhanceSVGVisibility } from '../../utils/colorUtils';
 import { escapeHtml } from '../../utils/htmlSanitize';
+import { applyLatexDarkTheme, sizeLatexSvg } from '../../utils/latexSvgTheme';
 
 /** Diagram types served by the backend LaTeX profiles. */
 const LATEX_TYPES = new Set(['circuitikz', 'tikz', 'chemfig', 'tikz-cd']);
@@ -169,15 +169,18 @@ function mount(container: HTMLElement, artifact: RenderedArtifact, isDarkMode: b
         wrapper.innerHTML = artifact.payload;
         const svg = wrapper.querySelector('svg');
         if (svg) {
-            // dvisvgm emits absolute pt dimensions; drop them so the diagram
-            // scales to the chat column instead of overflowing it.
-            svg.removeAttribute('width');
-            svg.removeAttribute('height');
-            svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-            (svg as SVGElement).style.maxWidth = '100%';
-            (svg as SVGElement).style.height = 'auto';
-            // TeX draws in black, which is invisible on a dark background.
-            enhanceSVGVisibility(svg as SVGElement, isDarkMode);
+            // Size to the diagram's own dimensions, capped at the container.
+            // Dropping width/height outright (as this did) leaves only the
+            // viewBox, which defaults to width:100% -- stretching a 70px
+            // benzene ring across an 820px column, a ~12x upscale.
+            sizeLatexSvg(svg as SVGElement);
+            // TeX draws in black, which measures 1.27:1 on the #1f1f1f
+            // diagram background -- invisible.  This must NOT go through
+            // enhanceSVGVisibility: that helper reads each element's OWN
+            // fill/stroke, and dvisvgm puts the colour on ancestor <g>
+            // elements instead, so it silently misses the ink while
+            // clobbering TeX's hairline stroke widths.  See latexSvgTheme.
+            applyLatexDarkTheme(svg as SVGElement, isDarkMode);
         }
     } else {
         const img = document.createElement('img');

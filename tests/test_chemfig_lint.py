@@ -101,6 +101,100 @@ def test_brace_groups_are_skipped():
     assert ring.is_closed
 
 
+def test_latex_comment_bond_chars_are_not_counted():
+    """A ``%`` comment runs to end of line and TeX discards it, so bond
+    characters inside it are not ring bonds.  A CORRECT benzene followed by an
+    explanatory comment must not be flagged as an overshoot, and a comment must
+    not be able to MASK a genuine deficit either."""
+    # A correct, closed ring whose trailing comment is full of bond chars.
+    correct, = scan_rings("*6(-=-=-=% double = bond note --\n)")
+    assert correct.bonds == 6
+    assert correct.pattern == "-=-=-="
+    assert correct.is_closed
+
+    # A comment in the middle of the ring must be skipped too.
+    mid, = scan_rings("*6(-=-% a note\n-=-)")
+    assert mid.bonds == 6
+    assert mid.is_closed
+
+    # A genuinely short ring stays short -- comment bond chars cannot hide it.
+    short, = scan_rings("*6(-=-=% - - filler\n)")
+    assert short.bonds == 4
+    assert not short.is_closed
+
+    # An escaped ``\%`` is a literal percent, not a comment start.
+    literal, = scan_rings(r"*6(-=-=-\%-)")
+    assert literal.bonds == 6
+    assert literal.is_closed
+
+
+def test_ring_written_inside_a_comment_is_not_detected():
+    """A ``*n(...)`` mentioned in a ``%`` comment is not a ring at all.
+
+    TeX discards the comment, so ring DETECTION (not just bond counting) must
+    ignore it.  A correct benzene whose comment references another ring by its
+    chemfig notation must yield exactly one real ring and no findings, while a
+    genuine ring outside any comment must still be seen and, if short, flagged.
+    """
+    # Comment mentions a *5 ring; only the real *6 must be detected.
+    rings = scan_rings("*6(-=-=-=) % benzene, cf. *5(-=-=) cyclopentadiene")
+    assert [(r.size, r.kind) for r in rings] == [(6, STANDALONE)]
+    assert lint("*6(-=-=-=) % benzene, cf. *5(-=-=) cyclopentadiene") == ()
+
+    # A comment ring on one line, a real short ring on the next: only the real
+    # one is a finding.
+    findings = lint("*6(-=-=-=) % see *5(-=)\n*5(-=-=)")
+    assert [(r.size, r.kind) for r in findings] == [(5, STANDALONE)]
+
+    # An escaped ``\%`` is a literal percent, so the following ring is REAL.
+    assert len(lint(r"50\% yield *5(-=-=)")) == 1
+
+    # autofix indices stay valid despite an intervening comment ring mention:
+    # the real short *6 is closed in the original body, comment left intact.
+    fixed, applied, warnings = autofix("*6(-=-=-) % note: *5(-=)\n")
+    assert fixed == "*6(-=-=-=) % note: *5(-=)\n"
+    assert len(applied) == 1 and warnings == ()
+
+
+def test_mhchem_adduct_star_is_not_a_ring():
+    r"""``*n(...)`` inside ``\ce{}``/``\pu{}`` is an mhchem adduct, not a ring.
+
+    A crystal-water formula such as ``\ce{CuSO4*5(H2O)}`` (CuSO4.5H2O) renders
+    perfectly, but the ``*`` is mhchem's hydrate operator -- not a chemfig ring
+    opener.  Detecting it as a ``*5`` ring produced a bogus "will not close"
+    warning on a correct formula.  A genuine ``\chemfig`` ring in the same body
+    must still be seen, and a real SHORT ring must still be flagged.
+    """
+    # The adduct star must not be detected as a ring at all.
+    assert scan_rings(r"\ce{CuSO4*5(H2O)}") == ()
+    assert lint(r"\ce{CuSO4*5(H2O)}") == ()
+
+    # \pu{} spans are masked the same way.
+    assert scan_rings(r"\pu{5*3(kg)}") == ()
+
+    # A closed chemfig ring alongside an mhchem adduct: only the real ring is
+    # seen, and it is correctly closed (no finding).
+    mixed = r"\ce{BaCl2*2(H2O)} \chemfig{*6(-=-=-=)}"
+    assert [(r.size, r.kind, r.is_closed) for r in scan_rings(mixed)] \
+        == [(6, STANDALONE, True)]
+    assert lint(mixed) == ()
+
+    # A real SHORT ring after an mhchem span is still flagged -- the mask must
+    # not suppress genuine findings.
+    short, = lint(r"\ce{ZnSO4*7H2O} + \chemfig{*5(-=-=)}")
+    assert (short.size, short.bonds, short.expected) == (5, 4, 5)
+
+    # autofix indices survive the masked mhchem span: the real short benzene is
+    # closed in the ORIGINAL body and the \ce{} span is left byte-for-byte.
+    fixed, applied, warnings = autofix(r"\ce{CuSO4*5(H2O)} \chemfig{*6(-=-=-)}")
+    assert fixed == r"\ce{CuSO4*5(H2O)} \chemfig{*6(-=-=-=)}"
+    assert len(applied) == 1 and warnings == ()
+
+    # An unbalanced \ce{ is not guessed at -- it falls through unmasked and the
+    # scan simply does not raise.
+    assert lint(r"\ce{CuSO4*5(H2O") is not None
+
+
 def test_branch_heavy_ring_is_reported_short():
     """The miscount this lint exists to prevent."""
     finding, = lint(BRANCH_HEAVY_SHORT)
