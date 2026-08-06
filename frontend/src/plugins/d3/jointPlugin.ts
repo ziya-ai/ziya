@@ -3,6 +3,7 @@ import type { dia, shapes } from '@joint/core';
 import { D3RenderPlugin } from '../../types/d3';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
+import { sanitizeJointGeometry } from './jointGeometrySanitizer';
 
 export interface JointSpec {
     type: 'joint' | 'jointjs' | 'diagram';
@@ -1781,6 +1782,22 @@ export const jointPlugin: D3RenderPlugin = {
 
             if (elements.length === 0) {
                 throw new Error('No elements found in specification');
+            }
+
+            // Sanitize element positions/sizes and link waypoints BEFORE creating cells.
+            // A single element at an extreme position (x=1e8) or size (1e7x1e7), or a link
+            // vertex at ±1e9, otherwise blows the graph bounding box to tens-of-millions of
+            // px: the fit-to-content pass sets a ~1e7 SVG viewBox and enters a runaway
+            // resize loop, so the headless screenshot never stabilizes and NO image is
+            // produced (graphics-stress Issue 16). Robust median/MAD outlier clamping pulls
+            // only true outliers back while leaving evenly-spread legitimate diagrams
+            // untouched. Mirrors sanitizeDrawioCoordinates (drawio Issue 8).
+            try {
+                const sanitized = sanitizeJointGeometry(elements as any[], connections as any[]);
+                elements = sanitized.elements as typeof elements;
+                connections = sanitized.connections as typeof connections;
+            } catch (sanitizeErr) {
+                console.warn('joint: geometry sanitize failed, using raw geometry', sanitizeErr);
             }
 
             const theme = spec.theme === 'auto' ? (isDarkMode ? 'dark' : 'light') :

@@ -161,3 +161,94 @@ describe('Issue 11 — sanitizeNetworkGraph (degenerate values + dangling edges)
     expect(links).toEqual([]);
   });
 });
+
+/**
+ * Regression test for Issue 21 (network renderer): CANVAS-RELATIVE NODE-SIZE CAP.
+ *
+ * ANOMALY: an adversarial spec with node `size` 1e12 (hub) and 1e300
+ * (precise_b) rendered as a SINGLE FLAT TEAL RECTANGLE — total data loss. The
+ * Issue-11 `sanitizeNetworkGraph` DID clamp size, but to the standalone
+ * constant `NETWORK_MAX_NODE_SIZE` (1000). On a 600x400 canvas a radius-1000
+ * circle (default fill #69b3a2) covers the ENTIRE viewport, hiding every other
+ * node and edge. The clamp bound was unrelated to canvas size, so a huge finite
+ * value still produced total occlusion.
+ *
+ * FIX: `networkNodeSizeCap(width,height)` derives a per-node radius cap from the
+ * smaller canvas dimension (NETWORK_NODE_SIZE_CANVAS_FRACTION), and
+ * `sanitizeNetworkGraph` accepts that cap as its 3rd argument. A single node can
+ * no longer paint over the whole canvas.
+ *
+ * Imports the REAL shipped module; would FAIL against pre-fix source (which had
+ * no `networkNodeSizeCap` export and no cap parameter — the 2-arg call always
+ * clamped to 1000).
+ */
+import {
+  networkNodeSizeCap,
+  NETWORK_NODE_SIZE_CANVAS_FRACTION,
+  NETWORK_DEFAULT_NODE_SIZE,
+} from '../networkDiagram';
+
+describe('Issue 21 — networkNodeSizeCap (canvas-relative node radius cap)', () => {
+  it('caps radius to a fraction of the smaller canvas dimension', () => {
+    // 600x400 -> min 400 * 0.15 = 60
+    expect(networkNodeSizeCap(600, 400)).toBeCloseTo(400 * NETWORK_NODE_SIZE_CANVAS_FRACTION, 6);
+    // portrait: 400x600 -> min 400 * 0.15 = 60 (uses the SMALLER dimension)
+    expect(networkNodeSizeCap(400, 600)).toBeCloseTo(400 * NETWORK_NODE_SIZE_CANVAS_FRACTION, 6);
+  });
+
+  it('the cap is far smaller than the canvas, so a capped node cannot cover it', () => {
+    const w = 600, h = 400;
+    const cap = networkNodeSizeCap(w, h);
+    // A radius-`cap` circle has diameter 2*cap; that must stay well under the
+    // smaller canvas dimension (this is the invariant the anomaly violated:
+    // 2*1000 = 2000 >> 400).
+    expect(2 * cap).toBeLessThan(Math.min(w, h));
+  });
+
+  it('never returns below the default node radius, never above the absolute guard', () => {
+    // tiny canvas -> floored at the default radius, not 0
+    expect(networkNodeSizeCap(10, 10)).toBe(NETWORK_DEFAULT_NODE_SIZE);
+    // giant canvas -> still capped by the absolute guard (1000)
+    expect(networkNodeSizeCap(1e9, 1e9)).toBe(NETWORK_MAX_NODE_SIZE);
+  });
+
+  it('falls back to sane defaults for missing/degenerate canvas dimensions', () => {
+    // default canvas 600x400 -> 60
+    expect(networkNodeSizeCap(undefined, undefined)).toBeCloseTo(60, 6);
+    expect(networkNodeSizeCap(0, -5)).toBeCloseTo(60, 6);
+    expect(networkNodeSizeCap(NaN, Infinity)).toBeCloseTo(60, 6);
+  });
+
+  it('sanitizeNetworkGraph clamps huge size to the CANVAS cap, reproducing the fix', () => {
+    const cap = networkNodeSizeCap(600, 400); // 60
+    const { nodes } = sanitizeNetworkGraph(
+      [
+        { id: 'hub', size: 1e12 },
+        { id: 'precise_b', size: 1e300 },
+        { id: 'normal', size: 12 },
+      ],
+      [],
+      cap
+    );
+    // hub + precise_b clamped to the canvas cap (60), NOT the old 1000
+    expect(nodes.find(n => n.id === 'hub')!.size).toBe(cap);
+    expect(nodes.find(n => n.id === 'precise_b')!.size).toBe(cap);
+    expect(nodes.find(n => n.id === 'hub')!.size).toBeLessThan(NETWORK_MAX_NODE_SIZE);
+    // in-bounds size is left untouched (cap did not become a catch-all)
+    expect(nodes.find(n => n.id === 'normal')!.size).toBe(12);
+  });
+
+  it('GUARD: without the canvas cap arg it still clamps to the absolute guard (back-compat)', () => {
+    // Pre-fix behavior preserved for callers that pass no cap: 1e12 -> 1000.
+    const { nodes } = sanitizeNetworkGraph([{ id: 'hub', size: 1e12 }], []);
+    expect(nodes[0].size).toBe(NETWORK_MAX_NODE_SIZE);
+  });
+
+  it('GUARD: a degenerate cap (<=0 / non-finite) collapses to the absolute guard, never 0', () => {
+    // A bad cap must NOT clamp every node to 0 (which would be a new blank-render bug).
+    const { nodes } = sanitizeNetworkGraph([{ id: 'hub', size: 1e12 }], [], 0);
+    expect(nodes[0].size).toBe(NETWORK_MAX_NODE_SIZE);
+    const r2 = sanitizeNetworkGraph([{ id: 'hub', size: 1e12 }], [], NaN);
+    expect(r2.nodes[0].size).toBe(NETWORK_MAX_NODE_SIZE);
+  });
+});

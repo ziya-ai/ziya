@@ -3,16 +3,20 @@
  * Consolidates duplicate implementations from graphviz, mermaid, and vega plugins
  */
 
+import { hexToRgbSafe } from './d3Plugins/hexColor';
+
 /**
- * Convert hex color to RGB components
+ * Convert hex color to RGB components.
+ *
+ * Delegates to the shared, unit-tested `hexToRgbSafe` helper so that 3-digit
+ * shorthand (`#000`, `#fff`), 4-digit shorthand (`#abcd`), 6-digit (`#aabbcc`)
+ * and 8-digit RGBA (`#aabbccdd`) all parse. The previous inline implementation
+ * matched 6-digit only, so Mermaid's `#000`/`#fff` output parsed as null and
+ * bubbled up as a `COLOR-PARSE-FAIL` (contrast collapsed to 1), silently
+ * disabling the text-contrast enhancement pass for shorthand-colored diagrams.
  */
 export function hexToRgb(hex: string): { r: number; g: number; b: number } | null {
-    const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-    return result ? {
-        r: parseInt(result[1], 16),
-        g: parseInt(result[2], 16),
-        b: parseInt(result[3], 16)
-    } : null;
+    return hexToRgbSafe(hex);
 }
 
 /**

@@ -211,6 +211,102 @@ export function sanitizeDrawioCoordinates(xml: string): string {
     return out;
 }
 
+/**
+ * STRESS-GUARD (Issue 22): break cycles in the mxCell `parent` hierarchy.
+ *
+ * A drawio `<mxCell>` may declare a `parent` id. maxGraph's model requires this
+ * to form a TREE rooted at cell "0"/"1". An adversarial (or LLM-hallucinated)
+ * spec can declare a cycle — e.g. g1 parent=g3, g2 parent=g1, g3 parent=g2 — a
+ * genuine 3-cycle in the parent chain with no path to the root.
+ *
+ * This is catastrophic: NOT a silent-data-loss like the coordinate outliers, but
+ * an UNBOUNDED INFINITE LOOP. Both the drawio plugin and maxGraph itself walk
+ * ancestor chains repeatedly:
+ *   - the plugin's absolute-position accumulation and geometric-containment
+ *     redistribution do `while (current && current.getId() !== '0') current = current.getParent();`
+ *   - maxGraph's model insertion / ancestor resolution recurses on getParent().
+ * With a parent cycle none of these terminate — the render hangs until the tool's
+ * hard cap (observed: the isolated 3-cycle hung the renderer for the full 300s,
+ * far past the 30s harness timeout). Same hang CLASS as Issue 5 (graphviz
+ * minlen=1e6 → unbounded layout): a degenerate input drives an uncapped loop.
+ *
+ * Fix: detect any cell whose parent-chain does not terminate at a root (either it
+ * revisits a cell already on the chain, or it exceeds a sane depth cap) and
+ * re-root the OFFENDING cell's `parent` to "1" (the default layer). This breaks
+ * every cycle while preserving all cells and all acyclic nesting: a legitimate
+ * deep tree (even the 30-level nest in this same spec) always terminates at "1"
+ * and is left completely untouched. Re-rooting to "1" is exactly what maxGraph's
+ * own decoder would fall back to for an unresolvable parent, so it cannot corrupt
+ * a valid diagram — it only rescues an invalid one from hanging.
+ *
+ * Exported as a pure string→string helper so it is unit-testable without a DOM.
+ */
+export function breakDrawioParentCycles(xml: string): string {
+    const MAX_DEPTH = 10000; // absolute backstop if the id map is somehow incomplete
+
+    // Parse id → parent from every <mxCell ...>. Attribute order is arbitrary, so
+    // match id and parent independently within each tag.
+    type CellInfo = { id: string; parent: string | null; tag: string };
+    const cells: CellInfo[] = [];
+    const cellRe = /<mxCell\b[^>]*?>/g;
+    let m: RegExpExecArray | null;
+    while ((m = cellRe.exec(xml)) !== null) {
+        const tag = m[0];
+        const idM = tag.match(/\bid="([^"]*)"/);
+        if (!idM) continue;
+        const parM = tag.match(/\bparent="([^"]*)"/);
+        cells.push({ id: idM[1], parent: parM ? parM[1] : null, tag });
+    }
+    if (cells.length === 0) return xml;
+
+    // First declaration wins per id (drawio dedups by first occurrence; a
+    // duplicate id reusing the same value keeps the original parent mapping).
+    const parentOf = new Map<string, string | null>();
+    for (const c of cells) {
+        if (!parentOf.has(c.id)) parentOf.set(c.id, c.parent);
+    }
+
+    // A chain is "rootable" if following parent pointers reaches a cell with no
+    // parent, or the reserved roots "0"/"1", or a parent id that isn't a declared
+    // cell (maxGraph re-roots those to the default layer anyway). It is BAD if it
+    // revisits a node already seen on this walk (a cycle) or exceeds MAX_DEPTH.
+    const offenders = new Set<string>();
+    for (const c of cells) {
+        if (c.id === '0' || c.id === '1') continue;
+        const seen = new Set<string>();
+        let cur: string | null = c.id;
+        let depth = 0;
+        while (cur !== null) {
+            if (cur === '0' || cur === '1') break;          // reached a root: OK
+            if (seen.has(cur)) { offenders.add(cur); break; } // revisited: cycle
+            if (depth++ > MAX_DEPTH) { offenders.add(cur); break; }
+            seen.add(cur);
+            if (!parentOf.has(cur)) break;                  // parent not declared: maxGraph re-roots, OK
+            const next: string | null = parentOf.get(cur) ?? null;
+            if (next === null) break;                        // no parent attr: top-level, OK
+            cur = next;
+        }
+    }
+    if (offenders.size === 0) return xml;
+
+    // Re-root each offending cell's parent to "1". Rewrite only the first
+    // <mxCell> tag per offending id (its authoritative declaration). If the tag
+    // has no parent attribute (shouldn't happen for an offender, but be safe),
+    // inject parent="1" right after the id.
+    const rerooted = new Set<string>();
+    return xml.replace(/<mxCell\b[^>]*?>/g, (tag) => {
+        const idM = tag.match(/\bid="([^"]*)"/);
+        if (!idM) return tag;
+        const id = idM[1];
+        if (!offenders.has(id) || rerooted.has(id)) return tag;
+        rerooted.add(id);
+        if (/\bparent="[^"]*"/.test(tag)) {
+            return tag.replace(/\bparent="[^"]*"/, 'parent="1"');
+        }
+        return tag.replace(/(\bid="[^"]*")/, '$1 parent="1"');
+    });
+}
+
 const normalizeDrawIOXml = (xml: string): string => {
     let normalized = xml.trim();
 
@@ -332,6 +428,16 @@ const normalizeDrawIOXml = (xml: string): string => {
     // window is wide and nothing is touched. A hard finite cap remains as a backstop.
     normalized = sanitizeDrawioCoordinates(normalized);
     console.log('📐 DrawIO: Sanitized coordinates (median/MAD outlier clamp, incl. mxPoint)');
+
+    // CRITICAL FIX (Issue 22): break cycles in the mxCell `parent` hierarchy.
+    // A cyclic parent chain (g1 parent=g3, g2 parent=g1, g3 parent=g2) makes every
+    // ancestor-walk (`while (cur.getId() !== '0') cur = cur.getParent()`) here AND in
+    // maxGraph's model loop forever → the render hangs indefinitely (observed 300s, no
+    // image). breakDrawioParentCycles() re-roots only the offending cells to "1", leaving
+    // all legitimate (acyclic) nesting — including the 30-level deep tree in this same
+    // spec — untouched. Same unbounded-loop CLASS as Issue 5 (graphviz minlen=1e6).
+    normalized = breakDrawioParentCycles(normalized);
+    console.log('📐 DrawIO: Broke any mxCell parent-hierarchy cycles');
 
     // Clean up any text content after closing tags (LLM sometimes adds descriptions)
     // Find the last proper closing tag (</mxfile>, </diagram>, or </mxGraphModel>)

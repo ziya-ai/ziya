@@ -11,7 +11,7 @@ import {
   type LayoutConfig,
   computeDimensions, defaultLayout, resolveColor,
   assignBracketDepths, escapeXml, computeBracketGutters, fitFieldLabel,
-  normalizePacketSpec, sanitizeFieldBits,
+  normalizePacketSpec, sanitizeFieldBits, sanitizeBrackets,
 } from '../../utils/d3Plugins/packetPlugin';
 import { getOptimalTextColor } from '../../utils/colorUtils';
 import { getZoomScript, getDownloadSvgScript } from '../../utils/popupScriptUtils';
@@ -120,6 +120,18 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
     renderError(container, 'Requires a "sections" array with at least one section', rawSpec, isDarkMode);
     return;
   }
+
+  // Sanitize bracket geometry BEFORE any layout math. Clamps each bracket's
+  // start_row/end_row into its section's row range, corrects inverted ranges,
+  // coerces bad depth, and validates side — so out-of-range/inverted/degenerate
+  // brackets cannot produce paths or gutters far outside the diagram bounds
+  // (the Issue-24 "layout explosion"). Runs on the SAME normalized spec that
+  // computeDimensions and the draw loop consume, so sizing and drawing agree.
+  pkt.sections = pkt.sections.map((sec: PacketSection) => {
+    if (!sec.brackets) return sec;
+    const rowCount = Array.isArray(sec.rows) ? sec.rows.length : 0;
+    return { ...sec, brackets: sanitizeBrackets(sec.brackets, rowCount) };
+  });
 
   const bits = pkt.bitWidth ?? 8;
   const { width, height, layout: L } = computeDimensions(pkt);

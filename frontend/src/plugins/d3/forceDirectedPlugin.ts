@@ -46,6 +46,80 @@ const DEFAULT_GROUP_COLORS = [
   '#edc948', '#b07aa1', '#ff9da7', '#9c755f', '#bab0ac',
 ];
 
+/** Absolute clamp for a node's rendered radius (px). */
+export const FORCE_MAX_NODE_RADIUS = 200;
+
+/**
+ * Coerce an arbitrary value to a finite number, or return `undefined` when it
+ * cannot be (non-numeric string, NaN, +/-Infinity, null, object). Numeric
+ * strings ("400", "3.5") are accepted; "NaN"/"Infinity"/"-Infinity" and
+ * anything else become `undefined`.
+ */
+export function toFiniteOrUndefined(v: any): number | undefined {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : undefined;
+  if (typeof v === 'string') {
+    const trimmed = v.trim();
+    if (trimmed === '') return undefined;
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Sanitize force-directed nodes so no non-finite value can reach the d3-force
+ * simulation. This is the whole-class guard for the "total render hang" family
+ * (ledger Issue 25): a node whose fixed-position pin (`fx`/`fy`) is a non-finite
+ * value — e.g. the JSON strings "Infinity"/"-Infinity"/"NaN", or a raw
+ * Infinity/NaN — poisons d3's quadtree. `d3.forceManyBody` builds a quadtree via
+ * `cover()`, which DOUBLES its extent in a `while` loop until it contains every
+ * point; an Infinity coordinate can never be covered, so the loop spins forever
+ * and the simulation never emits a frame (30s timeout, zero output). A NaN pin
+ * silently corrupts every node position to NaN instead.
+ *
+ * Rules (pure, no DOM):
+ *   - `fx`/`fy`: kept only if they coerce to a finite number; otherwise the pin
+ *     is DROPPED (property removed) so the node participates as a free node.
+ *   - `size`/`radius`: coerced to a finite number, forced non-negative, and
+ *     clamped to FORCE_MAX_NODE_RADIUS; non-finite/absent left untouched so the
+ *     render path applies its own default.
+ *   - all other fields (id, group, label, color, ...) are preserved verbatim.
+ *
+ * Returns NEW node objects (does not mutate the input).
+ */
+export function sanitizeForceNodes<T extends Record<string, any>>(nodes: T[]): T[] {
+  if (!Array.isArray(nodes)) return [];
+  return nodes.map((raw) => {
+    const n: Record<string, any> = { ...raw };
+
+    // Fixed-position pins: drop any non-finite pin outright.
+    if ('fx' in n) {
+      const fx = toFiniteOrUndefined(n.fx);
+      if (fx === undefined) delete n.fx;
+      else n.fx = fx;
+    }
+    if ('fy' in n) {
+      const fy = toFiniteOrUndefined(n.fy);
+      if (fy === undefined) delete n.fy;
+      else n.fy = fy;
+    }
+
+    // Radius-ish numeric fields: clamp to a sane finite range when present.
+    for (const key of ['size', 'radius'] as const) {
+      if (key in n) {
+        const val = toFiniteOrUndefined(n[key]);
+        if (val === undefined) {
+          delete n[key]; // let the render path fall back to its default
+        } else {
+          n[key] = Math.min(FORCE_MAX_NODE_RADIUS, Math.max(0, val));
+        }
+      }
+    }
+
+    return n as T;
+  });
+}
+
 function isForceDirectedSpec(spec: any): boolean {
   if (typeof spec !== 'object' || spec === null) return false;
 
@@ -84,8 +158,14 @@ export const forceDirectedPlugin: D3RenderPlugin = {
   canHandle: isForceDirectedSpec,
 
   render: (container: HTMLElement, d3: any, spec: any, isDarkMode: boolean): (() => void) => {
-    // Normalize spec: extract nodes/links from either location
-    const nodes: ForceNode[] = (spec.nodes || spec.data?.nodes || []).map((n: any) => ({ ...n }));
+    // Normalize spec: extract nodes/links from either location, then sanitize
+    // node geometry. sanitizeForceNodes drops any non-finite fx/fy pin (the JSON
+    // strings "Infinity"/"NaN", raw Infinity/NaN) — such a pin poisons d3's
+    // forceManyBody quadtree cover() into an infinite doubling loop, hanging the
+    // whole render to timeout with zero output. See ledger Issue 25.
+    const nodes: ForceNode[] = sanitizeForceNodes(
+      (spec.nodes || spec.data?.nodes || []).map((n: any) => ({ ...n }))
+    );
     const rawLinks: ForceLink[] = (spec.links || spec.data?.links || []).map((l: any) => ({ ...l }));
 
     // Sanitize links against the actual node set. d3.forceLink().id() throws an

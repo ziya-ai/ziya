@@ -181,6 +181,134 @@ function rewriteV5Expressions(obj: any): any {
   return out;
 }
 
+/**
+ * Decide which marks to keep when rendering a Vega spec.
+ *
+ * HISTORY / Issue 15: the plugin was originally written around one specific
+ * "sunburst" spec whose title/footer/legend were authored as static `text`
+ * marks + `group` (legend) marks alongside the data-bound `arc` marks. Those
+ * chrome marks are rendered as HTML outside the SVG, so the plugin stripped
+ * `group` and static (non-data-bound) `text` marks from the Vega spec to avoid
+ * double-rendering them. That strip was applied UNCONDITIONALLY to every Vega
+ * spec — so ANY spec that legitimately uses `group` marks (faceting, layering,
+ * nested-group layouts, legends) or static `text` marks had part or ALL of its
+ * scenegraph silently deleted. Issue 15's 5-level group nesting lost 100% of
+ * its marks → empty container → the headless harness screenshotted the
+ * surrounding SPA instead of a chart.
+ *
+ * GENERAL FIX: only perform the chrome-strip for the sunburst SIGNATURE — a
+ * spec that actually contains a data-bound `arc` mark. Every other spec keeps
+ * its marks verbatim. As a belt-and-suspenders guard, if the strip would empty
+ * the mark list, the original marks are returned unchanged (a chart is never
+ * silently reduced to nothing).
+ *
+ * PURE + exported so it can be unit-tested without a DOM.
+ */
+export function filterVegaChromeMarks(marks: any): any {
+  if (!Array.isArray(marks)) return marks;
+  // Sunburst signature: at least one data-bound arc mark. Absent that, this is
+  // a general Vega spec and stripping group/static-text marks would corrupt or
+  // erase it — so leave the marks untouched.
+  const hasDataArc = marks.some(
+    (m) => m && typeof m === 'object' && m.type === 'arc' && m.from?.data,
+  );
+  if (!hasDataArc) return marks;
+
+  const filtered = marks.filter((mark: any) => {
+    if (!mark || typeof mark !== 'object') return true;
+    // Keep arc and text-on-arc marks; remove standalone text and group (legend) marks
+    if (mark.type === 'arc') return true;
+    if (mark.type === 'text' && mark.from?.data) return true; // text labels on data arcs
+    // Remove static text marks (title, footer) and group marks (legend)
+    if (mark.type === 'text' && !mark.from?.data) return false;
+    if (mark.type === 'group') return false;
+    return true;
+  });
+  // Never let the chrome-strip empty the scenegraph.
+  return filtered.length > 0 ? filtered : marks;
+}
+
+/**
+ * Escape a string for safe inclusion in SVG/HTML text content.
+ * Prevents a malformed-spec error message (which can contain `<`, `>`, `&`,
+ * quotes, or even a `javascript:`-shaped fragment lifted from the offending
+ * spec) from breaking the placeholder markup or injecting nodes.
+ */
+export function escapeForSvgText(s: string): string {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Build the SVG markup for a Vega render-error placeholder.
+ *
+ * PURE + exported for unit testing (no DOM required). The key contract this
+ * satisfies: the returned markup contains a real `<svg>` element. The headless
+ * render harness (DiagramRenderPage) detects render completion via a
+ * MutationObserver watching for an `<svg>`/`<canvas>`/`<img>` inside the
+ * container. When the Vega runtime throws synchronously on a malformed spec
+ * (e.g. `Expression parse error: 1 +++ 2`), the plugin previously let the
+ * error propagate to D3Renderer, which discarded the (detached) render
+ * container and only set React error state the harness could NOT observe — so
+ * the ONLY terminal path was the 30s safety watchdog: a ~1s-known error
+ * decayed into a 30s "timeout-no-output" with no surfaced message. Emitting an
+ * error-placeholder SVG instead makes the failure a fast, terminal, visible
+ * outcome.
+ */
+export function buildVegaErrorSvgMarkup(message: string, isDarkMode: boolean): string {
+  const bg = isDarkMode ? '#2a1215' : '#fff2f0';
+  const border = isDarkMode ? '#a61d24' : '#ffccc7';
+  const fg = isDarkMode ? '#ff7875' : '#cf1322';
+  const sub = isDarkMode ? '#d9a7a7' : '#a8071a';
+  const safe = escapeForSvgText(message);
+  // Wrap long messages onto multiple <tspan> lines (~64 chars/line) so the
+  // full parse error stays legible.
+  const raw = String(message);
+  const lines: string[] = [];
+  const CHUNK = 64;
+  for (let i = 0; i < raw.length && lines.length < 8; i += CHUNK) {
+    lines.push(escapeForSvgText(raw.slice(i, i + CHUNK)));
+  }
+  if (lines.length === 0) lines.push(safe);
+  const tspans = lines
+    .map((ln, idx) => `<tspan x="20" dy="${idx === 0 ? 0 : 18}">${ln}</tspan>`)
+    .join('');
+  const height = 70 + lines.length * 18;
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="100%" viewBox="0 0 640 ${height}" ` +
+    `role="img" aria-label="Vega render error" data-vega-error="true" ` +
+    `style="max-width:100%;font-family:system-ui,-apple-system,sans-serif;display:block">` +
+    `<rect x="1" y="1" width="638" height="${height - 2}" rx="6" fill="${bg}" stroke="${border}" stroke-width="1.5"/>` +
+    `<text x="20" y="28" fill="${fg}" font-size="14" font-weight="bold">⚠ Vega render error</text>` +
+    `<text x="20" y="52" fill="${sub}" font-size="12">${tspans}</text>` +
+    `</svg>`
+  );
+}
+
+/**
+ * Paint a Vega render-error placeholder into the container.
+ * DOM-touching wrapper around {@link buildVegaErrorSvgMarkup}. Returns the
+ * error message (for logging/testing convenience).
+ */
+export function renderVegaErrorPlaceholder(
+  container: HTMLElement,
+  err: unknown,
+  isDarkMode: boolean,
+): string {
+  const message =
+    err instanceof Error ? err.message : (typeof err === 'string' ? err : 'Vega render failed');
+  try {
+    container.innerHTML = buildVegaErrorSvgMarkup(message, isDarkMode);
+  } catch {
+    /* container may be a non-standard element in tests; ignore */
+  }
+  return message;
+}
+
 export const vegaPlugin: D3RenderPlugin = {
   name: 'vega-renderer',
   // Higher than vega-lite-renderer (8) so we claim full Vega specs first.
@@ -221,6 +349,19 @@ export const vegaPlugin: D3RenderPlugin = {
     spec: any,
     isDarkMode: boolean,
   ): Promise<void> => {
+    // FAIL-FAST GUARD (Issue 15): the Vega runtime throws synchronously on a
+    // malformed spec (e.g. an invalid signal expression `1 +++ 2`). If that
+    // error propagates out of this render(), D3Renderer discards the detached
+    // render container and only sets React error state — which the headless
+    // harness (DiagramRenderPage) cannot observe, so its ONLY terminal path is
+    // the 30s safety watchdog. Result: an error KNOWN in ~1s decays into a 30s
+    // "timeout-no-output" with no surfaced message. By catching here and
+    // painting an error-placeholder <svg> into the container, the harness's
+    // MutationObserver sees the <svg> immediately → fast, terminal, visible
+    // failure carrying the precise Vega message. General: covers EVERY
+    // synchronous/async Vega error (parse errors, bad projections, scale math),
+    // not just this expression case.
+    try {
     const vegaEmbedModule = await import('vega-embed');
     const vegaEmbed = vegaEmbedModule.default;
 
@@ -274,18 +415,12 @@ export const vegaPlugin: D3RenderPlugin = {
     renderDiv.style.cssText = 'width:100%; max-width:100%; overflow:hidden; box-sizing:border-box;';
     container.appendChild(renderDiv);
 
-    // --- Strip out title/legend/footer marks from the Vega spec ---
-    // so only the sunburst arcs + arc labels remain in the SVG.
+    // --- Strip title/legend/footer chrome marks ONLY for sunburst specs ---
+    // (Issue 15) filterVegaChromeMarks is a no-op for every non-sunburst spec,
+    // so group/layered/faceted/nested specs keep their full scenegraph instead
+    // of being silently emptied.
     if (vegaSpec.marks && Array.isArray(vegaSpec.marks)) {
-      vegaSpec.marks = vegaSpec.marks.filter((mark: any) => {
-        // Keep arc and text-on-arc marks; remove standalone text and group (legend) marks
-        if (mark.type === 'arc') return true;
-        if (mark.type === 'text' && mark.from?.data) return true; // text labels on data arcs
-        // Remove static text marks (title, footer) and group marks (legend)
-        if (mark.type === 'text' && !mark.from?.data) return false;
-        if (mark.type === 'group') return false;
-        return true;
-      });
+      vegaSpec.marks = filterVegaChromeMarks(vegaSpec.marks);
     }
 
     // --- Strip signals that drove the removed footer text ---
@@ -503,5 +638,14 @@ function downloadSvg(){const s=new XMLSerializer().serializeToString(document.qu
     container.insertBefore(actions, container.firstChild);
     container.addEventListener('mouseenter', () => (actions.style.opacity = '1'));
     container.addEventListener('mouseleave', () => (actions.style.opacity = '0'));
+    } catch (err) {
+      // Paint a terminal error-placeholder SVG so the harness detects a
+      // completed (failed) render in ~1s instead of hanging to the 30s
+      // watchdog. Do NOT re-throw: an error propagated out of render() is
+      // exactly what caused the silent 30s timeout-no-output for Issue 15.
+      const msg = renderVegaErrorPlaceholder(container, err, isDarkMode);
+      // eslint-disable-next-line no-console
+      console.error('Vega render error (surfaced as placeholder):', msg);
+    }
   },
 };
