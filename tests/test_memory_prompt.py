@@ -121,7 +121,12 @@ class TestMemoryPrompt:
 
         from app.memory.prompt import get_memory_prompt_section
         section = get_memory_prompt_section()
-        assert "2 memory proposal(s) awaiting" in section
+        # Wording is load-bearing, not cosmetic: "awaiting user review" told
+        # both the user and the model that something was owed, which is what
+        # let a self-draining queue read as a 50-item backlog.  Asserted on
+        # the count and the no-obligation phrasing together.
+        assert "2 memory proposal(s) on probation" in section
+        assert "no review needed" in section
 
     def test_disabled_category_returns_empty(self, patch_storage):
         import os

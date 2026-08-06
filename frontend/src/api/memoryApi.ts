@@ -25,6 +25,14 @@ export interface MemoryProposal {
   tags: string[];
   learned_from: string;
   proposed_at: number;
+  // Probation progress.  Optional so a stale cached response still parses.
+  corroborations?: number;
+  signals?: string[];
+  // Age and expiry are in activity ticks, not wall-clock: a vacation must
+  // not silently expire anything.
+  age?: number;
+  expires_in?: number;
+  would_promote?: string | null;
 }
 
 export interface MindMapNode {

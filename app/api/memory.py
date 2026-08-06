@@ -137,45 +137,76 @@ async def delete_memory(memory_id: str):
 
 # -- Proposals ---------------------------------------------------------------
 
+# These endpoints read the PROBATIONARY store, which is swept automatically by
+# run_lifecycle_pass().  They exist for observability — a human can watch what
+# the model is proposing and how entries earn their way in — and for optional
+# intervention.  Nothing here is required: an untouched queue resolves itself.
+
 @router.get("/api/v1/memory/proposals")
 async def list_proposals():
-    """List pending memory proposals."""
-    from app.storage.memory import get_memory_storage
-    store = get_memory_storage()
-    return [p.model_dump() for p in store.list_proposals()]
+    """List probationary proposals with their promotion progress."""
+    from app.storage.proposals import get_proposals_store
+    from app.memory.lifecycle import (
+        current_activity_count, ARCHIVAL_AGE_THRESHOLD, _evaluate_promotion,
+    )
+    store = get_proposals_store()
+    counter = current_activity_count()
+    out = []
+    for row in store.list_open():
+        age = max(0, counter - int(row.get("activity_count_at_proposal", 0) or 0))
+        out.append({
+            **row,
+            # Why this entry has not promoted yet, and when it would expire.
+            "corroborations": row.get("corroborations", 0),
+            "signals": [s.get("name") for s in (row.get("signals") or [])],
+            "age": age,
+            "expires_in": max(0, ARCHIVAL_AGE_THRESHOLD - age),
+            "would_promote": _evaluate_promotion(row),
+        })
+    return out
 
 
 @router.post("/api/v1/memory/proposals/{proposal_id}/approve")
 async def approve_proposal(proposal_id: str):
-    """Approve a pending proposal, moving it to the flat store."""
-    from app.storage.memory import get_memory_storage
-    store = get_memory_storage()
-    memory = store.approve_proposal(proposal_id)
-    if not memory:
+    """Manually promote a proposal ahead of its automatic schedule.
+
+    Reuses the lifecycle promotion path so a hand-approved entry is
+    indistinguishable from one that earned promotion: corroborations,
+    scope, provenance and the re-embed under the new ID all carry over.
+    """
+    from app.storage.proposals import get_proposals_store
+    from app.memory.lifecycle import _promote_proposal
+    store = get_proposals_store()
+    row = store.get(proposal_id)
+    if not row or row.get("status") != "open":
         raise HTTPException(status_code=404, detail="Proposal not found")
-    return memory.model_dump()
+    memory_id = _promote_proposal(row, "manual_approval")
+    if not memory_id:
+        raise HTTPException(status_code=500, detail="Promotion failed")
+    from app.storage.memory import get_memory_storage
+    mem = get_memory_storage().get(memory_id)
+    return mem.model_dump() if mem else {"id": memory_id}
 
 
 @router.post("/api/v1/memory/proposals/approve-all")
 async def approve_all_proposals():
-    """Approve all pending proposals at once."""
-    from app.storage.memory import get_memory_storage
-    store = get_memory_storage()
-    proposals = store.list_proposals()
+    """Promote every open proposal now, bypassing the earn-it bar."""
+    from app.storage.proposals import get_proposals_store
+    from app.memory.lifecycle import _promote_proposal
+    store = get_proposals_store()
     approved = []
-    for p in proposals:
-        mem = store.approve_proposal(p.id)
-        if mem:
-            approved.append(mem.model_dump())
+    for row in store.list_open():
+        if _promote_proposal(row, "manual_approval_bulk"):
+            approved.append(row.get("id"))
     return {"approved": len(approved), "memories": approved}
 
 
 @router.delete("/api/v1/memory/proposals/{proposal_id}")
 async def dismiss_proposal(proposal_id: str):
-    """Dismiss a pending proposal."""
-    from app.storage.memory import get_memory_storage
-    store = get_memory_storage()
-    if not store.dismiss_proposal(proposal_id):
+    """Archive a proposal now instead of waiting for it to expire."""
+    from app.storage.proposals import get_proposals_store
+    store = get_proposals_store()
+    if not store.mark_archived(proposal_id, reason="dismissed_by_user"):
         raise HTTPException(status_code=404, detail="Proposal not found")
     return {"dismissed": True}
 

@@ -240,7 +240,7 @@ def get_memory_prompt_section() -> str:
         lines.append("")
         lines.append(f"*{len(memories)} total memories across {len(root_nodes)} domains.*")
         if pending_count > 0:
-            lines.append(f"*{pending_count} memory proposal(s) awaiting user review.*")
+            lines.append(f"*{pending_count} memory proposal(s) on probation — these promote or expire automatically; no review needed.*")
         return "\n".join(lines)
 
     # ── Flat dump (Phase 0 fallback) ───────────────────────────────
@@ -310,7 +310,7 @@ def get_memory_prompt_section() -> str:
         )
 
     if pending_count > 0:
-        lines.append(f"*{pending_count} memory proposal(s) awaiting user review.*")
+        lines.append(f"*{pending_count} memory proposal(s) on probation — these promote or expire automatically; no review needed.*")
 
     return "\n".join(lines)
 
