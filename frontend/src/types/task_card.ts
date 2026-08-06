@@ -119,7 +119,7 @@ export interface Artifact {
 // loop/trigger semantics and renders without visible chrome — it is the
 // invisible card-root wrapper that lets a State precede a loop without
 // entering the loop's scope.  Backend dispatches it to _execute_sequence.
-export type BlockType = 'task' | 'repeat' | 'parallel' | 'until' | 'schedule' | 'state' | 'group';
+export type BlockType = 'task' | 'repeat' | 'parallel' | 'until' | 'schedule' | 'state' | 'group' | 'call';
 export type RepeatMode = 'count' | 'until' | 'for_each';
 export type PropagateMode = 'none' | 'last' | 'all';
 export type UntilMode = 'model' | 'expression';
@@ -135,6 +135,14 @@ export interface Block {
   instructions?: string | null;
   scope?: TaskScope | null;
   emoji?: string | null;
+
+  // Call-only — invoke a named card or file task inline.  A leaf here
+  // (empty body); the callee's tree is resolved server-side at run time,
+  // so the caller's own definition carries only the reference.  That is
+  // also why the run map cannot draw the callee's rows: they are not part
+  // of this card's tree.  See app/agents/block_executor.py::_execute_call.
+  call_target_kind?: 'card' | 'file_task' | null;
+  call_target?: string | null;
 
   // Repeat-only
   repeat_mode?: RepeatMode | null;

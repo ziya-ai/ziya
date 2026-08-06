@@ -18,14 +18,22 @@
 import React from 'react';
 import { Spin } from 'antd';
 import type { Block, Artifact } from '../../types/task_card';
-import type { TaskRunBlockState } from '../../types/task_run';
+import type { TaskRun, TaskRunBlockState } from '../../types/task_run';
+import { blockOrigin, formatCompletedAt } from './partialOutcome';
 import { MarkdownRenderer } from '../MarkdownRenderer';
 import { ArtifactViewer } from './ArtifactViewer';
+import { stripTaskMetaTags } from './completionCheck';
 import { blockConfigLines, blockEmoji, blockLabel } from './runMapModel';
 
 interface Props {
   block: Block;
   status: string;
+  /**
+   * The run being viewed.  Needed for temporal provenance: the attempt
+   * ordinal, and whether this block's output was replayed from an
+   * earlier attempt rather than produced here.
+   */
+  run?: TaskRun | null;
   /** Persisted per-block state (artifact + error), from the REST snapshot. */
   blockState?: TaskRunBlockState;
   /** Live-streamed text accumulated for this block this session. */
@@ -39,6 +47,18 @@ interface Props {
   /** Needed to resolve frozen-render blob URLs for emitted artifacts. */
   projectId?: string;
   runId?: string;
+  /**
+   * Mid-loop resume.  Offered ONLY when an iteration is focused, and
+   * placed here rather than on the dot itself: a dot is 8px and already
+   * carries status + openability, whereas resuming a loop needs a
+   * sentence saying WHAT will be replayed.  Absent when the run is not
+   * resumable (live, or no card_snapshot), so the panel shows no
+   * affordance rather than one that always errors.
+   */
+  onRetryIteration?: (blockId: string, index: number) => void;
+  onContinueIteration?: (blockId: string, index: number) => void;
+  /** Index whose resume request is in flight, for the busy state. */
+  resumingIteration?: number | null;
 }
 
 const ArtifactBody: React.FC<{
@@ -70,20 +90,54 @@ const ArtifactBody: React.FC<{
 );
 
 export const BlockDetailPanel: React.FC<Props> = ({
-  block, status, blockState, liveText,
+  block, status, run, blockState, liveText,
   iterationIndex, iterationArtifact, iterationLoading, iterationError,
+  projectId, runId,
+  onRetryIteration, onContinueIteration, resumingIteration,
 }) => {
   const config = blockConfigLines(block);
   const artifact = blockState?.artifact ?? null;
   const error = blockState?.error ?? null;
   const isIter = iterationIndex != null;
+  // Temporal provenance.  Without this the panel showed state with no
+  // "when", so a replayed stage from attempt 1 was indistinguishable
+  // from one this attempt just produced — the "can't tell past from
+  // current" confusion.
+  const origin = blockOrigin(run, blockState, status);
+  const finishedAt = formatCompletedAt(origin.completedAt);
 
   return (
     <div className="tc-detail">
       <div className="tc-detail__head">
         <span>{blockEmoji(block)}</span>
         <span className="tc-detail__title">{blockLabel(block)}</span>
-        <span className={`tc-detail__status tc-detail__status--${status}`}>{status}</span>
+        {/* Says WHERE the output came from before saying what it is: a
+            reader who mistakes replayed output for fresh output draws
+            the wrong conclusion from everything below. */}
+        {origin.replayed ? (
+          <span
+            className="tc-detail__origin tc-detail__origin--replayed"
+            title={
+              'This stage did not run in this attempt.  Its recorded result ' +
+              'was replayed from an earlier attempt so later stages see the ' +
+              'same deck state they would have.'
+            }
+          >
+            replayed from an earlier attempt
+          </span>
+        ) : (
+          <span className="tc-detail__origin">
+            attempt {origin.attempt}
+          </span>
+        )}
+        {finishedAt && (
+          <span className="tc-detail__when" title="When this stage finished">
+            {finishedAt}
+          </span>
+        )}
+        <span
+          className={`tc-detail__status tc-detail__status--${origin.displayStatus}`}
+        >{origin.displayStatus}</span>
       </div>
 
       <details className="tc-detail__section" open>
@@ -101,6 +155,59 @@ export const BlockDetailPanel: React.FC<Props> = ({
       <div className="tc-detail__section">
         <div className="tc-detail__section-label">
           {isIter ? `Output — iteration #${iterationIndex}` : 'Output'}
+          {/* Restated on the output section itself, not only in the
+              header: with a long config block open, the header scrolls
+              out of view and the output would again look like this
+              attempt's own work. */}
+          {origin.replayed && !isIter && (
+            <span className="tc-detail__origin-note">
+              {' '}· from an earlier attempt, not re-run here
+            </span>
+          )}
+        {/* Mid-loop resume.  Rendered above the output rather than below
+            it: a loop's output can be long, and an action the user came
+            here to take should not be reachable only by scrolling past
+            the thing they were reading. */}
+        {isIter && (onRetryIteration || onContinueIteration) && (
+          <div className="tc-iter-resume">
+            <div className="tc-iter-resume__note">
+              Iterations before the one you pick are <strong>replayed from
+              record</strong>, not re-run — so the first iteration that
+              executes still receives the same input it had originally.
+            </div>
+            <div className="tc-iter-resume__actions">
+              {onRetryIteration && (
+                <button
+                  className="tc-iter-resume__btn"
+                  disabled={resumingIteration != null}
+                  title={
+                    `Start a NEW run that replays iterations 0–`
+                    + `${Math.max(0, iterationIndex! - 1)} and re-runs `
+                    + `#${iterationIndex}. This run is kept as a record.`
+                  }
+                  onClick={() => onRetryIteration(block.id, iterationIndex!)}
+                >
+                  {resumingIteration === iterationIndex
+                    ? '…' : `↻ re-run #${iterationIndex}`}
+                </button>
+              )}
+              {onContinueIteration && (
+                <button
+                  className="tc-iter-resume__btn tc-iter-resume__btn--continue"
+                  disabled={resumingIteration != null}
+                  title={
+                    `Start a NEW run that accepts #${iterationIndex}'s `
+                    + `recorded result and runs #${iterationIndex! + 1} `
+                    + `onward. Use after fixing the cause by hand.`
+                  }
+                  onClick={() => onContinueIteration(block.id, iterationIndex!)}
+                >
+                  ▶ continue from #{iterationIndex! + 1}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
         </div>
         {isIter ? (
           <>
@@ -111,7 +218,11 @@ export const BlockDetailPanel: React.FC<Props> = ({
             {iterationArtifact && <ArtifactBody artifact={iterationArtifact} />}
           </>
         ) : liveText ? (
-          <MarkdownRenderer markdown={liveText} enableCodeApply={false}
+          // The Inspector's Live tab already strips <progress>/
+          // <self_assessment> meta tags before rendering (stripTaskMetaTags);
+          // this focused-block view rendered the raw stream and either
+          // showed the literal tag text or had it silently swallowed as HTML.
+          <MarkdownRenderer markdown={stripTaskMetaTags(liveText)} enableCodeApply={false}
             isStreaming={status === 'running'} isSubRender={true} />
         ) : artifact ? (
           <ArtifactBody artifact={artifact} />
