@@ -10,27 +10,62 @@ import os
 import re
 import shlex
 import sys
+from contextvars import ContextVar
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app.config.write_policy import WritePolicyManager
 
 
+# Per-call task scope, held in a ContextVar rather than on the checker
+# instance. The shell server shares ONE ShellWriteChecker across all
+# requests, so an instance attribute is only safe while the request loop
+# is strictly serial. Once requests are dispatched concurrently, an
+# instance attribute leaks across conversations: A's set_task_scope() is
+# visible to B's allowlist/write checks, and A's clear_task_scope() in a
+# finally block can erase the scope out from under B mid-validation. The
+# envelope carries both ``writable`` paths and ``shell_commands`` grants,
+# so a leak is an authorization bug, not just a race on throughput.
+#
+# A ContextVar is per-task, so each concurrently-dispatched request sees
+# only its own grant. Default is None (not {}) to avoid sharing a single
+# mutable dict across contexts.
+_TASK_SCOPE: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
+    "ziya_shell_task_scope", default=None
+)
+
+
 class ShellWriteChecker:
     def __init__(self, pm: WritePolicyManager):
         self.pm = pm
-        # Per-call task scope (set by the shell server before each
-        # ``run_shell_command`` invocation, cleared after).  When non-
-        # empty, ``_is_write_allowed`` consults this list *in addition*
-        # to the base ``WritePolicyManager`` — a path that the task has
-        # been granted is permitted even if the base policy would deny
-        # it.  Each entry is ``{"path": str, "is_dir": bool}``; ``path``
-        # is interpreted relative to the task's effective project root.
-        #
-        # The shape is intentionally an envelope so future per-task
-        # scope categories (Slice B's command allowlist, etc.) can be
-        # added without changing the wire payload.
-        self._task_scope: Dict[str, Any] = {}
+        # Reset the context's task scope at construction. Previously the
+        # scope was an instance attribute initialized to {}, so a fresh
+        # checker always started with no grant. Moving the state to a
+        # module-level ContextVar removed that guarantee: a scope set via
+        # an earlier checker would still be visible here, since the
+        # ContextVar outlives any single instance. Clearing it restores
+        # the original "new checker => no grant" invariant, which both the
+        # serial server path and per-test fixtures rely on.
+        _TASK_SCOPE.set(None)
+
+    @property
+    def _task_scope(self) -> Dict[str, Any]:
+        """The current context's task scope (empty dict when unset).
+
+        Read-only. Set via ``set_task_scope`` / ``clear_task_scope`` so the
+        value lands in the ContextVar and stays confined to this request's
+        task. Kept under the original attribute name so the six existing
+        read sites in this module need no change.
+
+        When non-empty, ``_is_write_allowed`` consults it *in addition* to
+        the base ``WritePolicyManager`` — a path the task has been granted
+        is permitted even if the base policy would deny it. Each entry is
+        ``{"path": str, "is_dir": bool}``, interpreted relative to the
+        task's effective project root. The shape is intentionally an
+        envelope so further per-task scope categories can be added without
+        changing the wire payload.
+        """
+        return _TASK_SCOPE.get() or {}
 
     def set_task_scope(self, scope: Optional[Dict[str, Any]]) -> None:
         """Set the per-call task scope (or clear with ``None``).
@@ -39,10 +74,10 @@ class ShellWriteChecker:
         "project_root": str}``.  Unknown keys are ignored so the same
         envelope can later carry e.g. ``{"commands": [...]}`` for Slice B.
         """
-        self._task_scope = scope or {}
+        _TASK_SCOPE.set(scope or {})
 
     def clear_task_scope(self) -> None:
-        self._task_scope = {}
+        _TASK_SCOPE.set({})
 
     @property
     def policy(self):
@@ -111,10 +146,34 @@ class ShellWriteChecker:
             if not (s.startswith(prog + ' ') or s == prog):
                 continue
             tok = _tokenize(cmd)
+            matched_flag = None
             for flag in flags:
                 for t in tok[1:]:
                     if t == flag or t.startswith(flag):
-                        return False, f"In-place editing with '{prog} {flag}' is not allowed. Use git diffs."
+                        matched_flag = flag
+                        break
+                if matched_flag:
+                    break
+            if not matched_flag:
+                continue
+            # In-place edit detected. Rather than a blanket block, allow it
+            # when every file being edited in place resolves to a path the
+            # write policy (safe_write_paths / allowed_write_patterns) or
+            # active task scope already approves -- the same config gate
+            # cp/mv/rm already respect via _destructive/_is_write_allowed.
+            # Conservative: the leading non-flag token is treated as the
+            # script/pattern argument (e.g. sed's "s#..#..#"); everything
+            # after it is treated as file target(s) and must be approved.
+            non_flag = [t for t in tok[1:] if not t.startswith('-')]
+            targets = non_flag[1:] if len(non_flag) > 1 else []
+            if not targets:
+                return False, f"In-place editing with '{prog} {matched_flag}' is not allowed. Use git diffs."
+            for t in targets:
+                if not self._is_write_allowed(t):
+                    return False, (
+                        f"In-place editing with '{prog} {matched_flag}' targeting '{t}' is not allowed. "
+                        f"Use git diffs, or target a path approved by write policy."
+                    )
         return True, ""
 
     def _interpreter(self, cmd: str) -> Tuple[bool, str]:

@@ -346,6 +346,24 @@ class ShellServer:
     def __init__(self):
         self.request_id = 0
 
+        # ── Concurrent request dispatch ───────────────────────────────────
+        # Responses are written by several tasks at once. print() emits the
+        # payload and the trailing newline as two separate writes, so
+        # concurrent writers can interleave mid-record and corrupt the
+        # JSON-RPC framing. Serialize every response behind this lock.
+        self._stdout_lock = asyncio.Lock()
+        # Bound in-flight commands. Each running command occupies a thread
+        # from asyncio's shared default ThreadPoolExecutor (and forks a
+        # subprocess), so unbounded dispatch would both fork without limit
+        # and silently re-serialize once the pool saturates. The stdin
+        # reader permanently occupies one pool thread, so keep this below
+        # the pool size (min(32, cpu_count + 4)).
+        try:
+            _max_inflight = int(os.environ.get("ZIYA_SHELL_MAX_CONCURRENT", "8"))
+        except (TypeError, ValueError):
+            _max_inflight = 8
+        self._dispatch_semaphore = asyncio.Semaphore(max(1, _max_inflight))
+
         # ── Escalation-config integrity gate (ASR F-004 / F-007) ──────────────
         # Every privilege-bearing value this server trusts (ALLOW_COMMANDS, the
         # write-policy fields, SAFE_GIT_OPERATIONS, YOLO_MODE) arrives via the
@@ -472,6 +490,32 @@ class ShellServer:
         print(f"Write patterns: {self.wp_manager.policy.get('allowed_write_patterns', [])}", file=sys.stderr)
         print(f"Interpreters: {self.wp_manager.policy.get('allowed_interpreters', [])}", file=sys.stderr)
         
+    def _timeout_bounds(self, task_scope: Any) -> tuple:
+        """Return ``(default, ceiling)`` seconds for one shell call.
+
+        A task-scope ``shell_timeout_secs`` grant raises BOTH, not just
+        the ceiling: a card that declared it needs 20 minutes for
+        `npm run build` should not additionally have to remember to
+        pass ``timeout`` on every invocation for the grant to bite —
+        that requirement is exactly what made the grant unreliable in
+        practice.
+
+        Only ever raises.  A malformed or non-positive grant is
+        ignored rather than allowed to shorten the base ceiling.
+        """
+        granted = None
+        if isinstance(task_scope, dict):
+            try:
+                raw = task_scope.get("shell_timeout_secs")
+                granted = int(raw) if raw else None
+            except (TypeError, ValueError):
+                granted = None
+            if granted is not None and granted <= 0:
+                granted = None
+        ceiling = max(self.max_timeout, granted or 0)
+        default = granted or self.command_timeout
+        return default, ceiling
+
     @staticmethod
     def _expandvars_with(text: str, mapping: dict) -> str:
         """Expand $VAR / ${VAR} using the given mapping instead of os.environ.
@@ -1646,13 +1690,14 @@ class ShellServer:
                 task_scope = arguments.pop("_task_scope", None) if isinstance(arguments, dict) else None
                 command = arguments.get("command")
                 # Handle timeout parameter - convert string to number if needed
-                timeout_param = arguments.get("timeout", self.command_timeout)
+                _default_timeout, _ceiling = self._timeout_bounds(task_scope)
+                timeout_param = arguments.get("timeout", _default_timeout)
                 try:
-                    timeout = float(timeout_param) if timeout_param is not None else self.command_timeout
-                    timeout = max(1, min(timeout, self.max_timeout))  # Clamp to [1, max]
+                    timeout = float(timeout_param) if timeout_param is not None else _default_timeout
+                    timeout = max(1, min(timeout, _ceiling))  # Clamp to [1, ceiling]
                 except (ValueError, TypeError):
-                    timeout = self.command_timeout
-                    print(f"Warning: Invalid timeout value '{timeout_param}', using default {self.command_timeout}s", file=sys.stderr)
+                    timeout = _default_timeout
+                    print(f"Warning: Invalid timeout value '{timeout_param}', using default {_default_timeout}s", file=sys.stderr)
                 
                 if not command:
                     return {
@@ -1710,7 +1755,17 @@ class ShellServer:
                     if cwd and os.path.isdir(cwd):
                         print(f"Working directory: {cwd}", file=sys.stderr)
 
-                    result = self._execute_pipeline(command, timeout, cwd)
+                    # Run the blocking pipeline off the event loop. It calls
+                    # proc.communicate(), which blocks until the child's pipes
+                    # reach EOF; executing it inline pinned the loop for the
+                    # command's full duration, so no other request -- not even
+                    # the stdin read -- was serviced. asyncio.to_thread copies
+                    # the current context, so the _task_scope ContextVar set
+                    # by this request remains visible to the worker thread and
+                    # stays invisible to every other request.
+                    result = await asyncio.to_thread(
+                        self._execute_pipeline, command, timeout, cwd
+                    )
 
                     # Format output to be more shell-like
                     output = f"$ {command}\n"
@@ -1770,11 +1825,46 @@ class ShellServer:
             }
         }
     
+    async def _write_response(self, response: Dict[str, Any]) -> None:
+        """Emit one JSON-RPC record atomically with respect to other tasks."""
+        async with self._stdout_lock:
+            sys.stdout.write(json.dumps(response) + "\n")
+            sys.stdout.flush()
+
+    async def _serve_one(self, request: Dict[str, Any]) -> None:
+        """Handle one request to completion and write its response.
+
+        Runs as its own task, which is what makes the _task_scope ContextVar
+        actually isolate: create_task copies the context, so a grant set here
+        cannot be observed or cleared by a concurrently-dispatched request.
+        """
+        try:
+            async with self._dispatch_semaphore:
+                response = await self.handle_request(request)
+        except Exception as e:  # noqa: BLE001 - never let one request kill the loop
+            response = {
+                "jsonrpc": "2.0",
+                "id": request.get("id"),
+                "error": {"code": -32603, "message": f"Internal error: {str(e)}"},
+            }
+        if response:
+            await self._write_response(response)
+
     async def run(self):
-        """Run the MCP server."""
+        """Run the MCP server, dispatching each request concurrently.
+
+        Previously this awaited handle_request to completion inline while
+        blocking on a synchronous sys.stdin.readline(), so the server was a
+        strictly serial request loop: one slow command blocked every other
+        caller sharing the subprocess. Reading stdin in a worker thread and
+        dispatching each request as its own task lets independent commands
+        proceed in parallel. Responses may now complete out of order; the
+        client demultiplexes by JSON-RPC id, so that is protocol-correct.
+        """
+        pending: set = set()
         while True:
             try:
-                line = sys.stdin.readline()
+                line = await asyncio.to_thread(sys.stdin.readline)
                 if not line:
                     print("EOF received, shutting down", file=sys.stderr)
                     break
@@ -1784,24 +1874,26 @@ class ShellServer:
                     continue
                     
                 request = json.loads(line.strip())
-                response = await self.handle_request(request)
-                
-                if response:
-                    print(json.dumps(response), flush=True)
-                    
             except json.JSONDecodeError:
                 print("JSON decode error", file=sys.stderr)
                 continue
             except Exception as e:
-                error_response = {
+                await self._write_response({
                     "jsonrpc": "2.0",
                     "id": None,
-                    "error": {
-                        "code": -32603,
-                        "message": f"Internal error: {str(e)}"
-                    }
-                }
-                print(json.dumps(error_response), flush=True)
+                    "error": {"code": -32603, "message": f"Internal error: {str(e)}"},
+                })
+                continue
+
+            # Dispatch without awaiting so the next request can be read
+            # while this one runs. Hold a strong reference until completion
+            # or the task may be garbage-collected mid-flight.
+            task = asyncio.create_task(self._serve_one(request))
+            pending.add(task)
+            task.add_done_callback(pending.discard)
+
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
 
 if __name__ == "__main__":

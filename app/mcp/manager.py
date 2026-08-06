@@ -18,7 +18,7 @@ from app.utils.logging_utils import logger
 from app.mcp.dynamic_tools import get_dynamic_loader
 from app.mcp.tool_guard import scan_tool_description, detect_shadowing, fingerprint_tools, check_fingerprint_change, classify_warnings
 import time
-from app.context import get_project_root_or_none
+from app.context import get_project_root_or_none, get_conversation_id_or_none
 
 # Default timeout (seconds) for individual MCP tool executions when no
 # tool-specific timeout is provided.  Override via ZIYA_TOOL_TIMEOUT.
@@ -40,17 +40,20 @@ def build_task_scope_envelope() -> Optional[Dict[str, Any]]:
     try:
         from app.context import (
             get_task_writable_paths, get_task_readable_paths,
-            get_task_shell_commands, get_project_root,
+            get_task_shell_commands, get_task_shell_timeout,
+            get_project_root,
         )
         twp = get_task_writable_paths()
         trp = get_task_readable_paths()
         tsc = get_task_shell_commands()
-        if not (twp or trp or tsc):
+        tst = get_task_shell_timeout()
+        if not (twp or trp or tsc or tst):
             return None
         return {
             "writable": twp or [],
             "readable": trp or [],
             "shell_commands": list(tsc) if tsc else [],
+            "shell_timeout_secs": tst,
             "project_root": get_project_root() or "",
         }
     except Exception:  # noqa: BLE001 — never block dispatch on envelope build
@@ -2178,7 +2181,20 @@ class MCPManager:
                 }
         
         # Check for repetitive calls (conversation-aware)
-        conversation_id = arguments.get('conversation_id') if isinstance(arguments, dict) else None
+        # Fall back to the request-scoped ContextVar when the caller did not
+        # inject the id into arguments. Several dispatch paths reach here
+        # without it (the text-fence shell dispatch in
+        # streaming_tool_executor, and the anthropic/openai/bedrock direct
+        # wrappers). A None id becomes session_id=None in
+        # _get_or_create_workspace_client, where the instance key
+        # f"{workspace_path}::{session_id}" collapses to the bare workspace
+        # path -- so every conversation shares ONE shell subprocess whose
+        # request loop is serial, and a slow command in one conversation
+        # blocks all others. Resolving it here fixes every such caller at
+        # once instead of requiring each to remember. Both streaming entry
+        # points set this ContextVar (server.py, streaming_tool_executor).
+        conversation_id = (arguments.get('conversation_id') if isinstance(arguments, dict) else None) \
+            or get_conversation_id_or_none()
         
         # Extract workspace path if provided. Not every caller path injects
         # ``_workspace_path`` explicitly (e.g. ConnectionPool.call_tool(),
