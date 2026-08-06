@@ -53,8 +53,16 @@ def _sign(task_id, scope, signing_key, *, approved_by="dcohn", expires_at=None):
     return record
 
 
+# ``wget`` rather than ``curl`` for TaskScope-based cases below:
+# ``task_escalation_block`` subtracts the privilege floor, and ``curl`` is
+# in the base shell allowlist with no further runtime gate, so a
+# curl-only scope hashes to "" and needs no approval — which would make
+# each denial assertion here vacuously false.  (The CLI-task mirror at
+# the bottom of this file keeps ``curl``: ``cli_escalation_block`` does
+# NOT perform that subtraction, so a curl grant is still escalating
+# there.  Verified: cli_task_hash({'commands':['curl']}) is non-empty.)
 def test_no_record_reason(env):
-    scope = TaskScope(shell_commands=["curl"])
+    scope = TaskScope(shell_commands=["wget"])
     ok, reason = sa.is_scope_authorized_with_reason("b-1", scope)
     assert ok is False
     assert reason == "no_record"
@@ -71,9 +79,9 @@ def test_scope_hash_mismatch_reason(env, root_key):
 def test_signature_invalid_reason(env, root_key):
     """A record whose signature was forged with a different key."""
     other_key = Ed25519PrivateKey.generate()
-    _sign("b-1", TaskScope(shell_commands=["curl"]), other_key)
+    _sign("b-1", TaskScope(shell_commands=["wget"]), other_key)
     ok, reason = sa.is_scope_authorized_with_reason(
-        "b-1", TaskScope(shell_commands=["curl"]))
+        "b-1", TaskScope(shell_commands=["wget"]))
     assert ok is False
     assert reason == "signature_invalid"
 
@@ -96,7 +104,7 @@ def test_non_escalating_scope_has_no_reason(env):
 def test_is_scope_authorized_still_returns_plain_bool(env, root_key):
     """Backward compatibility: existing boolean-only callers (the runtime
     gate) must be unaffected by the reason-returning refactor."""
-    scope = TaskScope(shell_commands=["curl"])
+    scope = TaskScope(shell_commands=["wget"])
     assert sa.is_scope_authorized("b-1", scope) is False
     _sign("b-1", scope, root_key)
     assert sa.is_scope_authorized("b-1", scope) is True

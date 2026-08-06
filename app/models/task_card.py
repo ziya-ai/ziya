@@ -98,6 +98,21 @@ class TaskScope(BaseModel):
     # injected into tool args by ``tool_execution``, consumed by
     # ``shell_server`` / ``ShellWriteChecker``.
     shell_commands: List[str] = []
+    # Per-task shell timeout grant, in seconds.  Raises BOTH the
+    # ceiling a shell command may request and the default it gets when
+    # it requests nothing.
+    #
+    # Exists because the base ceilings (MAX_COMMAND_TIMEOUT and
+    # TOOL_EXEC_TIMEOUT, 300 s each) are shorter than a real frontend
+    # production build, so any card whose loop rebuilds a bundle fought
+    # the timeout every iteration, retried, and sometimes handed a
+    # downstream step a build that had never actually completed.  A
+    # card that legitimately needs 20 minutes for one command should be
+    # able to say so once, in scope, rather than relying on the model
+    # to pass `timeout` correctly on every call.
+    #
+    # None leaves both the ceiling and the default at their base values.
+    shell_timeout_secs: Optional[int] = None
 
 
 def merge_scopes(*scopes: "Optional[TaskScope]") -> "Optional[TaskScope]":
@@ -117,6 +132,11 @@ def merge_scopes(*scopes: "Optional[TaskScope]") -> "Optional[TaskScope]":
         overwrite).
       - ``tools`` / ``skills`` / ``shell_commands``: set union,
         de-duplicated, order-stable (first-seen order).
+      - ``shell_timeout_secs``: MAXIMUM of the non-null values, not
+        last-wins.  A timeout is a grant like a path or a command, and
+        the additive rule says an inner layer can only add: letting an
+        inner 60 s silently undercut an outer 1200 s would revoke a
+        grant the outer layer made.
       - ``cwd``: last non-null value wins (most specific).
       - ``model_tier`` / ``model_name`` / ``model_id_override`` /
         ``model_endpoint``: last non-null value wins (most specific),
@@ -132,6 +152,7 @@ def merge_scopes(*scopes: "Optional[TaskScope]") -> "Optional[TaskScope]":
     skills: List[str] = []
     shell_commands: List[str] = []
     cwd: Optional[str] = None
+    shell_timeout_secs: Optional[int] = None
     model_tier: Optional[str] = None
     model_name: Optional[str] = None
     model_id_override: Optional[str] = None
@@ -158,6 +179,14 @@ def merge_scopes(*scopes: "Optional[TaskScope]") -> "Optional[TaskScope]":
         for v in (s.shell_commands or []):
             if v not in shell_commands:
                 shell_commands.append(v)
+        _sts = getattr(s, "shell_timeout_secs", None)
+        if _sts:
+            try:
+                _sts_i = int(_sts)
+            except (TypeError, ValueError):
+                _sts_i = 0
+            if _sts_i > (shell_timeout_secs or 0):
+                shell_timeout_secs = _sts_i
         if s.cwd:
             cwd = s.cwd
         if getattr(s, "model_tier", None):
@@ -172,6 +201,7 @@ def merge_scopes(*scopes: "Optional[TaskScope]") -> "Optional[TaskScope]":
         paths=list(paths_by_key.values()),
         cwd=cwd, tools=tools, skills=skills,
         shell_commands=shell_commands,
+        shell_timeout_secs=shell_timeout_secs,
         model_tier=model_tier, model_name=model_name,
         model_id_override=model_id_override, model_endpoint=model_endpoint,
     )
@@ -252,7 +282,16 @@ class Block(BaseModel):
     #              (name -> literal).  A leaf like task.  Placement is
     #              the reset policy: in a once-running body it sets once;
     #              inside a Repeat/Until body it re-applies each cycle.
-    block_type: Literal["task", "repeat", "parallel", "until", "schedule", "state", "group"]
+    #   call     — invoke a NAMED, separately-defined unit of work: another
+    #              task card in the same project, or a named file task from
+    #              tasks.yaml.  A leaf from the caller's point of view (its
+    #              ``body`` is empty); the callee's tree is resolved and run
+    #              inline in the caller's run, and the callee's artifact
+    #              becomes this block's artifact.  Permissions do NOT flow
+    #              across the boundary in either direction — see
+    #              app/agents/block_executor.py::_execute_call.
+    block_type: Literal["task", "repeat", "parallel", "until", "schedule",
+                        "state", "group", "call"]
     id: str = ""
     name: str = ""
 
@@ -260,6 +299,16 @@ class Block(BaseModel):
     instructions: Optional[str] = None
     scope: Optional[TaskScope] = None
     emoji: Optional[str] = None
+
+    # Call-only fields.  ``call_target`` names a task card (by id, or by
+    # name case-insensitively) or a file task (by name in the merged
+    # tasks.yaml set).  ``call_target_kind`` selects which namespace to
+    # resolve in; None means "card" (the common case).  Deliberately a
+    # NAME rather than an inlined copy: the point of a call is that
+    # editing the callee changes every caller, which an inlined subtree
+    # could not do.
+    call_target_kind: Optional[Literal["card", "file_task"]] = None
+    call_target: Optional[str] = None
 
     # Repeat-only fields
     repeat_mode: Optional[Literal["count", "until", "for_each"]] = None

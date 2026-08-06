@@ -107,22 +107,48 @@ async def _drop_after_grace(run_id: str, delay: float) -> None:
 
 
 async def connect(run_id: str, ws: Any) -> None:
-    """Register a WebSocket for a task run's event stream."""
+    """Register a WebSocket for a task run's event stream.
+
+    Registration and history-snapshot happen under ONE lock hold, and the
+    snapshot deep-copies every folded delta entry.  Both halves matter:
+
+      * ``_record`` folds adjacent same-block ``task_text_delta`` events
+        by MUTATING the last buffered dict in place.  A shallow
+        ``list(...)`` snapshot therefore shares those dicts with the live
+        buffer, so a ``push`` landing mid-replay appended its content into
+        an entry this coroutine had not sent yet — and then delivered the
+        same content again as a live event.  A client attaching mid-run
+        rendered the overlapping text twice (verified: "AAABBB" arrived
+        as "AAABBBBBB").
+      * Taking the snapshot inside the same lock hold as registration
+        closes the converse gap: an event pushed between "snapshot taken"
+        and "socket registered" reached neither the replay nor the live
+        stream, and was silently lost.
+
+    Only ``content``/``count`` are mutated by the fold, so a per-entry
+    ``dict(...)`` is sufficient — no nested value is ever rewritten in
+    place, and a deep copy would cost more per attach for no benefit.
+
+    The SEND stays outside the lock: ``send_json`` awaits on a slow
+    client, and stalling every other connect/disconnect/push behind one
+    unresponsive socket would be a worse failure than either race.
+    """
     async with _lock:
         if run_id not in _active_connections:
             _active_connections[run_id] = []
         _active_connections[run_id].append(ws)
+        # Snapshot under the same hold that registered the socket, so
+        # the replay and the live stream partition the event sequence
+        # exactly: nothing is delivered twice, nothing falls between.
+        history = [dict(event) for event in _history.get(run_id, ())]
         logger.info(
             f"📡 TASK_RUN_RELAY: Client connected for {run_id[:8]} "
-            f"({len(_active_connections[run_id])} clients)"
+            f"({len(_active_connections[run_id])} clients, "
+            f"{len(history)} replayed)"
         )
-    # Replay buffered history to the new connector.  Done outside
-    # the lock since send_json may await on a slow client and we
-    # don't want to stall other connect/disconnect calls.  Errors
-    # are swallowed: a closed socket here just means the client
-    # gave up before we finished the replay; the live event stream
-    # will hit the same failure and get pruned by push().
-    history = list(_history.get(run_id, ()))
+    # Errors are swallowed: a closed socket here just means the client
+    # gave up before we finished the replay; the live event stream will
+    # hit the same failure and get pruned by push().
     for event in history:
         try:
             await ws.send_json(event)
@@ -155,7 +181,23 @@ async def push(run_id: str, event: Dict[str, Any]) -> None:
     # client is preserved for replay.  This is the whole point of
     # the buffer: a client connecting mid-run sees what happened
     # while it was disconnected.
-    _record(run_id, event)
+    #
+    # Under the lock, and reading the connection list in the SAME hold:
+    # ``_record`` mutates a folded delta entry in place, and ``connect``
+    # snapshots the buffer under this lock, so recording outside it would
+    # leave the fold able to interleave with a snapshot mid-copy.  Holding
+    # it here also fixes the ordering of the two: whichever acquires
+    # first, the resulting partition of the event sequence between replay
+    # and live stream is exact.
+    #
+    # Cheap to hold: ``_record`` is pure in-memory dict/deque work with no
+    # await, so no other coroutine can be blocked for longer than that.
+    # The FANOUT is deliberately left outside — ``send_json`` awaits on a
+    # slow client, and holding the lock across it would let one
+    # unresponsive socket stall every push for the whole server.
+    async with _lock:
+        _record(run_id, event)
+        conns = list(_active_connections.get(run_id, ()))
 
     # If this event terminates the run, schedule a delayed drop.
     if event.get("type") in _TERMINAL_EVENT_TYPES:
@@ -166,7 +208,6 @@ async def push(run_id: str, event: Dict[str, Any]) -> None:
             _drop_after_grace(run_id, _GRACE_PERIOD_SECONDS)
         )
 
-    conns = _active_connections.get(run_id, [])
     if not conns:
         return
 

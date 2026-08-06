@@ -6,6 +6,8 @@ import pytest
 from app.models.task_card import Block, TaskScope, ScopeEntry
 from app.utils.permissions_snapshot import (
     build_permissions_snapshot,
+    build_block_scopes,
+    synthesize_grant_scope,
     SCHEMA_VERSION,
 )
 
@@ -257,3 +259,75 @@ def test_no_deck_or_card_scope_preserves_prior_behavior():
     snap = build_permissions_snapshot(
         root_block=_task("a", scope=scope), project_root="/p")
     assert snap["block_scopes"]["a"]["tools"] == ["file_read"]
+
+
+# ── call-block coverage ────────────────────────────────────────────
+
+
+def test_call_block_body_is_empty_so_launch_cannot_see_callee():
+    """Pins WHY the run-time append exists: a call block names its
+    target, so nothing about the callee is reachable at launch."""
+    call = Block(id="c1", name="Call it", block_type="call",
+                 call_target="Helper", body=[])
+    snap = build_permissions_snapshot(root_block=call, project_root="/p")
+    assert snap["block_scopes"] == {}
+
+
+def test_build_block_scopes_stamps_via_call_on_whole_subtree():
+    inner = _task("callee-leaf", scope=TaskScope(shell_commands=["pytest"]))
+    root = _parallel("callee-root", body=[inner])
+    root.scope = TaskScope(tools=["file_read"])
+    via = {"call_block_id": "c1", "target": "Helper", "kind": "card"}
+    scopes = build_block_scopes(root, via_call=via)
+    assert set(scopes) == {"callee-root", "callee-leaf"}
+    for entry in scopes.values():
+        assert entry["via_call"] == via
+
+
+def test_build_block_scopes_uses_callee_card_scope_not_callers():
+    # Permissions do not cross a call boundary, so the recorded scope must
+    # come from the callee's own hierarchy or the audit would describe
+    # permissions the callee never held.
+    scopes = build_block_scopes(
+        _task("leaf"), card_scope=TaskScope(shell_commands=["callee-cmd"]))
+    assert scopes["leaf"]["shell_commands"] == ["callee-cmd"]
+
+
+def test_synthesize_grant_scope_records_globs_and_commands():
+    # A file-task callee has raw grant lists, never a TaskScope, so
+    # without this it would run holding real write access while the audit
+    # trail recorded none.
+    entry = synthesize_grant_scope(
+        _task("synthetic"),
+        shell_commands=["pytest"],
+        write_patterns=[{"pattern": "*.toml"}, {"pattern": "docs/**"}],
+        via_call={"call_block_id": "c1", "target": "release",
+                  "kind": "file_task"},
+    )["synthetic"]
+    assert entry["shell_commands"] == ["pytest"]
+    assert entry["write_patterns"] == ["*.toml", "docs/**"]
+    # A glob is NOT coerced into paths — that would claim a specific file
+    # was granted when a pattern was.
+    assert entry["paths"] == []
+    assert entry["via_call"]["kind"] == "file_task"
+
+
+def test_synthesize_grant_scope_empty_when_no_grants():
+    assert synthesize_grant_scope(_task("synthetic")) == {}
+
+
+def test_synthesize_grant_scope_ignores_malformed_pattern_entries():
+    entry = synthesize_grant_scope(
+        _task("synthetic"),
+        write_patterns=[{"pattern": ""}, {"path": "x"}, "junk"],
+        shell_commands=["pytest"],
+    )["synthetic"]
+    assert entry["write_patterns"] == []
+
+
+def test_via_call_absent_on_normal_launch_blocks():
+    """A block the card itself declares must NOT be marked as called."""
+    snap = build_permissions_snapshot(
+        root_block=_task("a", scope=TaskScope(tools=["t"])),
+        project_root="/p")
+    assert "via_call" not in snap["block_scopes"]["a"]

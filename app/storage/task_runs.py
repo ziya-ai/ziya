@@ -14,7 +14,15 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any
 
 from .base import BaseStorage
-from ..models.task_run import TaskRun, TaskRunCreate, TaskRunBlockState, IterationSummary
+from ..models.task_run import (
+    TaskRun, TaskRunCreate, TaskRunBlockState, IterationSummary, ProgressNote,
+)
+
+# Cap on the retained progress trail.  Bounded because a long campaign
+# emits a note per tool call: the trail is a readable narrative, not an
+# audit log, and an unbounded list would grow the run file (rewritten in
+# full on every heartbeat) without bound.  Oldest entries are evicted.
+PROGRESS_NOTE_CAP = 200
 from ..models.task_card import Artifact
 
 logger = logging.getLogger(__name__)
@@ -75,12 +83,48 @@ class TaskRunStorage(BaseStorage[TaskRun]):
             id=run_id,
             card_id=data.card_id,
             source_conversation_id=data.source_conversation_id,
+            # Copied through explicitly: this constructor lists fields
+            # one by one rather than splatting ``data``, so a new
+            # TaskRunCreate field is silently dropped unless named here.
+            # Needed by resume, which reconstructs ExecutionContext from
+            # the run record alone.
+            parameter_overrides=dict(data.parameter_overrides or {}),
+            # Lineage.  root_run_id defaults to SELF so an initial run is
+            # the root of its own lineage and the whole chain is always
+            # one ``root_run_id`` filter — no parent-pointer walk, and no
+            # null-root special case in the UI.
+            root_run_id=data.root_run_id or run_id,
+            parent_run_id=data.parent_run_id,
+            attempt=max(1, data.attempt),
+            resume_kind=data.resume_kind or "initial",
+            resumed_from_block_id=data.resumed_from_block_id,
+            # Mid-loop resume position.  Must be named explicitly for the
+            # same reason parameter_overrides is: this constructor does not
+            # splat ``data``, so an unnamed field is silently dropped and
+            # the resume would quietly restart the loop at 0.
+            resume_from_iteration=data.resume_from_iteration,
+            resume_iteration_artifacts=dict(data.resume_iteration_artifacts or {}),
             status="queued",
             created_at=now,
             updated_at=now,
         )
         self._write_json(self._run_file(run_id), run.model_dump())
         return run
+
+    def list_lineage(self, root_run_id: str) -> List[TaskRun]:
+        """Every attempt sharing a lineage, oldest attempt first.
+
+        Drives the tile's attempt rail.  Sorted by ``attempt`` rather
+        than ``created_at`` so the displayed ordinals are monotonic even
+        if two attempts land in the same millisecond.  Falls back to
+        matching the id itself, so a run written before lineage tracking
+        (``root_run_id`` absent) still returns itself rather than nothing.
+        """
+        out = [
+            r for r in self.list()
+            if (r.root_run_id or r.id) == root_run_id
+        ]
+        return sorted(out, key=lambda r: (r.attempt or 1, r.created_at))
 
     def update_status(
         self, run_id: str, status: str,
@@ -92,7 +136,13 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         run.status = status  # type: ignore[assignment]
         if status == "running" and run.started_at is None:
             run.started_at = time.time()
-        if status in ("done", "failed", "cancelled"):
+        # "partial" is terminal: without it here completed_at is never
+        # stamped, so the tile shows no runtime, and record_activity's
+        # terminal guard keeps letting heartbeats through.
+        # "held" is terminal for this run OBJECT for the same reasons —
+        # the executor coroutine has unwound — even though the work is
+        # continuable; the continuation is a NEW run.
+        if status in ("done", "partial", "failed", "cancelled", "held"):
             run.completed_at = time.time()
         if error:
             run.error = error
@@ -103,6 +153,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
     def record_activity(
         self, run_id: str, note: Optional[str] = None,
         min_interval_s: float = 5.0,
+        source: Optional[str] = None,
     ) -> Optional[TaskRun]:
         """Heartbeat: stamp ``last_activity_at`` (+ optional
         ``progress_note``) on the run file.
@@ -112,6 +163,12 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         carrying a genuinely NEW note bypasses the throttle so the
         surfaced note is never stale relative to the last tool call.
         No-op for unknown or already-terminal runs.
+
+        A note is ALSO appended to ``progress_notes``, the bounded trail
+        that survives being overwritten.  ``source`` (``"model"`` for a
+        ``<progress note=.../>`` tag, else None for a tool-derived line)
+        is carried through so the UI can prefer the richer kind without
+        discarding the other.
         """
         now = time.time()
         last = self._last_activity_write.get(run_id, 0.0)
@@ -131,6 +188,16 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         run.last_activity_at = now
         if note is not None:
             run.progress_note = note
+            # Append to the durable trail, skipping an exact consecutive
+            # repeat: a loop running the same command every iteration would
+            # otherwise fill the whole window with one line and evict the
+            # phase notes that give the trail its value.
+            if not run.progress_notes or run.progress_notes[-1].note != note:
+                run.progress_notes.append(
+                    ProgressNote(note=note, at=now, source=source)
+                )
+                if len(run.progress_notes) > PROGRESS_NOTE_CAP:
+                    del run.progress_notes[:-PROGRESS_NOTE_CAP]
         run.updated_at = int(now * 1000)
         self._write_json(self._run_file(run_id), run.model_dump())
         self._last_activity_write[run_id] = now
@@ -230,6 +297,53 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         self._write_json(self._run_file(run_id), run.model_dump())
         return run
 
+    def record_call(
+        self, run_id: str, block_id: str,
+        call_snapshot: dict,
+        block_scopes: Optional[dict] = None,
+    ) -> Optional[TaskRun]:
+        """Record a resolved Call target and its callee's block scopes.
+
+        Both halves land in one read-merge-write because they are written
+        at the same instant and a Call inside a loop body would otherwise
+        cost two disk round-trips per iteration.
+
+        Additive only: an existing ``call_snapshots`` entry or
+        ``block_scopes`` key is never overwritten.  That is what preserves
+        the audit-trail guarantee those records carry — appending a callee
+        the run actually invoked is recording history, whereas replacing
+        an existing entry would rewrite it.  It also makes a repeated call
+        (same block, later loop iteration) naturally idempotent, and the
+        no-op case skips the write entirely rather than rewriting the run
+        file once per iteration.
+        """
+        run = self.get(run_id)
+        if not run:
+            return None
+        dirty = False
+        if block_id and block_id not in (run.call_snapshots or {}):
+            run.call_snapshots[block_id] = call_snapshot
+            dirty = True
+        if block_scopes:
+            # permissions_snapshot may be absent when its launch-time
+            # capture failed (non-fatal by design).  Seed a minimal shell
+            # rather than dropping the callee's scopes on the floor: a
+            # partial audit trail beats a silently empty one.
+            snap = run.permissions_snapshot
+            if snap is None:
+                snap = {"block_scopes": {}}
+                run.permissions_snapshot = snap
+            existing = snap.setdefault("block_scopes", {})
+            for key, value in block_scopes.items():
+                if key not in existing:
+                    existing[key] = value
+                    dirty = True
+        if not dirty:
+            return run
+        run.updated_at = int(time.time() * 1000)
+        self._write_json(self._run_file(run_id), run.model_dump())
+        return run
+
     def update(self, run_id: str, data) -> Optional[TaskRun]:
         """BaseStorage contract.  Task runs don't have a generic update
         path — use update_status / set_artifact / set_block_state for
@@ -246,6 +360,34 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         if not run:
             return None
         run.cancel_requested = True
+        run.updated_at = int(time.time() * 1000)
+        self._write_json(self._run_file(run_id), run.model_dump())
+        return run
+
+    def mark_held(
+        self, run_id: str, reason: str = "",
+        block_id: str = "", error: Optional[str] = None,
+    ) -> Optional[TaskRun]:
+        """Record that a run stopped on an infrastructure fault.
+
+        Distinct from ``update_status(run_id, "held")`` only in that it
+        also persists the fault kind and the block the run reached, so
+        a later continuation does not have to infer the resume point
+        from block_states.  Deliberately does NOT run the
+        partial-reclassification pass: "partial" describes how much
+        work got done, whereas "held" describes why it stopped, and
+        collapsing the two would lose the actionable half (the
+        infrastructure needs fixing, not the card).
+        """
+        run = self.get(run_id)
+        if not run:
+            return None
+        run.status = "held"  # type: ignore[assignment]
+        run.held_reason = reason or None
+        run.held_at_block_id = block_id or None
+        if error:
+            run.error = error
+        run.completed_at = time.time()
         run.updated_at = int(time.time() * 1000)
         self._write_json(self._run_file(run_id), run.model_dump())
         return run
@@ -270,9 +412,58 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         if not run:
             return None
         run.pause_requested = False
+        # Drop any unspent step credit.  Resume means "run to
+        # completion", so a leftover budget must not survive to let a
+        # later re-pause silently slip a boundary.
+        run.step_budget = 0
         run.updated_at = int(time.time() * 1000)
         self._write_json(self._run_file(run_id), run.model_dump())
         return run
+
+    def request_step(self, run_id: str, count: int = 1) -> Optional[TaskRun]:
+        """Grant ``count`` boundary crossings to a paused run.
+
+        Leaves ``pause_requested`` set, which is what distinguishes a
+        step from a resume: the executor's wait-loop spends one credit
+        to pass the boundary it is holding at, then holds again at the
+        next one.  Credits accumulate, so calling this three times
+        advances three boundaries.
+
+        Also sets ``pause_requested`` if it was clear, so stepping a
+        freely-running run is meaningful: it will advance to the next
+        boundary and hold there rather than being a no-op.  Without
+        this, a step on a running run would only be observed if the run
+        happened to already be paused.
+        """
+        run = self.get(run_id)
+        if not run:
+            return None
+        run.pause_requested = True
+        run.step_budget = max(0, run.step_budget) + max(1, int(count))
+        run.updated_at = int(time.time() * 1000)
+        self._write_json(self._run_file(run_id), run.model_dump())
+        return run
+
+    def consume_step(self, run_id: str) -> bool:
+        """Spend one step credit if any remain.  Returns True if spent.
+
+        Called from ``block_executor._wait_if_paused`` when it finds the
+        pause flag set: a True return means "cross this one boundary
+        and keep holding afterwards".  The decrement is persisted so
+        the credit cannot be double-spent by a subsequent poll.
+
+        Not atomic across processes — two executors sharing a run file
+        could in principle both read the same credit.  Acceptable
+        because a run's executor coroutine is single and process-local
+        (see mark_active/is_active), so there is only ever one consumer.
+        """
+        run = self.get(run_id)
+        if not run or run.step_budget <= 0:
+            return False
+        run.step_budget = run.step_budget - 1
+        run.updated_at = int(time.time() * 1000)
+        self._write_json(self._run_file(run_id), run.model_dump())
+        return True
 
     # ---- live-run registry (process-local, not persisted) ----------
 

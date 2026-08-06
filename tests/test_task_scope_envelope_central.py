@@ -57,11 +57,36 @@ def test_combined_grants():
 
 def test_envelope_shape_matches_consumer_keys():
     """The envelope must carry exactly the keys the shell server's
-    set_task_scope consumer reads: writable, readable, shell_commands,
-    project_root."""
+    consumers read: writable, readable, shell_commands, project_root,
+    shell_timeout_secs.
+
+    Exact equality rather than a subset check is deliberate — a key
+    nothing consumes is dead weight crossing JSON-RPC on every call, and
+    a key a consumer expects but the builder omits is a silently dropped
+    grant.  Both directions matter, so this test has to be updated
+    whenever the envelope legitimately grows.
+    """
     tok = set_task_shell_commands(["gh"])
     try:
         env = build_task_scope_envelope()
     finally:
         reset_task_shell_commands(tok)
-    assert set(env.keys()) == {"writable", "readable", "shell_commands", "project_root"}
+    assert set(env.keys()) == {
+        "writable", "readable", "shell_commands", "project_root",
+        # Added with the per-task shell timeout grant; read by
+        # ShellServer._timeout_bounds to raise the ceiling AND the
+        # default for a single call.
+        "shell_timeout_secs",
+    }
+
+
+def test_timeout_key_present_even_without_a_timeout_grant():
+    """The key is always present (None when ungranted) rather than
+    conditionally added, so the consumer's ``.get`` needs no special
+    case for an older-shaped envelope."""
+    tok = set_task_shell_commands(["gh"])
+    try:
+        env = build_task_scope_envelope()
+    finally:
+        reset_task_shell_commands(tok)
+    assert env["shell_timeout_secs"] is None

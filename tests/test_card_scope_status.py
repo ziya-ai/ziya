@@ -38,8 +38,12 @@ def keyed(tmp_path, monkeypatch):
 
 
 def _esc_block():
+    # ``dd`` rather than ``npx jest``: "npx jest" is IN the base shell
+    # allowlist (beside "npx craco"), so the floor subtraction in
+    # task_escalation_block removes it and the escalation block comes back
+    # without a shell_commands key at all.
     return Block(block_type="task", id="b-esc", name="Deploy",
-                 scope=TaskScope(shell_commands=["npx jest"],
+                 scope=TaskScope(shell_commands=["dd"],
                                  paths=[ScopeEntry(path="out/", is_dir=True, write=True)]))
 
 
@@ -49,13 +53,16 @@ def _benign_block():
                                  paths=[ScopeEntry(path="a.py", read=True)]))
 
 
-def _card(root):
-    # Minimal stand-in matching what _get_storage(...).get() returns: an object
-    # with a .root Block. We patch the storage getter to return this.
-    class _C:
-        def __init__(self, root):
-            self.root = root
-    return _C(root)
+def _card(root, scope=None):
+    # Stand-in for what _get_storage(...).get() returns.  ``scope`` is
+    # required as well as ``root``: the endpoint merges CARD-level scope
+    # into every block's effective scope (see merge_scopes in
+    # app/models/task_card.py), so a stub carrying only ``.root`` raises
+    # AttributeError.  Using the real TaskCard model instead of a bare
+    # namespace means a future field the endpoint starts reading is
+    # supplied automatically rather than failing here again.
+    from app.models.task_card import TaskCard
+    return TaskCard(id="c1", name="C", description="", root=root, scope=scope)
 
 
 def _patch_storage(monkeypatch, card):
@@ -76,7 +83,7 @@ async def test_escalating_block_unsigned_reported_unauthorized(keyed, monkeypatc
     assert [b["blockId"] for b in res["blocks"]] == ["b-esc"]
     b = res["blocks"][0]
     assert b["authorized"] is False
-    assert b["escalation"]["shell_commands"] == ["npx jest"]
+    assert b["escalation"]["shell_commands"] == ["dd"]
     assert b["escalation"]["writable_paths"] == ["out/"]
     assert "sudo ziya-approve --task c1 --block b-esc --project p1" == b["signCommand"]
 

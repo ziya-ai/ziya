@@ -68,9 +68,14 @@ async def list_task_bindings(project_id: str, chat_id: str) -> List[TaskBinding]
     no bindings.  Does not validate that the chat exists — bindings
     for a deleted chat can still be listed (and would be empty).
 
-    Each binding with a run_id is enriched with a ``run_status``
-    extra field (TaskBinding has extra="allow") so the client can
-    show running-task affordances without a per-binding round trip.
+    Each binding with a run_id is enriched with ``run_status``,
+    ``root_run_id`` and ``attempt`` extra fields (TaskBinding has
+    extra="allow") so the client can show running-task affordances AND
+    collapse an attempt lineage to one tile without a per-binding round
+    trip.  All three come from a single run read, so the lineage fields
+    are free: the ``run_status`` lookup was already loading the record.
+    A client-side per-binding fetch would also have targeted the WRONG
+    project for a cross-project global chat — see the fallback below.
     """
     storage = _bindings_storage(project_id)
     bindings = storage.list_for_chat(chat_id)
@@ -119,6 +124,12 @@ async def list_task_bindings(project_id: str, chat_id: str) -> List[TaskBinding]
                     run = run_storage.get(b.run_id)
                     if run:
                         b.run_status = run.status
+                        # Lineage key + ordinal for the client-side
+                        # collapse.  ``or run.id`` mirrors the storage
+                        # default so a pre-lineage record reads as its
+                        # own single-attempt lineage rather than null.
+                        b.root_run_id = run.root_run_id or run.id
+                        b.attempt = run.attempt or 1
                 except Exception as e:
                     logger.debug(f"Binding {b.id[:8]}: run status lookup failed: {e}")
     return bindings

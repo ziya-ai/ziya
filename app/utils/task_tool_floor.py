@@ -50,6 +50,11 @@ ALWAYS_AVAILABLE_TOOLS: frozenset = frozenset({
     # Visual verification — the counterpart to emit_artifact for any
     # task whose product is a rendered diagram.
     "render_diagram",
+    # Paging an elided render back into view.  Must be unconditional:
+    # compaction hands the model a recall handle whether or not its scope
+    # listed this tool, and a handle it cannot redeem is worse than no
+    # handle at all — it reads as the observation having been unreliable.
+    "recall_image",
     # Silent task-tree bookkeeping. Internal tools the harness treats
     # as always-on in every other surface.
     "bead_create",

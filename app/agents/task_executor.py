@@ -44,6 +44,23 @@ class TaskExecutorError(Exception):
     """Raised when a Task block cannot be executed."""
 
 
+class TaskInfraError(TaskExecutorError):
+    """A Task stopped because of an infrastructure fault.
+
+    Subclasses TaskExecutorError so existing ``except`` clauses keep
+    catching it unchanged.  Callers that want to treat an infra stop
+    differently detect it via ``getattr(exc, "infra_kind", "")``
+    rather than importing this class, so modules with no other reason
+    to depend on this one do not acquire an import for it.
+    """
+
+    def __init__(self, message: str, infra_kind: str = "",
+                 block_id: str = ""):
+        super().__init__(message)
+        self.infra_kind = infra_kind
+        self.block_id = block_id
+
+
 def _validate_task_block(block: Block) -> None:
     """Structural validation for a Task block dispatch."""
     if block.block_type != "task":
@@ -223,6 +240,27 @@ FAILURE_RESULT_MARKERS = (
     "non-zero exit status",
 )
 
+# Fault kinds that mean "the infrastructure broke", not "the work failed".
+# Module-level because they are matched against TWO different fields: a
+# chunk whose ``type`` is one of these, and — the case that actually
+# occurs — a chunk whose ``type`` is the flat string ``"error"`` with the
+# kind carried in ``error_type``/``error`` instead (see
+# _classify_and_handle_error and the StreamError branch in
+# app/streaming_tool_executor.py, both of which emit that shape for an
+# expired-credentials failure).
+#
+# Matching only on ``type`` left this set with no producer at all, so the
+# infra-hold path was unreachable and every expired-credential stop was
+# recorded as a failure of the card.  Reclassification then turned it
+# into ``partial``, which reports the work as half-done rather than the
+# environment as broken — and loses the resume position a hold keeps.
+INFRA_ERROR_KINDS = (
+    "transient_service_error",
+    "throttling_error",
+    "connection_error",
+    "authentication_error",
+)
+
 
 def is_failure_result(result: object) -> bool:
     """Return True if a tool result's model-facing text denotes failure.
@@ -244,6 +282,9 @@ async def execute_task_block(
     project_root: Optional[str] = None,
     project_id: Optional[str] = None,
     run_id: Optional[str] = None,
+    *,
+    pre_authorized_shell_commands: Optional[List[str]] = None,
+    pre_authorized_writable: Optional[List[dict]] = None,
 ) -> Artifact:
     """Execute a single Task block in a sandboxed model invocation.
 
@@ -252,6 +293,17 @@ async def execute_task_block(
     When ``run_id`` is provided, live-observation events
     (``task_started``, ``task_text_delta``, ``task_tool_call``,
     ``task_finished``) are pushed to the task-run relay's replay buffer.
+
+    The two ``pre_authorized_*`` arguments carry grants that a CALLER has
+    already authorized against the signed ledger under a key this function
+    cannot check — today, a file task's ``allow`` block, keyed
+    ``cli:<realpath>#<name>`` (see ``app/agents/task_call.py``).  They are
+    unioned into the grants below and deliberately bypass
+    ``authorize_scope``, which hashes a scope against the BLOCK's id: a
+    synthetic block created for a call has no approval record and never
+    could, so routing an approved file task through that gate would floor
+    it.  Passing these is a privileged act; the only caller is
+    ``block_executor._run_callee``, immediately after the CLI-ledger check.
     """
     logger.info(f"📋 TASK_EXEC: entering execute_task_block for {block.name!r}")
     _validate_task_block(block)
@@ -287,11 +339,16 @@ async def execute_task_block(
         except Exception as e:  # noqa: BLE001
             logger.debug("Heartbeat storage unavailable: %s", e)
 
-    def _heartbeat(note: Optional[str] = None) -> None:
+    def _heartbeat(
+        note: Optional[str] = None, source: Optional[str] = None,
+    ) -> None:
         if _hb_storage is None or not run_id:
             return
         try:
-            _hb_storage.record_activity(run_id, note=note)
+            # ``source`` reaches the durable progress trail so the UI can
+            # tell a model-authored phase note from a tool-derived line
+            # after the fact, not only live on the WS stream.
+            _hb_storage.record_activity(run_id, note=note, source=source)
         except Exception as e:  # noqa: BLE001
             logger.debug("Heartbeat write failed: %s", e)
 
@@ -412,6 +469,26 @@ async def execute_task_block(
 
     start_time = time.time()
     tokens_used = 0
+    # Baseline for token accounting.  GlobalUsageTracker is keyed by
+    # conversation_id, and every task in a run shares one
+    # (conversation_id=run_id below), so the tracker's list for this key
+    # ALREADY holds the earlier tasks' records.  Summing it outright
+    # would attribute the whole run's spend to each task and grow
+    # quadratically across a loop; we therefore record the current
+    # length and count only records appended past it.
+    #
+    # Length, not a timestamp: record_usage stamps its own time, so a
+    # length watermark is the only index that cannot be perturbed by
+    # clock skew or two tasks landing in the same millisecond.
+    _usage_baseline = 0
+    try:
+        if run_id:
+            from app.streaming_tool_executor import get_global_usage_tracker
+            _usage_baseline = len(
+                get_global_usage_tracker().get_conversation_usages(run_id)
+            )
+    except Exception as e:  # noqa: BLE001 — metrics must never break a run
+        logger.debug("Usage baseline unavailable: %s", e)
     tool_call_count = 0
     collected_text: List[str] = []
     decisions: List[str] = []
@@ -502,6 +579,26 @@ async def execute_task_block(
         decisions.append(f"scope: {w}")
         logger.warning(f"📋 TASK_EXEC: {block.name!r}: {w}")
 
+    # Advertise the run-scoped blackboard (granted further below, where
+    # the path grants are assembled).  Announced here because
+    # ``system_parts`` is sealed into the SystemMessage a few lines down.
+    if run_id and project_root:
+        _bb = os.path.join(project_root, ".ziya", "task-runs", run_id)
+        system_parts.append(
+            "SHARED RUN SCRATCHPAD\n"
+            f"You may read and write files under: {_bb}\n\n"
+            "Every task in this run shares this directory and it "
+            "persists for the whole run.  It is the ONLY way to hand "
+            "STRUCTURED state to a later task: your conversation is "
+            "discarded when you finish, and your summary is prose a "
+            "later task cannot verify.\n\n"
+            "Record facts a later task would otherwise re-derive — a "
+            "mutable backlog with per-item status, a verified build "
+            "hash, what you have already confirmed and how.  BEFORE "
+            "re-deriving anything expensive, read here first: an "
+            "earlier task may have already established it."
+        )
+
     messages = [
         SystemMessage(content="\n\n".join(system_parts)),
         HumanMessage(content=block.instructions),
@@ -582,6 +679,36 @@ async def execute_task_block(
         # ought to be able to read it back.  We OR the two flags here.
         if getattr(entry, "read", False) or getattr(entry, "write", False):
             readable_grant.append({"path": path, "is_dir": is_dir})
+    # Caller-authorized writable grants.  Appended, not merged by path:
+    # these are fnmatch ``{"pattern": …}`` entries (a file task's
+    # ``write_patterns``), a shape ``ScopeEntry`` cannot express, which
+    # ``_task_scope_grants_write`` matches against the project-relative
+    # path and its basename.
+    for entry in (pre_authorized_writable or []):
+        if entry:
+            writable_grant.append(dict(entry))
+    # Run-scoped blackboard.  Appended BEFORE the set_task_*_paths calls
+    # below, since those snapshot the lists into ContextVars.
+    #
+    # Exists because a task's only inbound channel is its predecessor's
+    # summary string, which is lossy and unverifiable.  Observed
+    # consequence: in a four-iteration fix loop, iterations 2 and 3 each
+    # opened by re-deriving deployment state from scratch — re-reading
+    # the bundle hash, re-comparing mtimes — because the upstream report
+    # carried no facts they could check.  A durable place to write
+    # "deployed hash = X, backlog item 3 VERIFIED" makes that a read.
+    #
+    # A granted PATH rather than a new tool: file_read / file_write /
+    # the shell already work, and file_write creates missing parents.
+    # Nothing is automatic — a card must instruct its tasks to use it,
+    # so state crosses task boundaries only when the card says so.
+    blackboard_dir = None
+    if run_id and project_root:
+        blackboard_dir = os.path.join(
+            project_root, ".ziya", "task-runs", run_id,
+        )
+        writable_grant.append({"path": blackboard_dir, "is_dir": True})
+        readable_grant.append({"path": blackboard_dir, "is_dir": True})
     scope_token = set_task_writable_paths(writable_grant or None)
     read_token = set_task_readable_paths(readable_grant or None)
     # Per-task shell command grants (Slice B).  Stored on the scope as
@@ -590,7 +717,19 @@ async def execute_task_block(
     # command line.  Consulted by ShellWriteChecker only when the base
     # policy would otherwise block — see app/mcp_servers/write_policy.py.
     shell_commands_grant = list(getattr(scope, "shell_commands", []) or [])
+    for cmd in (pre_authorized_shell_commands or []):
+        if cmd and cmd not in shell_commands_grant:
+            shell_commands_grant.append(cmd)
     shell_token = set_task_shell_commands(shell_commands_grant or None)
+    # Shell timeout grant.  Set unconditionally (None when unspecified)
+    # so the reset in the finally below always has a valid token — the
+    # same discipline the path and command grants follow.
+    from ..context import (
+        set_task_shell_timeout, reset_task_shell_timeout,
+    )
+    shell_timeout_token = set_task_shell_timeout(
+        getattr(scope, "shell_timeout_secs", None)
+    )
     # Open the output-artifact collector for this task, alongside the
     # permission grants and reset in the same ``finally``.  The
     # emit_artifact builtin appends ArtifactPart-shaped dicts here;
@@ -680,6 +819,14 @@ async def execute_task_block(
                         "run_id": run_id,
                         "block_id": delta_block_id,
                         "content": content,
+                        # Server clock, matching every other timestamped
+                        # event (task_tool_call, task_progress, run
+                        # last_activity_at).  Without this the client fell
+                        # back to its own clock, and any skew between the
+                        # two machines corrupted the "Ns ago" age label
+                        # and the note-source preference that compares
+                        # against run.last_activity_at.
+                        "ts": time.time(),
                     })
                     _heartbeat()
                     if _progress_scanner is not None:
@@ -692,9 +839,31 @@ async def execute_task_block(
                                 "source": "model",
                                 "ts": time.time(),
                             })
-                            _heartbeat(_pnote)
+                            _heartbeat(_pnote, source="model")
             elif ctype == "tool_display":
                 tool_call_count += 1
+                # Close the open text run at the tool boundary.
+                #
+                # Text is only appended for ``ctype == "text"`` chunks, so a
+                # tool call leaves a GAP in ``collected_text``: the prose
+                # before the call and the prose after it become adjacent list
+                # entries and ``"".join`` welds them into one line --
+                # "...in parallel.The broken render confirms...".  The tell
+                # that this is a seam and not a lost newline is that a
+                # following "## Heading" renders as literal text: a heading
+                # only parses at line start, so no newline was ever present.
+                #
+                # Fixing it here rather than in the frontend repairs BOTH
+                # consumers -- the live inspector and ``full_text``, which
+                # feeds the persisted ``Artifact.summary`` below.
+                #
+                # Deliberately NOT emitted as a ``task_text_delta``: the CLI
+                # sink already calls ``_break_text()`` on ``task_tool_call``,
+                # so a whitespace delta would add two blank lines there.  The
+                # frontend reconstructs the same seam from ``task_tool_call``,
+                # which the relay's delta-collapsing already breaks on.
+                if collected_text and not collected_text[-1].endswith("\n"):
+                    collected_text.append("\n\n")
                 _result = chunk.get("result", "")
                 _tool_name = chunk.get("tool_name") or "tool"
                 _args = chunk.get("args")
@@ -760,25 +929,70 @@ async def execute_task_block(
             elif ctype == "stream_end":
                 break
             elif ctype == "error":
+                # The kind lives in ``error_type``/``error``; ``type`` is
+                # a flat "error".  Reading it here is what makes an
+                # infrastructure fault distinguishable from a failure of
+                # the work — see INFRA_ERROR_KINDS.
+                _err_kind = str(
+                    chunk.get("error_type") or chunk.get("error") or ""
+                )
+                _err_msg = chunk.get("content", "unknown")
                 logger.warning(
                     f"📋 TASK_EXEC: {block.name!r} received error chunk: "
-                    f"{chunk.get('content', 'unknown')}"
+                    f"{_err_msg} (kind={_err_kind or 'unclassified'})"
                 )
                 await _emit({
                     "type": "task_finished",
                     "run_id": run_id,
                     "block_id": block.id,
                     "ok": False,
-                    "error": chunk.get("content", "unknown"),
+                    "error": _err_msg,
                     "ts": time.time(),
                 })
+                if _err_kind in INFRA_ERROR_KINDS:
+                    raise TaskInfraError(
+                        f"Task execution failed ({_err_kind}): {_err_msg}",
+                        infra_kind=_err_kind,
+                        block_id=block.id or "",
+                    )
                 raise TaskExecutorError(
-                    f"Task execution failed: {chunk.get('content', 'unknown')}"
+                    f"Task execution failed: {_err_msg}"
+                )
+            elif ctype in INFRA_ERROR_KINDS:
+                # Terminal error chunks from _classify_and_handle_error's
+                # non-retryable path (retries exhausted, or a non-retryable
+                # class such as auth). These do not use ctype 'error', so
+                # without this branch they matched nothing, the loop exited
+                # normally, and the block was recorded as succeeding with
+                # silently truncated output. Their message lives in
+                # 'detail'/'retry_message' rather than 'content'.
+                _detail = (
+                    chunk.get("detail")
+                    or chunk.get("retry_message")
+                    or chunk.get("error")
+                    or ctype
+                )
+                logger.warning(
+                    f"📋 TASK_EXEC: {block.name!r} terminal {ctype}: {_detail}"
+                )
+                await _emit({
+                    "type": "task_finished",
+                    "run_id": run_id,
+                    "block_id": block.id,
+                    "ok": False,
+                    "error": _detail,
+                    "ts": time.time(),
+                })
+                raise TaskInfraError(
+                    f"Task execution failed ({ctype}): {_detail}",
+                    infra_kind=ctype,
+                    block_id=block.id or "",
                 )
     finally:
         reset_task_writable_paths(scope_token)
         reset_task_readable_paths(read_token)
         reset_task_shell_commands(shell_token)
+        reset_task_shell_timeout(shell_timeout_token)
         # Drain declared outputs in the same finally that resets the
         # grants, so the collector can never leak across task
         # boundaries even on error paths.
@@ -786,6 +1000,32 @@ async def execute_task_block(
 
     elapsed_ms = int((time.time() - start_time) * 1000)
     full_text = "".join(collected_text)
+
+    # Token accounting.  ``tokens_used`` was initialised to 0 and never
+    # incremented, so every artifact — and every iteration summary built
+    # from one — reported tokens=0, leaving no way to see what a long
+    # campaign actually cost or whether a model_tier grant had any
+    # effect.  There is no usage-bearing stream chunk to count, so the
+    # figure is read from GlobalUsageTracker, which
+    # message_stop_handler populates per streaming iteration.
+    #
+    # Counts only records appended past ``_usage_baseline`` (see above).
+    # cache_read is included: it is real input the model processed and
+    # was billed for, if discounted, so excluding it would understate a
+    # cache-heavy loop precisely where the cost question is sharpest.
+    try:
+        if run_id:
+            from app.streaming_tool_executor import get_global_usage_tracker
+            _records = get_global_usage_tracker().get_conversation_usages(run_id)
+            for _u in _records[_usage_baseline:]:
+                tokens_used += (
+                    getattr(_u, "input_tokens", 0)
+                    + getattr(_u, "output_tokens", 0)
+                    + getattr(_u, "cache_read_tokens", 0)
+                    + getattr(_u, "cache_write_tokens", 0)
+                )
+    except Exception as e:  # noqa: BLE001 — metrics must never break a run
+        logger.debug("Usage read failed: %s", e)
 
     # Parse the model's structured self-assessment, attach it to
     # the artifact, and use it to decide ``ok``.  Falls back to the
@@ -824,6 +1064,23 @@ async def execute_task_block(
     # marker — the previous hard ``[:2000]`` slice cut mid-sentence
     # silently, leaving users unable to tell whether the model or
     # the system had stopped.
+    # A task whose entire visible output was thinking and/or tool
+    # traffic leaves an empty summary.  Passing that downstream as a
+    # SUCCESS is what lets a silent step masquerade as a completed one:
+    # the next block receives "" as its {{previous}} and cannot tell
+    # "nothing to report" from "never ran", so it re-derives the whole
+    # world defensively.  Fail explicitly instead, and say why.
+    if not full_text.strip():
+        decisions.append(
+            "empty_summary: the task produced no prose output — only "
+            "thinking and/or tool calls.  A downstream block would have "
+            "received an empty result indistinguishable from silence, "
+            "so this task is recorded as failed rather than passing an "
+            "unverifiable success forward."
+        )
+        assessment_failed = True
+        assessment_signature = assessment_signature or "empty_summary"
+
     from app.utils.artifact_summary import truncate_summary
     artifact = Artifact(
         summary=truncate_summary(full_text.strip()),

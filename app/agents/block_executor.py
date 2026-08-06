@@ -46,6 +46,17 @@ logger = logging.getLogger(__name__)
 PASS_ARTIFACT_RETENTION_CAP = 50
 """Max passing iterations whose full Artifact is persisted per Repeat."""
 
+MAX_CALL_DEPTH = 5
+"""Maximum nesting of Call blocks within a single run.
+
+A cap is needed in addition to cycle detection: an acyclic call graph can
+still be arbitrarily deep (A→B→C→…), and each level multiplies the run's
+cost while the operator sees one tile.  Exceeding it produces a failed
+artifact rather than an exception, so ``on_failure`` decides what happens
+to the surrounding sequence — the same treatment an unresolvable target
+gets.
+"""
+
 
 @dataclass
 class ExecutionContext:
@@ -120,6 +131,66 @@ class ExecutionContext:
     # its own entry, so the lookup sees that block's most recent result.
     artifact_registry: Dict[str, Artifact] = field(default_factory=dict)
 
+    # Canonical keys of the Call targets currently on the stack, outermost
+    # first.  Two jobs: bound nesting at MAX_CALL_DEPTH, and reject a cycle
+    # (a target that is already executing).  Keyed by card id rather than
+    # by the name the caller used, so A→A is caught even when the two
+    # references spell the target differently.
+    call_stack: List[str] = field(default_factory=list)
+
+    # ---- Resume-from-block support ----
+    # Set when this run is a resume of an earlier run (see the resume
+    # endpoint).  ``resume_from_block_id`` is the structural block to
+    # re-enter at; execution proceeds normally from there to the end of
+    # the deck.  Only structural blocks are valid targets, because only
+    # those have persisted state — ``_mark_block_status`` deliberately
+    # skips blocks inside an active loop iteration (non-empty
+    # ``binding_stack``), so there is no per-iteration inner record to
+    # resume from.  Targeting inside a loop resumes the enclosing loop.
+    resume_from_block_id: Optional[str] = None
+    # True while walking the tree BEFORE the resume target is reached.
+    # Blocks encountered in this state are not executed; their persisted
+    # artifacts are replayed into ``artifact_registry`` /
+    # ``sibling_stack`` instead, so that {{sibling("id")}} and
+    # {{previous_sibling}} still resolve for the resumed blocks — this is
+    # what preserves the prior deck state rather than recomputing it.
+    # Cleared the moment the target block is reached.
+    #
+    # State blocks are the deliberate exception: they are re-executed
+    # even while skipping.  ``_execute_state`` only writes authored
+    # literals into ``ctx.variables`` / ``ctx.context_notes`` and emits
+    # an event — it is pure and has no side effects — and those two
+    # stores are the run-scoped state that is NOT persisted anywhere.
+    # Re-running them is how a resumed run rebuilds {{var.NAME}} without
+    # needing a variables snapshot on disk.
+    resume_skipping: bool = False
+    # Persisted block artifacts from the run being resumed, keyed by
+    # block id, read out of the source run's ``block_states``.  Consulted
+    # only while ``resume_skipping`` is True.  A missing entry means that
+    # block never completed (queued/failed), in which case there is
+    # nothing to replay and the slot is simply left unset.
+    resume_artifacts: Dict[str, Artifact] = field(default_factory=dict)
+    # ---- Mid-loop resume ----
+    # When set, the loop block named by ``resume_from_block_id`` starts
+    # executing at this iteration index; earlier iterations replay their
+    # recorded artifacts (from ``resume_iteration_artifacts``) instead of
+    # running.  Distinct from the block-level gate above because a loop's
+    # iterations are not blocks — they share one ``block_states`` entry
+    # and are recorded only as ``iteration_summaries``, which is exactly
+    # why the loop was previously resumable only at index 0.
+    #
+    # None means start at 0, i.e. every pre-existing resume behaves as
+    # before.
+    resume_from_iteration: Optional[int] = None
+    # Recorded iteration artifacts keyed by index, for the loop above.
+    # A replayed iteration returns its entry so the NEXT iteration's
+    # {{previous}} resolves to the same value it saw in the source run —
+    # without which a mid-loop resume would run the first executed
+    # iteration against an empty input while reporting success.
+    resume_iteration_artifacts: Dict[int, Artifact] = field(
+        default_factory=dict,
+    )
+
     def effective_scope(self, leaf_scope: Optional[TaskScope] = None) -> Optional[TaskScope]:
         """Merge deck + card + every active ancestor's scope + an
         optional leaf scope, root→leaf order (outermost first, so a
@@ -155,7 +226,32 @@ async def _emit(ctx: "ExecutionContext", event: Dict[str, Any]) -> None:
     await _relay.safe_push(ctx.run_id, event)
 
 
-async def _wait_if_paused(ctx: "ExecutionContext") -> None:
+def _is_step_boundary(block: Block) -> bool:
+    """True if holding before ``block`` should cost a step credit.
+
+    A credit must buy observable work, not tree descent.  Entering a
+    container (group/repeat/until/parallel) crosses a boundary but
+    executes nothing by itself, and each nesting level adds another such
+    boundary — so charging for them made one step cost N credits for a
+    task N levels deep (measured: 3 credits to reach the body of a
+    group[repeat[task]]).
+
+    Containers therefore hold when paused but pass for free when
+    stepping.  Leaf blocks (task, state, schedule) are what a credit
+    actually buys.
+
+    The Repeat/until ITERATION boundaries are likewise NOT charged (they
+    pass ``chargeable=False`` explicitly at their call sites): each
+    iteration executes its body as a sequence, and that sequence's own
+    first-child boundary is what charges for the iteration's work.
+    Charging the iteration boundary too was measured at four chargeable
+    holds for two iterations of work, so one credit could never advance
+    exactly one iteration.
+    """
+    return block.block_type not in ("group", "repeat", "until", "parallel")
+
+
+async def _wait_if_paused(ctx: "ExecutionContext", chargeable: bool = True) -> None:
     """Hold at a boundary while the run's pause flag is set.
 
     Called at the SAME boundaries as ``cancel_requested`` (between
@@ -163,6 +259,16 @@ async def _wait_if_paused(ctx: "ExecutionContext") -> None:
     No-op when not paused.  While held, the run's status is flipped to
     ``paused`` and a ``run_paused`` event is emitted once; on resume the
     status is restored to ``running`` and ``run_resumed`` is emitted.
+
+    Step-debug rides on this same hold.  If the run has an unspent step
+    credit (``step_budget``), one credit is spent and this returns
+    immediately even though ``pause_requested`` is still set — so the
+    executor crosses exactly this one boundary and then holds again at
+    the next.  That is the whole of stepping: no new hold points, and
+    the granularity is therefore a block/iteration boundary, never
+    mid-Task.  A step is checked BEFORE the paused-status flip so a
+    single step out of a running deck does not flicker the run through
+    ``paused`` and back.
 
     Cancel wins over pause: if cancel is requested while paused, this
     raises ``BlockExecutionCancelled`` so a paused run can still be
@@ -175,6 +281,28 @@ async def _wait_if_paused(ctx: "ExecutionContext") -> None:
     while ctx.pause_requested():
         if ctx.cancel_requested():
             raise BlockExecutionCancelled()
+        # ``chargeable=False`` boundaries (container descent) let a
+        # stepping run through WITHOUT spending a credit, so one credit
+        # buys one unit of real work regardless of nesting depth.  A
+        # non-stepping pause still holds here — the budget check is what
+        # differentiates the two.
+        if not chargeable:
+            _run = ctx.storage.get(ctx.run_id)
+            if _run and (_run.step_budget or 0) > 0:
+                break
+            # No credit outstanding: fall through and hold as an
+            # ordinary pause.
+        if chargeable and ctx.storage.consume_step(ctx.run_id):
+            # Credit spent: cross this boundary.  pause_requested stays
+            # set, so the next boundary holds again.  Emit a distinct
+            # event rather than run_resumed — the run is still held, and
+            # the frontend needs to tell "advanced one block" apart from
+            # "released to completion".
+            await _emit(ctx, {
+                "type": "run_stepped", "run_id": ctx.run_id,
+                "at": time.time(),
+            })
+            break
         if not notified:
             ctx.storage.update_status(ctx.run_id, "paused")
             await _emit(ctx, {
@@ -235,6 +363,33 @@ async def execute_block(block: Block, ctx: ExecutionContext) -> Artifact:
     ancestor's scope + its own, merged additively (see
     ExecutionContext.effective_scope / app.models.task_card.merge_scopes).
     """
+    # ---- Resume-from-block gate ----
+    # While walking the tree ahead of the resume target, blocks are not
+    # executed; their persisted artifacts are replayed so that the
+    # resumed blocks still see prior deck state via {{sibling("id")}}
+    # and {{previous_sibling}}.  Sits ahead of the "running" status
+    # write below so a replayed block never reports as running.
+    if ctx.resume_skipping:
+        if block.id and block.id == ctx.resume_from_block_id:
+            # Target reached — everything from here on executes for real.
+            ctx.resume_skipping = False
+        elif block.block_type == "state":
+            # Deliberately re-executed while skipping: _execute_state only
+            # writes authored literals into ctx.variables/context_notes,
+            # and those two stores are the run-scoped state that is not
+            # persisted anywhere.  Re-running them is how {{var.NAME}} is
+            # rebuilt without a variables snapshot on disk.
+            pass
+        elif _subtree_contains(block, ctx.resume_from_block_id):
+            # A container on the path to the target: descend so the inner
+            # sequence keeps skipping its own earlier children.  Only
+            # reachable for group/root containers, because loop-body
+            # blocks have no persisted state and are therefore not valid
+            # targets (see resume_from_block_id).
+            pass
+        else:
+            return await _replay_artifact(block, ctx)
+
     ctx.scope_stack.append(block.scope)
     await _mark_block_status(ctx, block, "running")
     try:
@@ -259,6 +414,8 @@ async def execute_block(block: Block, ctx: ExecutionContext) -> Artifact:
             artifact = await _execute_schedule_passthrough(block, ctx)
         elif block.block_type == "state":
             artifact = await _execute_state(block, ctx)
+        elif block.block_type == "call":
+            artifact = await _execute_call(block, ctx)
         elif block.block_type == "group":
             artifact = await _execute_sequence(
                 block.body, ctx,
@@ -286,6 +443,280 @@ async def execute_block(block: Block, ctx: ExecutionContext) -> Artifact:
     # the registry under the "" key).  Last-write-wins for loop re-runs.
     if block.id:
         ctx.artifact_registry[block.id] = artifact
+    return artifact
+
+
+def _call_failure(summary: str) -> Artifact:
+    """A failed artifact for a call that never ran.
+
+    Not an exception: an unresolvable or cyclic call is an authoring
+    defect, and returning a failed artifact routes it through the same
+    ``on_failure`` policy as a task that failed — so ``stop`` halts the
+    deck and ``continue`` records the defect and moves on, rather than
+    tearing down the whole run either way.
+    """
+    logger.warning("📞 CALL: %s", summary)
+    return Artifact(summary=summary, failed=True, created_at=time.time())
+
+
+def _seed_callee_block_states(ctx: "ExecutionContext", root: Block) -> None:
+    """Register the callee subtree in the run's ``block_states``.
+
+    ``update_block_status`` updates in place and returns early when the
+    block has no existing state, and launch-time seeding only walked the
+    CALLER's tree — so without this every callee block's status write is
+    silently dropped and the run record shows a call that produced an
+    artifact from nothing.
+
+    Gated on an empty ``binding_stack`` for the same reason
+    ``_mark_block_status`` is: inside a loop iteration this would rewrite
+    the run file once per callee block per iteration.
+    """
+    if ctx.storage is None or ctx.binding_stack:
+        return
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if node.id:
+            try:
+                ctx.storage.set_block_state(ctx.run_id, TaskRunBlockState(
+                    block_id=node.id,
+                    block_type=node.block_type,
+                    status="queued",
+                ))
+            except Exception as exc:  # noqa: BLE001 — bookkeeping only
+                logger.debug(f"seed callee block state failed: {exc}")
+        stack.extend(node.body or [])
+
+
+def _record_call_audit(ctx: "ExecutionContext", block: Block, resolved) -> None:
+    """Persist the resolved callee tree and its effective block scopes.
+
+    Two consumers, one write:
+
+    * the run map, which cannot draw the callee's rows without its tree
+      (the callee is named, not inlined, so it is in neither the card nor
+      ``card_snapshot``);
+    * ``run_outcome.summarize_side_effects``, which answers "did this run
+      change my workspace?" by intersecting ``block_states`` with
+      ``permissions_snapshot.block_scopes``.  The callee's blocks were
+      already in the former (``_seed_callee_block_states``) but absent
+      from the latter, so a callee task holding a write grant intersected
+      to nothing and the banner reported NO hazard — an actively wrong
+      "nothing changed", not merely a missing row.
+
+    Scopes are computed from the CALLEE's own hierarchy — deck scope plus
+    the callee's card scope — mirroring the isolation ``_execute_call``
+    enforces at run time.  Recording the caller's would describe
+    permissions the callee never had.
+
+    Best-effort: an audit-trail failure must not abort the work, matching
+    how the launch-time capture is treated.
+    """
+    if ctx.storage is None:
+        return
+    via = {
+        "call_block_id": block.id,
+        "target": resolved.label,
+        "kind": resolved.kind,
+    }
+    try:
+        from ..utils.permissions_snapshot import (
+            build_block_scopes, synthesize_grant_scope,
+        )
+        if resolved.shell_grants or resolved.writable_grants:
+            # File-task callee: its grants are raw lists, never a
+            # TaskScope, so there is no scope tree to walk.
+            scopes = synthesize_grant_scope(
+                resolved.root,
+                shell_commands=resolved.shell_grants,
+                write_patterns=resolved.writable_grants,
+                via_call=via,
+            )
+        else:
+            scopes = build_block_scopes(
+                resolved.root,
+                deck_scope=ctx.deck_scope,
+                card_scope=resolved.card_scope,
+                via_call=via,
+            )
+        ctx.storage.record_call(ctx.run_id, block.id, {
+            **via,
+            "key": resolved.key,
+            "root": resolved.root.model_dump(),
+        }, block_scopes=scopes)
+    except Exception as exc:  # noqa: BLE001 — audit must not break a run
+        logger.warning(f"📞 CALL: audit record failed (non-fatal): {exc}")
+
+
+async def _execute_call(block: Block, ctx: ExecutionContext) -> Artifact:
+    """Run a named card or file task inline, as this block's work.
+
+    **Permissions do not cross the boundary.** The caller's ``card_scope``
+    and ancestor ``scope_stack`` are swapped out for the callee's own for
+    the duration.  This is load-bearing rather than merely tidy: a leaf
+    task's escalation is authorized by hashing its FULL merged scope
+    (``authorize_scope`` ← ``ExecutionContext.effective_scope``), so any
+    caller grant left in the merge would change the hash away from what
+    was signed for the callee and demote an approved callee to the floor.
+    Isolation is therefore what makes "the callee's own approval governs"
+    actually work, and it simultaneously closes the laundering path where
+    a caller the agent may freely author confers its grants on a callee.
+
+    ``deck_scope`` is deliberately NOT reset: it is the project-wide
+    baseline, both cards live in the same project, and it is already part
+    of every hash signed on either side.
+
+    Run-scoped STATE does flow in — ``variables``, ``overrides``,
+    ``context_notes``, ``sibling_stack`` and ``binding_stack`` are shared.
+    For an unparameterized call this is the only channel by which a callee
+    can learn anything about its invocation, and those stores are
+    run-scoped by design.  Sharing ``binding_stack`` in particular keeps
+    the loop-persistence guard in ``_mark_block_status`` honest: clearing
+    it would make a call inside a 10,000-iteration loop persist every
+    callee block on every pass.
+    """
+    from .task_call import CallResolutionError, resolve_call_target
+
+    if len(ctx.call_stack) >= MAX_CALL_DEPTH:
+        return _call_failure(
+            f"call depth limit reached ({MAX_CALL_DEPTH}); refusing to call "
+            f"{block.call_target!r} from {' → '.join(ctx.call_stack)}"
+        )
+
+    try:
+        resolved = resolve_call_target(
+            block.call_target or "",
+            block.call_target_kind,
+            project_id=ctx.project_id,
+            project_root=ctx.project_root,
+        )
+    except CallResolutionError as exc:
+        return _call_failure(f"call could not be resolved: {exc}")
+
+    if resolved.key in ctx.call_stack:
+        # Depth alone would not catch this: a two-node cycle recurses
+        # forever only in the sense that it burns the whole depth budget
+        # on the same work, which is expensive and never terminates
+        # usefully.  Name the cycle so the author can see it.
+        cycle = " → ".join([*ctx.call_stack, resolved.key])
+        return _call_failure(f"call cycle detected: {cycle}")
+
+    await _emit(ctx, {
+        "type": "call_resolved",
+        "block_id": block.id,
+        "target_kind": resolved.kind,
+        "target": resolved.label,
+        "target_key": resolved.key,
+        "depth": len(ctx.call_stack) + 1,
+        "at": time.time(),
+    })
+
+    _seed_callee_block_states(ctx, resolved.root)
+    _record_call_audit(ctx, block, resolved)
+
+    saved_stack = ctx.scope_stack
+    saved_card_scope = ctx.card_scope
+    ctx.scope_stack = []
+    ctx.card_scope = resolved.card_scope
+    ctx.call_stack.append(resolved.key)
+    try:
+        artifact = await _run_callee(resolved, ctx)
+    finally:
+        ctx.call_stack.pop()
+        # Restore the SAME list object the enclosing execute_block pushed
+        # onto, so its own ``finally: ctx.scope_stack.pop()`` still pops
+        # the frame it owns.
+        ctx.scope_stack = saved_stack
+        ctx.card_scope = saved_card_scope
+
+    # Provenance goes in ``decisions``, never in ``summary``: a caller may
+    # be a Repeat whose ``repeat_until`` substring-matches the summary, so
+    # prefixing it would silently change the caller's loop condition.
+    notes = [f"called {resolved.kind} {resolved.label!r}", *resolved.notes]
+    return artifact.model_copy(update={
+        "decisions": [*(artifact.decisions or []), *notes],
+    })
+
+
+async def _run_callee(resolved, ctx: ExecutionContext) -> Artifact:
+    """Execute a resolved callee, activating any pre-authorized grants.
+
+    Card callees carry no pre-authorized grants (their blocks authorize
+    individually downstream), so this is a plain dispatch.  A file task's
+    ``allow`` was authorized against the CLI ledger during resolution and
+    is handed to ``execute_task_block`` explicitly.
+    """
+    if not resolved.shell_grants and not resolved.writable_grants:
+        return await execute_block(resolved.root, ctx)
+    return await execute_task_block(
+        resolved.root,
+        project_root=ctx.project_root,
+        project_id=ctx.project_id,
+        run_id=ctx.run_id,
+        pre_authorized_shell_commands=resolved.shell_grants,
+        pre_authorized_writable=resolved.writable_grants,
+    )
+
+
+def _subtree_contains(block: Block, target_id: Optional[str]) -> bool:
+    """True if ``target_id`` names ``block`` or any block beneath it.
+
+    Used by the resume gate to tell a container that must be descended
+    into (it encloses the target) from one that can be replayed whole.
+    """
+    if not target_id:
+        return False
+    if block.id == target_id:
+        return True
+    for child in (block.body or []):
+        if _subtree_contains(child, target_id):
+            return True
+    return False
+
+
+async def _replay_artifact(block: Block, ctx: ExecutionContext) -> Artifact:
+    """Return a block's artifact from the resumed run instead of running it.
+
+    Registers it under the block id so later {{sibling("id")}} lookups
+    resolve exactly as they did in the original run.  The caller
+    (_execute_sequence) threads the return value into sibling_stack, so
+    {{previous_sibling}} works too.
+
+    The replayed artifact is force-cleared of ``failed`` before being
+    returned.  This is load-bearing, not cosmetic: _execute_sequence's
+    on_failure="stop" policy halts at the first child whose artifact is
+    failed, so replaying a genuinely-failed artifact from the source run
+    would break the sequence BEFORE the resume target was ever reached
+    and resume would silently do nothing — the exact deck shape most
+    likely to be resumed (one that stopped on a failure) was the one it
+    could not handle.  The original summary is preserved so the prior
+    failure is still visible to the operator and to later blocks; only
+    the control-flow flag is dropped, because "this failed earlier" must
+    not re-trigger a stop the operator is explicitly retrying past.
+
+    A block with no persisted artifact never completed in the source run
+    (queued/failed/cancelled).  There is nothing to replay, so a marker
+    artifact stands in, likewise not failed.
+    """
+    replayed = ctx.resume_artifacts.get(block.id or "")
+    if replayed is None:
+        artifact = Artifact(
+            summary=f"(skipped on resume: no recorded result for {block.id})",
+            created_at=time.time(),
+        )
+    elif replayed.failed:
+        artifact = replayed.model_copy(update={"failed": False})
+    else:
+        artifact = replayed
+    if block.id:
+        ctx.artifact_registry[block.id] = artifact
+    # Record the replay in the new run's map.  Without this the block
+    # stays at the "queued" value seeded at launch, so a resumed run
+    # renders as though its earlier blocks never happened — losing the
+    # prior deck state the resume exists to preserve.  "skipped" is the
+    # honest status: this run did not execute the block.
+    await _mark_block_status(ctx, block, "skipped", artifact=artifact)
     return artifact
 
 
@@ -491,10 +922,32 @@ async def _execute_sequence(
     ctx.sibling_stack.append(None)
     try:
         for i, child in enumerate(blocks):
-            if i > 0:
-                await _wait_if_paused(ctx)
-                if ctx.cancel_requested():
-                    raise BlockExecutionCancelled()
+            # Gate every child, including the first.  The former ``i > 0``
+            # guard assumed the caller had just checked, which holds for a
+            # pause arriving mid-sequence but not for step-debug: a step
+            # granted while the executor sits at a boundary would cross
+            # that boundary AND run the first child of the sequence it
+            # then entered, advancing two blocks per credit.  Gating i==0
+            # costs one extra flag read per sequence when not paused
+            # (``pause_requested`` short-circuits before any sleep), and
+            # makes one credit mean exactly one block.
+            # Container children pass free while stepping (see
+            # _is_step_boundary) so descending into a loop or group does
+            # not consume the credit meant for the work inside it.
+            #
+            # A block that is about to be REPLAYED rather than executed
+            # (resume-from-block, see the gate at the top of
+            # execute_block) is likewise free.  That gate lives inside
+            # execute_block, which runs after this hold, so without this
+            # check a stepped resume spends its credits replaying
+            # already-finished blocks and appears to do nothing —
+            # measured as 2 credits buying 0 units of work on a
+            # resume@b3 deck.
+            _free = ctx.resume_skipping and child.id != ctx.resume_from_block_id
+            await _wait_if_paused(
+                ctx, chargeable=_is_step_boundary(child) and not _free)
+            if ctx.cancel_requested():
+                raise BlockExecutionCancelled()
             last = await execute_block(child, ctx)
             acc_outputs.extend(last.outputs or [])
             acc_decisions.extend(last.decisions or [])
@@ -584,6 +1037,35 @@ async def _execute_repeat(
         "planned": len(iterations),
         "at": time.time(),
     })
+
+    # Mid-loop resume: which iteration executes first.  Clamped to the
+    # planned range so a stale index (a card edited to run fewer
+    # iterations since the source run) cannot skip the loop entirely and
+    # report it complete.
+    resume_at = 0
+    if (
+        ctx.resume_from_iteration is not None
+        and block.id
+        and block.id == ctx.resume_from_block_id
+    ):
+        resume_at = max(0, min(int(ctx.resume_from_iteration), len(iterations)))
+        if resume_at:
+            logger.info(
+                f"repeat {block.id} resuming at iteration {resume_at} "
+                f"of {len(iterations)} ({resume_at} replayed)"
+            )
+
+    def _replay_iteration(index: int) -> Optional[Artifact]:
+        """The recorded artifact for a skipped iteration, if retained.
+
+        Cleared of ``failed`` for the same reason ``_replay_artifact``
+        does it: on_failure="stop" would otherwise halt the loop at a
+        replayed failure before reaching the iteration being retried.
+        """
+        got = ctx.resume_iteration_artifacts.get(index)
+        if got is None:
+            return None
+        return got.model_copy(update={"failed": False}) if got.failed else got
 
     async def _run_one(index: int, item: Any = None,
                         previous: Optional[Artifact] = None,
@@ -693,7 +1175,33 @@ async def _execute_repeat(
             raise BlockExecutionCancelled()
     else:
         for i in range(len(iterations)):
-            await _wait_if_paused(ctx)
+            # Replayed prefix on a mid-loop resume.  Threaded through the
+            # same ``last_artifact`` / ``prior_summaries`` variables the
+            # executed path uses, so the first REAL iteration sees exactly
+            # the {{previous}} / {{all}} bindings it saw in the source run.
+            # ``continue`` before the pause gate is deliberate: replaying a
+            # record is not work, so it must not consume a step credit.
+            if i < resume_at:
+                replayed = _replay_iteration(i)
+                if replayed is not None:
+                    last_artifact = replayed
+                    outputs.extend(replayed.outputs)
+                    if propagate == "all":
+                        prior_summaries.append(replayed.summary or "")
+                await _emit(ctx, {
+                    "type": "iteration_completed",
+                    "block_id": block.id, "index": i,
+                    "status": "passed", "replayed": True,
+                    "duration_ms": 0, "tokens": 0,
+                })
+                continue
+            # Non-chargeable: the iteration's body is a sequence, whose
+            # own first-child boundary charges the credit for this
+            # iteration's work.  Charging here too made one iteration
+            # cost two credits (traced: repeat_count=2 crossed four
+            # chargeable holds for two units of work), so a single step
+            # could never advance exactly one iteration.
+            await _wait_if_paused(ctx, chargeable=False)
             if ctx.cancel_requested():
                 raise BlockExecutionCancelled()
             # Honour propagate mode.  "none" isolates iterations entirely
@@ -870,8 +1378,51 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
         "planned": n_max, "at": time.time(),
     })
 
+    # Mid-loop resume — see the equivalent block in _execute_repeat.
+    resume_at = 0
+    if (
+        ctx.resume_from_iteration is not None
+        and block.id
+        and block.id == ctx.resume_from_block_id
+    ):
+        resume_at = max(0, min(int(ctx.resume_from_iteration), n_max))
+        if resume_at:
+            logger.info(
+                f"until {block.id} resuming at iteration {resume_at} "
+                f"of max {n_max}"
+            )
+
     for i in range(n_max):
-        await _wait_if_paused(ctx)
+        if i < resume_at:
+            # Replay, and critically SKIP the three exit-condition layers
+            # below.  A replayed iteration's self_assessment would break
+            # the loop immediately (layer 1 fires on objective_met=true),
+            # so a resume-at-4 would exit at iteration 0 having executed
+            # nothing while reporting the goal met — a false success, the
+            # worst available failure mode.  Convergence (layer 2) would
+            # likewise trip on two identical replayed summaries.
+            got = ctx.resume_iteration_artifacts.get(i)
+            if got is not None:
+                last_artifact = (
+                    got.model_copy(update={"failed": False})
+                    if got.failed else got
+                )
+                outputs.extend(last_artifact.outputs)
+                if not condition:
+                    # Keep the signature history aligned with the replayed
+                    # prefix so convergence detection compares executed
+                    # iterations against the right predecessor.
+                    signatures.append(_iteration_signature(last_artifact))
+            await _emit(ctx, {
+                "type": "iteration_completed",
+                "block_id": block.id, "index": i,
+                "status": "passed", "replayed": True,
+                "duration_ms": 0, "tokens": 0,
+            })
+            continue
+        # Non-chargeable for the same reason as the repeat path above:
+        # the body sequence's first-child boundary is what charges.
+        await _wait_if_paused(ctx, chargeable=False)
         if ctx.cancel_requested():
             raise BlockExecutionCancelled()
         await _emit(ctx, {

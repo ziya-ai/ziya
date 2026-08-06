@@ -18,14 +18,25 @@ from ..models.task_card import Block, TaskCard, TaskCardCreate, TaskCardUpdate
 logger = logging.getLogger(__name__)
 
 
-def _assign_block_ids(block_dict: dict, prefix: str = "b") -> None:
-    """Walk a block tree (as a plain dict) and assign IDs where missing."""
+def _assign_block_ids(block_dict: dict, prefix: str = "b", force: bool = False) -> None:
+    """Walk a block tree (as a plain dict) and assign IDs where missing.
+
+    ``force=True`` regenerates EVERY id, including ones already set.
+    Needed when cloning a card: the source tree already has ids (none
+    are missing), so the default fill-only behavior would leave a
+    duplicate with byte-identical block ids to its original — a
+    collision in ``TaskRunBlockState`` (both cards' runs write into the
+    same keyed state) and, more seriously, in the scope-approval
+    ledger, which keys an approval by block id alone: an approval
+    signed for one card's block would silently authorize the other
+    card's unchanged block too.
+    """
     if not isinstance(block_dict, dict):
         return
-    if not block_dict.get("id"):
+    if force or not block_dict.get("id"):
         block_dict["id"] = f"{prefix}-{uuid.uuid4().hex[:8]}"
     for child in block_dict.get("body", []) or []:
-        _assign_block_ids(child, prefix)
+        _assign_block_ids(child, prefix, force=force)
 
 
 class TaskCardStorage(BaseStorage[TaskCard]):
@@ -60,11 +71,21 @@ class TaskCardStorage(BaseStorage[TaskCard]):
                     cards.append(card)
         return sorted(cards, key=lambda c: c.updated_at, reverse=True)
 
-    def create(self, data: TaskCardCreate, source: str = "custom") -> TaskCard:
+    def create(
+        self, data: TaskCardCreate, source: str = "custom",
+        force_new_ids: bool = False,
+    ) -> TaskCard:
+        """Create a new card.
+
+        ``force_new_ids=True`` regenerates every block id rather than
+        only filling missing ones — see ``_assign_block_ids``.  Used by
+        ``duplicate()``, whose incoming tree already carries the
+        source card's ids.
+        """
         card_id = str(uuid.uuid4())
         now = int(time.time() * 1000)
         root_dict = data.root.model_dump()
-        _assign_block_ids(root_dict)
+        _assign_block_ids(root_dict, force=force_new_ids)
         card = TaskCard(
             id=card_id,
             name=data.name,
@@ -107,7 +128,13 @@ class TaskCardStorage(BaseStorage[TaskCard]):
         return True
 
     def duplicate(self, card_id: str, as_template: bool = False) -> Optional[TaskCard]:
-        """Clone a card; optionally flip template flag."""
+        """Clone a card; optionally flip template flag.
+
+        The clone gets a FRESH id for every block in the tree, not just
+        the card itself — see ``_assign_block_ids`` for why reusing the
+        source's block ids is unsafe (state-file collision, and a
+        scope approval leaking across cards).
+        """
         card = self.get(card_id)
         if not card:
             return None
@@ -118,7 +145,7 @@ class TaskCardStorage(BaseStorage[TaskCard]):
             scope=card.scope,
             tags=card.tags,
             is_template=as_template,
-        ))
+        ), force_new_ids=True)
 
     def record_run(self, card_id: str) -> Optional[TaskCard]:
         """Bump run_count and last_run_at for a card."""
