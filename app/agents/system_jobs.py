@@ -200,6 +200,59 @@ async def _memory_organize_run() -> None:
     )
 
 
+# Memory lifecycle: sweep probationary proposals every 30 min, promoting
+# those that earned it and archiving those that decayed.
+#
+# Why this exists as a JOB and not only as the extractor's post-pass call:
+# run_lifecycle_pass() was reachable from exactly one place —
+# memory_extractor, after a SUCCESSFUL extraction.  Every gate on
+# extraction was therefore also a gate on the queue draining
+# (MIN_HUMAN_TURNS unmet, an extraction exception, memory disabled on that
+# server).  Since memory_propose now writes to the probationary store, a
+# stalled sweep means proposals accumulate with nothing adjudicating them —
+# which is precisely the never-drains bug the redirect was meant to fix,
+# relocated rather than removed.
+#
+# The extractor call is deliberately KEPT: it is the responsive path, so a
+# proposal that gains its final corroboration during a turn promotes on
+# that turn instead of waiting up to 30 minutes.  This job is the floor,
+# not the mechanism.
+#
+# Cross-process safety comes from the loop, not from this job:
+# tick_system_jobs() only ever runs inside the scheduler's
+# ~/.ziya/scheduler.lock, so with 10+ Ziya servers sharing a home exactly
+# one sweeps.  That matters more here than for organize — ProposalsStore
+# documents that it provides no cross-process coordination, so two
+# concurrent sweeps could promote the same proposal twice.
+MEMORY_LIFECYCLE_INTERVAL_S = 30 * 60
+
+
+def _memory_lifecycle_gate() -> bool:
+    from app.config.env_registry import ziya_env
+    if not ziya_env("ZIYA_ENABLE_MEMORY"):
+        return False
+    try:
+        from app.storage.proposals import get_proposals_store
+        # Cheapest possible gate: the projection is already cached against
+        # the log's mtime, so an idle install pays a stat() and nothing else.
+        return len(get_proposals_store().list_open()) > 0
+    except Exception as e:
+        logger.debug(f"memory-lifecycle gate check failed: {e}")
+        return False
+
+
+async def _memory_lifecycle_run() -> None:
+    from app.memory.lifecycle import run_lifecycle_pass
+    counts = await run_lifecycle_pass()
+    logger.info(
+        f"⏰ system-job memory_lifecycle: "
+        f"scanned {counts.get('scanned', 0)}, "
+        f"promoted {counts.get('promoted', 0)}, "
+        f"archived {counts.get('archived', 0)}, "
+        f"noop {counts.get('noop', 0)}"
+    )
+
+
 def _ensure_registered() -> None:
     """Register built-in jobs once.  Lazy so import order can't break it."""
     global _registered
@@ -211,6 +264,12 @@ def _ensure_registered() -> None:
         interval_s=MEMORY_ORGANIZE_INTERVAL_S,
         gate=_memory_organize_gate,
         run=_memory_organize_run,
+    ))
+    register_system_job(SystemJob(
+        name="memory_lifecycle",
+        interval_s=MEMORY_LIFECYCLE_INTERVAL_S,
+        gate=_memory_lifecycle_gate,
+        run=_memory_lifecycle_run,
     ))
 
 
