@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import base64
 import logging
-import os
 from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -98,6 +97,22 @@ class RenderDiagramInput(BaseModel):
         default=None,
         description="Optional title shown above the diagram.",
     )
+    retain: Literal["auto", "turn", "pin"] = Field(
+        default="auto",
+        description=(
+            "How long the rendered image should stay visible to you. "
+            "'auto' (default) keeps it for a short window of tool "
+            "iterations, then replaces it with its text summary to save "
+            "context. 'turn' widens that window — use it when you are "
+            "iterating on a diagram and need to compare successive "
+            "attempts. 'pin' holds it as long as the byte budget allows; "
+            "use it only when the image is the reference you keep checking "
+            "against. Elision does not invalidate what you already saw: "
+            "conclusions you drew while the image was in view remain "
+            "valid. To keep a render permanently, use emit_artifact "
+            "instead — it freezes the PNG with the run."
+        ),
+    )
 
 
 class RenderDiagramTool(BaseMCPTool):
@@ -117,6 +132,16 @@ class RenderDiagramTool(BaseMCPTool):
         "Call this tool ONLY when:\n"
         "- You need to SEE the rendered result yourself to verify correctness\n"
         "- The user explicitly asks to export or capture a rendered diagram image"
+        "\n\n"
+        "Image lifetime: the returned image stays in your context for a "
+        "short window of tool iterations and is then replaced by its text "
+        "summary to bound context growth. This does NOT mean the "
+        "observation was unreliable — anything you concluded while the "
+        "image was in view was based on direct observation and stands. Do "
+        "not retract or re-examine an earlier visual finding just because "
+        "the image is no longer displayed; re-run this tool if you "
+        "genuinely need another look, or pass retain='turn'/'pin' up front "
+        "when you know you will need to compare renders."
     )
 
     InputSchema = RenderDiagramInput
@@ -132,6 +157,13 @@ class RenderDiagramTool(BaseMCPTool):
         width = kwargs.get("width")
         height = kwargs.get("height")
         title = kwargs.get("title")
+        # Retention is requested BEFORE the render so a slow or failing
+        # render still leaves the caller's intent recorded for the sweep
+        # that follows this iteration.
+        retain = kwargs.get("retain", "auto")
+        if retain and retain != "auto":
+            from app.utils.image_pin_context import request_image_retain
+            request_image_retain(retain)
 
         if not diagram_type:
             return _error("'type' is required (e.g. mermaid, graphviz, vega-lite)")
@@ -283,7 +315,11 @@ class RenderDiagramTool(BaseMCPTool):
             latex_renderer.render, diagram_type, definition,
             "svg" if fmt == "svg" else "png",
         )
-        advisory = self._latex_advisory(result)
+        # The advisory is deliberately NOT computed here: every failure path
+        # below returns early, and _latex_advisory describes a render that
+        # SUCCEEDED but may not match the intended structure.  Attaching ring
+        # notes to a "TeX not installed" error would be noise.  It is built
+        # once on the success path, where it is actually read.
 
         if not result.ok:
             # A missing TeX package is not a malformed diagram, so report what
@@ -371,6 +407,86 @@ class RenderDiagramTool(BaseMCPTool):
             "\n\nRing-structure notes (the diagram compiled, but verify it "
             "matches the structure you intended):\n" + "\n".join(lines)
         )
+
+
+class RecallImageInput(BaseModel):
+    """Input schema for recall_image."""
+
+    handle: str = Field(
+        ...,
+        description=(
+            "The handle from an elided image's placeholder text, e.g. "
+            "'img-3f9a1c04'."
+        ),
+    )
+
+
+class RecallImageTool(BaseMCPTool):
+    """Bring a previously-elided image back into view."""
+
+    name: str = "recall_image"
+    description: str = (
+        "[DIRECT] Bring an image you saw earlier back into view. When an "
+        "image is dropped from your context to save space, its placeholder "
+        "text carries a handle like 'img-3f9a1c04'; pass that handle here "
+        "to see the ORIGINAL pixels again.\n\n"
+        "This returns the exact bytes that were rendered before — not a "
+        "re-render — so it can never disagree with what you saw the first "
+        "time. Use it when you need to re-examine detail in a prior render, "
+        "or compare an earlier attempt against a current one.\n\n"
+        "You do NOT need this merely to trust an earlier conclusion: a "
+        "finding you made while an image was in view was based on direct "
+        "observation and remains valid whether or not the pixels are still "
+        "displayed. Recall when you need NEW detail, not reassurance."
+    )
+
+    InputSchema = RecallImageInput
+
+    async def execute(self, **kwargs) -> Any:
+        kwargs.pop("_workspace_path", None)
+        handle = (kwargs.get("handle") or "").strip()
+        if not handle:
+            return _error("'handle' is required (e.g. 'img-3f9a1c04')")
+
+        from app.utils import image_recall
+
+        scope = None
+        try:
+            from app.context import get_conversation_id_or_none
+            scope = get_conversation_id_or_none()
+        except Exception:  # noqa: BLE001 — scope is a guard, not a requirement
+            pass
+
+        content = image_recall.retrieve(handle, scope=scope)
+        if content is None:
+            # Expiry is a normal outcome, so say what it does and does not
+            # imply.  Without this the model can read a miss as evidence
+            # that its earlier observation was unfounded — the exact failure
+            # the recall mechanism exists to prevent.
+            return _error(
+                f"No retained image for handle {handle!r}. It may have "
+                f"expired or been evicted to free memory. This does NOT "
+                f"invalidate anything you concluded while that image was in "
+                f"view — those observations stand. If you need to see it "
+                f"again, re-run render_diagram with the same definition."
+            )
+
+        logger.info("🖼️ recall_image: served %s", handle)
+        label = image_recall.describe(handle) or ""
+        note = (
+            f"Recalled image {handle} — the original pixels, not a re-render."
+            + (f" Originally described as: {label}" if label else "")
+        )
+        # Re-served images are the newest thing in context, so the normal
+        # retention window applies to them from here; no pin is implied.
+        return {
+            "_has_image_content": True,
+            "content": [
+                *[b for b in content
+                  if isinstance(b, dict) and b.get("type") == "image"],
+                {"type": "text", "text": note},
+            ],
+        }
 
 
 def _error(msg: str) -> dict:
