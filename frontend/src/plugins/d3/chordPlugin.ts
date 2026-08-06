@@ -56,20 +56,106 @@ const DEFAULT_PALETTE = [
   '#edc948', '#b07aa1', '#ff9da7', '#9c755f', '#bab0ac',
 ];
 
+/**
+ * Recover a structured chord spec from a `definition`-as-JSON-string wrapper.
+ *
+ * `render_diagram` (app/mcp/tools/diagram_render.py) always ships the real
+ * chord JSON as a STRING under `spec.definition`, with only `type` on the
+ * outer wrapper. The plugin's `isChordSpec`/`render` read `matrix`/`nodes`/
+ * `links` off the top-level object, so a wrapped spec never matches any
+ * plugin -> "No plugin found for spec: chord" -> retry-to-timeout, zero
+ * output (Issue 23; same contract-mismatch class as joint#2 / network#11 /
+ * music#17).
+ *
+ * This lifts the structured fields (matrix | nodes+links, plus optional
+ * names/colors/directed/style/width/height) from the parsed definition onto
+ * a shallow copy so downstream code sees the arrays it expects. If the spec
+ * is already structured, or `definition` is absent / non-JSON / carries no
+ * chord content, the spec is returned unchanged (guarded — never hijacks a
+ * non-chord spec).
+ *
+ * Exported for regression testing.
+ */
+export function resolveChordSpec(spec: any): any {
+  if (typeof spec !== 'object' || spec === null) return spec;
+
+  // Already structured (matrix form OR links form)?
+  const hasMatrix = Array.isArray(spec.matrix) && spec.matrix.length > 0
+    && Array.isArray(spec.matrix[0]);
+  const hasNodes = Array.isArray(spec.nodes) || Array.isArray(spec.data?.nodes);
+  const hasLinks = Array.isArray(spec.links) || Array.isArray(spec.data?.links);
+  if (hasMatrix || (hasNodes && hasLinks)) return spec;
+
+  // Only attempt recovery from a JSON-object `definition` string.
+  if (typeof spec.definition !== 'string' || spec.definition.trim() === '') return spec;
+  if (spec.definition.trimStart()[0] !== '{') return spec;
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(spec.definition);
+  } catch (_e) {
+    return spec;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return spec;
+
+  const pMatrix = Array.isArray(parsed.matrix) && parsed.matrix.length > 0
+    && Array.isArray(parsed.matrix[0]);
+  const pNodes = Array.isArray(parsed.nodes) || Array.isArray(parsed.data?.nodes);
+  const pLinks = Array.isArray(parsed.links) || Array.isArray(parsed.data?.links);
+  // Requires genuine chord content: a matrix, or nodes (+links, defaulted below).
+  if (!pMatrix && !pNodes) return spec;
+
+  const resolved: any = { ...spec };
+  if (pMatrix) {
+    resolved.matrix = parsed.matrix;
+    if (parsed.names !== undefined) resolved.names = parsed.names;
+    if (parsed.colors !== undefined) resolved.colors = parsed.colors;
+  } else {
+    resolved.nodes = parsed.nodes || parsed.data?.nodes;
+    resolved.links = parsed.links || parsed.data?.links
+      || (Array.isArray(parsed.edges) ? parsed.edges : []);
+  }
+  if (parsed.directed !== undefined) resolved.directed = parsed.directed;
+  if (parsed.width !== undefined) resolved.width = parsed.width;
+  if (parsed.height !== undefined) resolved.height = parsed.height;
+  if (parsed.style !== undefined) resolved.style = parsed.style;
+  return resolved;
+}
+
+/**
+ * Coerce an arbitrary link `value` (or matrix cell) to a finite, non-negative
+ * number suitable for d3.chord().
+ *
+ * d3.chord() computes arc angles from a running sum of the matrix; a single
+ * NaN (from a string like `"not-a-number"` or a value d3 can't add), Infinity,
+ * or a negative flow poisons that sum and every downstream arc/ribbon path
+ * becomes `MNaN,NaN` -> the entire diagram silently vanishes (Issue 10 matrix
+ * form). This maps NaN/Infinity/-Infinity/negative -> 0 and keeps every finite
+ * non-negative magnitude (including huge 1e15 and tiny 1e-300, which d3 handles
+ * proportionally). `null`/`undefined` fall back to the caller's default.
+ *
+ * Exported for regression testing.
+ */
+export function coerceFlowValue(raw: any, fallback: number = 1): number {
+  const v = Number(raw ?? fallback);
+  return Number.isFinite(v) && v >= 0 ? v : 0;
+}
+
 function isChordSpec(spec: any): boolean {
-  if (typeof spec !== 'object' || spec === null) return false;
-  const type = spec.type;
+  const resolved = resolveChordSpec(spec);
+  if (typeof resolved !== 'object' || resolved === null) return false;
+  const type = resolved.type;
   if (type !== 'chord' && type !== 'chord-directed') return false;
 
   // Matrix form
-  if (Array.isArray(spec.matrix) && spec.matrix.length > 0
-      && Array.isArray(spec.matrix[0])) {
+  if (Array.isArray(resolved.matrix) && resolved.matrix.length > 0
+      && Array.isArray(resolved.matrix[0])) {
     return true;
   }
 
   // Links form (also accepts data.nodes / data.links)
-  const nodes = spec.nodes || spec.data?.nodes;
-  const links = spec.links || spec.data?.links;
+  const nodes = resolved.nodes || resolved.data?.nodes;
+  const links = resolved.links || resolved.data?.links;
   return Array.isArray(nodes) && Array.isArray(links) && nodes.length > 0;
 }
 
@@ -87,9 +173,15 @@ function buildMatrix(nodes: ChordNode[], links: ChordLink[]): number[][] {
     const s = idx.get(link.source);
     const t = idx.get(link.target);
     if (s === undefined || t === undefined) continue;
-    matrix[s][t] += Number(link.value ?? 1);
+    matrix[s][t] += coerceFlowValue(link.value, 1);
   }
   return matrix;
+}
+
+/** Coerce every cell of a matrix-form input to a finite non-negative number. */
+function sanitizeMatrix(matrix: any[][]): number[][] {
+  return matrix.map(row =>
+    Array.isArray(row) ? row.map(cell => coerceFlowValue(cell, 0)) : []);
 }
 
 export const chordPlugin: D3RenderPlugin = {
@@ -105,7 +197,9 @@ export const chordPlugin: D3RenderPlugin = {
 
   canHandle: isChordSpec,
 
-  render: (container: HTMLElement, d3: any, spec: any, isDarkMode: boolean): (() => void) => {
+  render: (container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boolean): (() => void) => {
+    // Recover a structured spec from a definition-as-JSON-string wrapper.
+    const spec = resolveChordSpec(rawSpec);
     const style: ChordStyle = spec.style || {};
     const width = spec.width || 600;
     const height = spec.height || 600;
@@ -123,7 +217,7 @@ export const chordPlugin: D3RenderPlugin = {
     let colors: string[];
 
     if (Array.isArray(spec.matrix)) {
-      matrix = spec.matrix;
+      matrix = sanitizeMatrix(spec.matrix);
       const n = matrix.length;
       names = Array.isArray(spec.names) && spec.names.length === n
         ? spec.names.map((s: any) => String(s))

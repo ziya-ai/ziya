@@ -6,7 +6,7 @@
  * See utils/d3Plugins/musicPlugin.ts for the shared rendering core.
  */
 import { D3RenderPlugin } from '../../types/d3';
-import { isMusicSpec, renderMusicSpec, type MusicSpec } from '../../utils/d3Plugins/musicPlugin';
+import { isMusicSpec, resolveMusicSpec, renderMusicSpec, type MusicSpec } from '../../utils/d3Plugins/musicPlugin';
 import { escapeXml } from '../../utils/d3Plugins/packetPlugin';
 
 function renderError(container: HTMLElement, message: string, rawSpec: any, isDarkMode: boolean): void {
@@ -47,13 +47,20 @@ function renderError(container: HTMLElement, message: string, rawSpec: any, isDa
 }
 
 async function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boolean): Promise<void> {
-  let spec: MusicSpec;
-  if (typeof rawSpec.definition === 'string') {
-    try { spec = JSON.parse(rawSpec.definition); }
+  // resolveMusicSpec recovers the music spec from the `render_diagram`
+  // wrapper ({type:'music', definition:'<json>'}) -- the definition body
+  // carries no `type`, so the spec must be lifted out and stamped before the
+  // isMusicSpec gate below accepts it. A structured spec passes through
+  // unchanged. Report malformed JSON explicitly rather than falling through
+  // to a misleading "requires a notes array" error.
+  if (typeof rawSpec?.definition === 'string'
+      && rawSpec.definition.trim() !== ''
+      && rawSpec.definition.trimStart()[0] === '{'
+      && !isMusicSpec(rawSpec)) {
+    try { JSON.parse(rawSpec.definition); }
     catch { renderError(container, 'Invalid JSON in definition', rawSpec, isDarkMode); return; }
-  } else {
-    spec = rawSpec as MusicSpec;
   }
+  const spec: MusicSpec = resolveMusicSpec(rawSpec) as MusicSpec;
 
   // Reuse isMusicSpec rather than re-checking `notes` here: a grand staff has
   // no top-level `notes` (they live in staves[].notes), so a local check
@@ -91,18 +98,17 @@ export const musicPlugin: D3RenderPlugin = {
     },
   },
   canHandle: (spec: any): boolean => {
-    if (isMusicSpec(spec)) return true;
-    if (typeof spec?.definition === 'string') {
-      try { return isMusicSpec(JSON.parse(spec.definition)); }
-      catch { return false; }
-    }
-    return false;
+    // Recover the music spec from the {type,definition} wrapper first: the
+    // definition body carries no `type`, so a bare isMusicSpec(JSON.parse(...))
+    // fails the type gate and the plugin is never selected -> 30s timeout.
+    // resolveMusicSpec lifts the parsed body and stamps type:'music' ONLY when
+    // it actually carries music content, so non-music specs are not hijacked.
+    return isMusicSpec(resolveMusicSpec(spec));
   },
   isDefinitionComplete: (definition: string): boolean => {
-    try {
-      const parsed = JSON.parse(definition);
-      return isMusicSpec(parsed);
-    } catch { return false; }
+    // Mirror canHandle: the definition body carries no `type`, so stamp it via
+    // resolveMusicSpec before the isMusicSpec gate.
+    return isMusicSpec(resolveMusicSpec({ type: 'music', definition }));
   },
   render,
 };

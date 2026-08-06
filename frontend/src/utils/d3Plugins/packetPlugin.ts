@@ -264,11 +264,97 @@ export function computeDimensions(spec: PacketSpec): { width: number; height: nu
   return { width, height, layout: L };
 }
 
+// ── Bracket sanitization ────────────────────────────────────────────────────
+
+/**
+ * Maximum bracket nesting depth the renderer will reserve gutter space for.
+ * Bracket depth is auto-assigned so that mutually-overlapping ranges get
+ * distinct depths; N brackets that all share the SAME range therefore get N
+ * DISTINCT depths (0..N-1). The left/right gutter width grows linearly with
+ * max depth (`depth * BRACKET_W`), so an adversarial spec with 20+ overlapping
+ * identical-range brackets balloons the gutter by hundreds of px, shoving the
+ * packet grid to the far side of the canvas and stranding the bracket cluster
+ * in a disjoint blob (the Issue-24 "layout explosion"). Capping the depth at a
+ * value far beyond any real protocol annotation (deeper nesting than this is
+ * visually indistinguishable anyway) bounds the gutter. No-op for any spec
+ * whose real nesting is shallower than the cap.
+ */
+export const PACKET_MAX_BRACKET_DEPTH = 6;
+
+/**
+ * Maximum section-label width (px) the left-bracket gutter will reserve.
+ * Left brackets are placed relative to the widest section label
+ * (`bx = gridX - 16 - maxLabelW - offset`); an unbounded 300+ char label
+ * therefore pushes them arbitrarily far left, off the content box. Capping the
+ * contribution keeps the gutter bounded while still giving normal labels room.
+ */
+export const PACKET_MAX_LABEL_GUTTER_W = 320;
+
+/**
+ * Coerce a bracket's row indices, depth and side into values safe to feed the
+ * layout/geometry math, clamped to a section that has `rowCount` rows. Pure and
+ * DOM-free so it is unit-testable in isolation.
+ *
+ * A bracket's vertical extent is `secY + start_row*ROW_H` .. `secY +
+ * (end_row+1)*ROW_H`. Unvalidated indices (`start_row:-5`/`end_row:999`,
+ * `9999`/`10005`), inverted ranges (`start_row:2 > end_row:0`), a non-numeric
+ * or negative `depth` ("3"/-7), and an invalid `side` ("top") all produce
+ * bracket paths and gutter reservations far outside the diagram bounds.
+ *
+ * Rules (general, spec-agnostic — a no-op for every well-formed bracket):
+ *   - `start_row`/`end_row`: coerced to integers, clamped to [0, rowCount-1]
+ *     (or [0,0] when rowCount<=0, e.g. a section with no rows), then reordered
+ *     so start <= end (an inverted range is silently corrected, not dropped).
+ *   - `depth` (when present): non-finite/non-number → dropped (auto-assigned
+ *     later); negative → 0; otherwise floored to an integer and capped at
+ *     PACKET_MAX_BRACKET_DEPTH.
+ *   - `side`: anything other than 'left'/'right' → 'right' (the documented
+ *     default).
+ *   - `label`: coerced to a string (a non-string label would crash `.length`).
+ */
+export function sanitizeBracket(br: any, rowCount: number): PacketBracket {
+  const maxRow = rowCount > 0 ? rowCount - 1 : 0;
+  const clampRow = (v: any): number => {
+    const n = Math.floor(Number(v));
+    if (!Number.isFinite(n)) return 0;
+    return Math.max(0, Math.min(maxRow, n));
+  };
+  let s = clampRow(br?.start_row);
+  let e = clampRow(br?.end_row);
+  if (s > e) { const t = s; s = e; e = t; }
+
+  const out: PacketBracket = {
+    start_row: s,
+    end_row: e,
+    label: typeof br?.label === 'string' ? br.label : String(br?.label ?? ''),
+    side: br?.side === 'left' || br?.side === 'right' ? br.side : 'right',
+  };
+
+  if (br?.depth !== undefined && br?.depth !== null) {
+    const d = Math.floor(Number(br.depth));
+    if (Number.isFinite(d)) {
+      out.depth = Math.max(0, Math.min(PACKET_MAX_BRACKET_DEPTH, d));
+    }
+  }
+  return out;
+}
+
+/**
+ * Sanitize every bracket in a section against that section's row count.
+ * Convenience wrapper over `sanitizeBracket`.
+ */
+export function sanitizeBrackets(brackets: any[] | undefined, rowCount: number): PacketBracket[] {
+  if (!Array.isArray(brackets)) return [];
+  return brackets.map(b => sanitizeBracket(b, rowCount));
+}
+
 // ── Bracket depth auto-computation ──────────────────────────────────────────
 
 /**
  * Assign nesting depths to brackets on one side so overlapping ranges
  * don't collide.  Innermost brackets get depth 0 (closest to grid).
+ * Auto-assigned depths are capped at PACKET_MAX_BRACKET_DEPTH so a pile of
+ * overlapping identical-range brackets cannot balloon the gutter without bound.
  */
 export function assignBracketDepths(brackets: PacketBracket[], side: 'left' | 'right'): PacketBracket[] {
   const sideBrackets = brackets
@@ -285,7 +371,7 @@ export function assignBracketDepths(brackets: PacketBracket[], side: 'left' | 'r
   for (const br of sideBrackets) {
     // Find the minimum depth that doesn't overlap any already-assigned bracket
     let depth = 0;
-    while (true) {
+    while (depth < PACKET_MAX_BRACKET_DEPTH) {
       const conflict = assigned.some( // eslint-disable-line no-loop-func -- synchronous callback, depth is correct per-iteration
         a => a.depth === depth &&
           a.start_row <= br.end_row &&
@@ -294,7 +380,11 @@ export function assignBracketDepths(brackets: PacketBracket[], side: 'left' | 'r
       if (!conflict) break;
       depth++;
     }
-    assigned.push({ ...br, depth, side });
+    // Cap the depth: beyond PACKET_MAX_BRACKET_DEPTH, additional overlapping
+    // brackets share the deepest lane rather than pushing the gutter (and the
+    // grid) ever further out. Label-overlap shifting still keeps their labels
+    // legible; the point is that the GUTTER width stays bounded.
+    assigned.push({ ...br, depth: Math.min(depth, PACKET_MAX_BRACKET_DEPTH), side });
   }
 
   return assigned;
@@ -350,8 +440,16 @@ export function computeBracketGutters(
   }
   const flipLeftToRight = hasLeft && !hasRight;
 
-  const maxLabelW = sections.reduce(
-    (w, s) => Math.max(w, estimateSectionLabelWidth(s.label ?? '')), 0);
+  // Bound the section-label contribution to the left-bracket gutter. Left
+  // brackets are placed at `gridX - 16 - maxLabelW - offset`, so an unbounded
+  // 300+ char label would push them arbitrarily far left, stranding them in a
+  // disjoint cluster far from the grid (the Issue-24 split). The cap keeps the
+  // gutter — and the returned maxLabelW the renderer uses for placement —
+  // bounded; a no-op for normal-length labels.
+  const maxLabelW = Math.min(
+    PACKET_MAX_LABEL_GUTTER_W,
+    sections.reduce(
+      (w, s) => Math.max(w, estimateSectionLabelWidth(s.label ?? '')), 0));
 
   let maxLeftDepth = 0;
   let maxRightDepth = 0;
