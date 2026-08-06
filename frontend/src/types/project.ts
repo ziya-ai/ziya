@@ -24,6 +24,10 @@ export interface ProjectSettings {
   defaultSkillIds: string[];
   writePolicy?: WritePolicy;
   contextManagement?: ContextManagementSettings;
+  // Which template seeded these settings. Provenance only — templates are
+  // apply-once, so this is never resolved when reading settings. Use it to
+  // explain WHY a default skill is on, not to compute what is on.
+  templateId?: string;
   // Saved project-wide model pin (alias string).  The outermost model
   // scope: conversations/folders with no more-specific pin inherit it.
   // Absent = follow the server default.
@@ -47,6 +51,11 @@ export interface Project {
 export interface ProjectCreate {
   path?: string;
   name?: string;
+  /**
+   * Explicit template choice.  Omit to let the server autodetect from the
+   * directory's build markers, then fall back to the user's default.
+   */
+  templateId?: string;
 }
 
 export interface ProjectUpdate {

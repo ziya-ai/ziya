@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Modal, Button, Input, InputNumber, Tag, Space, message, Divider, Alert, Collapse, Empty, Popconfirm, Select, Tooltip, List, Radio } from 'antd';
 import {
     DeleteOutlined, SettingOutlined, MergeCellsOutlined,
@@ -10,6 +10,9 @@ import { useProject } from '../context/ProjectContext';
 import { useTheme } from '../context/ThemeContext';
 import { useActiveChat } from '../context/ActiveChatContext';
 import { WritePolicy, ContextManagementSettings } from '../types/project';
+import type { DetectTemplateResponse, ProjectTemplate } from '../types/projectTemplate';
+import * as templateApi from '../api/projectTemplateApi';
+import { GENERAL_TEMPLATE_ID } from '../api/projectTemplateApi';
 import { DEFAULT_AUTO_ADD_TOKEN_LIMIT } from '../utils/autoAddTokenLimit';
 
 const { Panel } = Collapse;
@@ -158,6 +161,36 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
     const [newProjectName, setNewProjectName] = useState('');
     const [newProjectPath, setNewProjectPath] = useState('');
     const [isCreating, setIsCreating] = useState(false);
+    // Template state for the create form.  `templateOverride` is null while
+    // the user is happy with autodetection — the zero-cognitive-load path —
+    // and only becomes a value once they explicitly pick something.
+    const [templates, setTemplates] = useState<ProjectTemplate[]>([]);
+    const [defaultTemplateId, setDefaultTemplateId] = useState<string | null>(null);
+    const [detection, setDetection] = useState<DetectTemplateResponse | null>(null);
+    const [templateOverride, setTemplateOverride] = useState<string | null>(null);
+    const [showTemplatePicker, setShowTemplatePicker] = useState(false);
+    // Snapshot-a-project-as-template state, used only in the settings
+    // sub-view.  Authoring is a snapshot rather than a template editor:
+    // configure one project the way you want it, then name it.
+    const [showSnapshotForm, setShowSnapshotForm] = useState(false);
+    const [snapshotName, setSnapshotName] = useState('');
+    const [snapshotDescription, setSnapshotDescription] = useState('');
+    const [snapshotMarkers, setSnapshotMarkers] = useState<string[]>([]);
+    const [isSnapshotting, setIsSnapshotting] = useState(false);
+    // Template-manager sub-view.  Deliberately separate state from the
+    // create form's `templates`/`defaultTemplateId`: that pair is loaded
+    // only while the create form is open and is a snapshot for rendering
+    // one line, whereas this view mutates the list and must re-read after
+    // every write.  Sharing them would make a delete here silently
+    // invalidate the create form's copy.
+    const [showTemplateManager, setShowTemplateManager] = useState(false);
+    const [managedTemplates, setManagedTemplates] = useState<ProjectTemplate[]>([]);
+    const [managedDefaultId, setManagedDefaultId] = useState<string | null>(null);
+    const [isTemplateBusy, setIsTemplateBusy] = useState(false);
+    // Distinguishes "no templates yet" from "the list has not loaded".
+    // Without it an initial render shows the empty state for a moment and
+    // then replaces it, which reads as a flicker rather than a load.
+    const [templatesLoaded, setTemplatesLoaded] = useState(false);
     const [showBrowseModal, setShowBrowseModal] = useState(false);
     const [browseEntries, setBrowseEntries] = useState<BrowseEntry[]>([]);
     const [browsePath, setBrowsePath] = useState('~');
@@ -165,6 +198,143 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
     useEffect(() => {
         if (visible) refreshProjects();
     }, [visible]);
+
+    // Load the template list whenever the modal is open.  Originally
+    // deferred to the create form, but the list view's default-template
+    // hint needs the names too — and resolving an id to a name is the
+    // difference between "default: Software Development" and a raw slug.
+    // One small GET per modal open is a fair price for that.
+    useEffect(() => {
+        if (!visible) return;
+        let cancelled = false;
+        templateApi.listTemplates()
+            .then(r => {
+                if (cancelled) return;
+                setTemplates(r.templates);
+                setDefaultTemplateId(r.defaultTemplateId);
+            })
+            .catch(() => { /* non-fatal: the line degrades to "no template" */ });
+        return () => { cancelled = true; };
+    }, [visible]);
+
+    // Re-detect as the path changes, debounced.  Detection is a directory
+    // stat on the server, so a keystroke-rate call would be wasteful and a
+    // half-typed path would flap the displayed answer.
+    useEffect(() => {
+        if (!showCreateForm) return;
+        const path = newProjectPath.trim();
+        if (!path) { setDetection(null); return; }
+        let cancelled = false;
+        const t = setTimeout(() => {
+            templateApi.detectTemplateSafe(path).then(d => {
+                if (!cancelled) setDetection(d);
+            });
+        }, 300);
+        return () => { cancelled = true; clearTimeout(t); };
+    }, [newProjectPath, showCreateForm]);
+
+    /**
+     * Re-read the template list from the server.
+     *
+     * Both write endpoints return the full updated list, so callers use
+     * their response directly; this exists for the initial load and for
+     * recovering after a failed write, where local state may no longer
+     * match the server.
+     */
+    const reloadTemplates = useCallback(async () => {
+        try {
+            const r = await templateApi.listTemplates();
+            setManagedTemplates(r.templates);
+            setManagedDefaultId(r.defaultTemplateId);
+        } catch (error: any) {
+            message.error(error?.message || 'Failed to load templates');
+        } finally {
+            setTemplatesLoaded(true);
+        }
+    }, []);
+
+    useEffect(() => {
+        if (!showTemplateManager) return;
+        setTemplatesLoaded(false);
+        reloadTemplates();
+    }, [showTemplateManager, reloadTemplates]);
+
+    /**
+     * Set or clear the default template.
+     *
+     * Clicking the current default clears it rather than being a no-op —
+     * otherwise there is no way to get back to "detection only" once a
+     * default is set, since the API's clear is an explicit null the UI
+     * would never send.
+     */
+    const handleSetDefaultTemplate = async (templateId: string) => {
+        const next = managedDefaultId === templateId ? null : templateId;
+        setIsTemplateBusy(true);
+        try {
+            const r = await templateApi.setDefaultTemplate(next);
+            setManagedTemplates(r.templates);
+            setManagedDefaultId(r.defaultTemplateId);
+            message.success(next ? 'Default template set' : 'Default template cleared');
+        } catch (error: any) {
+            message.error(error?.message || 'Failed to set default');
+            reloadTemplates();
+        } finally {
+            setIsTemplateBusy(false);
+        }
+    };
+
+    /**
+     * Delete a user template.
+     *
+     * Safe for projects created from it — apply-once means they already own
+     * their settings — which is why this needs no "N projects use this"
+     * warning.  The server also drops the default preference if it pointed
+     * here, so the response is re-read rather than patched locally.
+     */
+    const handleDeleteTemplate = async (templateId: string) => {
+        setIsTemplateBusy(true);
+        try {
+            await templateApi.deleteTemplate(templateId);
+            await reloadTemplates();
+            message.success('Template deleted');
+        } catch (error: any) {
+            // 403 when the id names a built-in; the button is not offered
+            // for those, so this is a guard against a stale list rather
+            // than an expected path.
+            message.error(error?.message || 'Failed to delete template');
+        } finally {
+            setIsTemplateBusy(false);
+        }
+    };
+
+    /**
+     * Leave the manager, syncing the create form's copy of the list.
+     *
+     * The two copies are deliberately separate (see the state comment), so
+     * a default changed or a template deleted in here would otherwise leave
+     * the list view's hint and the create dialog's picker showing values
+     * that no longer exist.
+     */
+    const closeTemplateManager = () => {
+        setShowTemplateManager(false);
+        setTemplates(managedTemplates);
+        setDefaultTemplateId(managedDefaultId);
+        // An override naming a now-deleted template would silently 404 on
+        // create; drop it and fall back to detection.
+        if (templateOverride
+            && !managedTemplates.some(t => t.id === templateOverride)) {
+            setTemplateOverride(null);
+        }
+    };
+
+    // What will actually be applied: explicit choice > detection > default.
+    // Mirrors resolve_template_id server-side; shown so the user can see the
+    // decision before committing to it.
+    const effectiveTemplateId = templateOverride
+        ?? (detection?.detected ? detection.templateId : null)
+        ?? defaultTemplateId
+        ?? GENERAL_TEMPLATE_ID;
+    const effectiveTemplate = templates.find(t => t.id === effectiveTemplateId);
 
     // Sync settingsId with initialSettingsId prop when modal opens
     useEffect(() => {
@@ -272,7 +442,14 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
                 // We already have createProject from useProject hook — use the API directly
                 return { createProject: async (path: string, projectName?: string) => {
                     const { api } = await import('../api/index');
-                    return api.post<any>('/projects', { path: path || undefined, name: projectName });
+                    // Only send templateId when the user overrode the
+                    // detection.  Omitting it lets the server detect, which
+                    // is the intended default and keeps one implementation
+                    // of the precedence rule rather than two.
+                    return api.post<any>('/projects', {
+                        path: path || undefined, name: projectName,
+                        ...(templateOverride ? { templateId: templateOverride } : {}),
+                    });
                 }};
             });
 
@@ -282,6 +459,9 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
             message.success(`Project "${name}" created`);
             setNewProjectName('');
             setNewProjectPath('');
+            setTemplateOverride(null);
+            setDetection(null);
+            setShowTemplatePicker(false);
             setShowCreateForm(false);
 
             // Refresh project list and switch to the new project
@@ -324,6 +504,46 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
             setNewProjectPath(path);
         }
         setShowBrowseModal(false);
+    };
+
+    /**
+     * Snapshot this project's CURRENTLY SAVED settings as a template.
+     *
+     * Deliberately reads from the server rather than from local form state:
+     * the endpoint snapshots the persisted record, so offering it while the
+     * write-policy fields hold unsaved edits would silently capture the old
+     * values.  Save first, then snapshot — enforced by disabling the button
+     * rather than explained in prose the user has to read.
+     */
+    const handleSaveAsTemplate = async () => {
+        if (!settingsId) return;
+        const name = snapshotName.trim();
+        if (!templateApi.isUsableTemplateName(name)) {
+            message.error('Template name must contain a letter or digit');
+            return;
+        }
+        setIsSnapshotting(true);
+        try {
+            const tpl = await templateApi.saveProjectAsTemplate(settingsId, {
+                id: templateApi.slugifyTemplateId(name),
+                name,
+                description: snapshotDescription.trim(),
+                detectMarkers: snapshotMarkers,
+            });
+            message.success(`Template "${tpl.name}" saved`);
+            setShowSnapshotForm(false);
+            setSnapshotName('');
+            setSnapshotDescription('');
+            setSnapshotMarkers([]);
+        } catch (error: any) {
+            // 400 with a useful detail when the id shadows a built-in or is
+            // empty; surface it rather than a generic failure.  Note a
+            // duplicate USER id is not an error server-side — save_user_template
+            // replaces it, so re-saving under the same name updates in place.
+            message.error(error?.message || 'Failed to save template');
+        } finally {
+            setIsSnapshotting(false);
+        }
     };
 
     const handleSaveWritePolicy = async () => {
@@ -570,6 +790,94 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
                             isDarkMode={isDarkMode}
                         />
                     </div>
+
+                    <Divider style={{ margin: '8px 0' }} />
+
+                    {/* Reuse-as-template.  Placed last and collapsed by
+                        default: it is an occasional authoring action, not
+                        part of configuring the project in front of you. */}
+                    {!showSnapshotForm ? (
+                        <div>
+                            <strong>Reuse These Settings</strong>
+                            <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+                                Save this project's <em>saved</em> settings as a template for
+                                new projects. Save your changes above first — a snapshot reads
+                                the stored record, not the fields on this screen.
+                            </div>
+                            <Button size="small" icon={<PlusOutlined />}
+                                onClick={() => setShowSnapshotForm(true)}>
+                                Save as template…
+                            </Button>
+                        </div>
+                    ) : (
+                        <div style={{
+                            padding: 12, borderRadius: 6,
+                            border: `1px solid ${isDarkMode ? '#177ddc' : '#91d5ff'}`,
+                            backgroundColor: isDarkMode ? '#111d2c' : '#f0f8ff',
+                        }}>
+                            <div style={{ marginBottom: 8 }}>
+                                <strong>Save as Template</strong>
+                            </div>
+                            <div style={{ marginBottom: 8 }}>
+                                <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>
+                                    Template Name *
+                                </div>
+                                <Input size="small" autoFocus
+                                    placeholder="e.g. Deno Service, Research Notes"
+                                    value={snapshotName}
+                                    onChange={e => setSnapshotName(e.target.value)}
+                                    onPressEnter={handleSaveAsTemplate}
+                                />
+                                {snapshotName.trim() && (
+                                    <div style={{ fontSize: 11, color: '#888', marginTop: 3 }}>
+                                        id: <code>{templateApi.slugifyTemplateId(snapshotName)}</code>
+                                    </div>
+                                )}
+                            </div>
+                            <div style={{ marginBottom: 8 }}>
+                                <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>
+                                    Description
+                                </div>
+                                <Input size="small" placeholder="Optional"
+                                    value={snapshotDescription}
+                                    onChange={e => setSnapshotDescription(e.target.value)}
+                                />
+                            </div>
+                            <div style={{ marginBottom: 10 }}>
+                                <div style={{ fontSize: 12, color: '#888', marginBottom: 4 }}>
+                                    Detection Markers
+                                </div>
+                                <div style={{ fontSize: 11, color: '#888', marginBottom: 6 }}>
+                                    Filenames that select this template automatically. More
+                                    markers outrank fewer, so a specific template can take
+                                    precedence over Software Development. Leave empty to only
+                                    ever choose it by hand.
+                                </div>
+                                <EditableTagList
+                                    items={snapshotMarkers}
+                                    onChange={setSnapshotMarkers}
+                                    color="blue"
+                                    placeholder="deno.json"
+                                    emptyText="Never auto-detected"
+                                    isDarkMode={isDarkMode}
+                                    allowMulti
+                                />
+                            </div>
+                            <Space>
+                                <Button size="small" type="primary" loading={isSnapshotting}
+                                    disabled={!templateApi.isUsableTemplateName(snapshotName)}
+                                    onClick={handleSaveAsTemplate}>
+                                    Save Template
+                                </Button>
+                                <Button size="small" onClick={() => {
+                                    setShowSnapshotForm(false);
+                                    setSnapshotName('');
+                                    setSnapshotDescription('');
+                                    setSnapshotMarkers([]);
+                                }}>Cancel</Button>
+                            </Space>
+                        </div>
+                    )}
                 </Space>
             </Modal>
         );
@@ -627,6 +935,143 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
         );
     }
 
+    // Template-manager sub-view.  A separate view rather than a section of
+    // the project list because it is not about any one project: it edits
+    // ~/.ziya/templates.json, which is user-global.
+    if (showTemplateManager) {
+        const builtIns = managedTemplates.filter(t => t.isBuiltIn);
+        const userTemplates = managedTemplates.filter(t => !t.isBuiltIn);
+
+        const renderTemplate = (tpl: ProjectTemplate) => {
+            const isDefault = managedDefaultId === tpl.id;
+            const skillCount = tpl.settings?.defaultSkillIds?.length ?? 0;
+            return (
+                <div key={tpl.id} style={{
+                    padding: '10px 12px', marginBottom: 8, borderRadius: 6,
+                    border: `1px solid ${isDefault
+                        ? (isDarkMode ? '#177ddc' : '#1890ff')
+                        : (isDarkMode ? '#303030' : '#e8e8e8')}`,
+                    backgroundColor: isDefault
+                        ? (isDarkMode ? '#111d2c' : '#e6f7ff')
+                        : (isDarkMode ? '#1f1f1f' : '#fafafa'),
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <strong style={{ fontSize: 13 }}>{tpl.name}</strong>
+                        {isDefault && <Tag color="blue" style={{ fontSize: 10 }}>Default</Tag>}
+                        {tpl.isBuiltIn && <Tag style={{ fontSize: 10 }}>Built-in</Tag>}
+                        <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+                            <Tooltip title={isDefault
+                                ? 'Clear the default — new projects fall back to detection only'
+                                : 'Use for new projects when nothing is detected'}>
+                                <Button size="small" type={isDefault ? 'primary' : 'default'}
+                                    loading={isTemplateBusy}
+                                    onClick={() => handleSetDefaultTemplate(tpl.id)}>
+                                    {isDefault ? 'Clear default' : 'Set default'}
+                                </Button>
+                            </Tooltip>
+                            {!tpl.isBuiltIn && (
+                                <Popconfirm
+                                    title="Delete this template?"
+                                    description="Projects created from it keep their settings."
+                                    onConfirm={() => handleDeleteTemplate(tpl.id)}
+                                    okText="Delete"
+                                    okButtonProps={{ danger: true }}
+                                >
+                                    <Tooltip title="Delete template">
+                                        <Button size="small" type="text" danger
+                                            icon={<DeleteOutlined />} />
+                                    </Tooltip>
+                                </Popconfirm>
+                            )}
+                        </div>
+                    </div>
+                    {tpl.description && (
+                        <div style={{ fontSize: 12, color: '#888', marginTop: 3 }}>
+                            {tpl.description}
+                        </div>
+                    )}
+                    <div style={{ fontSize: 11, color: '#888', marginTop: 5,
+                        display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+                        <span>
+                            {skillCount > 0
+                                ? `${skillCount} default skill${skillCount === 1 ? '' : 's'}`
+                                : 'no default skills'}
+                        </span>
+                        {tpl.settings?.writePolicy && <span>· write policy</span>}
+                        {tpl.settings?.contextManagement && <span>· context settings</span>}
+                        {tpl.settings?.taskScope && <span>· task scope</span>}
+                    </div>
+                    <div style={{ fontSize: 11, color: '#888', marginTop: 4 }}>
+                        {tpl.detectMarkers && tpl.detectMarkers.length > 0 ? (
+                            <>
+                                Detected from:{' '}
+                                {tpl.detectMarkers.map(m => (
+                                    <Tag key={m} style={{ fontSize: 10, marginRight: 3 }}>{m}</Tag>
+                                ))}
+                            </>
+                        ) : (
+                            <span style={{ fontStyle: 'italic' }}>Never auto-detected</span>
+                        )}
+                    </div>
+                </div>
+            );
+        };
+
+        return (
+            <Modal
+                title="Project Templates"
+                open={visible}
+                onCancel={closeTemplateManager}
+                width={620}
+                footer={[
+                    <Button key="back" onClick={closeTemplateManager}>
+                        Back
+                    </Button>,
+                ]}
+            >
+                <Space direction="vertical" style={{ width: '100%' }} size="middle">
+                    <Alert
+                        message="Templates preset a new project's settings"
+                        description={
+                            'Applied once, when a project is created — editing a template ' +
+                            'never changes existing projects. A template is chosen by your ' +
+                            'explicit pick, then by markers detected in the directory, then ' +
+                            'by the default below. Detection outranks the default, because a ' +
+                            'default says what to do when there is no evidence.'
+                        }
+                        type="info"
+                        showIcon
+                    />
+
+                    {!templatesLoaded ? (
+                        <div style={{ color: '#888', fontSize: 12 }}>Loading templates…</div>
+                    ) : (
+                        <>
+                            <div>
+                                <strong style={{ fontSize: 12 }}>Built-in</strong>
+                                <div style={{ marginTop: 6 }}>{builtIns.map(renderTemplate)}</div>
+                            </div>
+                            <div>
+                                <strong style={{ fontSize: 12 }}>Yours</strong>
+                                {userTemplates.length === 0 ? (
+                                    <div style={{ fontSize: 12, color: '#888', marginTop: 6 }}>
+                                        None yet. Open a project's settings and use
+                                        {' '}<em>Save as template…</em> to snapshot its
+                                        configuration as a reusable template.
+                                    </div>
+                                ) : (
+                                    <div style={{ marginTop: 6 }}>
+                                        {userTemplates.map(renderTemplate)}
+                                    </div>
+                                )}
+                            </div>
+                        </>
+                    )}
+                </Space>
+            </Modal>
+        );
+    }
+
     // Main project list view
     return (
         <Modal
@@ -634,7 +1079,33 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
             open={visible}
             onCancel={onClose}
             width={650}
-            footer={<Button onClick={onClose}>Close</Button>}
+            footer={
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {/* Entry point to the template manager.  In the FOOTER
+                        rather than at the end of the body: the body scrolls
+                        (one card per project), so a link below the last card
+                        is unreachable without scrolling past every project.
+                        With 30 projects that is ~2400px of scroll, which is
+                        how a shipped feature stays invisible. */}
+                    <a
+                        style={{
+                            fontSize: 12,
+                            color: isDarkMode ? '#177ddc' : '#1890ff',
+                            cursor: 'pointer',
+                        }}
+                        onClick={e => { e.preventDefault(); setShowTemplateManager(true); }}
+                    >
+                        Manage project templates
+                    </a>
+                    {defaultTemplateId && (
+                        <span style={{ fontSize: 11, color: '#888' }}>
+                            (default: {templates.find(t => t.id === defaultTemplateId)?.name
+                                ?? defaultTemplateId})
+                        </span>
+                    )}
+                    <Button style={{ marginLeft: 'auto' }} onClick={onClose}>Close</Button>
+                </div>
+            }
         >
             {projects.length === 0 ? (
                 <Empty description="No projects found" />
@@ -781,6 +1252,74 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
                             </Button>
                         </Input.Group>
                     </div>
+
+                    {/* Template line.  One subtle row, no required field: the
+                        common case is zero clicks.  The provenance ("detected
+                        from pyproject.toml") is shown because a silent choice
+                        that changes a project's default skills should be
+                        visible rather than magic. */}
+                    <div style={{
+                        display: 'flex', alignItems: 'center', gap: 6,
+                        fontSize: 11.5, marginBottom: 12,
+                        color: isDarkMode ? '#8b949e' : '#6b7280',
+                    }}>
+                        <span>Template:</span>
+                        <span style={{ color: isDarkMode ? '#7ee787' : '#15803d' }}>
+                            {effectiveTemplate?.name ?? 'General'}
+                        </span>
+                        <span style={{ opacity: 0.7 }}>
+                            ({templateOverride
+                                ? 'your choice'
+                                : templateApi.describeTemplateChoice(detection, defaultTemplateId)})
+                        </span>
+                        <a
+                            style={{
+                                marginLeft: 'auto',
+                                color: isDarkMode ? '#177ddc' : '#1890ff',
+                                cursor: 'pointer',
+                            }}
+                            onClick={e => {
+                                e.preventDefault();
+                                setShowTemplatePicker(v => !v);
+                            }}
+                        >
+                            {showTemplatePicker ? 'done' : 'change'}
+                        </a>
+                    </div>
+
+                    {showTemplatePicker && (
+                        <div style={{ marginBottom: 12 }}>
+                            <Select
+                                size="small"
+                                style={{ width: '100%' }}
+                                value={effectiveTemplateId}
+                                onChange={v => setTemplateOverride(v)}
+                                options={templates.map(t => ({
+                                    value: t.id,
+                                    label: t.name + (t.description ? ` — ${t.description}` : ''),
+                                }))}
+                            />
+                            {templateOverride && (
+                                <a
+                                    style={{
+                                        fontSize: 11,
+                                        color: isDarkMode ? '#177ddc' : '#1890ff',
+                                        cursor: 'pointer',
+                                    }}
+                                    onClick={e => { e.preventDefault(); setTemplateOverride(null); }}
+                                >
+                                    use autodetection instead
+                                </a>
+                            )}
+                            {effectiveTemplate?.settings?.defaultSkillIds?.length ? (
+                                <div style={{ fontSize: 11, opacity: 0.7, marginTop: 4 }}>
+                                    Enables {effectiveTemplate.settings.defaultSkillIds.length} default
+                                    {' '}skill{effectiveTemplate.settings.defaultSkillIds.length === 1 ? '' : 's'}
+                                    {' '}in new conversations.
+                                </div>
+                            ) : null}
+                        </div>
+                    )}
 
                     <Space>
                         <Button type="primary" icon={<PlusOutlined />} loading={isCreating}
