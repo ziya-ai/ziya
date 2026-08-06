@@ -339,6 +339,10 @@ def collect_global_chat_summaries(
                     branchedFrom=data.get("branchedFrom"),
                     branchedAtMessageIndex=data.get("branchedAtMessageIndex"),
                     branchedFromLabel=data.get("branchedFromLabel"),
+                    # Mirror of ChatStorage.list_summaries — a global chat
+                    # must render its flags in every project, not only its own.
+                    flags=data.get("flags") if isinstance(data.get("flags"), list) else [],
+                    flagColor=data.get("flagColor"),
                     openBeadCount=open_beads,
                     openWorkItemCount=open_work_items,
                     **({"_version": version} if version else {}),

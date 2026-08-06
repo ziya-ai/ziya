@@ -242,6 +242,11 @@ class ChatStorage(BaseStorage[Chat]):
                 branchedFrom=data.get('branchedFrom'),
                 branchedAtMessageIndex=data.get('branchedAtMessageIndex'),
                 branchedFromLabel=data.get('branchedFromLabel'),
+                # Read defensively: a hand-edited or pre-feature record can
+                # carry a non-list flags value, and a summary build must not
+                # fail the whole listing over one malformed field.
+                flags=data.get('flags') if isinstance(data.get('flags'), list) else [],
+                flagColor=data.get('flagColor'),
                 openBeadCount=open_beads,
                 openWorkItemCount=open_work_items,
                 **({'_version': version} if version else {})
