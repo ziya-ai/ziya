@@ -222,19 +222,34 @@ _SALIENCE_PATTERNS = re.compile(
     r"we call|known as|short for|aka|what that means is|"
     r"in other words|i\.e\.|ie\b)|"
     # Corrections (high value — user fixing assistant)
-    r"\b(?:no,|not quite|actually[,\s]?|that's wrong|incorrect|"
+    # Apostrophes are OPTIONAL throughout ('?): real typing routinely omits
+    # them ("thats wrong", "doesnt work", "lets go with"), and every
+    # apostrophe-literal phrase below failed on that input — measured 8/8
+    # lost.  Corrections and negative constraints are the two highest-value
+    # categories, so this was silently discarding the best signal.
+    r"\b(?:no,|not quite|actually[,\s]?|that'?s wrong|incorrect|"
     r"let me clarify|to be clear|wait[,\s]|i meant|hang on|"
     r"in reality|in fact)|"
     # Decisions
-    r"\b(?:let's go with|we'll use|decided to|going with|"
+    # NOTE the apostrophe in we'll / we're is NOT optional, unlike the
+    # contractions elsewhere in this pattern set.  Dropping it makes the
+    # alternation match the bare words "well" and "were", which are far
+    # more common than the contractions they stand in for: "well use
+    # whatever you think" and "they were going with the other approach"
+    # both scored as decisions.  A false positive here is cheap (one
+    # wasted extraction call) but it is still noise in the one signal
+    # that decides whether a window is examined at all, and neither
+    # elision is common in practice — "well use X" for "we'll use X" is
+    # rare, whereas "dont"/"thats"/"lets" are routine.
+    r"\b(?:let'?s go with|let'?s say|we'll use|decided to|going with|"
     r"settled on|chose|chosen|opted for|gonna use|"
     r"going to use|we're going with|the answer is|"
     r"the right call(?:\s+here)?)|"
     # Negative constraints (very high value — tried & rejected)
-    r"\b(?:doesn't work|won't work|can't use|tried and failed|"
-    r"rejected|broke|broken|don't use|never use|won't fly|"
-    r"ruled out|gave up on|won't help|didn't work|"
-    r"that's a bad idea|avoid|stay away from)|"
+    r"\b(?:doesn'?t work|won'?t work|can'?t use|tried and failed|"
+    r"rejected|broke|broken|don'?t use|never use|won'?t fly|"
+    r"ruled out|gave up on|won'?t help|didn'?t work|"
+    r"that'?s a bad idea|avoid|stay away from)|"
     # Explicit save signals — note these often end in punctuation
     # ("important:", "takeaway:") so we must not require a trailing \b.
     r"\b(?:remember(?:\s+this)?|note that|key point|important[:\s]|"
@@ -791,7 +806,13 @@ async def extract_memories(
 ) -> List[Dict[str, Any]]:
     """Call the extraction model to identify memory candidates.
 
-    Uses the Bedrock Converse API with Nova Lite to keep costs low.
+    The model comes from the ``memory_extraction`` service category, which
+    SERVICE_MODEL_OVERRIDES routes to Haiku-4.5 tier on Bedrock — NOT Nova
+    Lite.  The override exists because lite-tier models could not hold the
+    session-artifact vs durable-knowledge distinction and produced output
+    needing an ever-growing regex compensating layer downstream.  Override
+    per-run with ZIYA_MEMORY_EXTRACTION_MODEL (used by the eval harness to
+    A/B tiers against recorded Opus verdicts).
     """
     if not stripped_conversation.strip():
         return []
