@@ -4,11 +4,17 @@ import {
 } from '../autoAddTokenLimit';
 
 describe('filterByAutoAddTokenLimit', () => {
+  // Sizes are expressed RELATIVE to the default limit, not hardcoded.
+  // A previous change (24282dde) lowered the default 35000 -> 12500 and
+  // updated only the assertion naming the constant; 'medium.ts' had been
+  // pinned at 34999 to sit just under the OLD limit, so it silently began
+  // being skipped and the 'skips files over the limit' case broke.
+  // Deriving the fixture from the constant keeps that from recurring.
   const counts: Record<string, number> = {
-    'small.ts': 1200,
-    'medium.ts': 34999,
-    'exact.ts': 35000,
-    'huge.html': 90000,
+    'small.ts': Math.floor(DEFAULT_AUTO_ADD_TOKEN_LIMIT * 0.1),
+    'medium.ts': DEFAULT_AUTO_ADD_TOKEN_LIMIT - 1,
+    'exact.ts': DEFAULT_AUTO_ADD_TOKEN_LIMIT,
+    'huge.html': DEFAULT_AUTO_ADD_TOKEN_LIMIT * 7,
     'unknown.bin': 0,
   };
   const getTokens = (p: string) => counts[p] ?? 0;
@@ -24,11 +30,17 @@ describe('filterByAutoAddTokenLimit', () => {
       getTokens,
     );
     expect(r.allowed).toEqual(['small.ts', 'medium.ts']);
-    expect(r.skipped).toEqual([{ path: 'huge.html', tokens: 90000 }]);
+    expect(r.skipped).toEqual([
+      { path: 'huge.html', tokens: counts['huge.html'] },
+    ]);
   });
 
   it('allows a file exactly at the limit', () => {
-    const r = filterByAutoAddTokenLimit(['exact.ts'], 35000, getTokens);
+    // Use the constant, not a literal — a literal is what let this file
+    // drift out of sync with the default in the first place.
+    const r = filterByAutoAddTokenLimit(
+      ['exact.ts'], DEFAULT_AUTO_ADD_TOKEN_LIMIT, getTokens,
+    );
     expect(r.allowed).toEqual(['exact.ts']);
     expect(r.skipped).toEqual([]);
   });

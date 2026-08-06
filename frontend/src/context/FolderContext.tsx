@@ -9,6 +9,7 @@ import { useProject } from "./ProjectContext";
 import { fetchDefaultIncludedFolders } from "../apis/folderApi";
 import { getTabState, setTabState } from '../utils/tabState';
 import { filterByAutoAddTokenLimit, DEFAULT_AUTO_ADD_TOKEN_LIMIT } from '../utils/autoAddTokenLimit';
+import { resolveDocSeed } from '../utils/docSeedDismissal';
 
 // convertToTreeData does a full recursive rebuild of the whole folder tree.
 // Calling it synchronously (as part of a setState) competes directly with
@@ -122,6 +123,24 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   });
   const autoAddedFilesRef = useRef(autoAddedFiles);
   autoAddedFilesRef.current = autoAddedFiles;
+
+  // Doc files this tab has already auto-seeded.  Seeding unions the server's
+  // AGENTS.md / README.md keys into the selection, so without a record of
+  // what was seeded, a doc file the user unchecked came back on the very next
+  // load — silently undoing the removal even though it HAD been persisted.
+  // A key recorded here that is not currently checked was dismissed, so it is
+  // never seeded again.  Cleared on project switch, which resets the whole
+  // selection anyway, so the record would refer to nothing.
+  const [seededDocFiles, setSeededDocFiles] = useState<Set<string>>(() => {
+    try {
+      const saved = getTabState('ZIYA_SEEDED_DOC_FILES');
+      return saved ? new Set<string>(JSON.parse(saved)) : new Set<string>();
+    } catch {
+      return new Set<string>();
+    }
+  });
+  const seededDocFilesRef = useRef(seededDocFiles);
+  seededDocFilesRef.current = seededDocFiles;
 
   const [searchValue, setSearchValue] = useState('');
   const [expandedKeys, setExpandedKeys] = useState<React.Key[]>(() => {
@@ -864,12 +883,26 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     try {
       const keys = await fetchDefaultIncludedFolders(projectPath);
       if (!keys || keys.length === 0) return;
+      // Decide against the seeded record, not just "is it missing": a doc
+      // file seeded before and absent now was unchecked by the user, and
+      // re-adding it would undo that on every single reload.
+      const { additions, nextSeeded } = resolveDocSeed(
+        keys, checkedKeysRef.current, seededDocFilesRef.current,
+      );
+      // Persist the record even when nothing is added, so a doc file the user
+      // had already checked by hand counts as seeded and is likewise not
+      // re-added if they uncheck it later.
+      if (nextSeeded.size !== seededDocFilesRef.current.size) {
+        seededDocFilesRef.current = nextSeeded;
+        setSeededDocFiles(nextSeeded);
+        setTabState('ZIYA_SEEDED_DOC_FILES', JSON.stringify([...nextSeeded]));
+      }
+      if (additions.length === 0) return;
+      console.log(`📄 AUTO-CONTEXT: seeding ${additions.length} documentation file(s)`);
       setCheckedKeys(prev => {
         const existing = new Set(prev.map(String));
-        const additions = keys.filter(k => !existing.has(String(k)));
-        if (additions.length === 0) return prev;
-        console.log(`📄 AUTO-CONTEXT: seeding ${additions.length} documentation file(s)`);
-        return [...prev, ...additions];
+        const fresh = additions.filter(k => !existing.has(k));
+        return fresh.length === 0 ? prev : [...prev, ...fresh];
       });
     } catch (e) {
       console.warn('Failed to seed default included folders:', e);
@@ -997,6 +1030,12 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       // Clear sessionStorage to prevent stale selections
       sessionStorage.removeItem('ZIYA_CHECKED_FOLDERS');
       sessionStorage.removeItem('ZIYA_EXPANDED_FOLDERS');
+      // Forget which docs were seeded too: the selection is being reset
+      // wholesale, so the dismissal record refers to nothing and would
+      // otherwise suppress seeding for the incoming project entirely.
+      sessionStorage.removeItem('ZIYA_SEEDED_DOC_FILES');
+      seededDocFilesRef.current = new Set<string>();
+      setSeededDocFiles(new Set<string>());
 
       // Trigger refresh with new project path
       fetchFolders();

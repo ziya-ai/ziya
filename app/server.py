@@ -293,7 +293,36 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     This centralizes message construction to avoid duplication.
     """
     logger.debug(f"🔍 FUNCTION_START: build_messages_for_streaming called with {len(files)} files")
-    
+
+    # Merge in files the MODEL pinned via context_add_file.  Two channels
+    # feed a turn's context: the user's file-tree selection arrives as
+    # `files`, while model-pinned files live on the chat record's
+    # additionalFiles.  Only the first was ever read here, so
+    # context_add_file's persistence was inert (its ephemeral inline read
+    # was the sole delivery), context_remove_file was a no-op, and
+    # context_list_files reported files as in-context that were not.
+    #
+    # This is the one choke point shared by every caller — web
+    # (chat_endpoint), CLI (CLI._build_messages) and delegates
+    # (DelegateManager) — and it already receives conversation_id, so
+    # fixing it here covers all three.  Mirrors _inject_task_results
+    # below, which loads the same record for the same reason.
+    #
+    # No token filtering on this path: context_add_file enforces the
+    # per-file limit at WRITE time (see app/mcp/tools/context_management),
+    # so anything already stored was deliberate.  Filtering here would
+    # silently drop a file the model explicitly asked for.
+    try:
+        from app.utils.chat_context_files import get_model_pinned_files, merge_context_files
+        _model_files = get_model_pinned_files(conversation_id)
+        if _model_files:
+            files, _added = merge_context_files(files, _model_files)
+            if _added:
+                logger.info(f"📎 MODEL_CONTEXT: merged {len(_added)} model-pinned "
+                            f"file(s) into context: {_added}")
+    except Exception as e:
+        logger.warning(f"Model-pinned file merge failed (non-fatal): {e}")
+
     # SDO-183: Strip hidden characters from user input before it reaches the model.
     # This prevents Unicode tag smuggling attacks where invisible instructions
     # are embedded in user prompts.
@@ -1702,6 +1731,16 @@ async def stream_chunks(body):
                     elif chunk.get('type') == 'tool_result_for_model':
                         # Don't stream to frontend - this is for model conversation only
                         logger.debug(f"Tool result for model conversation: {chunk.get('tool_use_id')}")
+                    elif chunk.get('type') == 'feedback_delivered':
+                        # Confirms mid-stream feedback actually reached the model's
+                        # conversation.  Without this branch the chunk fell through
+                        # to the "Unknown chunk type" debug log below, so the
+                        # frontend's feedbackDelivered handler never fired and the
+                        # status chip could only ever go queued -> undelivered —
+                        # reporting loss on every turn, including the ones that
+                        # delivered correctly.
+                        logger.debug(f"🔄 FEEDBACK_DELIVERED relayed: {chunk.get('message', '')[:60]}")
+                        yield f"data: {json.dumps(chunk)}\n\n"
                     elif chunk.get('type') == 'throttling_error':
                         # Pass through throttling errors to frontend for inline display
                         yield f"data: {json.dumps(chunk)}\n\n"
@@ -1711,6 +1750,14 @@ async def stream_chunks(body):
                     elif chunk.get('type') == 'iteration_continue':
                         # Send heartbeat to flush stream before next iteration
                         yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\n\n"
+                    elif chunk.get('type') == 'thinking':
+                        # Forwarded verbatim.  MUST be registered here: the
+                        # else branch below drops unrecognised chunk types at
+                        # debug level, so an unregistered thinking chunk would
+                        # vanish silently and present exactly like the API
+                        # withholding reasoning — a failure mode with no
+                        # visible symptom to debug from.
+                        yield f"data: {json.dumps(chunk)}\n\n"
                     else:
                         logger.debug(f"Unknown chunk type: {chunk.get('type')}")
                 
@@ -1827,6 +1874,9 @@ async def stream_chunks(body):
                             elif retry_chunk.get('type') == 'tool_display':
                                 yield f"data: {json.dumps({'tool_result': retry_chunk})}\n\n"
                             elif retry_chunk.get('type') == 'throttling_error':
+                                yield f"data: {json.dumps(retry_chunk)}\n\n"
+                            elif retry_chunk.get('type') == 'feedback_delivered':
+                                # Same confirmation contract as the main loop above.
                                 yield f"data: {json.dumps(retry_chunk)}\n\n"
                             elif retry_chunk.get('type') == 'stream_end':
                                 break
