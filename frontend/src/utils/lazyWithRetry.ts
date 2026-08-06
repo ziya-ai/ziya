@@ -3,6 +3,14 @@ import React from 'react';
 const RELOAD_FLAG = '__ziya_chunk_reload';
 const RELOAD_FLAG_TS = '__ziya_chunk_reload_ts';
 
+// True once THIS page context has initiated a hard reload.  Module-level (not
+// sessionStorage) so it is naturally scoped to the current page: sessionStorage
+// survives the reload and therefore cannot distinguish "a reload is in flight
+// right now" from "a previous page already reloaded and chunks still fail".
+// Several lazy chunks share one 120s webpack timeout and reject together, so
+// without this the second rejection throws while the first is still unloading.
+let reloadTriggered = false;
+
 export function lazyWithRetry<T extends React.ComponentType<any>>(
   factory: () => Promise<{ default: T }>,
   maxRetries = 2,
@@ -56,10 +64,16 @@ async function retryImport<T extends React.ComponentType<any>>(
         (err.name === 'ChunkLoadError' || err.message.includes('Loading chunk'));
 
       if (isChunkError) {
+        // A reload triggered by a sibling chunk's failure in this same page is
+        // already in flight; the page is about to unload.  Never-settle rather
+        // than throw, which would render the root error boundary in the gap.
+        if (reloadTriggered) return new Promise<{ default: T }>(() => {});
+
         // Webpack marks failed chunks in its internal JSONP registry.
         // Retrying factory() won't issue a new network request — only a
         // full reload clears the internal chunk state.
         if (!sessionStorage.getItem(RELOAD_FLAG)) {
+          reloadTriggered = true;
           sessionStorage.setItem(RELOAD_FLAG, '1');
           sessionStorage.setItem(RELOAD_FLAG_TS, String(Date.now()));
           hardReload();
