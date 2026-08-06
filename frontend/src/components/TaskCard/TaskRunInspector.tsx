@@ -16,6 +16,7 @@ import type { IterationsResponse, RunStatus } from '../../types/task_run';
  import { truncatePreview } from './previewText';
  import { MarkdownRenderer } from '../MarkdownRenderer';
  import { stripTaskMetaTags } from './completionCheck';
+ import { isRunOver } from './runControls';
 
 interface Props {
   live: LiveTaskState;
@@ -54,8 +55,12 @@ export const TaskRunInspector: React.FC<Props> = ({
   // were unreachable: this prop was declared and passed by the parent but
   // never destructured, so isTerminal was always undefined and a finished
   // run reported "No tool calls yet." as though it had been silent.
-  const isTerminal = runStatus != null
-    && ['done', 'failed', 'cancelled'].includes(runStatus);
+  //
+  // Now shares ONE definition with the controls layer (isRunOver).  The
+  // local list here omitted 'partial' and 'held', so the two statuses
+  // that most need a "this is over" cue were the two that never got one
+  // — a partial run kept its streaming cursor alive indefinitely.
+  const isTerminal = isRunOver(runStatus);
   const eventCount = live.events.length;
   const toolCount = live.toolCalls.length;
   const blockCount = Object.keys(live.text).filter(k => live.text[k]?.length).length;
@@ -99,27 +104,71 @@ export const TaskRunInspector: React.FC<Props> = ({
       </div>
 
       <div className="tc-tile__inspector-body">
-        {tab === 'live' && <LiveTextTab text={live.text} iterations={live.iterations} />}
+        {tab === 'live' && (
+          <LiveTextTab
+            text={live.text} iterations={live.iterations}
+            isTerminal={isTerminal}
+          />
+        )}
         {tab === 'tools' && <ToolCallsTab calls={live.toolCalls} iterations={live.iterations} isTerminal={isTerminal} />}
         {tab === 'events' && <EventsTab events={live.events} isTerminal={isTerminal} />}
       </div>
+
+      {/* Completion footer.  The inspector previously had NO terminal
+          state of its own: a finished run left the last iteration's
+          streaming cursor blinking and the tab bodies unchanged, so a
+          user watching the trace had no cue that the work had moved on
+          above.  Rendered inside the drawer (not the tile header) so it
+          is visible exactly where the watching happens. */}
+      {isTerminal && runStatus && (
+        <div
+          className={`tc-tile__inspector-done tc-tile__inspector-done--${runStatus}`}
+          role="status"
+        >
+          <span className="tc-tile__inspector-done-dot" aria-hidden>■</span>
+          <span>{runOverLabel(runStatus)}</span>
+          <span className="tc-tile__inspector-done-hint">
+            live trace ends here
+          </span>
+        </div>
+      )}
     </details>
   );
 };
+
+/**
+ * One-line "the run is over" wording per terminal status.
+ *
+ * Says what happened rather than only naming the status, because the
+ * point of the footer is to stop someone waiting for output that will
+ * never arrive — and 'held' in particular is NOT a verdict on the work,
+ * so labelling it "failed" would be actively misleading.
+ */
+export function runOverLabel(status: RunStatus): string {
+  switch (status) {
+    case 'done': return 'Run complete — no further output';
+    case 'partial': return 'Run stopped after partial progress — no further output';
+    case 'failed': return 'Run failed — no further output';
+    case 'cancelled': return 'Run cancelled — no further output';
+    case 'held': return 'Run held on an infrastructure fault — resume to continue';
+    default: return 'Run ended — no further output';
+  }
+}
 
 // ── Tabs ──────────────────────────────────────────────────────
 
 const LiveTextTab: React.FC<{
   text: Record<string, string>;
   iterations: LiveTaskState['iterations'];
-}> = ({ text, iterations }) => {
+  isTerminal?: boolean;
+}> = ({ text, iterations, isTerminal }) => {
   // Prefer per-iteration sections when we have them — gives the user
   // explicit boundaries between runs of a repeat block (or just one
   // section per block for non-repeat task blocks).  Falls back to
   // the flat per-block view when no iteration events have been
   // observed yet (early in a run, or for legacy data).
   if (iterations && iterations.length > 0) {
-    return <IterationSectionsView iterations={iterations} />;
+    return <IterationSectionsView iterations={iterations} isTerminal={isTerminal} />;
   }
   const entries = Object.entries(text).filter(([, v]) => v && v.length > 0);
   if (entries.length === 0) {
@@ -134,7 +183,10 @@ const LiveTextTab: React.FC<{
               markdown={stripTaskMetaTags(content)}
               enableCodeApply={false}
               breaks={true}
-              isStreaming={true}
+              // Was hardcoded true, so a finished run kept a streaming
+              // cursor blinking on its last block forever — one of the
+              // three places that gave no completion signal.
+              isStreaming={!isTerminal}
               isSubRender={true}
             />
         </div>
@@ -152,7 +204,8 @@ const LiveTextTab: React.FC<{
  */
 const IterationSectionsView: React.FC<{
   iterations: LiveTaskState['iterations'];
-}> = ({ iterations }) => {
+  isTerminal?: boolean;
+}> = ({ iterations, isTerminal }) => {
   // Filter out iterations with no streamed text — they'd just
   // produce an empty box.  The toolCalls/events tabs still surface
   // those iterations for users who want the lifecycle detail.
@@ -193,7 +246,10 @@ const IterationSectionsView: React.FC<{
                 markdown={stripTaskMetaTags(it.streamText)}
                 enableCodeApply={false}
                 breaks={true}
-                isStreaming={it.status === 'running'}
+                // Belt-and-braces with the hook's terminal seal: the seal
+                // fixes the DATA (a bucket left at 'running'), this guards
+                // the RENDER even if a seal is ever missed.
+                isStreaming={it.status === 'running' && !isTerminal}
                 isSubRender={true}
               />
             </div>

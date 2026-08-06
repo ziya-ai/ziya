@@ -14,7 +14,7 @@
 
 import {
   launchTaskCard, listTaskRuns, getTaskRun, cancelTaskRun, deleteTaskRun,
-  listIterations,
+  listIterations, stepTaskRun, resumeRunFromBlock,
 } from '../taskRunApi';
 import { listBindings, createBinding, deleteBinding } from '../taskBindingApi';
 
@@ -87,6 +87,78 @@ describe('taskRunApi forwards X-Project-Root', () => {
     const init = lastInit(fm);
     expect(headerOf(init, 'X-Project-Root')).toBe(PROJECT);
     expect(init.method).toBe('POST');
+  });
+
+  it('stepTaskRun sends X-Project-Root, is POST, and defaults count=1', async () => {
+    const fm = setupFetchMock();
+    await stepTaskRun('proj-1', 'run-1');
+    const init = lastInit(fm);
+    expect(headerOf(init, 'X-Project-Root')).toBe(PROJECT);
+    expect(init.method).toBe('POST');
+    const url = String(fm.mock.calls[fm.mock.calls.length - 1][0]);
+    expect(url).toContain('/task-runs/run-1/step');
+    expect(url).toContain('count=1');
+  });
+
+  it('stepTaskRun forwards an explicit count', async () => {
+    const fm = setupFetchMock();
+    await stepTaskRun('proj-1', 'run-1', 4);
+    expect(String(fm.mock.calls[fm.mock.calls.length - 1][0]))
+      .toContain('count=4');
+  });
+
+  it('stepTaskRun throws on a non-ok response', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false, status: 422, json: async () => ({}),
+    });
+    await expect(stepTaskRun('proj-1', 'run-1', 0)).rejects.toThrow(/422/);
+  });
+
+  it('resumeRunFromBlock sends X-Project-Root and targets the right path', async () => {
+    const fm = setupFetchMock();
+    fm.mockResolvedValueOnce({
+      ok: true, status: 200,
+      json: async () => ({ run: { id: 'run-2' }, binding: { id: 'b1' } }),
+    });
+    const res = await resumeRunFromBlock('proj-1', 'run-1', 'blk-3');
+    const init = lastInit(fm);
+    expect(headerOf(init, 'X-Project-Root')).toBe(PROJECT);
+    expect(init.method).toBe('POST');
+    expect(String(fm.mock.calls[0][0]))
+      .toContain('/task-runs/run-1/resume-from/blk-3');
+    // Both halves of the response must survive — the binding is what
+    // makes the new run renderable at all.
+    expect(res.run.id).toBe('run-2');
+    expect(res.binding?.id).toBe('b1');
+  });
+
+  it('resumeRunFromBlock url-encodes ids', async () => {
+    const fm = setupFetchMock();
+    fm.mockResolvedValueOnce({
+      ok: true, status: 200, json: async () => ({ run: {}, binding: null }),
+    });
+    await resumeRunFromBlock('proj-1', 'run/1', 'blk 3');
+    const url = String(fm.mock.calls[0][0]);
+    expect(url).toContain('run%2F1');
+    expect(url).toContain('blk%203');
+  });
+
+  it('resumeRunFromBlock surfaces the server detail, not just the code', async () => {
+    // 409/422 each mean something specific and actionable here, so a
+    // bare status code would strand the user.
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false, status: 409,
+      json: async () => ({ detail: 'Run is still running; cancel it first.' }),
+    });
+    await expect(resumeRunFromBlock('p', 'r', 'b'))
+      .rejects.toThrow(/409 — Run is still running/);
+  });
+
+  it('resumeRunFromBlock still throws when the error body is unreadable', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false, status: 500, json: async () => { throw new Error('no body'); },
+    });
+    await expect(resumeRunFromBlock('p', 'r', 'b')).rejects.toThrow(/500/);
   });
 
   it('deleteTaskRun sends X-Project-Root and is DELETE', async () => {

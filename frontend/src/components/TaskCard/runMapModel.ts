@@ -5,11 +5,21 @@
  */
 
 import type { Block } from '../../types/task_card';
-import type { TaskRun, BlockStatus, IterationSummary } from '../../types/task_run';
+import type {
+  TaskRun, BlockStatus, IterationSummary, CallSnapshot,
+} from '../../types/task_run';
 
 export interface MapRow {
   block: Block;
   depth: number;
+  /**
+   * Id of the Call block this row was reached through, when it belongs
+   * to a callee rather than to the card itself.  Lets the row say so:
+   * the callee is a different card, and presenting its blocks as though
+   * this card declared them would misattribute both the work and the
+   * permissions.
+   */
+  viaCall?: string;
 }
 
 /**
@@ -17,21 +27,41 @@ export interface MapRow {
  * Group blocks are invisible wrappers (matching the editor, which
  * renders them chromeless): their children appear at the group's own
  * depth and the group itself gets no row.
+ *
+ * ``callSnapshots`` splices a resolved Call target's tree in beneath its
+ * call row.  The callee lives in another card, so it is in neither this
+ * card nor ``card_snapshot`` — without it the map shows a call row that
+ * produced an artifact from nothing, while the callee's blocks stream
+ * status events that land on no row.
  */
 export function flattenBlocks(
   root: Block | undefined | null, depth = 0,
+  callSnapshots?: Record<string, CallSnapshot>,
+  // Guards a malformed record: the server rejects call cycles, but a
+  // hand-edited or truncated run file must not hang the UI.
+  seen: ReadonlySet<string> = new Set(),
 ): MapRow[] {
   if (!root) return [];
   const rows: MapRow[] = [];
   if (root.block_type === 'group') {
     for (const child of root.body ?? []) {
-      rows.push(...flattenBlocks(child, depth));
+      rows.push(...flattenBlocks(child, depth, callSnapshots, seen));
     }
     return rows;
   }
   rows.push({ block: root, depth });
   for (const child of root.body ?? []) {
-    rows.push(...flattenBlocks(child, depth + 1));
+    rows.push(...flattenBlocks(child, depth + 1, callSnapshots, seen));
+  }
+  if (root.block_type === 'call' && callSnapshots) {
+    const snap = callSnapshots[root.id];
+    const key = snap?.key ?? root.id;
+    if (snap?.root && !seen.has(key)) {
+      const next = new Set(seen).add(key);
+      for (const r of flattenBlocks(snap.root, depth + 1, callSnapshots, next)) {
+        rows.push({ ...r, viaCall: r.viaCall ?? root.id });
+      }
+    }
   }
   return rows;
 }
@@ -53,9 +83,16 @@ export function resolveBlockStatus(
   const live = liveStatuses[blockId];
   const persisted = run?.block_states?.[blockId]?.status;
   let status = (live ?? persisted ?? 'queued') as BlockStatus;
-  const terminal = run && ['done', 'failed', 'cancelled'].includes(run.status);
+  const terminal = run
+    && ['done', 'partial', 'failed', 'cancelled'].includes(run.status);
   if (terminal && status === 'running') {
-    status = run!.status as BlockStatus;
+    // A stale 'running' under a terminal run degrades to the run's own
+    // outcome — except 'partial', which is a RUN-level classification
+    // and meaningless for a single block.  A block left running when a
+    // partial run unwound was interrupted, so say that instead.
+    status = (run!.status === 'partial'
+      ? 'cancelled'
+      : run!.status) as BlockStatus;
   }
   return status;
 }
@@ -102,7 +139,7 @@ export function buildDots(
 
 const TYPE_EMOJI: Record<string, string> = {
   task: '🔵', repeat: '🔁', until: '🔄', parallel: '⚡',
-  schedule: '⏰', state: '📌', group: '▫️',
+  schedule: '⏰', state: '📌', group: '▫️', call: '📞',
 };
 
 export function blockEmoji(b: Block): string {
@@ -131,6 +168,7 @@ export function blockLabel(b: Block): string {
     case 'parallel': return 'In parallel';
     case 'schedule': return 'Schedule';
     case 'state': return 'State / givens';
+    case 'call': return truncate(`Call: ${b.call_target || '(no target)'}`);
     default: return b.block_type;
   }
 }

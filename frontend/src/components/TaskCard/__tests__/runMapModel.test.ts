@@ -42,6 +42,72 @@ describe('flattenBlocks', () => {
   it('returns empty for null root', () => {
     expect(flattenBlocks(null)).toEqual([]);
   });
+
+  const call = (id: string, target: string): any => ({
+    block_type: 'call', id, name: `call ${target}`,
+    call_target: target, body: [],
+  });
+  const task = (id: string): any => ({
+    block_type: 'task', id, name: id, instructions: 'x', body: [],
+  });
+
+  it('splices a resolved callee tree beneath its call row', () => {
+    // Without this the callee's blocks stream status events that land on
+    // no row, and the call row appears to produce output from nothing.
+    const snaps = {
+      'c1': { key: 'card:c2', target: 'Helper', root: task('callee-1') },
+    };
+    const rows = flattenBlocks(call('c1', 'Helper'), 0, snaps);
+    expect(rows.map(r => r.block.id)).toEqual(['c1', 'callee-1']);
+    expect(rows[1].depth).toBe(1);
+  });
+
+  it('marks callee rows with the call block they came through', () => {
+    // Attribution matters: the block belongs to another card and runs
+    // under that card's permissions.
+    const snaps = {
+      'c1': { key: 'card:c2', target: 'Helper', root: task('callee-1') },
+    };
+    const rows = flattenBlocks(call('c1', 'Helper'), 0, snaps);
+    expect(rows[0].viaCall).toBeUndefined();
+    expect(rows[1].viaCall).toBe('c1');
+  });
+
+  it('draws only the call row when no snapshot exists', () => {
+    // A run that never reached the call, or predates call_snapshots.
+    const rows = flattenBlocks(call('c1', 'Helper'), 0, {});
+    expect(rows.map(r => r.block.id)).toEqual(['c1']);
+  });
+
+  it('omits callee rows when call_snapshots is absent entirely', () => {
+    const rows = flattenBlocks(call('c1', 'Helper'));
+    expect(rows.map(r => r.block.id)).toEqual(['c1']);
+  });
+
+  it('does not hang on a cyclic call record', () => {
+    // The server rejects cycles, but a hand-edited or truncated run file
+    // must not take the UI down with it.
+    const inner = call('c-inner', 'Self');
+    const snaps = {
+      'c-outer': { key: 'card:self', target: 'Self', root: inner },
+      'c-inner': { key: 'card:self', target: 'Self', root: inner },
+    };
+    const rows = flattenBlocks(call('c-outer', 'Self'), 0, snaps);
+    expect(rows.length).toBeLessThan(10);
+    expect(rows[0].block.id).toBe('c-outer');
+  });
+
+  it('propagates snapshots through nested containers', () => {
+    const group: any = {
+      block_type: 'group', id: 'g1', name: 'g1',
+      body: [call('c1', 'Helper')],
+    };
+    const snaps = {
+      'c1': { key: 'card:c2', target: 'Helper', root: task('callee-1') },
+    };
+    const rows = flattenBlocks(group, 0, snaps);
+    expect(rows.map(r => r.block.id)).toEqual(['c1', 'callee-1']);
+  });
 });
 
 const runWith = (
