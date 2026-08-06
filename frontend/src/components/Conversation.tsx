@@ -19,6 +19,10 @@ import { useChatContext } from '../context/ChatContext';
 import { useSendPayload } from '../hooks/useSendPayload';
 
 import { useTaskBindings } from '../hooks/useTaskBindings';
+// The ONE definition of "this run is over".  Imported rather than
+// re-derived because the local copy this replaces omitted 'partial' and
+// 'held' — see the reconciler effect below.
+import { isRunOver } from './TaskCard/runControls';
 import { MessageIdContext } from '../context/MessageIdContext';
 import { useCopyCleanup } from '../hooks/useCopyCleanup';
 
@@ -435,11 +439,22 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     } = useChatContext();
     useEffect(() => {
         if (!currentConversationId) return;
-        const TERMINAL = new Set(['done', 'failed', 'cancelled']);
         let hasRunning = false;
         for (const arr of bindingsByAnchor.values()) {
             for (const b of arr) {
-                if (b.run_status && !TERMINAL.has(b.run_status)) { hasRunning = true; break; }
+                // isRunOver, not a local status list.  This effect carried
+                // its own ['done','failed','cancelled'] — precisely the
+                // duplication runControls.ts warns about — so 'partial' and
+                // 'held' read as still-running and the sidebar kept
+                // spinning "Task running…" on a run that had already
+                // stopped, with no task in flight.  Both statuses are
+                // recent additions AND describe the case a user is most
+                // likely to be looking at (a run that ended without
+                // finishing), so the omission hit the common path.
+                if (b.run_status && !isRunOver(b.run_status)) {
+                    hasRunning = true;
+                    break;
+                }
             }
             if (hasRunning) break;
         }
