@@ -82,14 +82,19 @@ async def handle_message_stop(
     """
     ts = lambda: f"{int((time.time() - iteration_start_time) * 1000)}ms"
 
-    # Close unclosed <thinking-data> tag (DeepSeek R1 thinking-only responses).
+    # Close an open thinking block when the response ends while still inside
+    # one -- a thinking-only response, which never transitions to answer text.
+    #
+    # Emits a discrete 'thinking' done chunk rather than appending a literal
+    # closing tag.  The opening tag is no longer produced (see the executor's
+    # thinking_delta branch), so appending a closer here put a BARE closing
+    # tag into assistant_text: rendered as stray text, and carried into the
+    # backend's own history for the next iteration.
     if state.thinking_tag_opened:
         state.thinking_tag_opened = False
-        closing = '</thinking-data>'
-        state.assistant_text += closing
         yield track_yield({
-            'type': 'text',
-            'content': closing,
+            'type': 'thinking',
+            'done': True,
             'timestamp': ts(),
         })
 
