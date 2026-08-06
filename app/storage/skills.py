@@ -38,13 +38,35 @@ class SkillStorage(BaseStorage[Skill]):
         Creates missing built-in skills and updates existing ones with any
         new fields (visibility, source, keywords, id) that were added after
         the skill was first persisted.
+
+        Adoption of same-named custom skills: when a skill that users
+        previously created by hand is later PROMOTED to a built-in (as
+        Continuous Documentation and Tests for Everything were), matching
+        only ``isBuiltIn`` records would leave the old custom copy in place
+        and add a second entry under the same name — two indistinguishable
+        cards in the skills list, only one of which a template can seed.
+        A non-builtin match by name is therefore adopted: the canonical
+        built-in record is written and the superseded custom file removed.
+        File-discovered skills (``source`` project/user) are NOT adopted —
+        they are owned by a file on disk that this code must not delete, and
+        a user who wrote a SKILL.md deliberately outranks a shipped default.
         """
         existing_skills = self.list()
         existing_by_name = {s.name: s for s in existing_skills if s.isBuiltIn}
+        adoptable_by_name = {
+            s.name: s for s in existing_skills
+            if not s.isBuiltIn and s.source not in ('project', 'user')
+        }
         
         for built_in_data in BUILT_IN_SKILLS:
             canonical_id = f"builtin-{built_in_data['name'].lower().replace(' ', '-')}"
             existing = existing_by_name.get(built_in_data['name'])
+            if existing is None:
+                superseded = adoptable_by_name.get(built_in_data['name'])
+                if superseded is not None and superseded.id != canonical_id:
+                    old_file = self._skill_file(superseded.id)
+                    if old_file.exists():
+                        old_file.unlink()
 
             if existing is None:
                 # Brand-new built-in skill
