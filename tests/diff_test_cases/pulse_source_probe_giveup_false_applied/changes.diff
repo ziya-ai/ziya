@@ -1,0 +1,41 @@
+diff --git a/pulse_sync.c b/pulse_sync.c
+--- a/pulse_sync.c
++++ b/pulse_sync.c
+@@ -135,18 +135,30 @@
+             logMessage("pulseSync: pulse validity lost, falling "
+                        "back to software measurement\n");
+         }
+-        pulseGoodStreak = 0;
++        pulseGoodStreak    = 0;
++        pulseHaveGoodPhase = 0;
+ 
+         /* Alternate the pulse-in mux between the two candidate pins
+          * until one carries a valid pulse, so a hardware revision is
+          * picked up without reconfiguration. */
+-        if(++pulseBadStreak >= PULSE_SOURCE_PROBE_TICKS)
++        if(!pulseProbeGaveUp &&
++           ++pulseBadStreak >= PULSE_SOURCE_PROBE_TICKS)
+         {
+-            (void)pulseSourceSelect(
+-                devNum,
+-                (pulseSourceMode == PULSE_SOURCE_PIN_A)
+-                    ? PULSE_SOURCE_PIN_B
+-                    : PULSE_SOURCE_PIN_A);
++            if(pulseSourceSwitches >= PULSE_SOURCE_PROBE_GIVEUP)
++            {
++                pulseProbeGaveUp = 1;
++                logMessage("pulseSync: no pulse on either pin after "
++                           "%u attempts; using software measurement\n",
++                           pulseSourceSwitches);
++            }
++            else
++            {
++                (void)pulseSourceSelect(
++                    devNum,
++                    (pulseSourceMode == PULSE_SOURCE_PIN_A)
++                        ? PULSE_SOURCE_PIN_B
++                        : PULSE_SOURCE_PIN_A);
++            }
+         }
+     }
+ 
