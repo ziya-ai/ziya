@@ -208,6 +208,56 @@ class TestListSummaries:
         assert summary_dump["branchedAtMessageIndex"] == 4
         assert summary_dump["branchedFromLabel"] == "follow the queued work"
 
+    def _write_raw(self, storage, chat_id, **extra):
+        data = {
+            "id": chat_id, "title": "Flagged", "messages": [],
+            "createdAt": int(time.time() * 1000),
+            "lastActiveAt": int(time.time() * 1000),
+            **extra,
+        }
+        (storage.chats_dir / f"{chat_id}.json").write_text(json.dumps(data))
+
+    def test_summaries_carry_flags_and_flag_color(self, storage):
+        # The sidebar renders flags from the SUMMARY listing, so an
+        # undeclared field here is invisible to the UI even though the
+        # full Chat record round-trips it via extra="allow".
+        self._write_raw(storage, "flagged",
+                        flags=["priority", "blocked"], flagColor="red")
+        s = next(s for s in storage.list_summaries() if s.id == "flagged")
+        assert s.flags == ["priority", "blocked"]
+        assert s.flagColor == "red"
+
+    def test_unflagged_chat_defaults_to_empty_not_absent(self, storage):
+        # Consumers must never have to distinguish absent from empty.
+        self._write_raw(storage, "plain")
+        s = next(s for s in storage.list_summaries() if s.id == "plain")
+        assert s.flags == []
+        assert s.flagColor is None
+
+    def test_malformed_flags_do_not_break_the_listing(self, storage):
+        # A hand-edited or pre-feature record must not fail the whole
+        # listing — one bad field would blank the entire sidebar.
+        self._write_raw(storage, "bad", flags="priority")  # str, not list
+        s = next(s for s in storage.list_summaries() if s.id == "bad")
+        assert s.flags == []
+
+    def test_flags_survive_the_summary_mtime_cache(self, storage):
+        # list_summaries caches the BUILT summary per file; a second call
+        # must return the same flags rather than a pre-cache shape.
+        self._write_raw(storage, "cached", flags=["priority"], flagColor="blue")
+        first = next(s for s in storage.list_summaries() if s.id == "cached")
+        second = next(s for s in storage.list_summaries() if s.id == "cached")
+        assert first.flags == second.flags == ["priority"]
+        assert first.flagColor == second.flagColor == "blue"
+
+    def test_cleared_flags_are_reported_as_cleared(self, storage):
+        # Clearing is a real state, not an absence: an empty list and a null
+        # color must be reported verbatim so the merge can propagate them.
+        self._write_raw(storage, "cleared", flags=[], flagColor=None)
+        s = next(s for s in storage.list_summaries() if s.id == "cleared")
+        assert s.flags == []
+        assert s.flagColor is None
+
 
 # ── Update ─────────────────────────────────────────────────────────
 
