@@ -74,6 +74,18 @@ class ConnectionPool:
         if not mcp_manager.is_initialized:
             logger.error("🔌 CONNECTION_POOL: MCP manager not initialized")
         
+        # Propagate conversation_id INTO the arguments envelope. MCPManager
+        # reads the conversation from arguments (not from a parameter) and
+        # uses it as the session_id that keys workspace-scoped client
+        # instances as f"{workspace_path}::{session_id}". Omitted, session_id
+        # is None, the key collapses to the bare workspace path, and every
+        # conversation on a project shares ONE shell subprocess whose request
+        # loop is serial -- so a slow command in one conversation blocks all
+        # others. The manager strips this key again before the call reaches
+        # the MCP server, so servers never see it.
+        if isinstance(arguments, dict) and conversation_id:
+            arguments = {**arguments, 'conversation_id': conversation_id}
+
         # Call the tool via MCP manager
         try:
             logger.debug(f"🔌 CONNECTION_POOL: Calling MCP manager with tool_name={tool_name}, server_name={server_name}")

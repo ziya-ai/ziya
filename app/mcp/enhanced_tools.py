@@ -423,8 +423,23 @@ class SecureMCPTool(BaseTool):
         if conversation_id is None:
             conversation_id = "default"
         
-        # Run asynchronously and get result
-        loop = asyncio.get_event_loop()
+        # Run asynchronously and get result.
+        #
+        # ``get_event_loop()`` is not safe on its own here: it raises
+        # "no current event loop" in a non-main thread, and also after any
+        # earlier ``asyncio.run()`` in this thread has closed the loop it
+        # created.  Neither condition is reachable today (production
+        # dispatch is ``await tool_instance.execute()`` and this sync entry
+        # point is unused), but this is a public LangChain BaseTool method,
+        # so the first sync caller would hit it.  DirectMCPTool._run above
+        # already guards the same way; keeping the two consistent is what
+        # stops that divergence from becoming a bug report.
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_closed():
+                raise RuntimeError("event loop is closed")
+        except RuntimeError:
+            return asyncio.run(self._arun(tool_input, conversation_id))
         return loop.run_until_complete(self._arun(tool_input, conversation_id))
     
     async def _arun(self, tool_input: Dict[str, Any], conversation_id: str) -> str:
