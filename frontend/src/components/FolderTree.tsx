@@ -47,8 +47,14 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     const { isScanning, scanError } = useFolderContext();
     // Blank the panel as soon as either the project API call or the full sync is in progress
     const isSwitchingProject = isLoadingProject || isProjectSwitching;
-    // Distinguish initial load from an actual switch for the spinner label
-    const switchingLabel = (isLoadingProject && projectContext.currentProject === null) ? 'Loading…' : 'Switching project…';
+    // Distinguish initial load from an actual switch for the spinner label.
+    // isProjectSwitching is only set for a genuine switch (it is gated on
+    // isActualProjectSwitch, which is false when serverSyncedForProject is
+    // still null), so on a cold start this must not claim to be "switching" —
+    // there is no previous project to switch away from.
+    const switchingLabel = isProjectSwitching
+        ? 'Switching project…'
+        : 'Loading…';
     const [panelWidth, setPanelWidth] = useState<number>(300);
     const [modelDisplayName, setModelDisplayName] = useState<string>('');
 
