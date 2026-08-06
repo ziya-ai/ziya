@@ -232,13 +232,26 @@ class TestBuiltinRegistration:
     def test_get_diagram_render_tools_returns_tool(self):
         from app.mcp.builtin_tools import get_diagram_render_tools
         tools = get_diagram_render_tools()
-        assert len(tools) == 1
-        assert tools[0].__name__ == "RenderDiagramTool"
+        # recall_image ships with render_diagram: it is only reachable via a
+        # handle a render produced, so the two are registered together.
+        # Asserted by NAME rather than by count so adding a third tool
+        # fails here loudly instead of silently passing a bare length check.
+        names = [t.__name__ for t in tools]
+        assert names == ["RenderDiagramTool", "RecallImageTool"]
 
     def test_category_getter_wired(self):
         from app.mcp.builtin_tools import get_builtin_tools_for_category
         tools = get_builtin_tools_for_category("diagram_render")
-        assert len(tools) == 1
+        assert [t.__name__ for t in tools] == [
+            "RenderDiagramTool", "RecallImageTool",
+        ]
+
+    def test_recall_image_is_in_the_task_scope_floor(self):
+        # A task with a strict tools allowlist still gets handed recall
+        # handles by compaction, so the tool must be unconditionally
+        # available or the handle is unredeemable.
+        from app.utils.task_tool_floor import ALWAYS_AVAILABLE_TOOLS
+        assert "recall_image" in ALWAYS_AVAILABLE_TOOLS
 
 
 class TestStreamingExecutorImagePassthrough:
