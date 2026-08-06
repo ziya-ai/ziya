@@ -25,6 +25,12 @@ export interface ServerChatSummary {
     branchedFrom?: string;
     branchedAtMessageIndex?: number;
     branchedFromLabel?: string;
+    // Triage flags. Unlike the open-work counts below, these are VERSIONED:
+    // a flag change goes through mutateConversationMeta, which stamps a new
+    // _version. That is why they are adopted only on the server-newer
+    // branches and never overlaid onto a keep-local decision.
+    flags?: string[];
+    flagColor?: string | null;
     openBeadCount?: number;
     openWorkItemCount?: number;
     _version?: number;
@@ -44,6 +50,8 @@ export interface LocalShell {
     branchedFrom?: string;
     branchedAtMessageIndex?: number;
     branchedFromLabel?: string;
+    flags?: string[];
+    flagColor?: string | null;
     _isShell?: boolean;
     _fullMessageCount?: number;
     openBeadCount?: number;
@@ -109,7 +117,23 @@ export function shouldFetchFull(
     // or folder assignment that local is missing.
     const serverHasDelegateMeta = sc.delegateMeta && !local.delegateMeta;
     const serverHasFolder = (sc.groupId || sc.folderId) && !local.folderId;
-    if (serverHasDelegateMeta || serverHasFolder) {
+    // Deliberately "server HAS what local LACKS", not a symmetric
+    // divergence check. A symmetric comparison would fire on the far more
+    // common case of the LOCAL user having just set a flag (local ahead,
+    // push still in flight), re-fetching on every cycle until the push
+    // lands — and the merge would discard the result anyway, since local
+    // wins on version. This direction only fires when the server genuinely
+    // knows something we do not, and self-clears once the merge adopts it.
+    //
+    // Reachable despite flags being versioned: a coincident _version (two
+    // browsers writing in the same millisecond) leaves the flag change with
+    // no version signal at all, which is precisely the hole the
+    // count-divergence rule below exists to plug for messages.
+    const serverHasFlags = (sc.flags?.length ?? 0) > 0
+        && (local.flags?.length ?? 0) === 0;
+    const serverHasFlagColor = !!sc.flagColor && !local.flagColor;
+    if (serverHasDelegateMeta || serverHasFolder
+        || serverHasFlags || serverHasFlagColor) {
         return !ctx.alreadyFetchedThisSession;
     }
     const serverVer = sc._version || sc.lastActiveAt || 0;
@@ -254,6 +278,11 @@ export function mergeServerChat(
                     branchedFrom: sc.branchedFrom,
                     branchedAtMessageIndex: sc.branchedAtMessageIndex,
                     branchedFromLabel: sc.branchedFromLabel,
+                    // This branch enumerates fields rather than spreading, so
+                    // an unlisted field is silently dropped — the shell then
+                    // renders unflagged until a full fetch happens to land.
+                    flags: sc.flags ?? [],
+                    flagColor: sc.flagColor ?? null,
                     messages: [],
                     _isShell: true,
                     _fullMessageCount: typeof sc.messageCount === 'number' ? sc.messageCount : 0,
@@ -359,6 +388,15 @@ export function mergeServerChat(
                 branchedFrom: sc.branchedFrom ?? local.branchedFrom,
                 branchedAtMessageIndex: sc.branchedAtMessageIndex ?? local.branchedAtMessageIndex,
                 branchedFromLabel: sc.branchedFromLabel ?? local.branchedFromLabel,
+                // The server is newer, so its flags win — including an
+                // explicit CLEAR. \`??\` and not \`||\`: an empty array (all
+                // flags removed) and a null flagColor (color cleared) are
+                // real values the server is asserting, and a falsy-fallback
+                // chain would restore the stale local value and undo the
+                // clear on the very sync meant to propagate it.
+                flags: sc.flags ?? local.flags ?? [],
+                flagColor: sc.flagColor !== undefined
+                    ? sc.flagColor : (local.flagColor ?? null),
                 _version: contentBehind ? local._version : serverVersion,
                 _isShell: local._isShell,
                 openBeadCount: sc.openBeadCount ?? local.openBeadCount ?? 0,
@@ -422,6 +460,93 @@ export function canReusePrevConversation(mc: any, existing: any): boolean {
         && mc.isGlobal === existing.isGlobal
         && mc.delegateMeta?.status === existing.delegateMeta?.status
         && mc.hasUnreadResponse === existing.hasUnreadResponse
+        // Both drive a rendered row badge (see chatTreeHash.ts, which hashes
+        // the same two fields for the sidebar's tree memo). Omitting them
+        // here reuses the stale object and discards the flags the merge just
+        // adopted — the same starved-render path as the counts below.
+        && (mc.flags || []).join(',') === (existing.flags || []).join(',')
+        && (mc.flagColor || '') === (existing.flagColor || '')
         && (mc.openBeadCount || 0) === (existing.openBeadCount || 0)
         && (mc.openWorkItemCount || 0) === (existing.openWorkItemCount || 0);
+}
+export interface CrossTabMergeCtx {
+    /**
+     * True when THIS tab is actively streaming into the conversation.
+     * During streaming this tab's React state is the ONLY place the
+     * in-flight turn exists — queueSave is debounced, so IndexedDB lags
+     * behind by design.
+     */
+    isStreaming: boolean;
+}
+
+export type CrossTabMergeDecision =
+    /** Local copy wins outright; leave the merged entry untouched. */
+    | { action: 'keep-local' }
+    /** Remote is newer and safe to adopt wholesale. */
+    | { action: 'adopt-remote' }
+    /**
+     * Adopt remote's metadata but KEEP local's messages.  Used when the
+     * remote record is genuinely newer (someone changed a flag, title,
+     * folder…) but is message-stale relative to a stream in flight here.
+     */
+    | { action: 'adopt-metadata-only' };
+
+/**
+ * Decide how to merge one remote conversation into the local copy during a
+ * CROSS-TAB broadcast (`conversations-changed`).
+ *
+ * The periodic server sync refuses to run at all while any conversation is
+ * streaming (see ChatContext: "the server poll would race with
+ * addMessageToConversation / queueSave and clobber in-progress conversation
+ * data").  The broadcast receiver had no equivalent protection, so a
+ * metadata mutation in another tab — a conversation flag toggle, which
+ * calls mutateConversationMeta and stamps `_version: Date.now()` — would
+ * re-enter the merge mid-stream and do exactly what that guard exists to
+ * prevent.
+ *
+ * The escape hatch that made it destructive is `localMsgCount <= 2`.  It
+ * exists so an authoritative remote record can replace a local stub, and is
+ * correct at rest.  But a conversation early in its life is *legitimately*
+ * at 1–2 messages while streaming, so a fresher-but-message-stale IDB
+ * record satisfied both halves of the condition and replaced live state,
+ * dropping the human turn the response was answering.
+ *
+ * Rather than skip the merge outright (which would make cross-tab flags
+ * invisible until the stream ended — the feature the broadcast is for), a
+ * streaming conversation adopts remote METADATA and keeps local messages.
+ */
+export function decideCrossTabMerge(
+    local: any | undefined,
+    remote: any,
+    ctx: CrossTabMergeCtx
+): CrossTabMergeDecision {
+    if (!local) return { action: 'adopt-remote' };
+
+    // Version gate is unchanged: an older remote is never adopted.
+    if ((remote._version || 0) <= (local._version || 0)) {
+        return { action: 'keep-local' };
+    }
+
+    const localMsgCount = local.messages?.length || 0;
+    const remoteMsgCount = remote.messages?.length || 0;
+
+    // Streaming: messages are never taken from remote, at any count.  Even
+    // an EQUAL count can differ in content — the committed human turn may
+    // be newer than the one IndexedDB holds.
+    if (ctx.isStreaming) return { action: 'adopt-metadata-only' };
+
+    if (remoteMsgCount >= localMsgCount || localMsgCount <= 2) {
+        return { action: 'adopt-remote' };
+    }
+    return { action: 'keep-local' };
+}
+
+/**
+ * Apply a decision of `adopt-metadata-only`: every remote field EXCEPT the
+ * message list.  Written as an exclusion rather than a field allowlist so a
+ * newly-added metadata field (the next `flags`) propagates cross-tab
+ * without needing to be remembered here.
+ */
+export function adoptMetadataOnly(local: any, remote: any): any {
+    return { ...remote, messages: local.messages || [], isActive: local.isActive ?? true };
 }

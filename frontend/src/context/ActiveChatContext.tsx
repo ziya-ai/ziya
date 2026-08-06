@@ -15,6 +15,7 @@
 import React, { createContext, useContext, useMemo, Dispatch, SetStateAction } from 'react';
 import { Message } from '../utils/types';
 import type { ProcessingState } from './ChatContext';
+import type { ThinkingBlockData } from '../utils/thinkingBlocks';
 
 export interface ActiveChatContextValue {
   currentConversationId: string;
@@ -44,8 +45,9 @@ export interface ActiveChatContextValue {
   // Streaming content maps
   streamedContentMap: Map<string, string>;
   setStreamedContentMap: Dispatch<SetStateAction<Map<string, string>>>;
-  reasoningContentMap: Map<string, string>;
-  setReasoningContentMap: Dispatch<SetStateAction<Map<string, string>>>;
+  /** Ephemeral thinking blocks keyed by turn id -- see thinkingBlocks.ts. */
+  reasoningContentMap: Map<string, ThinkingBlockData[]>;
+  setReasoningContentMap: Dispatch<SetStateAction<Map<string, ThinkingBlockData[]>>>;
   // Processing state
   getProcessingState: (conversationId: string) => ProcessingState;
   updateProcessingState: (conversationId: string, state: ProcessingState) => void;

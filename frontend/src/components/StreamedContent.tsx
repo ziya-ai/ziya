@@ -13,7 +13,6 @@ import { useSendPayload } from '../hooks/useSendPayload';
 import SwarmRecoveryPanel from './SwarmRecoveryPanel';
 import SwarmFlowGraph from './SwarmFlowGraph';
 import type { SwarmNode } from './SwarmFlowGraph';
-import ReasoningDisplay from './ReasoningDisplay';
 import { lazyWithRetry } from '../utils/lazyWithRetry';
 const MarkdownRenderer = lazyWithRetry(() => import("./MarkdownRenderer"));
 
@@ -929,9 +928,6 @@ export const StreamedContent: React.FC<{}> = () => {
                     )}
                     <Suspense fallback={<div>Loading content...</div>}>
                         <>
-                            {/* Show reasoning content for OpenAI models */}
-                            <ReasoningDisplay conversationId={currentConversationId} />
-
                             {/* Only render if we have actual content */}
                             {error && <div><ErrorDisplay message={error} /><br /></div>}
                             {!error && streamedContent && streamedContent.trim() && (

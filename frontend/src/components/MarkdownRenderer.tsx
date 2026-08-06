@@ -7,8 +7,9 @@ import 'react-diff-view/style/index.css';
 import { DiffLine } from './DiffLine';
 import { useActiveChat } from '../context/ActiveChatContext';
 import { parseToolCall, formatToolCallForDisplay } from '../utils/toolCallParser';
-import { parseThinkingContent, removeThinkingTags } from '../utils/thinkingParser';
-import { useFolderContext } from '../context/FolderContext';
+import { removeThinkingTags } from '../utils/thinkingParser';
+import { THINKING_MARKER_RE } from '../utils/thinkingBlocks';
+import type { ThinkingBlockData } from '../utils/thinkingBlocks';import { useFolderContext } from '../context/FolderContext';
 import {
     SplitCellsOutlined, NumberOutlined, EyeOutlined, FileTextOutlined,
     CheckCircleOutlined, CloseCircleOutlined, CheckOutlined, UndoOutlined
@@ -32,8 +33,9 @@ import { useProject } from '../context/ProjectContext';
 import { useSendPayload } from '../hooks/useSendPayload';
 import { useStreamingContext } from '../context/StreamingContext';
 import { parseD3Spec } from '../utils/d3SpecParser';
-import { escapeNestedBacktickFences, stripBareProseFences, matchFenceOpen, applyOutsideFences, splitJsonSpecTrailingContent, upgradeNestedFences } from './fenceScanner';
+import { escapeNestedBacktickFences, stripBareProseFences, matchFenceOpen, applyOutsideFences, splitJsonSpecTrailingContent, upgradeNestedFences, repairAtomicFenceRuns } from './fenceScanner';
 import { processInlineMath } from '../utils/inlineMathClassifier';
+import { applyMusicDarkTheme, VALID_DURATION_BASES } from '../utils/d3Plugins/musicPlugin';
 /**
  * Determine whether a diff for the given language should soft-wrap long lines
  * instead of horizontal-scroll.  Wrapping is appropriate for prose
@@ -3566,6 +3568,126 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded 
     );
 });
 
+/**
+ * Matches a git ``/dev/null`` placeholder, with or without its leading slash.
+ * Such a path names NO file — it is the null side of a create or a delete —
+ * and must never be shown as a filename.
+ */
+const DEV_NULL_RE = /^\/?dev\/null$/;
+
+/**
+ * Matches a unified-diff file header (``--- <path>`` / ``+++ <path>``) and
+ * captures the path, tolerating any run of spaces or tabs as the separator.
+ *
+ * Deliberately a capture rather than a fixed offset.  The previous code sliced
+ * with ``line.substring(6)``, an offset calibrated for ``"--- a/"``; applied to
+ * ``"--- /dev/null"`` — which has only five characters before its path — it ate
+ * two of them and produced ``"ev/null"``.  That mangled value then failed the
+ * ``=== '/dev/null'`` guard whose whole job was to skip the null side and read
+ * the ``+++`` line instead, so the fragment was returned as the file's title.
+ */
+const DIFF_HEADER_RE = /^(?:---|\+\+\+)[ \t]+(.+?)[ \t]*$/;
+
+/**
+ * The file path named by one unified-diff header line.
+ *
+ * Three outcomes, and the caller needs all three kept apart:
+ *   - a string — the path, with any ``a/`` / ``b/`` prefix removed
+ *   - ``null`` — the header is ``/dev/null``: it names no file, which is what
+ *     identifies a create (on ``---``) or a delete (on ``+++``)
+ *   - ``undefined`` — not a header at all, or one whose path has not finished
+ *     streaming.  Folding this into ``null`` would make a half-arrived header
+ *     indistinguishable from a genuine create.
+ */
+export function parseDiffHeaderPath(line: string): string | null | undefined {
+    const match = DIFF_HEADER_RE.exec(line);
+    if (!match) return undefined;
+    let path = match[1];
+    // ``diff -u`` appends a tab-separated mtime, which is not part of the path.
+    const tab = path.indexOf('\t');
+    if (tab >= 0) path = path.slice(0, tab).trim();
+    if (DEV_NULL_RE.test(path)) return null;
+    path = path.replace(/^[ab]\//, '');
+    return path === '' ? undefined : path;
+}
+
+/**
+ * The title shown in a diff block's header bar.
+ *
+ * Prefers the ``diff --git`` line when present, then falls back to the
+ * ``---``/``+++`` pair — which is the ONLY path information available for the
+ * headerless diffs models most often emit, and is where the ``ev/null`` bug
+ * lived: that shape has no git line to fall back on, so one bad slice lost the
+ * filename outright.
+ *
+ * Header scanning stops at the first ``@@``.  Past that point every line is
+ * hunk body, and the body of a diff-of-a-diff is byte-identical to a real
+ * header — an added ``+++ b/x`` line arrives on the wire as ``"+++ b/x"``.
+ * Only position distinguishes them.
+ *
+ * Exported for direct unit testing; the component wraps it in a ``useCallback``.
+ */
+export function extractDiffFileTitle(diffContent: string): string {
+    if (!diffContent) return '';
+
+    // NORMALIZE: Fix LLM-generated diffs with missing newlines between headers
+    // Pattern: ...path--- or ...path+++ (concatenated without newline)
+    const normalizedContent = diffContent
+        .replace(/([^\n])(---\s+[ab]\/)/g, '$1\n$2')  // Insert newline before ---
+        .replace(/([^\n])(\+\+\+\s+[ab]\/)/g, '$1\n$2'); // Insert newline before +++
+
+    const lines = normalizedContent.split('\n');
+
+    // A null OLD side means the file is being created; a null NEW side means it
+    // is being deleted.  Tested via parseDiffHeaderPath so ``dev/null`` without
+    // the leading slash, and extra separator whitespace, are both recognized.
+    const isNewFile = lines.some(line => line.includes('new file mode'))
+        || lines.some(line => line.startsWith('---') && parseDiffHeaderPath(line) === null);
+    const isDeletedFile = lines.some(line => line.includes('deleted file mode'))
+        || lines.some(line => line.startsWith('+++') && parseDiffHeaderPath(line) === null);
+
+    for (const line of lines) {
+        if (!line.startsWith('diff --git')) continue;
+        // Handle both standard format and malformed Gemini format
+        const match = line.match(/diff --git (?:a\/)?([^\/]*(?:\/[^\/]*)*) (?:b\/)?(.*)$/);
+        if (!match) continue;
+        const oldPath = match[1];
+        const newPath = match[2];
+        // Deletion is checked FIRST: the 'deleted file mode' marker is
+        // definitive even when the git header shows the same path on both sides.
+        if (isDeletedFile) return `Delete: ${oldPath}`;
+        if (isNewFile) {
+            return `Create New File: ${DEV_NULL_RE.test(newPath) ? oldPath : newPath}`;
+        }
+        if (DEV_NULL_RE.test(oldPath)) {
+            return `Create New File: ${DEV_NULL_RE.test(newPath) ? 'Unknown' : newPath}`;
+        }
+        if (DEV_NULL_RE.test(newPath)) return `Delete File: ${oldPath}`;
+        if (oldPath !== newPath) return `Rename: ${oldPath} → ${newPath}`;
+        return `Modify: ${newPath || oldPath}`;
+    }
+
+    // No git header: the unified pair is all we have.  Take the FIRST of each
+    // so a body line that mimics a header cannot override the real one.
+    let oldPath: string | null | undefined;
+    let newPath: string | null | undefined;
+    for (const line of lines) {
+        if (line.startsWith('@@')) break;   // hunk body begins; stop scanning
+        if (line.startsWith('---') && oldPath === undefined) {
+            oldPath = parseDiffHeaderPath(line);
+        } else if (line.startsWith('+++') && newPath === undefined) {
+            newPath = parseDiffHeaderPath(line);
+        }
+    }
+
+    if (newPath && (oldPath === null || isNewFile)) return `Create New File: ${newPath}`;
+    if (oldPath && (newPath === null || isDeletedFile)) return `Delete File: ${oldPath}`;
+    if (oldPath && newPath && oldPath !== newPath) return `Rename: ${oldPath} → ${newPath}`;
+    // A lone half-streamed header names nothing yet; say so rather than
+    // rendering a fragment of it.
+    return newPath || oldPath || 'Unknown file';
+}
+
 interface DiffViewWrapperProps {
     token: TokenWithText;
     enableCodeApply: boolean;
@@ -3599,90 +3721,12 @@ const DiffViewWrapper = memo(({ token, enableCodeApply, superseded = false, inde
     // Track component visibility
     const containerRef = useRef<HTMLDivElement>(null);
 
-    // Extract file title early from the diff content, even during streaming
-    const extractFileTitle = useCallback((diffContent: string): string => {
-        if (!diffContent) return '';
-
-        // NORMALIZE: Fix LLM-generated diffs with missing newlines between headers
-        // Pattern: ...path--- or ...path+++ (concatenated without newline)
-        const normalizedContent = diffContent
-            .replace(/([^\n])(---\s+[ab]\/)/g, '$1\n$2')  // Insert newline before ---
-            .replace(/([^\n])(\+\+\+\s+[ab]\/)/g, '$1\n$2'); // Insert newline before +++
-
-        const lines = normalizedContent.split('\n');
-
-        // Check for new file creation first - prioritize 'new file mode' over git header paths
-        const isNewFile = lines.some(line => line.includes('new file mode')) ||
-            lines.some(line => line.startsWith('--- /dev/null'));
-
-        // Check for file deletion
-        const isDeletedFile = lines.some(line => line.includes('deleted file mode')) ||
-            lines.some(line => line.startsWith('+++ /dev/null'));
-
-        // Look for git diff header  
-        for (const line of lines) {
-            if (line.startsWith('diff --git')) {
-                // Handle both standard format and malformed Gemini format
-                const match = line.match(/diff --git (?:a\/)?([^\/]*(?:\/[^\/]*)*) (?:b\/)?(.*)$/);
-                if (match) {
-                    const oldPath = match[1];
-                    const newPath = match[2];
-
-                    // Check for deletion FIRST - before any path comparisons
-                    // The 'deleted file mode' marker is definitive even if git header shows same path
-                    if (isDeletedFile) {
-                        return `Delete: ${oldPath}`;
-                    }
-
-                    // Handle new file creation - check for isNewFile flag first
-                    if (isNewFile) {
-                        return `Create New File: ${newPath !== '/dev/null' ? newPath : oldPath}`;
-                    }
-                    // Only use git header /dev/null detection if we don't have 'new file mode' marker
-                    if (oldPath === '/dev/null' && !isNewFile) {
-                        return `Create New File: ${newPath !== '/dev/null' ? newPath : 'Unknown'}`;
-                    }
-                    // Handle file deletion (new path is /dev/null)  
-                    if (newPath === '/dev/null') {
-                        return `Delete File: ${oldPath}`;
-                    }
-                    // Handle file rename (different paths)
-                    if (oldPath !== newPath) {
-                        return `Rename: ${oldPath} → ${newPath}`;
-                    }
-                    // Regular file modification
-                    return `Modify: ${newPath || oldPath}`;
-                }
-            }
-
-            // Also check unified diff headers for new/deleted files
-            // Look for unified diff headers
-            if (line.startsWith('+++ b/')) {
-                const filePath = line.substring(6);
-                if (isNewFile && filePath !== '/dev/null') {
-                    return `Create New File: ${filePath}`;
-                }
-                return filePath !== '/dev/null' ? filePath : 'Unknown file';
-            }
-            // Handle new file creation from unified diff headers
-            if (line.startsWith('--- a/') || line.startsWith('--- /dev/null')) {
-                const filePath = line.substring(6);
-
-                // Skip /dev/null paths for new files - look for the +++ line instead
-                if (filePath === '/dev/null' && isNewFile) {
-                    continue; // Keep looking for the actual file path
-                }
-
-                // Check if this is a deletion diff
-                if (isDeletedFile) {
-                    return `Delete File: ${filePath}`;
-                }
-                return filePath;
-            }
-        }
-
-        return 'Unknown file';
-    }, []);
+    // Extract file title early from the diff content, even during streaming.
+    // The parsing lives in the module-level extractDiffFileTitle so it is
+    // directly unit-testable; this only memoizes a stable reference for the
+    // fileTitle useMemo below.
+    const extractFileTitle = useCallback(
+        (diffContent: string): string => extractDiffFileTitle(diffContent), []);
 
     useEffect(() => {
         const observer = new IntersectionObserver(([entry]) => {
@@ -4501,7 +4545,7 @@ const decodeHtmlEntities = (text: string): string => {
         .replace(/&trade;/g, '™');
 };
 
-const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false, thinkingContentRef?: React.MutableRefObject<string>, onOpenShellConfig?: () => void, forcedSuperseded: boolean = false): React.ReactNode => {
+const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false, thinkingBlocksMap?: Map<string, ThinkingBlockData[]>, onOpenShellConfig?: () => void, forcedSuperseded: boolean = false): React.ReactNode => {
     const shouldLog = isDebugLoggingEnabled() &&
         (Date.now() - lastLogTimestamp > 10000);
 
@@ -4860,7 +4904,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         };
                         return (
                             <React.Fragment key={frameKey}>
-                                {renderTokens([frameToken], enableCodeApply, isDarkMode, true, isStreaming, thinkingContentRef, onOpenShellConfig)}
+                                {renderTokens([frameToken], enableCodeApply, isDarkMode, true, isStreaming, thinkingBlocksMap, onOpenShellConfig)}
                             </React.Fragment>
                         );
                     };
@@ -4870,7 +4914,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     const renderCaption = (markdown: string): React.ReactNode => {
                         try {
                             const capTokens = marked.lexer(markdown);
-                            return renderTokens(capTokens as any, enableCodeApply, isDarkMode, true, isStreaming, thinkingContentRef, onOpenShellConfig);
+                            return renderTokens(capTokens as any, enableCodeApply, isDarkMode, true, isStreaming, thinkingBlocksMap, onOpenShellConfig);
                         } catch {
                             return <span>{markdown}</span>;
                         }
@@ -5180,7 +5224,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     // 'text' case converts these to <br/>.
                     const filteredPTokens = pTokens.filter(t => t.type !== 'text' || (t as TokenWithText).text !== '' || (t as TokenWithText).text === '\n');
                     if (filteredPTokens.length === 0) return null; // Don't render empty paragraphs
-                    return <p key={sk}>{renderTokens(filteredPTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</p>;
+                    return <p key={sk}>{renderTokens(filteredPTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig)}</p>;
 
                 case 'list':
                     // Render list, processing items recursively
@@ -5191,7 +5235,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             {listToken.items.map((item, itemIndex) => (
                                 // Render list items using the 'list_item' case below
                                 <React.Fragment key={itemIndex}>
-                                    {renderTokens([item], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}
+                                    {renderTokens([item], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig)}
                                 </React.Fragment>
                             ))}
                         </ListTag>
@@ -5200,7 +5244,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'list_item':
                     const listItemToken = token as Tokens.ListItem;
 
-                    const itemContent = renderTokens(listItemToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig);
+                    const itemContent = renderTokens(listItemToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig);
 
                     // Handle task list items
                     if (listItemToken.task) {
@@ -5229,7 +5273,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                                 <tr>
                                     {tableToken.header.map((cell, cellIndex) => (
                                         <th key={cellIndex} style={{ borderBottom: '2px solid #ddd', padding: '8px', textAlign: tableToken.align[cellIndex] || 'left' }}>
-                                            {renderTokens(cell.tokens || [{ type: 'text', text: cell.text }], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}
+                                            {renderTokens(cell.tokens || [{ type: 'text', text: cell.text }], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig)}
                                         </th>
                                     ))}
                                 </tr>
@@ -5239,7 +5283,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                                     <tr key={rowIndex}>
                                         {row.map((cell, cellIndex) => (
                                             <td key={cellIndex} style={{ border: '1px solid #ddd', padding: '8px', textAlign: tableToken.align[cellIndex] || 'left' }}>
-                                                {renderTokens(cell.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}
+                                                {renderTokens(cell.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig)}
                                             </td>
                                         ))}
                                     </tr>
@@ -5489,9 +5533,22 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     }
 
                     // Handle thinking block tokens
-                    if (decodedText.startsWith('THINKING_MARKER')) {
-                        const thinkingContent = thinkingContentRef?.current || '';
-                        return <ThinkingBlock key={sk} isDarkMode={isDarkMode} isStreaming={isStreaming}>{thinkingContent}</ThinkingBlock>;
+                    const thinkMatch = decodedText.match(THINKING_MARKER_RE);
+                    if (thinkMatch) {
+                        const [, turnId, idxStr] = thinkMatch;
+                        const block = thinkingBlocksMap?.get(turnId)?.[Number(idxStr)];
+                        // Unresolvable after a reload (sidecar is session
+                        // state) or past the retention cap.  Rendering
+                        // nothing is the intended ephemeral behaviour.
+                        if (!block) return null;
+                        // isStreaming is per-BLOCK, not per-response: a block
+                        // whose closing chunk has arrived is finished even
+                        // while later iterations still stream, so it collapses
+                        // immediately rather than staying open until the whole
+                        // turn ends.
+                        return <ThinkingBlock key={sk} isDarkMode={isDarkMode}
+                                              isStreaming={!block.complete}>
+                            {block.content}</ThinkingBlock>;
                     }
 
                     // Handle math expressions in text tokens
@@ -5513,7 +5570,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     // Check if this 'text' token has nested inline tokens (like strong, em, etc.)
                     if (tokenWithText.tokens && tokenWithText.tokens.length > 0) {
                         // If it has nested tokens, render them recursively
-                        return renderTokens(tokenWithText.tokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig);
+                        return renderTokens(tokenWithText.tokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig);
                     } else {
                         // If the text contains multiple lines, preserve whitespace.
                         // This handles cases where fenced code block content (no lang tag)
@@ -5539,9 +5596,9 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                 // --- Handle Inline Markdown Elements (Recursively) ---
                 case 'strong':
-                    return <strong key={sk}>{renderTokens((token as Tokens.Strong).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</strong>;
+                    return <strong key={sk}>{renderTokens((token as Tokens.Strong).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig)}</strong>;
                 case 'em':
-                    return <em key={sk}>{renderTokens((token as Tokens.Em).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</em>;
+                    return <em key={sk}>{renderTokens((token as Tokens.Em).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig)}</em>;
                 case 'codespan':
                     if (!hasText(tokenWithText)) return null;
                     // No-chrome inline music notation: `music: C4/q, D4/q`
@@ -5555,11 +5612,11 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'br':
                     return <br key={sk} />;
                 case 'del':
-                    return <del key={sk}>{renderTokens((token as Tokens.Del).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</del>;
+                    return <del key={sk}>{renderTokens((token as Tokens.Del).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig)}</del>;
 
                 case 'link':
                     const linkToken = token as Tokens.Link;
-                    return <a key={sk} href={linkToken.href} title={linkToken.title ?? undefined}>{renderTokens(linkToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</a>;
+                    return <a key={sk} href={linkToken.href} title={linkToken.title ?? undefined}>{renderTokens(linkToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig)}</a>;
 
                 case 'escape':
                     if (!hasText(tokenWithText)) return null;
@@ -5581,11 +5638,11 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'heading':
                     const headingToken = token as Tokens.Heading;
                     const Tag = `h${headingToken.depth}` as keyof JSX.IntrinsicElements;
-                    return <Tag key={sk}>{renderTokens(headingToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</Tag>;
+                    return <Tag key={sk}>{renderTokens(headingToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig)}</Tag>;
                 case 'hr':
                     return <hr key={sk} />;
                 case 'blockquote':
-                    return <blockquote key={sk}>{renderTokens((token as Tokens.Blockquote).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingContentRef, onOpenShellConfig)}</blockquote>;
+                    return <blockquote key={sk}>{renderTokens((token as Tokens.Blockquote).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig)}</blockquote>;
                 case 'space': // Usually ignored
                     return null;
 
@@ -5919,10 +5976,12 @@ export const MusicInlineRenderer: React.FC<{ dsl: string; isDarkMode: boolean }>
         let cancelled = false;
         const renderInline = async () => {
             try {
-                const [vexMod, d3mod] = await Promise.all([
-                    import('vexflow'),
-                    import('d3'),
-                ]);
+                // Only VexFlow is needed here.  A parallel `import('d3')` used
+                // to be awaited alongside it, but its module object was never
+                // read -- it pulled the whole of d3 into the inline-staff load
+                // path, and under jest d3's ESM-only build throws
+                // "Unexpected token 'export'", failing every draw.
+                const vexMod = await import('vexflow');
                 const { Factory, Renderer, Voice } = vexMod as any;
                 if (cancelled || !containerRef.current) return;
                 containerRef.current.innerHTML = '';
@@ -5937,6 +5996,23 @@ export const MusicInlineRenderer: React.FC<{ dsl: string; isDarkMode: boolean }>
                 });
                 const score = factory.EasyScore();
                 const system = factory.System({ width: width - 10 });
+                // Reject an out-of-range/unknown duration BEFORE handing the DSL
+                // to EasyScore.  An unrecognised code (e.g. "C4/999") does not
+                // error there -- it builds a 0/NaN-tick note and VexFlow's
+                // Formatter then spins forever, hanging the page with a blank
+                // staff.  Fail fast into the error fallback instead.  Each token
+                // is "PITCH/DURATION[/...]"; the duration is the 2nd segment,
+                // minus any trailing dots.
+                for (const token of dsl.split(',')) {
+                    const seg = token.trim().split('/')[1];
+                    if (seg == null) continue;
+                    const base = seg.replace(/\.*$/, '').toLowerCase();
+                    if (base && !VALID_DURATION_BASES.has(base)) {
+                        throw new Error(
+                            `unknown duration "${seg}" in inline music (use w h q 8 16, optionally dotted)`,
+                        );
+                    }
+                }
                 const notes = score.notes(dsl, { clef: 'treble' });
                 if (notes.length === 0) {
                     throw new Error(`EasyScore parsed no notes from "${dsl}"`);
@@ -5949,6 +6025,13 @@ export const MusicInlineRenderer: React.FC<{ dsl: string; isDarkMode: boolean }>
                     .addTickables(notes);
                 system.addStave({ voices: [voice] });
                 factory.draw();
+                // VexFlow writes fill/stroke="black" on the root <svg> and has
+                // no theme hook, so an untreated inline staff is black ink on a
+                // dark background (1.27:1).  Must follow draw(): the elements
+                // being recoloured do not exist until then.
+                if (isDarkMode) {
+                    applyMusicDarkTheme(containerRef.current?.querySelector('svg') ?? null);
+                }
                 if (!cancelled) setIsReady(true);
             } catch (error) {
                 console.debug('MusicInlineRenderer: VexFlow render failed (handled):', error);
@@ -6115,8 +6198,10 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     const previousTokensRef = useRef<(Tokens.Generic | TokenWithText)[]>([]);
     const parseTimeoutRef = useRef<NodeJS.Timeout>();
     const markdownRef = useRef<string>(markdown);
-    const thinkingRenderedRef = useRef(false);
-    const thinkingContentRef = useRef<string>('');
+    // Thinking blocks come from session state, not from parsing the markdown.
+    // Read here (before the render memo below) because useActiveChat is
+    // otherwise destructured further down, after the memo that needs it.
+    const { reasoningContentMap: thinkingBlocksMap } = useActiveChat();
 
     // State for the tokens that are currently displayed with stable reference
     const [displayTokens, setDisplayTokens] = useState<(Tokens.Generic | TokenWithText)[]>([]);
@@ -6136,12 +6221,10 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         }
 
         try {
-            // Reset thinking refs only when content actually shrinks (indicating a new message)
-            // Don't reset when content is just growing during streaming
-            if (markdownRef.current && markdown.length < markdownRef.current.length) {
-                thinkingRenderedRef.current = false;
-                thinkingContentRef.current = '';
-            }
+            // No thinking-ref reset needed: blocks live in session state
+            // keyed by turn id.  The old shrink heuristic never fired
+            // mid-turn (streaming content only grows), which is what latched
+            // the single-block bug in place.
             markdownRef.current = markdown;
             // During streaming, if we already have a diff being rendered, keep it stable
             let processedMarkdown = markdown;
@@ -6296,6 +6379,20 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     // (unterminated) blocks are left untouched.
     processedMarkdown = splitJsonSpecTrailingContent(processedMarkdown);
 
+    // Repair runs of atomic diagram/mockup blocks in which one closing
+    // fence is missing.  A single omission inverts every fence that
+    // follows: the next block's opener is absorbed as content, its close
+    // is consumed as the unterminated block's close, and the stray bare
+    // fence after it becomes an opener -- so a whole sequence of diagrams
+    // is destroyed by one absent line (the packet block reports "Invalid
+    // JSON" because it is handed the tail of an html-mockup).
+    //
+    // Must run BEFORE stripBareProseFences: that pass removes the orphan
+    // bare fences one at a time without restoring the missing close, which
+    // leaves the run still mis-paired (verified: it recovers 3 of 4
+    // openers in the four-block case, not 4).
+    processedMarkdown = repairAtomicFenceRuns(processedMarkdown);
+
     // Strip bare code fences that wrap markdown prose instead of code,
     // via the shared CommonMark-aware scanner (fenceScanner.ts).  The
     // former inline implementation detected lang-tagged openers with
@@ -6325,38 +6422,23 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         }
     }
 
-    // Pre-process thinking content to extract and handle separately (only once)
-    if (!thinkingRenderedRef.current) {
-        const thinkingMatch = parseThinkingContent(processedMarkdown);
-        if (thinkingMatch) {
-            // Store thinking content in ref IMMEDIATELY
-            thinkingContentRef.current = thinkingMatch.content;
-            thinkingRenderedRef.current = true;
-            // Remove thinking tags from main content
-            processedMarkdown = removeThinkingTags(processedMarkdown);
-            // Add simple marker at the beginning
-            processedMarkdown = `THINKING_MARKER\n\n${processedMarkdown}`;
-        } else if (externalStreaming) {
-            // During streaming, an unclosed <thinking-data> or <thinking> opening
-            // tag has no closing counterpart yet, so parseThinkingContent returns
-            // null. Strip the raw tag and partial content from the rendered output
-            // and accumulate in thinkingContentRef so the ThinkingBlock shows live
-            // progress instead of leaking raw tags into the chat bubble.
-            const partialMatch =
-                processedMarkdown.match(/<thinking-data>([\s\S]*)$/) ||
-                processedMarkdown.match(/<thinking>([\s\S]*)$/);
-            if (partialMatch) {
-                thinkingContentRef.current = partialMatch[1];
-                processedMarkdown = processedMarkdown
-                    .replace(/<thinking-data>[\s\S]*$/, '')
-                    .replace(/<thinking>[\s\S]*$/, '');
-                processedMarkdown = `THINKING_MARKER\n\n${processedMarkdown}`;
-            }
-        }
-    } else {
-        // Remove thinking tags from subsequent renders
-        processedMarkdown = removeThinkingTags(processedMarkdown);
-    }
+    // Thinking is no longer extracted from the text stream: the executor
+    // emits it as a discrete 'thinking' chunk and chatApi holds it in an
+    // ephemeral sidecar, leaving only a positional marker in the content.
+    //
+    // The removed block carried a one-shot ``thinkingRenderedRef`` latch
+    // that processed only the FIRST complete block per message.  With
+    // display:"summarized" there is one block per tool-calling iteration,
+    // so every later block fell through to a branch that merely stripped
+    // tags: mid-stream its regex could not match an unclosed tag (raw
+    // opener leaked into the bubble) and on close it deleted the block
+    // without emitting a marker (content vanished silently).
+    //
+    // removeThinkingTags is still applied for BACKWARD COMPATIBILITY:
+    // conversations recorded before this change hold literal
+    // <thinking-data> tags inside message.content and would otherwise
+    // render them raw.
+    processedMarkdown = removeThinkingTags(processedMarkdown);
 
     // Escape backticks inside diff code blocks before markdown parsing
     // This prevents backticks in diff content from being interpreted as fence delimiters
@@ -6711,11 +6793,14 @@ useEffect(() => {
 
 // Only memoize the rendered content when not streaming or when streaming completes
 const renderedContent = useMemo(() => {
-    return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender, externalStreaming, thinkingContentRef, onOpenShellConfig, superseded);
+    return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender, externalStreaming, thinkingBlocksMap, onOpenShellConfig, superseded);
 // externalStreaming is a real input to renderTokens (it reaches the Apply
 // button gate), so omitting it froze the tokens rendered mid-stream: the
 // true→false transition at stream end produced no re-render.
-}, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender, superseded, externalStreaming]); // Use forceRender to trigger re-renders
+// thinkingBlocksMap is a real input: it changes as reasoning streams in, and
+// omitting it would freeze markers against a stale map so a block would
+// never appear or never collapse.
+}, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender, superseded, externalStreaming, thinkingBlocksMap]);
 
 // Attach event listeners to throttle retry buttons after render
 const { currentConversationId, currentMessages,

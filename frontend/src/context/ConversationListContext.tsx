@@ -34,6 +34,12 @@ export interface ConversationListContextValue {
   forkConversation: (conversationId: string) => Promise<string | null>;
   toggleFolderGlobal: (folderId: string) => Promise<void>;
   dbError: string | null;
+  /**
+   * False until a conversation list has been committed for the current
+   * project.  Lets the sidebar show a spinner instead of an "empty" state
+   * while a cold start or project switch is still in flight.
+   */
+  hasLoadedConversations: boolean;
   isProjectSwitching: boolean;
   isLoadingConversation: boolean;
 }
@@ -66,6 +72,7 @@ export const ConversationListProvider: React.FC<
       toggleFolderGlobal: value.toggleFolderGlobal,
       dbError: value.dbError,
       isProjectSwitching: value.isProjectSwitching,
+      hasLoadedConversations: value.hasLoadedConversations,
       isLoadingConversation: value.isLoadingConversation,
     }),
     [
@@ -75,6 +82,7 @@ export const ConversationListProvider: React.FC<
       value.folderFileSelections,
       value.dbError,
       value.isProjectSwitching,
+      value.hasLoadedConversations,
       value.isLoadingConversation,
       // Stable callbacks — won't trigger re-renders on their own
       value.setConversations, value.setFolders,

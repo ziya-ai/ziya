@@ -21,7 +21,7 @@ import { useDelegatePolling } from '../hooks/useDelegatePolling';
 import { gcEmptyConversations, purgeExpiredConversations } from '../utils/retentionPurge';
 import { useDelegateStreaming } from '../hooks/useDelegateStreaming';
 import { folderIsEffectivelyGlobal, conversationIsEffectivelyGlobal } from '../utils/folderUtil';
-
+import type { ThinkingBlockData } from '../utils/thinkingBlocks';
 const TERMINAL_PLAN_STATUSES = new Set(['completed', 'completed_partial', 'cancelled']);
 
 // Titles that are placeholders rather than meaningful (auto- or user-set)
@@ -51,12 +51,19 @@ interface ConversationProcessingState {
 
 interface ChatContext {
     streamedContentMap: Map<string, string>;
-    reasoningContentMap: Map<string, string>;
+    /**
+     * Ephemeral thinking blocks, keyed by TURN id (not conversation id).
+     * Never persisted to a message record, so a reload clears them and
+     * there is no path by which reasoning can be resubmitted as context.
+     * Retained across stream end so a completed block stays expandable for
+     * the rest of the session.
+     */
+    reasoningContentMap: Map<string, ThinkingBlockData[]>;
     dynamicTitleLength: number;
     lastResponseIncomplete: boolean;
     setDynamicTitleLength: (length: number) => void;
     setStreamedContentMap: Dispatch<SetStateAction<Map<string, string>>>;
-    setReasoningContentMap: Dispatch<SetStateAction<Map<string, string>>>;
+    setReasoningContentMap: Dispatch<SetStateAction<Map<string, ThinkingBlockData[]>>>;
     isStreaming: boolean;
     getProcessingState: (conversationId: string) => ProcessingState;
     updateProcessingState: (conversationId: string, state: ProcessingState) => void;
@@ -64,6 +71,12 @@ interface ChatContext {
     setIsStreaming: Dispatch<SetStateAction<boolean>>;
     setConversations: Dispatch<SetStateAction<Conversation[]>>;
     conversations: Conversation[];
+    // False until the conversation list has been populated at least once for
+    // the current project (from IndexedDB preload OR the server sync).
+    // Distinguishes "still loading" from "genuinely zero conversations" —
+    // without it, a cold start into a large project is indistinguishable
+    // from an empty project, and the sidebar renders blank with no feedback.
+    hasLoadedConversations: boolean;
     isLoadingConversation: boolean;
     isProjectSwitching: boolean;
     currentConversationId: string;
@@ -141,7 +154,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const { isServerReachable } = useServerStatus();
     const renderCount = useRef(0);
     const [streamedContentMap, setStreamedContentMap] = useState(() => new Map<string, string>());
-    const [reasoningContentMap, setReasoningContentMap] = useState(() => new Map<string, string>());
+    const [reasoningContentMap, setReasoningContentMap] = useState(() => new Map<string, ThinkingBlockData[]>());
     const [isTopToBottom, setIsTopToBottom] = useState<boolean>(() => {
         try { return JSON.parse(localStorage.getItem('ZIYA_TOP_DOWN_MODE') || 'true'); } catch { return true; }
     });
@@ -161,6 +174,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const setIsStreaming: Dispatch<SetStateAction<boolean>> = useCallback(() => {}, []);
     const [runningTaskConversations, setRunningTaskConversations] = useState<Set<string>>(() => new Set());
     const [isLoadingConversation, setIsLoadingConversation] = useState(false);
+    // Gates the sidebar's "loading" vs "empty" distinction.  Set true by the
+    // first commit of a conversation list for a project — whichever of the
+    // IDB preload or the server sync gets there first — and reset to false
+    // when the project changes so the next project shows its own spinner
+    // rather than inheriting the previous project's "loaded" state.
+    // Never gates data flow; purely a UI affordance.
+    const [hasLoadedConversations, setHasLoadedConversations] = useState(false);
     const [isProjectSwitching, setIsProjectSwitching] = useState(false);
     const [isInitialized, setIsInitialized] = useState(false);
     const [userHasScrolled, setUserHasScrolled] = useState(false);
@@ -476,11 +496,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
             return next;
         });
 
-        setReasoningContentMap(prev => {
-            const next = new Map(prev);
-            next.delete(id);
-            return next;
-        });
+        // Thinking blocks are deliberately NOT cleared here.  They are keyed
+        // by turn id, not by ``id`` (a conversation id), so this delete was
+        // already a no-op -- but the intent it encoded was wrong: the marker
+        // is committed to message.content while the content lived only until
+        // stream end, so reasoning vanished the moment a response finished.
+        // Retention is bounded by evictOldThinkingTurns instead.
 
         // Auto-reset processing state when streaming ends
         setProcessingStates(prev => {
@@ -1769,18 +1790,46 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             // Only scroll if we actually switched conversations
             if (isActualSwitch) {
-                // Scroll to appropriate position after conversation loads with multiple attempts
+                // Scroll to the appropriate edge after conversation loads.
+                // A single scrollTop assignment lands wrong when the
+                // conversation ends with one or more TaskCardInlineTile
+                // bindings: those mount lazily (Suspense) and fetch their
+                // run state over REST/WS (see TaskCardInlineTile.tsx), so
+                // chatContainer.scrollHeight keeps growing for a beat after
+                // this callback runs. With several completed/failed cards
+                // preceding the active one, the one-shot scroll captures an
+                // early, incomplete scrollHeight and settles at whatever
+                // partial height existed then — visually "the top of the
+                // first card" — instead of the true bottom.
+                //
+                // Mirror the settle-loop used elsewhere in this file for
+                // message-index jumps (loadConversationAndScrollToMessage):
+                // pin to the edge immediately, then keep re-pinning while
+                // scrollHeight is still changing, until it stabilizes (or a
+                // timeout elapses) so late-mounting task cards don't leave
+                // the view short of the real end.
                 const scrollToPosition = () => {
                     const chatContainer = document.querySelector('.chat-container') as HTMLElement;
-                    if (chatContainer) {
-                        if (isTopToBottom) {
-                            // For top-down, scroll to the very bottom
-                            chatContainer.scrollTop = chatContainer.scrollHeight;
-                        } else {
-                            // For bottom-up, scroll to the very top
-                            chatContainer.scrollTop = 0;
+                    if (!chatContainer) return;
+                    const pin = () => {
+                        chatContainer.scrollTop = isTopToBottom
+                            ? chatContainer.scrollHeight
+                            : 0;
+                    };
+                    pin();
+                    const settleStart = performance.now();
+                    let lastHeight = chatContainer.scrollHeight;
+                    let stableChecks = 0;
+                    const settle = () => {
+                        const height = chatContainer.scrollHeight;
+                        stableChecks = height === lastHeight ? stableChecks + 1 : 0;
+                        lastHeight = height;
+                        pin();
+                        if (stableChecks < 3 && (performance.now() - settleStart) < 3000) {
+                            setTimeout(settle, 150);
                         }
-                    }
+                    };
+                    setTimeout(settle, 150);
                 };
 
                 // Execute scroll positioning
@@ -2161,6 +2210,9 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 console.log('✅ EPHEMERAL MODE: Set initial conversation');
             }
 
+            // Ephemeral mode has no persistence to wait on — the list above
+            // is final, so the sidebar must not sit on a spinner.
+            setHasLoadedConversations(true);
             setIsInitialized(true);
             isRecovering.current = false;
             return;
@@ -2603,6 +2655,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 setIsProjectSwitching(true);
                 console.log('🔄 PROJECT_SWITCH: Set isProjectSwitching = true for', projectId);
             }
+
+            // Reset the loaded flag for the incoming project.  Without this,
+            // switching from a populated project to one that is still loading
+            // would show the previous project's "loaded" state and render an
+            // "empty" message over a list that is merely in flight.
+            // Deliberately inside the `serverSyncedForProject !== projectId`
+            // guard so periodic 30s ticks (which re-run this effect body via
+            // dependency changes) never flip the sidebar back to a spinner.
+            setHasLoadedConversations(false);
         }
 
         recentlyFetchedFullIds.current.clear();
@@ -2707,7 +2768,16 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     // Only clear if we're still the current epoch; a stale
                     // preload should not flip the spinner off underneath the
                     // active project's switch.
-                    if (!isStale()) setIsProjectSwitching(false);
+                    if (!isStale()) {
+                        setIsProjectSwitching(false);
+                        // The IDB preload is the FIRST list the user can see,
+                        // so it ends the loading state even though the server
+                        // sync is still running.  A project with local history
+                        // therefore never waits on the network to render, and
+                        // one with genuinely no history correctly falls through
+                        // to the empty message instead of spinning forever.
+                        setHasLoadedConversations(true);
+                    }
                 }
             };
             preloadForSwitch();
@@ -3174,6 +3244,20 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             if (knownServerConversationIds.current.has((p as any).id)) continue;
                             const pid = (p as any).projectId;
                             if (pid && pid !== projectId && !(p as any).isGlobal) continue;
+                            // Ephemerals are prev-only BY DESIGN, permanently: they
+                            // are never written to IDB and never pushed to the
+                            // server, so this loop is the ONLY thing keeping them
+                            // in state.  The age cap below assumes a prev-only
+                            // entry is a race IDB will shortly resolve, which is
+                            // exactly wrong for an ephemeral: an idle one silently
+                            // vanished on the first sync 5 minutes after its last
+                            // touch, while the focused one survived via the
+                            // active-conversation rescue below.  That asymmetry is
+                            // why the loss looked intermittent rather than total.
+                            if ((p as any).isEphemeral) {
+                                safeConvs.push(p);
+                                continue;
+                            }
                             const lastActivity = (p as any).lastAccessedAt || (p as any)._version || 0;
                             if (lastActivity === 0 || nowTs - lastActivity > PRESERVATION_MAX_AGE_MS) continue;
                             safeConvs.push(p);
@@ -3307,7 +3391,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                     && p.isActive !== false
                                     && (!p.projectId || p.projectId === projectId || conversationIsEffectivelyGlobal(p, syncFolders))
                                     && !knownServerConversationIds.current.has(p.id)
-                                    && (nowTs - (p.lastAccessedAt || p._version || 0)) < PRESERVATION_MAX_AGE_MS
+                                    // Same permanent-prev-only exemption as the main
+                                    // preservation loop above: an ephemeral has no IDB
+                                    // or server copy to age toward, so the staleness
+                                    // cap can only ever delete it.
+                                    && (p.isEphemeral
+                                        || (nowTs - (p.lastAccessedAt || p._version || 0)) < PRESERVATION_MAX_AGE_MS)
                                 );
                                 // Active-conversation safety net: if the user's currently
                                 // viewed conversation is in prev but didn't make it into
@@ -3618,6 +3707,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 // exit should release the UI — by the time we get here, a
                 // newer epoch has its own setIsProjectSwitching flow.
                 setIsProjectSwitching(false);
+                // Backstop for the loading affordance: this `finally` runs on
+                // success, on sync error, and on early return (unreachable
+                // server, hidden tab, streaming in progress), so the sidebar
+                // can never be left spinning indefinitely — including the case
+                // where IndexedDB is unavailable and the preload above never
+                // committed a list.
+                setHasLoadedConversations(true);
                 if (isPeriodicTick) periodicSyncInFlightRef.current = false;
             }
         };
@@ -3680,6 +3776,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
         }
     }, [currentConversationId, conversations, currentFolderId]);
 
+    // Cross-tab merge.  Reads streamingConversationsRef (not the state
+    // value) so the callback identity stays stable — it is a dependency of
+    // the BroadcastChannel effect below, and re-running that effect on every
+    // streaming transition would tear down and rebuild the channel
+    // subscription mid-stream.
     const mergeConversations = useCallback((local: Conversation[], remote: Conversation[]) => {
         const merged = new Map<string, Conversation>();
 
@@ -3697,24 +3798,26 @@ export function ChatProvider({ children }: ChatProviderProps) {
         remote.forEach(remoteConv => {
             if (!remoteConv?.id) return; // Skip null/undefined/corrupt entries
             const localConv = merged.get(remoteConv.id);
-            if (!localConv) {
-                merged.set(remoteConv.id, {
-                    ...remoteConv,
-                    isActive: true
-                });
+            // Version + message-count decision extracted to
+            // utils/syncMerge.ts (pure + unit-testable).  The streaming case
+            // is the load-bearing part: a metadata mutation in another tab
+            // (flag toggle → mutateConversationMeta → _version bump →
+            // broadcast) must not bring a message-stale IndexedDB record
+            // into live state and drop the in-flight turn.
+            const decision = syncMerge.decideCrossTabMerge(
+                localConv, remoteConv,
+                { isStreaming: streamingConversationsRef.current.has(remoteConv.id) },
+            );
+            if (decision.action === 'keep-local') return;
+            if (decision.action === 'adopt-metadata-only') {
+                merged.set(remoteConv.id,
+                    syncMerge.adoptMetadataOnly(localConv, remoteConv));
                 return;
             }
-            // Message count guard: never accept a remote version that has
-            // fewer messages, even if its _version is newer.
-            const localMsgCount = localConv.messages?.length || 0;
-            const remoteMsgCount = remoteConv.messages?.length || 0;
-            if ((remoteConv._version || 0) > (localConv._version || 0)
-                && (remoteMsgCount >= localMsgCount || localMsgCount <= 2)) {
-                merged.set(remoteConv.id, {
-                    ...remoteConv,
-                    isActive: localConv?.isActive ?? true // Preserve active status
-                });
-            }
+            merged.set(remoteConv.id, {
+                ...remoteConv,
+                isActive: localConv?.isActive ?? true // Preserve active status
+            });
         });
 
         return Array.from(merged.values());
@@ -3801,13 +3904,17 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // Stash the latest payload; the rAF callback will pick it up.
             // If another message arrives before the frame fires, we overwrite —
             // chatApi sends the full accumulated string, not deltas.
-            pendingChunk = { conversationId, content, reasoning };
+            // Thinking blocks are deliberately NOT relayed across tabs: they
+            // are ephemeral per-window session state keyed by a turn id minted
+            // in that window's sendPayload, so another tab has no matching
+            // marker to resolve them against.
+            pendingChunk = { conversationId, content };
 
             if (chunkRafId === null) {
                 chunkRafId = requestAnimationFrame(() => {
                     chunkRafId = null;
                     if (!pendingChunk) return;
-                    const { conversationId: cid, content: c, reasoning: r } = pendingChunk;
+                    const { conversationId: cid, content: c } = pendingChunk;
                     pendingChunk = null;
 
                     if (c) {
@@ -3815,14 +3922,6 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             if (prev.get(cid) === c) return prev; // no-op: same content
                             const next = new Map(prev);
                             next.set(cid, c);
-                            return next;
-                        });
-                    }
-                    if (r) {
-                        setReasoningContentMap(prev => {
-                            if (prev.get(cid) === r) return prev;
-                            const next = new Map(prev);
-                            next.set(cid, r);
                             return next;
                         });
                     }
@@ -4519,6 +4618,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         setConversationModelPreference,
         moveConversationToFolder,
         dbError,
+        hasLoadedConversations,
         isLoadingConversation,
         isProjectSwitching,
         toggleMessageMute,
@@ -4693,6 +4793,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     toggleFolderGlobal={toggleFolderGlobal}
                     dbError={dbError}
                     isProjectSwitching={isProjectSwitching}
+                    hasLoadedConversations={hasLoadedConversations}
                     isLoadingConversation={isLoadingConversation}
                 >
                     <ActiveChatProvider

@@ -165,6 +165,93 @@ describe('shouldFetchFull', () => {
     });
 });
 
+describe('shouldFetchFull — flags', () => {
+    it('fetches when the server has flags local lacks', () => {
+        expect(shouldFetchFull(
+            sc({ flags: ['priority'] }), local({ flags: [] }), fetchCtx(),
+        )).toBe(true);
+    });
+
+    it('fetches when the server has a flagColor local lacks', () => {
+        expect(shouldFetchFull(
+            sc({ flagColor: 'red' }), local({ flagColor: null }), fetchCtx(),
+        )).toBe(false === false ? true : true);
+    });
+
+    // The churn case the "server HAS / local LACKS" direction exists to
+    // avoid: the local user just set a flag, so local is ahead and the push
+    // is still in flight. A symmetric divergence check would re-fetch every
+    // cycle and the merge would discard the result anyway (local wins on
+    // version), so this must NOT trigger a fetch.
+    it('does NOT fetch when LOCAL has flags the server lacks', () => {
+        expect(shouldFetchFull(
+            sc({ flags: [] }), local({ flags: ['priority'] }), fetchCtx(),
+        )).toBe(false);
+    });
+
+    it('does NOT fetch when flags agree', () => {
+        expect(shouldFetchFull(
+            sc({ flags: ['priority'] }), local({ flags: ['priority'] }), fetchCtx(),
+        )).toBe(false);
+    });
+
+    it('respects alreadyFetchedThisSession for a flags-only trigger', () => {
+        expect(shouldFetchFull(
+            sc({ flags: ['priority'] }), local({ flags: [] }),
+            fetchCtx({ alreadyFetchedThisSession: true }),
+        )).toBe(false);
+    });
+});
+
+describe('mergeServerChat — flag propagation', () => {
+    it('server-only shell carries the summary flags', () => {
+        const d = mergeServerChat(
+            sc({ flags: ['priority'], flagColor: 'red' }),
+            undefined, undefined, mergeCtx());
+        expect(d.action).toBe('set');
+        expect((d as any).record.flags).toEqual(['priority']);
+        expect((d as any).record.flagColor).toBe('red');
+    });
+
+    it('server-only shell with no flags defaults to empty/null', () => {
+        const d = mergeServerChat(sc(), undefined, undefined, mergeCtx());
+        expect((d as any).record.flags).toEqual([]);
+        expect((d as any).record.flagColor).toBeNull();
+    });
+
+    it('summary-overlay adopts server flags when server is newer', () => {
+        const d = mergeServerChat(
+            sc({ _version: NOW, flags: ['blocked'], flagColor: 'blue' }),
+            local({ _version: NOW - 5_000, flags: [], flagColor: null }),
+            undefined, mergeCtx());
+        expect((d as any).record.flags).toEqual(['blocked']);
+        expect((d as any).record.flagColor).toBe('blue');
+    });
+
+    // Clearing is the case a falsy-fallback chain silently breaks: the
+    // stale local value would be restored, undoing the clear on the very
+    // sync meant to propagate it.
+    it('summary-overlay propagates an explicit flag CLEAR', () => {
+        const d = mergeServerChat(
+            sc({ _version: NOW, flags: [], flagColor: null }),
+            local({ _version: NOW - 5_000, flags: ['priority'], flagColor: 'red' }),
+            undefined, mergeCtx());
+        expect((d as any).record.flags).toEqual([]);
+        expect((d as any).record.flagColor).toBeNull();
+    });
+
+    // Flags are VERSIONED (mutateConversationMeta bumps _version), unlike
+    // the bead counts, so a local-newer record must keep its own flags —
+    // overlaying the server's would revert a change the user just made.
+    it('keep-local does NOT overlay server flags when local is newer', () => {
+        const d = mergeServerChat(
+            sc({ _version: NOW - 10_000, flags: ['blocked'] }),
+            local({ _version: NOW, flags: ['priority'] }),
+            undefined, mergeCtx());
+        expect(d.action).toBe('keep-local');
+    });
+});
+
 describe('mergeServerChat — server-only (no local copy)', () => {
     it('adopts the full-fetched record with normalized fields', () => {
         const full = {
