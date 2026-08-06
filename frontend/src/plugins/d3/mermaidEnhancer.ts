@@ -486,6 +486,45 @@ export function initMermaidEnhancer(): void {
     diagramTypes: ['quadrantchart']
   });
 
+  // Escape a run of two or more backticks that OPENS a node label. Mermaid
+  // treats a single backtick right after the opening quote as its own
+  // markdown-string delimiter, so that form is a legitimate feature -- but a
+  // run of 2+ there is not valid markdown-string syntax and the lexer aborts
+  // with "Lexical error ... Unrecognized text", which reaches the user as an
+  // empty SVG and a dead diagram. This is the shape an LLM emits constantly,
+  // because a triple-backtick fence is how it names a code block in prose.
+  //
+  // Verified by rendering against real mermaid 11, not inferred: a backtick
+  // run appearing LATER in the same label parses fine, so only the leading
+  // run is rewritten -- escaping unconditionally would churn content that
+  // already works. '`' renders back to a literal backtick in the SVG.
+  registerPreprocessor(
+    (definition: string): string => {
+      if (definition.indexOf('``') === -1) {
+        return definition;
+      }
+
+      console.log('🔍 LABEL-BACKTICK-ESCAPE: Escaping backtick runs that open a label');
+
+      // Every node shape opener ends with the quote ('["', '("', '{"', '[["',
+      // '{{"', '[/"', ...), so anchoring on quote + 2-or-more backticks covers
+      // all of them without enumerating shapes. A label that merely ENDS in
+      // backticks is backtick-then-quote and is left untouched.
+      const result = definition.replace(
+        /"(`{2,})/g,
+        (_match, run: string) => '"' + '`'.repeat(run.length),
+      );
+
+      if (result !== definition) {
+        console.log('🔍 LABEL-BACKTICK-ESCAPE: Escaped a leading backtick run');
+      }
+      console.log('🔍 LABEL-BACKTICK-ESCAPE: Processing complete');
+      return result;
+    }, {
+    name: 'label-backtick-escape',
+    priority: 730, // Before edge-label-pipe-escape (720) and every label pass
+  });
+
   // Escape literal pipe characters that appear INSIDE already-quoted edge
   // labels (e.g. |phase| absolute-value notation). Mermaid treats '|' as the
   // edge-label delimiter, so an unescaped '|' inside a quoted label closes the

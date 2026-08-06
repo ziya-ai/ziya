@@ -1405,13 +1405,6 @@ const REFERENCE_COLUMN_PX = 760;
 const MIN_LEGIBLE_SCALE = 0.35;
 const LEGIBILITY_WIDTH_LIMIT = Math.round(REFERENCE_COLUMN_PX / MIN_LEGIBLE_SCALE);
 
-/** Estimated width of one measure, from its note count. */
-function estimateMeasureWidth(noteCount: number): number {
-  // At least one slot: an empty measure still needs its barline and padding,
-  // and a zero would let unboundedly many empty bars share one system.
-  return Math.max(1, noteCount) * MEASURE_NOTE_PX;
-}
-
 /**
  * How much horizontal room one note claims, as a fraction of a full slot.
  *
@@ -1451,8 +1444,8 @@ function noteWidthWeight(duration: string | number): number {
  * Sums each note's slot fraction rather than counting notes, so a bar of
  * sixteen beamed 16ths (16 * 0.4 == 6.4 slots) estimates near a bar of eight
  * eighths instead of sixteen quarters, letting several dense bars share a line
- * (M4).  An empty measure still reserves one slot for its barline and padding,
- * matching estimateMeasureWidth's `Math.max(1, ...)` floor.
+ * (M4).  An empty measure still reserves one slot (MEASURE_NOTE_PX) for its
+ * barline and padding, the same floor the flat count-based estimate used.
  */
 function estimateMeasureWidthFromNotes(notes: MusicNoteSpec[]): number {
   if (!notes || notes.length === 0) return MEASURE_NOTE_PX;
