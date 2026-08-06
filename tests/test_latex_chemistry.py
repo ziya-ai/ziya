@@ -332,3 +332,61 @@ def test_chemmove_renders_as_png(renderer):
     assert result.ok, result.error
     assert result.fmt == "png", "position marks cannot be carried by SVG"
     assert len(result.content) > 3000, "the arrow appears to be missing"
+
+
+# ---------------------------------------------------------------------------
+# \charge separator.  Pins the syntax documented in Docs/Capabilities.md.
+#
+# chemfig defines \charge_g#1:#2[#3]=#4, (chemfig.tex:2240), so the angle is
+# separated from the charge symbol by "=" and ":" introduces the optional
+# radial offset.  Colon-by-analogy is the natural wrong guess, because chemfig
+# spells BOND angles -[:30]; it fails with "Argument of \charge_g has an extra
+# }", which names brace balance and never mentions the separator.  Both halves
+# are asserted so a chemfig change that swapped them could not pass.
+# ---------------------------------------------------------------------------
+
+@needs_tex
+def test_charge_uses_equals_as_its_separator(renderer):
+    result = renderer.render(
+        "chemfig", r"\chemfig{\charge{90=\|,180=\|}{O}}",
+        fmt="png", use_cache=False)
+    assert result.ok, result.error
+
+
+@needs_tex
+def test_charge_with_a_colon_separator_is_repaired_and_renders(renderer):
+    r"""The colon-separator wrong guess is auto-repaired, not surfaced as an error.
+
+    ``:`` is the natural (wrong) guess because chemfig spells BOND angles
+    ``-[:30]``.  Before the charge repair shipped, this form failed to compile
+    with "Argument of \charge_g has an extra }" -- a message that names brace
+    balance and never mentions the separator.  ``app/utils/chemfig_charge.py``
+    now promotes ``:`` to ``=`` and the render succeeds, reporting the fix so it
+    is never silent.  (See test_chemfig_charge.py for the separator rule itself.)
+    """
+    result = renderer.render(
+        "chemfig", r"\chemfig{\charge{90:\|}{O}}",
+        fmt="png", use_cache=False)
+    assert result.ok, result.error
+    assert result.autofixes, "the separator repair must be reported, not silent"
+
+
+@needs_tex
+def test_math_mode_charge_argument_is_wrapped_and_renders(renderer):
+    r"""\ominus et al. need their own $...$; the repair now supplies it.
+
+    The raw failure ("Missing $ inserted") does not say which argument was at
+    fault, so ``app/utils/chemfig_charge.py`` wraps a control-word payload in
+    ``$...$`` and the render succeeds.  The pre-wrapped form must of course also
+    render, unchanged.
+    """
+    repaired = renderer.render(
+        "chemfig", r"\chemfig{\charge{90=\scriptstyle\ominus}{O}}",
+        fmt="png", use_cache=False)
+    assert repaired.ok, repaired.error
+    assert repaired.autofixes, "the math wrap must be reported, not silent"
+
+    wrapped = renderer.render(
+        "chemfig", r"\chemfig{\charge{90=$\scriptstyle\ominus$}{O}}",
+        fmt="png", use_cache=False)
+    assert wrapped.ok, wrapped.error

@@ -349,24 +349,49 @@ class LatexRenderer:
 
     @staticmethod
     def _lint_chemfig(body: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
-        """Close unambiguously-short chemfig rings; warn about the rest.
+        """Repair \\charge syntax and close unambiguously-short chemfig rings.
+
+        Two independent fixers, run in this order because they address
+        different constructs and the charge repair can turn a body that would
+        not compile at all into one the ring lint can then usefully inspect.
 
         Wrapped in a blanket except because this is a convenience check on
-        model-authored input: any defect in the lint itself must degrade to
-        "render the body as written", never to a failed render.
+        model-authored input: any defect in either fixer must degrade to
+        "render the body as written", never to a failed render.  Each is
+        guarded separately so a fault in one cannot cost the other.
         """
+        applied: list[str] = []
+        warnings: list[str] = []
+
+        # \charge separator / math-mode repair.  Its failures are hard compile
+        # errors whose messages name the wrong cause entirely, so repairing is
+        # strictly better than reporting -- see app/utils/chemfig_charge.py.
+        try:
+            from app.utils.chemfig_charge import autofix as charge_autofix
+
+            body, charge_fixes, _ = charge_autofix(body)
+            for note in charge_fixes:
+                logger.info("chemfig charge repair: %s", note)
+            applied.extend(charge_fixes)
+        except Exception:                  # pragma: no cover - defensive
+            logger.exception("chemfig charge repair failed; body unchanged")
+
+        # Ring-closure lint.  Unlike the charge repair, an under-specified ring
+        # still COMPILES, so these warnings are the only signal a caller gets.
         try:
             from app.utils.chemfig_lint import autofix
 
-            fixed, applied, warnings = autofix(body)
-            for note in applied:
+            body, ring_fixes, ring_warnings = autofix(body)
+            for note in ring_fixes:
                 logger.info("chemfig autofix: %s", note)
-            for note in warnings:
+            for note in ring_warnings:
                 logger.warning("chemfig lint: %s", note)
-            return fixed, applied, warnings
+            applied.extend(ring_fixes)
+            warnings.extend(ring_warnings)
         except Exception:                      # pragma: no cover - defensive
             logger.exception("chemfig lint failed; rendering body unchanged")
-            return body, (), ()
+
+        return body, tuple(applied), tuple(warnings)
 
     def _not_installed(self, profile: LatexProfile, cap: Capability,
                        missing: tuple[str, ...] = ()) -> RenderResult:
