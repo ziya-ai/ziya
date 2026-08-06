@@ -32,7 +32,7 @@ import pytest
 
 from app.mcp.tools.memory_tools import MemoryProposeTool
 from app.models.memory import MemoryScope
-from app.storage.memory import get_memory_storage
+from app.storage.proposals import get_proposals_store
 
 
 _WORKSPACE = "/tmp/ziya-scope-test-project"
@@ -103,8 +103,11 @@ async def test_no_workspace_leaves_default_scope(monkeypatch):
             _workspace_path="",
         )
     assert result.get("success"), result
-    # Read back: default empty scope, healed to MemoryScope by the round-trip.
+    # Read back from the probationary store.  Rows are plain dicts from the
+    # event-log projection, so scope arrives as a nested dict rather than
+    # being healed into a MemoryScope by MemoryProposal(**data) — the
+    # round-trip that this file's header note describes does not apply here.
     pid = result["proposal_id"]
-    proposal = next(p for p in get_memory_storage().list_proposals() if p.id == pid)
-    assert isinstance(proposal.scope, MemoryScope)
-    assert proposal.scope.project_paths == []
+    proposal = get_proposals_store().get(pid)
+    assert proposal is not None, f"{pid} not found in probationary store"
+    assert proposal.get("scope", {}).get("project_paths", []) == []

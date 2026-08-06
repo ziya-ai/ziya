@@ -223,6 +223,28 @@ def _archive_proposal(proposal: Dict[str, Any], reason: str) -> bool:
         return False
 
 
+def current_activity_count() -> int:
+    """Read the activity counter WITHOUT advancing it.
+
+    ``extractor._next_activity_count()`` increments on read, which is
+    correct for extraction (a completed extraction IS user activity) but
+    wrong for any passive caller: bumping the counter ages every open
+    proposal toward the ARCHIVAL_AGE_THRESHOLD without anything having
+    happened.  Callers that merely need the current value — the lifecycle
+    sweep, and the memory_propose tool — use this instead.
+    """
+    try:
+        import json
+        from app.utils.paths import get_ziya_home
+        counter_path = get_ziya_home() / "memory" / "activity_counter.json"
+        if counter_path.exists():
+            with open(counter_path) as f:
+                return int(json.load(f).get("count", 0))
+    except Exception as e:
+        logger.debug(f"activity_counter read failed (treating as 0): {e}")
+    return 0
+
+
 async def run_lifecycle_pass() -> Dict[str, int]:
     """Sweep all open proposals; promote or archive based on accumulated signals.
 
@@ -242,20 +264,7 @@ async def run_lifecycle_pass() -> Dict[str, int]:
     if not open_proposals:
         return counts
 
-    # The lifecycle pass should NOT advance the counter -- it's a passive
-    # sweep, not user activity.  Read the current value without bumping it.
-    try:
-        from pathlib import Path
-        import json
-        from app.utils.paths import get_ziya_home
-        counter_path = get_ziya_home() / "memory" / "activity_counter.json"
-        if counter_path.exists():
-            with open(counter_path) as f:
-                current_counter = int(json.load(f).get("count", 0))
-        else:
-            current_counter = 0
-    except Exception:
-        current_counter = 0
+    current_counter = current_activity_count()
 
     embedding_lookup = _make_active_embedding_lookup()
 

@@ -11,9 +11,14 @@ Ownership is proven by matching the proposal's stamped conversation_id
 against the conversation_id the framework injects into the tool call.
 The gate fails closed: missing stamp or mismatch → denied.
 
-These run against the real MemoryStorage, isolated to tmp_path by the
-autouse conftest fixture (which also forces the Noop embedding provider),
-so the queue read/write and the ownership gate are exercised end to end.
+These run against the real ProposalsStore — the PROBATIONARY store, which
+is what memory_propose writes to and what run_lifecycle_pass sweeps.  The
+memories-store proposal list is a separate human-only queue that nothing
+writes to any more.  Rows there are plain dicts from the event-log
+projection, not MemoryProposal objects, so field access is by key.
+Isolated to tmp_path by the autouse conftest fixtures (ZIYA_HOME redirect
+plus Noop embeddings), so the queue and the ownership gate are exercised
+end to end without touching the developer's real store.
 """
 import pytest
 
@@ -21,7 +26,7 @@ from app.mcp.tools.memory_tools import (
     MemoryProposeTool,
     MemoryRetractProposalTool,
 )
-from app.storage.memory import get_memory_storage
+from app.storage.proposals import get_proposals_store
 from app.models.memory import MemoryProposal
 
 
@@ -50,10 +55,18 @@ async def _retract(proposal_id, conversation_id):
 
 
 def _pending_ids():
-    return {p.id for p in get_memory_storage().list_proposals()}
+    """Open (still-probationary) proposal ids.
+
+    Only ``open`` counts as pending: retract archives rather than deletes,
+    so the row survives in ``list_all()`` for audit and would otherwise
+    still appear here after a successful retract.
+    """
+    return {p["id"] for p in get_proposals_store().list_open()}
 
 
 def _active_contents():
+    # Promotion targets the memories store, so this one stays put.
+    from app.storage.memory import get_memory_storage
     return {m.content for m in get_memory_storage().list_memories(status="active")}
 
 
@@ -62,8 +75,9 @@ def _active_contents():
 @pytest.mark.asyncio
 async def test_propose_stamps_conversation_id():
     pid = await _propose("Kuiper GGMA merlin count is 4 per gateway.", CONV_A)
-    proposal = next(p for p in get_memory_storage().list_proposals() if p.id == pid)
-    assert proposal.conversation_id == CONV_A
+    proposal = get_proposals_store().get(pid)
+    assert proposal is not None, f"{pid} not found in probationary store"
+    assert proposal["conversation_id"] == CONV_A
 
 
 # ── own-session retract succeeds ────────────────────────────────────
@@ -101,14 +115,20 @@ async def test_retract_legacy_unstamped_denied():
     # Simulate a proposal created before conversation stamping existed
     # (or by a path that doesn't stamp): write it directly with no
     # conversation_id.
-    store = get_memory_storage()
+    #
+    # Written straight to the probationary store rather than through the
+    # tool, because the tool always stamps.  This test passed even before
+    # the store redirect, but for the wrong reason: retract looked in a
+    # store this row was never in, so "not found" masqueraded as "denied".
+    # It now genuinely exercises the fails-closed ownership gate.
+    store = get_proposals_store()
     legacy = MemoryProposal(content="Legacy unstamped proposal.", layer="domain_context")
     assert legacy.conversation_id is None
-    store.add_proposal(legacy)
+    legacy_id = store.add(legacy, activity_count=0)
 
-    result = await _retract(legacy.id, CONV_A)
+    result = await _retract(legacy_id, CONV_A)
     assert result.get("error") is True, result
-    assert legacy.id in _pending_ids()  # untouched
+    assert legacy_id in _pending_ids()  # untouched
 
 
 # ── current call with no conversation_id cannot retract anything ────

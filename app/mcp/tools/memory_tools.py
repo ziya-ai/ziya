@@ -353,10 +353,17 @@ class MemoryProposeTool(BaseMCPTool):
         import os
         project_path = kwargs.pop("_workspace_path", None) or os.environ.get("ZIYA_USER_CODEBASE_DIR", "")
 
-        from app.storage.memory import get_memory_storage
+        from app.storage.proposals import get_proposals_store
         from app.models.memory import MemoryProposal, MemoryScope
 
-        store = get_memory_storage()
+        # Probationary store, NOT the memories-store proposal list.  The
+        # latter has no automatic adjudicator: every consumer of it is a
+        # human action (the /api/v1/memory/proposals endpoints), so anything
+        # written there accumulates until someone clicks.  Observed live at
+        # 50 pending.  ProposalsStore is swept by run_lifecycle_pass(),
+        # which promotes on corroboration + use and archives decayed
+        # entries, so a proposal written here resolves without a human.
+        store = get_proposals_store()
         proposal = MemoryProposal(
             content=content,
             tags=tags,
@@ -372,8 +379,13 @@ class MemoryProposeTool(BaseMCPTool):
             proposal.conversation_id = _conversation_id
         if project_path:
             proposal.scope = MemoryScope(project_paths=[project_path])
-        store.add_proposal(proposal)
-        pending_count = len(store.list_proposals())
+        # Read the activity counter WITHOUT advancing it: a proposal is not
+        # itself user activity, and bumping the counter here would age every
+        # other open proposal toward archival.  Same reasoning as the
+        # passive-sweep read in lifecycle.run_lifecycle_pass.
+        from app.memory.lifecycle import current_activity_count
+        proposal.id = store.add(proposal, activity_count=current_activity_count())
+        pending_count = len(store.list_open())
         return {
             "success": True,
             "message": f"Memory proposed for review ({pending_count} pending).",
@@ -564,16 +576,13 @@ class MemoryRetractProposalTool(BaseMCPTool):
         if not proposal_id:
             return {"error": True, "message": "proposal_id is required."}
 
-        from app.storage.memory import get_memory_storage
-        store = get_memory_storage()
+        from app.storage.proposals import get_proposals_store
+        store = get_proposals_store()
 
-        # Locate the proposal in the review queue.
-        target = None
-        for p in store.list_proposals():
-            if p.id == proposal_id:
-                target = p
-                break
-        if target is None:
+        # ProposalsStore rows are plain dicts from the event-log projection,
+        # not MemoryProposal objects, so field access is by key.
+        target = store.get(proposal_id)
+        if target is None or target.get("status") != "open":
             return {
                 "error": True,
                 "message": f"No pending proposal with id '{proposal_id}'. "
@@ -584,7 +593,7 @@ class MemoryRetractProposalTool(BaseMCPTool):
         # Ownership gate: only the conversation that created the proposal
         # may retract it.  Fails closed — a missing stamp (legacy proposal,
         # or one created before this field was set) is NOT retractable.
-        owner = getattr(target, "conversation_id", None)
+        owner = target.get("conversation_id")
         if not _conversation_id or owner != _conversation_id:
             logger.info(
                 f"🔒 memory_retract_proposal denied for {proposal_id}: "
@@ -600,8 +609,11 @@ class MemoryRetractProposalTool(BaseMCPTool):
                 ),
             }
 
-        if store.dismiss_proposal(proposal_id):
-            logger.info(f"↩️ Retracted own-session proposal {proposal_id}: {target.content[:60]}")
+        # Archive rather than delete: the event log keeps the row in
+        # list_all() for audit, and mark_archived is idempotent (returns
+        # False if already terminal).
+        if store.mark_archived(proposal_id, reason="retracted_by_agent"):
+            logger.info(f"↩️ Retracted own-session proposal {proposal_id}: {target.get('content','')[:60]}")
             return {
                 "success": True,
                 "message": f"Retracted proposal {proposal_id}.",

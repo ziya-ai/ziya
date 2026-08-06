@@ -520,12 +520,19 @@ const ProposalCard: React.FC<{
       <div style={{ fontSize: 13, lineHeight: 1.5, color: isDarkMode ? '#e2e8f0' : '#334155', marginBottom: 8 }}>
         {proposal.content}
       </div>
+      {/* This queue resolves itself: run_lifecycle_pass promotes on
+          corroboration + use and archives decayed entries.  The buttons
+          are an override for a user who wants to intervene, not a task
+          list — so they read as "now" against an implied "eventually". */}
+      <div style={{ fontSize: 11, color: isDarkMode ? '#64748b' : '#94a3b8', marginBottom: 8, fontStyle: 'italic' }}>
+        On probation — promotes itself if corroborated or used, lapses if not.
+      </div>
       <div style={{ display: 'flex', gap: 8 }}>
         <Button type="primary" size="small" icon={<CheckCircleOutlined />}
           onClick={() => onApprove(proposal.id)}
-          style={{ background: '#10b981', borderColor: '#10b981' }}>Approve</Button>
+          style={{ background: '#10b981', borderColor: '#10b981' }}>Promote now</Button>
         <Button size="small" icon={<CloseCircleOutlined />}
-          onClick={() => onDismiss(proposal.id)}>Dismiss</Button>
+          onClick={() => onDismiss(proposal.id)}>Drop now</Button>
       </div>
     </div>
   );
@@ -777,7 +784,7 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ visible, onClose }) => {
           {/* Stat cards row */}
           <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 24 }}>
             <StatCard icon="🧠" label="Total Memories" value={status?.total || 0} color="#3b82f6" isDarkMode={isDarkMode} />
-            <StatCard icon="💡" label="Pending Proposals" value={proposals.length} color="#f59e0b" isDarkMode={isDarkMode} />
+            <StatCard icon="🌱" label="On Probation" value={proposals.length} color="#8b9dc3" isDarkMode={isDarkMode} />
             <StatCard icon="🗺️" label="Mind-Map Domains" value={mindmap.filter(n => !n.parent).length} color="#8b5cf6" isDarkMode={isDarkMode} />
             <StatCard icon="🔗" label="Cross-Links" value={mindmap.reduce((s, n) => s + n.cross_links.length, 0)} color="#06b6d4" isDarkMode={isDarkMode} />
             <StatCard icon="⚠️" label="Needs Review"
