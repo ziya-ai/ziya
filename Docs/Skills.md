@@ -10,6 +10,11 @@ Skills are reusable instruction bundles that shape how the AI responds. When a s
 | **Custom** | Created by the user via the UI. | Yes |
 | **Project** | Auto-discovered from `SKILL.md` files in the project workspace. | Edit the file directly |
 
+Some built-in skills are switched on automatically for new projects of a
+recognized type — a code repository starts with **Continuous Documentation**
+and **Tests for Everything** active. See
+[Project Templates](ProjectTemplates.md).
+
 ## Using Skills
 
 Skills are managed in the **Contexts** tab of the left sidebar, under the **Skills** section header.
