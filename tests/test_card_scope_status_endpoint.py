@@ -13,8 +13,10 @@ A throwaway Ed25519 keypair + isolated approval store are used so nothing
 touches /etc/ziya or ~/.ziya.
 """
 
+import asyncio
 import os
 import time
+from unittest.mock import patch
 
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -60,28 +62,37 @@ from app.api import task_cards as tc
 
 
 def _status(card, project_id="proj1", deck_scope=None):
-    """Reproduce the endpoint body against an in-memory card."""
-    from app.models.task_card import merge_scopes
-    blocks = []
-    for block, ancestor_scopes in tc._walk_blocks(card.root):
-        own_scope = getattr(block, "scope", None)
-        scope = merge_scopes(deck_scope, card.scope, *ancestor_scopes, own_scope)
-        escalation = sc.task_escalation_block(scope)
-        if not escalation:
-            continue
-        authorized = sa.is_scope_authorized(block.id, scope)
-        sign_command = "" if authorized else (
-            f"sudo ziya-approve --task {card.id} "
-            f"--block {block.id} --project {project_id}")
-        blocks.append({
-            "blockId": block.id, "name": block.name or "",
-            "hasEscalation": True, "authorized": bool(authorized),
-            "escalation": {k: list(v) for k, v in escalation.items()},
-            "signCommand": sign_command,
-        })
-    return {"cardId": card.id,
-            "anyUnapproved": any(not b["authorized"] for b in blocks),
-            "blocks": blocks}
+    """Call the REAL endpoint against an in-memory card.
+
+    This previously re-implemented the endpoint body inline, and the copy
+    went stale without anyone noticing: when the endpoint was corrected to
+    skip container blocks (only leaf tasks are gated at runtime), the
+    transcription kept reporting them — so three tests here failed against
+    a CORRECT implementation, and would have kept passing against a broken
+    one.  A test that re-implements what it is testing verifies only its
+    own copy.
+
+    Only the two external dependencies are stubbed — the card lookup and
+    the project record that supplies the deck scope — so every assertion
+    below now exercises the shipped code path.
+    """
+    class _Storage:
+        def get(self, _cid):
+            return card
+
+    class _Project:
+        settings = type("S", (), {"taskScope": deck_scope})()
+
+    class _ProjectStorage:
+        def __init__(self, *a, **k):
+            pass
+
+        def get(self, _pid):
+            return _Project()
+
+    with patch.object(tc, "_get_storage", lambda _pid: _Storage()), \
+         patch.object(tc, "ProjectStorage", _ProjectStorage):
+        return asyncio.run(tc.get_card_scope_status(project_id, card.id))
 
 
 def _effective_scope(card, block_id, deck_scope=None):
@@ -206,6 +217,49 @@ def test_ancestor_container_scope_contributes_escalation(keyed_store):
     assert st["blocks"][0]["escalation"]["shell_commands"] == ["make test"]
 
 
+def test_container_block_is_never_reported_even_with_its_own_escalation(keyed_store):
+    """Only ids the RUNTIME gates may be reported.
+
+    authorize_scope is called from execute_task_block alone, which
+    block_executor invokes for block_type == "task" — so a container's
+    scope is never hashed under the container's own id.  Reporting one
+    produced a signCommand that wrote a record nothing reads: the
+    operator saw "✓ Signed" while the card kept running at the floor.
+
+    The duplicate was also silent-by-construction: an ancestor's scope
+    merges into its descendants, so container and leaf hash IDENTICALLY
+    and the editor rendered the same escalation twice.
+    """
+    leaf = Block(block_type="task", id="b-leaf", name="Leaf")
+    root = Block(block_type="repeat", id="b-root", name="Loop",
+                 repeat_mode="count", repeat_count=2,
+                 scope=TaskScope(shell_commands=["make test"]),
+                 body=[leaf])
+    card = TaskCard(id="c-container", name="C", description="", root=root)
+    st = _status(card)
+    ids = [b["blockId"] for b in st["blocks"]]
+    assert "b-root" not in ids, (
+        "a container id must not be reported: nothing gates it at runtime"
+    )
+    assert ids == ["b-leaf"]
+    # The grant is not lost — it reaches the leaf via the ancestor chain.
+    assert st["blocks"][0]["escalation"]["shell_commands"] == ["make test"]
+
+
+def test_no_signCommand_names_a_non_task_block(keyed_store):
+    """Every emitted signCommand must target a gated id.  Guards the
+    whole class of bug rather than the one nesting shape above."""
+    inner = Block(block_type="task", id="b-inner", name="Inner",
+                  scope=TaskScope(shell_commands=["dd"]))
+    mid = Block(block_type="parallel", id="b-mid", name="Mid",
+                scope=TaskScope(shell_commands=["wget"]), body=[inner])
+    root = Block(block_type="group", id="b-grp", name="Grp", body=[mid])
+    card = TaskCard(id="c-deep", name="C", description="", root=root)
+    st = _status(card)
+    for b in st["blocks"]:
+        if b["signCommand"]:
+            assert f"--block {b['blockId']}" in b["signCommand"]
+        assert b["blockId"] not in ("b-grp", "b-mid")
 def test_approval_binds_to_full_effective_hash_not_leaf_alone(keyed_store):
     """Approving a leaf's own scope hash does NOT authorize it once a
     deck/card/ancestor layer adds escalation the approval never covered —

@@ -116,14 +116,26 @@ async def test_list_bound_to_current_chat_filters(env, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_list_bound_without_conversation_errors(env):
+async def test_list_bound_without_conversation_fails_open(env):
+    """With no resolvable conversation_id the binding filter cannot be
+    applied, so the tool returns the UNFILTERED list plus a warning rather
+    than erroring.
+
+    Deliberate: ``bound_to_current_chat`` is a convenience filter, and
+    failing the whole call over it would break a listing that is otherwise
+    perfectly answerable.  This test previously asserted the opposite
+    (hard error) and predates that change.
+    """
     from app.mcp.tools.task_card_tools import TaskCardListTool
     from app.context import set_conversation_id
     set_conversation_id("")  # clear
     _make_card(env)
     out = await TaskCardListTool().execute(bound_to_current_chat=True)
-    assert out.get("error") is True
-    assert "conversation_id" in out["message"]
+    assert out.get("error") is not True
+    assert out["count"] == 1          # unfiltered, not empty
+    # The warning must name the reason so the model can tell an unfiltered
+    # list from a filtered one that happened to match everything.
+    assert "conversation_id" in str(out)
 
 
 # ── read ────────────────────────────────────────────────────────

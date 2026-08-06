@@ -109,7 +109,12 @@ def test_outer_state_persists_inner_state_resets(monkeypatch):
     root = _repeat([_state({"target": "prod"}, id_="s1"), inner], count=1, id_="rout")
     asyncio.run(execute_block(root, ExecutionContext(run_id="r")))
     assert len(captured) == 2
-    assert all(c == "prod/0" for c in captured)
+    # Substring, not equality: a task preceded by a sibling (here the State
+    # block) receives an auto-prepended "[Result of the previous step ...]"
+    # context preamble — see block_executor._sibling_context.  What this
+    # test is actually about is that the OUTER state persists while the
+    # INNER one resets each cycle, which the rendered values still show.
+    assert all("prod/0" in c for c in captured)
 
 
 def test_task_without_state_or_loop_is_unchanged(monkeypatch):
@@ -148,7 +153,12 @@ def test_override_survives_loop_baseline_reapply(monkeypatch):
                     _task("n={{var.n}}")], count=3)
     asyncio.run(execute_block(
         root, ExecutionContext(run_id="r", overrides={"n": "9"})))
-    assert captured == ["n=9", "n=9", "n=9"]
+    # Substring per iteration rather than exact list equality: the task
+    # follows a State sibling, so each rendering carries the auto-prepended
+    # sibling-context preamble.  The assertion that matters is that the
+    # override wins on EVERY cycle, not just the first.
+    assert len(captured) == 3
+    assert all("n=9" in c for c in captured)
 
 
 def test_override_with_no_state_block_is_readable(monkeypatch):
