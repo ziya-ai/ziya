@@ -25,9 +25,13 @@
 import { D3RenderPlugin } from '../../types/d3';
 import { escapeHtml } from '../../utils/htmlSanitize';
 import { applyLatexDarkTheme, sizeLatexSvg } from '../../utils/latexSvgTheme';
+import { LATEX_PROFILE_KEYS } from '../../constants/latexProfiles';
 
-/** Diagram types served by the backend LaTeX profiles. */
-const LATEX_TYPES = new Set(['circuitikz', 'tikz', 'chemfig', 'tikz-cd']);
+/**
+ * Diagram types served by the backend LaTeX profiles, derived from the shared
+ * registry so a new profile cannot be supported everywhere except here.
+ */
+const LATEX_TYPES = new Set(LATEX_PROFILE_KEYS);
 
 interface LatexSpec {
     type: string;
