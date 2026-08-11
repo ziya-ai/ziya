@@ -1205,7 +1205,19 @@ class ConversationDB implements DB {
 
         // Before running the expensive full cursor scan, check if localStorage
         // has a recent snapshot we can use instead.
-        if (this._seedShellCacheFromLS()) {
+        //
+        // Skipped when mutations are pending.  The snapshot predates anything
+        // recorded in shellCacheDirtyIds, and unlike the incremental path
+        // above this branch does not re-read those ids — so serving it hands
+        // back the pre-mutation record (a renamed conversation reverting to
+        // its old title).  The staleness is also self-perpetuating:
+        // _seedShellCacheFromLS restores shellCacheTs to the snapshot's own
+        // timestamp, which is already past SHELL_CACHE_TTL_MS, so the tiers
+        // above stay disabled and every subsequent call re-seeds the same
+        // stale data until the snapshot ages out of the 5-minute window.
+        // The full scan below is the correct source in that case, and it
+        // clears the dirty set, so this costs one scan rather than one per call.
+        if (this.shellCacheDirtyIds.size === 0 && this._seedShellCacheFromLS()) {
             return Array.from(this.shellCache!.values()).map(c => ({ ...c }));
         }
 
