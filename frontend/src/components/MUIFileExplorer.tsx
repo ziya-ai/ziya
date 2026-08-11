@@ -6,7 +6,7 @@ import { useProject } from '../context/ProjectContext';
 import { Folders } from '../utils/types';
 import { debounce } from 'lodash';
 import { message } from 'antd';
-import { convertToTreeData } from '../utils/folderUtil';
+import { convertToTreeData, fileExplorerViewState } from '../utils/folderUtil';
 import Tooltip from '@mui/material/Tooltip';
 import { getFileIcon, getFolderIcon } from '../utils/fileIcons';
 
@@ -97,6 +97,7 @@ export const MUIFileExplorer = () => {
     isScanning,
     scanProgress,
     scanError,
+    isSwitchingProject,
     getFolderTokenCount,
     accurateTokenCounts,
     autoAddedFiles,
@@ -1260,8 +1261,47 @@ export const MUIFileExplorer = () => {
     window.addEventListener('accurateTokenCountsUpdated', handleAccurateTokenCountsUpdated);
     return () => window.removeEventListener('accurateTokenCountsUpdated', handleAccurateTokenCountsUpdated);
   }, []);
+
+  // Single resolution of which top-level view wins, so the four branches below
+  // cannot disagree about precedence (they did: the switch window matched the
+  // empty state and reported "No files found" for a project not yet read).
+  const viewState = fileExplorerViewState({
+    isSwitchingProject,
+    isScanning,
+    isInitialLoad,
+    hasLoadedData,
+    treeNodeCount: muiTreeData?.length ?? 0,
+  });
+
+  // Switching projects: blank tree, spinner, and say so. Deliberately shows no
+  // file counters — they would be the outgoing project's, or zero, and both
+  // read as "the new project is empty", which is the thing being fixed.
+  if (viewState === 'switching') {
+    return (
+      <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', p: 1, minHeight: '200px', overflow: 'hidden' }}>
+        <Box sx={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          height: '200px',
+          gap: 2
+        }}>
+          <LinearProgress sx={{ width: '80%' }} />
+          <Typography variant="body2" color="text.secondary" align="center">
+            Switching projects…
+            <br />
+            <Typography variant="caption" color="text.secondary">
+              Loading the file tree for the new project
+            </Typography>
+          </Typography>
+        </Box>
+      </Box>
+    );
+  }
+
   // Show loading state while scanning and no data
-  if ((isScanning || isInitialLoad) && (!hasLoadedData || !muiTreeData || muiTreeData.length === 0)) {
+  if (viewState === 'loading') {
     const showSlowLoadingTip = scanProgress && scanProgress.elapsed >= 60;
     return (
       <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', p: 1, minHeight: '200px', overflow: 'hidden' }}>
@@ -1319,7 +1359,7 @@ export const MUIFileExplorer = () => {
   }
 
   // Show empty state if no folders loaded and not scanning
-  if (!isScanning && !isInitialLoad && hasLoadedData && (!muiTreeData || muiTreeData.length === 0)) {
+  if (viewState === 'empty') {
     return (
       <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', p: 1, minHeight: '200px', overflow: 'hidden' }}>
         <Box sx={{ textAlign: 'center', py: 4 }}>

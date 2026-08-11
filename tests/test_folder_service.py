@@ -630,3 +630,119 @@ class TestAddDirectoryToFolderCache:
                     is_inside_workspace=True,
                 )
             assert result is False
+
+
+class TestScanCompleteBroadcastIsProjectScoped:
+    """The scan_complete event must name the directory that finished.
+
+    The /ws/file-tree socket is shared by every open window and connections
+    are NOT per-project, so every window receives every project's scan
+    events. While this broadcast carried an empty path, each window read
+    another project's completion as its own and cleared its scanning state
+    mid-scan. That is not merely a wrong indicator: clearing `isScanning`
+    tears down the frontend progress poller, and that poller is also the
+    fallback that fetches the finished tree -- so the window was left
+    rendering whatever shallow partial it happened to hold, indefinitely.
+
+    Measured: a 17.6s scan of one project silently froze the tree of a
+    concurrent 79s+ scan of another at 4 top-level keys.
+
+    These assert on the ARGUMENTS handed to _schedule_broadcast rather than
+    on socket traffic, because the defect was entirely in the payload; the
+    delivery path was already working (and is covered by
+    TestScheduleBroadcast).
+    """
+
+    def setup_method(self):
+        import app.services.folder_service as svc
+        import app.utils.directory_util as du
+        svc._folder_cache.clear()
+        svc._background_scan_threads.clear()
+        du._scan_progress_by_dir.clear()
+        du._folder_cache.clear()
+        du._scan_progress["active"] = False
+        du._scan_progress["cancelled"] = False
+
+    def _broadcasts_for_scan(self, directory, fake_result):
+        """Run one background scan, returning every _schedule_broadcast call."""
+        import app.services.folder_service as svc
+        import app.utils.directory_util as du
+        abs_dir = os.path.abspath(directory)
+        calls = []
+        with patch.object(du, 'get_folder_structure', return_value=fake_result), \
+             patch.object(du, 'get_scan_progress', return_value={"active": False}), \
+             patch.object(svc, '_schedule_broadcast',
+                          side_effect=lambda *a, **k: calls.append((a, k))):
+            svc.get_cached_folder_structure(directory, [], 15, synchronous=False)
+            t = svc._background_scan_threads.get(abs_dir)
+            if t:
+                t.join(timeout=5.0)
+        return calls, abs_dir
+
+    def test_scan_complete_carries_the_scanned_directory(self):
+        calls, abs_dir = self._broadcasts_for_scan(
+            "/tmp/ziya_bcast_proj", {"src": {"token_count": 5, "children": {}}},
+        )
+        completes = [c for c in calls if c[0] and c[0][0] == "scan_complete"]
+        assert len(completes) == 1, f"expected one scan_complete, got {calls}"
+        args = completes[0][0]
+        assert len(args) >= 2, "scan_complete broadcast carries no path argument"
+        assert args[1] == abs_dir, (
+            f"scan_complete path was {args[1]!r}, expected {abs_dir!r}"
+        )
+
+    def test_path_is_not_empty_the_regression_itself(self):
+        """Pin the exact prior behaviour, so a revert to '' fails loudly.
+
+        Without this, a regression to the pathless form would still satisfy
+        a laxer 'a scan_complete was sent' assertion.
+        """
+        calls, _ = self._broadcasts_for_scan(
+            "/tmp/ziya_bcast_empty", {"src": {"token_count": 1, "children": {}}},
+        )
+        completes = [c for c in calls if c[0] and c[0][0] == "scan_complete"]
+        assert completes, "no scan_complete broadcast at all"
+        assert completes[0][0][1] != "", (
+            "scan_complete broadcast is pathless again -- every window will "
+            "read another project's completion as its own"
+        )
+
+    def test_path_is_absolute_so_windows_can_compare_it(self):
+        """The frontend compares against its own absolute project path.
+
+        A relative path would never match, so the guard would silently
+        discard this window's own completion event.
+        """
+        calls, abs_dir = self._broadcasts_for_scan(
+            "/tmp/ziya_bcast_abs", {"src": {"token_count": 1, "children": {}}},
+        )
+        path = [c for c in calls if c[0] and c[0][0] == "scan_complete"][0][0][1]
+        assert os.path.isabs(path), f"scan_complete path {path!r} is not absolute"
+        assert path == abs_dir
+
+    def test_two_projects_broadcast_distinguishable_paths(self):
+        """The whole point: concurrent scans must be tellable apart."""
+        calls_a, abs_a = self._broadcasts_for_scan(
+            "/tmp/ziya_bcast_a", {"src": {"token_count": 1, "children": {}}},
+        )
+        calls_b, abs_b = self._broadcasts_for_scan(
+            "/tmp/ziya_bcast_b", {"lib": {"token_count": 2, "children": {}}},
+        )
+        path_a = [c for c in calls_a if c[0][0] == "scan_complete"][0][0][1]
+        path_b = [c for c in calls_b if c[0][0] == "scan_complete"][0][0][1]
+        assert path_a == abs_a and path_b == abs_b
+        assert path_a != path_b, "two projects broadcast identical paths"
+
+    def test_discarded_scan_broadcasts_nothing(self):
+        """A cancelled scan commits no tree, so it must not claim completion.
+
+        Announcing completion here would make every window fetch and cache
+        a half-built tree.
+        """
+        calls, _ = self._broadcasts_for_scan(
+            "/tmp/ziya_bcast_cancel",
+            {"src": {"token_count": 1, "children": {}}, "_cancelled": True},
+        )
+        assert not [c for c in calls if c[0] and c[0][0] == "scan_complete"], (
+            "cancelled scan announced scan_complete"
+        )

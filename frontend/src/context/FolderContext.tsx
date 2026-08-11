@@ -1,7 +1,7 @@
 import React, { createContext, ReactNode, useContext, useCallback, useEffect, useState, useLayoutEffect, useRef, useMemo } from 'react';
 import { Folders } from "../utils/types";
 import { message } from 'antd';
-import { convertToTreeData, insertIntoFolders, updateTokenInFolders, removeFromFolders, sanitizeCheckedKeys, collectAllTreePaths } from "../utils/folderUtil";
+import { convertToTreeData, insertIntoFolders, updateTokenInFolders, removeFromFolders, sanitizeCheckedKeys, collectAllTreePaths, scanEventTargetsProject, nextScanRefetchInterval, SCAN_REFETCH_INITIAL_TICK } from "../utils/folderUtil";
 import { TreeDataNode } from "antd";
 import { debounce } from "../utils/debounce";
 import { useConfig } from "./ConfigContext";
@@ -82,6 +82,13 @@ export interface FolderContextType {
     elapsed: number;
   } | null;
   scanError: string | null;
+  // True from the moment a project switch begins until the first folder data
+  // for the incoming project arrives. Distinguishes "we have not looked at
+  // this project yet" from "this project is empty" — without it the explorer
+  // renders its No-files-found empty state for the whole switch window,
+  // because the incoming project's tree is empty while hasLoadedData is still
+  // latched true from the project just left.
+  isSwitchingProject: boolean;
   getFolderTokenCount: (path: string, folderData: Folders) => number;
   accurateTokenCounts: Record<string, { count: number; timestamp: number }>;
   addFilesToContext: (filePaths: string[], options?: { isAutoAdd?: boolean }) => Promise<string[]>;
@@ -155,6 +162,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const [isScanning, setIsScanning] = useState(false);
   const [scanProgress, setScanProgress] = useState<{ directories: number; files: number; elapsed: number } | null>(null);
   const [scanError, setScanError] = useState<string | null>(null);
+  const [isSwitchingProject, setIsSwitchingProject] = useState(false);
   const scanTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const progressIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const [accurateTokenCounts, setAccurateTokenCounts] = useState<Record<string, { count: number; timestamp: number }>>({});
@@ -543,6 +551,16 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
   // One-time setup for folder progress checking
   useEffect(() => {
+    // Mid-scan refetch bookkeeping, scoped to this scan: the effect re-runs
+    // (and these reset) whenever isScanning flips. The backend serves a live
+    // partial tree that deepens as the scan proceeds, so the tree must be
+    // re-fetched during the scan, not only at completion — otherwise a large
+    // project shows a near-empty tree for the scan's whole duration.
+    let pollTick = 0;
+    let refetchInterval = SCAN_REFETCH_INITIAL_TICK;
+    let nextRefetchTick = SCAN_REFETCH_INITIAL_TICK;
+    let lastRefetchedFileCount = -1;
+
     const checkFolderProgress = async () => {
       // Cancel any previously scheduled poll to prevent parallel chains
       if (progressPollTimerRef.current) {
@@ -565,11 +583,25 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
           const data = await response.json();
           console.log('Progress data:', data);
           if (data.active) {
+            const filesSeen = data.progress?.files || 0;
             setScanProgress({
               directories: data.progress?.directories || 0,
-              files: data.progress?.files || 0,
+              files: filesSeen,
               elapsed: data.progress?.elapsed || 0
             });
+
+            // Pull the deepened partial tree on a backing-off schedule. Gated
+            // on the file count having moved so a scan stalled inside one slow
+            // directory doesn't pay for a re-convert that renders identically.
+            pollTick += 1;
+            if (pollTick >= nextRefetchTick) {
+              if (filesSeen !== lastRefetchedFileCount) {
+                lastRefetchedFileCount = filesSeen;
+                if (fetchFoldersRef.current) fetchFoldersRef.current();
+              }
+              refetchInterval = nextScanRefetchInterval(refetchInterval);
+              nextRefetchTick = pollTick + refetchInterval;
+            }
 
             // Only schedule another check if scanning is still active
             progressPollTimerRef.current = setTimeout(checkFolderProgress, 1000);
@@ -690,6 +722,14 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
           // Scan complete — fetch the finished tree and clear progress state.
           if (type === 'scan_complete') {
+            // This socket carries scan events for every project being scanned,
+            // not just ours. Acting on another project's completion cleared
+            // this window's scanning state mid-scan, which also stopped the
+            // progress poller that fetches the finished tree — leaving the
+            // tree stuck on whatever partial it last received.
+            if (!scanEventTargetsProject(filePath, currentProjectRef.current?.path)) {
+              return;
+            }
             setIsScanning(false);
             setScanProgress(null);
             if (progressIntervalRef.current) {
@@ -702,7 +742,8 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
           // Remaining handlers below operate on a concrete file path, so
           // drop pathless events here (scan_complete, handled above, is the
-          // one event type that legitimately carries an empty path).
+          // one event type that may carry an empty path — it now carries the
+          // scanned directory, and older backends send it empty).
           if (!filePath || !type) return;
 
           // External paths have a nested structure on the server that
@@ -810,6 +851,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         if (data.error) {
           setScanError(data.error);
           setIsScanning(false);
+          setIsSwitchingProject(false);
           return;
         }
 
@@ -819,9 +861,15 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
           setIsScanning(true);
           setScanError(null);
           startProgressPolling();
+          // Note the pure-_scanning case deliberately does NOT clear the
+          // switching flag: the server has nothing to show yet, so this is
+          // exactly the blank-with-spinner window the flag exists to mark.
           if (data._stale_and_scanning) {
             const { _stale_and_scanning, ...folderData } = data;
             if (folderData && Object.keys(folderData).length > 0) {
+              // First real (if shallow) tree for the new project — the switch
+              // is over; the ordinary scanning indicator takes it from here.
+              setIsSwitchingProject(false);
               setFolders(folderData);
               __folderTreeIdleTraced('stale-and-scanning', () => {
                 try {
@@ -836,6 +884,10 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
         } else {
           setIsScanning(false);
           setScanError(null);
+          // A completed scan ends the switch window whatever it found — an
+          // empty result here is a real "this project has no files", which is
+          // the empty state's job to report, not the switching view's.
+          setIsSwitchingProject(false);
           if (progressIntervalRef.current) {
             clearInterval(progressIntervalRef.current);
             progressIntervalRef.current = null;
@@ -862,6 +914,9 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       } catch (error) {
         setScanError(error instanceof Error ? error.message : 'Unknown error');
         setIsScanning(false);
+        // Never leave the spinner up on a failed fetch — the error state has
+        // to be able to surface, and it is outranked by the switching view.
+        setIsSwitchingProject(false);
       } finally {
         closePorts();
       }
@@ -934,7 +989,22 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   useEffect(() => {
     const newPath = currentProject?.path ?? null;
     if (newPath && newPath !== prevProjectPath.current) {
+      const isRealSwitch = prevProjectPath.current !== null;
       prevProjectPath.current = newPath;
+      // This path fires when the project changes without a projectSwitched
+      // event (ProjectContext finishing its load, a restore from storage).
+      // It previously only re-fetched, leaving the OUTGOING project's tree
+      // on screen — labelled as the incoming project — until new data
+      // arrived. Clear it and mark the switch so the explorer shows a blank
+      // tree with a switching spinner instead of the wrong project's files.
+      // Guarded on there having been a previous project: the initial load is
+      // not a switch, and treating it as one would replace the ordinary
+      // first-load spinner with a switching message.
+      if (isRealSwitch) {
+        setIsSwitchingProject(true);
+        setFolders(undefined);
+        setTreeData([]);
+      }
       fetchFolders();
       seedDefaultIncludedFolders(newPath);
     }
@@ -1018,6 +1088,12 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       setIsScanning(false);
       setScanProgress(null);
       setScanError(null);
+
+      // Mark the switch window. Clearing the tree below is necessary but not
+      // sufficient: an empty tree with hasLoadedData still latched from the
+      // old project is indistinguishable from an empty project, and the
+      // explorer reported it as "No files found" until data arrived.
+      setIsSwitchingProject(true);
 
       // Clear stale folder data from old project immediately
       setFolders(undefined);
@@ -1269,13 +1345,14 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     isScanning,
     scanProgress,
     scanError,
+    isSwitchingProject,
     accurateTokenCounts,
     addFilesToContext,
     autoAddedFiles,
     removeAutoAddedFiles,
     // Remove forceRefreshCounter from dependencies to prevent unnecessary re-renders
   }), [folders, treeData, checkedKeys, searchValue, expandedKeys, isScanning,
-    scanProgress, scanError, accurateTokenCounts, addFilesToContext, autoAddedFiles, removeAutoAddedFiles]);
+    scanProgress, scanError, isSwitchingProject, accurateTokenCounts, addFilesToContext, autoAddedFiles, removeAutoAddedFiles]);
 
   return (
     <FolderContext.Provider value={contextValue}>
@@ -1305,6 +1382,7 @@ export const useFolderContext = () => {
         elapsed: number;
       } | null,
       scanError: null,
+      isSwitchingProject: false,
       getFolderTokenCount: () => 0,
       accurateTokenCounts: {} as Record<string, { count: number; timestamp: number }>,
       addFilesToContext: async () => [],
