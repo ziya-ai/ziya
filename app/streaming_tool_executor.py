@@ -3646,13 +3646,36 @@ Please retry the tool call with valid JSON. Ensure:
                                 tools_executed_this_iteration = True
 
                     elif chunk['type'] == 'message_stop':
+                        # Drain the inline scanner's carry before the
+                        # handler runs: a stream ending mid-tag, or right
+                        # after a deferred opener, would otherwise lose it.
+                        from app.text_delta_processor import flush_inline_thinking
+                        _fl_events, _fl_text = flush_inline_thinking(
+                            _td_state.inline_thinking,
+                            f"{int((time.time() - iteration_start_time) * 1000)}ms",
+                        )
+                        for _fl_evt in _fl_events:
+                            yield track_yield(_fl_evt)
+                        if _fl_text:
+                            assistant_text += _fl_text
+                            _td_state.assistant_text = assistant_text
+                            yield track_yield({'type': 'text', 'content': _fl_text})
                         # Delegate to extracted handler (Phase 5d)
                         from app.message_stop_handler import handle_message_stop, MessageStopState
                         _ms_state = MessageStopState(
                             assistant_text=assistant_text,
                             viz_buffer=viz_buffer,
                             content_buffer=content_buffer,
-                            thinking_tag_opened=thinking_tag_opened,
+                            # OR in the inline scanner's flag so an
+                            # unclosed inline block is force-closed too.
+                            # Merged only HERE: the close-on-text check
+                            # earlier in this loop runs BEFORE
+                            # process_text_delta, so merging during the
+                            # stream would close the block on the next
+                            # delta of its own content.
+                            thinking_tag_opened=(
+                                thinking_tag_opened
+                                or _td_state.inline_thinking.open),
                         )
                         async for _ms_evt in handle_message_stop(
                             executor=self,

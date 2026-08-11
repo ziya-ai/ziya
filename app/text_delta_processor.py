@@ -25,6 +25,12 @@ from app.hallucination import (
     scannable_text,
 )
 
+from app.utils.inline_thinking import (
+    InlineThinkingState,
+    flush as flush_inline_thinking,
+    scan as scan_inline_thinking,
+)
+
 logger = logging.getLogger(__name__)
 
 # Patterns indicating hallucinated tool output (checked outside code fences)
@@ -317,6 +323,17 @@ class TextDeltaState:
     # never registered anything to match against).
     conversation_id: Optional[str] = None
 
+    # Inline reasoning scanner state.  Composed here rather than hung off
+    # the executor: the executor._* convention needs a matching delattr in
+    # _cleanup_iteration_resources, and that contract is already
+    # incomplete -- _fake_tool_buffer / _fake_tool_ticks are set in this
+    # module but never cleaned there, so an unclosed fake-tool fence
+    # carries its accumulator into the next iteration.  TextDeltaState is
+    # constructed fresh per iteration, so an unterminated reasoning block
+    # cannot bleed forward by construction.
+    inline_thinking: InlineThinkingState = field(
+        default_factory=InlineThinkingState)
+
     # Output flags — checked by caller after each call
     hallucination_detected: bool = False
     # Populated when a shingle match fires. Consumed by caller to
@@ -361,10 +378,21 @@ def process_text_delta(
     events: List[Dict[str, Any]] = []
     ts = f"{int((time.time() - state.iteration_start_time) * 1000)}ms"
 
-    # --- Convert <reasoning> tags to <thinking-data> for presentation ---
-    # OpenAI-compatible models (GLM, Qwen, etc.) emit reasoning content
-    # inline in <reasoning> tags; map them to the thinking UI.
-    text = text.replace('<reasoning>', '<thinking-data>').replace('</reasoning>', '</thinking-data>')
+    # --- Inline reasoning tags -> discrete 'thinking' SSE events ---
+    # The rewrite above changed only the tag SPELLING and left reasoning
+    # in the text stream.  This converts it to the same discrete event
+    # the native ThinkingDelta path emits, so reasoning never enters
+    # assistant_text (no longer re-billed as input every iteration) and
+    # no raw tag can reach the renderer.  in_code_block leaves tags in a
+    # diff or code sample intact -- the guard the rewrite lacked, which
+    # is how it corrupted diffs of this feature.
+    _think_events, text = scan_inline_thinking(
+        text, state.inline_thinking, ts,
+        in_code_block=bool(state.code_block_tracker.get('in_block')),
+    )
+    events.extend(_think_events)
+    if not text:
+        return events
 
     # --- Fence buffering ---
     if not hasattr(executor, '_block_opening_buffer'):
