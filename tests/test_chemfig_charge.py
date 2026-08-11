@@ -499,3 +499,57 @@ def test_an_undefined_command_is_not_papered_over(renderer):
     )
     assert not result.ok
     assert result.error_kind == "compile"
+
+
+# ---------------------------------------------------------------------------
+# Double optional-bracket collapse.  chemfig accepts ONE optional argument;
+# the natural wrong guess ``\chemfig[][draw=red]{...}`` -- copied from macros
+# that take two optionals -- aborts fatally with the misleading "Undefined
+# control sequence \CF_currentstringangle".  Verified against a live install:
+# single ``[X]{...}`` renders, ANY second bracket is fatal.  Collapsing an
+# EMPTY bracket is unambiguous; two non-empty brackets stay untouched.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("body,expected", [
+    (r"\chemfig[][draw=blue,line width=0.5pt]{*5(-S-=-=)}",
+     r"\chemfig[draw=blue,line width=0.5pt]{*5(-S-=-=)}"),
+    (r"\chemfig[][red]{*5(-S-=-=)}", r"\chemfig[red]{*5(-S-=-=)}"),
+    (r"\chemfig[draw=blue][]{*5(-S-=-=)}", r"\chemfig[draw=blue]{*5(-S-=-=)}"),
+    (r"\chemfig[][]{*5(-S-=-=)}", r"\chemfig[]{*5(-S-=-=)}"),
+])
+def test_empty_double_optional_bracket_is_collapsed(body, expected):
+    fixed, applied, warnings = autofix(body)
+    assert fixed == expected
+    assert applied, "the collapse must be reported, not silent"
+    assert warnings == ()
+
+
+@pytest.mark.parametrize("body", [
+    r"\chemfig[draw=red]{*5(-S-=-=)}",   # single optional
+    r"\chemfig{*5(-S-=-=)}",             # no optional
+    r"\chemfig[a][b]{X}",                # two non-empty -> ambiguous, untouched
+])
+def test_single_or_ambiguous_optional_is_untouched(body):
+    fixed, applied, _ = autofix(body)
+    assert fixed == body
+    assert not any("two optional" in n for n in applied)
+
+
+@needs_tex
+def test_double_optional_bracket_renders_after_collapse(renderer):
+    """End-to-end: the double-bracket form must compile after the collapse."""
+    fixed, applied, _ = autofix(
+        r"\chemfig[][draw=blue,line width=0.5pt]{*5(-S-=-=)}")
+    assert applied
+    result = renderer.render("chemfig", fixed, fmt="png", use_cache=False)
+    assert result.ok, result.error
+
+
+@needs_tex
+def test_the_renderer_collapses_double_optional_itself(renderer):
+    """The integration point: the BROKEN body straight to render() succeeds."""
+    result = renderer.render(
+        "chemfig", r"\chemfig[][draw=blue,line width=0.5pt]{*5(-S-=-=)}",
+        fmt="png", use_cache=False,
+    )
+    assert result.ok, result.error
+    assert result.autofixes, "the correction must be reported, not silent"
