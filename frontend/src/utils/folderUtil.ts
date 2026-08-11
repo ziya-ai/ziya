@@ -180,6 +180,54 @@ export const collectAllTreePaths = (folders: Folders | undefined): Set<string> =
     return paths;
 };
 
+/**
+ * Does a scan-lifecycle WebSocket event apply to this window's project?
+ *
+ * The /ws/file-tree socket is shared by every open window and is not
+ * per-project, so scan events for all concurrently-scanning projects arrive
+ * everywhere. Acting on another project's scan_complete clears this window's
+ * scanning state while its own scan is still running, which also tears down
+ * the progress poller that would otherwise fetch the finished tree.
+ *
+ * Fails OPEN (returns true) when either side is unknown: a stuck
+ * scanning indicator that never clears is worse than an extra refetch.
+ */
+export const scanEventTargetsProject = (
+    eventPath: string | undefined | null,
+    projectPath: string | undefined | null,
+): boolean => {
+    // Older backends broadcast scan_complete with no path, and during early
+    // load the window may not know its own project yet.
+    if (!eventPath || !projectPath) return true;
+    const norm = (p: string) => p.replace(/\/+$/, '');
+    return norm(eventPath) === norm(projectPath);
+};
+
+/** First progress-poll tick at which the in-progress tree is refetched. */
+export const SCAN_REFETCH_INITIAL_TICK = 3;
+
+/** Ceiling on the gap between mid-scan refetches, in poll ticks (~seconds). */
+export const SCAN_REFETCH_MAX_INTERVAL_TICKS = 30;
+
+/**
+ * Back off the gap between mid-scan tree refetches.
+ *
+ * The backend publishes a live partial tree that deepens as the scan runs, but
+ * a single fetch at scan start captures only what existed at that instant — on
+ * a large project that is a near-empty tree held for the whole scan. Refetching
+ * shows the depth as it arrives, at the cost of re-running convertToTreeData
+ * over an ever-larger tree each time.
+ *
+ * Doubling keeps the early refetches (cheap, small tree, most visible to the
+ * user) frequent and the later ones (expensive, large tree) rare, with a cap so
+ * a multi-minute scan still refreshes periodically instead of going silent.
+ */
+export const nextScanRefetchInterval = (currentInterval: number): number => {
+    // Guard a non-advancing interval, which would refetch on every 1s poll.
+    const base = currentInterval >= 1 ? currentInterval : 1;
+    return Math.min(base * 2, SCAN_REFETCH_MAX_INTERVAL_TICKS);
+};
+
 export const convertToTreeData = (folders: Folders, parentKey = ''): TreeDataNode[] => {
     if (!folders || typeof folders !== 'object') return [];
     return Object.entries(folders)
@@ -282,6 +330,42 @@ export const removeFromFolders = (root: Folders, relPath: string): void => {
     };
 
     remove(root, 0);
+};
+
+export type FileExplorerViewState = 'switching' | 'loading' | 'empty' | 'tree';
+
+/**
+ * Resolve which of the file explorer's four mutually-exclusive top-level views
+ * to render. Extracted from MUIFileExplorer so the precedence is testable —
+ * the defect it fixes was entirely a matter of which guard matched first.
+ *
+ * \`\`isSwitchingProject\`\` must outrank everything. In the window between a
+ * project switch and the first folder data for the incoming project, the
+ * explorer's state is \`\`isScanning=false, isInitialLoad=false,
+ * hasLoadedData=true, treeNodeCount=0\`\`: the switch handler clears the tree,
+ * but \`\`hasLoadedData\`\` latched on the project just left and nothing resets
+ * it. That is an exact match for the empty-state guard and not a match for the
+ * loading guard (which needs \`\`isScanning || isInitialLoad\`\`), so the explorer
+ * asserted "No files found" — with a Refresh button — for a project it had not
+ * looked at yet. The flag cannot be derived from the other four: the switching
+ * state and a genuinely-empty scanned project are indistinguishable from them.
+ *
+ * It also outranks a non-empty tree, so a clear that races with the switch
+ * cannot show the previous project's files under the new project's name.
+ */
+export const fileExplorerViewState = (s: {
+    isSwitchingProject: boolean;
+    isScanning: boolean;
+    isInitialLoad: boolean;
+    hasLoadedData: boolean;
+    treeNodeCount: number;
+}): FileExplorerViewState => {
+    if (s.isSwitchingProject) return 'switching';
+    const noTree = s.treeNodeCount === 0;
+    if ((s.isScanning || s.isInitialLoad) && (!s.hasLoadedData || noTree)) return 'loading';
+    // Only claim emptiness once a scan has finished and produced nothing.
+    if (!s.isScanning && !s.isInitialLoad && s.hasLoadedData && noTree) return 'empty';
+    return 'tree';
 };
 
 const hasSearchTerm = (n, searchTerm) =>

@@ -686,7 +686,14 @@ def get_cached_folder_structure(directory: str, ignored_patterns, max_depth: int
                     'directory_mtime': 0
                 }
                 logger.info(f"Background folder scan completed in {time.time() - scan_start:.1f}s")
-                _schedule_broadcast("scan_complete", "")
+                # Scope the event to the directory that finished. The file-tree
+                # socket is shared by every open window and connections are not
+                # per-project, so a pathless scan_complete was read by all of
+                # them as their own: a window scanning project A cleared its
+                # scanning state the moment unrelated project B finished. That
+                # also stopped its progress poller, which is the fallback that
+                # fetches the finished tree, leaving it on a partial tree.
+                _schedule_broadcast("scan_complete", directory)
             except Exception as e:
                 logger.error(f"Background folder scan error: {e}", exc_info=True)
             finally:
