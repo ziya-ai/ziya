@@ -36,6 +36,13 @@ class ModelSettingsRequest(BaseModel):
     temperature: float = Field(default=0.3, ge=0, le=1)
     top_k: int = Field(default=15, ge=0, le=500)
     max_output_tokens: int = Field(default=DEFAULT_MAX_OUTPUT_TOKENS, ge=1)
+    # Declared so the frontend's input-token control is actually persisted.
+    # Optional (not defaulted to a number) so that a client which omits it
+    # leaves the current value alone rather than resetting it: the handler
+    # only writes ZIYA_MAX_INPUT_TOKENS when a value is supplied. Clamped
+    # against the running model's real ceiling in the handler, since the
+    # ceiling is per-model and cannot be expressed as a static Field bound.
+    max_input_tokens: Optional[int] = Field(default=None, ge=1)
     thinking_mode: bool = Field(default=False)
     thinking_level: Optional[str] = Field(default=None, pattern='^(low|medium|high)$')
     thinking_effort: Optional[str] = Field(default=None, pattern='^(low|medium|high|xhigh|max)$')
@@ -99,6 +106,66 @@ def get_available_models(endpoint: Optional[str] = None):
     except Exception as e:
         logger.error(f"Error getting available models: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.get('/api/endpoints')
+def get_endpoints():
+    """List the model endpoints this install is permitted to use.
+
+    Powers the endpoint pulldown in the model config modal: the frontend
+    cannot know the enterprise allowlist, so it has to be told. The list is
+    clamped the same way get_available_models / set_model clamp it, so a
+    policy-forbidden endpoint is never offered as a choice. Community
+    builds have no restriction and get every configured endpoint;
+    ZIYA_ALLOW_ALL_ENDPOINTS=1 bypasses the clamp for dev/testing.
+
+    ``default_model`` is what the UI should select when the user switches
+    to that endpoint, since aliases do not carry across endpoints.
+
+    ``available`` reports whether that endpoint has credentials, read from
+    the startup snapshot in app.utils.provider_detection (no per-request
+    filesystem probe). Unavailable endpoints are still listed — with a
+    ``hint`` naming the variable to set — rather than hidden, so the user
+    can see that e.g. Google exists and what it needs, instead of the
+    option silently not being there.
+    """
+    active = os.environ.get("ZIYA_ENDPOINT", config.DEFAULT_ENDPOINT)
+    names = list(ModelManager.MODEL_CONFIGS.keys())
+
+    if os.environ.get("ZIYA_ALLOW_ALL_ENDPOINTS") != "1":
+        try:
+            from app.plugins import get_allowed_endpoints
+            allowed = get_allowed_endpoints()
+            if allowed is not None:
+                names = [n for n in names if n in allowed]
+        except (ImportError, RuntimeError, OSError):
+            pass  # Plugin system unavailable — no restriction to apply
+
+    try:
+        from app.utils.provider_detection import (
+            get_availability, missing_credential_hint,
+        )
+        availability = get_availability()
+    except (ImportError, RuntimeError, OSError):
+        availability = {}
+        missing_credential_hint = lambda _ep: None  # noqa: E731
+
+    endpoints = []
+    for name in names:
+        # Absent from the snapshot => unknown, not unavailable. Reporting
+        # unknown as False would grey out a working endpoint.
+        avail = availability.get(name, True)
+        endpoints.append({
+            "id": name,
+            "default_model": ModelManager.DEFAULT_MODELS.get(name),
+            "model_count": len(ModelManager.MODEL_CONFIGS.get(name, {})),
+            "available": avail,
+            "hint": None if avail else missing_credential_hint(name),
+        })
+
+    return {
+        "active": active,
+        "endpoints": endpoints,
+    }
 
 @router.get('/api/model-tiers')
 def get_model_tiers(endpoint: Optional[str] = None):
@@ -399,19 +466,27 @@ def _set_model_sync(request: SetModelRequest):
                 # Case 2: Direct string comparison
                 elif model_id == config_model_id:
                     found_alias = alias
+                    found_endpoint = ep
                     break
                 
                 # Case 3: String model_id matches one of the values in a dictionary config_model_id
                 elif isinstance(model_id, str) and isinstance(config_model_id, dict):
                     if any(val == model_id for val in config_model_id.values()):
                         found_alias = alias
+                        found_endpoint = ep
                         break
                 
                 # Case 4: Dictionary model_id contains a value that matches string config_model_id
                 elif isinstance(model_id, dict) and isinstance(config_model_id, str):
                     if any(val == config_model_id for val in model_id.values()):
                         found_alias = alias
+                        found_endpoint = ep
                         break
+
+            # The inner break only exits the model loop; without this the outer
+            # loop keeps scanning later endpoints and can overwrite the match.
+            if found_alias:
+                break
 
         if not found_alias:
             logger.error(f"Invalid model identifier: {model_id}")
@@ -426,8 +501,10 @@ def _set_model_sync(request: SetModelRequest):
             logger.info(f"Model {found_alias} is already active, no change needed")
             return {"status": "success", "model": found_alias, "changed": False}
 
-        # Check if we need to adjust the region based on the model
-        model_config = ModelManager.get_model_config(endpoint, found_alias)
+        # Check if we need to adjust the region based on the model.  Look the
+        # config up on the model's OWN endpoint — a cross-endpoint change
+        # (e.g. bedrock -> google) has found_endpoint != endpoint here.
+        model_config = ModelManager.get_model_config(found_endpoint, found_alias)
         model_id = model_config.get("model_id")
         
         # If the model has region-specific IDs, ensure we're using the right region
@@ -448,6 +525,7 @@ def _set_model_sync(request: SetModelRequest):
         # Reinitialize all model related state
         old_state = {
             'model_id': os.environ.get("ZIYA_MODEL"),
+            'endpoint': os.environ.get("ZIYA_ENDPOINT"),
             'model': ModelManager._state.get('model'),
             'current_model_id': ModelManager._state.get('current_model_id')
         }
@@ -473,7 +551,7 @@ def _set_model_sync(request: SetModelRequest):
                 raise model_init_error
 
             # Verify the model was actually changed by checking the model ID and updating global references
-            expected_model_id = ModelManager.MODEL_CONFIGS[endpoint][found_alias]['model_id']
+            expected_model_id = ModelManager.MODEL_CONFIGS[found_endpoint][found_alias]['model_id']
             actual_model_id = ModelManager.get_model_id(new_model)
             logger.info(f"Model ID verification - Expected: {expected_model_id}, Actual: {actual_model_id}")
             
@@ -481,6 +559,12 @@ def _set_model_sync(request: SetModelRequest):
                 logger.error(f"Model initialization failed - expected ID: {expected_model_id}, got: {actual_model_id}")
                 # Restore previous state
                 os.environ["ZIYA_MODEL"] = old_state['model_id'] if old_state['model_id'] else ModelManager.DEFAULT_MODELS["bedrock"]
+                # The endpoint must be rolled back together with the model id.
+                # Leaving ZIYA_ENDPOINT pointing at the target endpoint while
+                # ZIYA_MODEL points at the old model leaves every subsequent
+                # lookup mismatched, with no way to recover short of a restart.
+                if old_state['endpoint']:
+                    os.environ["ZIYA_ENDPOINT"] = old_state['endpoint']
                 ModelManager._state.update(old_state)
                 raise HTTPException(
                     status_code=500,
@@ -509,7 +593,24 @@ def _set_model_sync(request: SetModelRequest):
                     agent = None  # No XML agent needed
                     agent_executor = None  # No executor needed
                 # For models with native function calling, skip XML agent creation
-                elif endpoint in ("google", "openai", "anthropic") and model_name:
+                #
+                # Decided by the model's own config, NOT by an endpoint allowlist.
+                # A hardcoded allowlist silently excluded newer OpenAI-compatible
+                # endpoints (meta, zai) whose wrappers are plain DirectOpenAIModel
+                # objects — not Runnables — so they fell through to create_xml_agent
+                # and raised "Expected a Runnable, callable or dict".
+                #
+                # The `agent` / `agent_executor` values below are not retained:
+                # the request path streams via StreamingToolExecutor, not an XML
+                # agent. The only reason to branch here is that create_agent_chain
+                # raises on non-Runnable models, so the branch is a crash guard
+                # rather than a behavioral switch.
+                #
+                # Note the default below (False) is deliberately NOT aligned with
+                # get_model_capabilities(), which defaults undeclared *bedrock*
+                # models to True. Aligning them would stop create_agent_chain from
+                # refreshing ModelManager._state['llm_with_stop'] for Bedrock.
+                elif model_name:
                     model_config = ModelManager.get_model_config(endpoint, model_name)
                     uses_native_calling = model_config.get("native_function_calling", False)
                     
@@ -547,7 +648,7 @@ def _set_model_sync(request: SetModelRequest):
                 "status": "success",
                 "model": found_alias, 
                 "previous_model": old_state['model_id'],
-                "model_display_name": ModelManager.MODEL_CONFIGS[endpoint][found_alias].get("display_name", found_alias),
+                "model_display_name": ModelManager.MODEL_CONFIGS[found_endpoint][found_alias].get("display_name", found_alias),
                 "changed": True,
                 "message": "Model and routes successfully updated"
             }
@@ -561,6 +662,8 @@ def _set_model_sync(request: SetModelRequest):
             logger.info(f"Restoring previous state: {old_state}")
 
             os.environ["ZIYA_MODEL"] = old_state['model_id'] if old_state['model_id'] else ModelManager.DEFAULT_MODELS["bedrock"]
+            if old_state['endpoint']:
+                os.environ["ZIYA_ENDPOINT"] = old_state['endpoint']
             if old_state['model']:
                 ModelManager._state.update(old_state)
             else:
@@ -570,15 +673,44 @@ def _set_model_sync(request: SetModelRequest):
                 detail=f"Failed to initialize model {found_alias}: {str(e)}"
             )
 
+    except HTTPException:
+        # HTTPException is an Exception subclass, so the broad handler below
+        # was swallowing every deliberate status this route raises (400 for a
+        # bad/empty model id, 403 for a policy or allowlist denial) and
+        # re-emitting it as 500. The frontend distinguishes these: a 403
+        # "endpoint not permitted" must not surface as a server error.
+        raise
     except Exception as e:
         logger.error(f"Error in set_model: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to change model: {str(e)}")
 
 @router.get('/api/model-capabilities')
-def get_model_capabilities(model: str = None):
-    """Get the capabilities of the current model."""
+def get_model_capabilities(model: str = None, endpoint: Optional[str] = None):
+    """Get the capabilities of a model.
 
-    endpoint = os.environ.get("ZIYA_ENDPOINT", "bedrock")
+    ``endpoint`` lets the caller ask about a model on an endpoint other than
+    the running one — required by the model config modal, which offers an
+    endpoint pulldown and must show the target model's limits before any
+    switch is applied. Defaults to the active endpoint.
+    """
+
+    endpoint = endpoint or os.environ.get("ZIYA_ENDPOINT", "bedrock")
+
+    # Clamp a caller-supplied endpoint to the enterprise allowlist, matching
+    # get_available_models / get_model_tiers / set_model. Without it this read
+    # route would disclose the model catalog of a forbidden endpoint.
+    if os.environ.get("ZIYA_ALLOW_ALL_ENDPOINTS") != "1":
+        try:
+            from app.plugins import get_allowed_endpoints
+            allowed_endpoints = get_allowed_endpoints()
+            if allowed_endpoints is not None and endpoint not in allowed_endpoints:
+                logger.warning(f"Endpoint '{endpoint}' not in policy list {allowed_endpoints}, using first allowed")
+                endpoint = allowed_endpoints[0]
+        except (ImportError, RuntimeError, OSError):
+            pass  # Plugin system unavailable
+
+    if endpoint not in ModelManager.MODEL_CONFIGS:
+        return {"error": f"Unknown endpoint: {endpoint}"}
     # If model parameter is provided, get capabilities for that model
     # Otherwise use current model
     model_alias = None
@@ -782,13 +914,33 @@ async def _update_model_settings_locked(settings: ModelSettingsRequest):
                 os.environ["AWS_REGION"] = preferred_region
                 logger.info(f"Switched region to {preferred_region} for model {new_model}")
 
+        # Clamp a caller-supplied input ceiling to what the running model can
+        # actually accept. The ceiling is per-model, so it cannot be a static
+        # Field bound; without this a client could raise it above the model's
+        # real context window, which makes the frontend's budget gauge report
+        # headroom that does not exist and defers the failure to an API 400.
+        if settings.max_input_tokens is not None:
+            model_ceiling = model_config.get("token_limit", 4096)
+            if model_config.get("supports_extended_context"):
+                model_ceiling = model_config.get("extended_context_limit", model_ceiling)
+            if settings.max_input_tokens > model_ceiling:
+                logger.warning(
+                    f"Requested max_input_tokens={settings.max_input_tokens} exceeds "
+                    f"{model_name}'s ceiling of {model_ceiling}; clamping."
+                )
+                settings.max_input_tokens = model_ceiling
+            # Mirror the clamp into the echoed settings so the frontend shows
+            # the value that was actually stored, not the one it asked for.
+            original_settings["max_input_tokens"] = settings.max_input_tokens
+
         # Store all settings in environment variables with ZIYA_ prefix
         # Defense in depth alongside extra="ignore": only these keys may mutate
         # process env via this route, so even a future model field cannot set
         # policy-bearing ZIYA_* variables.
         _SETTABLE_KEYS = {
             'temperature', 'top_k', 'top_p', 'max_output_tokens',
-            'thinking_mode', 'thinking_level', 'thinking_effort',
+            'max_input_tokens', 'thinking_mode', 'thinking_level',
+            'thinking_effort',
         }
         for key, value in settings.model_dump().items():
             if key not in _SETTABLE_KEYS:
