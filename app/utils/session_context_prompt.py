@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import datetime
 import os
+from types import SimpleNamespace
 from typing import Any, List, Optional
 
 
@@ -41,6 +42,37 @@ def _safe_get_effective_policy() -> dict:
         return get_write_policy_manager().get_effective_policy() or {}
     except Exception:
         return {}
+
+
+def cli_task_scope_from_context() -> Optional[Any]:
+    """Build a ``task_scope``-shaped object from the CLI task-path
+    contextvars (``app.context.get_task_writable_paths`` /
+    ``get_task_shell_commands``), which ``cmd_task`` populates from a
+    signed CLI task's ``allow`` block via ``allow_to_task_scope``.
+
+    Those setters store the plain shapes ``allow_to_task_scope`` returns
+    (``{"pattern": ...}`` dicts for writable entries, bare strings for
+    shell grants) — NOT ``TaskScope``/``ScopeEntry`` objects. The
+    formatters below read ``getattr(entry, "path", None)`` /
+    ``getattr(entry, "write", False)``, so a raw dict passthrough would
+    silently render nothing. This adapts the dict shape into the
+    attribute shape the formatters expect. Returns ``None`` when neither
+    contextvar is set (chat path, or an unescalated/unsigned task) so
+    callers can pass the result straight through as ``task_scope``.
+    """
+    try:
+        from app.context import get_task_writable_paths, get_task_shell_commands
+    except ImportError:
+        return None
+    writable = get_task_writable_paths() or []
+    shell_cmds = get_task_shell_commands() or []
+    if not writable and not shell_cmds:
+        return None
+    paths = [
+        SimpleNamespace(path=entry.get("pattern"), write=True, read=True, is_dir=False)
+        for entry in writable if isinstance(entry, dict) and entry.get("pattern")
+    ]
+    return SimpleNamespace(paths=paths, tools=[], skills=[], shell_commands=list(shell_cmds))
 
 
 def _format_writable_section(
