@@ -25,6 +25,7 @@ import pytest
 
 from app.services.latex_profiles import (
     LatexPackage,
+    charge_color_breaks_dvisvgm,
     get_profile,
     requires_position_marks,
 )
@@ -118,6 +119,36 @@ def test_lewis_structures_come_from_chemfigs_bundled_module():
     assert r"\IfFileExists{chemfig-lewis.tex}" in document
 
 
+def test_chemfig_preloads_xcolor_with_extended_names_before_chemfig():
+    """chemfig loads xcolor (unoptioned) internally, and xcolor is once-only,
+    so the profile must load it FIRST with svgnames+dvipsnames -- otherwise
+    only ~19 base colours exist and a model reaching for a CSS/SVG name
+    (Crimson, Navy, DarkGreen, Teal, ...) hits a FATAL 'Undefined color' and
+    the whole render is lost.  Order matters: xcolor must precede chemfig."""
+    document = get_profile("chemfig").build_document(
+        r"\chemfig{*6(-=-*5(-\color{Crimson}{N}H-=-)=-=)}", standalone=True)
+    assert r"\usepackage[svgnames,dvipsnames]{xcolor}" in document
+    assert document.index(r"\usepackage[svgnames,dvipsnames]{xcolor}") \
+        < document.index(r"\usepackage{chemfig}"), \
+        "xcolor must load before chemfig, which loads xcolor unoptioned itself"
+
+
+@needs_tex
+def test_svgname_colour_in_chemfig_label_compiles(renderer):
+    """Regression for the fatal 'Undefined color `Crimson'' compile bug.
+
+    An svgnames colour (Crimson, #dc143c) inside a \\color{} label on an
+    indole-like fused 6-5 ring must now compile end-to-end instead of aborting
+    with no output.  Exercises the real toolchain, so it is skipped where no
+    TeX is installed."""
+    result = renderer.render(
+        "chemfig", r"\chemfig{*6(-=-*5(-\color{Crimson}{N}H-=-)=-=)}",
+        use_cache=False)
+    assert result.ok, f"expected success, got {result.error_kind}: {result.error}"
+    assert result.content, "no output produced"
+    assert not result.warnings, f"unexpected lint warnings: {result.warnings}"
+
+
 def test_optional_packages_are_listed_in_the_install_hint(renderer, monkeypatch):
     """Installing mhchem alongside is strictly better, so name it."""
     monkeypatch.setattr(LatexRenderer, "_kpsewhich", staticmethod(lambda _f: False))
@@ -203,6 +234,54 @@ def test_svg_is_retained_for_bodies_without_position_marks(renderer, monkeypatch
     renderer.render("chemfig", r"\chemfig{*6(-=-=-=)}",
                     fmt="svg", use_cache=False)
     assert seen["target"] == "svg"
+
+
+# ---------------------------------------------------------------------------
+# Coloured \charge: a construct that compiles to PDF but crashes the dvisvgm
+# colour driver, so it must be forced onto the PNG path.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("body", [
+    r"\chemfig{*6(-=-\charge{90=\color{red}{\oplus}}{N}=-=)}",
+    r"\chemfig{*6(-=-\charge{90=$\color{red}{\oplus}$}{N}=-=)}",   # post math-wrap
+    r"\chemfig{*6(-=-\charge{90=\textcolor{blue}{\ominus}}{O}=-=)}",
+    r"\chemfig{\Charge{45=\color{green}{2+}}{Fe}}",
+])
+def test_coloured_charge_is_detected(body):
+    assert charge_color_breaks_dvisvgm(body)
+
+
+@pytest.mark.parametrize("body", [
+    r"\chemfig{*6(-=-\charge{90=\oplus}{N}=-=)}",       # colourless charge
+    r"\chemfig{*6(-=(-\color{red}{OH})-=-=)}",           # colour in a label, no charge
+    r"\chemfig{*6(-=-=-=)}",                              # neither
+    r"\chemfig{\charge{90=\oplus}{N}}\color{red}{X}",   # colour AFTER the charge group
+])
+def test_ordinary_bodies_are_not_treated_as_coloured_charge(body):
+    assert not charge_color_breaks_dvisvgm(body)
+
+
+def test_coloured_charge_forces_png_over_svg(renderer, monkeypatch):
+    """A \\color inside a \\charge argument sends the dvisvgm colour driver into
+    a "TeX capacity exceeded" runaway on the DVI/SVG path, even though it
+    compiles cleanly to PDF/PNG.  The renderer must force PNG rather than
+    return a compile failure for a body that renders perfectly as a raster."""
+    monkeypatch.setattr(LatexRenderer, "_kpsewhich", staticmethod(lambda _f: True))
+    monkeypatch.setattr(LatexRenderer, "probe",
+                        lambda self, refresh=False: _full_capability())
+    seen = {}
+
+    def fake_compile(self, document, target, cap):
+        seen["target"] = target
+        return RenderResult(ok=True, content=b"x", fmt=target)
+
+    monkeypatch.setattr(LatexRenderer, "_compile", fake_compile)
+    renderer.render(
+        "chemfig",
+        r"\chemfig{*6(-=-\charge{90=\color{red}{\oplus}}{N}=-=)}",
+        fmt="svg", use_cache=False,
+    )
+    assert seen["target"] == "png"
 
 
 # ---------------------------------------------------------------------------
