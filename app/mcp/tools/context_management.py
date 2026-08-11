@@ -128,9 +128,13 @@ def _resolve_chat_for_request(_kwargs: Dict[str, Any]) -> Dict[str, Any]:
         # up front) and for a brand-new web conversation whose first sync
         # hasn't landed yet — neither is an error condition.
         now = int(_time.time() * 1000)
+        # The placeholder must match the frontend string EXACTLY (capital C).
+        # This record is written with a fresh _version, so it can win the
+        # server-vs-local merge; a differently-cased placeholder is not
+        # recognised by PLACEHOLDER_TITLES and overwrites the real title.
         chat_data = {
             "id": conversation_id,
-            "title": "CLI session" if conversation_id.startswith("cli_") else "New conversation",
+            "title": "CLI session" if conversation_id.startswith("cli_") else "New Conversation",
             "groupId": None,
             "contextIds": [],
             "skillIds": [],

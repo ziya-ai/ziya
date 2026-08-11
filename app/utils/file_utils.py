@@ -182,10 +182,6 @@ def read_file_content(file_path: str) -> Optional[str]:
     Returns:
         File content as string, or None if reading failed
     """
-    # Check if it's a document file that we can extract text from
-    if is_document_file(file_path):
-        return False  # Treat as text since we can extract content
-    
     try:
         # Check if this file has specialized tool support - return context note instead
         if is_tool_backed_file(file_path):
