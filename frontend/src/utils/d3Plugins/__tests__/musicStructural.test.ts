@@ -17,7 +17,49 @@
  */
 import { renderMusicSpec, type MusicSpec } from '../musicPlugin';
 
-const d3Stub = { select: () => ({ append: () => ({ attr: () => ({ attr: () => ({}) }) }) }) };
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/**
+ * A d3 stand-in that appends REAL elements, so overlay-drawn output is
+ * assertable instead of silently discarded.
+ *
+ * Two reasons this is not the usual inert stub:
+ *   1. It chains to any depth.  `drawVoltaBracket` chains six `.attr()` calls;
+ *      a two-level stub failed with "svg.append(...).attr(...).attr(...).attr
+ *      is not a function", which read as a plugin TypeError but was purely a
+ *      test artefact.
+ *   2. The volta LABEL is a d3 overlay, not a VexFlow glyph, so an inert stub
+ *      discards the very string this suite asserts on.
+ *
+ * Real d3 cannot be used: v7 ships ESM only and this project's jest transform
+ * rejects it ("Unexpected token 'export'" from node_modules/d3/src/index.js).
+ */
+const wrapNode = (el: Element | null): any => {
+  const sel: any = {
+    append: (tag: string) => {
+      if (!el) return wrapNode(null);
+      const child = document.createElementNS(SVG_NS, tag);
+      el.appendChild(child);
+      return wrapNode(child);
+    },
+    // d3 treats a null value as a no-op rather than the string "null".
+    attr: (name: string, value: unknown) => {
+      if (el && value != null) el.setAttribute(name, String(value));
+      return sel;
+    },
+    style: () => sel,
+    text: (value: unknown) => {
+      if (el) el.textContent = value == null ? '' : String(value);
+      return sel;
+    },
+    node: () => el,
+  };
+  return sel;
+};
+const d3Stub = {
+  select: (target: any) =>
+    wrapNode(typeof target === 'string' ? document.querySelector(target) : target ?? null),
+};
 
 const draw = async (spec: MusicSpec) => {
   const container = document.createElement('div');

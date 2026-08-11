@@ -20,7 +20,18 @@
  */
 import { buildNoteString, renderMusicSpec, type MusicSpec } from '../musicPlugin';
 
-const d3Stub = { select: () => ({ append: () => ({ attr: () => ({ attr: () => ({}) }) }) }) };
+const makeChain = () => {
+  const chain: any = {};
+  // Every d3 selection method used by the overlay layers returns the chain, so
+  // a call sequence of any depth resolves.  A two-level stub previously broke
+  // the volta bracket's six chained .attr() calls and surfaced as a plugin
+  // TypeError rather than as the test limitation it was.
+  for (const m of ['attr', 'style', 'text', 'append', 'classed', 'html']) {
+    chain[m] = () => chain;
+  }
+  return chain;
+};
+const d3Stub = { select: () => makeChain() };
 
 const draw = async (spec: MusicSpec) => {
   const container = document.createElement('div');
