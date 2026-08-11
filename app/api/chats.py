@@ -548,11 +548,32 @@ def get_chat(project_id: str, chat_id: str):
     if chat:
         return chat
 
-    # Chat not in this project — check if it's a global chat in another project
+    # Chat not in this project — resolve via the chat index instead of
+    # walking every project's chats directory.  collect_global_chats()
+    # read+decrypted every chat file in every project (measured ~349MB
+    # across ~1,400 files in 30 projects, ~2.1s per call), and its LRU is
+    # capped at 200 entries against far more files, so it thrashes and
+    # never warms.  bulk_get_chats already switched to the index for this
+    # reason; this mirrors it.
+    #
+    # The index resolves ANY chat, whereas collect_global_chats returned
+    # only effectively-global ones, so the surfacing check is re-applied
+    # here rather than dropped: a chat surfaces cross-project if its own
+    # isGlobal is set, or its groupId is global in the owning project
+    # (own flag or inherited from an ancestor folder).
     ziya_home = get_ziya_home()
-    for global_chat in collect_global_chats(ziya_home, exclude_project_id=project_id):
-        if global_chat.id == chat_id:
-            return global_chat
+    from ..storage import chat_index
+    from ..storage.global_items import _effective_global_group_ids
+    found = chat_index.lookup(ziya_home, chat_id)
+    if found is not None:
+        owning_pid, owning_path = found
+        if owning_pid != project_id:
+            owning_chat = get_chat_storage(owning_pid).get(chat_id)
+            if owning_chat is not None:
+                eff_groups = _effective_global_group_ids(owning_path.parent.parent)
+                grp = getattr(owning_chat, "groupId", None)
+                if getattr(owning_chat, "isGlobal", False) or (grp is not None and grp in eff_groups):
+                    return owning_chat
 
     raise HTTPException(status_code=404, detail="Chat not found")
 
