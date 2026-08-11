@@ -16,6 +16,7 @@ import { ActiveContextBar } from './ActiveContextBar';
 import { ContextsTab } from './ContextsTab';
 import { useTheme } from '../context/ThemeContext';
 import { FolderScanProgress } from './FolderScanProgress';
+import { lazyWithRetry } from '../utils/lazyWithRetry';
 
 import CreateNewFolderIcon from '@mui/icons-material/CreateNewFolder';
 import AddCommentIcon from '@mui/icons-material/AddComment';
@@ -23,7 +24,7 @@ import IconButton from '@mui/material/IconButton';
 import Tooltip from '@mui/material/Tooltip';
 
 // Lazy — bead backlog browser sidebar tab (see design/bead-backlog-browser.md)
-const BacklogBrowser = lazy(() => import('./BacklogBrowser'));
+const BacklogBrowser = lazyWithRetry(() => import('./BacklogBrowser'));
 
 interface FolderTreeProps {
     isPanelCollapsed: boolean;
