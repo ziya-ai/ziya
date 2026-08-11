@@ -329,6 +329,51 @@ class TestMaxIterations:
         assert v[0] != 'end'
 
 
+class TestRefusal:
+    """A provider refusal must end the turn immediately, never retry.
+
+    stop_reason 'refusal' arrives with an empty content array, so it is
+    indistinguishable from a transient empty completion at the call site.
+    It is not transient: the verdict is deterministic for a given payload,
+    so re-issuing the identical request is rejected identically while
+    re-writing the whole prompt-cache prefix each attempt.
+
+    Reaching this branch depends on last_stop_reason carrying the REAL
+    value. Bedrock sends it on message_delta, not message_stop; a parser
+    that reads only message_stop falls back to a hardcoded 'end_turn' and
+    silently makes every assertion here unreachable in production.
+    """
+
+    def test_refusal_ends_turn(self, decide):
+        assert _call(decide, last_stop_reason='refusal')[:2] == ('end', 'refusal')
+
+    def test_refusal_does_not_spend_empty_retry(self, decide):
+        """The bug this guards: 3 identical rejected calls per submission."""
+        v = _call(decide, last_stop_reason='refusal',
+                  empty_completion_retry_used=0)
+        assert v[0] != 'spend_empty_retry'
+
+    def test_refusal_after_tool_results_does_not_nudge(self, decide):
+        """Must precede the empty-after-tools nudge, which would also retry."""
+        v = _call(decide, last_stop_reason='refusal',
+                  prev_is_tool_result=True, textonly_grace_used=0)
+        assert v[:2] == ('end', 'refusal')
+
+    def test_refusal_verdict_is_stable_across_retry_budget(self, decide):
+        for used in (0, 1, 2):
+            v = _call(decide, last_stop_reason='refusal',
+                      empty_completion_retry_used=used)
+            assert v[:2] == ('end', 'refusal'), f"budget={used}"
+
+    @pytest.mark.parametrize('reason', ['end_turn', 'max_tokens', 'length',
+                                        'stop_sequence', None])
+    def test_non_refusal_empty_still_retries(self, decide, reason):
+        """Guard against over-broad matching: only 'refusal' short-circuits."""
+        v = _call(decide, assistant_text="", last_stop_reason=reason,
+                  prev_is_tool_result=False, empty_completion_retry_used=0)
+        assert v[0] == 'spend_empty_retry', f"{reason!r} regressed"
+
+
 if __name__ == "__main__":
     import sys
     sys.exit(pytest.main([__file__, "-v"]))
