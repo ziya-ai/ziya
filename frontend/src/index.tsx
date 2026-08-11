@@ -25,6 +25,14 @@ import { ProjectProvider } from './context/ProjectContext';
 import { lazyWithRetry } from './utils/lazyWithRetry';
 // Lazy-load the render harness — only needed for headless diagram export
 const DiagramRenderPage = lazyWithRetry(() => import('./components/DiagramRenderPage'));
+// Stage-1 feasibility spike route — proves the real MarkdownRenderer mounts
+// headlessly under the existing provider stack (see PrintFeasibilitySpike.tsx).
+const PrintFeasibilitySpike = lazyWithRetry(() => import('./components/PrintFeasibilitySpike'));
+// Production whole-conversation render route (Stage 2). SHARED infrastructure:
+// driven by app/services/pdf_exporter.py for BOTH PDF capture (Card I) and
+// self-contained HTML extraction (Card II). Renders the real MarkdownRenderer
+// pipeline for an entire conversation; see PrintRenderPage.tsx.
+const PrintRenderPage = lazyWithRetry(() => import('./components/PrintRenderPage'));
 
 // hide unhandled promise rejections from making console spam
 window.addEventListener('unhandledrejection', (event) => {
@@ -194,6 +202,22 @@ root.render(
                                                 element={
                                                     <React.Suspense fallback={<div>Loading…</div>}>
                                                         <DiagramRenderPage />
+                                                    </React.Suspense>
+                                                }
+                                            />
+                                            <Route
+                                                path="/print-spike"
+                                                element={
+                                                    <React.Suspense fallback={<div>Loading…</div>}>
+                                                        <PrintFeasibilitySpike />
+                                                    </React.Suspense>
+                                                }
+                                            />
+                                            <Route
+                                                path="/print"
+                                                element={
+                                                    <React.Suspense fallback={<div>Loading…</div>}>
+                                                        <PrintRenderPage />
                                                     </React.Suspense>
                                                 }
                                             />

@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse
 from typing import List, Dict, Any, Optional
 from app.utils.logging_utils import logger
 from app.config.env_registry import ziya_env
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 router = APIRouter(prefix="/api/export", tags=["export"])
 
@@ -192,3 +192,122 @@ async def export_to_target(request: PluginExportRequest) -> Dict[str, Any]:
             status_code=500,
             content={"error": f"Export failed: {exc}", "success": False},
         )
+
+
+class PdfExportRequest(BaseModel):
+    """Request body for POST /api/export/pdf.
+
+    Mirrors RenderedExportRequest: the caller sends the raw ``messages`` plus
+    the option knobs; option-based FILTERING happens in the ``/print`` page
+    (single source of truth shared by PDF / HTML / CLI), so this endpoint does
+    not pre-filter.  ``project_id`` + ``conversation_id`` let the server load a
+    conversation by id when the client does not ship the bodies.
+    """
+
+    conversation_id: Optional[str] = None
+    project_id: Optional[str] = None
+    messages: Optional[List[Dict[str, Any]]] = None
+    title: str = Field(default="Ziya Session Transcript")
+    # Render options — same semantics as ExportConversationModal.
+    round_limit: Optional[int] = Field(default=None, alias="roundLimit")
+    include_human: bool = Field(default=True, alias="includeHuman")
+    include_collapsed: bool = Field(default=True, alias="includeCollapsed")
+    include_footer: bool = Field(default=True, alias="includeFooter")
+
+    # Accept BOTH the camelCase aliases (what the frontend sends) and the
+    # snake_case field names when constructed in Python/tests.
+    model_config = ConfigDict(populate_by_name=True)
+
+
+@router.post("/pdf")
+async def export_pdf(request: PdfExportRequest):
+    """Export a conversation to a high-fidelity PDF via the headless /print route.
+
+    Renders the WHOLE conversation through the real MarkdownRenderer pipeline
+    (Prism / KaTeX / react-diff-view / D3 diagrams) in headless Chromium and
+    captures it with ``page.pdf()`` (A4, printBackground).  Returns the PDF
+    bytes with ``application/pdf`` + a ``Content-Disposition`` attachment.
+
+    Follows the /rendered + /to-target conventions for version/model/provider
+    plumbing (ModelManager.get_model_alias, ZIYA_ENDPOINT, get_current_version,
+    ZIYA_PORT).  Missing conversations and absent Playwright surface as real
+    HTTP errors rather than silent success.
+    """
+    from fastapi import Response
+    from app.agents.models import ModelManager
+    from app.utils.version_util import get_current_version
+
+    model_alias = ModelManager.get_model_alias()
+    endpoint = ziya_env("ZIYA_ENDPOINT")
+    version = get_current_version()
+    port = ziya_env("ZIYA_PORT")
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        port = 6969
+
+    options = {
+        "roundLimit": request.round_limit,
+        "includeHuman": request.include_human,
+        "includeCollapsed": request.include_collapsed,
+        "includeFooter": request.include_footer,
+    }
+
+    # Import lazily so the app (and this module's other endpoints) keep working
+    # when Playwright is not installed — the ImportError is surfaced below.
+    try:
+        from app.services.pdf_exporter import export_conversation_pdf
+    except ImportError as exc:  # pragma: no cover - defensive
+        logger.error("PDF export unavailable: %s", exc)
+        return JSONResponse(
+            status_code=501,
+            content={"error": f"PDF export unavailable: {exc}", "success": False},
+        )
+
+    try:
+        pdf_bytes, meta = await export_conversation_pdf(
+            messages=request.messages,
+            project_id=request.project_id,
+            conversation_id=request.conversation_id,
+            options=options,
+            title=request.title,
+            version=version,
+            model=model_alias,
+            provider=endpoint,
+            server_port=port,
+        )
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc), "success": False})
+    except LookupError as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc), "success": False})
+    except ImportError as exc:
+        logger.error("PDF export requires Playwright: %s", exc)
+        return JSONResponse(
+            status_code=501,
+            content={"error": str(exc), "success": False},
+        )
+    except Exception as exc:
+        logger.error("PDF export failed: %s", exc, exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"PDF export failed: {exc}", "success": False},
+        )
+
+    safe_title = "".join(
+        c if c.isalnum() or c in (" ", "-", "_") else "_" for c in request.title
+    ).strip().replace(" ", "_") or "ziya_conversation"
+    filename = f"{safe_title}.pdf"
+
+    logger.info(
+        "PDF export succeeded: %d bytes, %d messages",
+        meta.get("size", len(pdf_bytes)), meta.get("message_count", 0),
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(pdf_bytes)),
+            "X-Ziya-Message-Count": str(meta.get("message_count", 0)),
+        },
+    )
