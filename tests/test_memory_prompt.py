@@ -53,8 +53,15 @@ class TestActivationDirective:
         patch_storage.save(Memory(content="fact 2"))
         from app.memory.prompt import get_memory_activation_directive
         directive = get_memory_activation_directive()
-        assert "2 facts stored" in directive
         assert "never announce recall" in directive
+        # The stored-fact COUNT is deliberately absent from this directive.
+        # It is PREPENDED to the system prompt ahead of ~141KB of static
+        # instructions, so a value that changes as memory grows would
+        # invalidate the entire cached prefix on every new memory for
+        # prompt-caching providers.  The exact figure is reported instead by
+        # get_memory_prompt_section in the volatile tail, where it is free.
+        assert "facts stored" not in directive
+        assert "2" not in directive
 
     def test_disabled_returns_empty(self, patch_storage):
         import os

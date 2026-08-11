@@ -800,12 +800,17 @@ class TestRunExtraction:
     @pytest.mark.asyncio
     async def test_per_window_cap_enforced(self, tmp_path):
         """When a single window's extraction returns more than
-        PER_WINDOW_CANDIDATE_CAP candidates, the excess is dropped.
-        This is the safety against runaway extraction in any single
-        window — the original 'cap=3 over the whole conversation'
-        was wrong, but a per-window cap is appropriate."""
+        the window's budget, the excess is dropped.
+
+        The cap is now a RATE (window_candidate_cap: CANDIDATES_PER_
+        EXCHANGE_BLOCK per EXCHANGE_BLOCK_TURNS human turns, floored),
+        not a flat constant, so the expected ceiling depends on how many
+        human turns this fixture's single window contains.  Asserting
+        against the flat PER_WINDOW_CANDIDATE_CAP would now be asserting
+        the floor, which this 3-turn window sits above."""
         from app.storage.memory import MemoryStorage
         from app.storage.proposals import ProposalsStore
+        from app.memory.extractor import window_candidate_cap
         store = MemoryStorage(memory_dir=tmp_path / "memory")
         proposals = ProposalsStore(memory_dir=tmp_path / "memory")
 
@@ -824,7 +829,9 @@ class TestRunExtraction:
             {"role": "assistant", "content": "Got it."},
         ]
 
-        # Mock returns 5 candidates from a single window's extraction
+        # Mock returns 12 candidates from a single window's extraction —
+        # comfortably above the 3-human-turn budget of 5, so the cap is
+        # genuinely exercised rather than passing everything through.
         async def mock_call(category, system_prompt, user_message,
                              max_tokens=2048, temperature=0.2):
             if category == "memory_comparison":
@@ -832,7 +839,7 @@ class TestRunExtraction:
             return json.dumps([
                 {"content": f"Distinct unique technical fact number {i} about a particular subsystem",
                  "layer": "architecture", "tags": [f"tag{i}"], "confidence": "high"}
-                for i in range(5)
+                for i in range(12)
             ])
 
         with patch("app.mcp.builtin_tools.is_builtin_category_enabled", return_value=True), \
@@ -841,9 +848,16 @@ class TestRunExtraction:
              patch("app.services.model_resolver.call_service_model", side_effect=mock_call):
             result = await run_post_conversation_extraction(messages, "conv-cap")
 
-        # Cap kicked in: at most PER_WINDOW_CANDIDATE_CAP per window
-        assert result["extracted"] <= PER_WINDOW_CANDIDATE_CAP
-        assert len(proposals.list_open()) <= PER_WINDOW_CANDIDATE_CAP
+        # This fixture is one window of 3 human turns.
+        expected_cap = window_candidate_cap(3)
+        assert result["extracted"] <= expected_cap
+        assert len(proposals.list_open()) <= expected_cap
+        # And the cap must actually have bitten — 12 candidates were offered.
+        # Without this the test would pass vacuously if the cap stopped
+        # being applied at all.
+        assert result["extracted"] < 12, (
+            "cap did not truncate: all 12 mock candidates survived"
+        )
 
     @pytest.mark.asyncio
     async def test_lifecycle_pass_called_after_extraction(self, tmp_path):
