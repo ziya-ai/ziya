@@ -936,7 +936,25 @@ async def execute_task_block(
                 _err_kind = str(
                     chunk.get("error_type") or chunk.get("error") or ""
                 )
-                _err_msg = chunk.get("content", "unknown")
+                # ``or``-chained, NOT ``.get(key, default)``: the default
+                # only fires when the key is ABSENT, so a chunk carrying
+                # ``content: ""`` (present but empty) passed straight
+                # through and produced the observed
+                # ``"Task execution failed: "`` — a colon with nothing
+                # after it, recorded as a run's entire error field.  A user
+                # arriving at that run learns only that something failed.
+                #
+                # The fallbacks mirror the infra branch below, because a
+                # chunk's message is not reliably in one field: the
+                # streaming layer uses ``content``, while
+                # _classify_and_handle_error's paths carry it in ``detail``
+                # or ``retry_message``.  Reading only ``content`` discards
+                # the message whenever a producer chose a different key.
+                _err_msg = (
+                    chunk.get("content") or chunk.get("detail")
+                    or chunk.get("retry_message") or chunk.get("error")
+                    or "unknown"
+                )
                 logger.warning(
                     f"📋 TASK_EXEC: {block.name!r} received error chunk: "
                     f"{_err_msg} (kind={_err_kind or 'unclassified'})"
