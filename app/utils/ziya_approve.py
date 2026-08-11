@@ -529,6 +529,20 @@ def _find_block_with_ancestors(block, target_id, ancestors=()):
     return None
 
 
+def _iter_task_blocks(block, ancestors=()):
+    """Depth-first yield of ``(task_block, ancestor_scopes)`` for every leaf
+    TASK block in a card tree — mirrors ``scope_audit._iter_task_blocks``.
+    Only ``block_type == "task"`` blocks are gated at runtime (see
+    ``_approve_task``'s docstring / block_executor), so container blocks are
+    walked for their scope (contributed via ``ancestors``) but never yielded
+    themselves."""
+    if getattr(block, "block_type", None) == "task":
+        yield block, ancestors
+    for child in (getattr(block, "body", None) or []):
+        yield from _iter_task_blocks(
+            child, ancestors + (getattr(block, "scope", None),))
+
+
 def _resolve_deck_scope(project_id: str):
     """Read a project's deck-level (project-wide) taskScope, namespace-
     wrapped.  Decrypt-soft (mirrors ``_resolve_card``): returns None on
@@ -704,6 +718,123 @@ def _approve_task(project_id: str, card_id: str, block_id: str,
         f"\n✓ Signed. Approval record written to {path}.\n"
         f"  The escalation takes effect on the task's next run.\n"
         f"  Editing any granted privilege voids this approval until re-approved.\n"
+    )
+    return 0
+
+
+def _approve_all_task(project_id: str, card_id: str,
+                      assume_yes: bool, ttl_days: Optional[float] = None) -> int:
+    """Sign every unapproved leaf-task block in a card with ONE confirmation.
+
+    A card with several escalating blocks otherwise needs one
+    ``sudo ziya-approve --task ... --block ...`` invocation (and one
+    interactive confirmation) per block, which is impractical for anything
+    beyond a couple of blocks. This walks the card's leaf TASK blocks (see
+    ``_iter_task_blocks`` — containers are never gated at runtime, so they are
+    walked for scope only, not individually signed), computes each block's
+    EFFECTIVE scope hash exactly as ``_approve_task`` does, previews the union
+    of every still-unsigned escalation, and — after a single confirmation —
+    signs and persists one approval record per unsigned block.
+
+    Blocks already signed for their current scope hash are skipped (reported,
+    not re-signed) so re-running ``--all`` after editing only one block does
+    not require re-confirming the ones already approved.
+    """
+    from app.utils import scope_approvals as sa
+
+    card = _resolve_card(project_id, card_id)
+    if card is None:
+        sys.stderr.write(
+            f"Card {card_id!r} not found or undecryptable out-of-process.\n"
+            "If the card is encrypted, open it in the Ziya UI (which stages "
+            "each block's decrypted scope for signing) and retry while the "
+            "server is running.\n"
+        )
+        return 2
+
+    deck_scope = _resolve_deck_scope(project_id)
+    card_scope = getattr(card, "scope", None)
+
+    pending = []   # (block_id, name, scope_chain, scope_hash)
+    already = []   # (block_id, name)
+    for block_obj, ancestor_scopes in _iter_task_blocks(getattr(card, "root", card)):
+        scope_chain = (deck_scope, card_scope) + ancestor_scopes + (
+            getattr(block_obj, "scope", None),)
+        scope_hash = sc.task_scope_hash(*scope_chain)
+        if not scope_hash:
+            continue  # no escalation on this block — runs at the floor already
+        block_id = getattr(block_obj, "id", "") or ""
+        name = getattr(block_obj, "name", "") or block_id
+        if sa.is_scope_authorized(block_id, *scope_chain):
+            already.append((block_id, name))
+            continue
+        pending.append((block_id, name, scope_chain, scope_hash))
+
+    sys.stdout.write(f"Task card: {card_id}\n")
+    if already:
+        sys.stdout.write(f"Already approved ({len(already)}): "
+                         + ", ".join(f"{n!r}" for _, n in already) + "\n")
+    if not pending:
+        sys.stdout.write("Nothing to approve — every escalating block is "
+                         "already signed for its current scope.\n")
+        return 0
+
+    sys.stdout.write(f"\nPending escalations across {len(pending)} block(s):\n")
+    for block_id, name, scope_chain, _ in pending:
+        sys.stdout.write(f"\n  Block {block_id!r} ({name!r}):\n")
+        preview = _render_task_escalation(*scope_chain)
+        sys.stdout.write("\n".join(f"  {line}" for line in preview.splitlines())
+                         + "\n")
+
+    if not assume_yes and not _confirm(
+        f"\nSign ALL {len(pending)} escalation(s) above with the root "
+        f"approval key? [y/N] "
+    ):
+        sys.stdout.write("Aborted; no approval records written.\n")
+        return 1
+
+    approved_by = os.environ.get("SUDO_USER") or os.environ.get("USER") or "unknown"
+    signed = 0
+    for block_id, name, _scope_chain, scope_hash in pending:
+        approved_at = int(time.time())
+        expires_at = _resolve_expires_at(approved_at, ttl_days)
+        try:
+            sig = sc.sign_approval_record(block_id, scope_hash, approved_by,
+                                          approved_at, expires_at=expires_at)
+        except PermissionError:
+            sys.stderr.write(
+                f"PermissionError reading the private key "
+                f"({sc.private_key_path()}). Run via 'sudo ziya-approve' — "
+                f"only root may sign.\n"
+            )
+            return 2
+        except FileNotFoundError:
+            sys.stderr.write(
+                f"Private key not found at {sc.private_key_path()}. "
+                f"Run 'sudo ziya-approve --provision' first.\n"
+            )
+            return 2
+        except Exception as e:  # noqa: BLE001 — surface any key/sign failure clearly
+            sys.stderr.write(f"Signing failed for block {block_id!r}: {e}\n")
+            return 2
+
+        record = {
+            "task_id": block_id,
+            "scope_hash": scope_hash,
+            "approved_by": approved_by,
+            "approved_at": approved_at,
+            "signature": sig,
+        }
+        if expires_at is not None:
+            record["expires_at"] = expires_at
+        sa.save_record(record)
+        sys.stdout.write(f"  ✓ Signed block {block_id!r} ({name!r}).\n")
+        signed += 1
+
+    sys.stdout.write(
+        f"\n✓ Signed {signed} approval record(s) for card {card_id!r}.\n"
+        f"  Each escalation takes effect on that block's next run.\n"
+        f"  Editing any granted privilege voids its approval until re-approved.\n"
     )
     return 0
 
@@ -988,6 +1119,12 @@ def main(argv: Optional[list] = None) -> int:
         "--project", default=None,
         help="Project id owning the task card (for --task mode).",
     )
+    parser.add_argument(
+        "--all", action="store_true", dest="all_blocks",
+        help="With --task/--project (no --block), sign EVERY unapproved "
+             "escalating block in the card with a single confirmation, "
+             "instead of one invocation per block.",
+    )
     # CLI-task approval mode (ASR F-001). When --cli-task is given, sign an
     # approval record for a tasks.yaml task's ``allow`` block instead of a card
     # scope or the shell-config env delta.
@@ -1028,11 +1165,24 @@ def main(argv: Optional[list] = None) -> int:
     if args.cli_task:
         return _approve_cli_task(args.cli_task, args.root, args.yes, args.ttl_days)
 
-    # Route to task-scope approval when --task/--block are supplied.
-    if args.task or args.block:
-        if not (args.task and args.block and args.project):
+    # Route to task-scope approval when --task/--block/--all are supplied.
+    if args.task or args.block or args.all_blocks:
+        if not (args.task and args.project):
             sys.stderr.write(
-                "--task mode requires --task, --block, and --project together.\n"
+                "--task mode requires --task and --project (plus --block, or "
+                "--all to sign every unapproved block in the card).\n"
+            )
+            return 2
+        if args.all_blocks:
+            if args.block:
+                sys.stderr.write("--all cannot be combined with --block.\n")
+                return 2
+            return _approve_all_task(args.project, args.task, args.yes,
+                                     args.ttl_days)
+        if not args.block:
+            sys.stderr.write(
+                "--task mode requires --block (or pass --all to sign every "
+                "unapproved block in the card).\n"
             )
             return 2
         return _approve_task(args.project, args.task, args.block, args.yes,
