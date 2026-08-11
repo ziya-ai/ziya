@@ -1,4 +1,25 @@
-import { isInlineMathContent, processInlineMath } from '../inlineMathClassifier';
+import {
+    isInlineMathContent,
+    processInlineMath,
+    decodeInlineMathMarker,
+    MATH_INLINE_MARKER_PREFIX,
+    MATH_INLINE_MARKER_SPLIT_RE,
+    isInlineMathMarker,
+} from '../inlineMathClassifier';
+
+/**
+ * The marker payload is base64-encoded (see inlineMathClassifier.ts), so the
+ * LaTeX is no longer legible in the emitted string. Assert on the DECODED
+ * payload instead of a literal marker: that keeps these tests pinned to
+ * behaviour (which spans are treated as math) rather than to the encoding,
+ * which is an implementation detail of marker transport.
+ */
+function decodedMath(segment: string): string[] {
+    return processInlineMath(segment)
+        .split(MATH_INLINE_MARKER_SPLIT_RE)
+        .filter(part => part && isInlineMathMarker(part))
+        .map(part => decodeInlineMathMarker(part) as string);
+}
 
 describe('isInlineMathContent — genuine math', () => {
     it('single variables', () => {
@@ -65,12 +86,9 @@ describe('processInlineMath — full segment transformation', () => {
     });
 
     it('still converts genuine inline math', () => {
-        expect(processInlineMath('the value $x = 0$ holds'))
-            .toContain('⟨MATH_INLINE:x = 0⟩');
-        expect(processInlineMath('$\\frac{1}{2}$ cup'))
-            .toContain('⟨MATH_INLINE:\\frac{1}{2}⟩');
-        expect(processInlineMath('let $x$ vary'))
-            .toContain('⟨MATH_INLINE:x⟩');
+        expect(decodedMath('the value $x = 0$ holds')).toEqual(['x = 0']);
+        expect(decodedMath('$\\frac{1}{2}$ cup')).toEqual(['\\frac{1}{2}']);
+        expect(decodedMath('let $x$ vary')).toEqual(['x']);
     });
 
     it('KaTeX adjacency kills the "$5 + $5" currency caveat at the source', () => {
@@ -84,7 +102,8 @@ describe('processInlineMath — full segment transformation', () => {
 
     it('mixed line: real math renders, adjacent currency stays literal', () => {
         const out = processInlineMath('cost $5 but $x$ is unknown');
-        expect(out).toContain('⟨MATH_INLINE:x⟩');
+        expect(out).toContain(MATH_INLINE_MARKER_PREFIX);
+        expect(decodedMath('cost $5 but $x$ is unknown')).toEqual(['x']);
         expect(out).toContain('cost $5 but');
     });
 });
