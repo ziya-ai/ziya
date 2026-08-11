@@ -287,7 +287,11 @@ class ChatStorage(BaseStorage[Chat]):
         
         chat = Chat(
             id=chat_id,
-            title=data.title or "New conversation",
+            # Must match the frontend placeholder string EXACTLY (capital C).
+            # PLACEHOLDER_TITLES, isEmptyShell and the empty-conversation GC
+            # all compare against 'New Conversation'; a differently-cased
+            # value is treated as a real user-authored title and sticks.
+            title=data.title or "New Conversation",
             groupId=data.groupId,
             contextIds=context_ids,
             skillIds=skill_ids,
