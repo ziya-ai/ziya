@@ -88,6 +88,92 @@ _BARE_ANGLE_RE = re.compile(r"\s*[-+]?\d+(?:\.\d+)?\s*\Z")
 _DEFAULT_CHARGE_ANGLE = "90"
 
 
+#: A ``\chemfig`` / ``\Chemfig`` (or ``\chemleft``-style) command carrying TWO
+#: consecutive optional brackets.  chemfig accepts exactly ONE optional
+#: argument, so ``\chemfig[][draw=red]{...}`` -- the natural guess by analogy
+#: with macros that take two optionals -- aborts fatally with the misleading
+#: "Undefined control sequence \CF_currentstringangle", a message that names
+#: nothing the author wrote and points at chemfig internals.  Verified against
+#: a live chemfig install: single ``[X]{...}`` renders; ANY second bracket
+#: (``[][X]``, ``[X][]``, ``[][]``, ``[X][Y]``) is fatal.
+_CHEMFIG_DOUBLE_OPT_RE = re.compile(r"\\(?:chemfig|Chemfig)\s*\[")
+
+
+def _collapse_double_optional(body: str) -> tuple[str, list[str]]:
+    r"""Collapse ``\chemfig[][X]{...}`` -> ``\chemfig[X]{...}`` when safe.
+
+    chemfig takes a SINGLE optional argument; a second ``[...]`` is a fatal
+    ``\CF_currentstringangle`` error (verified on a live install).  The
+    common author mistake is an EMPTY leading bracket followed by the real
+    options -- ``\chemfig[][draw=red]{...}`` -- copied from macros that take
+    two optionals.
+
+    The rewrite fires ONLY when at least one of the two brackets is EMPTY, in
+    which case the empty one carries no information and dropping it cannot
+    change meaning: ``[][X]`` and ``[X][]`` both become ``[X]``, and ``[][]``
+    becomes ``[]``.  When BOTH brackets are non-empty (``[X][Y]``) the intent
+    is genuinely ambiguous -- which set of options did the author mean? -- so
+    the body is left untouched for the renderer to reject with the TeX error,
+    exactly as the ring lint leaves ambiguous rings alone.
+
+    Safe for the same reason the other repairs here are: the double-bracket
+    form is ALREADY invalid, so collapsing it cannot turn a working render
+    into a broken one.  A single ``\chemfig[X]{...}`` (or bracket-free
+    ``\chemfig{...}``) has no adjacent second bracket and never matches.
+    """
+    notes: list[str] = []
+    out = body
+    # Right-to-left so each edit leaves earlier match indices valid.
+    matches = list(_CHEMFIG_DOUBLE_OPT_RE.finditer(body))
+    for m in reversed(matches):
+        first_open = m.end() - 1
+        first_close = _match_bracket(body, first_open)
+        if first_close is None:
+            continue
+        # A second bracket must follow immediately (only whitespace between).
+        j = first_close + 1
+        while j < len(body) and body[j] in " \t":
+            j += 1
+        if j >= len(body) or body[j] != "[":
+            continue
+        second_open = j
+        second_close = _match_bracket(body, second_open)
+        if second_close is None:
+            continue
+        first_inner = body[first_open + 1:first_close]
+        second_inner = body[second_open + 1:second_close]
+        # Only collapse when at least one bracket is empty (unambiguous).
+        if first_inner.strip() and second_inner.strip():
+            continue
+        kept = first_inner if first_inner.strip() else second_inner
+        replacement = f"[{kept}]"
+        out = out[:first_open] + replacement + out[second_close + 1:]
+        notes.append(
+            "\\chemfig had two optional [] brackets (chemfig accepts one); "
+            f"collapsed the empty one, keeping [{kept}]"
+        )
+    return out, list(reversed(notes))
+
+
+def _match_bracket(body: str, open_idx: int) -> Optional[int]:
+    """Index of the ``]`` matching the ``[`` at ``open_idx``, or None.
+
+    Nesting-aware so a bracketed value inside the option list (rare, but a
+    pgfkeys value can contain ``[...]``) cannot terminate the option early.
+    """
+    if open_idx >= len(body) or body[open_idx] != "[":
+        return None
+    depth = 0
+    for i in range(open_idx, len(body)):
+        if body[i] == "[":
+            depth += 1
+        elif body[i] == "]":
+            depth -= 1
+            if depth == 0:
+                return i
+    return None
+
+
 def _match_brace(body: str, open_idx: int) -> Optional[int]:
     """Index of the ``}`` matching the ``{`` at ``open_idx``, or None.
 
@@ -402,11 +488,15 @@ def autofix(body: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
     Every repair here is unambiguous, so nothing lands in ``warnings``; the
     triple exists so the renderer can treat both chemfig fixers alike.
 
-    Runs the ``\charge`` argument repair first, then braces any bare
-    ``^``/``_`` bond-character script (``O^-`` -> ``O^{-}``).  The order is
-    deliberate: the charge repair may emit ``$...$`` spans, and the bond-script
-    pass must see them so it does not re-touch a payload already handled.
+    Runs the double-optional-bracket collapse first (``\chemfig[][X]{...}``
+    -> ``\chemfig[X]{...}``), then the ``\charge`` argument repair, then braces
+    any bare ``^``/``_`` bond-character script (``O^-`` -> ``O^{-}``).  The
+    order is deliberate: the bracket collapse is a whole-command fix that must
+    run before the argument-level repairs, and the charge repair may emit
+    ``$...$`` spans that the bond-script pass must see so it does not re-touch a
+    payload already handled.
     """
-    fixed, notes = repair(body)
+    fixed, bracket_notes = _collapse_double_optional(body)
+    fixed, notes = repair(fixed)
     fixed, script_notes = _brace_bare_bond_scripts(fixed)
-    return fixed, tuple(notes) + tuple(script_notes), ()
+    return fixed, tuple(bracket_notes) + tuple(notes) + tuple(script_notes), ()

@@ -185,7 +185,25 @@ PROFILES: dict[str, LatexProfile] = {
     ),
     "chemfig": LatexProfile(
         key="chemfig",
-        packages=(LatexPackage("chemfig"),),
+        # xcolor is loaded FIRST, with the extended name sets, because chemfig
+        # loads xcolor itself (no options) as a dependency -- and xcolor is a
+        # once-only package, so whoever loads it first wins.  Without this line
+        # only xcolor's ~19 base colours exist, and a model authoring a
+        # structure naturally reaches for a CSS/SVG colour name (Crimson, Navy,
+        # DarkGreen, Teal, Orange, ...) inside a \color{}/\textcolor{} label or
+        # a bond's 5th colour field.  Every such name is then a FATAL
+        # "Undefined color" -> no output at all, for a diagram that is
+        # otherwise perfectly valid.  Verified against a live chemfig install:
+        # \color{Crimson}{...} aborts without this option and renders with it,
+        # and pre-loading with options produces no clash when chemfig later
+        # requests xcolor unoptioned.  svgnames + dvipsnames together cover the
+        # ~340 names an LLM is likely to emit.  (Note this cannot rescue an
+        # invalid spelling such as lowercase `navy`, which is not a name in any
+        # set -- that remains a genuine input error.)
+        packages=(
+            LatexPackage("xcolor", "svgnames,dvipsnames"),
+            LatexPackage("chemfig"),
+        ),
         # mhchem supplies \ce{} and \pu{}, which chemfig cannot typeset --
         # chemfig draws structures, not equations.  Optional because mhchem
         # does not ship with BasicTeX, and a hard dependency would break
@@ -244,6 +262,47 @@ def requires_position_marks(body: str) -> bool:
     them through the DVI/SVG path.
     """
     return any(pat in body for pat in _POSITION_MARK_PATTERNS)
+
+
+#: A ``\color`` / ``\textcolor`` appearing inside a chemfig ``\charge`` /
+#: ``\Charge`` argument.  Verified empirically against a live chemfig install:
+#: such a body compiles cleanly through pdflatex -> PDF -> PNG, but under the
+#: DVI/dvisvgm path it sends dvisvgm's colour routine
+#: (``\pgfsys@svg@set@color@orig``) into an unbounded expansion and aborts with
+#: "TeX capacity exceeded" -- no image at all.  A plain ``\color`` in an
+#: ordinary substituent label is fine on the SVG path, and a colourless
+#: ``\charge`` is fine; only the COMBINATION diverges, because \charge typesets
+#: its argument inside a pgfpicture whose colour push/pop the dvisvgm driver
+#: mishandles.  This mirrors the position-mark case: a construct that survives
+#: PDF but not DVI, so it must be forced to the PNG path.
+#:
+#: The ``[^{}]*`` before the colour macro stays inside the charge's own brace
+#: group (angle/offset/tikz key text never contains ``{``), so a ``\color`` in
+#: a sibling label after the ``\charge`` does not match.
+_CHARGE_COLOR_RE = None  # compiled lazily below to keep re import local
+
+
+def charge_color_breaks_dvisvgm(body: str) -> bool:
+    """True when ``body`` colours a ``\\charge`` argument.
+
+    Such bodies must not be routed through the DVI/dvisvgm (SVG) path: they
+    trigger a "TeX capacity exceeded" runaway in the dvisvgm colour driver even
+    though they compile fine to PDF/PNG.  Callers should force PNG.
+
+    Advisory heuristic: any internal fault degrades to ``False`` (attempt the
+    normal path) rather than raising, so a regex defect can never block a
+    render that would otherwise succeed.
+    """
+    global _CHARGE_COLOR_RE
+    try:
+        import re
+        if _CHARGE_COLOR_RE is None:
+            _CHARGE_COLOR_RE = re.compile(
+                r"\\(?:charge|Charge)\s*\{[^{}]*\\(?:color|textcolor)\b"
+            )
+        return bool(_CHARGE_COLOR_RE.search(body))
+    except Exception:                      # pragma: no cover - defensive
+        return False
 
 #: Diagram types this module can render.  ``diagram_render.py`` consults this
 #: so LaTeX types stop being rejected as unsupported.

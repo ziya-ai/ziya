@@ -62,6 +62,7 @@ from typing import Optional
 from app.services.latex_profiles import (
     LatexProfile,
     TOOLCHAIN_TL_PACKAGES,
+    charge_color_breaks_dvisvgm,
     get_profile,
     install_command,
     requires_position_marks,
@@ -320,6 +321,20 @@ class LatexRenderer:
             logger.info(
                 "%s: forcing PNG, body uses pgf position marks which the "
                 "dvisvgm driver cannot place correctly", profile.key,
+            )
+            target = "png"
+        # A \color inside a \charge argument compiles to PDF but sends the
+        # dvisvgm colour driver into an unbounded expansion ("TeX capacity
+        # exceeded") on the DVI/SVG path -- verified against a live chemfig
+        # install.  Like position marks, this is a driver limitation that
+        # survives PDF but not DVI, so force PNG rather than returning a
+        # compile failure for a body that renders perfectly as a raster.
+        if target == "svg" and profile.key == "chemfig" \
+                and charge_color_breaks_dvisvgm(body) \
+                and cap.has_pdflatex and cap.has_ghostscript:
+            logger.info(
+                "chemfig: forcing PNG, body colours a \\charge argument which "
+                "sends the dvisvgm colour driver into a runaway expansion",
             )
             target = "png"
         if target == "svg" and not (cap.has_latex and cap.has_dvisvgm):
