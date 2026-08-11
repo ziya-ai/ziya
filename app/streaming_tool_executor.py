@@ -1663,7 +1663,11 @@ class StreamingToolExecutor:
         if iteration_usages:
             last_usage = iteration_usages[-1]
             total_processed = last_usage.input_tokens + last_usage.cache_read_tokens
-            if iteration > 0 and total_processed > 10000 and last_usage.cache_read_tokens == 0:
+            # A cache WRITE with no read is legitimate first-time population
+            # (write != read), not a failure.
+            if (iteration > 0 and total_processed > 10000
+                    and last_usage.cache_read_tokens == 0
+                    and last_usage.cache_write_tokens == 0):
                 throttle_state['cache_working'] = False
             elif last_usage.cache_read_tokens > 0:
                 throttle_state['cache_working'] = True
@@ -3777,11 +3781,18 @@ Please retry the tool call with valid JSON. Ensure:
                     
                     logger.debug("=" * 80)
                     
-                    # CRITICAL: Detect cache failures immediately
-                    if iteration > 0 and cached == 0 and fresh > 10000:
+                    # Detect cache failures. A cache WRITE with no read is
+                    # legitimate first-time population (write != read), not a
+                    # failure — this alarm previously fired on every fresh
+                    # cache prefix, and via the throttle path's
+                    # cache_working==False branch halved max_output_tokens on
+                    # the next throttle for no reason.
+                    _cache_written = iteration_usage.cache_write_tokens
+                    if (iteration > 0 and cached == 0 and fresh > 10000
+                            and _cache_written == 0):
                         logger.error("🚨 CACHE FAILURE DETECTED!")
                         logger.error(f"   Iteration {iteration}: {fresh:,} fresh tokens")
-                        logger.error(f"   Expected cache reads but got ZERO")
+                        logger.error(f"   Expected cache reads or writes but got ZERO")
                         logger.error(f"   This WILL cause throttling!")
                         
                         throttle_state['cache_working'] = False
@@ -3789,6 +3800,13 @@ Please retry the tool call with valid JSON. Ensure:
                         throttle_state['cache_working'] = True
                         throttle_state['last_cache_efficiency'] = iteration_usage.cache_hit_rate
                         logger.debug(f"✅ CACHE WORKING: {cached:,} tokens reused")
+                    elif _cache_written > 0:
+                        # Prefix written this call; reads become possible on
+                        # the next one. Caching infrastructure is working.
+                        throttle_state['cache_working'] = True
+                        logger.debug(
+                            f"📝 CACHE WRITE: {_cache_written:,} tokens "
+                            f"written, no reads yet")
                 else:
                     # No usage is expected when the iteration produced no
                     # output (early break, error before message_stop, or
