@@ -1128,28 +1128,39 @@ async def chat_endpoint(request: Request):
         model_selection = body.get('modelSelection') or {}
         pinned_model = model_selection.get('model') if isinstance(model_selection, dict) else None
         _endpoint = ziya_env("ZIYA_ENDPOINT")
+        _pin_endpoint = None
         if pinned_model:
             from app.utils.model_override import validate_model_override
             _pin_err = validate_model_override(pinned_model, _endpoint)
             if _pin_err:
                 logger.warning(f"🎯 MODEL_PIN: rejected pin '{pinned_model}': {_pin_err}")
                 return JSONResponse({"error": _pin_err, "error_type": "model_pin"}, status_code=400)
-            logger.info(f"🎯 MODEL_PIN: request pinned to '{pinned_model}'")
+            # A pin may name a model on another provider; the executor takes
+            # an endpoint_override, so resolve it here and carry it through
+            # rather than assuming the running endpoint.
+            from app.utils.model_override import resolve_override_endpoint
+            _pin_endpoint = resolve_override_endpoint(pinned_model)
+            logger.info(
+                f"🎯 MODEL_PIN: request pinned to '{pinned_model}'"
+                + (f" on endpoint '{_pin_endpoint}'" if _pin_endpoint != _endpoint else "")
+            )
 
         # Check current model to determine routing.  The pin, when present,
         # is the model that will actually stream.
         current_model = pinned_model or ModelManager.get_model_alias()
+        # Routability must be judged on the endpoint that will actually run.
+        _route_endpoint = _pin_endpoint or _endpoint
         logger.debug(f"🔍 CHAT_ENDPOINT: current_model={current_model}")
         # Routability is owned by the provider factory — the single source of
         # truth for which endpoints can be streamed. Do NOT re-derive a local
         # predicate list here; that duplication is what silently dropped new
         # endpoints (fable5/mythos5, zai, openrouter). A model streams iff the
         # factory can build a provider for its endpoint.
-        model_cfg = ModelManager.get_model_config(_endpoint, current_model) if current_model else {}
+        model_cfg = ModelManager.get_model_config(_route_endpoint, current_model) if current_model else {}
         from app.providers.factory import is_endpoint_supported
-        use_direct_streaming = is_endpoint_supported(_endpoint, model_cfg)
+        use_direct_streaming = is_endpoint_supported(_route_endpoint, model_cfg)
         logger.debug(
-            f"🔍 CHAT_ENDPOINT: model={current_model}, endpoint={_endpoint}, "
+            f"🔍 CHAT_ENDPOINT: model={current_model}, endpoint={_route_endpoint}, "
             f"streamable={use_direct_streaming}")
         
         if use_direct_streaming:
@@ -1535,12 +1546,20 @@ async def stream_chunks(body):
     # callers) — an invalid pin is dropped with a warning, not fatal.
     model_selection = body.get("config", {}).get("modelSelection", {}) or {}
     pinned_model = model_selection.get("model") if isinstance(model_selection, dict) else None
+    pinned_endpoint = None
     if pinned_model:
         from app.utils.model_override import validate_model_override
         _pin_err = validate_model_override(pinned_model, ziya_env("ZIYA_ENDPOINT"))
         if _pin_err:
             logger.warning(f"🎯 MODEL_PIN: dropping invalid pin in stream_chunks: {_pin_err}")
             pinned_model = None
+        else:
+            # None when the pin names the running endpoint's own model, which
+            # leaves endpoint_override unset and preserves prior behavior.
+            from app.utils.model_override import resolve_override_endpoint
+            _resolved = resolve_override_endpoint(pinned_model)
+            if _resolved and _resolved != ziya_env("ZIYA_ENDPOINT"):
+                pinned_endpoint = _resolved
     
     # Use request-scoped context (set by ProjectContextMiddleware) if no explicit body param.
     # Fall back to body param for backwards compatibility with older frontends.
@@ -1642,11 +1661,13 @@ async def stream_chunks(body):
                 executor = StreamingToolExecutor(
                     profile_name=aws_profile, region=current_region,
                     model_override=pinned_model,
+                    endpoint_override=pinned_endpoint,
                 )
                 logger.debug(
                     f"🚀 DIRECT_STREAMING: Created StreamingToolExecutor with "
                     f"profile={aws_profile}, region={current_region}, "
-                    f"model_override={pinned_model}")
+                    f"model_override={pinned_model}, "
+                    f"endpoint_override={pinned_endpoint}")
                 
                 # Apply per-request model overrides from active skills
                 if model_overrides:
@@ -1725,6 +1746,24 @@ async def stream_chunks(body):
                     elif chunk.get('type') == 'error':
                         logger.info(f"🔐 ERROR_CHUNK: Received error chunk: {chunk}")
                         yield f"data: {json.dumps({'error': chunk.get('content', 'Unknown error'), 'error_type': chunk.get('error', 'unknown'), 'can_retry': chunk.get('can_retry', False), 'retry_message': chunk.get('retry_message', '')})}\n\n"
+                    elif chunk.get('type') == 'continuation_rewind':
+                        # Keep server-side validation content aligned with the
+                        # frontend-visible content before relaying the rewind.
+                        rewind_line = chunk.get('rewind_line')
+                        accumulated_lines = accumulated_content.split('\n')
+                        if (isinstance(rewind_line, int) and
+                                0 <= rewind_line <= len(accumulated_lines)):
+                            accumulated_content = '\n'.join(accumulated_lines[:rewind_line])
+                        else:
+                            logger.warning(
+                                "Invalid continuation rewind offset %r for %d lines",
+                                rewind_line, len(accumulated_lines),
+                            )
+                        yield f"data: {json.dumps(chunk)}\n\n"
+                    elif chunk.get('type') == 'continuation_failed':
+                        # chatApi marks the response incomplete and disables
+                        # Apply for any diff left by a failed continuation.
+                        yield f"data: {json.dumps(chunk)}\n\n"
                     elif chunk.get('type') == 'heartbeat':
                         # Pass through heartbeat messages
                         yield f"data: {json.dumps({'heartbeat': True, 'type': 'heartbeat'})}\n\n"
@@ -1874,6 +1913,8 @@ async def stream_chunks(body):
                             elif retry_chunk.get('type') == 'tool_display':
                                 yield f"data: {json.dumps({'tool_result': retry_chunk})}\n\n"
                             elif retry_chunk.get('type') == 'throttling_error':
+                                yield f"data: {json.dumps(retry_chunk)}\n\n"
+                            elif retry_chunk.get('type') in ('continuation_rewind', 'continuation_failed'):
                                 yield f"data: {json.dumps(retry_chunk)}\n\n"
                             elif retry_chunk.get('type') == 'feedback_delivered':
                                 # Same confirmation contract as the main loop above.

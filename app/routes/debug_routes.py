@@ -713,3 +713,123 @@ async def memstats(top: int = 25, by_type: int = 20):
 
     return report
 
+
+@router.get('/api/debug/threads')
+async def debug_threads():
+    """
+    Thread and executor-pool census.
+
+    Primary use: diagnosing Bedrock stream-reader starvation.  A worker in
+    one of the provider pools is held for the ENTIRE lifetime of a stream
+    (parked in a blocking next() on the boto3 event iterator, including
+    while the model thinks and while tool calls run mid-stream), so steady
+    state is ~1 busy worker per ACTIVE conversation.
+
+    The load-bearing field is queue_depth: a non-zero queue while
+    live_threads == max_workers is direct evidence that new work
+    (notably stream connects) is stalled behind parked readers.
+    ThreadPoolExecutor queues unboundedly, so a queued connect's
+    connect_timeout does not begin to fire until a worker frees up.
+    """
+    import threading
+
+    report: Dict[str, Any] = {"timestamp": time.time()}
+
+    # Provider pools.  Looked up via sys.modules ONLY -- importing a
+    # provider module would construct its pool as a side effect, so an
+    # unloaded provider is reported absent rather than spun up by a probe.
+    pool_specs = [
+        ("bedrock", "app.providers.bedrock", "_bedrock_executor", "bedrock-io"),
+        # Connect pool is deliberately separate from the read pool: readers
+        # park for a whole stream, so a shared pool would queue connects
+        # behind them.  Saturation here means new TURNS cannot start, which
+        # is a different (and more urgent) symptom than reader saturation.
+        ("bedrock_connect", "app.providers.bedrock",
+         "_bedrock_connect_executor", "bedrock-connect"),
+        ("nova", "app.providers.nova_bedrock", "_nova_executor", "nova-io"),
+        ("nova_connect", "app.providers.nova_bedrock",
+         "_nova_connect_executor", "nova-connect"),
+        ("openai_bedrock", "app.providers.openai_bedrock", "_oai_executor", "oai-bedrock-io"),
+        ("openai_bedrock_connect", "app.providers.openai_bedrock",
+         "_oai_connect_executor", "oai-bedrock-connect"),
+    ]
+
+    pools: Dict[str, Any] = {}
+    for label, mod_name, attr, prefix in pool_specs:
+        mod = sys.modules.get(mod_name)
+        if mod is None:
+            pools[label] = {"loaded": False, "thread_name_prefix": prefix}
+            continue
+        try:
+            ex = getattr(mod, attr, None)
+            if ex is None:
+                pools[label] = {"loaded": True, "error": f"{attr} not found"}
+                continue
+            max_workers = getattr(ex, "_max_workers", None)
+            # _threads / _work_queue are CPython internals -- queue depth
+            # is not otherwise observable.  Degrade to None rather than
+            # 500 if a future CPython drops them.
+            try:
+                live = len(getattr(ex, "_threads", ()) or ())
+            except Exception:
+                live = None
+            try:
+                qdepth = ex._work_queue.qsize()
+            except Exception:
+                qdepth = None
+            entry = {
+                "loaded": True,
+                "thread_name_prefix": prefix,
+                "max_workers": max_workers,
+                "live_threads": live,
+                "queue_depth": qdepth,
+                "saturated": bool(
+                    max_workers and live is not None and live >= max_workers
+                ),
+            }
+            if entry["saturated"] and qdepth:
+                entry["verdict"] = (
+                    "STARVED: all workers busy and work is queued behind them"
+                )
+            pools[label] = entry
+        except Exception as e:
+            pools[label] = {"loaded": True, "error": str(e)}
+    report["provider_pools"] = pools
+
+    # Live OS-thread census, grouped by name prefix.
+    try:
+        all_threads = threading.enumerate()
+        by_prefix: Counter = Counter()
+        for t in all_threads:
+            nm = t.name or "unnamed"
+            by_prefix[nm.rsplit("_", 1)[0] if "_" in nm else nm] += 1
+        report["threads"] = {
+            "total": len(all_threads),
+            "by_prefix": dict(by_prefix.most_common(40)),
+            "daemon": sum(1 for t in all_threads if t.daemon),
+        }
+    except Exception as e:
+        report["threads"] = {"error": str(e)}
+
+    # Default asyncio executor -- MCP/tool work lands here, so its own
+    # saturation is a separate failure mode from the provider pools.
+    try:
+        loop = asyncio.get_running_loop()
+        de = getattr(loop, "_default_executor", None)
+        if de is None:
+            report["default_executor"] = {"present": False}
+        else:
+            report["default_executor"] = {
+                "present": True,
+                "max_workers": getattr(de, "_max_workers", None),
+                "live_threads": len(getattr(de, "_threads", ()) or ()),
+                "queue_depth": de._work_queue.qsize(),
+            }
+    except Exception as e:
+        report["default_executor"] = {"error": str(e)}
+
+    report["env"] = {
+        "BEDROCK_THREAD_POOL_SIZE": os.environ.get("BEDROCK_THREAD_POOL_SIZE"),
+        "BEDROCK_CONNECT_POOL_SIZE": os.environ.get("BEDROCK_CONNECT_POOL_SIZE"),
+    }
+    return report
