@@ -158,7 +158,12 @@ describe('demoteWebglTracesForCapture', () => {
                     layout: { title: 'x' },
                 } as any),
             );
-            expect(out.data[0].type).toBe('scatter');
+            // `PlotlySpec.data` is optional (`data?: any[]`), so indexing it
+            // is an error under strictNullChecks.  Assert it survived the
+            // round-trip first — a preprocessor that dropped `data` entirely
+            // would otherwise fail with a confusing index error.
+            expect(out.data).toBeDefined();
+            expect(out.data![0].type).toBe('scatter');
         });
 
         it('does not demote through preprocessPlotlySpec in the UI', () => {
@@ -168,7 +173,8 @@ describe('demoteWebglTracesForCapture', () => {
                     layout: { title: 'x' },
                 } as any),
             );
-            expect(out.data[0].type).toBe('scattergl');
+            expect(out.data).toBeDefined();
+            expect(out.data![0].type).toBe('scattergl');
         });
     });
 });

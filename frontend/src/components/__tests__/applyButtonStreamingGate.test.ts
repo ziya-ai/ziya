@@ -74,6 +74,18 @@ describe('isDiffComplete', () => {
         });
     });
 
+    describe('failed continuation sentinel', () => {
+        const incomplete = COMPLETE_DIFF + '\n<!-- ZIYA_CONTINUATION_INCOMPLETE -->';
+
+        it('stays non-applicable after streaming has ended', () => {
+            expect(isDiffComplete(incomplete, false)).toBe(false);
+        });
+
+        it('stays non-applicable while streaming', () => {
+            expect(isDiffComplete(incomplete, true)).toBe(false);
+        });
+    });
+
     describe('not streaming — the short-circuit the fix depends on', () => {
         // This is the load-bearing branch: once the conversation is no
         // longer streaming, ANY non-empty diff is considered complete and
