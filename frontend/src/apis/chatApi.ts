@@ -9,6 +9,8 @@ import { projectSync } from '../utils/projectSync';
 import { escapeHtml } from '../utils/htmlSanitize';
 
 import { extractSingleFileDiff } from '../utils/diffUtils';
+import { drainSseFrames } from './sseFramer';
+import { applyContinuationRewind } from './continuationProtocol';
 import { resolveModelPin, ResolvedModelPin } from '../utils/modelPins';
 import {
     applyThinkingEvent,
@@ -1004,19 +1006,13 @@ export const sendPayload = async (
         document.addEventListener('visibilitychange', _onVisibilityChangeForWakeLock);
 
         // Process chunks as they arrive
-        const processChunk = (chunk: string) => {
-            // Add chunk to buffer
-            buffer += chunk;
+        const processChunk = (chunk: string, flush: boolean = false) => {
+            const drained = drainSseFrames(buffer, chunk, flush);
+            const messages = drained.frames;
+            buffer = drained.remainder;
 
             // Any data from the server proves it's alive — reset the health-check failure counter
             document.dispatchEvent(new Event('serverAliveProof'));
-
-            // Split by double newlines to get complete SSE messages
-            const messages = buffer.split('\n\n');
-
-            // Keep the last potentially incomplete message in buffer
-            buffer = messages.pop() || '';
-
 
             // Process complete messages
             for (const sseMessage of messages) {
@@ -1590,6 +1586,15 @@ export const sendPayload = async (
                     return;
                 }
 
+                // Refusal-recovery ladder notices: the backend is retrying a
+                // provider refusal with a reduced payload. Warning-level, not
+                // content — must never enter the stored transcript.
+                if (unwrappedData.type === 'refusal_recovery') {
+                    showError(unwrappedData.message, conversationId,
+                        addMessageToConversation, 'warning', unwrappedData.type);
+                    return;
+                }
+
                 // Handle throttling status messages
                 if (unwrappedData.type === 'throttling_status') {
                     showError(unwrappedData.message, conversationId, addMessageToConversation, 'warning', unwrappedData.type);
@@ -1799,40 +1804,24 @@ export const sendPayload = async (
                     }
                 }
 
-                // Handle continuation rewind markers
+                // Rewind to the explicit line boundary chosen by the backend.
                 if (jsonData.type === 'continuation_rewind') {
-                    // Handle marker-based rewind (for diff validation)
-                    if (jsonData.type === 'rewind' && jsonData.to_marker) {
-                        const marker = `<span class="diff-rewind-marker" data-marker="${jsonData.to_marker}"`;
-                        console.log(`🔄 MARKER_REWIND: Searching for marker: ${marker}`);
-
-                        const markerIndex = currentContent.indexOf(marker);
-                        if (markerIndex >= 0) {
-                            currentContent = currentContent.substring(0, markerIndex);
-                            console.log(`✂️ MARKER_REWIND: Cut at marker position ${markerIndex}, preserved ${currentContent.length} chars`);
-
-                            flushStreamedContent();
-                        } else {
-                            console.warn(`⚠️ MARKER_REWIND: Marker not found: ${marker}`);
-                        }
-                        return;
-                    }
-
-                    console.log('🔄 REWIND: Received continuation rewind marker:', jsonData);
-                    // Remove the last incomplete line based on rewind_line
-                    const lines = currentContent.split('\n');
-                    if (jsonData.rewind_line && lines.length > jsonData.rewind_line) {
-                        const beforeRewind = lines.slice(0, jsonData.rewind_line).join('\n');
-                        currentContent = beforeRewind;
-                        console.log(`🔄 REWIND: Trimmed content to line ${jsonData.rewind_line}, length: ${currentContent.length}`);
+                    const rewound = applyContinuationRewind(currentContent, jsonData);
+                    if (rewound.applied) {
+                        currentContent = rewound.content;
                         flushStreamedContent();
+                    } else {
+                        console.warn('⚠️ REWIND: Invalid continuation offset:', jsonData.rewind_line);
                     }
                     return;
                 }
-
                 // Handle continuation failure
                 if (jsonData.type === 'continuation_failed') {
                     console.log('🔄 CONTINUATION_FAILED:', jsonData);
+                    if (jsonData.incomplete && !currentContent.includes('<!-- ZIYA_CONTINUATION_INCOMPLETE -->')) {
+                        currentContent += '\n<!-- ZIYA_CONTINUATION_INCOMPLETE -->';
+                        flushStreamedContent();
+                    }
                     const failureMessage = jsonData.can_retry
                         ? '⚠️ Response continuation was interrupted due to rate limiting. Click "Retry" to continue.'
                         : '❌ Response continuation failed. The response may be incomplete.';
@@ -2813,15 +2802,10 @@ export const sendPayload = async (
             } finally {
                 // Flush any remaining bytes in the decoder
                 try {
+                    // The final call also emits a complete trailing SSE event
+                    // when the server closes without a terminal blank line.
                     const finalChunk = decoder.decode();
-                    if (finalChunk) {
-                        processChunk(finalChunk);
-                    }
-
-                    // Process any remaining buffered message
-                    if (buffer.trim()) {
-                        processChunk('');  // This will process the final buffer content
-                    }
+                    processChunk(finalChunk, true);
 
                     // SAFETY NET: If no content was streamed and no error was shown, check for missed errors
                     if (!currentContent && !errorOccurred && !errorAlreadyDisplayed) {
