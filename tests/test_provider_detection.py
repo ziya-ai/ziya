@@ -15,11 +15,18 @@ from app.utils.custom_exceptions import KnownCredentialException
 
 @pytest.fixture(autouse=True)
 def _clear_provider_env(monkeypatch):
-    """Start each test with no provider env vars set."""
-    for var in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL",
-                "GOOGLE_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+    """Start each test with no provider env vars set.
+
+    Driven off the credential registry rather than a hand-listed tuple, so a
+    newly added provider's key is cleared automatically. The old list did not
+    cover zai/meta, which would leak a real developer key into these tests
+    and make the auto-select assertions non-deterministic.
+    """
+    registry_vars = [k for p in pd.PROVIDER_CREDENTIALS for k in p.keys]
+    for var in (*registry_vars, "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
                 "AWS_SESSION_TOKEN"):
         monkeypatch.delenv(var, raising=False)
+    pd.refresh_availability()
     yield
 
 
@@ -33,9 +40,12 @@ def test_detect_reports_each_provider(monkeypatch):
     _force_bedrock(monkeypatch, False)
     monkeypatch.setenv("GOOGLE_API_KEY", "g")
     result = pd.detect_available_providers()
-    assert result == {
-        "bedrock": False, "anthropic": False, "openai": False, "google": True,
-    }
+    # Assert the reported shape covers every registered provider (plus
+    # bedrock) and the values, rather than pinning an exact dict literal
+    # that has to be edited every time a provider is added.
+    assert set(result) == {"bedrock", *(p.endpoint for p in pd.PROVIDER_CREDENTIALS)}
+    assert result["google"] is True
+    assert all(v is False for k, v in result.items() if k != "google")
 
 
 def test_openai_base_url_counts_as_openai(monkeypatch):
@@ -87,8 +97,11 @@ def test_no_autoselect_when_nothing_configured(monkeypatch):
 def test_setup_help_lists_all_providers(monkeypatch):
     monkeypatch.setattr(pd, "available_aws_profiles", lambda: [])
     msg = pd.build_setup_help()
-    for token in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_API_KEY",
-                  "aws configure", "--profile"):
+    # Every REGISTERED provider, not a hardcoded three — the production list
+    # this replaced had silently omitted zai and meta.
+    for provider in pd.PROVIDER_CREDENTIALS:
+        assert provider.canonical_key in msg
+    for token in ("aws configure", "--profile"):
         assert token in msg
 
 
