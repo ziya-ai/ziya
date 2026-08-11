@@ -48,7 +48,11 @@ REFUSAL = "refusal"
 class ApiMessage:
     """One outgoing message plus the original indices it came from."""
     role: str
-    content: str
+    # Not necessarily str: a captured payload carries content BLOCK LISTS
+    # (text/tool_use/tool_result/image).  Flattening those to text would
+    # change the bytes being tested, which defeats the purpose of probing a
+    # captured payload, so the original shape is passed through verbatim.
+    content: Any
     origin: List[int] = field(default_factory=list)
 
 
@@ -170,6 +174,76 @@ def sanitize_slice(msgs: List[ApiMessage]) -> List[ApiMessage]:
     return s
 
 
+def content_len(content: Any) -> int:
+    """Reportable size for either a string or a content-block list."""
+    return len(content) if isinstance(content, str) else len(json.dumps(content))
+
+
+def _strip_cache_control(content: Any) -> Any:
+    """Drop cache_control breadcrumbs from a captured content list.
+
+    Prompt caching is deliberately unused here (see module docstring), and a
+    captured payload arrives with the server's cache_control markers still on
+    it.  Left in place, every probe would pay for a cache WRITE of a payload
+    that changes each probe -- strictly more expensive than plain input.
+    Removing them alters only cache metadata, never the text the classifier
+    sees, so refusal behaviour is unaffected.
+    """
+    if isinstance(content, list):
+        return [
+            {k: v for k, v in b.items() if k != "cache_control"}
+            if isinstance(b, dict) else b
+            for b in content
+        ]
+    return content
+
+
+def load_dump_messages(path: Path, keep_cache_control: bool = False) -> List[ApiMessage]:
+    """Load a messages array captured by ZIYA_DUMP_REQUEST_PARTS.
+
+    Bisecting the STORED conversation tests a payload that was never sent.
+    The send path rewrites content on the way out -- redact_garbled replaces
+    flagged spans with placeholders and normalize_paste_artifacts substitutes
+    private-use codepoints -- and prepare_cache_control restructures blocks.
+    Since the suspect content in a refusal can be a *product* of those
+    rewrites, reconstructing from the chat file can both miss a real trigger
+    and invent one that was never transmitted.  This loads the transmitted
+    bytes instead, bypassing to_api_messages entirely.
+    """
+    raw = json.loads(path.read_text())
+    if not isinstance(raw, list):
+        raise SystemExit(f"{path}: expected a JSON messages array")
+    out: List[ApiMessage] = []
+    for idx, msg in enumerate(raw):
+        if not isinstance(msg, dict):
+            continue
+        role = (msg.get("role") or "").strip()
+        if role not in ("user", "assistant"):
+            continue
+        content = msg.get("content")
+        if not keep_cache_control:
+            content = _strip_cache_control(content)
+        if not content:
+            continue
+        out.append(ApiMessage(role=role, content=content, origin=[idx]))
+    while out and out[0].role != "user":
+        out.pop(0)
+    return out
+
+
+def parts_files(parts_dir: str) -> Dict[str, Optional[Path]]:
+    """Map a dump directory onto the three payload components."""
+    d = Path(os.path.expanduser(parts_dir))
+    if not d.is_dir():
+        raise SystemExit(f"{d} is not a directory")
+    return {
+        name: (d / fname if (d / fname).exists() else None)
+        for name, fname in (("system", "system.txt"),
+                            ("tools", "tools.json"),
+                            ("messages", "messages.json"))
+    }
+
+
 # ----------------------------------------------------------------- probing
 
 
@@ -219,10 +293,6 @@ class Prober:
         stream: bool,
         pause: float,
     ):
-        import boto3
-
-        session = boto3.Session(profile_name=profile) if profile else boto3.Session()
-        self.client = session.client("bedrock-runtime", region_name=region)
         self.model_id = model_id
         self.system_text = system_text
         self.tools = tools
@@ -232,6 +302,14 @@ class Prober:
         self.probes = 0
         self.input_tokens = 0
         self.output_tokens = 0
+        self._connect(region, profile)
+
+    def _connect(self, region: str, profile: Optional[str]) -> None:
+        """Open the transport. Overridden to probe a different endpoint."""
+        import boto3
+
+        session = boto3.Session(profile_name=profile) if profile else boto3.Session()
+        self.client = session.client("bedrock-runtime", region_name=region)
 
     def _body(self, msgs: List[ApiMessage]) -> Dict[str, Any]:
         body: Dict[str, Any] = {
@@ -317,6 +395,117 @@ class Prober:
                            len(msgs), last_origin)
 
 
+_MANTLE_BASE_URL = "https://bedrock-mantle.{region}.api.aws/anthropic"
+
+
+class MantleProber(Prober):
+    """Probes Bedrock Mantle rather than bedrock-runtime.
+
+    The two endpoints do not apply the same safety classifier: a payload
+    that mantle refuses can pass on bedrock-runtime.  Probing
+    bedrock-runtime for a mantle-only refusal therefore reports "did not
+    reproduce" and finds nothing -- which is what this script did for every
+    mantle-routed model (fable5, mythos5), the exact models whose refusals
+    prompted writing it.
+
+    Mantle speaks the Anthropic Messages API over SigV4 rather than the
+    Bedrock invoke_model shape, so ``model`` moves from the request envelope
+    into the body.  ``anthropic_version`` is REQUIRED and stays: omitting it
+    returns 400 "anthropic_version: Field required" (verified live).
+    """
+
+    def _connect(self, region: str, profile: Optional[str]) -> None:
+        import boto3
+        import httpx
+        from botocore.auth import SigV4Auth
+        from botocore.awsrequest import AWSRequest
+
+        session = boto3.Session(profile_name=profile) if profile else boto3.Session()
+        creds = session.get_credentials()
+        if creds is None:
+            raise SystemExit("No AWS credentials available for Bedrock Mantle")
+        # Hold the resolver, not a frozen snapshot: bisecting a large
+        # conversation can outlive short-lived STS/SSO credentials, and
+        # get_frozen_credentials() refreshes when due.  Mirrors the
+        # reasoning in _AsyncSigV4Transport.
+        self._creds = creds
+        self._sigv4 = SigV4Auth
+        self._aws_request = AWSRequest
+        self._region = region
+        self._url = _MANTLE_BASE_URL.format(region=region) + "/v1/messages"
+        self.client = None
+        # A refusal returns in ~1s, but a NON-refusing probe on a 100k-token
+        # prefix legitimately takes minutes; a short read timeout would look
+        # like an error and abort the bisection mid-search.
+        self._http = httpx.Client(
+            timeout=httpx.Timeout(connect=10.0, write=120.0, read=600.0, pool=60.0)
+        )
+
+    def _signed_headers(self, payload: str) -> Dict[str, str]:
+        req = self._aws_request(
+            method="POST", url=self._url,
+            headers={"content-type": "application/json"},
+            data=payload.encode("utf-8"),
+        )
+        self._sigv4(self._creds.get_frozen_credentials(), "bedrock",
+                    self._region).add_auth(req)
+        return dict(req.headers)
+
+    @staticmethod
+    def _usage(data: dict) -> Tuple[int, int]:
+        u = data.get("usage", {}) or {}
+        return (u.get("input_tokens", 0) + u.get("cache_read_input_tokens", 0),
+                u.get("output_tokens", 0))
+
+    def _invoke(self, body: Dict[str, Any]) -> Tuple[Optional[str], Any, int, int]:
+        body = dict(body)
+        body["model"] = self.model_id
+        if self.stream:
+            body["stream"] = True
+        payload = json.dumps(body)
+        headers = self._signed_headers(payload)
+
+        if not self.stream:
+            resp = self._http.post(self._url, content=payload, headers=headers)
+            if resp.status_code != 200:
+                # Name the exception ThrottlingException on 429 so Prober.probe's
+                # existing "Throttl" backoff recognises it; mantle's 429 body
+                # does not reliably carry that string.
+                kind = "ThrottlingException" if resp.status_code == 429 else "HTTPError"
+                raise RuntimeError(f"{kind}: HTTP {resp.status_code} {resp.text[:300]}")
+            data = resp.json()
+            in_tok, out_tok = self._usage(data)
+            return data.get("stop_reason"), data.get("stop_details"), in_tok, out_tok
+
+        stop_reason, stop_details, in_tok, out_tok = None, None, 0, 0
+        with self._http.stream("POST", self._url, content=payload,
+                               headers=headers) as resp:
+            if resp.status_code != 200:
+                resp.read()
+                kind = "ThrottlingException" if resp.status_code == 429 else "HTTPError"
+                raise RuntimeError(f"{kind}: HTTP {resp.status_code} {resp.text[:300]}")
+            for line in resp.iter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                raw = line[5:].strip()
+                if not raw or raw == "[DONE]":
+                    continue
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if parsed.get("type") == "message_start":
+                    in_tok, out_tok = self._usage(parsed.get("message", {}) or {})
+                elif parsed.get("type") == "message_delta":
+                    delta = parsed.get("delta", {}) or {}
+                    stop_reason = delta.get("stop_reason") or stop_reason
+                    stop_details = delta.get("stop_details") or stop_details
+                    d_in, d_out = self._usage(parsed)
+                    in_tok = d_in or in_tok
+                    out_tok = d_out or out_tok
+        return stop_reason, stop_details, in_tok, out_tok
+
+
 # --------------------------------------------------------------- bisection
 
 
@@ -382,12 +571,15 @@ def main() -> int:
     ap = argparse.ArgumentParser(
         description="Bisect a stored conversation to find what Bedrock refuses."
     )
-    ap.add_argument("chat", help="chat id or unique substring of one")
+    ap.add_argument("chat", nargs="?", default=None,
+                    help="chat id or unique substring of one; omit when "
+                         "supplying --messages-file/--parts-dir")
     ap.add_argument("--model", default="opus4.6",
                     help="bedrock model alias (default: opus4.6)")
     ap.add_argument("--model-id", default=None,
                     help="explicit Bedrock modelId, overrides --model")
-    ap.add_argument("--region", default=os.environ.get("AWS_REGION", "us-west-2"))
+    ap.add_argument("--region", default=None,
+                    help="AWS region (default: AWS_REGION, or us-east-1 with --mantle)")
     ap.add_argument("--prefix", default=None, choices=["us", "eu", "global"],
                     help="inference-profile prefix (default: inferred from region)")
     ap.add_argument("--profile", default=os.environ.get("AWS_PROFILE"))
@@ -397,6 +589,18 @@ def main() -> int:
                     help="file whose text is sent as the system prompt")
     ap.add_argument("--tools-file", default=None,
                     help="JSON file containing the Anthropic tools array")
+    ap.add_argument("--messages-file", default=None,
+                    help="messages.json captured by ZIYA_DUMP_REQUEST_PARTS; "
+                         "probes the TRANSMITTED payload instead of rebuilding "
+                         "it from the stored chat")
+    ap.add_argument("--parts-dir", default=None,
+                    help="ZIYA_DUMP_REQUEST_PARTS directory; supplies system, "
+                         "tools and messages together")
+    ap.add_argument("--keep-cache-control", action="store_true",
+                    help="keep cache_control markers from a captured payload")
+    ap.add_argument("--mantle", action="store_true",
+                    help="probe Bedrock Mantle instead of bedrock-runtime; "
+                         "required to reproduce mantle-only refusals")
     ap.add_argument("--stream", action="store_true",
                     help="probe via streaming API instead of invoke_model")
     ap.add_argument("--loo", action="store_true",
@@ -409,28 +613,59 @@ def main() -> int:
     ap.add_argument("--out", default=None, help="write JSON trace here")
     args = ap.parse_args()
 
+    if args.region:
+        region = args.region
+    elif args.mantle:
+        # The mantle anthropic models are served from us-east-1 only, so a
+        # stale AWS_REGION would sign for a host that does not exist and the
+        # connection error would surface as a probe failure rather than as a
+        # misconfiguration.
+        region = "us-east-1"
+    else:
+        region = os.environ.get("AWS_REGION", "us-west-2")
+
     _bootstrap_plugins()
-    path, chat = resolve_chat(args.chat)
-    raw_messages = chat.get("messages", []) or []
-    msgs = to_api_messages(raw_messages, include_muted=args.include_muted)
+
+    parts = parts_files(args.parts_dir) if args.parts_dir else {}
+    messages_file = args.messages_file or parts.get("messages")
+    system_file = args.system_file or parts.get("system")
+    tools_file = args.tools_file or parts.get("tools")
+
+    path = chat = None
+    raw_messages: List[Any] = []
+    if messages_file:
+        msgs = load_dump_messages(Path(messages_file), args.keep_cache_control)
+        source = str(messages_file)
+    else:
+        if not args.chat:
+            raise SystemExit("Give a chat id, or --messages-file/--parts-dir")
+        path, chat = resolve_chat(args.chat)
+        raw_messages = chat.get("messages", []) or []
+        msgs = to_api_messages(raw_messages, include_muted=args.include_muted)
+        source = f"{path.stem} ({chat.get('title', '')!r})"
     if not msgs:
-        raise SystemExit("Conversation has no sendable messages")
+        raise SystemExit("No sendable messages")
 
-    model_id = args.model_id or resolve_model_id(args.model, args.region, args.prefix)
-    system_text = Path(args.system_file).read_text() if args.system_file else None
-    tools = json.loads(Path(args.tools_file).read_text()) if args.tools_file else None
+    model_id = args.model_id or resolve_model_id(args.model, region, args.prefix)
+    system_text = Path(system_file).read_text() if system_file else None
+    tools = json.loads(Path(tools_file).read_text()) if tools_file else None
 
-    print(f"chat      {path.stem}  ({chat.get('title', '')!r})")
-    print(f"project   {path.parent.parent.name}")
-    print(f"messages  {len(raw_messages)} stored -> {len(msgs)} sendable")
-    print(f"model     {model_id}  region={args.region}  profile={args.profile}")
+    print(f"source    {source}")
+    if path is not None:
+        print(f"project   {path.parent.parent.name}")
+        print(f"messages  {len(raw_messages)} stored -> {len(msgs)} sendable")
+    else:
+        print(f"messages  {len(msgs)} captured (transmitted payload)")
+    print(f"model     {model_id}  region={region}  profile={args.profile}")
+    print(f"endpoint  {'bedrock-mantle' if args.mantle else 'bedrock-runtime'}")
     print(f"payload   system={'yes' if system_text else 'no'} "
           f"tools={len(tools) if tools else 0} max_tokens={args.max_tokens} "
           f"stream={args.stream}")
     print()
 
-    prober = Prober(model_id, args.region, args.profile, system_text, tools,
-                    args.max_tokens, args.stream, args.pause)
+    prober_cls = MantleProber if args.mantle else Prober
+    prober = prober_cls(model_id, region, args.profile, system_text, tools,
+                        args.max_tokens, args.stream, args.pause)
     trace: List[dict] = []
 
     print("control probe (full conversation):")
@@ -469,12 +704,12 @@ def main() -> int:
           f"({len(kept)} after sanitizing).")
     if len(newly) == 1:
         print(f"Primary suspect: role={suspect.role}, stored index "
-              f"{suspect.origin}, {len(suspect.content):,} chars")
+              f"{suspect.origin}, {content_len(suspect.content):,} chars")
     else:
         print(f"Primary suspects ({len(newly)} messages newly admitted at "
               f"this boundary — the trigger is in one of them):")
         for m in newly:
-            print(f"  role={m.role} stored={m.origin} {len(m.content):,} chars")
+            print(f"  role={m.role} stored={m.origin} {content_len(m.content):,} chars")
 
     if n > 1:
         check = prober.probe(msgs[:n - 1], f"verify prefix[:{n - 1}]")
@@ -509,10 +744,12 @@ def main() -> int:
         out_path = Path(args.out)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(json.dumps({
-            "chat_id": path.stem,
-            "project_id": path.parent.parent.name,
+            "chat_id": path.stem if path is not None else None,
+            "project_id": path.parent.parent.name if path is not None else None,
+            "source": source,
             "model_id": model_id,
-            "region": args.region,
+            "region": region,
+            "endpoint": "bedrock-mantle" if args.mantle else "bedrock-runtime",
             "stored_message_count": len(raw_messages),
             "sendable_message_count": len(msgs),
             "shortest_refusing_prefix": n,

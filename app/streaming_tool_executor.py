@@ -1493,6 +1493,35 @@ class StreamingToolExecutor:
         return False
 
     @staticmethod
+    def _compact_older_assistant_turns(conversation, keep_last=2, cap=1200):
+        """Refusal-recovery rung 2: truncate older large assistant turns.
+
+        Replayed assistant bulk is a measured refusal lever: the same
+        conversation that refuses at full size passes with the big
+        assistant turn reduced. Keeps the last ``keep_last`` assistant
+        turns intact, truncates earlier ones to ``cap`` chars with an
+        explicit elision marker. Returns the number of turns compacted.
+        """
+        marker = "\n\n[...earlier response truncated to reduce request size...]"
+        idxs = [i for i, m in enumerate(conversation)
+                if m.get('role') == 'assistant']
+        compacted = 0
+        for i in (idxs[:-keep_last] if keep_last else idxs):
+            content = conversation[i].get('content')
+            if isinstance(content, str):
+                if len(content) > cap + len(marker):
+                    conversation[i]['content'] = content[:cap] + marker
+                    compacted += 1
+            elif isinstance(content, list):
+                for bi, block in enumerate(content):
+                    if isinstance(block, dict) and block.get('type') == 'text':
+                        t = block.get('text') or ''
+                        if len(t) > cap + len(marker):
+                            content[bi] = {**block, 'text': t[:cap] + marker}
+                            compacted += 1
+        return compacted
+
+    @staticmethod
     def _count_conversation_chars(conversation: List[Dict[str, Any]]) -> int:
         """Best-effort character count of a conversation, for debug logging.
 
@@ -2468,6 +2497,10 @@ class StreamingToolExecutor:
         # on the first turn after a normal user message — a transient provider
         # hiccup that otherwise surfaces as an "errored" empty bubble in the UI.
         empty_completion_retry_used = 0
+        # Refusal-recovery ladder state: 0 = untried, 1 = file context
+        # dropped, 2 = older history compacted. Each rung retries once with a
+        # smaller payload; see the refusal branch in the iteration loop.
+        refusal_rungs_used = 0
         # Non-prefill incomplete-code-block continuation (step 2). The stall
         # counter bounds only *unproductive* rounds: it resets to 0 whenever a
         # round makes progress (new fence transitions vs. the prior round, OR a
@@ -4450,6 +4483,75 @@ Please retry the tool call with valid JSON. Ensure:
                                 f"stop_reason={last_stop_reason!r}). Re-issuing request."
                             )
                             continue
+                        if _reason == 'refusal':
+                            # Refusal recovery ladder. A refusal is
+                            # deterministic for a given payload, so a bare
+                            # retry is useless — but the verdict is measured
+                            # to be strongly payload-SIZE dependent: the same
+                            # conversation that refuses with ~77k chars of
+                            # injected file context passes without it, and a
+                            # benign system prompt of equal size refuses
+                            # identically. Each rung retries ONCE with a
+                            # legitimately reduced payload. Content is never
+                            # perturbed or obfuscated to evade the
+                            # classifier: we only send less.
+                            _cb_marker = 'Below is the current codebase of the user:'
+                            if (refusal_rungs_used == 0
+                                    and isinstance(system_content, str)
+                                    and _cb_marker in system_content):
+                                refusal_rungs_used = 1
+                                _head, _tail = system_content.split(_cb_marker, 1)
+                                system_content = (
+                                    _head + _cb_marker +
+                                    "\n\n(File context omitted for this request: "
+                                    "the model declined the full-size payload. "
+                                    "Do NOT guess at file contents — ask the "
+                                    "user to re-attach specific files if "
+                                    "needed.)"
+                                )
+                                logger.warning(
+                                    "🪜 REFUSAL_RECOVERY rung 1: dropped %d chars "
+                                    "of injected file context, retrying.",
+                                    len(_tail),
+                                )
+                                yield {'type': 'refusal_recovery', 'rung': 1,
+                                       'message': (
+                                           'The model declined this request; '
+                                           'retrying without injected file '
+                                           'context.')}
+                                continue
+                            if refusal_rungs_used <= 1:
+                                refusal_rungs_used = 2
+                                _n = self._compact_older_assistant_turns(conversation)
+                                if _n:
+                                    logger.warning(
+                                        "🪜 REFUSAL_RECOVERY rung 2: compacted "
+                                        "%d older assistant turns, retrying.", _n,
+                                    )
+                                    yield {'type': 'refusal_recovery', 'rung': 2,
+                                           'message': (
+                                               'The model declined again; '
+                                               'retrying with older history '
+                                               'compacted.')}
+                                    continue
+                            # Ladder exhausted (or nothing left to reduce).
+                            logger.warning(
+                                "🚫 REFUSAL: provider declined this request "
+                                "(model=%s, iteration=%s, input_tokens=%s, "
+                                "recovery_rungs_tried=%s). Ending turn.",
+                                self.model_id, iteration,
+                                getattr(iteration_usage, 'input_tokens', '?'),
+                                refusal_rungs_used,
+                            )
+                            yield {'type': 'error', 'content': (
+                                'The model declined to respond '
+                                '(stop_reason: refusal), including after '
+                                'automatic retries with reduced context. '
+                                'Try removing or muting recent large '
+                                'messages, or switch models.'
+                            )}
+                            yield {'type': 'stream_end'}
+                            break
                         # _verdict == 'end' (no_activity or max_iterations)
                         if _reason == 'max_iterations':
                             logger.debug(f"🔍 MAX_ITERATIONS: Reached maximum iterations ({iteration}), ending stream")
