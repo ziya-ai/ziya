@@ -484,6 +484,16 @@ class DiffRegressionTest(unittest.TestCase):
     def test_MRE_folder_button_removal(self):
         """Test case for false 'already applied' detection with FolderButton removal"""
         self.run_diff_test('MRE_folder_button_removal')
+
+    def test_MRE_backtick_content_truncation(self):
+        """Content after a line-terminal bare backtick must survive application.
+
+        Twice, a real apply dropped everything following a comment that ended in
+        a lone unmatched backtick, leaving a callback with no return statement --
+        valid syntax that silently returned undefined. This pins the byte-exact
+        payload so a regression in the apply path fails loudly here.
+        """
+        self.run_diff_test('MRE_backtick_content_truncation')
         
     def test_constant_duplicate_check(self):
         """Test that constant definitions don't duplicate on multiple applications"""
