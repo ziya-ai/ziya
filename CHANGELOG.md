@@ -2,7 +2,75 @@
 
 All notable changes to this project will be documented in this file.
 
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+<!-- ═══════════════════════════════════════════════════════════════════
+  HOW TO ADD ENTRIES:
+  All new changes go in [Unreleased] below. NEVER add to a numbered version.
+  When a release is cut, [Unreleased] is renamed to the new version number
+  and a fresh empty [Unreleased] section is created above it.
+  Versions are listed newest-first (reverse chronological).
+═══════════════════════════════════════════════════════════════════ -->
+
+## [Unreleased]
+
+### Added
+
 ### Fixed
+
+### Changed
+
+## [0.8.5.1] - 2026-08-11
+
+### Added
+- **Server-side high-fidelity PDF export** (`app/services/pdf_exporter.py` (new), `app/routes/export_routes.py`, `frontend/src/components/PrintRenderPage.tsx` (new), `PrintFeasibilitySpike.tsx` (new), `frontend/src/index.tsx`, `ExportConversationModal.tsx`, `tests/test_pdf_exporter.py` (new)). PDF export previously drove the browser print dialog over client-rendered DOM, so the result depended on the user's print settings and silently lost anything the print stylesheet dropped. A new `/print` route renders a whole conversation through the real `MarkdownRenderer` pipeline — Prism, KaTeX, react-diff-view, D3 diagrams — and `pdf_exporter` drives it in headless Chromium, capturing with `page.pdf()` (A4, `printBackground`). `POST /api/export/pdf` returns real PDF bytes as an attachment rather than opening a dialog. Option filtering (`roundLimit` / `includeHuman` / `includeCollapsed`) happens in the `/print` page so PDF and HTML export share one implementation, which is why the client posts raw messages instead of pre-filtering them. Playwright is imported lazily and its absence surfaces as HTTP 501, and a missing conversation as a real error, rather than as a silent empty success.
+- **Per-endpoint model capabilities, and switching endpoint without a restart** (`app/config/models_config.py`, `app/agents/models.py`, `app/routes/model_routes.py`, `app/utils/model_override.py`, `frontend/src/components/ModelConfigModal.tsx`, `ModelConfigButton.tsx`, `tests/routes/test_endpoints_route.py` (new), `test_model_capabilities_endpoint_param.py` (new), `test_set_model_cross_endpoint.py` (new)). A model offered by more than one endpoint reported a single merged capability set, and the capabilities route had no way to ask about a specific endpoint — so a capability present on one endpoint and absent on another was indistinguishable. Capabilities are now keyed per endpoint, the route accepts an endpoint parameter, and setting a model can switch endpoint in the same call. The model config modal exposes an endpoint selector backed by that data.
+- **Meta (Muse Spark) endpoint** (`app/utils/provider_detection.py`, `app/services/model_resolver.py`, `README.md`). Meta offers `muse-spark-1.2-contributor` at roughly a tenth of standard pricing in exchange for training on submitted prompts and completions. Ziya registers it but never selects it implicitly — no alias, no tier tag — because Ziya sends your source code and documents to the model; opt in only by naming it explicitly (`--model muse-spark-1.2-contributor`).
+- **Refusal recovery ladder** (`app/streaming_tool_executor.py`, `scripts/bisect_refusal.py`, `tests/test_refusal_recovery_ladder.py` (new)). A `stop_reason` of `refusal` previously ended the turn with a bare error. The verdict is deterministic for a given payload, so a plain retry is useless — but it is measurably payload-**size** dependent: the same conversation that refuses with ~77k chars of injected file context passes without it, and a benign system prompt of equal size refuses identically. Two rungs now each retry once with a legitimately smaller request — rung 1 drops the injected file context (instructing the model not to guess at file contents), rung 2 truncates older assistant turns while keeping the last two intact. Content is never perturbed or obfuscated to evade the classifier; the request only gets smaller. When the ladder is exhausted the turn ends with an error naming the rungs tried, and progress is surfaced to the client as `refusal_recovery` events.
+- **Inline thinking tag extraction** (`app/utils/inline_thinking.py` (new), `app/text_delta_processor.py`, `app/streaming_tool_executor.py`, `tests/test_inline_thinking.py` (new)). Models that emit reasoning as inline tags in the text stream, rather than as dedicated thinking events, had that reasoning rendered as body text. A scanner recognises the tags mid-stream and routes the content to the thinking channel. Because a tag can straddle a chunk boundary the scanner carries partial state, and the executor drains that carry at end of stream — a stream ending mid-tag, or right after a deferred opener, would otherwise drop the buffered text entirely.
+- **Multi-voice music notation, with accidental filtering** (`frontend/src/utils/d3Plugins/musicPlugin.ts`, `musicAccidentals.ts` (new), `__tests__/musicAccidentalFilterVerify.test.ts` (new), `musicPitchlessGuards.test.ts` (new)). Staves can carry multiple voices. Accidentals are filtered against the key signature and against prior accidentals in the same measure, so a note already covered by the key no longer prints a redundant sign.
+- **Task-scope bulk approval in `ziya-approve`** (`app/utils/ziya_approve.py`, `tests/test_ziya_approve.py`). Approving a task's scope required acknowledging each path individually, which is unworkable for a task whose `allow` block names many paths.
+- **Task writable paths and shell grants now appear in the session prompt** (`app/utils/session_context_prompt.py`). `cmd_task` populates the task-path contextvars with the plain shapes `allow_to_task_scope` returns — `{"pattern": ...}` dicts for writable entries, bare strings for shell grants — not `TaskScope`/`ScopeEntry` objects. The formatters read `entry.path` / `entry.write` via `getattr`, so passing those dicts straight through rendered **nothing**: a signed CLI task's writable paths and shell grants were absent from the prompt the model actually saw, leaving it to infer its own permissions. `cli_task_scope_from_context` adapts the dict shape, returning `None` on the chat path so callers can pass it through unconditionally.
+- **Request-parts debug dump** (`app/routes/debug_routes.py`, `app/config/env_registry.py`, `app/config/common_args.py`, `app/main.py`, `app/server.py`). Diagnosing a request the model handled unexpectedly meant reconstructing the payload by reading the assembly code, because nothing recorded what was actually sent. Gated behind an explicit env flag registered in `env_registry`.
+- Token count display in the composer, so context consumption is visible before sending (`frontend/src/components/TokenCountDisplay.tsx`, `SendChatContainer.tsx`).
+- Task runs can resume from a point **inside** a loop. Previously a click
+  anywhere in a Repeat/Until body normalised up to the loop and restarted it
+  at iteration 0, so a five-iteration campaign stopped at its last iteration
+  had to re-pay all five and discarded four banked passes — the most
+  expensive lost work in the task system, since a long loop is where a run is
+  most likely to outlive a credential. Iteration dots now offer retry and
+  continue for a single iteration; earlier iterations replay from record so
+  the first executed one still receives its `{{previous}}`/`{{all}}`
+  bindings. Refused for a parallel loop (iterations are independent, so there
+  is no ordering to resume into) and when the immediate predecessor's full
+  artifact was dropped past the 50-pass retention cap — both would otherwise
+  run against empty input while reporting success.
+- Elided images are retained in memory and can be paged back into view with
+  the new `recall_image` tool, using a handle embedded in the placeholder
+  text. Recall returns the original pixels, not a re-render. Memory is
+  bounded per conversation so one busy run cannot evict another's renders.
+- `render_diagram` accepts `retain` (`auto` | `turn` | `pin`) to widen the
+  retention window up front when iterating on a diagram.
+
+### Fixed
+- **Math preprocessing corrupted code spans and could swallow the prose between two incidental dollar signs** (`frontend/src/components/MarkdownRenderer.tsx`, `fenceScanner.ts`, `frontend/src/utils/inlineMathClassifier.ts`, `frontend/src/constants/latexProfiles.ts` (new), `frontend/src/plugins/d3/latexPlugin.ts`, `__tests__/codeSpanScanner.test.ts` (new), `mathCodeSpanOrdering.test.ts` (new), `mathPreprocessingProseSurvival.test.ts` (new), `preformattedTextToken.test.ts` (new), `inlineMathMarker.test.ts` (new)). The scanner walked the raw markdown with no notion of code spans, so a `$` inside `inline code` or a fenced block was treated as a math delimiter: the code was rewritten as math, and where the resulting pair spanned unrelated text the prose between the two delimiters was consumed. Code spans and preformatted regions are now tracked and each candidate delimiter is classified in document order, so code content survives verbatim. LaTeX fence languages are declared once in `latexProfiles` and shared by the renderer, the fence scanner and the latex plugin, replacing three hand-maintained lists that had already drifted apart.
+- **A fresh cache write was reported as a cache failure, halving the output budget** (`app/streaming_tool_executor.py`). Both cache-health checks tested only `cache_read_tokens == 0`, so first-time prefix population — a legitimate write, and a write is not a read — tripped the alarm on every fresh cache. That was not merely a noisy ERROR log: it left `throttle_state['cache_working']` at `False`, whose branch halves `max_output_tokens` on the next throttle, so a normal cache warm-up silently cut the response budget. Both checks now also require `cache_write_tokens == 0`, and a call that wrote a prefix marks caching as working.
+- **The service-model resolver paired a Bedrock model ID with a non-Bedrock client** (`app/services/model_resolver.py`, `tests/test_service_model_resolver.py`). An endpoint with no service-model table of its own fell back to Bedrock's defaults but kept reporting the *caller's* endpoint, so e.g. `us.amazon.nova-lite-v1:0` was POSTed to `api.meta.ai` — failing on every service call. The endpoint and the model ID are now always read from the same table.
+- **Reasoning containing a code fence rendered a literal `\x00CODEBLOCK0\x00`** (`frontend/src/utils/thinkingParser.ts`, `__tests__/inlineThinkingEncode.test.ts` (new)). `protectFences` applied its restore pass only after the whole transform, but `encodeThinkingBlocks` *captures* text rather than rewriting around it — so a fence placeholder inside the reasoning payload was frozen into the base64, where the restore pass could never reach it. `restore` is now returned to the caller so a capturing transform can un-placeholder its capture before encoding.
+- **The exporter silently dropped three supported diagram types** (`app/utils/conversation_exporter.py`, `tests/test_conversation_exporter_viz_types.py` (new), `test_conversation_exporter_dedup.py` (new)). The visualization fence list was hand-maintained and had drifted: only `circuitikz` was present, while `chemfig`, `tikz` and `tikz-cd` were fully supported renderers whose fences the exporter ignored — they exported as plain code blocks with no embedded diagram and no "paste into a renderer" hint. LaTeX languages are now derived from the backend profile registry, so a new profile is picked up without editing this list. Two dead helpers carrying a third copy of the list were removed.
+- **Content after a line-terminal bare backtick was dropped when applying a diff** (`tests/run_diff_tests.py`, `tests/diff_test_cases/MRE_backtick_content_truncation/` (new)). Twice, a real apply discarded everything following a comment that ended in a lone unmatched backtick, leaving a callback with no `return` — valid syntax that silently returned `undefined`. The byte-exact payload is now pinned as a fixture so a regression in the apply path fails loudly.
+- **Garbled-text detection shipped with no tests while gating a destructive transform** (`app/utils/garbled_text_detector.py`, `tests/test_garbled_text_detector.py` (new)). A flagged span is replaced by a placeholder *before* the request is sent, so a false positive silently deletes legitimate content from the user's context. Adds threshold coverage and widens detection to encoding-damage patterns that previously passed through.
+- **Extended `xcolor` names were rejected and chemfig charge colours rendered in the default ink** (`app/services/latex_profiles.py`, `app/services/latex_renderer.py`, `app/utils/chemfig_charge.py`, `tests/test_chemfig_charge.py`, `tests/test_latex_chemistry.py`). Charge annotations were emitted without routing their colour through the profile palette, so they were invisible against a dark background. Colour names outside the base `xcolor` set were rejected outright rather than passed through.
+- **Tool schemas using `$ref`/`$defs` were unusable on strict-schema endpoints** (`app/providers/openai_direct.py`, `app/utils/schema_refs.py` (new)). Endpoints requiring a fully self-contained schema rejected the request outright, so any tool whose parameters referenced a nested model could not be called there. References are resolved and inlined before the request is built.
+- **Chat list rows reflowed while scrolling and could push the footer row out of view** (`frontend/src/components/MUIChatHistory.tsx`, `frontend/src/utils/chatListLayout.ts` (new), `__tests__/chatListLayout.test.ts` (new), `chatListFooterRow.test.tsx` (new)). Row heights were computed inline on every render; the geometry is now a pure function with tests.
+- **A pathologically slow cross-project chat lookup** (`app/api/chats.py`, `app/storage/chats.py`). Opening a conversation belonging to another project walked every project's chat store to find it, so the cost grew with the total conversation count across all projects. It now consults the index.
+- **Memory extraction starved on large windows** (`app/memory/extractor.py`, `app/memory/prompt.py`, `tests/test_window_candidate_cap.py` (new), `tests/test_memory_extractor.py`, `tests/test_memory_prompt.py`). A fixed per-pass candidate cap allowed a long window and a short one the same number of proposals, so the cap was reached early in a large window and the remainder was never mined. The cap is now proportional to window size. Salience scoring also split terms containing apostrophes into fragments and scored them as separate low-value tokens (`tests/test_salience_apostrophes.py`).
+- **A `message_stop` in an unanticipated state left the turn with no terminal event** (`app/message_stop_handler.py`, `tests/test_message_stop.py`), so the client kept showing the response as still in flight. Also fixes feedback not reaching the model on some delivery paths (`tests/test_feedback_delivery_paths.py`).
+- Lazily loaded debug and render routes used bare `React.lazy`, so a chunk fetch that failed once — which happens when the bundle is replaced while a tab is open — left the route permanently broken with no retry. They now use the existing `lazyWithRetry` wrapper (`frontend/src/components/Debug.tsx`, `DiagramRenderPage.tsx`).
+- Pitchless music entries (rests and percussion-style events) reached pitch-dependent layout code and produced NaN geometry, silently dropping the remainder of the stave; they are now guarded at entry (`frontend/src/utils/d3Plugins/musicPlugin.ts`).
+- **The resume path for a stopped Task Card run was unreachable in practice, leaving Restart as the only visible option** (`frontend/src/components/TaskCard/RunRecoveryBanner.tsx` (new), `recoveryTarget.ts` (new), `TaskCardInlineTile.tsx`, `task-card-inline-tile.css`, `__tests__/recoveryTarget.test.ts` (new), `__tests__/recoveryBannerWiring.test.ts` (new), `Docs/Capabilities.md`). Resume-from-block was fully wired — endpoint, client, `canResumeFromBlock`, both retry and continue modes — and reported as "there is no resume button", with one eventually found "hiding within the failed node". Three structural causes, none of them logic. **`TaskRunMap` returns `null` when `rows.length <= 1`**, so a single-task card — the commonest shape — rendered no map at all and therefore had *no host* for the resume buttons; the only control on the tile was Restart. Where the map did render, the buttons were `font-size: 10px` at `opacity: 0.62` until row-hover, at the right edge of the row, and **repeated identically on every row**, so the recovery path was distributed across N rows with nothing marking which one the user wanted — quiet-until-hover was a deliberate earlier choice (it launches real work) that turns out to be wrong for the one action a stopped run exists to offer. And the header advertised only `Restart failed task`, which relaunches the card from scratch: a user who cannot find the resume path reasonably concludes discarding all prior work is the only option. Fixed by placement rather than new plumbing: a tile-level banner, rendered **above** the map and gated on `canResumeFromBlock` rather than on the map existing, naming the single natural target — `held_at_block_id` for a held run (more precise than inferring from status, and an infra fault may mark no block `failed` at all), otherwise the earliest failed block (later `failed` entries are containers propagating it upward, so targeting one would resume from a wrapper). It states what is replayed from record versus re-run, and explicitly contrasts itself with Restart, whose tooltip now names the cost. `recoveryTarget` returns null for a `done` run and for a run with no recorded stages, since inventing a stopping point or claiming preserved work where there is none would both be false; the per-row buttons remain for the genuinely deliberate case of resuming from *earlier* than the failure. Guarded by a static wiring test rather than a render test, because the defect was placement: every unit test on `runControls` and the API client passed while the affordance was unreachable, and reproducing it in jsdom needs both a specific card shape and computed style, which jsdom cannot supply. The test also pins the map's `rows.length <= 1` bail-out, since that is *why* the banner has to exist.
+
 - Extended-thinking content was silently discarded on Claude Opus
   4.7/4.8/5, Sonnet 5, Fable 5 and Mythos 5. Anthropic defaults
   `thinking.display` to `"omitted"` on those models, which suppresses
@@ -21,22 +89,7 @@ All notable changes to this project will be documented in this file.
   warnings on every adaptive-thinking iteration. Both are handled by
   design, but fell through to the same WARNING channel that flags
   genuinely unknown block types, firing several times per turn.
-
-### Added
-- Task runs can resume from a point **inside** a loop. Previously a click
-  anywhere in a Repeat/Until body normalised up to the loop and restarted it
-  at iteration 0, so a five-iteration campaign stopped at its last iteration
-  had to re-pay all five and discarded four banked passes — the most
-  expensive lost work in the task system, since a long loop is where a run is
-  most likely to outlive a credential. Iteration dots now offer retry and
-  continue for a single iteration; earlier iterations replay from record so
-  the first executed one still receives its `{{previous}}`/`{{all}}`
-  bindings. Refused for a parallel loop (iterations are independent, so there
-  is no ordering to resume into) and when the immediate predecessor's full
-  artifact was dropped past the 50-pass retention cap — both would otherwise
-  run against empty input while reporting success.
-
-### Fixed
+- **After switching projects the file tree showed only the global/external folders for the entire duration of a background scan, and often never filled in** (`app/services/folder_service.py`, `frontend/src/utils/folderUtil.ts`, `frontend/src/context/FolderContext.tsx`, `frontend/src/utils/__tests__/folderScanScoping.test.ts` (new)). Two independent causes, both required to produce the symptom. **`scan_complete` was broadcast with an empty path** over `/ws/file-tree`, a socket shared by every open window and not scoped per project, so any project finishing a scan cleared `isScanning` in *every* window — including one still scanning a different project. That is not merely a wrong indicator: the `isScanning` effect owns the progress poller, and the poller is also the fallback that fetches the finished tree, so a window whose scan state was cleared by an unrelated project had nothing left that would ever refetch. Observed with a 17.6s scan of one project silently terminating tree updates for a concurrent 79s+ scan of another. Separately, **nothing refetched the tree during a scan at all**: `checkFolderProgress` called `fetchFolders()` only on the branch where the server reports the scan finished, so while a scan ran it updated the directory/file counters and never re-read the tree. The backend already publishes a live partial tree that deepens as the walk proceeds (`partial_tree` as a live reference, attach-before-recurse, `_snapshot_tree` to serve it safely mid-mutation) — the frontend fetched it once at scan start, when it was nearly empty, and not again. The single fetch that did land returned 4 top-level keys plus the pre-populated `[external]` entry, which is why the tree appeared to contain nothing but global folders. `scan_complete` now carries the scanned directory and windows ignore events for other projects (failing open on a pathless event, so an older backend still clears the indicator rather than stranding it), and the progress poller now refetches the deepening partial on a doubling backoff — first at ~3s, then 9s, 21s, 45s, capped at 30s — gated on the file counter having moved, so early refreshes are frequent and cheap while a large tree is not re-converted on every one-second poll.
 - The conversation list's "Task running…" gear now clears when a run stops.
   The reconciler in `Conversation.tsx` carried its own
   `['done','failed','cancelled']` terminal-status list — the exact
@@ -105,31 +158,24 @@ All notable changes to this project will be documented in this file.
   every real render carries a description, so the notice never fired on the
   path that mattered.
 
-### Added
-- Elided images are retained in memory and can be paged back into view with
-  the new `recall_image` tool, using a handle embedded in the placeholder
-  text. Recall returns the original pixels, not a re-render. Memory is
-  bounded per conversation so one busy run cannot evict another's renders.
-- `render_diagram` accepts `retain` (`auto` | `turn` | `pin`) to widen the
-  retention window up front when iterating on a diagram.
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+- **Switching projects showed the outgoing project's file tree, or an assertive "No files found", until the new project's scan produced data** (`frontend/src/utils/folderUtil.ts`, `frontend/src/context/FolderContext.tsx`, `frontend/src/components/MUIFileExplorer.tsx`, `frontend/src/utils/__tests__/fileExplorerViewState.test.ts` (new)). Two distinct wrong states in the same window, from two causes. The `currentProject?.path` effect — the switch path taken when no `projectSwitched` event is dispatched, e.g. ProjectContext finishing its initial load or a restore from storage — only re-fetched, and never cleared `folders`/`treeData`, so the *previous* project's files stayed on screen under the new project's name until the fetch returned. Where the tree WAS cleared (the `projectSwitched` handler does clear it), the explorer then reported `No files found` with a Refresh button, because clearing the tree is necessary but not sufficient: `hasLoadedData` latches on first load and nothing resets it on switch, so the state during the window is exactly `isScanning=false, isInitialLoad=false, hasLoadedData=true, treeNodeCount=0` — a precise match for the empty-state guard, and not a match for the loading guard, which requires `isScanning || isInitialLoad`. The explorer was therefore asserting a project was empty before it had read it, for as long as the round trip plus gitignore-pattern build took. Fixed with an explicit `isSwitchingProject` flag on FolderContext, set by both switch paths and cleared the moment the first folder data for the incoming project lands (not when the scan finishes — a shallow partial is enough to stop claiming ignorance). The flag cannot be derived from the other four state variables: the switching state and a genuinely-empty scanned project are indistinguishable from them, which is the whole defect. Branch precedence moved into a pure `fileExplorerViewState` resolver so the four mutually-exclusive views cannot disagree about ordering; verified exhaustively over all 16 combinations of the other flags to be behaviour-identical to the branch order it replaces when not switching, so a same-project mid-scan refresh still shows its tree rather than blanking. The switching view deliberately shows no file/directory counters — they would be the outgoing project's or zero, both of which read as "the new project is empty".
+- Task runs no longer record an empty error detail. An error chunk whose
+  `content` was present-but-empty bypassed the `"unknown"` fallback (a
+  dict default fires only on a missing key), so a failed run's entire
+  error field could read `"Task execution failed: "`. The message is now
+  resolved by or-chaining `content` → `detail` → `retry_message` →
+  `error`, matching the infra branch and covering producers that use a
+  different field.
 
-<!-- ═══════════════════════════════════════════════════════════════════
-  HOW TO ADD ENTRIES:
-  All new changes go in [Unreleased] below. NEVER add to a numbered version.
-  When a release is cut, [Unreleased] is renamed to the new version number
-  and a fresh empty [Unreleased] section is created above it.
-  Versions are listed newest-first (reverse chronological).
-═══════════════════════════════════════════════════════════════════ -->
-
-## [Unreleased]
-
-### Added
-
-### Fixed
+### Security
+- **Two shell allowlist bypasses via escaped and unterminated quotes** (`app/mcp_servers/shell_server.py`, `tests/test_shell_escaped_quote_bypass.py` (new), `test_shell_escaped_quote_operator_matrix.py` (new), `test_shell_heredoc_body_quote_placement.py` (new), `test_shell_heredoc_quote_regression.py` (new), `test_shell_walker_divergence_contract.py` (new)). The allowlist walker's quote handling diverged from the shell's own, so a crafted command line could present one command to the validator and a different one to the shell — defeating the allowlist that is the primary guard on shell execution. Escaped quotes inside a quoted region and unterminated quotes were both mis-tracked, and the same divergence applied to quote placement inside heredoc bodies. The walker's tokenization is now pinned against the intended semantics by a divergence contract test, with operator-matrix and heredoc regression coverage.
 
 ### Changed
+- Provider credentials are resolved through a single registry (`app/utils/provider_detection.py`, `app/providers/factory.py`, `app/services/model_resolver.py`, `tests/test_provider_credential_registry.py` (new), `test_provider_credential_resolver.py` (new), `test_credential_readers_use_registry.py` (new)). Env var names and their historical aliases were open-coded in at least three places, so adding a provider or renaming a key meant finding every copy — and the copies had already diverged. `resolve_credential()` is now the only reader.
+- `ZAI_API_TOKEN` is renamed to `ZAI_API_KEY`, for consistency with every other provider's key variable. The old name is still accepted as an alias, so existing environments keep working (`README.md`).
+- Bedrock streaming no longer logs `UNHANDLED content_block_delta type='signature_delta'` and `UNHANDLED content_block_start type='text'` on every adaptive-thinking iteration. Both are handled by design, but fell through to the same WARNING channel that flags genuinely unknown block types, firing several times per turn (`app/providers/bedrock.py`, `app/providers/nova_bedrock.py`, `app/providers/openai_bedrock.py`).
+- Built-in skill catalogue and precision-prompt guidance updates; context-management tool wording now states file add/remove ownership rules where the model reads them (`app/data/built_in_skills.py`, `app/utils/precision_prompt_system.py`, `app/utils/prompt_extensions.py`, `app/mcp/tools/context_management.py`, `app/utils/file_utils.py`).
+- The superseded `chemfigDarkProbe` frontend test is removed; it asserted the pre-fix charge-colour behaviour and is covered by `tests/test_chemfig_charge.py` against the profile palette.
 
 ## [0.8.5.0] - 2026-08-06
 
