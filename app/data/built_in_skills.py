@@ -916,12 +916,43 @@ different marking (snap pizzicato), not a harmonic.
 Ornaments (a note's `ornaments` list): `trill mordent mordent-inverted turn
 turn-inverted`.
 
+## Accidentals are ABSOLUTE, not inherited from the key signature
+
+A `keys` entry is the SOUNDING pitch, so spell the accidental you want and do
+not rely on `keySignature` to supply it.  In Eb major, `"eb/5"` is E-flat and
+prints bare (the signature already carries the flat), while `"e/5"` is
+E-NATURAL and prints an explicit natural to cancel the signature:
+
+    "keySignature": "Eb",
+    "notes": [{"keys": ["eb/5"], "duration": "q"},   // E-flat, no printed sign
+              {"keys": ["bb/5"], "duration": "q"},   // B-flat, no printed sign
+              {"keys": ["e/5"],  "duration": "q"}]   // E-NATURAL, prints natural
+
+This is the opposite of most text notation input, where a plain letter inherits
+the signature.  It is the easiest way to get a whole score wrong: writing the
+plain letters of a tune in a flat or sharp key yields the right SHAPE at the
+wrong PITCHES, cluttered with a natural on nearly every note.
+
+The check: a diatonic passage in a key with accidentals should render with
+almost NO accidentals on the noteheads.  A natural on nearly every note means
+the pitches are being cancelled rather than inherited.
+
+A pitchless entry -- no `keys`, or an empty `keys` array -- is drawn as a REST
+of its duration, with a console warning.  `{"rest": true}` is the documented
+spelling and the one to use; the fallback exists because emitting a note with
+no pitch previously hung the renderer for 30s and lost the entire score.
+
 ## Beaming
 
 Set `"autoBeam": true` on the spec to beam eighths and shorter into the
 meter's natural beat groups.  **Without it every eighth and sixteenth draws an
 individual flag**, which is only correct for isolated notes — so any passage
 of running eighths wants `autoBeam`.
+
+On a multi-staff score put it at the SPEC level (beside `timeSignature`), not
+on a `measures[]` entry, where it has no effect.  A `staves[]` entry may set
+its own `autoBeam` to override the spec for that one part — including
+`false`, to leave one part flagged while the others beam.
 
 ```
 {"type": "music", "timeSignature": "4/4", "autoBeam": true, "notes": [ ... ]}
@@ -1144,10 +1175,14 @@ tempo mark or brackets above it.
 {
   "type": "music", "timeSignature": "4/4",
   "tempo": {"name": "Allegro", "duration": "q", "bpm": 132},
-  "mark": "to-coda",              // navigation mark, see list below
+  "marks": ["segno", "to-coda"],  // navigation marks, see list below
+  "mark": "to-coda",              // single-mark shorthand; `marks` wins
   "beginBar": "repeat-begin",     // opening barline
   "endBar": "repeat-end",         // closing barline
-  "volta": {"type": "begin-end", "label": "1.", "measures": [2, 2]},
+  "voltas": [                     // repeat endings; see below
+    {"type": "begin-end", "label": "1.", "measures": [2, 2]},
+    {"type": "begin-end", "label": "2.", "measures": [3, 3]}
+  ],
   "measureNumber": 12,
   "section": "B",                  // rehearsal-mark style label
   "notes": [ ... ]
@@ -1160,15 +1195,26 @@ unit defaults to a quarter, so `duration` is only needed for a non-quarter
 metronome mark (e.g. `{"duration": "8", "bpm": 160}`); `dots` puts
 augmentation dots on the beat unit.
 
-A `volta` is a repeat-ending bracket ("1.", "2.").  It is scoped to the
-measures of ONE ending, not the whole line, so anchor it with a 1-based
-inclusive measure range: `"volta": {"type": "begin-end", "label": "1.",
-"measures": [2, 2]}` draws the "1." bracket over measure 2 only.  `type`
+A repeat ending is a bracket ("1.", "2.") scoped to the measures of ONE
+ending, not the whole line.  A real repeat needs BOTH a 1st and a 2nd
+ending, so use the `voltas` LIST (one entry per ending) and anchor each with
+a 1-based inclusive measure range over its own bars:
+
+```
+"voltas": [
+  {"type": "begin-end", "label": "1.", "measures": [2, 2]},
+  {"type": "begin-end", "label": "2.", "measures": [3, 3]}
+]
+```
+
+draws the "1." bracket over measure 2 (before the `repeat-end` barline) and
+the "2." bracket over measure 3 (the alternate ending after it).  `type`
 chooses the end-hooks: `begin` (left hook, ending continues), `end` (right
-hook), `begin-end` (both — a fully-enclosed ending), `mid` (no hooks).  If
-`measures` is omitted the bracket falls on the measure carrying a
-`repeat-end` barline, or the last measure.  For a 1st AND 2nd ending, anchor
-each with its own range over its own bars.
+hook), `begin-end` (both — a fully-enclosed ending), `mid` (no hooks).  Each
+ending must carry its own `measures` range or they overlap.  For a single
+ending, one-element `voltas` (or the legacy singular `volta` field, same
+object shape) works; a lone `volta` with `measures` omitted falls back to the
+measure carrying a `repeat-end` barline, or the last measure.
 
 ## Measures and barlines
 
@@ -1216,6 +1262,24 @@ Keep `timeSignature` as the meter of ONE bar (`"4/4"`, not `"12/4"` for three
 bars) — the renderer does not require the content to sum to it.  Each
 measure's `notes` should hold roughly one bar's worth; an over- or underfull
 bar still renders rather than failing.
+
+A meter CHANGE mid-score goes on the measure where it begins: give that
+measure a `timeSignature` and the new signature is engraved there, then reads
+as governing every following bar until the next change (a change persists
+forward, exactly as printed scores read).  Do NOT repeat it on later bars in
+the same meter.  The spec-level `timeSignature` is the OPENING meter only.
+
+```
+{
+  "type": "music", "timeSignature": "4/4",
+  "measures": [
+    {"notes": [ ...4 beats... ]},
+    {"timeSignature": "3/4", "notes": [ ...3 beats... ]},
+    {"notes": [ ...3 beats... ]},
+    {"timeSignature": "4/4", "notes": [ ...4 beats... ]}
+  ]
+}
+```
 
 `measures` works inside a `staves` entry too, for a multi-measure grand staff.
 Span indices (`slurs`, `ties`, `brackets`, `hairpins`, `trillLines`) count
@@ -1276,9 +1340,14 @@ each continuation system, as published scores do.
 Navigation marks (`mark`): `coda segno fine to-coda da-capo
 da-capo-al-coda da-capo-al-fine dal-segno dal-segno-al-coda
 dal-segno-al-fine`, plus `coda-right` / `segno-right` to place the symbol at
-the right of the measure instead of the left.  Only ONE mark per spec.  A
-`tempo` and a `mark` may be given together: the tempo is lifted onto its own
-row above the navigation mark so the two never overprint.
+the right of the measure instead of the left.  For a full jump scheme use the
+`marks` LIST -- a real D.S./D.C.-al-Coda needs several symbols at once (a
+`segno` at the target, a `to-coda` where the jump leaves, a `dal-segno-al-coda`
+at the source, and a `coda` at the destination), e.g.
+`"marks": ["segno", "to-coda", "dal-segno-al-coda", "coda-right"]`.  The
+singular `mark` remains as a shorthand for a single symbol; when both are given,
+`marks` wins.  A `tempo` and any navigation mark may be given together: the
+tempo is lifted onto its own row above the marks so the two never overprint.
 
 Fermata is an ARTICULATION, not a structural mark: put `fermata-above` in a
 note's `articulations`.
@@ -1326,6 +1395,37 @@ Harp pedal diagrams: attach a `harpPedal` string to any note using LilyPond's
 compact encoding — `^` flat, `-` natural, `v` sharp, one character per pedal
 in order D C B | E F G A (the `|` divides left-foot from right-foot pedals).
 Renders as a small glyph row above the stave at that note's position.
+
+## Independent voices on one staff (keyboard, SATB, counterpoint)
+
+When two simultaneous lines share a single staff — soprano above alto, or a
+melody over an independent inner part — give the staff a `voices` list instead
+of `notes`.  Each entry has its own `notes` (or `measures`) and its own
+`stemDirection` ("up" / "down"), so the reader follows each line separately.
+This is NOT the same as a chord (stacked `keys`): a chord forces one shared
+stem and one shared rhythm, so an eighth-note upper line against a quarter-note
+lower line can ONLY be written as two voices.  The voices are formatted
+together and their notes align vertically by beat.
+
+```
+{
+  "type": "music", "timeSignature": "4/4",
+  "voices": [
+    {"stemDirection": "up",   "notes": [
+      {"keys": ["e/5"], "duration": "q"}, {"keys": ["f/5"], "duration": "q"},
+      {"keys": ["g/5"], "duration": "q"}, {"keys": ["a/5"], "duration": "q"}]},
+    {"stemDirection": "down", "notes": [
+      {"keys": ["c/4"], "duration": "h"}, {"keys": ["e/4"], "duration": "h"}]}
+  ]
+}
+```
+
+Put `voices` on a `staves[]` entry for a multi-voice staff inside a grand staff
+(e.g. a piano right hand carrying two voices).  The staff's own `slurs`, `ties`,
+`beams` and `tuplets` address the FIRST voice — a span between two independent
+voices is not something the engine can draw.  `autoBeam` beams every voice,
+each on its own stem side.  Set forced stem directions on a two-voice staff:
+without them the lines overlap ambiguously.
 
 Guidance:
 - Prefer inline `music:` for anything you'd describe in one sentence of music.

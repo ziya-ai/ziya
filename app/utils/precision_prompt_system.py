@@ -158,25 +158,46 @@ class PrecisionPromptSystem:
                     # write-policy listing that was previously a
                     # separate fileio_prompt section below.
                     from app.utils.session_context_prompt import build_session_context_section
+                    # CLI tasks (`ziya task <name>`) authorize escalated
+                    # git/shell/write grants via the _task_scope contextvars
+                    # (app.context), NOT via a TaskScope object -- that's the
+                    # Task-Card-only path. Without this, a signed task's own
+                    # prompt told the model it had none of the permissions
+                    # cmd_task had actually granted it.
+                    from app.utils.session_context_prompt import cli_task_scope_from_context
                     block = build_session_context_section(
                         project_root=project_root,
                         cwd=cwd,
-                        task_scope=None,
+                        task_scope=cli_task_scope_from_context(),
                         conv_start_iso=conv_start_iso,
                     )
 
-                    # CurrentDateTime changes on every request. Leaving it in
-                    # the cache-controlled system prompt invalidates the entire
-                    # cached prefix each turn. Move it to the current user
-                    # message so the model still receives the current time.
-                    current_time_match = re.search(
+                    # Relocate per-request AND per-conversation timestamps out
+                    # of the system prompt onto the current user message.
+                    #
+                    # CurrentDateTime changes every request; ConversationStartTime
+                    # changes every conversation. Both sit within the first ~150
+                    # chars of the system prompt, ahead of ~141KB of identical
+                    # static instructions, so either one invalidates the whole
+                    # cached prefix for prompt-caching providers.
+                    #
+                    # Live-measured on Meta Muse Spark: leaving
+                    # ConversationStartTime in place yields 0% cross-conversation
+                    # cache reuse; relocating it yields 96.6%. Within a single
+                    # conversation the prefix was already stable, which is why
+                    # this stayed invisible — it only costs reuse ACROSS the
+                    # parallel conversations Ziya is built around.
+                    relocated_tags = []
+                    for _pattern in (
                         r'^<CurrentDateTime value="[^"]+" />$',
-                        block,
-                        flags=re.MULTILINE,
-                    )
-                    if current_time_match:
-                        current_time_tag = current_time_match.group(0) + "\n"
-                        block = block.replace(current_time_match.group(0), "", 1)
+                        r'^<ConversationStartTime value="[^"]+" />$',
+                    ):
+                        _m = re.search(_pattern, block, flags=re.MULTILINE)
+                        if _m:
+                            relocated_tags.append(_m.group(0))
+                            block = block.replace(_m.group(0), "", 1)
+                    if relocated_tags:
+                        current_time_tag = "\n".join(relocated_tags) + "\n"
                         for current_message in reversed(messages):
                             if current_message.get("role") != "user":
                                 continue
