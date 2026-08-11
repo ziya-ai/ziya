@@ -94,7 +94,22 @@ class PromptExtensionManager:
         """
         if context is None:
             context = {}
-        
+
+        # model_name / model_family / endpoint arrive as explicit kwargs but were
+        # never merged into the context handed to extensions, so an extension
+        # reading context["model_name"] fell back to $ZIYA_MODEL — the *global*
+        # model, not the per-request pinned one. With a cross-endpoint pin that
+        # yields a mismatched pair (endpoint from the request, model from the
+        # env), and capability lookups silently return the wrong answer.
+        # Caller-supplied context still wins, so an extension can be given an
+        # explicit override.
+        _resolved = {
+            "model_name": model_name,
+            "model_family": model_family,
+            "endpoint": endpoint,
+        }
+        context = {**{k: v for k, v in _resolved.items() if v is not None}, **context}
+
         # Import prompt debugger (lazy import to avoid circular deps)
         try:
             from app.utils.prompt_debugger import log_prompt_assembly, is_prompt_debug_enabled
