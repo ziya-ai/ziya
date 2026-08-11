@@ -9,6 +9,12 @@
  * one place avoids the two tiers drifting apart.
  */
 
+import {
+  filterPitch,
+  keySignatureMap,
+  newBarState,
+} from './musicAccidentals';
+
 export type MusicClef = 'treble' | 'bass' | 'alto' | 'tenor' | 'percussion';
 
 export interface MusicAnnotation {
@@ -357,6 +363,24 @@ export interface MusicMeasure {
   /** Barline opening this measure; used when the previous has no `endBar`. */
   beginBar?: string;
   /**
+   * Meter change taking effect AT this measure, e.g. "3/4".
+   *
+   * A piece is not fixed to one meter -- a mid-score change (4/4 to 3/4 to
+   * 6/8) is ordinary published practice, and the changed signature is engraved
+   * at the measure where it begins and then reads as governing every bar until
+   * the next change.  The spec's top-level `timeSignature` is a single field
+   * and cannot express this, so the meter glyph could only ever be printed
+   * once at the opening clef no matter how the beat count changed later.
+   *
+   * Drawn INSIDE the stave via a 0-tick TimeSigNote tickable (the same
+   * mechanism as the mid-stave BarNote), not the stave's own
+   * `addTimeSignature`, because the latter only prints the signature at the
+   * stave's left edge.  Omit on the first measure -- the opening meter is
+   * printed by the stave once at the clef -- and on any measure whose meter is
+   * unchanged from the measure before it.
+   */
+  timeSignature?: string;
+  /**
    * Start a new system (line) at this measure.
    *
    * Without wrapping, a staff's measures all share one System whose width
@@ -371,6 +395,39 @@ export interface MusicMeasure {
    * budget would not have chosen one.
    */
   systemBreak?: boolean;
+}
+
+/**
+ * One independent rhythmic voice within a single staff.
+ *
+ * A staff is not limited to one melodic line: keyboard, choral (SATB reduced
+ * to two staves) and much contrapuntal writing put two or more simultaneous
+ * lines on ONE staff, each with its own rhythm and, crucially, its own stem
+ * direction -- soprano stems up, alto stems down -- so the reader can follow
+ * each line independently even where they share noteheads.  A chord (stacked
+ * `keys` on one note) cannot express this: it forces a single shared stem and
+ * a single shared rhythm, so an eighth-note upper line against a quarter-note
+ * lower line is simply unwritable as a chord.
+ *
+ * VexFlow models this as multiple `Voice`s formatted together on one stave --
+ * the very mechanism the dynamics underlay already uses -- so a `voices` list
+ * builds one VexFlow voice per entry.  The FIRST voice is the primary line and
+ * takes the full modifier path (and is what the staff's spans/beams/tuplets
+ * address); the rest ride alongside with their stems forced so the lines stay
+ * visually separated as published scores set them.
+ */
+export interface MusicVoice {
+  /**
+   * Force every stem in this voice up or down.  Independent voices are read
+   * apart chiefly by stem direction (upper voice up, lower voice down), so a
+   * multi-voice staff without forced stems is ambiguous.  Omitted on the
+   * primary voice, VexFlow's automatic by-staff-position choice applies.
+   */
+  stemDirection?: 'up' | 'down';
+  /** Flat single-measure note list.  Ignored when `measures` is present. */
+  notes?: MusicNoteSpec[];
+  /** Multi-measure content; measures align by index with the other voices. */
+  measures?: MusicMeasure[];
 }
 
 /**
@@ -411,10 +468,35 @@ export interface MusicStaff {
   hairpins?: MusicHairpin[];
   brackets?: MusicBracket[];
   trillLines?: MusicTrillLine[];
+  /**
+   * Beam this staff's eighths-and-shorter automatically, overriding the
+   * spec-level `autoBeam` for this staff only.  `false` leaves the staff
+   * flagged while the rest of the system beams.
+   *
+   * Declared because a `staves[]` entry already carries its own `clef`,
+   * `notes`, `slurs`, `beams` and `tuplets`, so an author reasonably expects
+   * beaming to be settable here too -- and beaming genuinely is a per-part
+   * decision (a flowing harp figure wants beams while a wind part's isolated
+   * notes want flags).  Before this it was silently ignored: the flag was read
+   * only from the spec root, so a multi-staff score that set it here drew every
+   * sixteenth with an individual flag and gave no indication why.
+   */
+  autoBeam?: boolean;
+  /** Beat groups for this staff's `autoBeam`; falls back to the spec's. */
+  beamGroups?: Array<[number, number]>;
   /** Explicit beam groups.  Overrides nothing; adds to any autoBeam output. */
   beams?: MusicBeam[];
   /** Tuplets (triplets etc.) over runs of this staff's notes. */
   tuplets?: MusicTuplet[];
+  /**
+   * Independent simultaneous voices sharing this one staff (keyboard, SATB,
+   * counterpoint).  When present, this staff's own `notes`/`measures` are
+   * ignored in favour of `voices[0]`, and the remaining entries are drawn
+   * alongside it with forced stems.  The staff's spans/beams/tuplets address
+   * the FIRST voice, since a span between two independent voices is not a
+   * primitive VexFlow can draw.
+   */
+  voices?: MusicVoice[];
 }
 
 export interface MusicNoteSpec {
@@ -534,6 +616,14 @@ export interface MusicSpec {
    */
   tuplets?: MusicTuplet[];
   /**
+   * Independent simultaneous voices on a SINGLE staff (the single-staff
+   * shorthand, mirroring how `notes`/`clef` fall through to a lone staff).
+   * When present, the top-level `notes`/`measures` are ignored in favour of
+   * `voices[0]`, and the rest are drawn alongside with forced stems.  For a
+   * multi-staff system put `voices` on each `staves[]` entry instead.
+   */
+  voices?: MusicVoice[];
+  /**
    * Grand staff / multi-staff system.  When present, `notes` and the
    * per-staff span lists above are ignored in favour of these, and a brace
    * plus left/right connectors join the staves.
@@ -541,10 +631,46 @@ export interface MusicSpec {
   staves?: MusicStaff[];
   /** Tempo marking above the top staff. */
   tempo?: MusicTempo;
-  /** Navigation mark, a key of NAVIGATION_MARKS. */
+  /**
+   * A single navigation mark, a key of NAVIGATION_MARKS.  A real jump scheme
+   * needs TWO or more (a segno at the target AND a "D.S. al Coda" at the
+   * source, or a "To Coda" and a "Coda"), so `mark` alone cannot express one --
+   * use `marks` for that.  Kept for the single-mark shorthand and backward
+   * compatibility; when both are given, `marks` wins.
+   */
   mark?: string;
-  /** Repeat-ending bracket above the top staff. */
+  /**
+   * Navigation marks, one per symbol -- this is what a full D.S./D.C.-al-Coda
+   * scheme requires: e.g. `["segno", "to-coda", "dal-segno-al-coda", "coda"]`
+   * so the reader is told where to jump FROM and where the target IS.  A single
+   * `mark` field could only ever place one of them, leaving the rest of the
+   * scheme unmarked.  VexFlow's `setRepetitionType` PUSHES each mark as its own
+   * stave modifier (verified: repeated calls stack rather than replace), so a
+   * list simply adds each one; the `-left`/`-right` suffix on a name still
+   * chooses which end of the measure it anchors to.  Each entry is looked up in
+   * NAVIGATION_MARKS and an unknown name is skipped with a warning, exactly as
+   * the single `mark` path does.  When both `marks` and `mark` are given,
+   * `marks` wins.
+   */
+  marks?: string[];
+  /**
+   * Repeat-ending bracket above the top staff.  A single volta only expresses
+   * ONE ending, so it cannot draw the ordinary 1st-and-2nd-ending pair a
+   * repeat needs -- use `voltas` for that.  Kept for the single-ending
+   * shorthand and for backward compatibility.
+   */
   volta?: MusicVolta;
+  /**
+   * Repeat-ending brackets, one per ending -- this is what a real repeat
+   * scheme needs: a "1." bracket over the bars played the first time through
+   * and a "2." bracket over the alternate ending after the repeat-end barline.
+   * A single `volta` field could only ever name one of the two, leaving the
+   * other unmarked; a list draws every ending in its own place.  Each entry
+   * carries its own `measures` range (strongly recommended once there is more
+   * than one, since the unanchored fallback would stack them on the same bar).
+   * When both `voltas` and `volta` are given, `voltas` wins.
+   */
+  voltas?: MusicVolta[];
   /** Opening barline, a key of BARLINE_TYPES. */
   beginBar?: string;
   /** Closing barline, a key of BARLINE_TYPES. */
@@ -581,10 +707,18 @@ export interface MusicSpec {
  * failure surfaced later and misleadingly as "Voice does not have enough
  * notes".  Verified against vexflow 5.0.0: `notes("c/5/q")` -> 0 notes,
  * `notes("C5/q")` -> 1 note.
+ *
+ * The accidental class includes `n` (explicit natural) because the key-
+ * signature filter emits it to cancel a signature accidental (rule 4, see
+ * musicAccidentals.ts).  Without `n` the pattern failed to match, `en/5` fell
+ * through to the passthrough branch and kept its lowercase letter -- emitting
+ * `en5` where EasyScore's grammar wants `En5`.  Sharps and flats were
+ * unaffected, so this surfaced only on the natural path: measured on an
+ * Eb-major bass staff whose spec asked for a plain `e/5`.
  */
 export function toEasyScoreKey(key: string): string {
-  const match = /^([a-gA-G])([#b]{0,2})\/(-?\d+)$/.exec(String(key).trim());
-  if (match) return match[1].toUpperCase() + match[2] + match[3];
+  const match = /^([a-gA-G])(n|[#b]{1,2})?\/(-?\d+)$/.exec(String(key).trim());
+  if (match) return match[1].toUpperCase() + (match[2] ?? '') + match[3];
   // Already in EasyScore form (or unrecognised): pass through with any stray
   // slash removed so a partially-correct key still parses.
   return String(key).trim().replace('/', '');
@@ -713,21 +847,66 @@ export function toNoteStructDuration(
 }
 
 /** Build the EasyScore note list for a spec, parenthesising chords. */
-export function buildNoteString(notes: MusicNoteSpec[], clef: string = 'treble'): string {
+/**
+ * Build the EasyScore note string for one measure.
+ *
+ * `keySignature` is optional and, when given, filters redundant accidentals
+ * out of the emitted pitches (see musicAccidentals.ts).  It is threaded in
+ * here rather than applied to the finished notes because an accidental baked
+ * into an EasyScore pitch string is EXPLICIT -- VexFlow draws it
+ * unconditionally, and there is no later hook that can suppress it.
+ *
+ * Accidental state is per CALL, which is what makes a bar the reset unit:
+ * both render paths already invoke this once per measure.
+ */
+export function buildNoteString(
+  notes: MusicNoteSpec[],
+  clef: string = 'treble',
+  keySignature?: string,
+): string {
   const restPitch = REST_PITCH_FOR_CLEF[clef] ?? REST_PITCH_FOR_CLEF.treble;
+  const implied = keySignatureMap(keySignature);
+  const barState = newBarState();
   return notes
     .map((n) => {
       // Neutralise a degenerate/unknown duration BEFORE it reaches EasyScore:
       // an unrecognised code builds a 0/NaN-tick note that hangs the formatter.
       const { base, dots } = sanitizeDuration(n.duration);
       const dotStr = '.'.repeat(dots);
-      if (n.rest) {
+      // A pitchless entry is silence.  `rest: true` is the documented spelling,
+      // but an entry with no `keys` has no pitch to draw either and is treated
+      // the same way -- see the guard below for why that must not fall through.
+      if (n.rest || !n.keys?.length) {
+        if (!n.rest) {
+          // Falling through would emit the literal token "undefined/q": the
+          // `keys[0]` of an empty array is undefined and template-interpolates
+          // as text.  EasyScore cannot parse it into a pitch, so the note gets
+          // a NaN position and the formatter's justification loop NEVER
+          // RETURNS -- a 30s render timeout with a blank canvas and no error,
+          // losing the whole score rather than one note (verified).
+          //
+          // Silence is the honest reading: the entry HAS no pitch, and the
+          // likely intent of omitting `keys` was a rest.  Substituting an
+          // audible pitch would invent a note the author never wrote, which is
+          // worse than a bar that is too quiet -- a wrong note is heard as the
+          // composer's, a missing one is visibly missing.
+          console.warn(
+            `musicPlugin: note with no keys and no rest:true; drawing a `
+            + `${base} rest.  Use {"rest": true, "duration": "${base}"} to `
+            + `write a rest explicitly.`,
+          );
+        }
         // The augmentation dot goes AFTER the /r, not on the duration:
         // "B4/q./r" parses as a NOTE (verified: rests=0, draws a notehead)
         // while "B4/q/r." is a dotted rest.
         return `${restPitch}/${base}/r${dotStr}`;
       }
-      const keys = (n.keys ?? []).map(toEasyScoreKey);
+      // Filter BEFORE toEasyScoreKey so the filter sees the spec's own slash
+      // form; it accepts either, but keeping one input shape here means the
+      // two conversions cannot disagree about what an accidental is.
+      const keys = n.keys
+        .map((k) => filterPitch(k, implied, barState))
+        .map(toEasyScoreKey);
       const pitch = keys.length > 1 ? `(${keys.join(' ')})` : keys[0];
       return `${pitch}/${base}${dotStr}`;
     })
@@ -742,15 +921,40 @@ export function buildNoteString(notes: MusicNoteSpec[], clef: string = 'treble')
 const hasNotes = (value: any): boolean => Array.isArray(value) && value.length > 0;
 
 /**
+ * True when a `voices` list carries renderable notes in any of its voices,
+ * whether flat (`voice.notes`) or measure-based (`voice.measures[].notes`).
+ * Used by the recognition gates so a multi-voice staff -- which stores its
+ * notes only inside `voices[]` -- is accepted rather than mistaken for empty.
+ */
+const voicesHaveNotes = (voices: any): boolean =>
+  Array.isArray(voices) && voices.some((v: any) => hasNotes(v?.notes)
+    || (Array.isArray(v?.measures) && v.measures.some((m: any) => hasNotes(m?.notes))));
+
+/**
  * A staff's measures, treating a flat `notes` list as a single measure.
  *
  * Normalising here means the render path has exactly one shape to walk, so a
  * multi-measure staff is not a second code path that can drift from the
  * single-measure one.
  */
-function measuresOf(staffSpec: { notes?: MusicNoteSpec[]; measures?: MusicMeasure[] }): MusicMeasure[] {
+function measuresOf(
+  staffSpec: { notes?: MusicNoteSpec[]; measures?: MusicMeasure[]; voices?: MusicVoice[] },
+): MusicMeasure[] {
   if (Array.isArray(staffSpec.measures) && staffSpec.measures.length > 0) {
     return staffSpec.measures;
+  }
+  if (hasNotes(staffSpec.notes)) return [{ notes: staffSpec.notes ?? [] }];
+  // A voiced staff carries no direct notes/measures: its PRIMARY line is
+  // voices[0], so the width estimate, spans, beams and tuplets -- all of which
+  // walk measuresOf/notesOf -- transparently address the primary voice without
+  // a second code path.  The secondary voices are handled explicitly in the
+  // systems loop.
+  const primary = staffSpec.voices?.[0];
+  if (primary) {
+    if (Array.isArray(primary.measures) && primary.measures.length > 0) {
+      return primary.measures;
+    }
+    return [{ notes: primary.notes ?? [] }];
   }
   return [{ notes: staffSpec.notes ?? [] }];
 }
@@ -784,6 +988,11 @@ export const isMusicSpec = (spec: any): spec is MusicSpec => {
   // A measures-only spec has no top-level `notes` either.
   if (Array.isArray(spec.measures)
       && spec.measures.some((m: any) => hasNotes(m?.notes))) return true;
+  // A multi-voice single-staff spec puts its notes inside `voices[]` and has
+  // no top-level `notes`/`measures` at all -- requiring those would reject it
+  // and (via canHandle) surface as "No compatible plugin", the same class of
+  // gate bug the staves branch already documents.
+  if (voicesHaveNotes(spec.voices)) return true;
   return (
     Array.isArray(spec.staves) &&
     spec.staves.length > 0 &&
@@ -791,7 +1000,8 @@ export const isMusicSpec = (spec: any): spec is MusicSpec => {
     // somewhere rather than accepting the key's mere presence.
     spec.staves.some((staff: any) => hasNotes(staff?.notes)
       || (Array.isArray(staff?.measures)
-          && staff.measures.some((m: any) => hasNotes(m?.notes))))
+          && staff.measures.some((m: any) => hasNotes(m?.notes)))
+      || voicesHaveNotes(staff?.voices))
   );
 };
 
@@ -806,10 +1016,12 @@ const hasMusicContent = (s: any): boolean =>
   typeof s === 'object' && s !== null && (
     hasNotes(s.notes)
     || (Array.isArray(s.measures) && s.measures.some((m: any) => hasNotes(m?.notes)))
+    || voicesHaveNotes(s.voices)
     || (Array.isArray(s.staves) && s.staves.length > 0
         && s.staves.some((staff: any) => hasNotes(staff?.notes)
           || (Array.isArray(staff?.measures)
-              && staff.measures.some((m: any) => hasNotes(m?.notes)))))
+              && staff.measures.some((m: any) => hasNotes(m?.notes)))
+          || voicesHaveNotes(staff?.voices)))
   );
 
 /**
@@ -1548,7 +1760,7 @@ export async function renderMusicSpec(
     Factory, Annotation, Renderer, Voice,
     StaveHairpin, Articulation, Ornament, Modifier, GhostNote,
     Barline, Repetition, ChordSymbol, StaveTempo, BarNote, Beam, Fraction,
-    GraceNote, GraceNoteGroup,
+    GraceNote, GraceNoteGroup, TimeSigNote,
   } = Vex as any;
 
   container.innerHTML = '';
@@ -1563,6 +1775,7 @@ export async function renderMusicSpec(
         clef: spec.clef, keySignature: spec.keySignature, notes: spec.notes,
         name: spec.name,
         measures: spec.measures,
+        voices: spec.voices,
         slurs: spec.slurs, ties: spec.ties,
         glissandos: spec.glissandos, hairpins: spec.hairpins,
         brackets: spec.brackets, trillLines: spec.trillLines,
@@ -1652,15 +1865,20 @@ export async function renderMusicSpec(
       'set `maxSystemWidth`, or add `"systemBreak": true` to a measure',
     );
   }
-  // Dynamics sit below the staff and hairpins below those, so a fixed 160
-  // clips them.  Grow the canvas only when those features are present, to
-  // avoid padding every plain staff with dead space.
+  // Features that occupy the band BELOW the staff, so a fixed 160 clips them.
+  //
+  // `n.dynamic` is deliberately NOT listed: measured on a real render, a
+  // dynamic draws ABOVE the stave, so a dynamic alone puts nothing below it.
+  // Including it made every dynamic-bearing score reserve 230px/stave for an
+  // empty band -- 60% of the canvas unused at one stave.  A dynamic still
+  // deepens the band when LYRICS are present (drawLyricLayer drops the verse
+  // baseline from +26 to +44 to clear it), and that is handled where the
+  // lyric depth is computed, not by this flag.
   const needsRoomBelow = staffSpecs.some((s) =>
     notesOf(s).some((n) =>
-      n.dynamic
       // A below-staff chord symbol (roman-numeral analysis) needs the same
-      // room a dynamic does.
-      || (typeof n.chordSymbol === 'object' && n.chordSymbol?.position === 'below')
+      // room a lyric does.
+      (typeof n.chordSymbol === 'object' && n.chordSymbol?.position === 'below')
       // Lyrics are underlaid beneath the staff and need the same headroom.
       || n.lyric != null)
     || (s.hairpins?.length ?? 0) > 0
@@ -1670,7 +1888,8 @@ export async function renderMusicSpec(
   // Tempo / marks / volta / measure number all render ABOVE the top staff and
   // are clipped without headroom.
   const needsRoomAbove = Boolean(
-    spec.tempo || spec.mark || spec.volta ||
+    spec.tempo || spec.mark || (spec.marks?.length ?? 0) > 0
+    || spec.volta || (spec.voltas?.length ?? 0) > 0 ||
     spec.measureNumber != null || spec.section
     // Brackets and trill lines also occupy the band above the staff.
     || staffSpecs.some((s) =>
@@ -1686,7 +1905,9 @@ export async function renderMusicSpec(
   // A tempo lifted onto its own row above a navigation mark
   // (TEMPO_SHIFT_Y_WITH_MARK = -64, 30px higher than the ordinary -34 whose
   // topmost glyph sat at y≈26) needs a taller reserve or it clips at y<0.
-  const tempoAboveMark = Boolean(spec.tempo && spec.mark);
+  const tempoAboveMark = Boolean(
+    spec.tempo && (spec.mark || (spec.marks?.length ?? 0) > 0),
+  );
   const roomAbove = needsRoomAbove
     ? (tempoAboveMark
         ? 76
@@ -1697,10 +1918,95 @@ export async function renderMusicSpec(
   // titleY below.  Computed once so the reserve and the draw agree.
   const titleH = titleBlockHeight(spec);
   const systemSpacing = spec.systemSpacing ?? DEFAULT_SYSTEM_SPACING;
-  /** Vertical room one system (all its staves) occupies. */
-  const perSystemHeight = (needsRoomBelow ? 230 : 160) * staffSpecs.length;
+  /**
+   * Vertical geometry of a system, split into the two roles the previous single
+   * `perSystemHeight` conflated.
+   *
+   * The old model multiplied ONE budget by the stave count and used the result
+   * both as the canvas allowance and as the y-advance between stacked systems.
+   * That over-allocated, because the band below the LAST stave was counted once
+   * per stave instead of once per system.  Measured dead space at the bottom of
+   * the canvas grew with the score: 43% at one stave and 27% at eight on the
+   * plain path; 60% and 49% on the needsRoomBelow path.
+   *
+   * Measured facts this model rests on (single stave, C major, 4/4):
+   *   - VexFlow's actual advance between staves of a system is 120px with
+   *     `spaceBetweenStaves: 12`, not the 160 that was budgeted.
+   *   - Drawn content ends ~50px below the last stave's TOP line (the stave
+   *     spans 40px, plus stem/beam overshoot).
+   */
+  const STAVE_ADVANCE = 120;
+  /** Top line to bottom line of a 5-line stave. */
+  const STAVE_SPAN = 40;
+  /** Stem/beam overshoot below the bottom line on a plain stave. */
+  const PLAIN_TAIL = 50;
+  /** drawLyricLayer: a dynamic present pushes verse 1 to bottomLine + 44. */
+  const LYRIC_OFFSET_WITH_DYNAMIC = 44;
+  /** drawLyricLayer: no dynamic, so verse 1 sits closer at bottomLine + 26. */
+  const LYRIC_OFFSET_NO_DYNAMIC = 26;
+  /** drawLyricLayer: each additional verse steps down by this much. */
+  const LYRIC_VERSE_STEP = 15;
+  /** Descent of the 12px lyric font. */
+  const LYRIC_DESCENT = 12;
+  /** Below-staff chord symbols / brackets / tuplet numbers. */
+  const BELOW_STAFF_MARK_DEPTH = 34;
+  /**
+   * Depth below the last stave's TOP line that must stay on canvas.
+   *
+   * Derived from drawLyricLayer's own geometry rather than a fixed allowance,
+   * because the lyric layer is drawn by d3 AFTER formatting and is therefore
+   * absent from VexFlow's bounding box -- nothing else will catch an
+   * under-reserve, and the failure mode is clipped text.
+   *
+   * Measured on real renders:
+   *   - dynamics draw ABOVE the stave, so a dynamic ALONE adds no depth below;
+   *   - verse 1 with a dynamic lands ~45px below the bottom line (formula: 44);
+   *   - verse 3 with a dynamic lands ~81px below it (formula: 74).
+   * A fixed two-verse reserve therefore clipped three-verse scores by ~15px,
+   * which is why the depth is computed from the spec's actual maximum verse.
+   *
+   * Taking the MAX of the candidate occupants (rather than branching on the
+   * `needsRoomBelow` proxy) is what removes the waste: `needsRoomBelow` is true
+   * for a dynamic alone, which reserved 230px/stave for a band that measurement
+   * shows is empty.
+   */
+  const lyricNotes = staffSpecs.flatMap((s) => notesOf(s))
+    .filter((n) => n?.lyric != null);
+  const hasLyrics = lyricNotes.length > 0;
+  // A dynamic only deepens the band when lyrics are present: drawLyricLayer
+  // drops the baseline from +26 to +44 to clear the dynamic's band.  With no
+  // lyrics there is nothing to displace, so a dynamic reserves nothing.
+  const hasDynamic = staffSpecs.some((s) => notesOf(s).some((n) => n?.dynamic));
+  const maxVerse = hasLyrics
+    ? Math.max(1, ...lyricNotes.map((n) => {
+        const l: any = n.lyric;
+        const obj = typeof l === 'string' ? { text: l } : l;
+        return Math.max(1, Math.floor(obj?.verse ?? 1));
+      }))
+    : 1;
+  const lyricDepth = hasLyrics
+    ? (hasDynamic ? LYRIC_OFFSET_WITH_DYNAMIC : LYRIC_OFFSET_NO_DYNAMIC)
+      + (maxVerse - 1) * LYRIC_VERSE_STEP + LYRIC_DESCENT
+    : 0;
+  const systemTail = STAVE_SPAN + Math.max(
+    // Stem/beam overshoot is always present, measured from the bottom line.
+    PLAIN_TAIL - STAVE_SPAN,
+    lyricDepth,
+    needsRoomBelow ? BELOW_STAFF_MARK_DEPTH : 0,
+  );
+  /**
+   * Advance between stacked systems: every stave of this system, plus the tail
+   * of its last stave so the next system clears it.  Previously the 40px of
+   * slack in the old 160 budget happened to provide this; making it explicit is
+   * why wrapped layouts shift slightly (and stop risking collision).
+   */
+  const perSystemHeight = STAVE_ADVANCE * staffSpecs.length + systemTail;
   const height = spec.height
-    ?? perSystemHeight * systems.length
+    // The tail belongs to the LAST stave of each system, and perSystemHeight
+    // already carries one; adding it per system would reintroduce the original
+    // over-allocation.  Count the staves, then the tail exactly once.
+    ?? STAVE_ADVANCE * staffSpecs.length * systems.length
+       + systemTail
        + systemSpacing * Math.max(0, systems.length - 1)
        + roomAbove + titleH;
 
@@ -1805,6 +2111,12 @@ export async function renderMusicSpec(
     /** systemIndex per flat note index, parallel to `notes`. */
     noteSystem: number[];
   }> = [];
+  /**
+   * Beams generated for SECONDARY voices (voices[1..]).  Collected as the
+   * voices are built -- they are not factory-owned, so like the primary
+   * auto-beams they need an explicit draw pass after factory.draw().
+   */
+  const secondaryBeams: any[] = [];
 
   /** Resolve the barline drawn between two adjacent measures. */
   const barlineBetween = (before: MusicMeasure, after: MusicMeasure): number => {
@@ -1823,6 +2135,21 @@ export async function renderMusicSpec(
     const clef = staffSpec.clef ?? (staffIndex === 0 ? 'treble' : 'bass');
     const allMeasures = measuresOf(staffSpec);
     const allSpecNotes = notesOf(staffSpec);
+    // Meter in effect at each measure, resolving per-measure `timeSignature`
+    // changes forward: a change persists until the next one, exactly as a
+    // printed score reads.  Precomputed over the WHOLE staff (not per system)
+    // so a continuation line knows the meter carried into it and can re-print
+    // it at the clef, and so a change is detected against the immediately
+    // preceding bar regardless of where the system break falls.  The opening
+    // entry is the spec-level meter unless the first measure overrides it.
+    const effectiveMeterByMeasure: Array<string | undefined> = [];
+    {
+      let running: string | undefined = spec.timeSignature;
+      allMeasures.forEach((measure, idx) => {
+        if (measure.timeSignature) running = measure.timeSignature;
+        effectiveMeterByMeasure[idx] = running;
+      });
+    }
     /** Accumulated across systems, for the per-staff span view. */
     const staffNotes: any[] = [];
     const staffNoteSystem: number[] = [];
@@ -1832,9 +2159,11 @@ export async function renderMusicSpec(
     // measures than the plan contributes an empty stave here rather than
     // being dropped, so the system keeps its full complement of staves and
     // the brace/connectors still line up.
-    const measures = systemMeasures
-      .map((m) => allMeasures[m])
-      .filter((m): m is MusicMeasure => m != null);
+    // Keep each measure paired with its GLOBAL index so a meter change can be
+    // detected against the preceding bar (which may live on the previous
+    // system) via effectiveMeterByMeasure.
+    const globalMeasureIndices = systemMeasures.filter((m) => allMeasures[m] != null);
+    const measures = globalMeasureIndices.map((m) => allMeasures[m]);
     const noteOffset = staffNotes.length;
     const specNotes = measures.flatMap((m) => m.notes ?? []);
     // easyNotes is the flat note list that span indices address; tickables
@@ -1849,8 +2178,30 @@ export async function renderMusicSpec(
         // setEndBarType only reach the stave's two outer edges.
         tickables.push(new BarNote(barlineBetween(measures[measureIndex - 1], measure)));
       }
+      // Mid-stave meter change: engrave the new signature as a 0-tick
+      // TimeSigNote before this measure's notes, exactly where a printed score
+      // prints it.  Two gates:
+      //   - `measureIndex > 0`: a change landing on a system's FIRST bar is
+      //     already printed at that line's clef (see systemOpeningMeter, which
+      //     reflects the meter carried into the line), so a mid-stave symbol
+      //     there would double-print it.  Only interior bars need the inline
+      //     glyph.
+      //   - meter differs from the GLOBAL preceding bar: re-stating an
+      //     unchanged meter mid-line is wrong engraving.
+      const globalIdx = globalMeasureIndices[measureIndex];
+      const meterHere = effectiveMeterByMeasure[globalIdx];
+      const meterBefore = globalIdx > 0 ? effectiveMeterByMeasure[globalIdx - 1] : undefined;
+      if (measureIndex > 0 && meterHere && meterBefore && meterHere !== meterBefore) {
+        // ignoreTicks TimeSigNote contributes 0 ticks (like BarNote), so it
+        // shifts no note and both voices stay in sync.
+        tickables.push(new TimeSigNote(meterHere));
+      }
       const measureNotes = measure.notes ?? [];
-      const noteStrings = buildNoteString(measureNotes, clef);
+      // Same precedence as the stave's own addKeySignature below, so the
+      // notes are filtered against exactly the signature that is drawn.
+      const noteStrings = buildNoteString(
+        measureNotes, clef, staffSpec.keySignature ?? spec.keySignature,
+      );
       const rendered = score.notes(noteStrings, { clef });
 
       // EasyScore signals a grammar mismatch by returning fewer notes, not by
@@ -1871,9 +2222,12 @@ export async function renderMusicSpec(
     });
 
     // Per-note modifiers are attached before formatting so VexFlow reserves
-    // space for them.
-    easyNotes.forEach((note: any, i: number) => {
-      const specNote = specNotes[i];
+    // space for them.  Factored into a closure (rather than an inline forEach
+    // body) so a secondary independent voice on the same staff runs the exact
+    // same modifier logic -- articulations, ornaments, grace notes, fingering,
+    // chord symbols, annotations -- instead of a parallel path that could
+    // drift from the primary voice's.
+    const applyNoteModifiers = (note: any, specNote?: MusicNoteSpec) => {
       if (!specNote) return;
       for (const name of specNote.articulations ?? []) {
         const code = ARTICULATION_CODES[name];
@@ -1893,7 +2247,19 @@ export async function renderMusicSpec(
       // path is: GraceNote goes through Note.parseDuration, which rejects a
       // trailing "." and hangs on a degenerate code, so dots must be split out.
       if (Array.isArray(specNote.graceNotes) && specNote.graceNotes.length > 0) {
-        const graceNotes = specNote.graceNotes.map((g) => {
+        // Drop pitchless grace notes BEFORE construction.  `new GraceNote({keys:
+        // []})` builds with a degenerate (NaN) y-position and GraceNoteGroup's
+        // pre-format loop -- which iterates until every grace note is placed --
+        // never converges, freezing the render for 30s with a blank canvas
+        // (verified).  Unlike a main note there is no rest to fall back to: an
+        // ornament with no pitch has no meaning, so the only choices are to drop
+        // it or lose the score.
+        const playableGraces = specNote.graceNotes.filter((g) => {
+          if (g.keys?.length) return true;
+          console.warn('musicPlugin: grace note with no keys skipped');
+          return false;
+        });
+        const graceNotes = playableGraces.map((g) => {
           const { duration, dots } = toNoteStructDuration(g.duration);
           return new GraceNote({
             // StaveNote's constructor (which GraceNote extends) parses its
@@ -1901,13 +2267,16 @@ export async function renderMusicSpec(
             // slashless form -- feeding it a toEasyScoreKey result ("B4")
             // yields an unparseable pitch and hangs GraceNoteGroup's format
             // loop.  toStaveNoteKey keeps/repairs the slash form it needs.
-            keys: (g.keys ?? []).map(toStaveNoteKey),
+            keys: g.keys.map(toStaveNoteKey),
             duration, dots,
             // The slash is the acciaccatura ("crushed") vs the plain
             // appoggiatura; VexFlow draws it on a flagged/first grace note.
             slash: Boolean(g.slash),
           });
         });
+        // Every grace note was unplayable -- attaching an empty group would
+        // re-enter the same non-converging format loop the filter just avoided.
+        if (graceNotes.length > 0) {
         // showSlur=false: the little curved connector VexFlow can draw from
         // the grace group to the main note is off by default in most house
         // styles and would collide with any real slur the spec draws.
@@ -1919,6 +2288,7 @@ export async function renderMusicSpec(
           group.beamNotes();
         }
         note.addModifier(group, 0);
+        }
       }
       // Fingering: a bare value means "below", which is the piano convention.
       if (specNote.fingering != null) {
@@ -1972,7 +2342,31 @@ export async function renderMusicSpec(
         );
         note.addModifier(ann, 0);
       }
-    });
+    };
+    easyNotes.forEach((note: any, i: number) => applyNoteModifiers(note, specNotes[i]));
+
+    // Force the PRIMARY voice's stems when voices[0] asked for a direction.
+    // voices[0] is normalised through measuresOf into the standard staff path
+    // (so width/beams/spans share one code path), and that path lets VexFlow
+    // auto-pick the stem from staff position -- which silently drops the
+    // requested stemDirection on the top voice of a two-voice staff, leaving
+    // both voices stemmed the same way.  A published two-voice staff needs the
+    // upper voice stems up and the lower down, so honour voices[0] here, the
+    // mirror of the voices[1..] handling below.  Only when a direction is set,
+    // so a single-voice staff keeps VexFlow's position-based default exactly.
+    {
+      const primaryStemSpec = staffSpec.voices?.[0]?.stemDirection;
+      const primaryStem = primaryStemSpec === 'down'
+        ? Vex.Stem?.DOWN ?? -1
+        : primaryStemSpec === 'up'
+          ? Vex.Stem?.UP ?? 1
+          : undefined;
+      if (primaryStem != null) {
+        for (const note of easyNotes) {
+          if (typeof note.setStemDirection === 'function') note.setStemDirection(primaryStem);
+        }
+      }
+    }
 
     const voices: any[] = [
       factory.Voice({ time: meter }).setMode(Voice.Mode.SOFT).addTickables(tickables),
@@ -2005,6 +2399,17 @@ export async function renderMusicSpec(
         if (measureIndex > 0) {
           marks.push(new BarNote(barlineBetween(measures[measureIndex - 1], measure)));
         }
+        // Mirror the melody voice's mid-stave TimeSigNote (a 0-tick tickable),
+        // or the two voices desync at the meter change exactly as they do at a
+        // barline -- the dynamics voice must occupy the same positions.  Same
+        // `measureIndex > 0` gate: a first-bar change is printed at the clef,
+        // not inline, in EITHER voice.
+        const globalIdx = globalMeasureIndices[measureIndex];
+        const meterHere = effectiveMeterByMeasure[globalIdx];
+        const meterBefore = globalIdx > 0 ? effectiveMeterByMeasure[globalIdx - 1] : undefined;
+        if (measureIndex > 0 && meterHere && meterBefore && meterHere !== meterBefore) {
+          marks.push(new TimeSigNote(meterHere));
+        }
         for (const specNote of measure.notes ?? []) marks.push(markFor(specNote));
       });
       voices.push(
@@ -2012,12 +2417,101 @@ export async function renderMusicSpec(
       );
     }
 
+    // Secondary independent voices (voices[1..]) share this staff, formatted
+    // alongside the primary voice.  Voice 0 was already consumed as the staff's
+    // primary content (see measuresOf), so only the extras are built here.  A
+    // secondary voice is a REAL note voice -- it consumes beat time and stacks
+    // against the primary -- unlike the dynamics/ghost voice above, so each of
+    // its notes is a genuine StaveNote with its stem forced by stemDirection
+    // and the same modifier logic applied.  Its measures are aligned by index
+    // with the primary voice's, and BarNotes/TimeSigNotes are mirrored at the
+    // same positions so the voices cannot desync after a barline or meter
+    // change (the exact failure the dynamics voice documents).
+    const extraVoiceSpecs = (staffSpec.voices ?? []).slice(1);
+    for (const voiceSpec of extraVoiceSpecs) {
+      const voiceMeasures = (Array.isArray(voiceSpec.measures)
+        && voiceSpec.measures.length > 0)
+        ? voiceSpec.measures
+        : [{ notes: voiceSpec.notes ?? [] }];
+      // Restrict to this system's measures, aligned by GLOBAL index with the
+      // primary voice's slice.  A voice with fewer measures than the primary
+      // simply contributes nothing on later systems rather than misaligning.
+      const stemDir = voiceSpec.stemDirection === 'down'
+        ? Vex.Stem?.DOWN ?? -1
+        : voiceSpec.stemDirection === 'up'
+          ? Vex.Stem?.UP ?? 1
+          : undefined;
+      const voiceTickables: any[] = [];
+      const voiceByMeasure: any[][] = [];
+      globalMeasureIndices.forEach((globalIdx, localIdx) => {
+        const measure = voiceMeasures[globalIdx];
+        if (localIdx > 0) {
+          // Mirror the primary voice's barline so the two stay in tick-sync.
+          const prevPrimary = measures[localIdx - 1];
+          voiceTickables.push(new BarNote(barlineBetween(prevPrimary, measures[localIdx])));
+        }
+        const meterHere = effectiveMeterByMeasure[globalIdx];
+        const meterBefore = globalIdx > 0 ? effectiveMeterByMeasure[globalIdx - 1] : undefined;
+        if (localIdx > 0 && meterHere && meterBefore && meterHere !== meterBefore) {
+          voiceTickables.push(new TimeSigNote(meterHere));
+        }
+        const measureNotes = measure?.notes ?? [];
+        if (measureNotes.length === 0) { voiceByMeasure.push([]); return; }
+        const rendered = score.notes(
+          buildNoteString(measureNotes, clef, staffSpec.keySignature ?? spec.keySignature),
+          { clef },
+        );
+        rendered.forEach((note: any, i: number) => {
+          // Force the stem so the reader can tell this voice from the primary;
+          // setStemDirection reflows the flag/beam side automatically.
+          if (stemDir != null && typeof note.setStemDirection === 'function') {
+            note.setStemDirection(stemDir);
+          }
+          applyNoteModifiers(note, measureNotes[i]);
+        });
+        voiceTickables.push(...rendered);
+        voiceByMeasure.push(rendered);
+      });
+      if (voiceTickables.length === 0) continue;
+      voices.push(
+        factory.Voice({ time: meter }).setMode(Voice.Mode.SOFT).addTickables(voiceTickables),
+      );
+      // Auto-beam a secondary voice on the same terms as the primary (per
+      // measure, respecting beamGroups), preserving its forced stem so the
+      // beam sits on the correct side.  Collected for the post-draw pass with
+      // the primary beams.
+      if (spec.autoBeam) {
+        const groups = spec.beamGroups?.length
+          ? spec.beamGroups.map(([n, d]) => new Fraction(n, d))
+          : undefined;
+        for (const measureNotes of voiceByMeasure) {
+          if (measureNotes.length === 0) continue;
+          secondaryBeams.push(...Beam.generateBeams(measureNotes, {
+            ...(groups ? { groups } : {}),
+            beamRests: false,
+            // Keep the beam on the voice's stem side rather than letting
+            // VexFlow re-choose it from staff position.
+            ...(stemDir != null ? { stemDirection: stemDir, maintainStemDirections: true } : {}),
+          }));
+        }
+      }
+    }
+
     const stave = vexSystems[systemIndex].addStave({ voices });
     // Clef, key and time signature are re-printed on EVERY system, which is
     // what a printed score does at a line break -- a continuation line with no
     // clef would be unreadable.
     stave.addClef(clef);
-    if (spec.timeSignature) stave.addTimeSignature(spec.timeSignature);
+    // Print the meter at this system's clef.  On the first system that is the
+    // opening meter; on a continuation line it is whatever meter was carried
+    // into the line's first bar, so a score that changed to 3/4 on a previous
+    // line re-prints 3/4 here rather than the stale opening signature.  A
+    // change that first occurs mid-line is still drawn by the TimeSigNote
+    // above; this only re-states the meter in force AT the line's start.
+    const systemOpeningMeter = globalMeasureIndices.length > 0
+      ? effectiveMeterByMeasure[globalMeasureIndices[0]]
+      : spec.timeSignature;
+    if (systemOpeningMeter) stave.addTimeSignature(systemOpeningMeter);
     const key = staffSpec.keySignature ?? spec.keySignature;
     if (key) stave.addKeySignature(key);
     built.push({
@@ -2064,7 +2558,11 @@ export async function renderMusicSpec(
       // immovable band above the staff (see TEMPO_SHIFT_Y_WITH_MARK); lift the
       // tempo onto its own higher row when one is present so the two do not
       // overprint.  Absent a mark, keep the ordinary lift unchanged.
-      const tempoShiftY = spec.mark ? TEMPO_SHIFT_Y_WITH_MARK : TEMPO_SHIFT_Y;
+      // A navigation mark (whether the singular `mark` or any of `marks`)
+      // shares the immovable band above the staff, so lift the tempo onto its
+      // own higher row when one is present.  tempoAboveMark already accounts
+      // for both fields.
+      const tempoShiftY = tempoAboveMark ? TEMPO_SHIFT_Y_WITH_MARK : TEMPO_SHIFT_Y;
       const tempoMark = new StaveTempo(
         {
           name: spec.tempo.name,
@@ -2078,57 +2576,92 @@ export async function renderMusicSpec(
       topStave.addModifier(tempoMark);
     }
   }
-  if (spec.mark) {
-    const key = NAVIGATION_MARKS[spec.mark];
+  // Navigation marks.  A full jump scheme needs several (segno + D.S.-al-Coda +
+  // To-Coda + Coda), so the plan is a LIST: `marks` is the general case and the
+  // legacy singular `mark` is treated as a one-element list so both share this
+  // loop.  setRepetitionType PUSHES each mark as its own stave modifier
+  // (verified: repeated calls stack rather than replace), and the `-left`/
+  // `-right` suffix on a name still selects which end of the measure it anchors
+  // to, so several marks coexist on one system exactly as a published score
+  // sets them.
+  const navMarks: string[] = (spec.marks?.length ?? 0) > 0
+    ? spec.marks!
+    : spec.mark
+      ? [spec.mark]
+      : [];
+  for (const markName of navMarks) {
+    const key = NAVIGATION_MARKS[markName];
     if (key) topStave.setRepetitionType(Repetition.type[key], 0);
-    else problems.push(`unknown mark "${spec.mark}"`);
+    else problems.push(`unknown mark "${markName}"`);
   }
-  // Volta (repeat-ending bracket).  NOT drawn via topStave.setVoltaType --
+  // Volta (repeat-ending brackets).  NOT drawn via topStave.setVoltaType --
   // that stave modifier spans the whole stave, i.e. the entire system, so it
   // drew the "1." bracket over every bar instead of over the ending it names.
-  // Instead resolve which measures the ending covers and defer the draw to the
-  // post-format overlay pass, where the notes' resolved x-positions exist.
-  let voltaPlan:
-    | { volta: MusicVolta; systemIndex: number; fromNote: any; toNote: any }
-    | null = null;
-  if (spec.volta) {
-    // The volta rides the TOP staff, whose measures define the range.  Note
+  // Instead resolve which measures each ending covers and defer the draw to
+  // the post-format overlay pass, where the notes' resolved x-positions exist.
+  //
+  // A repeat scheme needs at least TWO brackets (a "1." ending before the
+  // repeat-end barline and a "2." ending after it), so the plan is a LIST: the
+  // spec's `voltas` array is the general case, and the legacy single `volta`
+  // is treated as a one-element list so both paths share this resolver.
+  const voltaSpecs: MusicVolta[] = (spec.voltas?.length ?? 0) > 0
+    ? spec.voltas!
+    : spec.volta
+      ? [spec.volta]
+      : [];
+  const voltaPlans: Array<
+    { volta: MusicVolta; systemIndex: number; fromNote: any; toNote: any }
+  > = [];
+  if (voltaSpecs.length > 0) {
+    // The voltas ride the TOP staff, whose measures define the ranges.  Note
     // counts per measure let a 1-based measure range become flat note indices.
     const topMeasures = measuresOf(staffSpecs[0]);
     const perMeasureCounts = topMeasures.map((m) => (m.notes ?? []).length);
     const flatStartOf = (measure0: number): number =>
       perMeasureCounts.slice(0, measure0).reduce((a, b) => a + b, 0);
-
-    // Default range: the measure closing a repeat-end (a 1st ending's usual
-    // home), else the last measure -- so an unanchored volta still lands
-    // plausibly rather than over the whole system.
-    let from0: number;
-    let to0: number;
-    if (Array.isArray(spec.volta.measures) && spec.volta.measures.length === 2) {
-      from0 = Math.max(0, Math.floor(spec.volta.measures[0]) - 1);
-      to0 = Math.min(topMeasures.length - 1, Math.floor(spec.volta.measures[1]) - 1);
-      if (to0 < from0) { const t = from0; from0 = to0; to0 = t; }
-    } else {
-      const repeatEnd = topMeasures.findIndex((m) => m.endBar === 'repeat-end');
-      from0 = repeatEnd >= 0 ? repeatEnd : Math.max(0, topMeasures.length - 1);
-      to0 = from0;
-    }
-
-    const firstFlat = flatStartOf(from0);
-    const lastFlat = flatStartOf(to0) + Math.max(0, perMeasureCounts[to0] - 1);
     const top = perStaff[0];
-    const fromNote = top?.notes[firstFlat] ?? null;
-    const toNote = top?.notes[lastFlat] ?? null;
-    if (fromNote && toNote && top.noteSystem[firstFlat] === top.noteSystem[lastFlat]) {
-      voltaPlan = {
-        volta: spec.volta,
-        systemIndex: top.noteSystem[firstFlat],
-        fromNote,
-        toNote,
-      };
-    } else {
-      problems.push('volta range is empty or crosses a system break and was skipped');
-    }
+    // The default (unanchored) fallback -- the measure closing a repeat-end,
+    // else the last measure -- is a SINGLE bar and would stack every
+    // unanchored ending on top of one another.  It stays sensible for the lone
+    // legacy `volta`, but once there are several endings each really must carry
+    // its own `measures`; warn rather than pile them on the same bar.
+    voltaSpecs.forEach((v, i) => {
+      let from0: number;
+      let to0: number;
+      if (Array.isArray(v.measures) && v.measures.length === 2) {
+        from0 = Math.max(0, Math.floor(v.measures[0]) - 1);
+        to0 = Math.min(topMeasures.length - 1, Math.floor(v.measures[1]) - 1);
+        if (to0 < from0) { const t = from0; from0 = to0; to0 = t; }
+      } else {
+        if (voltaSpecs.length > 1) {
+          problems.push(
+            `volta ${i + 1} of ${voltaSpecs.length} has no \`measures\` range; ` +
+            'multiple endings each need one or they overlap. Falling back to a ' +
+            'default bar',
+          );
+        }
+        const repeatEnd = topMeasures.findIndex((m) => m.endBar === 'repeat-end');
+        from0 = repeatEnd >= 0 ? repeatEnd : Math.max(0, topMeasures.length - 1);
+        to0 = from0;
+      }
+
+      const firstFlat = flatStartOf(from0);
+      const lastFlat = flatStartOf(to0) + Math.max(0, perMeasureCounts[to0] - 1);
+      const fromNote = top?.notes[firstFlat] ?? null;
+      const toNote = top?.notes[lastFlat] ?? null;
+      if (fromNote && toNote && top.noteSystem[firstFlat] === top.noteSystem[lastFlat]) {
+        voltaPlans.push({
+          volta: v,
+          systemIndex: top.noteSystem[firstFlat],
+          fromNote,
+          toNote,
+        });
+      } else {
+        problems.push(
+          `volta ${i + 1} range is empty or crosses a system break and was skipped`,
+        );
+      }
+    });
   }
   if (spec.measureNumber != null) topStave.setMeasure(spec.measureNumber);
   if (spec.section) topStave.setSection(spec.section, 0);
@@ -2337,21 +2870,28 @@ export async function renderMusicSpec(
   const beams: any[] = [];
   // autoBeam runs per `built` entry: byMeasure is already the per-system slice,
   // and beaming is per measure anyway, so each system beams its own bars.
-  if (spec.autoBeam) {
-    const groups = spec.beamGroups?.length
-      ? spec.beamGroups.map(([n, d]) => new Fraction(n, d))
+  //
+  // Resolved PER STAFF so a `staves[]` entry can set its own flag: the entry's
+  // value wins when present (including an explicit `false`, which opts one part
+  // out of a spec-level `autoBeam`), otherwise the spec's applies.
+  for (const { byMeasure, staffSpec } of built) {
+    const autoBeam = staffSpec.autoBeam ?? spec.autoBeam;
+    if (!autoBeam) continue;
+    const groupSource = staffSpec.beamGroups?.length
+      ? staffSpec.beamGroups
+      : spec.beamGroups;
+    const groups = groupSource?.length
+      ? groupSource.map(([n, d]) => new Fraction(n, d))
       : undefined;
-    for (const { byMeasure } of built) {
-      // Beam per measure, never across a barline -- a beam spanning a bar is
-      // wrong engraving, and the flat note list would happily produce one.
-      for (const measureNotes of byMeasure) {
-        beams.push(...Beam.generateBeams(measureNotes, {
-          ...(groups ? { groups } : {}),
-          // A rest breaks a beam group in ordinary engraving; beaming over one
-          // is a deliberate stylistic choice, not a default.
-          beamRests: false,
-        }));
-      }
+    // Beam per measure, never across a barline -- a beam spanning a bar is
+    // wrong engraving, and the flat note list would happily produce one.
+    for (const measureNotes of byMeasure) {
+      beams.push(...Beam.generateBeams(measureNotes, {
+        ...(groups ? { groups } : {}),
+        // A rest breaks a beam group in ordinary engraving; beaming over one
+        // is a deliberate stylistic choice, not a default.
+        beamRests: false,
+      }));
     }
   }
   // Explicit beams address the staff's FLAT note list, so they resolve against
@@ -2381,6 +2921,13 @@ export async function renderMusicSpec(
   // draw pass does not render them; they need an explicit context.  Those from
   // factory.Beam are already drawn and must not be drawn twice.
   for (const beam of beams) {
+    if (typeof beam.getContext === 'function' && !beam.getContext()) {
+      beam.setContext(factory.getContext()).draw();
+    }
+  }
+  // Secondary-voice auto-beams are Beam.generateBeams output too, so they need
+  // the same explicit draw pass.
+  for (const beam of secondaryBeams) {
     if (typeof beam.getContext === 'function' && !beam.getContext()) {
       beam.setContext(factory.getContext()).draw();
     }
@@ -2437,17 +2984,20 @@ export async function renderMusicSpec(
     // Instrument / part labels in the left gutter, one per named staff.  Drawn
     // here (post-format) so each staff's resolved x/y are available.
     drawStaffLabels(d3, svg, built, isDarkMode);
-    // Volta bracket over its measure range.  Anchored to the TOP staff of the
-    // system the ending falls on (built entries are one per staff x system);
-    // drawn here because it needs the endpoint notes' resolved x-positions.
-    if (voltaPlan) {
+    // Volta brackets over their measure ranges -- one per ending (a "1." and a
+    // "2." for the usual repeat scheme).  Each is anchored to the TOP staff of
+    // the system its ending falls on (built entries are one per staff x
+    // system); drawn here because they need the endpoint notes' resolved
+    // x-positions.  Sharing one band above the staff, they never overlap
+    // vertically because their measure ranges do not overlap horizontally.
+    for (const plan of voltaPlans) {
       const entry = built.find(
-        (b) => b.staffSpec === staffSpecs[0] && b.systemIndex === voltaPlan!.systemIndex,
+        (b) => b.staffSpec === staffSpecs[0] && b.systemIndex === plan.systemIndex,
       );
       if (entry) {
         drawVoltaBracket(
-          d3, svg, entry.stave, voltaPlan.volta,
-          voltaPlan.fromNote, voltaPlan.toNote, isDarkMode,
+          d3, svg, entry.stave, plan.volta,
+          plan.fromNote, plan.toNote, isDarkMode,
         );
       }
     }
