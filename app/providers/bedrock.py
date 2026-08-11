@@ -42,17 +42,48 @@ from app.config.env_registry import ziya_env
 logger = get_mode_aware_logger(__name__)
 
 
-# Dedicated thread pool for Bedrock API calls.  Isolates blocking boto3
+# Dedicated thread pools for Bedrock API calls.  Isolates blocking boto3
 # operations (connect + stream reads) from the default asyncio executor
 # so that tool execution, MCP communication, and health checks never
 # stall waiting for a free thread.
 #
-# Size: 8 is enough for typical concurrency (each request uses ~2 threads:
-# one for the initial connect, one for iterating the stream).  Override
-# via BEDROCK_THREAD_POOL_SIZE for high-concurrency deployments.
-_BEDROCK_POOL_SIZE = int(os.environ.get("BEDROCK_THREAD_POOL_SIZE", "8"))
+# The two operations are deliberately kept in SEPARATE pools because their
+# occupancy profiles are opposites:
+#
+#   READ  -- a worker is held for the ENTIRE lifetime of a stream.  The
+#            reader parks in a blocking next() on the boto3 event iterator
+#            and is not released while the model is thinking or while tool
+#            calls run mid-stream.  Steady state is ~1 worker per ACTIVE
+#            conversation.  Long-lived and mostly idle.
+#   CONNECT -- short-lived, but it is the operation that gates a new turn
+#            from starting at all.
+#
+# Sharing one pool couples them: once readers occupy every worker, connects
+# land in the ThreadPoolExecutor work queue behind them.  That queue is
+# unbounded and untimed, so asyncio.wait_for(..., timeout=connect_timeout)
+# expires while the callable has not begun to run -- new turns stall
+# indefinitely and the failure presents as a deadlock rather than a timeout.
+# Splitting the pools makes that impossible: a connect can never wait on a
+# parked reader.
+#
+# Workers in both pools are socket-blocked, not CPU-bound, so oversizing is
+# cheap.  BEDROCK_THREAD_POOL_SIZE still sizes the read pool (the one that
+# must exceed peak concurrent conversations); BEDROCK_CONNECT_POOL_SIZE
+# sizes connects independently.
+_BEDROCK_POOL_SIZE = int(os.environ.get("BEDROCK_THREAD_POOL_SIZE", "64"))
 _bedrock_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=_BEDROCK_POOL_SIZE, thread_name_prefix="bedrock-io"
+)
+
+# Connect-only pool.  Sized smaller than the read pool since occupancy is
+# brief, but large enough that a burst of simultaneous new turns does not
+# self-queue.
+_BEDROCK_CONNECT_POOL_SIZE = int(
+    os.environ.get("BEDROCK_CONNECT_POOL_SIZE", "32")
+)
+_bedrock_connect_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=_BEDROCK_CONNECT_POOL_SIZE,
+    thread_name_prefix="bedrock-connect",
 )
 
 class BedrockProvider(LLMProvider):
@@ -155,7 +186,7 @@ class BedrockProvider(LLMProvider):
                 # start streaming (can be slow for extended-context requests).
                 response = await asyncio.wait_for(
                     asyncio.get_event_loop().run_in_executor(
-                        _bedrock_executor,
+                        _bedrock_connect_executor,
                         lambda: self.bedrock.invoke_model_with_response_stream(**api_params),
                     ),
                     timeout=connect_timeout,
@@ -205,7 +236,7 @@ class BedrockProvider(LLMProvider):
                             api_params["body"] = json.dumps(body)
                             response = await asyncio.wait_for(
                                 asyncio.get_event_loop().run_in_executor(
-                                    _bedrock_executor,
+                                    _bedrock_connect_executor,
                                     lambda: self.bedrock.invoke_model_with_response_stream(**api_params),
                                 ),
                                 timeout=connect_timeout,
@@ -215,14 +246,25 @@ class BedrockProvider(LLMProvider):
                             logger.debug("Extended context retry also failed: %s", e)
                             # fall through to ErrorEvent
 
-                # Region failover: on throttle/overloaded, try an alternate
-                # region before surfacing the error to the orchestrator.
-                # This is a single failover attempt — not a retry loop.
+                # Region failover: on throttle/overloaded/5xx, try an
+                # alternate region before surfacing the error to the
+                # orchestrator. This is a single failover attempt — not a
+                # retry loop.
+                #
+                # SERVER_ERROR is included even though it is marked
+                # non-retryable: "not retried" is correct for the SAME
+                # endpoint (botocore has already exhausted its own retries
+                # by this point) but a 5xx is a per-endpoint health signal,
+                # not a property of the request. Excluding it meant an
+                # InternalServerException killed the turn outright while two
+                # other healthy regions sat unused.
                 if (
-                    classified in (ErrorType.THROTTLE, ErrorType.OVERLOADED)
+                    classified in (ErrorType.THROTTLE, ErrorType.OVERLOADED,
+                                   ErrorType.SERVER_ERROR)
                     and self._region_router.enabled
                 ):
-                    self._region_router.report_throttle(self._region)
+                    if classified is not ErrorType.SERVER_ERROR:
+                        self._region_router.report_throttle(self._region)
                     alt_endpoint = self._region_router.select_endpoint(exclude=self._region)
                     if alt_endpoint:
                         alt_client = self._region_router.get_client_for_region(alt_endpoint.region)
@@ -238,7 +280,7 @@ class BedrockProvider(LLMProvider):
                                 }
                                 response = await asyncio.wait_for(
                                     asyncio.get_event_loop().run_in_executor(
-                                        _bedrock_executor,
+                                        _bedrock_connect_executor,
                                         lambda: alt_client.invoke_model_with_response_stream(**alt_params),
                                     ),
                                     timeout=connect_timeout,

@@ -34,9 +34,30 @@ from app.utils.logging_utils import get_mode_aware_logger
 
 logger = get_mode_aware_logger(__name__)
 
-_POOL_SIZE = int(os.environ.get("BEDROCK_THREAD_POOL_SIZE", "8"))
+# Read pool.  A worker is held for the ENTIRE lifetime of a stream (parked
+# in a blocking next() on the boto3 event iterator, including while the
+# model is thinking and while tool calls run mid-stream), so steady state
+# is ~1 worker per ACTIVE conversation.
+#
+# Connects live in a SEPARATE pool below.  Sharing one pool lets readers
+# occupy every worker, after which connects land in the unbounded, untimed
+# ThreadPoolExecutor work queue behind them -- asyncio.wait_for() then
+# expires while the callable has not begun to run, so new turns stall
+# indefinitely and present as a deadlock rather than a timeout.
+# See the extended note in app/providers/bedrock.py.
+_POOL_SIZE = int(os.environ.get("BEDROCK_THREAD_POOL_SIZE", "64"))
 _oai_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=_POOL_SIZE, thread_name_prefix="oai-bedrock-io"
+)
+
+# Connect-only pool: brief occupancy, but it gates whether a new turn can
+# start at all, so it must never queue behind a parked reader.
+_CONNECT_POOL_SIZE = int(
+    os.environ.get("BEDROCK_CONNECT_POOL_SIZE", "32")
+)
+_oai_connect_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=_CONNECT_POOL_SIZE,
+    thread_name_prefix="oai-bedrock-connect",
 )
 
 
@@ -92,7 +113,7 @@ class OpenAIBedrockProvider(LLMProvider):
         try:
             response = await asyncio.wait_for(
                 asyncio.get_event_loop().run_in_executor(
-                    _oai_executor,
+                    _oai_connect_executor,
                     lambda: client.invoke_model_with_response_stream(
                         modelId=self.model_id,
                         body=json.dumps(body),
