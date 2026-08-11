@@ -22,12 +22,29 @@ def _viz_fingerprint(source: str) -> str:
     return f"{len(normalized)}:{normalized[:64]}"
 
 # All visualization code-fence languages recognised by the exporter.
-# Mirror of frontend/src/constants/visualizationTypes.ts — the single
-# source of truth.  Update both when adding a new visualization type.
+#
+# LaTeX languages are derived from the backend profile registry rather than
+# hand-listed.  Hand-listing meant only 'circuitikz' was recognised, while
+# 'chemfig', 'tikz' and 'tikz-cd' were fully supported renderers whose fences
+# this exporter silently ignored: they exported as plain code blocks with no
+# embedded diagram and no "paste into a renderer" hint.
+#
+# Module-scope import is safe: latex_profiles imports only logging, dataclasses
+# and typing, so it adds no startup cost and cannot cycle.  This module already
+# depends on app.services elsewhere (diagram_renderer, imported lazily because
+# Playwright may be absent -- not the case here).
+#
+# Alternation order is deliberately NOT sorted longest-first.  Every use of
+# _VIZ_TYPES_RE places a delimiter immediately after the capture group (a
+# newline, or '">'), so a 'tikz' alternative cannot shadow a 'tikz-cd' fence --
+# the regex backtracks and matches the longer name.  Verified at all three
+# call sites.
+from app.services.latex_profiles import PROFILES as _LATEX_PROFILES
+
 _VIZ_TYPES = (
     'graphviz', 'mermaid', 'vega-lite', 'd3', 'joint',
-    'circuitikz', 'packet', 'drawio', 'designinspector',
-)
+    'packet', 'drawio', 'designinspector',
+) + tuple(_LATEX_PROFILES)
 _VIZ_TYPES_RE = '|'.join(_VIZ_TYPES)
 
 logger = logging.getLogger(__name__)
@@ -728,69 +745,6 @@ def _markdown_to_html_basic(markdown: str) -> str:
     
     return html
 
-def _process_visualizations_for_markdown(content: str) -> str:
-    """
-    Process content to embed visualizations in markdown-compatible format.
-    
-    For SVG diagrams, we convert to base64 data URIs.
-    For other visualizations, we preserve the code blocks.
-    """
-    # Look for code blocks with visualization types
-    viz_pattern = r'```(graphviz|mermaid|vega-lite|d3|joint)\n(.*?)```'
-    
-    def replace_viz(match):
-        viz_type = match.group(1)
-        viz_code = match.group(2)
-        
-        # Keep the code block for reproducibility
-        # Add a note that this is a visualization
-        return f"```{viz_type}\n{viz_code}\n```\n\n> 📊 *This is a {viz_type} visualization. Paste into a markdown viewer that supports {viz_type} rendering.*\n"
-    
-    content = re.sub(viz_pattern, replace_viz, content, flags=re.DOTALL)
-    
-    return content
-
-def _process_content_for_html(content: str) -> str:
-    """
-    Process markdown content and convert to HTML.
-    Handles code blocks, diffs, and inline formatting.
-    """
-    # Simple markdown to HTML conversion
-    # This is a basic implementation - you may want to use a library like markdown2
-    
-    html = content
-    
-    # Convert code blocks
-    def convert_code_block(match):
-        lang = match.group(1) or 'text'
-        code = match.group(2)
-        # Escape HTML in code
-        code = code.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        return f'<pre><code class="language-{lang}">{code}</code></pre>'
-    
-    html = re.sub(r'```(\w+)?\n(.*?)```', convert_code_block, html, flags=re.DOTALL)
-    
-    # Convert inline code
-    html = re.sub(r'`([^`]+)`', r'<code>\1</code>', html)
-    
-    # Convert bold
-    html = re.sub(r'\*\*([^*]+)\*\*', r'<strong>\1</strong>', html)
-    
-    # Convert italic
-    html = re.sub(r'\*([^*]+)\*', r'<em>\1</em>', html)
-    
-    # Convert links
-    html = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2">\1</a>', html)
-    
-    # Convert paragraphs (double newlines)
-    paragraphs = html.split('\n\n')
-    html = ''.join(f'<p>{p.strip()}</p>\n' if p.strip() and not p.strip().startswith('<') else p + '\n' for p in paragraphs)
-    
-    # Process visualizations
-    html = _embed_visualizations_in_html(html)
-    
-    return html
-
 def _embed_visualizations_in_html(html: str) -> str:
     """
     Embed visualizations directly in HTML.
@@ -894,10 +848,9 @@ def _process_visualizations_for_markdown(content: str) -> str:
     2. Add rendering hints for paste services
     """
     
-    # Detect visualization code blocks
-    viz_types = ['graphviz', 'mermaid', 'vega-lite', 'd3', 'joint', 'circuitikz']
-    
-    for viz_type in viz_types:
+    # Uses the module-level registry rather than a second literal list.  The
+    # two had already diverged from each other and from the frontend.
+    for viz_type in _VIZ_TYPES:
         pattern = f'```{viz_type}\\n(.*?)```'
         
         def add_viz_note(match):
