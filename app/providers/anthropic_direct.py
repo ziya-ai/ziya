@@ -303,6 +303,55 @@ class AnthropicDirectProvider(LLMProvider):
                 # Standard extended thinking requires budget_tokens
                 kwargs["thinking"] = {"type": "enabled", "budget_tokens": config.thinking.budget_tokens}
 
+        # Diagnostic: dump the session-dependent request components to disk so
+        # an offline probe (scripts/bisect_refusal.py) can reproduce the exact
+        # payload. Mirrors BedrockProvider._build_request_body, which had the
+        # only such hook — leaving every provider on THIS path (including
+        # BedrockMantleProvider) unable to emit the payload it actually sent.
+        # That asymmetry mattered: a refusal reproducible only on mantle could
+        # not be captured from the refusing endpoint, while the bisector probed
+        # the legacy endpoint that did not refuse. Writes once per process; set
+        # the env var to a directory path.
+        _dump_dir = ziya_env("ZIYA_DUMP_REQUEST_PARTS")
+        if _dump_dir and not getattr(AnthropicDirectProvider, "_parts_dumped", False):
+            try:
+                AnthropicDirectProvider._parts_dumped = True
+                _dd = os.path.expanduser(str(_dump_dir))
+                os.makedirs(_dd, exist_ok=True)
+                _sys = kwargs.get("system")
+                if _sys:
+                    _text = "".join(
+                        b.get("text", "") for b in _sys
+                    ) if isinstance(_sys, list) else str(_sys)
+                    with open(os.path.join(_dd, "system.txt"), "w",
+                              encoding="utf-8") as _f:
+                        _f.write(_text)
+                if kwargs.get("tools"):
+                    with open(os.path.join(_dd, "tools.json"), "w",
+                              encoding="utf-8") as _f:
+                        json.dump(kwargs["tools"], _f, indent=2)
+                # The messages array is dumped here, unlike on the bedrock
+                # path: cache_control breadcrumbs and any guard rewriting are
+                # applied during _build_request, so the stored conversation
+                # alone does not reconstruct what was transmitted.
+                with open(os.path.join(_dd, "messages.json"), "w",
+                          encoding="utf-8") as _f:
+                    json.dump(kwargs.get("messages") or [], _f, indent=2)
+                with open(os.path.join(_dd, "params.json"), "w",
+                          encoding="utf-8") as _f:
+                    json.dump({
+                        "provider": self.provider_name,
+                        "base_url": str(getattr(self.client, "base_url", "")),
+                        "model_id": self.model_id,
+                        "max_tokens": kwargs.get("max_tokens"),
+                        "thinking": kwargs.get("thinking"),
+                        "temperature": kwargs.get("temperature"),
+                        "message_count": len(kwargs.get("messages") or []),
+                    }, _f, indent=2)
+                logger.info("🗒️ REQUEST_PARTS: dumped to %s", _dd)
+            except Exception as _de:
+                logger.warning("🗒️ REQUEST_PARTS dump failed: %s", _de)
+
         return kwargs
 
     # ------------------------------------------------------------------
