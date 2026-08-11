@@ -68,6 +68,42 @@ MIN_WORDS = 40
 UPPER_THRESHOLD = 0.60
 VOWELLESS_THRESHOLD = 0.10
 
+# Third signal: how VARIED the vowel-less words are.  Genuine obfuscation
+# corrupts every word independently, so it yields many DIFFERENT vowel-less
+# tokens.  Code yields a FEW tokens repeated often: a window of CPSS
+# switch-driver source measured vowelless_frac 0.314 -- above the gate --
+# from exactly two distinct tokens, CPSS and DXCH, each appearing 24 times
+# because _WORD splits CPSS_DXCH_* identifiers on the underscore.  That span
+# of real source was being replaced by a placeholder in every request.
+# Measured: real garble 0.21-0.25, base32 1.00; code-like cases 0.01-0.06.
+DIVERSITY_THRESHOLD = 0.15
+
+# Long unbroken runs of the base64/base64url/hex alphabet: inline render
+# images (`data:image/png;base64,...`), embedded fonts, attachment payloads.
+#
+# These must be exempted rather than scored.  base64 of a mid-entropy image
+# -- an antialiased music score, mostly white with black glyphs -- lands
+# squarely inside the gate: measured upper=0.64 vowelless=0.10
+# diversity=1.00, redacting 66% of the payload.  The diversity signal offers
+# no protection because base64 is maximally varied by construction; it was
+# built to exempt REPETITIVE code tokens, not high-entropy data.  Uniform
+# random base64 (upper=0.53) and near-black images (zero runs encode to
+# vowel-rich "AAAA") both fall outside, so it is precisely ordinary rendered
+# images that were affected.
+#
+# Corrupting a data URI is worse than the refusal the guard exists to
+# prevent: splicing a placeholder into base64 yields an invalid image, and
+# the provider then rejects the request outright (observed: stop_reason
+# 'refusal', out_tok=2, on the turn following a redacted score render).
+#
+# Exempting these is safe because the classifier's concern is text that
+# reads as a SUBSTITUTION CIPHER over prose.  Encoded data is not prose and
+# carries no hidden instructions; base64 in a data URI is declared as data
+# by its own URI scheme.  The 200-char floor is well above any prose word
+# run (prose always breaks on spaces and punctuation) and well below the
+# smallest realistic image payload.
+_ENCODED_RUN = re.compile(r'[A-Za-z0-9+/=_-]{200,}')
+
 
 @dataclass
 class GarbledSpan:
@@ -76,6 +112,7 @@ class GarbledSpan:
     end: int
     upper_frac: float
     vowelless_frac: float
+    diversity: float = 1.0
 
     @property
     def length(self) -> int:
@@ -83,11 +120,12 @@ class GarbledSpan:
 
     def __repr__(self) -> str:  # pragma: no cover - diagnostic only
         return (f"GarbledSpan({self.start}:{self.end} len={self.length} "
-                f"upper={self.upper_frac:.3f} vless={self.vowelless_frac:.3f})")
+                f"upper={self.upper_frac:.3f} vless={self.vowelless_frac:.3f} "
+                f"div={self.diversity:.3f})")
 
 
-def score_window(seg: str) -> Optional[Tuple[float, float]]:
-    """Return ``(upper_frac, vowelless_frac)`` or None if under-evidenced."""
+def score_window(seg: str) -> Optional[Tuple[float, float, float]]:
+    """Return ``(upper_frac, vowelless_frac, diversity)`` or None."""
     letters = [c for c in seg if c.isalpha()]
     if len(letters) < MIN_LETTERS:
         return None
@@ -96,8 +134,34 @@ def score_window(seg: str) -> Optional[Tuple[float, float]]:
     words = [w for w in _WORD.findall(seg) if not _HEX_WORD.match(w)]
     if len(words) < MIN_WORDS:
         return None
-    vowelless = sum(1 for w in words if len(w) >= 4 and not _VOWEL.search(w))
-    return upper_frac, vowelless / len(words)
+    vowelless = [w for w in words if len(w) >= 4 and not _VOWEL.search(w)]
+    if not vowelless:
+        return upper_frac, 0.0, 0.0
+    distinct = len(set(w.upper() for w in vowelless))
+    return (upper_frac, len(vowelless) / len(words),
+            distinct / len(vowelless))
+
+
+def mask_encoded_runs(text: str) -> Tuple[str, int]:
+    """Blank out encoded payloads, preserving every offset.
+
+    Runs are overwritten with spaces rather than deleted so that the spans
+    `find_garbled_spans` reports still index into the ORIGINAL string; the
+    caller slices the original text, so any length change here would
+    silently misplace every redaction after the first image.
+
+    Spaces (not a placeholder word) because the replacement must not add
+    letters: a real word would enter the score_window statistics and shift
+    the very ratios being measured.
+    """
+    if not text:
+        return text, 0
+    out = list(text)
+    runs = 0
+    for match in _ENCODED_RUN.finditer(text):
+        out[match.start():match.end()] = ' ' * (match.end() - match.start())
+        runs += 1
+    return (''.join(out), runs) if runs else (text, 0)
 
 
 def find_garbled_spans(text: str) -> List[GarbledSpan]:
@@ -105,16 +169,22 @@ def find_garbled_spans(text: str) -> List[GarbledSpan]:
     if not text or len(text) < WINDOW // 2:
         return []
 
+    # Score with encoded payloads blanked, but keep offsets aligned to the
+    # original so reported spans stay valid for the caller's slicing.
+    scan_text, _ = mask_encoded_runs(text)
+
     hits: List[GarbledSpan] = []
     limit = max(1, len(text) - WINDOW + 1)
     for i in range(0, limit, STRIDE):
-        scored = score_window(text[i:i + WINDOW])
+        scored = score_window(scan_text[i:i + WINDOW])
         if not scored:
             continue
-        upper_frac, vowelless_frac = scored
-        if upper_frac >= UPPER_THRESHOLD and vowelless_frac >= VOWELLESS_THRESHOLD:
+        upper_frac, vowelless_frac, diversity = scored
+        if (upper_frac >= UPPER_THRESHOLD
+                and vowelless_frac >= VOWELLESS_THRESHOLD
+                and diversity >= DIVERSITY_THRESHOLD):
             hits.append(GarbledSpan(i, min(i + WINDOW, len(text)),
-                                    upper_frac, vowelless_frac))
+                                    upper_frac, vowelless_frac, diversity))
 
     if not hits:
         return []
@@ -127,6 +197,7 @@ def find_garbled_spans(text: str) -> List[GarbledSpan]:
                 prev.start, max(prev.end, span.end),
                 max(prev.upper_frac, span.upper_frac),
                 max(prev.vowelless_frac, span.vowelless_frac),
+                max(prev.diversity, span.diversity),
             )
         else:
             merged.append(span)
