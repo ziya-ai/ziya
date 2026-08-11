@@ -3447,7 +3447,38 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     // because each retry returned 0 messages → nFailed++ →
                     // never added to recentlyFetchedFullIds → next sync
                     // re-fetches.
-                    const hydrationTargets = pendingHydration.filter(id => mergedMap.has(id));
+                    const eligibleHydration = pendingHydration.filter(id => mergedMap.has(id));
+                    // Cap eager hydration.  On a cold project switch every server
+                    // chat needs a full fetch, so a project with ~1000 chats pulled
+                    // ~200MB across 22 parallel bulk-gets.  The chat routes are
+                    // sync `def`, so serializing that volume is GIL-bound work that
+                    // starves the event loop: index latency measured 6ms idle ->
+                    // 1.1s with one tab -> ~8.4s with three.  Bodies aren't needed
+                    // here (the sidebar renders shells, and search is server-side
+                    // via /chats/search); anything left a shell hydrates on open.
+                    const EAGER_HYDRATION_CAP = 25;
+                    let hydrationTargets = eligibleHydration;
+                    if (eligibleHydration.length > EAGER_HYDRATION_CAP) {
+                        hydrationTargets = eligibleHydration
+                            .slice()
+                            .sort((a, b) => ((mergedMap.get(b) as any)?.lastAccessedAt || 0)
+                                          - ((mergedMap.get(a) as any)?.lastAccessedAt || 0))
+                            .slice(0, EAGER_HYDRATION_CAP);
+                        // Mark the deferred IDs as fetched-this-session.  Shells are
+                        // filtered out of the IDB write (see the !_isShell filters), so
+                        // on the next poll localMap has no entry and shouldFetchFull's
+                        // `if (!local)` branch would re-queue them every 30s -- and
+                        // because the ordering key (lastAccessedAt) doesn't change, it
+                        // would re-request the same 25 forever while the rest never
+                        // hydrate.  Marking them keeps the deferral stable; they
+                        // hydrate on open (the _isShell paths in selectConversation).
+                        const deferredIds = eligibleHydration.slice(EAGER_HYDRATION_CAP);
+                        const hydratingNow = new Set(hydrationTargets);
+                        for (const id of deferredIds) {
+                            if (!hydratingNow.has(id)) recentlyFetchedFullIds.current.add(id);
+                        }
+                        console.log(`⏱️ SYNC[${projectId.substring(0, 8)}]: deferring ${eligibleHydration.length - hydrationTargets.length} of ${eligibleHydration.length} shells to on-open hydration`);
+                    }
                     if (hydrationTargets.length > 0) {
                         const tHydrateStart = performance.now();
                         // Use the bulk endpoint to avoid the lock-contention storm

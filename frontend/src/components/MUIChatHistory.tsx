@@ -15,6 +15,11 @@ import { db } from '../utils/db';
 import { folderIsEffectivelyGlobal, conversationIsEffectivelyGlobal, globalMenuItemState } from '../utils/folderUtil';import { v4 as uuidv4 } from 'uuid';
 import { sortComparator } from '../utils/chatTreeSort';
 import { computeStructuralHash, fnv1a } from '../utils/chatTreeHash';
+import {
+  chatListItemCount,
+  isChatListFooterRow,
+  chatListHasMoreBelow,
+} from '../utils/chatListLayout';
 import type { DelegateMeta, TaskPlan, DelegateStatus } from '../types/delegate';
 import { CONVERSATION_FLAG_LABELS, CONVERSATION_FLAG_COLORS, getFlagColorDef } from '../utils/conversationFlags';
 // MUI imports
@@ -3346,6 +3351,9 @@ const MUIChatHistory = () => {
   // Measure available height for the virtual list
   const treeContainerRef = useRef<HTMLDivElement>(null);
   const [treeContainerHeight, setTreeContainerHeight] = useState(600);
+  // Drives the bottom-fade affordance: without it a row that happens to align
+  // flush with the container edge reads as the end of the list.
+  const [listScrollOffset, setListScrollOffset] = useState(0);
   useEffect(() => {
     const el = treeContainerRef.current;
     if (!el) return;
@@ -3616,7 +3624,10 @@ const MUIChatHistory = () => {
     </Box>
   ) : (
     <>
-      <Box ref={chatHistoryRef} sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      {/* flex:1 + minHeight:0, not height:100% — this Box shares a flex column
+          with ActiveContextBar, so a hard 100% overflows the panel and pushes
+          the bottom of the list off-screen. */}
+      <Box ref={chatHistoryRef} sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         {/* Tree View with integrated action buttons */}
 
         {/* Search Input */}
@@ -3852,7 +3863,7 @@ const MUIChatHistory = () => {
             </Typography>
           </Box>
         ) : (
-          <div ref={treeContainerRef} style={{ flexGrow: 1, overflow: 'hidden', paddingTop: 8, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+          <div ref={treeContainerRef} style={{ flexGrow: 1, overflow: 'hidden', paddingTop: 8, display: 'flex', flexDirection: 'column', minHeight: 0, position: 'relative' }}>
             {/* Root-level drop zone: visible only during drag when first item is a folder */}
             {customDragState.isDragging && flatNodes.length > 0 && flatNodes[0].isFolder && (
               <div
@@ -3874,13 +3885,33 @@ const MUIChatHistory = () => {
               height={treeContainerHeight}
               width="100%"
               ref={virtualListRef}
-              itemCount={flatNodes.length}
+              itemCount={chatListItemCount(flatNodes.length)}
               itemSize={VIRTUAL_ROW_HEIGHT}
               overscanCount={8}
               className="chat-history-tree"
-              itemKey={(index) => flatNodes[index].id}
+              onScroll={({ scrollOffset }) => setListScrollOffset(scrollOffset)}
+              itemKey={(index) => isChatListFooterRow(index, flatNodes.length)
+                ? '__chat-list-footer__'
+                : flatNodes[index].id}
               itemData={{
                 renderRow: (index: number, rowStyle: React.CSSProperties) => {
+                // Footer row. Checked before indexing flatNodes — this index is
+                // past the end of that array.
+                if (isChatListFooterRow(index, flatNodes.length)) {
+                  return (
+                    <div style={{
+                      ...rowStyle,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'flex-end',
+                      gap: 8,
+                      paddingRight: 8,
+                    }}>
+                      <Button variant="outlined" startIcon={<DownloadIcon />} onClick={handleExportConversations} size="small">Export</Button>
+                      <Button variant="outlined" startIcon={<UploadIcon />} onClick={handleImportConversations} size="small">Import</Button>
+                    </div>
+                  );
+                }
                 const flat = flatNodes[index];
                 const node = flat.node;
                 const isFolder = flat.isFolder;
@@ -4045,28 +4076,21 @@ const MUIChatHistory = () => {
             >
               {VirtualRow}
             </FixedSizeList>
-            {/* Export/Import — below the list, scrolls with content */}
-            <Box sx={{
-              display: 'flex',
-              justifyContent: 'flex-end',
-              p: 1,
-              flexShrink: 0,
-            }}>
-              <Box sx={{ display: 'flex', gap: 1 }}>
-                <Button
-                  variant="outlined"
-                  startIcon={<DownloadIcon />}
-                  onClick={handleExportConversations}
-                  size="small"
-                >Export</Button>
-                <Button
-                  variant="outlined"
-                  startIcon={<UploadIcon />}
-                  onClick={handleImportConversations}
-                  size="small"
-                >Import</Button>
-              </Box>
-            </Box>
+            {/* Bottom fade: content continues below the fold. Needed because a
+                row can align flush with the container edge, which otherwise
+                reads as the end of the list. */}
+            {chatListHasMoreBelow(listScrollOffset, chatListItemCount(flatNodes.length), VIRTUAL_ROW_HEIGHT, treeContainerHeight) && (
+              <div
+                data-chat-list-bottom-fade="true"
+                style={{
+                  position: 'absolute', left: 0, right: 0, bottom: 0, height: 24,
+                  pointerEvents: 'none',
+                  background: isDarkMode
+                    ? 'linear-gradient(to bottom, rgba(20,20,20,0), rgba(20,20,20,0.92))'
+                    : 'linear-gradient(to bottom, rgba(255,255,255,0), rgba(255,255,255,0.94))',
+                }}
+              />
+            )}
           </div>
         )}
 
