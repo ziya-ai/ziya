@@ -1067,8 +1067,18 @@ class ShellServer:
                 if next_next_char == '\n' and not in_single_quote:
                     i += 2
                     continue
-                # If we're escaping a backtick, treat it as literal
-                if next_next_char == '`':
+                # Outside single quotes a backslash escapes the NEXT character,
+                # whatever it is. Consume the pair verbatim so an escaped quote
+                # cannot toggle quote state: previously only `\<newline>` and
+                # ``\` `` were handled, so ``\'`` fell through to the quote
+                # handler below and flipped in_single_quote. Everything after it
+                # was then treated as quoted data, so a following ``;`` was not
+                # recognized as a separator and the command after it was never
+                # validated -- an allowlist bypass on the heredoc route, which
+                # executes via ``sh -c`` (bash does treat that ``;`` as a
+                # separator). Inside single quotes a backslash is literal, so it
+                # is left alone there.
+                if not in_single_quote:
                     current_segment += char + next_next_char
                     i += 2
                     continue
@@ -1150,6 +1160,47 @@ class ShellServer:
             segments.append((current_operator, current_segment.strip()))
         
         return segments
+
+    @staticmethod
+    def _split_unquoted_lines(text: str) -> tuple:
+        """Split on newlines that are NOT inside a quoted string.
+
+        Returns (lines, unterminated) where unterminated is True if the text
+        ended while still inside a single- or double-quoted string.
+
+        A bare newline is a shell command separator, but a newline inside a
+        quoted argument is data. str.split() cannot tell the two apart, so a
+        multi-line quoted argument (node -e "...") gets shredded into
+        fragments that are then mistaken for command words. Walk the text
+        tracking quote state -- mirroring the quote tracking the non-heredoc
+        validation path already does -- and break only on newlines seen
+        outside quotes.
+
+        Backslash escapes are honoured outside single quotes so an escaped
+        quote does not flip the state.
+        """
+        lines: list = []
+        current: list = []
+        in_single = in_double = False
+        escaped = False
+        for ch in text:
+            if ch == '\n' and not (in_single or in_double):
+                lines.append(''.join(current))
+                current = []
+                escaped = False
+                continue
+            current.append(ch)
+            if escaped:
+                escaped = False
+                continue
+            if ch == '\\' and not in_single:
+                escaped = True
+            elif ch == "'" and not in_double:
+                in_single = not in_single
+            elif ch == '"' and not in_single:
+                in_double = not in_double
+        lines.append(''.join(current))
+        return lines, (in_single or in_double)
     
     def is_command_allowed(self, command: str) -> tuple:
         """
@@ -1162,6 +1213,36 @@ class ShellServer:
         
         command = command.strip()
 
+        # Refuse a command whose quote state is still open at end-of-input,
+        # on EVERY route.  Two problems converge here:
+        #
+        #   1. A genuinely unterminated quote means the remainder was
+        #      swallowed as quoted data and never validated.  bash cannot
+        #      parse it either, but on the shell=False orchestrator route
+        #      there is no shell to do the rejecting, so refuse explicitly.
+        #
+        #   2. ANSI-C quoting ($'...') inverts the single-quote rule: inside
+        #      it a backslash ESCAPES, so ``$'\''`` is the complete one-char
+        #      string ``'``.  Every walker here applies the normal rule and
+        #      so reads the string as still open, swallowing any following
+        #      ``;`` as quoted data.  bash disagrees and runs the hidden
+        #      command -- a live allowlist bypass on the two ``sh -c`` routes
+        #      (compound and heredoc).  Only heredoc had a guard; compound
+        #      and plain had none.
+        #
+        # Analyse the HEREDOC-STRIPPED text, not the raw command.  A heredoc
+        # body is stdin *data*: prose with an apostrophe ("it's fine",
+        # "O'Brien") has an odd quote count, so checking pre-strip rejects
+        # benign commands (measured 6 of 7 realistic heredocs).  Stripping
+        # removes only body content, so a real imbalance in actual shell
+        # syntax is still seen and a command sequenced after the terminator
+        # is still validated.
+        _probe = (_strip_heredoc_bodies(command)
+                  if _has_heredoc(command) else command)
+        _lines, _unterminated = self._split_unquoted_lines(_probe)
+        if _unterminated:
+            return False, "unterminated quote in command"
+
         # Heredoc commands span multiple physical lines and must NOT be
         # truncated to the first line below: the body is stdin *data*, but
         # a real command may be sequenced after the terminator
@@ -1173,7 +1254,19 @@ class ShellServer:
         # keep their dedicated _validate_compound_body path below.
         if _has_heredoc(command) and not self._is_compound_command(command):
             stripped = _strip_heredoc_bodies(command)
-            for hd_line in stripped.split('\n'):
+            # Split quote-aware: a newline inside a quoted argument is data,
+            # not a separator. A raw split() here shredded multi-line
+            # quoted arguments that legitimately follow a heredoc
+            # (node -e "...", python3 -c "..."), so their body lines were
+            # recursively validated as if they were commands.
+            hd_lines, unterminated = self._split_unquoted_lines(stripped)
+            # An unterminated quote means the remainder was swallowed as
+            # quoted data and never validated. sh -c would reject it too,
+            # but refuse it here rather than rely on that: a command hidden
+            # behind an unclosed quote must not skip the allowlist.
+            if unterminated:
+                return False, "unterminated quote in command"
+            for hd_line in hd_lines:
                 hd_line = hd_line.strip()
                 if not hd_line or hd_line.startswith('#'):
                     continue
