@@ -4,7 +4,10 @@ import { CopyOutlined, DownloadOutlined, GithubOutlined, CloudOutlined, FileText
 import { useActiveChat } from '../context/ActiveChatContext';
 import { useTheme } from '../context/ThemeContext';
 import { captureAllVisualizations } from '../utils/visualizationCapture';
-import { exportConversationAsPdf } from '../utils/pdfExport';
+// NOTE: the legacy client-side exportConversationAsPdf (utils/pdfExport.ts) is
+// retired from the PDF path in Stage 2 — handlePdfExport now POSTs to
+// /api/export/pdf and downloads real PDF bytes. The util file itself is left
+// in place (its import removed here) until Stage 7 deletes it.
 import { useProject } from '../context/ProjectContext';
 import { hydrateConversationMessages } from '../utils/conversationHydration';
 import type { Message } from '../utils/types';
@@ -162,19 +165,66 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
         setIsPdfExporting(true);
         setCaptureProgress(0);
         setCaptureStatus('Preparing PDF…');
+        // Progress plumbing preserved from the old client-side path. A single
+        // server round-trip does not stream granular progress, so we report
+        // coarse milestones through the SAME onProgress/captureProgress state
+        // the modal already renders.
+        const onProgress = (pct: number, status: string) => {
+            setCaptureProgress(pct);
+            setCaptureStatus(status);
+        };
         try {
-            await exportConversationAsPdf({
-                title: 'Ziya Session Transcript',
-                includeFooter: true,
-                roundLimit,
-                includeHuman,
-                includeCollapsed,
-                onProgress: (pct, status) => {
-                    setCaptureProgress(pct);
-                    setCaptureStatus(status);
-                },
+            onProgress(15, 'Rendering conversation server-side…');
+            // Send the RAW messages plus option knobs; the server-side /print
+            // route performs the roundLimit/includeHuman/includeCollapsed
+            // filtering (single source of truth shared by PDF & HTML exports),
+            // so we must NOT pre-filter here.
+            const response = await fetch('/api/export/pdf', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    conversation_id: currentConversationId,
+                    project_id: currentProject?.id,
+                    messages: currentMessages,
+                    title: 'Ziya Session Transcript',
+                    roundLimit,
+                    includeHuman,
+                    includeCollapsed,
+                    includeFooter: true,
+                }),
             });
-            message.success('PDF print dialog opened — choose "Save as PDF" to save.');
+
+            if (!response.ok) {
+                // Surface server-side failure as a REAL error instead of the
+                // old "print dialog opened" silent success.
+                let detail = `PDF export failed (HTTP ${response.status})`;
+                try {
+                    const errBody = await response.json();
+                    if (errBody?.error) detail = errBody.error;
+                } catch { /* non-JSON body */ }
+                throw new Error(detail);
+            }
+
+            onProgress(80, 'Downloading PDF…');
+            const blob = await response.blob();
+
+            // Derive a filename from the Content-Disposition header when present.
+            let filename = 'Ziya_Session_Transcript.pdf';
+            const disposition = response.headers.get('Content-Disposition');
+            const match = disposition && /filename="?([^"]+)"?/.exec(disposition);
+            if (match && match[1]) filename = match[1];
+
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+
+            onProgress(100, 'PDF downloaded');
+            message.success('PDF downloaded.');
         } catch (err: any) {
             message.error(err?.message || 'PDF export failed');
         } finally {
