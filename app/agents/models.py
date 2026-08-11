@@ -660,6 +660,9 @@ class ModelManager:
             elif endpoint == "zai":
                 logger.info("Using z.ai authentication flow only")
                 model = cls._initialize_zai_model(model_config)
+            elif endpoint == "meta":
+                logger.info("Using Meta Model API authentication flow only")
+                model = cls._initialize_meta_model(model_config)
             elif endpoint == "anthropic":
                 logger.info("Using Anthropic authentication flow only")
                 model = cls._initialize_anthropic_model(model_config)
@@ -1278,20 +1281,14 @@ class ModelManager:
     @classmethod
     def _check_openai_credentials(cls) -> None:
         """Check that an OpenAI API key is available."""
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if api_key and api_key.strip():
+        # Registry-backed: OPENAI_BASE_URL is a registered alternative for
+        # this endpoint, so a local/compatible server with no key satisfies
+        # it without a second hand-written check below.
+        from app.utils.provider_detection import resolve_credential, credential_error
+        if resolve_credential("openai"):
             logger.info("OpenAI API key found in environment variables")
             return
-        # Allow OPENAI_BASE_URL without key (e.g. local LLM servers)
-        base_url = os.environ.get("OPENAI_BASE_URL")
-        if base_url:
-            logger.info(f"No OPENAI_API_KEY but OPENAI_BASE_URL is set ({base_url}), proceeding")
-            return
-        raise ValueError(
-            "OpenAI credentials not found. Please set OPENAI_API_KEY:\n"
-            "  export OPENAI_API_KEY=sk-...\n"
-            "Or set OPENAI_BASE_URL for a compatible local server."
-        )
+        raise ValueError(credential_error("openai"))
 
     @classmethod
     def _initialize_zai_model(cls, model_config: Dict[str, Any]):
@@ -1335,7 +1332,8 @@ class ModelManager:
 
         # Pay-as-you-go keys use api/paas/v4; Coding Plan subscriptions use
         # api/coding/paas/v4. Default to pay-as-you-go; override via ZAI_BASE_URL.
-        api_key = os.environ.get("ZAI_API_KEY") or os.environ.get("ZHIPUAI_API_KEY")
+        from app.utils.provider_detection import resolve_credential
+        api_key = resolve_credential("zai")
         base_url = os.environ.get("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4")
 
         logger.info(
@@ -1355,16 +1353,83 @@ class ModelManager:
     @classmethod
     def _check_zai_credentials(cls) -> None:
         """Check that a z.ai API key is available."""
-        api_key = os.environ.get("ZAI_API_KEY") or os.environ.get("ZHIPUAI_API_KEY")
-        if api_key and api_key.strip():
+        # Registry-backed so ZAI_API_TOKEN (the name the README documents) is
+        # accepted here too. This hand-written pair previously rejected it,
+        # while detect_available_providers accepted it -- so the endpoint was
+        # reported available and then failed at init.
+        from app.utils.provider_detection import resolve_credential, credential_error
+        if resolve_credential("zai"):
             logger.info("z.ai API key found in environment variables")
             return
-        raise ValueError(
-            "z.ai credentials not found. Please set ZAI_API_KEY:\n"
-            "  export ZAI_API_KEY=...\n"
-            "Get a key at https://z.ai. If you have a Coding Plan subscription,\n"
-            "also set: export ZAI_BASE_URL=https://api.z.ai/api/coding/paas/v4"
+        raise ValueError(credential_error("zai"))
+
+    @classmethod
+    def _initialize_meta_model(cls, model_config: Dict[str, Any]):
+        """
+        Initialize a Meta Model API model (Muse Spark).
+
+        The Meta Model API is OpenAI Chat Completions compatible, so this
+        reuses the DirectOpenAIModel wrapper with Meta's base URL and key —
+        the same arrangement as z.ai.
+
+        Args:
+            model_config: Model configuration dict
+
+        Returns:
+            DirectOpenAIModel: The initialized model
+        """
+        from app.agents.wrappers.openai_direct import DirectOpenAIModel
+
+        gc.collect()
+        logger.info("Initializing Meta model with OpenAI-compatible API")
+
+        # Load .env if present
+        try:
+            dotenv_path = find_dotenv()
+            if dotenv_path:
+                load_dotenv(dotenv_path)
+        except ImportError:
+            pass
+
+        model_id = model_config.get("model_id")
+        temperature = model_config.get("temperature", 0.3)
+        max_output_tokens = model_config.get("max_output_tokens", 16384)
+
+        # Apply environment overrides
+        settings = cls.get_model_settings(model_config)
+        if "temperature" in settings:
+            temperature = settings["temperature"]
+        if "max_output_tokens" in settings:
+            max_output_tokens = settings["max_output_tokens"]
+
+        cls._check_meta_credentials()
+
+        from app.utils.provider_detection import resolve_credential
+        api_key = resolve_credential("meta")
+        base_url = os.environ.get("META_BASE_URL", "https://api.meta.ai/v1")
+
+        logger.info(
+            f"Initializing Meta model: {model_id} "
+            f"(temp={temperature}, max_output_tokens={max_output_tokens}, base_url={base_url})"
         )
+
+        model = DirectOpenAIModel(
+            model_name=model_id,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            api_key=api_key,
+            base_url=base_url,
+        )
+        return model
+
+    @classmethod
+    def _check_meta_credentials(cls) -> None:
+        """Check that a Meta Model API key is available."""
+        from app.utils.provider_detection import resolve_credential, credential_error
+        if resolve_credential("meta"):
+            logger.info("Meta API key found in environment variables")
+            return
+        raise ValueError(credential_error("meta"))
 
     @classmethod
     def _initialize_anthropic_model(cls, model_config: Dict[str, Any]):

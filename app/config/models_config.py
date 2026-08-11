@@ -14,7 +14,8 @@ DEFAULT_MODELS = {
     "google": "gemini-3.1-pro",
     "openai": "gpt-5.5",
     "anthropic": "claude-sonnet-5",
-    "zai": "glm-5.2"
+    "zai": "glm-5.2",
+    "meta": "muse-spark-1.2"
 }
 
 # Model aliases — short names that resolve to canonical model keys.
@@ -47,6 +48,13 @@ MODEL_ALIASES: dict[str, dict[str, str]] = {
     },
     "zai": {
         "glm": "glm-5.2",
+    },
+    "meta": {
+        "muse": "muse-spark-1.2",
+        "spark": "muse-spark-1.2",
+        # Data-sharing tier — see the muse-spark-1.2-contributor entry in
+        # MODEL_CONFIGS before using this.
+        "muse-contributor": "muse-spark-1.2-contributor",
     },
 }
 
@@ -362,6 +370,42 @@ MODEL_FAMILIES = {
         "supported_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
         "token_limit": 1000000
     },
+    "meta-muse": {
+        # Meta Model API (Muse Spark), OpenAI Chat Completions compatible.
+        # Served by OpenAIDirectProvider with base_url=api.meta.ai/v1.
+        "supported_parameters": ["temperature", "top_p", "max_tokens"],
+        "parameter_ranges": {
+            "temperature": {"min": 0.0, "max": 2.0, "default": 0.3},
+            "top_p": {"min": 0.0, "max": 1.0, "default": 1.0},
+            # Live-verified 2026-08: 131072 accepted; 2000000 -> 400.
+            "max_tokens": {"min": 1, "max": 131072, "default": 4096}
+        },
+        "native_function_calling": True,
+        "supports_vision": True,
+        # Reasoning: unlike zai-glm, Meta needs NO thinking-enable envelope —
+        # it accepts the standard `reasoning_effort` key, so declaring
+        # supports_reasoning_effort is sufficient and reasoning_request is
+        # deliberately absent.
+        #
+        # Reasoning is NOT streamed: no reasoning_content / reasoning delta
+        # attribute ever appears (live-verified on 1.1 and 1.2, all efforts).
+        # It is only reported after the fact as
+        # usage.completion_tokens_details.reasoning_tokens, and it dominates
+        # short turns — "What is 31*47?" spent 267 of 279 completion tokens
+        # on invisible reasoning. So supports_thinking here means "bills for
+        # thinking", not "can display thinking".
+        "supports_thinking": True,
+        "supports_reasoning_effort": True,
+        # Live-verified vocabulary (2026-08): none|minimal|low|medium|high|
+        # xhigh, but `none` is rejected per-model ("does not support 'none'
+        # with this model") and `max` does not exist ("unknown variant
+        # `max`") — both are in Ziya's canonical set and reachable via
+        # ZIYA_THINKING_EFFORT, so declaring the real set makes the provider
+        # clamp instead of sending a 400. `minimal` has no Ziya equivalent.
+        "supported_efforts": ["low", "medium", "high", "xhigh"],
+        "thinking_effort_default": "medium",
+        "token_limit": 1048576
+    },
     "openai-gpt": {
         "supported_parameters": ["temperature", "top_p", "max_tokens"],
         "parameter_ranges": {
@@ -426,6 +470,17 @@ ENDPOINT_DEFAULTS = {
         "parameter_ranges": {
             "temperature": {"min": 0.0, "max": 1.0, "default": 0.6},
             "top_p": {"min": 0.0, "max": 1.0, "default": 0.95},
+            "max_tokens": {"min": 1, "max": 131072, "default": 4096}
+        }
+    },
+    "meta": {
+        "token_limit": 1048576,
+        "max_output_tokens": 131072,
+        "default_max_output_tokens": 16384,
+        "supported_parameters": ["temperature", "top_p", "max_tokens"],
+        "parameter_ranges": {
+            "temperature": {"min": 0.0, "max": 2.0, "default": 0.3},
+            "top_p": {"min": 0.0, "max": 1.0, "default": 1.0},
             "max_tokens": {"min": 1, "max": 131072, "default": 4096}
         }
     },
@@ -1677,7 +1732,62 @@ MODEL_CONFIGS = {
             "supports_thinking": True,
             "native_function_calling": True,
         },
-    }
+    },
+    "meta": {
+        # Meta's API rejects any tool schema containing $ref with
+        # "400 Recursive JSON schemas are not currently supported". Tool
+        # definitions are sent as one array, so a single recursive schema
+        # (MCP canvas block trees, or anything from Pydantic's
+        # model_json_schema()) fails every request. inline_schema_refs makes
+        # the OpenAI-compatible provider expand refs before sending. This is
+        # an endpoint-wide API constraint, hence set on every meta model.
+        "muse-spark-1.2": {
+            "tier": "medium",
+            "model_id": "muse-spark-1.2",
+            "family": "meta-muse",
+            "token_limit": 1048576,
+            "max_output_tokens": 131072,
+            "default_max_output_tokens": 16384,
+            "supports_thinking": True,
+            "native_function_calling": True,
+            "supports_vision": True,
+            "inline_schema_refs": True,
+        },
+        "muse-spark-1.1": {
+            "tier": "small",
+            "model_id": "muse-spark-1.1",
+            "family": "meta-muse",
+            "token_limit": 1048576,
+            "max_output_tokens": 131072,
+            "default_max_output_tokens": 16384,
+            "supports_thinking": True,
+            "native_function_calling": True,
+            "supports_vision": True,
+            "inline_schema_refs": True,
+        },
+        # Contributor tier: same model as muse-spark-1.2 at roughly a tenth
+        # of the price (~$0.10/$0.20 per M vs ~$1.25/$4.25) in exchange for
+        # Meta using your prompts and completions to train future models.
+        #
+        # Deliberately NOT aliased to a short name and NOT tier-tagged, so no
+        # tier request, delegate, or Task Card block can route here
+        # implicitly. Ziya sends source code, design docs and shell output to
+        # the model, so opting that corpus into a vendor's training set must
+        # be an explicit, typed-out choice — never a cost optimisation the
+        # harness makes on the user's behalf.
+        "muse-spark-1.2-contributor": {
+            "model_id": "muse-spark-1.2-contributor",
+            "family": "meta-muse",
+            "token_limit": 1048576,
+            "max_output_tokens": 131072,
+            "default_max_output_tokens": 16384,
+            "supports_thinking": True,
+            "native_function_calling": True,
+            "supports_vision": True,
+            "shares_data_for_training": True,
+            "inline_schema_refs": True,
+        },
+    },
 }
 
 # Environment variable mapping to config keys
@@ -1686,6 +1796,11 @@ ENV_VAR_MAPPING = {
     "ZIYA_TOP_K": "top_k",
     "ZIYA_TOP_P": "top_p",
     "ZIYA_MAX_OUTPUT_TOKENS": "max_output_tokens",
+    # Read back so get_model_settings() surfaces the stored input ceiling.
+    # Without this entry the value written to ZIYA_MAX_INPUT_TOKENS was
+    # never loaded, and /api/model-capabilities always fell through to the
+    # model's static token_limit — the setting had no observable effect.
+    "ZIYA_MAX_INPUT_TOKENS": "max_input_tokens",
     "ZIYA_THINKING_MODE": "thinking_mode",
     "ZIYA_MAX_TOKENS": "max_tokens",
     "ZIYA_MODEL_ID_OVERRIDE": "model_id",
@@ -2092,7 +2207,7 @@ _VALID_MODEL_CONFIG_KEYS = frozenset({
     "region_router_class", "requires_provider_data_share",
     "reasoning_request", "supports_reasoning_effort",
     "service_name", "stop_sequences", "supports_cache", "supported_efforts",
-    "supported_parameters", "supports_adaptive_thinking",
+    "shares_data_for_training", "supported_parameters", "supports_adaptive_thinking",
     "supports_assistant_prefill", "supports_context_caching",
     "supports_extended_context", "supports_function_calling",
     "supports_max_input_tokens", "supports_multimodal", "supports_streaming",

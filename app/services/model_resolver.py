@@ -110,11 +110,18 @@ def resolve_service_model(
         pass  # No plugin system or no providers
 
     # 3. Endpoint-aware default
-    ep_defaults = _ENDPOINT_DEFAULTS.get(endpoint, _ENDPOINT_DEFAULTS["bedrock"])
+    # An endpoint with no service-model table of its own falls back to
+    # Bedrock's — and must report the BEDROCK endpoint alongside it. Keeping
+    # the caller's endpoint here pairs a Bedrock model ID with a non-Bedrock
+    # client (e.g. POSTing 'us.amazon.nova-lite-v1:0' to api.meta.ai), which
+    # fails on every service call. The endpoint and the model ID have to come
+    # from the same table.
+    resolved_endpoint = endpoint if endpoint in _ENDPOINT_DEFAULTS else "bedrock"
+    ep_defaults = _ENDPOINT_DEFAULTS[resolved_endpoint]
     cat_defaults = ep_defaults.get(category, ep_defaults.get("default", {}))
 
     return {
-        "endpoint": endpoint,
+        "endpoint": resolved_endpoint,
         "model_id": cat_defaults.get("model_id", ""),
         "region": cat_defaults.get("region", env_region),
     }

@@ -48,11 +48,18 @@ class TestDefaultResolution:
             assert "haiku" in config["model_id"].lower() or "claude" in config["model_id"].lower()
 
     def test_local_default(self):
+        """'local' has no service-model table, so it falls back to Bedrock
+        COMPLETELY — endpoint AND model_id from the same table.
+
+        Previously asserted endpoint=='local' while model_id came from
+        Bedrock's table; that pairing POSTs a Bedrock model ID to whatever
+        client the endpoint selects. See the matching test in
+        tests/test_service_model_resolver.py.
+        """
         with patch.dict(os.environ, {"ZIYA_ENDPOINT": "local"}, clear=False):
             config = resolve_service_model("default")
-            assert config["endpoint"] == "local"
-            assert config["model_id"]  # Has a default model
-            # Should have base_url or the caller derives it from env
+            assert config["endpoint"] == "bedrock"
+            assert config["model_id"]
 
     def test_unknown_category_uses_default(self):
         with patch.dict(os.environ, {"ZIYA_ENDPOINT": "bedrock"}, clear=False):

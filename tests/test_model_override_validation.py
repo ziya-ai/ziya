@@ -6,6 +6,7 @@ import pytest
 from app.utils.model_override import (
     validate_model_override,
     apply_model_info_override,
+    resolve_override_endpoint,
 )
 from app.agents.models import ModelManager
 
@@ -23,7 +24,65 @@ class TestValidateModelOverride:
     def test_unknown_model_rejected(self):
         err = validate_model_override("definitely-not-a-model", "bedrock")
         assert err is not None
-        assert "not available" in err
+        assert "not defined on any configured endpoint" in err
+
+
+class TestCrossEndpointPins:
+    """Cross-endpoint pins are honored via the executor's endpoint_override.
+
+    This rests on model aliases being globally unique — pinned models carry
+    no endpoint of their own, so a collision would route to whichever
+    endpoint happened to be found first.
+    """
+
+    def test_model_aliases_are_globally_unique(self):
+        owners: dict[str, list[str]] = {}
+        for ep, models in ModelManager.MODEL_CONFIGS.items():
+            for m in models:
+                owners.setdefault(m, []).append(ep)
+        dupes = {m: eps for m, eps in owners.items() if len(eps) > 1}
+        assert not dupes, (
+            f"Model aliases {dupes} exist on multiple endpoints. Pins identify "
+            f"a model by alias alone and derive the endpoint from it, so this "
+            f"collision makes pin routing ambiguous. Either rename one alias "
+            f"or extend the pin payload to carry an explicit endpoint."
+        )
+
+    def test_resolve_prefers_active_endpoint(self, monkeypatch):
+        monkeypatch.setenv("ZIYA_ENDPOINT", "bedrock")
+        model = _first_bedrock_model()
+        assert resolve_override_endpoint(model) == "bedrock"
+
+    def test_resolve_finds_other_endpoint(self, monkeypatch):
+        monkeypatch.setenv("ZIYA_ENDPOINT", "bedrock")
+        google = next(iter(ModelManager.MODEL_CONFIGS.get("google", {})), None)
+        if google is None:
+            pytest.skip("no google models configured")
+        assert resolve_override_endpoint(google) == "google"
+
+    def test_resolve_unknown_is_none(self):
+        assert resolve_override_endpoint("not-a-model-xyz") is None
+
+    def test_cross_endpoint_pin_accepted_when_permitted(self, monkeypatch):
+        monkeypatch.setenv("ZIYA_ENDPOINT", "bedrock")
+        monkeypatch.setenv("ZIYA_ALLOW_ALL_ENDPOINTS", "1")
+        google = next(iter(ModelManager.MODEL_CONFIGS.get("google", {})), None)
+        if google is None:
+            pytest.skip("no google models configured")
+        import app.utils.provider_detection as pdmod
+        monkeypatch.setattr(pdmod, "get_availability", lambda refresh=False: {"google": True})
+        assert validate_model_override(google, "bedrock") is None
+
+    def test_cross_endpoint_pin_rejected_without_credentials(self, monkeypatch):
+        monkeypatch.setenv("ZIYA_ENDPOINT", "bedrock")
+        monkeypatch.setenv("ZIYA_ALLOW_ALL_ENDPOINTS", "1")
+        google = next(iter(ModelManager.MODEL_CONFIGS.get("google", {})), None)
+        if google is None:
+            pytest.skip("no google models configured")
+        import app.utils.provider_detection as pdmod
+        monkeypatch.setattr(pdmod, "get_availability", lambda refresh=False: {"google": False})
+        err = validate_model_override(google, "bedrock")
+        assert err is not None and "no credentials" in err
 
     def test_empty_model_rejected(self):
         assert validate_model_override("", "bedrock") is not None
