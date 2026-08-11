@@ -640,10 +640,22 @@ never auto-collapses at all, since the receipt offers no way to resume it.
 #### Resuming a finished run from a block
 
 A run that died partway through used to be unrecoverable: the only option was
-relaunching the card, discarding every block that had already succeeded. Hover
-any row in a finished run's block map and a **↻ from here** button appears —
-it starts a **new** run that replays the earlier blocks' recorded results
-instead of re-running them, and resumes real execution at the block you picked.
+relaunching the card, discarding every block that had already succeeded.
+
+A stopped run now leads with a **recovery banner** naming the block it stopped
+at, with **↻ Retry \<block\>** and **▶ Continue past it**. Both start a *new*
+run that replays the earlier blocks' recorded results instead of re-running
+them; they differ only in whether the named block itself runs again — continue
+is what you want after fixing the cause by hand.
+
+This is separate from **Restart** in the tile header, which relaunches the card
+from the beginning and keeps none of the run's progress. The banner says so,
+because Restart is the more prominent control and is usually the wrong one for
+a run that got partway.
+
+For a deliberate choice other than the stopping point, every row of the block
+map also carries **↻ from here** and **▶ past here** on hover — useful for
+re-running from *earlier* than the failure.
 
 What this preserves, and why:
 
