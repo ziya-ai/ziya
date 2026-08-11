@@ -249,7 +249,25 @@ class OpenAIDirectProvider(LLMProvider):
                 openai_messages.append(a_msg)
                 continue
 
-            openai_messages.append({"role": role, "content": content})
+            # Messages that are already in OpenAI shape reach this fallback:
+            # build_assistant_message() and build_tool_result_message() emit
+            # native dicts, and the orchestrator appends them verbatim. Rebuilding
+            # them as {role, content} silently dropped the keys that bind a tool
+            # result to its call, producing
+            #   400 Missing required parameter: `messages[N].tool_call_id`
+            # on the second iteration of any tool-using conversation.
+            passthrough: Dict[str, Any] = {"role": role, "content": content}
+            if msg.get("tool_calls"):
+                passthrough["tool_calls"] = msg["tool_calls"]
+            if msg.get("tool_call_id"):
+                passthrough["tool_call_id"] = msg["tool_call_id"]
+            # A tool message with no id is unsendable; the API rejects the whole
+            # request. Degrade it to a user message so the result still reaches
+            # the model instead of failing the turn.
+            if role == "tool" and not passthrough.get("tool_call_id"):
+                passthrough["role"] = "user"
+                passthrough.pop("tool_call_id", None)
+            openai_messages.append(passthrough)
 
         kwargs: Dict[str, Any] = {
             "model": self.model_id,
@@ -261,13 +279,29 @@ class OpenAIDirectProvider(LLMProvider):
         if config.temperature is not None:
             kwargs["temperature"] = config.temperature
         if tools and not config.suppress_tools:
+            # Some OpenAI-compatible endpoints (Meta) reject any tool schema
+            # containing $ref with "400 Recursive JSON schemas are not currently
+            # supported". Because tool definitions are sent as a single array,
+            # one recursive schema fails the whole request. Opt-in per model so
+            # OpenAI/OpenRouter payloads, which accept $ref, stay byte-identical.
+            if self.model_config.get("inline_schema_refs"):
+                from app.utils.schema_refs import inline_json_schema_refs
+
+                def _params(t: Dict[str, Any]) -> Dict[str, Any]:
+                    return inline_json_schema_refs(
+                        t.get("input_schema", {"type": "object", "properties": {}})
+                    )
+            else:
+                def _params(t: Dict[str, Any]) -> Dict[str, Any]:
+                    return t.get("input_schema", {"type": "object", "properties": {}})
+
             kwargs["tools"] = [
                 {
                     "type": "function",
                     "function": {
                         "name": t.get("name", ""),
                         "description": t.get("description", ""),
-                        "parameters": t.get("input_schema", {"type": "object", "properties": {}}),
+                        "parameters": _params(t),
                     },
                 }
                 for t in tools
@@ -289,7 +323,17 @@ class OpenAIDirectProvider(LLMProvider):
             if isinstance(envelope, dict):
                 extra_body.update(envelope)
             if self.model_config.get("supports_reasoning_effort"):
-                extra_body["reasoning_effort"] = config.thinking.effort
+                # Clamp to the vendor's own effort vocabulary. Ziya's canonical
+                # set spans none..max, but a given vendor accepts a subset
+                # (Meta: minimal|low|medium|high|xhigh — no `max`/`none`), and
+                # an out-of-set value is a 400. Same guard as bedrock.py.
+                effort = config.thinking.effort
+                supported = self.model_config.get("supported_efforts")
+                if isinstance(supported, (list, tuple)) and effort not in supported:
+                    effort = self.model_config.get(
+                        "thinking_effort_default", "medium",
+                    )
+                extra_body["reasoning_effort"] = effort
         # Raw passthrough for any other vendor-specific request params.
         if config.extra_body:
             extra_body.update(config.extra_body)
@@ -382,10 +426,23 @@ class OpenAIDirectProvider(LLMProvider):
         if latest_usage is not None:
             u = latest_usage
             details = getattr(u, "prompt_tokens_details", None)
+            # Reasoning tokens are billed WITHIN completion_tokens, not in
+            # addition to them. Reporting them matters most where reasoning
+            # is never streamed (Meta Muse Spark emits no reasoning delta at
+            # all), because then this figure is the ONLY evidence the tokens
+            # were spent — live-verified at 267 of 279 completion tokens on a
+            # one-line arithmetic question. Without this, cost attribution
+            # silently reports 0 for every reasoning model on this provider.
+            out_details = getattr(u, "completion_tokens_details", None)
+            reasoning_tokens = (
+                getattr(out_details, "reasoning_tokens", None) or 0
+                if out_details else 0
+            )
             yield UsageEvent(
                 input_tokens=getattr(u, "prompt_tokens", 0),
                 output_tokens=getattr(u, "completion_tokens", 0),
                 cache_read_tokens=getattr(details, "cached_tokens", 0) if details else 0,
+                thinking_tokens=reasoning_tokens,
             )
         yield StreamEnd(stop_reason=final_stop_reason)
 
