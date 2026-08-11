@@ -1009,6 +1009,81 @@
   border: 1px solid rgba(88,166,255,0.28);
   border-radius: 6px; padding: 8px 11px; margin-bottom: 10px;
 }
+
+/* ── Run recovery banner ──────────────────────────────────────────
+ * Deliberately the OPPOSITE treatment to .tc-map__resume: full opacity,
+ * normal type size, real buttons.  The row-level controls are quiet
+ * because they are one choice among N; this is the primary action on a
+ * run that stopped, and it competes with a prominent Restart button
+ * that discards everything.  Quiet was the bug. */
+.tc-recover {
+  border: 1px solid rgba(88,166,255,0.45);
+  background: rgba(88,166,255,0.09);
+  border-left: 4px solid #58a6ff;
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.tc-recover__head {
+  font-weight: 600;
+  font-size: 12.5px;
+  color: #79c0ff;
+  margin-bottom: 5px;
+}
+.tc-recover__note {
+  font-size: 12px;
+  line-height: 1.55;
+  margin-bottom: 8px;
+}
+.tc-recover__note strong { color: #cfe4ff; font-weight: 600; }
+
+.tc-recover__actions {
+  display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+}
+
+/* Sized as an action, not an annotation — the map's 10px row buttons
+ * are what "there is no resume button" was actually reporting. */
+.tc-recover__btn {
+  background: rgba(88,166,255,0.16);
+  border: 1px solid #58a6ff;
+  color: #cfe4ff;
+  border-radius: 4px;
+  font-size: 12px; font-weight: 600; line-height: 1.5;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.tc-recover__btn:hover:not(:disabled) { background: rgba(88,166,255,0.28); }
+.tc-recover__btn:focus-visible { outline: 2px solid #58a6ff; outline-offset: 1px; }
+.tc-recover__btn:disabled { opacity: 0.55; cursor: progress; }
+
+/* Continue is non-destructive but also not the default guess, so it is
+ * neutral rather than accented — matching .tc-map__continue. */
+.tc-recover__btn--continue {
+  background: transparent;
+  border-color: rgba(128,128,128,0.5);
+  color: rgba(190,190,190,0.95);
+  font-weight: 500;
+}
+.tc-recover__btn--continue:hover:not(:disabled) {
+  background: rgba(128,128,128,0.16);
+}
+
+/* Separated by a rule: this is a warning about a DIFFERENT control, so
+ * it must not read as part of the offer above it. */
+.tc-recover__alt {
+  margin-top: 8px; padding-top: 7px;
+  border-top: 1px solid rgba(88,166,255,0.22);
+  font-size: 11px; line-height: 1.5;
+  color: #8b949e;
+}
+.tc-recover__alt strong { color: #d29922; }
+
+@media (prefers-color-scheme: light) {
+  .tc-recover__head { color: #0b4ea2; }
+  .tc-recover__note strong { color: #0b4ea2; }
+  .tc-recover__btn { color: #0b4ea2; }
+}
 .tc-prov__head {
   color: #58a6ff; font-weight: 600; margin-bottom: 3px;
 }

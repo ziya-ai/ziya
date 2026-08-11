@@ -30,12 +30,14 @@ import { TaskRunInspector } from './TaskRunInspector';
 import { TaskRunMap } from './TaskRunMap';
 import { BlockDetailPanel } from './BlockDetailPanel';
 import { ArtifactViewer } from './ArtifactViewer';
+import { RunRecoveryBanner } from './RunRecoveryBanner';
 import { blockLabel, findBlockById, resolveBlockStatus } from './runMapModel';
 import { deriveRunControls, heldLabel } from './runControls';
 import {
   attemptSummary, firstFailedBlock, isPartial, progressCounts, progressPhrase,
   provenance, resumeKindLabel, sideEffectSummary,
 } from './partialOutcome';
+import { recoveryTarget } from './recoveryTarget';
 import FailureClusters from './FailureClusters';
 import { analyzeFailures } from '../../utils/iterationClusters';
 import { formatLastActivity } from './liveActivity';
@@ -1108,14 +1110,21 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
         )}
         {isTerminal && (
           <Tooltip
+            /* Names the cost.  This control relaunches the card from
+               scratch, which for a run that stopped partway is usually
+               NOT what the user wants — but it was the loudest thing on
+               the tile, so it read as the intended action. */
             title={
               run.status === 'done'
                 ? 'Rerun this task'
-                : run.status === 'held'
-                  ? 'Restart — this run stopped on an infrastructure fault, not a failure of the work'
-                  : run.status === 'cancelled'
-                    ? 'Restart cancelled task'
-                    : 'Restart failed task'
+                : controls.canResumeFromBlock
+                  ? 'Restart from the beginning, discarding this run’s '
+                    + 'progress. To keep it, use Retry / Continue above.'
+                  : run.status === 'held'
+                    ? 'Restart — this run stopped on an infrastructure fault, not a failure of the work'
+                    : run.status === 'cancelled'
+                      ? 'Restart cancelled task'
+                      : 'Restart failed task'
             }
           >
             <button
@@ -1152,6 +1161,34 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
             })()}
           />
         )}
+
+        {/* Tile-level recovery, placed BEFORE the run map on purpose.
+            The map's per-row buttons cannot carry this: the map is
+            suppressed entirely for a single-node card, and where it does
+            render the buttons are 10px, hover-faded, and repeated on
+            every row with nothing marking the one the user wants.  This
+            names the natural target once, states what is preserved, and
+            says how it differs from Restart. */}
+        {controls.canResumeFromBlock && (() => {
+          const target = recoveryTarget(run);
+          if (!target) return null;   // done run / no recorded stages
+          const b = displayCard
+            ? findBlockById(displayCard.root, target.blockId) : null;
+          return (
+            <RunRecoveryBanner
+              run={run}
+              target={target}
+              targetLabel={b ? blockLabel(b) : target.blockId}
+              onRetry={(id) => handleResumeFrom(id, 'retry')}
+              onContinue={
+                controls.canContinueFromBlock
+                  ? (id) => handleResumeFrom(id, 'continue')
+                  : undefined
+              }
+              busy={resumingBlockId != null}
+            />
+          );
+        })()}
 
         <ProvenanceBlock run={run} />
 
