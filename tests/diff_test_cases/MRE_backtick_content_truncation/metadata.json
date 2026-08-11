@@ -1,0 +1,6 @@
+{
+    "target_file": "frontend/src/components/MathPreprocess.ts",
+    "description": "MRE for content truncation at a bare backtick. A hunk whose added lines include (a) a comment ending in a lone unmatched backtick and (b) subsequent code containing template literals was applied with everything after the backtick silently dropped, leaving a callback with no return statement. Observed twice on real applies to MarkdownRenderer.tsx and fenceScanner.ts.",
+    "date_added": "2026-08-08",
+    "issue_reference": "backtick_content_truncation"
+}
