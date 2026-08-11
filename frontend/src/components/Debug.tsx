@@ -16,14 +16,15 @@ import { diffTestSuites } from '../utils/diffTestCases';
 import { DiffTestReport } from '../utils/diffTestTypes';
 import { useConversationList } from '../context/ConversationListContext';
 import { useFolderContext } from '../context/FolderContext';
+import { lazyWithRetry } from '../utils/lazyWithRetry';
 
 // Lazy load test components
-const PrismTest = React.lazy(() => import('./PrismTest'));
-const SyntaxTest = React.lazy(() => import('./SyntaxTest'));
-const VegaLiteTest = React.lazy(() => import("./VegaLiteTest"));
-const ApplyDiffTest = React.lazy(() => import('./ApplyDiffTest'));
-const DiffTestView = React.lazy(() => import('./DiffTestView'));
-const D3Test = React.lazy(() => import('./D3Test'));
+const PrismTest = lazyWithRetry(() => import('./PrismTest'));
+const SyntaxTest = lazyWithRetry(() => import('./SyntaxTest'));
+const VegaLiteTest = lazyWithRetry(() => import("./VegaLiteTest"));
+const ApplyDiffTest = lazyWithRetry(() => import('./ApplyDiffTest'));
+const DiffTestView = lazyWithRetry(() => import('./DiffTestView'));
+const D3Test = lazyWithRetry(() => import('./D3Test'));
 
 const { TabPane } = Tabs;
 
