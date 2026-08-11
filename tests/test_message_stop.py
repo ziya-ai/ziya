@@ -267,7 +267,7 @@ class TestContinuation:
         ex._update_code_block_tracker.side_effect = close_tracker
 
         events = await _collect(handle_message_stop(
-            executor=ex, state=state, chunk={'stop_reason': 'end_turn'},
+            executor=ex, state=state, chunk={'stop_reason': 'max_tokens'},
             code_block_tracker=tracker, conversation=[], system_content=None,
             mcp_manager=None, iteration_start_time=time.time(),
             conversation_id=None, iteration_usage=FakeIterationUsage(),
@@ -275,9 +275,97 @@ class TestContinuation:
         ))
 
         assert state.continuation_happened is True
-        # Should have yielded a rewind event
-        rewind_events = [e for e in events if isinstance(e, dict) and e.get('rewind')]
-        assert len(rewind_events) >= 1
+        rewind_events = [
+            event for event in events
+            if isinstance(event, dict) and event.get('type') == 'continuation_rewind'
+        ]
+        assert len(rewind_events) == 1
+        assert rewind_events[0]['rewind_line'] == 3
+        assert rewind_events[0]['block_type'] == 'python'
+        assert rewind_events[0]['fence_width'] == 3
+        assert not any(event.get('to_marker') for event in rewind_events)
+
+    @pytest.mark.asyncio
+    async def test_max_tokens_empty_continuation_leaves_response_at_cutoff(self):
+        """Characterize the observed truncation-shaped failure mode.
+
+        If the first generation stops inside a diff and the continuation emits
+        no text, the final assistant state remains at the original cutoff. The
+        control events must still make that state explicit to the frontend.
+        """
+        from app.message_stop_handler import handle_message_stop, MessageStopState
+
+        ex = _make_executor()
+
+        async def empty_continue(*args, **kwargs):
+            if False:
+                yield {}
+
+        ex._continue_incomplete_code_block = empty_continue
+        cutoff = (
+            "```diff\n"
+            "+        // Inline code spans are NOT fences, so the split above does not\n"
+            "+        // protect them: `"
+        )
+        state = MessageStopState(assistant_text=cutoff)
+        tracker = {'in_block': True, 'block_type': 'diff', 'backtick_count': 3}
+
+        events = await _collect(handle_message_stop(
+            executor=ex, state=state, chunk={'stop_reason': 'max_tokens'},
+            code_block_tracker=tracker, conversation=[], system_content=None,
+            mcp_manager=None, iteration_start_time=time.time(),
+            conversation_id=None, iteration_usage=FakeIterationUsage(),
+            iteration=0, track_yield=_identity,
+        ))
+
+        assert state.assistant_text.endswith(
+            "+        // Inline code spans are NOT fences, so the split above does not"
+        )
+        rewind_events = [
+            event for event in events
+            if isinstance(event, dict) and event.get('type') == 'continuation_rewind'
+        ]
+        assert len(rewind_events) == 1
+        assert rewind_events[0]['rewind_line'] == 2
+
+        failure_events = [
+            event for event in events
+            if isinstance(event, dict) and event.get('type') == 'continuation_failed'
+        ]
+        assert len(failure_events) == 1
+        assert failure_events[0]['incomplete'] is True
+        assert failure_events[0]['can_retry'] is False
+        assert failure_events[0]['block_type'] == 'diff'
+        assert failure_events[0]['fence_width'] == 3
+
+    @pytest.mark.asyncio
+    async def test_exhausted_continuations_are_marked_incomplete(self):
+        from app.message_stop_handler import handle_message_stop, MessageStopState
+
+        ex = _make_executor()
+
+        async def still_open(*args, **kwargs):
+            yield {'type': 'text', 'content': '+more but still open\n'}
+
+        ex._continue_incomplete_code_block = still_open
+        state = MessageStopState(assistant_text="```diff\n+start\n")
+        tracker = {'in_block': True, 'block_type': 'diff', 'backtick_count': 3}
+
+        events = await _collect(handle_message_stop(
+            executor=ex, state=state, chunk={'stop_reason': 'max_tokens'},
+            code_block_tracker=tracker, conversation=[], system_content=None,
+            mcp_manager=None, iteration_start_time=time.time(),
+            conversation_id=None, iteration_usage=FakeIterationUsage(),
+            iteration=0, track_yield=_identity,
+        ))
+
+        failures = [
+            event for event in events
+            if isinstance(event, dict) and event.get('type') == 'continuation_failed'
+        ]
+        assert len(failures) == 1
+        assert failures[0]['reason'] == 'Continuation attempts exhausted with fence still open'
+        assert failures[0]['incomplete'] is True
 
     @pytest.mark.asyncio
     async def test_continuation_failure_yields_marker(self):
@@ -293,7 +381,7 @@ class TestContinuation:
         tracker = {'in_block': True, 'block_type': 'diff', 'backtick_count': 3}
 
         events = await _collect(handle_message_stop(
-            executor=ex, state=state, chunk={'stop_reason': 'end_turn'},
+            executor=ex, state=state, chunk={'stop_reason': 'max_tokens'},
             code_block_tracker=tracker, conversation=[], system_content=None,
             mcp_manager=None, iteration_start_time=time.time(),
             conversation_id=None, iteration_usage=FakeIterationUsage(),
@@ -303,3 +391,6 @@ class TestContinuation:
         failure_events = [e for e in events if isinstance(e, dict) and e.get('type') == 'continuation_failed']
         assert len(failure_events) == 1
         assert failure_events[0]['can_retry'] is True
+        assert failure_events[0]['incomplete'] is True
+        assert failure_events[0]['block_type'] == 'diff'
+        assert failure_events[0]['fence_width'] == 3

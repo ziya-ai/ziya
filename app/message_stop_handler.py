@@ -161,17 +161,7 @@ async def handle_message_stop(
     # an API call.
     max_continuations = 2
     state.continuation_happened = False
-
-    continuation_marker_id = f"continuation_{time.time_ns()}"
-
-    # Embed the rewind marker before the first continuation so the
-    # frontend can locate it when a rewind event references it.
-    if should_continue_incomplete_block(code_block_tracker.get('in_block'), state.last_stop_reason):
-        yield track_yield({
-            'type': 'text',
-            'content': f"",
-            'timestamp': ts(),
-        })
+    continuation_failure_emitted = False
 
     while (should_continue_incomplete_block(code_block_tracker.get('in_block'), state.last_stop_reason)
            and continuation_count < max_continuations):
@@ -202,7 +192,13 @@ async def handle_message_stop(
 
         last_complete_line = len(assistant_lines)
 
-        yield track_yield({'rewind': True, 'to_marker': continuation_marker_id})
+        yield track_yield({
+            'type': 'continuation_rewind',
+            'rewind_line': last_complete_line,
+            'block_type': block_type,
+            'fence_width': code_block_tracker.get('backtick_count', 3),
+            'timestamp': ts(),
+        })
         logger.info(f"🔄 YIELDING_REWIND: Rewinding to line {last_complete_line}")
 
         await asyncio.sleep(0.1)
@@ -244,12 +240,26 @@ async def handle_message_stop(
                 'type': 'continuation_failed',
                 'reason': str(continuation_error),
                 'can_retry': 'ThrottlingException' in str(continuation_error),
+                'incomplete': True,
+                'block_type': block_type,
+                'fence_width': code_block_tracker.get('backtick_count', 3),
                 'timestamp': ts(),
             }
+            continuation_failure_emitted = True
             break
 
         if not continuation_had_content:
             logger.info("🔄 CONTINUATION: No content generated, stopping continuation attempts")
+            yield {
+                'type': 'continuation_failed',
+                'reason': 'Continuation produced no content',
+                'can_retry': False,
+                'incomplete': True,
+                'block_type': block_type,
+                'fence_width': code_block_tracker.get('backtick_count', 3),
+                'timestamp': ts(),
+            }
+            continuation_failure_emitted = True
             break
 
         logger.info(
@@ -257,6 +267,18 @@ async def handle_message_stop(
             f"in_block={code_block_tracker['in_block']}, "
             f"had_content={continuation_had_content}"
         )
+
+    if (state.continuation_happened and code_block_tracker.get('in_block')
+            and not continuation_failure_emitted):
+        yield {
+            'type': 'continuation_failed',
+            'reason': 'Continuation attempts exhausted with fence still open',
+            'can_retry': False,
+            'incomplete': True,
+            'block_type': code_block_tracker.get('block_type', 'code'),
+            'fence_width': code_block_tracker.get('backtick_count', 3),
+            'timestamp': ts(),
+        }
 
     # --- 7. Record iteration usage ---
     if conversation_id and iteration_usage.input_tokens > 0:

@@ -101,6 +101,22 @@ def test_feedback_delivered_is_relayed_to_the_client():
     )
 
 
+def test_continuation_protocol_events_are_relayed_to_the_client():
+    """Explicit rewind/failure events must not fall through as unknown chunks."""
+    src = open("app/server.py").read()
+    relayed = _relayed_chunk_types(src)
+    assert "continuation_rewind" in relayed
+    assert "continuation_failed" in relayed
+
+    retry_types = set(re.findall(
+        r"""retry_chunk\.get\(['"]type['"]\)\s*==\s*['"]([a-z_]+)['"]""", src))
+    for grp in re.findall(
+            r"""retry_chunk\.get\(['"]type['"]\)\s+in\s+\(([^)]*)\)""", src):
+        retry_types |= {t.strip().strip("'\"") for t in grp.split(",") if t.strip()}
+    assert "continuation_rewind" in retry_types
+    assert "continuation_failed" in retry_types
+
+
 def test_retry_loop_also_relays_feedback_delivered():
     """The diff-validation retry loop is a second, separate relay chain."""
     src = open("app/server.py").read()
