@@ -8,6 +8,7 @@ import { ModelSettings } from './ModelConfigModal';
 import { useActiveChat } from '../context/ActiveChatContext';
 import { useConversationList } from '../context/ConversationListContext';
 import { CheckCircleOutlined, CloseCircleOutlined, DashboardOutlined } from '@ant-design/icons';
+import { useResolvedModelPin } from '../hooks/useResolvedModelPin';
 // Global request deduplication cache
 const activeRequests = new Map<string, Promise<any>>();
 
@@ -107,6 +108,12 @@ export const TokenCountDisplay = memo(() => {
         max_output_tokens: number;
     }>({ token_limit: null, max_input_tokens: 200000, max_output_tokens: 1024 });
     const modelCapabilitiesFetchRef = useRef<number>(0);
+    // Effective model for the ACTIVE conversation. A conversation / folder /
+    // project pin routes sends to a different model than the server default,
+    // so the input-token ceiling has to follow the pin.
+    const { pin: activeModelPin } = useResolvedModelPin();
+    // Mirror of the pin for event handlers, avoiding a stale closure.
+    const pinnedModelRef = useRef<string | null>(null);
     const [astEnabled, setAstEnabled] = useState(false);
     const [astTokenCount, setAstTokenCount] = useState<number>(0);
     const [astResolutions, setAstResolutions] = useState<Record<string, any>>({});
@@ -156,9 +163,6 @@ export const TokenCountDisplay = memo(() => {
     const tokenLimit = modelLimits.max_input_tokens || modelLimits.token_limit || 4096;
     const warningThreshold = useMemo(() => Math.floor(tokenLimit * 0.7), [tokenLimit]);
     const dangerThreshold = useMemo(() => Math.floor(tokenLimit * 0.9), [tokenLimit]);
-
-    // Create ref outside of the effect
-    const fetchAttemptedRef = useRef(false);
 
     // Fetch AST resolutions data
     const fetchAstResolutions = useCallback(async () => {
@@ -432,20 +436,24 @@ export const TokenCountDisplay = memo(() => {
         };
     }, []);
 
-    // One-time fetch of model capabilities
+    // Model limits for the EFFECTIVE model of the active conversation.
+    // Re-runs whenever the pin changes — including switching to a new
+    // conversation, where the pin resolves to null and the ceiling must
+    // fall back to the server default model.
     useEffect(() => {
-        // Use a ref to track if this component is mounted
         const abortController = new AbortController();
         const isMounted = { current: true };
+        const pinnedModel = activeModelPin?.model ?? null;
+        pinnedModelRef.current = pinnedModel;
 
         const fetchModelCapabilities = async () => {
-            if (fetchAttemptedRef.current) return; // Only try once
-            fetchAttemptedRef.current = true;
-
             try {
-                const response = await fetch('/api/current-model', {
-                    signal: abortController.signal
-                });
+                // A pinned model's ceiling comes from its own capabilities;
+                // unpinned follows the server's current model + settings.
+                const url = pinnedModel
+                    ? '/api/model-capabilities?model=' + encodeURIComponent(pinnedModel)
+                    : '/api/current-model';
+                const response = await fetch(url, { signal: abortController.signal });
 
                 if (!response.ok) {
                     throw new Error('Failed to fetch current model settings');
@@ -455,17 +463,19 @@ export const TokenCountDisplay = memo(() => {
                 if (!isMounted.current) return;
 
                 const data = await response.json();
-                const capabilities = data.capabilities || {};
-                const settings = data.settings || {};
+                if (data?.error) throw new Error(data.error);
+                // /api/model-capabilities returns the capability block
+                // directly; /api/current-model nests it beside settings.
+                const capabilities = pinnedModel ? data : (data.capabilities || {});
+                const settings = pinnedModel ? {} : (data.settings || {});
 
-                // Add null checks to prevent errors
                 setModelLimits({
                     token_limit: capabilities?.token_limit || 4096,
-                    max_input_tokens: settings?.max_input_tokens || capabilities?.token_limit || 4096,
+                    max_input_tokens: settings?.max_input_tokens || capabilities?.max_input_tokens || capabilities?.token_limit || 4096,
                     max_output_tokens: settings?.max_output_tokens || capabilities?.max_output_tokens || 1024
                 });
 
-                console.debug('Model limits updated:', { capabilities, settings });
+                console.debug('Model limits updated:', { pinnedModel, capabilities, settings });
             } catch (error) {
                 if (error instanceof Error && error.name === 'AbortError') {
                     console.debug('Model capabilities fetch aborted');
@@ -475,15 +485,13 @@ export const TokenCountDisplay = memo(() => {
             }
         };
 
-        // Only fetch once when component mounts
         fetchModelCapabilities();
 
-        // Cleanup function to prevent state updates after unmount
         return () => {
             isMounted.current = false;
             abortController.abort();
         };
-    }, []);
+    }, [activeModelPin?.model]);
 
     interface ModelSettingsEventDetail {
         settings?: ModelSettings;
@@ -497,6 +505,9 @@ export const TokenCountDisplay = memo(() => {
     // Listen for model settings changes
     useEffect(() => {
         const handleModelSettingsChange = async (event: CustomEvent) => {
+            // A pinned model's ceiling is owned by the pin effect above; a
+            // global settings save must not overwrite it.
+            if (pinnedModelRef.current) return;
             // CRITICAL FIX: Prevent redundant fetches when switching conversations
             const now = Date.now();
             if (now - modelCapabilitiesFetchRef.current < 2000) {
