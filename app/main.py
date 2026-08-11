@@ -734,6 +734,20 @@ def main():
             print(f"\n❌ Endpoint '{endpoint}' is restricted by your enterprise policy.")
             print(f"   Allowed endpoints: {', '.join(allowed)}\n")
             sys.exit(1)
+
+    # Snapshot which endpoints have credentials, once. /api/endpoints serves
+    # this to the model config modal so an endpoint the user cannot actually
+    # reach is shown as unavailable instead of failing at /api/set-model.
+    # Probing here keeps the per-open cost of the modal at zero.
+    try:
+        from app.utils.provider_detection import refresh_availability
+        _avail = refresh_availability()
+        logger.info(
+            "Endpoint credentials detected: "
+            + ", ".join(sorted(ep for ep, ok in _avail.items() if ok)) or "none"
+        )
+    except (ImportError, OSError, RuntimeError) as _e:
+        logger.debug(f"Credential availability probe skipped: {_e}")
     
     # Publish the enterprise approval-TTL bound for the out-of-process signer.
     # ziya-approve runs as root under sudo and cannot load plugins, so it cannot
