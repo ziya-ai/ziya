@@ -8,9 +8,23 @@
  * routing step in determineTokenType was missing it.  Nothing failed loudly —
  * the fence just fell through to the generic 'code' case.  A test that renders
  * a diagram cannot catch this; only a cross-layer consistency check can.
+ *
+ * The original version of this test checked three sites and missed three.  All
+ * three uncovered ones were found to be WRONG: visualizationTypes.ts and both
+ * lists in conversation_exporter.py named only 'circuitikz', so a rendered
+ * chemfig/tikz/tikz-cd diagram misclassified on export.  The lists are now
+ * derived from a shared registry, and these tests assert the derivation holds
+ * rather than re-checking literals that no longer exist.
  */
 import * as fs from 'fs';
 import * as path from 'path';
+
+import {
+    LATEX_PROFILE_KEYS,
+    isLatexFenceLang,
+    latexProfileForLang,
+} from '../../constants/latexProfiles';
+import { VISUALIZATION_TYPES } from '../../constants/visualizationTypes';
 
 const REPO = path.resolve(__dirname, '../../../..');
 
@@ -83,5 +97,55 @@ describe('LaTeX fence routing is complete across all three layers', () => {
         expect(backendProfiles().length).toBeGreaterThanOrEqual(4);
         expect(routedLangs().length).toBeGreaterThanOrEqual(4);
         expect(Object.keys(langToProfile()).length).toBeGreaterThanOrEqual(4);
+    });
+});
+
+describe('shared LaTeX registry agrees with the backend', () => {
+    it('declares exactly the backend profile keys, no more and no fewer', () => {
+        // Extra keys are as harmful as missing ones: a frontend-only profile
+        // routes a fence to /api/render-latex, which then rejects it as an
+        // unknown type after a round-trip.
+        expect([...LATEX_PROFILE_KEYS].sort())
+            .toEqual([...backendProfiles()].sort());
+    });
+
+    it('routes every profile key as a fence language of the same name', () => {
+        for (const key of LATEX_PROFILE_KEYS) {
+            expect(latexProfileForLang(key)).toBe(key);
+        }
+    });
+
+    it('keeps bare ```latex routed but unmapped', () => {
+        // The deliberate exception: routed so it is recognised, unmapped so it
+        // degrades to a code block instead of being compiled as a circuit.
+        expect(isLatexFenceLang('latex')).toBe(true);
+        expect(latexProfileForLang('latex')).toBeNull();
+    });
+
+    it('normalises case and surrounding whitespace', () => {
+        expect(latexProfileForLang('  ChemFig ')).toBe('chemfig');
+        expect(isLatexFenceLang('TIKZ-CD')).toBe(true);
+    });
+
+    it('rejects unknown languages rather than guessing', () => {
+        expect(latexProfileForLang('pgfplots')).toBeNull();
+        expect(isLatexFenceLang('python')).toBe(false);
+    });
+});
+
+describe('export-side lists include every LaTeX profile', () => {
+    it('visualizationTypes contains every profile key', () => {
+        // D3Renderer names the container after the PROFILE, so a profile
+        // absent here misclassifies to the 'd3' fallback on capture.
+        for (const key of LATEX_PROFILE_KEYS) {
+            expect(VISUALIZATION_TYPES).toContain(key);
+        }
+    });
+
+    it('the Python exporter no longer hardcodes a LaTeX list', () => {
+        const src = read('app/utils/conversation_exporter.py');
+        expect(src).toContain('from app.services.latex_profiles import PROFILES');
+        // The second literal list at the old line 898 must be gone.
+        expect(src).not.toMatch(/viz_types\s*=\s*\[/);
     });
 });

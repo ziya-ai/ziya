@@ -1,6 +1,7 @@
 import React, { useState, useEffect, memo, useMemo, useCallback, useRef, useId, useLayoutEffect } from 'react';
 import { lazyWithRetry } from '../utils/lazyWithRetry';
 import { marked, Tokens } from 'marked';
+import { isLatexFenceLang, latexProfileForLang } from '../constants/latexProfiles';
 import { Alert, Button, message, notification, Tooltip, Collapse } from 'antd';
 import { parseDiff, Diff, Hunk } from 'react-diff-view';
 import 'react-diff-view/style/index.css';
@@ -33,9 +34,38 @@ import { useProject } from '../context/ProjectContext';
 import { useSendPayload } from '../hooks/useSendPayload';
 import { useStreamingContext } from '../context/StreamingContext';
 import { parseD3Spec } from '../utils/d3SpecParser';
-import { escapeNestedBacktickFences, stripBareProseFences, matchFenceOpen, applyOutsideFences, splitJsonSpecTrailingContent, upgradeNestedFences, repairAtomicFenceRuns } from './fenceScanner';
-import { processInlineMath } from '../utils/inlineMathClassifier';
+import { escapeNestedBacktickFences, stripBareProseFences, matchFenceOpen, applyOutsideFences, applyOutsideCodeSpans, splitJsonSpecTrailingContent, upgradeNestedFences, repairAtomicFenceRuns, isPreformattedTextToken } from './fenceScanner';
+import {
+    processInlineMath,
+    decodeInlineMathMarker,
+    isInlineMathMarker,
+    MATH_INLINE_MARKER_PREFIX,
+    MATH_INLINE_MARKER_SPLIT_RE,
+} from '../utils/inlineMathClassifier';
 import { applyMusicDarkTheme, VALID_DURATION_BASES } from '../utils/d3Plugins/musicPlugin';
+
+/**
+ * Split a text run into literal text and rendered inline-math, decoding each
+ * base64 marker payload.
+ *
+ * Four call sites (paragraph, two html-token paths, text token) previously
+ * duplicated this split/slice logic, and each did its own `.slice(prefix, -1)`
+ * with a `.trim()`. Centralising it is what makes the encoding swappable: the
+ * marker format is now known in exactly one place per direction.
+ *
+ * A marker whose payload fails to decode falls through to literal text rather
+ * than rendering an empty MathRenderer, so corruption stays visible.
+ */
+const renderWithInlineMath = (text: string): React.ReactNode[] =>
+    text.split(MATH_INLINE_MARKER_SPLIT_RE).map((part, i) => {
+        if (part && isInlineMathMarker(part)) {
+            const latex = decodeInlineMathMarker(part);
+            if (latex !== null) {
+                return <MathRenderer key={i} math={latex} displayMode={false} />;
+            }
+        }
+        return part || null;
+    });
 /**
  * Determine whether a diff for the given language should soft-wrap long lines
  * instead of horizontal-scroll.  Wrapping is appropriate for prose
@@ -2758,6 +2788,7 @@ const DiffView: React.FC<DiffViewProps> = ({ diff, viewType, initialDisplayMode,
  */
 export const isDiffComplete = (diffContent: string, isStreaming: boolean): boolean => {
     if (!diffContent || !diffContent.trim()) return false;
+    if (diffContent.includes('<!-- ZIYA_CONTINUATION_INCOMPLETE -->')) return false;
 
     // If not streaming, assume diff is complete
     if (!isStreaming) return true;
@@ -3453,12 +3484,12 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded 
         };
     }, [currentConversationId]);
 
-    // Clean up any MATH_INLINE expansions that might have slipped through
-    const cleanedText = useMemo(() => {
-        if (!token.text) return '';
-        // Replace any MATH_INLINE expansions with their original form
-        return token.text.replace(/⟨MATH_INLINE:(\d+)⟩/g, '$$1');
-    }, [token.text]);
+    // Formerly un-expanded `⟨MATH_INLINE:<digits>⟩` back into `$1`, to undo
+    // regex back-references ($1, $2) misread as math. That can no longer
+    // occur: isInlineMathContent rejects a digits-only span outright, so no
+    // such marker is ever emitted. The payload is now base64 besides, which
+    // this digit pattern could not match anyway.
+    const cleanedText = useMemo(() => token.text || '', [token.text]);
 
     // Store the content in a ref to avoid re-renders
     useEffect(() => {
@@ -4293,15 +4324,12 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
         if (lang === 'graphviz' || lang === 'dot') {
             return 'graphviz';
         }
-        // Every server-rendered LaTeX profile must be listed here, or its fence
-        // falls through to the generic 'code' case and the user sees the raw
-        // source instead of a diagram.  ``chemfig`` and ``tikz-cd`` were absent
-        // while being fully supported by the backend profile registry AND by
-        // latexPlugin's own LATEX_TYPES, so the two ends worked and only this
-        // middle routing step was missing.  Keep in sync with
-        // ``LATEX_DIAGRAM_TYPES`` in app/services/latex_profiles.py.
-        if (lang === 'circuitikz' || lang === 'tikz' || lang === 'latex'
-            || lang === 'latex-circuit' || lang === 'chemfig' || lang === 'tikz-cd') {
+        // Routed via the shared registry rather than a literal list here.  A
+        // language missing from this step is invisible: the fence silently
+        // falls through to the generic 'code' case and the user sees raw
+        // source instead of a diagram, which is how ``chemfig`` shipped broken
+        // while both ends of the pipeline supported it.
+        if (isLatexFenceLang(lang)) {
             return 'circuitikz';
         }
         if (lang === 'd3') return 'd3';
@@ -4818,23 +4846,16 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'circuitikz':
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
                     // determineTokenType folds every LaTeX-family lang into
-                    // this case.  Each must map to a backend profile name here;
-                    // an unmapped lang silently degrades to a code block, which
-                    // is how ```chemfig came to render as literal source.
+                    // this case, so each must resolve to a backend profile.
+                    // An unmapped lang degrades to a code block silently, so
+                    // the mapping lives in the shared registry and is covered
+                    // by the cross-layer guard test.
                     //
                     // A bare ```latex block deliberately stays a code block: it
                     // is usually raw math or prose, and compiling it inside a
                     // circuitikz environment would fail.
                     {
-                        const latexLang = (tokenWithText.lang || '').toLowerCase().trim();
-                        const LATEX_LANG_TO_PROFILE: Record<string, string> = {
-                            'tikz': 'tikz',
-                            'circuitikz': 'circuitikz',
-                            'latex-circuit': 'circuitikz',
-                            'chemfig': 'chemfig',
-                            'tikz-cd': 'tikz-cd',
-                        };
-                        const latexProfile = LATEX_LANG_TO_PROFILE[latexLang] || null;
+                        const latexProfile = latexProfileForLang(tokenWithText.lang || '');
                         if (!latexProfile) {
                             return <CodeBlock key={sk} token={{ ...tokenWithText, lang: 'latex' }} index={index} />;
                         }
@@ -5205,15 +5226,8 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                     // Check if any paragraph content has inline math
                     const paragraphContent = pTokens.map(t => (t as TokenWithText).text || '').join('');
-                    if (paragraphContent.includes('⟨MATH_INLINE:')) {
-                        const parts = paragraphContent.split(/(⟨MATH_INLINE:[\s\S]*?⟩)/);
-                        return <p key={sk}>{parts.map((part, i) => {
-                            if (part.startsWith('⟨MATH_INLINE:')) {
-                                const math = part.slice('⟨MATH_INLINE:'.length, -1).trim();
-                                return <MathRenderer key={i} math={math} displayMode={false} />;
-                            }
-                            return part || null;
-                        })}</p>;
+                    if (paragraphContent.includes(MATH_INLINE_MARKER_PREFIX)) {
+                        return <p key={sk}>{renderWithInlineMath(paragraphContent)}</p>;
                     }
 
                     // Filter out genuinely empty text tokens (text === ""), but
@@ -5356,9 +5370,13 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             return <MathRenderer key={index} math={mathMatch[1]} displayMode={true} />;
                         }
                     }
-                    if (htmlContent.includes('MATH_INLINE:')) {
-                        const mathMatch = htmlContent.match(/MATH_INLINE:([^<]*)/s);
-                        if (mathMatch) return <MathRenderer key={index} math={mathMatch[1]} displayMode={false} />;
+                    // Inline math is handled by the marker-aware path below.
+                    // The previous `MATH_INLINE:([^<]*)` guard here captured
+                    // greedily past the marker's closing bracket, so it both
+                    // intercepted the marker before proper extraction AND fed
+                    // KaTeX a trailing '⟩'. Delegating removes that hazard.
+                    if (htmlContent.includes(MATH_INLINE_MARKER_PREFIX)) {
+                        return <React.Fragment key={index}>{renderWithInlineMath(htmlContent)}</React.Fragment>;
                     }
 
                     // Handle thinking blocks - check for thinking-data tags
@@ -5406,19 +5424,8 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     };
 
                     // Check for angle-bracketed math markers first
-                    if (htmlContent.includes('⟨MATH_INLINE:')) {
-                        const parts = htmlContent.split(/(⟨MATH_INLINE:[\s\S]*?⟩)/);
-                        return (
-                            <React.Fragment key={sk}>
-                                {parts.map((part, i) => {
-                                    if (part.startsWith('⟨MATH_INLINE:')) {
-                                        const math = part.slice('⟨MATH_INLINE:'.length, -1).trim();
-                                        return <MathRenderer key={i} math={math} displayMode={false} />;
-                                    }
-                                    return part || null;
-                                })}
-                            </React.Fragment>
-                        );
+                    if (htmlContent.includes(MATH_INLINE_MARKER_PREFIX)) {
+                        return <React.Fragment key={sk}>{renderWithInlineMath(htmlContent)}</React.Fragment>;
                     }
 
                     // Check if this is a MathML element and render it inline
@@ -5470,15 +5477,10 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         const mathMatch = htmlContent.match(/MATH_DISPLAY:([^<]*)/s);
                         if (mathMatch) return <MathRenderer key={sk} math={mathMatch[1]} displayMode={true} />;
                     }
-                    if (htmlContent.includes('MATH_INLINE:')) {
-                        const mathMatch = htmlContent.match(/MATH_INLINE:([^<]*)/s);
-                        if (mathMatch) return <MathRenderer key={sk} math={mathMatch[1]} displayMode={false} />;
-                    }
-
-                    if (htmlContent.includes('class="math-inline-span"') && htmlContent.includes('MATH_INLINE:')) {
-                        const mathMatch = htmlContent.match(/MATH_INLINE:([^<]*)/);
-                        if (mathMatch) return <MathRenderer key={sk} math={mathMatch[1]} displayMode={false} />;
-                    }
+                    // Inline-math markers were already handled earlier in this
+                    // case by the marker-aware branch, so no MATH_INLINE guard
+                    // is needed here. The former `math-inline-span` variant was
+                    // dead code: nothing in the pipeline emits that class.
 
                     const tagMatches = htmlContent.match(/<\/?([a-zA-Z][a-zA-Z0-9]*)\b[^>]*>/g);
 
@@ -5552,19 +5554,8 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     }
 
                     // Handle math expressions in text tokens
-                    if (decodedText.includes('⟨MATH_INLINE:')) {
-                        const parts = decodedText.split(/(⟨MATH_INLINE:[\s\S]*?⟩)/);
-                        return (
-                            <>
-                                {parts.map((part, i) => {
-                                    if (part.startsWith('⟨MATH_INLINE:')) {
-                                        const math = part.slice('⟨MATH_INLINE:'.length, -1).trim();
-                                        return <MathRenderer key={i} math={math} displayMode={false} />;
-                                    }
-                                    return part || null;
-                                })}
-                            </>
-                        );
+                    if (decodedText.includes(MATH_INLINE_MARKER_PREFIX)) {
+                        return <>{renderWithInlineMath(decodedText)}</>;
                     }
 
                     // Check if this 'text' token has nested inline tokens (like strong, em, etc.)
@@ -5572,11 +5563,16 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         // If it has nested tokens, render them recursively
                         return renderTokens(tokenWithText.tokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig);
                     } else {
-                        // If the text contains multiple lines, preserve whitespace.
-                        // This handles cases where fenced code block content (no lang tag)
-                        // ends up as a text token — e.g. during streaming before the
-                        // closing fence arrives, or when preprocessing strips bare fences.
-                        if (decodedText.includes('\n') && decodedText.trim().includes('\n')) {
+                        // Preformatted block content (no lang tag) can arrive as a
+                        // text token — during streaming before the closing fence
+                        // arrives, when preprocessing strips bare fences, or as
+                        // indented content under a list item. Those keep their
+                        // leading indentation, so preserve their whitespace.
+                        //
+                        // A bare "contains a newline" test also caught ordinary
+                        // soft-wrapped prose, boxing mid-sentence fragments in a
+                        // monospace <pre> nested illegally inside <p>.
+                        if (isPreformattedTextToken(decodedText)) {
                             return (
                                 <pre key={sk} style={{
                                     margin: '0.5em 0',
@@ -6496,10 +6492,16 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             if (idx % 2 === 1 && part.startsWith('```')) {
                 return part; // code fence — leave untouched
             }
-            return part.replace(/\$\$([\s\S]*?)\$\$/g, (_match, innerContent) => {
-                const encoded = btoa(unescape(encodeURIComponent(innerContent.trim())));
-                return `\n\n<div class="math-display-encoded" data-math="${encoded}"></div>\n\n`;
-            });
+            // Inline code spans are NOT fences, so the split above does not
+            // protect them. A display-math delimiter written inside backticks
+            // would otherwise have an encoded div substituted into the code
+            // span, showing renderer internals instead of the literal text
+            // the user typed.
+            return applyOutsideCodeSpans(part, segment =>
+                segment.replace(/\$\$([\s\S]*?)\$\$/g, (_match, innerContent) => {
+                    const encoded = btoa(unescape(encodeURIComponent(innerContent.trim())));
+                    return `\n\n<div class="math-display-encoded" data-math="${encoded}"></div>\n\n`;
+                }));
         }).join('');
     }
 
@@ -6512,12 +6514,18 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             if (idx % 2 === 1 && part.startsWith('```')) {
                 return part; // code fence — leave untouched
             }
-            return part.replace(/(?<!\$)\$(?!\$)((?:(?!\$).)+?)\$(?!\$)/g, (match, content) => {
-                const placeholder = `__MATH_INLINE_${mathCounter}__`;
-                mathBlocks.push({ placeholder, content: match });
-                mathCounter++;
-                return placeholder;
-            });
+            // Skip code spans for the same reason as the $$ pass above. This
+            // round-trip is lossless on its own, but it must agree with the
+            // marker pass further down about which spans are math: otherwise a
+            // code span's $...$ is lifted out here and restored into text that
+            // the later pass treats as eligible.
+            return applyOutsideCodeSpans(part, segment =>
+                segment.replace(/(?<!\$)\$(?!\$)((?:(?!\$).)+?)\$(?!\$)/g, match => {
+                    const placeholder = `__MATH_INLINE_${mathCounter}__`;
+                    mathBlocks.push({ placeholder, content: match });
+                    mathCounter++;
+                    return placeholder;
+                }));
         }).join('');
     }
 
@@ -6577,7 +6585,12 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
                     // Handle inline math $...$ — classifier + KaTeX-adjacency
                     // match regex live in inlineMathClassifier.ts (unit-tested).
-                    processed = processInlineMath(processed);
+                    //
+                    // Wrapped in the code-span guard: this pass runs before
+                    // marked's lexer, so without it a `$x$` written in backticks
+                    // became a marker and the code span rendered that marker
+                    // verbatim instead of the user's literal text.
+                    processed = applyOutsideCodeSpans(processed, processInlineMath);
                 } catch (mathError) {
                     console.debug('Math processing error (handled):', mathError);
                     // Return original segment if math processing fails
@@ -7057,16 +7070,12 @@ const cleanDiffContent = (content: string): string => {
         // instead of the original backticks.
         //
         // Only &#96;/&#x60; are decoded here: this runs on diff bodies, where
-        // a general entity decode would corrupt legitimate content such as an
-        // HTML file's own &amp; or &lt; being added or removed by the patch.
-        line = line.replace(/&#96;/g, '`').replace(/&#x60;/gi, '`');
+        line = line.replace(/`/g, '`').replace(/`/gi, '`');
 
-        // Fix any MATH_INLINE expansions that might have slipped through
-        // This handles cases like $1 in regex replacements being converted to ⟨MATH_INLINE:1⟩
-        if (line.includes('⟨MATH_INLINE:')) {
-            // Replace ⟨MATH_INLINE:1⟩ with $1, ⟨MATH_INLINE:2⟩ with $2, etc.
-            line = line.replace(/⟨MATH_INLINE:(\d+)⟩/g, '$$1');
-        }
+        // No inline-math un-expansion here: math processing is skipped
+        // wholesale for diff content (the isDiff guard), and a digits-only
+        // span is rejected by isInlineMathContent, so the `$1`-back-reference
+        // case this once repaired cannot reach a diff line.
 
         // Handle offset diff format lines
         // Pattern: optional leading spaces + optional +/- + [number + optional modifier] + space + content

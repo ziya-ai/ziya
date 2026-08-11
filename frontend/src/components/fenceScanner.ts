@@ -30,6 +30,8 @@
  * vanishingly rare and intentionally out of scope here.
  */
 
+import { LATEX_FENCE_LANGS } from '../constants/latexProfiles';
+
 export type FenceChar = '`' | '~';
 
 /** A line that opens a fenced code block. */
@@ -610,9 +612,10 @@ export function upgradeNestedFences(markdown: string): string {
  * CAN carry fences (diff, markdown, md, and any prose/code language) are
  * deliberately absent and are skipped wholesale by the pass.
  *
- * Keep in sync with the diagram cases in determineTokenType
- * (MarkdownRenderer.tsx) — a language present there but missing here only
- * loses the repair, never renders wrongly.
+ * LaTeX languages are spread in from the shared registry rather than listed,
+ * so a new profile cannot miss the repair pass.  The remaining literals still
+ * need manual sync with the diagram cases in determineTokenType — a language
+ * present there but missing here only loses the repair, never renders wrongly.
  */
 const ATOMIC_FENCE_LANGS = new Set([
     'mermaid', 'graphviz', 'dot',
@@ -623,7 +626,7 @@ const ATOMIC_FENCE_LANGS = new Set([
     'joint', 'jointjs', 'diagram', 'd2', 'chord',
     'force-directed', 'forcedirected', 'network', 'd3',
     'html-mockup', 'ui-mockup', 'mockup',
-    'circuitikz', 'tikz', 'tikz-cd', 'chemfig', 'latex-circuit',
+    ...LATEX_FENCE_LANGS.filter(l => l !== 'latex'),
     'slidecast', 'slideshow', 'framechain',
     'basic-chart', 'chart',
 ]);
@@ -752,4 +755,134 @@ export function repairAtomicFenceRuns(markdown: string): string {
     }
 
     return out.join('\n');
+}
+/**
+ * Inline code-span scanning.
+ *
+ * This module's block-level model (classifyFenceLines and friends) covers
+ * fenced blocks; the header above explicitly scopes inline code spans out. But
+ * the preprocessing passes that consult this module also need to avoid
+ * rewriting the interior of a `` `...` `` span — math preprocessing wrote its
+ * marker inside code spans, so a user who typed `` `$x$` `` saw renderer
+ * internals instead of literal text.
+ *
+ * findCodeSpans is the inline analogue of applyOutsideFences, and it implements
+ * the CommonMark rule rather than approximating it with /`[^`]*`/:
+ *
+ *   - A span opens with a run of N backticks and closes with the next run of
+ *     EXACTLY N backticks. A longer or shorter run is span content, which is
+ *     what makes ``a ` b`` a single span rather than two.
+ *   - A run with no matching close is literal text. Treating it as an open
+ *     span would swallow the remainder of the document.
+ *   - A span may contain a newline, so this cannot be done line-by-line.
+ *
+ * Agreement with marked's own inline tokenizer is asserted case-by-case in
+ * components/__tests__/codeSpanScanner.test.ts; that equivalence is the
+ * correctness criterion, since these spans are handed to marked afterwards.
+ */
+
+/**
+ * Locate every inline code span, as [startIndex, endIndexExclusive] pairs
+ * covering the span INCLUDING its backtick delimiters. Pairs are
+ * non-overlapping and in ascending order.
+ */
+export function findCodeSpans(text: string): Array<[number, number]> {
+    const spans: Array<[number, number]> = [];
+    let i = 0;
+    while (i < text.length) {
+        if (text[i] !== '`') {
+            i += 1;
+            continue;
+        }
+        // Length of the opening backtick run.
+        let openLen = 0;
+        while (text[i + openLen] === '`') openLen += 1;
+        const afterOpen = i + openLen;
+
+        // Scan for a closing run of exactly openLen backticks. Runs of a
+        // different length are content and are skipped whole, so the scan
+        // cannot mistake part of a longer run for a close.
+        let j = afterOpen;
+        let closeStart = -1;
+        while (j < text.length) {
+            if (text[j] !== '`') {
+                j += 1;
+                continue;
+            }
+            let runLen = 0;
+            while (text[j + runLen] === '`') runLen += 1;
+            if (runLen === openLen) {
+                closeStart = j;
+                break;
+            }
+            j += runLen;
+        }
+
+        if (closeStart === -1) {
+            // Unmatched opening run: literal text. Resume after the run so a
+            // later, properly matched span is still found.
+            i = afterOpen;
+            continue;
+        }
+
+        spans.push([i, closeStart + openLen]);
+        i = closeStart + openLen;
+    }
+    return spans;
+}
+
+/**
+ * Does a multi-line inline `text` token hold preformatted block content
+ * (stripped-fence or indented code) rather than soft-wrapped prose?
+ *
+ * The renderer's 'text' case wraps such tokens in a <pre> to keep newlines.
+ * The original test was merely "contains a newline", which also matched
+ * ordinary soft-wrapped prose: when a list fails to start (no blank line
+ * before "4.", and CommonMark only lets a list interrupt a paragraph at
+ * "1."), the whole group lexes as ONE paragraph, and interleaved codespans
+ * split it into text fragments that each begin with "\n". Those fragments
+ * were then boxed as monospace <pre> mid-sentence — and a block <pre>
+ * nested inside <p> also breaks the surrounding layout.
+ *
+ * Preformatted content keeps its leading whitespace on every continuation
+ * line (that indentation is what made it a code block in the first place);
+ * soft-wrapped prose does not. Requiring indentation on ALL continuation
+ * lines separates the two without a lexer change.
+ */
+export function isPreformattedTextToken(text: string): boolean {
+    if (!text.includes('\n')) return false;
+    const lines = text.split('\n');
+    // Need at least two lines with content: a lone "\n" or a trailing
+    // newline is a separator, not a block.
+    if (lines.filter(l => l.trim() !== '').length < 2) return false;
+    const continuations = lines.slice(1).filter(l => l.trim() !== '');
+    if (continuations.length === 0) return false;
+    return continuations.every(l => /^\s/.test(l));
+}
+
+/**
+ * Apply transform to the regions of text OUTSIDE inline code spans, leaving
+ * span interiors (and their delimiters) byte-identical.
+ *
+ * Intended to wrap a preprocessing pass that rewrites markdown text, so that
+ * the pass cannot corrupt content the user marked as code.
+ */
+export function applyOutsideCodeSpans(
+    text: string,
+    transform: (segment: string) => string,
+): string {
+    const spans = findCodeSpans(text);
+    if (spans.length === 0) {
+        return transform(text);
+    }
+    let out = '';
+    let pos = 0;
+    for (let k = 0; k < spans.length; k += 1) {
+        const [start, end] = spans[k];
+        out += transform(text.slice(pos, start));
+        out += text.slice(start, end);
+        pos = end;
+    }
+    out += transform(text.slice(pos));
+    return out;
 }
