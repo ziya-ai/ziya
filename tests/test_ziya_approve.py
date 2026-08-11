@@ -326,7 +326,7 @@ def test_task_requires_all_three_flags(task_env, capsys):
     # --block without --project/--task is incomplete -> rc 2, no signing attempt
     rc = ziya_approve.main(["--block", "b-step1", "--yes"])
     assert rc == 2
-    assert "requires --task, --block, and --project" in capsys.readouterr().err
+    assert "requires --task and --project" in capsys.readouterr().err
 
 
 def test_task_show_then_sign_is_idempotent_relationship(task_env):
@@ -352,6 +352,88 @@ def test_task_non_escalating_block_needs_no_record(task_env, capsys):
     assert rc == 0
     assert "Nothing to approve" in capsys.readouterr().out
     assert sa.get_record("b-step1") is None
+
+
+# ── --task --all (sign every unapproved block in one confirmation) ─────────────
+
+def _write_multi_block_card(projects_dir, project_id, card_id, blocks):
+    """Write a card with several sibling escalating task blocks under one
+    repeat root. ``blocks`` is a list of (block_id, scope) pairs."""
+    card_dir = projects_dir / project_id / "task_cards"
+    card_dir.mkdir(parents=True, exist_ok=True)
+    card = {
+        "id": card_id, "name": "t",
+        "root": {"block_type": "repeat", "id": "b-root", "name": "loop",
+                 "repeat_count": 2,
+                 "body": [{"block_type": "task", "id": bid, "name": bid,
+                           "instructions": "go", "scope": scope}
+                          for bid, scope in blocks]},
+    }
+    (card_dir / f"{card_id}.json").write_text(json.dumps(card))
+
+
+def test_task_all_signs_every_pending_block(task_env, capsys):
+    from app.utils import scope_approvals as sa
+    _write_multi_block_card(task_env, "p1", "c1", [
+        ("b-1", {"shell_commands": ["make deploy"]}),
+        ("b-2", {"shell_commands": ["make release"]}),
+    ])
+    rc = ziya_approve.main(["--project", "p1", "--task", "c1", "--all", "--yes"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert sa.get_record("b-1") is not None
+    assert sa.get_record("b-2") is not None
+    assert "Signed 2 approval record" in out
+
+
+def test_task_all_skips_already_approved(task_env, capsys):
+    from app.utils import scope_approvals as sa
+    _write_multi_block_card(task_env, "p1", "c1", [
+        ("b-1", {"shell_commands": ["make deploy"]}),
+        ("b-2", {"shell_commands": ["make release"]}),
+    ])
+    assert ziya_approve.main(
+        ["--project", "p1", "--task", "c1", "--block", "b-1", "--yes"]
+    ) == 0
+    rc = ziya_approve.main(["--project", "p1", "--task", "c1", "--all", "--yes"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Already approved" in out
+    assert "Signed 1 approval record" in out
+    assert sa.get_record("b-2") is not None
+
+
+def test_task_all_nothing_pending(task_env, capsys):
+    from app.utils import scope_approvals as sa
+    _write_multi_block_card(task_env, "p1", "c1", [
+        ("b-1", {"shell_commands": ["make deploy"]}),
+    ])
+    assert ziya_approve.main(
+        ["--project", "p1", "--task", "c1", "--block", "b-1", "--yes"]
+    ) == 0
+    rc = ziya_approve.main(["--project", "p1", "--task", "c1", "--all", "--yes"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Nothing to approve" in out
+
+
+def test_task_all_rejects_with_block(task_env, capsys):
+    rc = ziya_approve.main(
+        ["--project", "p1", "--task", "c1", "--all", "--block", "b-1", "--yes"]
+    )
+    assert rc == 2
+    assert "--all cannot be combined with --block" in capsys.readouterr().err
+
+
+def test_task_all_requires_task_and_project(task_env, capsys):
+    rc = ziya_approve.main(["--all", "--yes"])
+    assert rc == 2
+    assert "requires --task and --project" in capsys.readouterr().err
+
+
+def test_task_all_unknown_card_exits_2(task_env):
+    rc = ziya_approve.main(["--project", "p1", "--task", "missing", "--all", "--yes"])
+    assert rc == 2
 
 
 # ── --cli-task mode (tasks.yaml, ASR F-001 / §6) ────────────────────────────────
