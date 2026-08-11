@@ -22,7 +22,7 @@ from app.utils.logging_utils import logger
 # predicate list — that duplication is exactly what silently dropped new
 # endpoints (fable5/mythos5 → 200 null pre-0.7.3.0; zai/openrouter → 500).
 _SUPPORTED_ENDPOINTS = frozenset({
-    "bedrock", "anthropic", "openai", "openrouter", "google", "zai",
+    "bedrock", "anthropic", "openai", "openrouter", "google", "zai", "meta",
 })
 
 
@@ -143,26 +143,29 @@ def create_provider(
 
     if endpoint == "anthropic":
         from app.providers.anthropic_direct import AnthropicDirectProvider
+        from app.utils.provider_detection import resolve_credential
         return AnthropicDirectProvider(
             model_id=model_id,
             model_config=model_config,
-            api_key=api_key or os.getenv("ANTHROPIC_API_KEY"),
+            api_key=api_key or resolve_credential("anthropic"),
         )
 
     if endpoint == "openai":
         from app.providers.openai_direct import OpenAIDirectProvider
+        from app.utils.provider_detection import resolve_credential
         return OpenAIDirectProvider(
             model_id=model_id,
             model_config=model_config,
-            api_key=api_key or os.getenv("OPENAI_API_KEY"),
+            api_key=api_key or resolve_credential("openai"),
         )
 
     if endpoint == "google":
         from app.providers.google_direct import GoogleDirectProvider
+        from app.utils.provider_detection import resolve_credential
         return GoogleDirectProvider(
             model_id=model_id,
             model_config=model_config,
-            api_key=api_key or os.getenv("GOOGLE_API_KEY"),
+            api_key=api_key or resolve_credential("google"),
             thinking_level=model_config.get("thinking_level"),
         )
 
@@ -179,15 +182,33 @@ def create_provider(
         # z.ai (Zhipu / GLM) exposes an OpenAI-compatible chat completions API.
         # Pay-as-you-go keys use api/paas/v4; Coding Plan subscriptions use
         # api/coding/paas/v4. Default to pay-as-you-go; override via ZAI_BASE_URL.
+        # Key lookup is registry-backed (app.utils.provider_detection), which
+        # is what makes the README-documented ZAI_API_TOKEN work here.
         from app.providers.openai_direct import OpenAIDirectProvider
+        from app.utils.provider_detection import resolve_credential
         return OpenAIDirectProvider(
             model_id=model_id,
             model_config=model_config,
-            api_key=api_key or os.getenv("ZAI_API_KEY") or os.getenv("ZHIPUAI_API_KEY"),
+            api_key=api_key or resolve_credential("zai"),
             base_url=os.getenv("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4"),
+        )
+
+    if endpoint == "meta":
+        # Meta Model API (Muse Spark) is OpenAI Chat Completions compatible,
+        # so it needs no provider of its own — only a base URL and a key.
+        # Meta's own docs name the key variable MODEL_API_KEY, which is too
+        # generic to claim in a multi-provider process; META_API_KEY is
+        # preferred and MODEL_API_KEY accepted as the documented fallback.
+        from app.providers.openai_direct import OpenAIDirectProvider
+        from app.utils.provider_detection import resolve_credential
+        return OpenAIDirectProvider(
+            model_id=model_id,
+            model_config=model_config,
+            api_key=api_key or resolve_credential("meta"),
+            base_url=os.getenv("META_BASE_URL", "https://api.meta.ai/v1"),
         )
 
     raise ValueError(
         f"No LLMProvider registered for endpoint '{endpoint}'. "
-        f"Supported: bedrock, anthropic, openai, openrouter, google, zai"
+        f"Supported: bedrock, anthropic, openai, openrouter, google, zai, meta"
     )

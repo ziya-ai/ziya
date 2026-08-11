@@ -106,14 +106,24 @@ export AWS_SECRET_ACCESS_KEY=...
 export GOOGLE_API_KEY=...
 
 # Or z.ai (GLM)
-export ZAI_API_TOKEN=...
+export ZAI_API_KEY=...
 
 # Or OpenAI
 export OPENAI_API_KEY=...
 
+# Or Meta (Muse Spark)
+export META_API_KEY=...
+
 # Or Anthropic direct
 export ANTHROPIC_API_KEY=...
 ```
+
+> **Meta contributor tier.** Meta offers `muse-spark-1.2-contributor` at
+> roughly a tenth of standard pricing in exchange for using your prompts and
+> completions to train future models. Ziya registers it but never selects it
+> implicitly — no alias, no tier tag — because Ziya sends your source code and
+> documents to the model. Opt in only by naming it explicitly:
+> `--model muse-spark-1.2-contributor`.
 
 Then point it at a project and start it:
 

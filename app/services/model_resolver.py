@@ -139,7 +139,7 @@ async def call_service_model(
         return await _call_bedrock(config, system_prompt, user_message, max_tokens, temperature)
     elif ep == "google":
         return await _call_google(config, system_prompt, user_message, max_tokens, temperature)
-    elif ep in ("openai", "anthropic", "zai"):
+    elif ep in ("openai", "anthropic", "zai", "meta"):
         return await _call_openai_compatible(config, system_prompt, user_message, max_tokens, temperature)
     else:
         logger.warning(f"ServiceModelResolver: unknown endpoint '{ep}', falling back to bedrock")
@@ -232,10 +232,18 @@ async def _call_openai_compatible(config, system_prompt, user_message, max_token
         from openai import OpenAI
         # z.ai (Zhipu / GLM) is OpenAI-compatible but needs an explicit key
         # and base URL. OpenAI / Anthropic-direct read their keys from env.
+        # Keys come from the credential registry (app.utils.provider_detection)
+        # so this third copy of the alias chain cannot drift from the others.
+        from app.utils.provider_detection import resolve_credential
         if config.get("endpoint") == "zai":
             client = OpenAI(
-                api_key=os.environ.get("ZAI_API_KEY") or os.environ.get("ZHIPUAI_API_KEY"),
+                api_key=resolve_credential("zai"),
                 base_url=os.environ.get("ZAI_BASE_URL", "https://api.z.ai/api/paas/v4"),
+            )
+        elif config.get("endpoint") == "meta":
+            client = OpenAI(
+                api_key=resolve_credential("meta"),
+                base_url=os.environ.get("META_BASE_URL", "https://api.meta.ai/v1"),
             )
         else:
             client = OpenAI()  # Uses OPENAI_API_KEY / ANTHROPIC_API_KEY from env
