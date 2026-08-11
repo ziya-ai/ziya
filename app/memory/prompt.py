@@ -115,10 +115,17 @@ def get_memory_activation_directive() -> str:
     except Exception:
         count = 0
 
+    # The directive is PREPENDED to the system prompt, ahead of ~141KB of
+    # static instructions, so any value that changes here invalidates the
+    # whole cached prefix for prompt-caching providers. The stored-fact
+    # COUNT changes as memory grows, so it is deliberately omitted: the
+    # exact figure is already reported at the end of the prompt by
+    # get_memory_prompt_section ("N total memories across M domains"),
+    # which sits in the volatile tail where it costs nothing.
     if count > 0:
         return (
-            "IMPORTANT: You have persistent memory across sessions "
-            f"({count} facts stored). Use memories silently — never announce recall. "
+            "IMPORTANT: You have persistent memory across sessions. "
+            "Use memories silently — never announce recall. "
             "Propose new memories with `memory_propose` when the user shares "
             "reusable domain knowledge.\n\n"
         )

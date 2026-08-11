@@ -95,11 +95,21 @@ def test_non_salient_window_still_scores_zero():
 
 NOT_SALIENT = [
     "well use whatever you think is best there",
-    "they were going with the other approach originally",
     "it works well",
     "we were going to lunch",
     "the well is dry",
 ]
+
+# "they were going with the other approach" is deliberately NOT in the list
+# above: it matches on `going with`, a separate pre-existing decision
+# alternation, so it cannot discriminate the we're/were question this block
+# exists to pin.  A negative control that fails for an unrelated reason
+# tests nothing.
+
+
+def test_bare_were_alone_is_not_a_decision():
+    # Isolates the actual risk: `were` with no other trigger present.
+    assert not _SALIENCE_PATTERNS.search("they were unhappy with the result")
 
 
 @pytest.mark.parametrize("text", NOT_SALIENT)

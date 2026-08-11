@@ -50,7 +50,31 @@ MAX_MESSAGE_CHARS = 1500
 # rather than the prompt's "0-2 from a whole conversation" being applied
 # to an 80-turn aggregate (which loses everything beyond turn 6 or so).
 WINDOW_TURN_COUNT = 8
+
+# Per-window candidate ceiling, expressed as a RATE rather than a constant.
+#
+# The old flat cap of 3 bound on 13 of 23 measured windows — i.e. it was
+# discarding candidates on the majority of windows, and discarding them by
+# ARRAY ORDER, not by quality, so a good fact emitted fourth was dropped in
+# favour of a weak one emitted first.  A rate keeps the ceiling proportional
+# to how much conversation the window actually covers: a 1-turn window and
+# an 8-turn window should not share a budget.
+#
+# Downstream filtering (quality_gate, then probation's promote-on-
+# corroboration / archive-on-decay) is what removes noise.  The cap exists
+# only to bound a runaway response, so it can afford to be generous.
+EXCHANGE_BLOCK_TURNS = 6
+CANDIDATES_PER_EXCHANGE_BLOCK = 10
+# Floor for very short windows.  Also the value eval.py imports as
+# PER_WINDOW_CANDIDATE_CAP, kept so that import keeps working.
 PER_WINDOW_CANDIDATE_CAP = 3
+
+
+def window_candidate_cap(human_turns: int) -> int:
+    """Candidate ceiling for a window containing ``human_turns`` user turns."""
+    scaled = (max(0, human_turns) * CANDIDATES_PER_EXCHANGE_BLOCK
+              + EXCHANGE_BLOCK_TURNS - 1) // EXCHANGE_BLOCK_TURNS
+    return max(PER_WINDOW_CANDIDATE_CAP, scaled)
 
 EXTRACTION_SYSTEM_PROMPT = """\
 You are an EXTRACTOR examining a transcript of a conversation between a USER \
@@ -69,7 +93,10 @@ The first character of your response must be '['.
 GATE 1 — THE NEXT-SESSION TEST (apply to every candidate, no exceptions):
 "Would someone starting a BRAND NEW conversation — with ZERO knowledge of \
 what was built, edited, debugged, or discussed today — find this useful?"
-If NO → discard. Most conversations produce 0-2 extractable facts, not 5-10.
+If NO → discard.  Do NOT impose a quota in either direction: a long \
+technical conversation that genuinely establishes a dozen durable facts \
+should yield a dozen, and a short one that establishes none should yield \
+none.  Judge each candidate on its own merits.
 
 GATE 2 — SELF-CONTAINMENT (apply to every candidate that passes Gate 1):
 A reader with NO surrounding context must understand the memory. It must not \
@@ -99,16 +126,23 @@ the moment the current bug is fixed, document is published, or build is
 green?  If yes, it is a session artifact.  Discard.
 Extract ONLY the underlying domain truth, if one exists.
 
-GATE 4 — NOT A CODE DESCRIPTION:
-Reject memories that merely describe what code does without conveying \
-transferable knowledge. Implementation details of the CURRENT PROJECT \
-are not memories — they live in the code itself:
-- How a specific function/module/class works ("X uses Y to do Z")
+GATE 4 — NOT A TRANSIENT IMPLEMENTATION DETAIL:
+Reject memories that describe code the way the code already describes \
+itself, or that go stale the moment someone edits a file:
+- Line-level mechanics ("function X calls helper Y on line 40")
 - What files were changed ("server.py was reduced from X to Y lines")
-- Internal API behavior ("the MCP tool server uses os.getcwd()")
 - Feature descriptions ("the rendering pipeline supports 6 diagram types")
-- Architecture of the tool being built ("AST tokens are only consumed when...")
-Only extract if the knowledge applies BEYOND the current codebase.
+- Anything whose truth depends on a specific SHA, version, or line number
+
+Do NOT reject a fact merely because it concerns the user's OWN project. \
+Durable STRUCTURAL facts about the systems the user works on are among the \
+MOST valuable memories: where data lives on disk, which component owns which \
+responsibility, how two named services interact, what a wire format is. A \
+returning session cannot cheaply re-derive those, which is exactly what \
+makes them worth storing.
+
+The test is DURABILITY, not ownership: would this still be true and useful \
+in three months?
 
 GATE 5 — NOT REDUNDANT:
 If two candidate facts say essentially the same thing, keep only the most \
@@ -148,6 +182,10 @@ ACCEPT examples:
 - "Exponential backoff with jitter is required for retries to Service X" → durable operational pattern
 - "SDN quantum = 4.8112s, SDN slot = 3 × SDN quantum = 14.4s" → durable technical constant
 - "Safety_inhibit ALWAYS overrides persistence in flight mode" → durable safety constraint
+- "Ziya stores data under ~/.ziya/: ale_key (KEK), keyring.json (wrapped DEKs), projects/<id>/chats/" → durable layout of the user's OWN tool; a new session cannot guess it
+- "Ziya's MCP tool-result signing uses HMAC-SHA256 with a per-process secret from os.urandom(32), regenerated each server start" → durable security design, not a line-level detail
+- "Package Builder caches dependency packages at /opt/brazil-pkg-cache/packages/<Pkg>/<Version>/<Platform>/" → durable path convention
+- "Ziya encrypted files begin with the magic string 'ZIYA-ALE-V1' followed by version/DEK identifier bytes" → durable wire/file format
 
 Output format — for each extracted fact, a JSON object with:
 - "content": Distilled principle or fact (1-2 sentences, self-contained)
@@ -190,7 +228,11 @@ Additional rules:
 - Prefer ONE comprehensive memory over multiple fragments about the same entity
 - Do NOT extract meta-commentary about the AI tool itself
 - Maximum 2-4 tags per memory. More tags = less findable, not more.
-- When in doubt, DO NOT EXTRACT. Silence is better than noise.
+- Borderline candidates: prefer extracting.  Noise is filtered downstream
+  (a probationary queue promotes only what is later corroborated or used,
+  and archives the rest), but a durable fact never extracted is lost for
+  good.  This is NOT licence to extract session artifacts — Gates 1-4 are
+  absolute.  It applies only where a candidate plausibly passes them.
 
 Output a JSON array only. No markdown, no explanation. [] if nothing qualifies."""
 
@@ -1347,9 +1389,15 @@ async def run_post_conversation_extraction(
             win_stripped, existing + candidates,
             project_name, project_path,
         )
-        if len(win_candidates) > PER_WINDOW_CANDIDATE_CAP:
-            logger.info(f"🧠 Window {i}: capping {len(win_candidates)} → {PER_WINDOW_CANDIDATE_CAP}")
-            win_candidates = win_candidates[:PER_WINDOW_CANDIDATE_CAP]
+        _win_human_turns = sum(
+            1 for m in win
+            if m.get("role", m.get("type", "")) in ("human", "user")
+        )
+        _cap = window_candidate_cap(_win_human_turns)
+        if len(win_candidates) > _cap:
+            logger.info(f"🧠 Window {i}: capping {len(win_candidates)} → {_cap} "
+                        f"({_win_human_turns} human turns)")
+            win_candidates = win_candidates[:_cap]
         candidates.extend(win_candidates)
     logger.info(f"🧠 Windowed extraction: {len(windows)} windows → {len(candidates)} candidates")
     if not candidates:
