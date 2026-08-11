@@ -17,8 +17,9 @@
  */
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useTheme } from '../context/ThemeContext';
+import { lazyWithRetry } from '../utils/lazyWithRetry';
 
-const D3Renderer = React.lazy(
+const D3Renderer = lazyWithRetry(
     () => import('./D3Renderer').then(m => ({ default: m.D3Renderer }))
 );
 
