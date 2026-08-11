@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Button, message, Form } from 'antd';
 import { SettingOutlined } from '@ant-design/icons';
-import { ModelConfigModal, ModelCapabilities, ModelSettings, ModelInfo, ModelScope } from './ModelConfigModal';
+import { ModelConfigModal, ModelCapabilities, ModelSettings, ModelInfo, ModelScope, EndpointInfo } from './ModelConfigModal';
 import { isSafari } from '../utils/browserUtils';
 import { modelCapabilitiesService } from '../services/modelCapabilitiesService';
 import { useActiveChat } from '../context/ActiveChatContext';
@@ -47,6 +47,15 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
   const [inferenceEndpoint, setInferenceEndpoint] = useState<string>('');
   const [capabilities, setCapabilities] = useState<ModelCapabilities | null>(null);
   const [availableModels, setAvailableModels] = useState<ExtendedModelInfo[]>([]);
+  // Endpoints this install may use, and the one the modal is currently
+  // showing.  `endpoint` above tracks what is actually RUNNING and is
+  // refreshed by polling; this is the user's in-modal choice, which must
+  // not be clobbered by that polling.
+  const [endpoints, setEndpoints] = useState<EndpointInfo[]>([]);
+  const [selectedEndpoint, setSelectedEndpoint] = useState<string>('');
+  // Set once the user picks an endpoint, so verifyCurrentModel stops
+  // overwriting the model list with the running endpoint's models.
+  const endpointDirtyRef = useRef<boolean>(false);
     const capabilitiesLoadedRef = useRef<boolean>(false);
     const [form] = Form.useForm();
     const [isPolling, setIsPolling] = useState(false);
@@ -65,6 +74,25 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
             console.error('Error fetching available models:', error);
             message.error('Failed to load available models');
         }
+    };
+
+    const fetchEndpoints = async () => {
+        try {
+            const response = await fetch('/api/endpoints');
+            if (!response.ok) throw new Error('Failed to fetch endpoints');
+            const data = await response.json();
+            setEndpoints(Array.isArray(data?.endpoints) ? data.endpoints : []);
+        } catch (error) {
+            // Non-fatal: the modal simply omits the endpoint pulldown.
+            console.error('Error fetching endpoints:', error);
+        }
+    };
+
+    const handleEndpointChange = async (nextEndpoint: string) => {
+        if (nextEndpoint === selectedEndpoint) return;
+        endpointDirtyRef.current = nextEndpoint !== endpoint;
+        setSelectedEndpoint(nextEndpoint);
+        await fetchAvailableModels(nextEndpoint);
     };
 
     const verifyCurrentModel = useCallback(async () => {
@@ -100,8 +128,13 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
         setCurrentModelId(safeModelId);
 
         setEndpoint(actualEndpoint);
-        // Always refresh the model list to match the actual running endpoint
-        await fetchAvailableModels(actualEndpoint);
+        // Refresh the model list to match the running endpoint — unless the
+        // user has selected a different endpoint in the open modal, whose
+        // model list we must not overwrite.
+        if (!endpointDirtyRef.current) {
+          setSelectedEndpoint(actualEndpoint);
+          await fetchAvailableModels(actualEndpoint);
+        }
         setRegion(actualRegion);
         setDisplayModelId(actualDisplayModelId);
         setInferenceEndpoint(actualInferenceEndpoint);
@@ -125,8 +158,10 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
         setRegion(actualRegion); // Update region even if model ID hasn't changed
         setDisplayModelId(actualDisplayModelId); // Update display model ID even if model ID hasn't changed
         setInferenceEndpoint(actualInferenceEndpoint); // Update inference endpoint even if model ID hasn't changed
-        // Always refresh model list to match the running endpoint
-        await fetchAvailableModels(actualEndpoint);
+        if (!endpointDirtyRef.current) {
+          setSelectedEndpoint(actualEndpoint);
+          await fetchAvailableModels(actualEndpoint);
+        }
       }
     } catch (error) {
       console.error('Error verifying current model:', error);
@@ -155,6 +190,7 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
                     setIsPolling(true);
                     await verifyCurrentModel();
                     await fetchModelCapabilities();
+                    await fetchEndpoints();
                 } finally {
                     setIsPolling(false);
                 }
@@ -163,6 +199,13 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
         } else if (!modalVisible) {
             // Reset so the next modal open triggers a fresh fetch
             capabilitiesLoadedRef.current = false;
+            // Drop any in-modal endpoint selection so the next open starts
+            // from whatever is actually running.
+            if (endpointDirtyRef.current) {
+                endpointDirtyRef.current = false;
+                setSelectedEndpoint(endpoint);
+                fetchAvailableModels(endpoint);
+            }
         }
     }, [modalVisible, isPolling]);
 
@@ -568,6 +611,12 @@ export const ModelConfigButton = ({ modelId }: ModelConfigButtonProps): JSX.Elem
         inferenceEndpoint={inferenceEndpoint}
         capabilities={capabilities}
         endpoint={endpoint}
+        endpoints={endpoints}
+        selectedEndpoint={selectedEndpoint || endpoint}
+        endpointDefaultModel={
+          endpoints.find(e => e.id === (selectedEndpoint || endpoint))?.default_model ?? null
+        }
+        onEndpointChange={handleEndpointChange}
         region={region}
         availableModels={availableModels}
         onModelChange={handleModelChange}

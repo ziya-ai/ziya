@@ -1292,8 +1292,22 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
               // Without this, Chrome inserts styled HTML (spans, tables,
               // inline CSS) that bloats token counts and loses whitespace
               // from <pre> blocks (e.g. build logs).
-              const plain = e.clipboardData?.getData('text/plain');
+              let plain = e.clipboardData?.getData('text/plain');
               if (plain) {
+                // Normalize PDF-viewer paste artifacts before insertion,
+                // mirroring backend normalize_paste_artifacts(): PDF viewers
+                // emit font-specific Private Use Area glyphs (e.g. U+E12C
+                // for list bullets) that have no standard meaning, inflate
+                // token counts, and in one measured case contributed to a
+                // provider refusal. Ordinary typography (smart quotes,
+                // em dashes, real bullets) is deliberately preserved.
+                plain = plain
+                  // PUA (BMP + supplementary planes): glyph garbage -> space
+                  .replace(/[\uE000-\uF8FF\u{F0000}-\u{FFFFD}\u{100000}-\u{10FFFD}]/gu, ' ')
+                  // zero-width/format controls (Cf): remove entirely
+                  .replace(/[\u00AD\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g, '')
+                  // exotic spaces (NBSP, thin space, ideographic): -> space
+                  .replace(/[\u00A0\u1680\u2000-\u200A\u202F\u205F\u3000]/g, ' ');
                 e.preventDefault();
                 // Direct DOM insertion via Range API. execCommand('insertText')
                 // fires O(n) input events for large text, each triggering a

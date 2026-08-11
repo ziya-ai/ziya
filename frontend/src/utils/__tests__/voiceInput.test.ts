@@ -8,7 +8,12 @@ describe('chooseRecordingMimeType', () => {
   test('selects the first supported browser format', () => {
     const recorder = {
       isTypeSupported: (type: string) => type === 'audio/webm',
-    } as typeof MediaRecorder;
+      // `as unknown as` because the stub supplies only the one static
+      // method under test, while `typeof MediaRecorder` also demands a
+      // constructor signature and `prototype` — TS rejects the direct
+      // cast as insufficiently overlapping.  Matches the sibling test
+      // below, which already casts this way.
+    } as unknown as typeof MediaRecorder;
 
     expect(chooseRecordingMimeType(recorder)).toBe('audio/webm');
   });

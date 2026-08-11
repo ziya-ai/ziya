@@ -10,6 +10,18 @@ export interface ModelInfo {
   name: string;
 }
 
+/** An endpoint this install is permitted to use (from /api/endpoints). */
+export interface EndpointInfo {
+  id: string;
+  /** Model alias to select when switching to this endpoint. */
+  default_model?: string | null;
+  model_count?: number;
+  /** False when the endpoint has no credentials configured. */
+  available?: boolean;
+  /** What to set to make it available (present only when unavailable). */
+  hint?: string | null;
+}
+
 /**
  * Where a model change applies: the global server default, a per-project
  * pin, or a per-conversation pin.  Pins are per-browser-tab and
@@ -22,6 +34,17 @@ interface ModelConfigModalProps {
   onClose: () => void;
   modelId: string | Record<string, string>;
   endpoint: string;
+  /**
+   * Endpoints this install may use.  The endpoint pulldown is only rendered
+   * when more than one is permitted — a single-endpoint install sees the
+   * modal exactly as before.
+   */
+  endpoints?: EndpointInfo[];
+  /** Endpoint currently chosen in the modal; defaults to `endpoint`. */
+  selectedEndpoint?: string;
+  /** Default model alias for `selectedEndpoint`, used on endpoint switch. */
+  endpointDefaultModel?: string | null;
+  onEndpointChange?: (endpoint: string) => void;
   region: string;
   displayModelId?: string; // New prop for the actual model ID to display
   inferenceEndpoint?: string; // The actual string sent to the Bedrock API
@@ -84,6 +107,10 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
   onClose,
   modelId,
   endpoint,
+  endpoints,
+  selectedEndpoint,
+  endpointDefaultModel,
+  onEndpointChange,
   region,
   displayModelId,
   inferenceEndpoint,
@@ -99,6 +126,13 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
   const { isDarkMode } = useTheme();
   const [form] = Form.useForm();
   const capabilitiesLoadedRef = useRef<boolean>(false);
+  // The endpoint the form is describing.  Falls back to the running
+  // endpoint when the caller doesn't drive a selection, so behaviour is
+  // unchanged for single-endpoint installs.
+  const activeEndpoint = selectedEndpoint || endpoint;
+  // Only offer the pulldown when there is a real choice to make.
+  const endpointChoices = endpoints && endpoints.length > 1 ? endpoints : [];
+
   const [formValues, setFormValues] = useState({
     temperature: currentSettings.temperature,
     top_k: currentSettings.top_k || 15,
@@ -263,7 +297,9 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
   const fetchModelCapabilities = async (modelId: string) => {
     try {
       setIsLoadingCapabilities(true);
-      const response = await fetch(`/api/model-capabilities?model=${encodeURIComponent(modelId)}`);
+      const response = await fetch(
+        `/api/model-capabilities?model=${encodeURIComponent(modelId)}` +
+        `&endpoint=${encodeURIComponent(activeEndpoint)}`);
 
       if (!response.ok) {
         throw new Error(`Failed to fetch model capabilities: ${response.status}`);
@@ -325,6 +361,22 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
     await fetchModelCapabilities(newModelId);
   };
 
+  // After an endpoint switch the caller refetches availableModels.  Model
+  // aliases do not carry across endpoints, so once the new list arrives the
+  // selected model has to be re-pointed at something that exists on it.
+  useEffect(() => {
+    if (!visible || availableModels.length === 0) return;
+    const current = form.getFieldValue('model');
+    if (!current) return;
+    if (availableModels.some(m => m.id === current)) return;
+    const fallback =
+      endpointDefaultModel && availableModels.some(m => m.id === endpointDefaultModel)
+        ? endpointDefaultModel
+        : availableModels[0].id;
+    form.setFieldsValue({ model: fallback });
+    fetchModelCapabilities(fallback);
+  }, [visible, availableModels, endpointDefaultModel]);
+
   // Use selected model capabilities for form limits
   const activeCapabilities = selectedModelCapabilities || capabilities;
   const supportsTemperature = activeCapabilities?.temperature_range != null;
@@ -368,8 +420,22 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
         }
         console.log('Model change succeeded');
       }
-      // Then save the settings
-      await onSave(values);
+      // Then save the settings — but ONLY for server scope.  onSave POSTs
+      // to /api/model-settings, which mutates process-wide ZIYA_* env vars
+      // and force-reinitializes the global model.  A pin is by definition
+      // scoped to one conversation / folder / project, so pushing the
+      // pinned model's form values (temperature, max_output_tokens, drawn
+      // from ITS capabilities) into global state would silently
+      // reconfigure every other conversation — including ones running a
+      // different model that may not even accept those values.
+      //
+      // Per-scope sampling settings are not yet modelled; until they are,
+      // a pin changes WHICH model answers and nothing else.
+      if (pinScope === 'server') {
+        await onSave(values);
+      } else {
+        console.log('Pin scope active — skipping global settings save');
+      }
       onClose(); // Only close on successful save
     } catch (error: any) {
       console.error('Apply failed:', error);
@@ -446,6 +512,55 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
                   : 'This tab only — forgotten on reload.'}
               </Text>
             </Checkbox>
+          </Form.Item>
+        )}
+        {pinScope !== 'server' && (
+          <Form.Item style={{ marginTop: -8, marginBottom: 8 }}>
+            <Text type="warning" style={{ fontSize: 11 }}>
+              A pin selects which model answers this {pinScope}. The sampling
+              settings below are server-global and are not applied by a pin —
+              switch to “Server default” to change them.
+            </Text>
+          </Form.Item>
+        )}
+        {endpointChoices.length > 0 && (
+          <Form.Item
+            label={
+              <Space align="center">
+                <span>
+                  Endpoint <Tooltip title="Which provider to draw models from. Switching endpoints changes the model list below. Endpoints without credentials are shown but cannot be selected.">
+                    <InfoCircleOutlined style={{ marginLeft: 5 }} />
+                  </Tooltip>
+                </span>
+              </Space>
+            }
+            extra={
+              pinScope !== 'server' && activeEndpoint !== endpoint
+                ? <Text type="secondary" style={{ fontSize: 11 }}>
+                    This pin routes to {activeEndpoint} without changing the
+                    server default ({endpoint}).
+                  </Text>
+                : undefined
+            }
+          >
+            <Select
+              value={activeEndpoint}
+              onChange={(ep: string) => onEndpointChange && onEndpointChange(ep)}
+              options={endpointChoices.map(ep => {
+                const unavailable = ep.available === false;
+                const suffix = ep.id === endpoint
+                  ? ' (running)'
+                  : unavailable ? ` — ${ep.hint || 'no credentials'}` : '';
+                return {
+                  // Never disable the RUNNING endpoint: it is demonstrably
+                  // working, and a stale snapshot must not lock the user out
+                  // of their own current selection.
+                  disabled: unavailable && ep.id !== endpoint,
+                  label: `${ep.id}${suffix}`,
+                  value: ep.id,
+                };
+              })}
+            />
           </Form.Item>
         )}
         <Form.Item
@@ -544,7 +659,7 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
           />
         </Form.Item>}
 
-        {endpoint === 'bedrock' && supportsTopK && (
+        {activeEndpoint === 'bedrock' && supportsTopK && (
           <Form.Item label={
             <Space align="center">
               <span> Top K
