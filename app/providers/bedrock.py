@@ -29,6 +29,7 @@ from app.providers.base import (
     StreamEnd,
     StreamEvent,
     TextDelta,
+    ThinkingBlock,
     ThinkingDelta,
     ToolUseEnd,
     ToolUseInput,
@@ -344,8 +345,13 @@ class BedrockProvider(LLMProvider):
         self,
         text: str,
         tool_uses: List[Dict[str, Any]],
+        thinking_blocks: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         content_blocks: List[Dict[str, Any]] = []
+        # Thinking must lead the turn: the API requires signed reasoning blocks
+        # to precede text and tool_use, and rejects them out of order.
+        for tb in (thinking_blocks or []):
+            content_blocks.append(tb)
         if text.strip():
             content_blocks.append({"type": "text", "text": text.rstrip()})
         for tu in tool_uses:
@@ -418,9 +424,15 @@ class BedrockProvider(LLMProvider):
                 "cache_control": {"type": "ephemeral"},
             }]
         elif isinstance(content, list) and content:
-            last_block = content[-1]
-            if isinstance(last_block, dict):
-                last_block["cache_control"] = {"type": "ephemeral"}
+            # Never the raw [-1]: a thinking block there is immutable, and
+            # stamping it 400s the entire request rather than merely
+            # costing a cache hit.  See LLMProvider._stamp_cache_control.
+            if not self._stamp_cache_control(content):
+                logger.debug(
+                    "🧠 PROMPT_CACHE: boundary message carries only "
+                    "reasoning blocks; skipping this breakpoint to keep "
+                    "the request legal"
+                )
 
         return messages
 
@@ -428,6 +440,12 @@ class BedrockProvider(LLMProvider):
         feature_map = {
             "thinking": self.model_config.get("supports_thinking", False),
             "adaptive_thinking": self.model_config.get("supports_adaptive_thinking", False),
+            # Signed thinking blocks may be echoed back inside a tool chain so
+            # reasoning survives the round-trip (Anthropic block format).
+            "thinking_passback": (
+                self.model_config.get("supports_thinking", False)
+                or self.model_config.get("supports_adaptive_thinking", False)
+            ),
             "extended_context": self.model_config.get("supports_extended_context", False),
             "cache_control": True,  # Bedrock Claude always supports caching
             "assistant_prefill": self.model_config.get("supports_assistant_prefill", True),
@@ -725,6 +743,11 @@ class BedrockProvider(LLMProvider):
         stream_iter = iter(stream_body)
         in_thinking_block = False
 
+        # Completed thinking blocks for reasoning-continuity passback, keyed by
+        # content-block index.  A signature_delta is what closes each one; a
+        # block without a signature cannot be echoed back and is dropped.
+        _thinking_blocks: Dict[int, Dict[str, Any]] = {}
+
         # Pending read task — ensures we never call next(stream_iter) concurrently.
         # When a timeout occurs we must NOT start a new to_thread call; instead we
         # keep awaiting the same task until it completes or the total silence budget
@@ -864,16 +887,27 @@ class BedrockProvider(LLMProvider):
                 block_type = cb.get("type", "")
                 if block_type == "thinking":
                     in_thinking_block = True
-                elif block_type in ("text", "redacted_thinking"):
-                    # Known and deliberately inert.  A text block needs no
-                    # action — its content arrives as text_delta — and a
-                    # redacted_thinking block carries only opaque bytes we
-                    # never echo back.  Whitelisted explicitly rather than
-                    # left to fall through to the warning below: an adaptive
-                    # thinking response opens a text block on EVERY
-                    # iteration, so the warning fired several times per turn
-                    # and taught readers to disregard the channel that is
-                    # supposed to flag genuinely unknown block types.
+                    _thinking_blocks[idx] = {
+                        "type": "thinking", "thinking": "", "signature": None,
+                    }
+                elif block_type == "redacted_thinking":
+                    # Opaque encrypted reasoning.  Captured rather than ignored
+                    # because passback is all-or-nothing: echoing the readable
+                    # thinking blocks while silently dropping a redacted one
+                    # reorders the assistant turn and the API rejects it.  The
+                    # payload arrives whole on this event, not via deltas.
+                    _thinking_blocks[idx] = {
+                        "type": "redacted_thinking", "data": cb.get("data", ""),
+                    }
+                elif block_type == "text":
+                    # Known and deliberately inert: a text block needs no
+                    # action, its content arrives as text_delta.  Whitelisted
+                    # explicitly rather than left to fall through to the
+                    # warning below: an adaptive thinking response opens a
+                    # text block on EVERY iteration, so the warning fired
+                    # several times per turn and taught readers to disregard
+                    # the channel that is supposed to flag genuinely unknown
+                    # block types.
                     logger.debug(
                         "content_block_start type=%r index=%s (no-op)",
                         block_type, idx,
@@ -908,22 +942,25 @@ class BedrockProvider(LLMProvider):
                     _thinking = delta.get("thinking", "")
                     _thinking_deltas += 1
                     _thinking_chars += len(_thinking)
+                    if idx in _thinking_blocks:
+                        _thinking_blocks[idx]["thinking"] += _thinking
                     yield ThinkingDelta(content=_thinking)
 
                 elif delta_type == "signature_delta":
-                    # Closes a thinking block with a cryptographic signature
-                    # that lets the API verify the block if it is echoed back
-                    # in a later turn.  Deliberately dropped: the assistant
-                    # message is rebuilt from text and tool_use blocks only
-                    # (see streaming_tool_executor's content_block handling),
-                    # so no thinking block — and therefore no signature — is
-                    # ever sent upstream.  Should this change, capture the
-                    # signature here and attach it to the thinking block, or
-                    # the API will reject the turn.
-                    logger.debug(
-                        "signature_delta index=%s dropped (thinking blocks "
-                        "are not round-tripped)", idx,
-                    )
+                    # Closes a thinking block with the cryptographic signature
+                    # the API requires to verify the block when it is echoed
+                    # back.  Retained so the assistant turn can carry its own
+                    # reasoning across a tool round-trip: without it the model
+                    # re-derives its plan from scratch every iteration, paying
+                    # for the same reasoning repeatedly.
+                    _sig = delta.get("signature", "")
+                    if idx in _thinking_blocks and _sig:
+                        _thinking_blocks[idx]["signature"] = _sig
+                    else:
+                        logger.debug(
+                            "signature_delta index=%s has no open thinking "
+                            "block (sig_present=%s)", idx, bool(_sig),
+                        )
 
                 elif delta_type == "input_json_delta":
                     partial = delta.get("partial_json", "")
@@ -946,6 +983,26 @@ class BedrockProvider(LLMProvider):
                 # If a thinking block just finished, clear the flag
                 if in_thinking_block:
                     in_thinking_block = False
+                # Emit the completed thinking block for passback.  Unsigned
+                # readable blocks are dropped: the API rejects a thinking
+                # block whose signature is missing or does not match.
+                _tb = _thinking_blocks.pop(idx, None)
+                if _tb is not None:
+                    if _tb["type"] == "redacted_thinking":
+                        yield ThinkingBlock(
+                            block_type="redacted_thinking",
+                            data=_tb.get("data", ""), index=idx,
+                        )
+                    elif _tb.get("signature"):
+                        yield ThinkingBlock(
+                            content=_tb["thinking"],
+                            signature=_tb["signature"], index=idx,
+                        )
+                    else:
+                        logger.debug(
+                            "thinking block index=%s closed without signature "
+                            "— not eligible for passback", idx,
+                        )
                 # Find the tool that just finished
                 finished_id = None
                 for tid, tdata in active_tools.items():
