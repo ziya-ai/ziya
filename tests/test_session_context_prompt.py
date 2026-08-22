@@ -51,18 +51,23 @@ NOW = datetime.datetime(2026, 1, 2, 3, 4, 5)
 
 @pytest.fixture(autouse=True)
 def _stub_write_policy(monkeypatch):
-    """Default: empty base policy.  Individual tests override."""
-    class _Stub:
-        def get_effective_policy(self):
-            return {
-                "safe_write_paths": [".ziya/", "/tmp/"],
-                "allowed_write_patterns": [],
-                "direct_write_mode": "none",
-            }
+    """Default: a fixed base policy.  Individual tests override.
 
+    Patches ``effective_policy_for_root``, NOT ``get_write_policy_manager``.
+    The builder became root-addressed (a root-blind read described whichever
+    project last touched the shared singleton), so a stub on the manager is
+    no longer on the path — and because the real DEFAULT_WRITE_POLICY happens
+    to contain ``.ziya/`` and ``/tmp/``, the assertions below kept passing
+    against defaults while the stub did nothing at all.  Patching the seam
+    the builder actually calls is what keeps this file's coverage real.
+    """
     monkeypatch.setattr(
-        "app.config.write_policy.get_write_policy_manager",
-        lambda: _Stub(),
+        "app.config.write_policy.effective_policy_for_root",
+        lambda _root="": {
+            "safe_write_paths": [".ziya/", "/tmp/"],
+            "allowed_write_patterns": [],
+            "direct_write_mode": "none",
+        },
     )
 
 
@@ -127,16 +132,13 @@ class TestWritableSection:
         assert "readonly.txt" not in writable_block
 
     def test_direct_write_mode_all_files(self, monkeypatch):
-        class _Stub:
-            def get_effective_policy(self):
-                return {
-                    "safe_write_paths": [".ziya/"],
-                    "allowed_write_patterns": [],
-                    "direct_write_mode": "all_files",
-                }
         monkeypatch.setattr(
-            "app.config.write_policy.get_write_policy_manager",
-            lambda: _Stub(),
+            "app.config.write_policy.effective_policy_for_root",
+            lambda _root="": {
+                "safe_write_paths": [".ziya/"],
+                "allowed_write_patterns": [],
+                "direct_write_mode": "all_files",
+            },
         )
         out = build_session_context_section(project_root="/p", now=NOW)
         assert "direct_write_mode=`all_files`" in out
@@ -256,10 +258,10 @@ class TestShellSection:
 
 class TestFailureIsolation:
     def test_write_policy_raise_does_not_propagate(self, monkeypatch):
-        def _boom():
+        def _boom(_root=""):
             raise RuntimeError("policy unavailable")
         monkeypatch.setattr(
-            "app.config.write_policy.get_write_policy_manager",
+            "app.config.write_policy.effective_policy_for_root",
             _boom,
         )
         out = build_session_context_section(project_root="/p", now=NOW)
@@ -271,10 +273,10 @@ class TestFailureIsolation:
         assert "### Writable paths" not in out
 
     def test_write_policy_raise_with_task_scope_still_emits_scope(self, monkeypatch):
-        def _boom():
+        def _boom(_root=""):
             raise RuntimeError("policy unavailable")
         monkeypatch.setattr(
-            "app.config.write_policy.get_write_policy_manager",
+            "app.config.write_policy.effective_policy_for_root",
             _boom,
         )
         scope = _Scope(paths=[_Entry("foo.tsx", write=True)])

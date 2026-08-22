@@ -35,11 +35,17 @@ from types import SimpleNamespace
 from typing import Any, List, Optional
 
 
-def _safe_get_effective_policy() -> dict:
-    """Return the merged write policy or an empty dict on any error."""
+def _safe_get_effective_policy(project_root: Optional[str] = None) -> dict:
+    """Return the merged write policy for ``project_root``, or {} on error.
+
+    Root-addressed on purpose.  The root-blind form resolved to whichever
+    project last touched the shared WritePolicyManager, so with two
+    projects open this block described one project's policy while
+    file_write enforced another's -- see effective_policy_for_root.
+    """
     try:
-        from app.config.write_policy import get_write_policy_manager
-        return get_write_policy_manager().get_effective_policy() or {}
+        from app.config.write_policy import effective_policy_for_root
+        return effective_policy_for_root(project_root or "") or {}
     except Exception:
         return {}
 
@@ -320,7 +326,7 @@ def build_session_context_section(
     if conv_start_iso:
         out.append(f'<ConversationStartTime value="{conv_start_iso}" />')
 
-    base_policy = _safe_get_effective_policy()
+    base_policy = _safe_get_effective_policy(project_root)
     sections: List[List[str]] = [
         _format_writable_section(base_policy, task_scope),
         _format_readable_section(task_scope),
