@@ -19,6 +19,10 @@ import * as contextApi from '../api/contextApi';
 import * as skillApi from '../api/skillApi';
 import * as tokenApi from '../api/tokenApi';
 import { db } from '../utils/db';
+import {
+  effectiveActiveSkillIds as computeEffectiveActiveSkillIds,
+  staleSkillIds,
+} from '../utils/skillActivation';
 import * as syncApi from '../api/conversationSyncApi';
 import * as folderSyncApi from '../api/folderSyncApi';
 import FirstRunProjectDialog from '../components/FirstRunProjectDialog';
@@ -90,6 +94,11 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   // Skill state
   const [skills, setSkills] = useState<Skill[]>([]);
   const [isLoadingSkills, setIsLoadingSkills] = useState(false);
+  // Which project the loaded ``skills`` list belongs to.  Needed because
+  // switchProject restores the NEW project's lens immediately while the
+  // skills fetch is still in flight, so for one render ``skills`` describes
+  // the OLD project — reconciling the lens against it would prune every id.
+  const [skillsProjectId, setSkillsProjectId] = useState<string | null>(null);
   
   // ── Lens persistence helpers ──────────────────────────────────────
   // Store active context/skill IDs per project in localStorage so they
@@ -305,6 +314,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!currentProject) {
       setSkills([]);
+      setSkillsProjectId(null);
       return;
     }
     
@@ -313,6 +323,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       try {
         const skls = await skillApi.listSkills(currentProject.id);
         setSkills(skls);
+        setSkillsProjectId(currentProject.id);
       } catch (error) {
         console.error('Failed to load skills:', error);
       } finally {
@@ -321,6 +332,33 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     };
     loadSkills();
   }, [currentProject?.id]);
+
+  // Drop lens ids that no longer resolve to a loaded skill.
+  //
+  // The lens outlives the skills it names.  ``deleteSkillFn`` prunes only
+  // in the tab that performed the delete, and a backend-side deletion
+  // (built-in adoption superseding a promoted custom skill) never notifies
+  // the browser at all — so a dead id survives every reload.  The failure
+  // is silent and total: SkillsSection renders cards from ``skills``, so a
+  // dead id matches no card and EVERY card reads "off", while
+  // activeSkillPrompts guards on ``if (skill)`` and injects nothing.  That
+  // is indistinguishable from the skill having been switched off.
+  //
+  // Guards matter more than the prune: acting on a list that is still
+  // loading, or that belongs to another project, destroys a good lens.
+  useEffect(() => {
+    if (!currentProject || isLoadingSkills) return;
+    if (skillsProjectId !== currentProject.id) return;
+    if (skills.length === 0 || activeSkillIds.length === 0) return;
+    const stale = staleSkillIds(activeSkillIds, skills);
+    if (stale.length === 0) return;
+    console.warn('ProjectContext: pruning stale lens skill ids:', stale);
+    const live = new Set(skills.map(s => s.id));
+    setActiveSkillIds(prev => prev.filter(id => live.has(id)));
+  }, [
+    currentProject?.id, isLoadingSkills, skillsProjectId,
+    skills, activeSkillIds, setActiveSkillIds,
+  ]);
 
   // Hydrate full prompt bodies for any skills that are active but whose
   // body was omitted by listSkills (file-backed project/user skills, served
@@ -352,6 +390,25 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     });
   }, [currentProject?.id, skills, activeSkillIds]);
   
+  // Which lens entries actually mean "inject this skill".
+  //
+  // ``activeSkillIds`` carries TWO OPPOSITE meanings, selected by the
+  // skill's visibility (see SkillsSection.getLevel):
+  //   - user_selectable    : membership means the user switched it ON
+  //   - model_discoverable : membership means the user switched it OFF
+  //
+  // Every consumer below looped the RAW array, so switching a discoverable
+  // skill OFF injected the prompt being suppressed AND applied that skill's
+  // modelOverrides (temperature / model / thinkingMode), toolIds and files —
+  // turning off Packet Diagrams could silently change the model settings for
+  // the whole conversation.  Kept in one memo so the five consumers cannot
+  // drift apart again; the predicate itself lives in utils/skillActivation
+  // so it is unit-testable without rendering this provider.
+  const effectiveActiveSkillIds = useMemo(
+    () => computeEffectiveActiveSkillIds(activeSkillIds, skills),
+    [activeSkillIds, skills],
+  );
+  
   // Calculate active files from contexts + additional
   const activeFiles = useMemo(() => {
     const files = new Set<string>();
@@ -368,7 +425,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     additionalFiles.forEach(f => files.add(f));
     
     // Add files from active skills
-    for (const skillId of activeSkillIds) {
+    for (const skillId of effectiveActiveSkillIds) {
       const skill = skills.find(s => s.id === skillId);
       if (skill?.files) {
         skill.files.forEach(f => files.add(f));
@@ -376,13 +433,13 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     }
 
     return Array.from(files);
-  }, [activeContextIds, activeSkillIds, additionalFiles, contexts, skills]);
+  }, [activeContextIds, effectiveActiveSkillIds, additionalFiles, contexts, skills]);
   
   // Combine active skill prompts
   const activeSkillPrompts = useMemo(() => {
     const prompts: string[] = [];
     
-    for (const skillId of activeSkillIds) {
+    for (const skillId of effectiveActiveSkillIds) {
       const skill = skills.find(s => s.id === skillId);
       if (skill) {
         prompts.push(`[Active Skill: ${skill.name}]\n${skill.prompt}`);
@@ -394,13 +451,13 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     }
     
     return prompts.join('\n\n');
-  }, [activeSkillIds, additionalPrompt, skills]);
+  }, [effectiveActiveSkillIds, additionalPrompt, skills]);
   
   // Recalculate tokens when selection changes
   // Merge modelOverrides from all active skills (last-write-wins per key)
   const activeModelOverrides = useMemo(() => {
     const merged: Record<string, any> = {};
-    for (const skillId of activeSkillIds) {
+    for (const skillId of effectiveActiveSkillIds) {
       const skill = skills.find(s => s.id === skillId);
       if (skill?.modelOverrides) {
         if (skill.modelOverrides.temperature !== undefined)
@@ -412,12 +469,12 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       }
     }
     return merged;
-  }, [activeSkillIds, skills]);
+  }, [effectiveActiveSkillIds, skills]);
 
   // Collect toolIds from active skills for tool filtering
   const activeToolIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const skillId of activeSkillIds) {
+    for (const skillId of effectiveActiveSkillIds) {
       const skill = skills.find(s => s.id === skillId);
       if (skill?.toolIds) {
         skill.toolIds.forEach(t => ids.add(t));
@@ -427,7 +484,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       }
     }
     return Array.from(ids);
-  }, [activeSkillIds, skills]);
+  }, [effectiveActiveSkillIds, skills]);
 
   // Bump astRevision when background AST indexing completes.
   // This is fired by FolderContext when the ws/file-tree WebSocket
@@ -444,7 +501,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
       return;
     }
     
-    if (activeFiles.length === 0 && activeSkillIds.length === 0 && !additionalPrompt) {
+    if (activeFiles.length === 0 && effectiveActiveSkillIds.length === 0 && !additionalPrompt) {
       setTokenInfo(null);
       return;
     }
@@ -456,7 +513,10 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
           currentProject.id,
           additionalFiles,
           activeContextIds,
-          activeSkillIds,
+          // Suppression markers must not be billed: a discoverable skill
+          // toggled OFF is present in activeSkillIds, and app/api/tokens.py
+          // sums the tokenCount of every id it is handed.
+          effectiveActiveSkillIds,
           additionalPrompt || undefined
         );
         setTokenInfo(info);
@@ -470,7 +530,7 @@ export function ProjectProvider({ children }: { children: ReactNode }) {
     // Debounce calculation
     const timeout = setTimeout(calculateTokens, 300);
     return () => clearTimeout(timeout);
-  }, [currentProject?.id, activeFiles, activeContextIds, activeSkillIds, additionalFiles, additionalPrompt, astRevision]);
+  }, [currentProject?.id, activeFiles, activeContextIds, effectiveActiveSkillIds, additionalFiles, additionalPrompt, astRevision]);
   
   // Project actions
   const switchProject = useCallback(async (projectId: string) => {

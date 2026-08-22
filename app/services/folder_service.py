@@ -39,6 +39,11 @@ _cache_invalidation_debounce = 2.0  # seconds
 
 # Track which projects have had external paths restored this session
 _restored_projects: set = set()
+# Guards the check-then-add on _restored_projects.  Must be a distinct lock
+# from _cache_lock: restore_external_paths_for_project() calls
+# add_external_path_to_cache(), which acquires _cache_lock itself, and
+# _cache_lock is a plain non-reentrant Lock.
+_restored_projects_lock = threading.Lock()
 
 # Active WebSocket connections for file tree updates
 active_file_tree_connections: set = set()
@@ -544,7 +549,20 @@ def _snapshot_tree(tree: Dict[str, Any], _depth: int = 0) -> Dict[str, Any]:
     else:
         return out
     for k, v in items:
-        out[k] = _snapshot_tree(v, _depth + 1) if isinstance(v, dict) else v
+        if isinstance(v, dict):
+            try:
+                out[k] = _snapshot_tree(v, _depth + 1)
+            except RuntimeError:
+                # A nested dict mutated faster than its own retry loop could
+                # absorb. The retry above guards only THIS level's items()
+                # call, so a RuntimeError from any deeper level escaped the
+                # whole snapshot and failed the request — the observed
+                # "dictionary changed size during iteration". Degrade just
+                # this subtree; the response is flagged _stale_and_scanning,
+                # so the frontend re-polls and it fills in on a later pass.
+                out[k] = {}
+        else:
+            out[k] = v
     return out
 
 
@@ -712,9 +730,14 @@ def restore_external_paths_for_project(project_root: str) -> None:
     """Re-populate server-side external path caches from persisted project data."""
     global _explicit_external_paths
     abs_root = os.path.abspath(project_root)
-    if abs_root in _restored_projects:
-        return
-    _restored_projects.add(abs_root)
+    # This now runs on a worker thread (see folder_routes.api_get_folders), so
+    # concurrent /api/folders requests can reach here at the same time.  Make
+    # the check-then-add atomic or both callers would redo the full token-count
+    # walk of every persisted external path.
+    with _restored_projects_lock:
+        if abs_root in _restored_projects:
+            return
+        _restored_projects.add(abs_root)
 
     try:
         from app.storage.projects import ProjectStorage

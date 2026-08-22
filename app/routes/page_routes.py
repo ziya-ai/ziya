@@ -105,6 +105,39 @@ async def render_page(request: Request):
     """
     return await root(request)
 
+@router.get("/print")
+async def print_page(request: Request):
+    """Serve the SPA shell for the /print route.
+
+    React Router handles client-side routing to PrintRenderPage. Without this
+    passthrough the backend 404s the path, so the SPA never boots and
+    window.__renderConversation is never defined -- which surfaces in the PDF
+    exporter as a confusing "not a function" TypeError rather than a 404,
+    because a 404 body reaches networkidle immediately and the driver proceeds
+    as though the page had loaded.
+    """
+    return await root(request)
+
+@router.get("/print-spike")
+async def print_spike_page(request: Request):
+    """Serve the SPA shell for the /print-spike route.
+
+    React Router handles client-side routing to PrintFeasibilitySpike.  Same
+    passthrough requirement as /print and /render.
+    """
+    return await root(request)
+
+@router.get("/debug")
+async def debug_page(request: Request):
+    """Serve the SPA shell for the /debug route.
+
+    React Router handles client-side routing to the Debug component.  Distinct
+    from the legacy /debug1 (shell with a debug_mode template context) and
+    /debug2 (server-rendered HTML info page) routes, neither of which serves
+    the React Debug view that index.tsx routes at /debug.
+    """
+    return await root(request)
+
 @router.get("/info")
 async def info_page(request: Request):
     """Render the info page as part of the React app."""

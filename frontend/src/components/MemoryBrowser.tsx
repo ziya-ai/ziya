@@ -163,6 +163,7 @@ const KnowledgeGraph: React.FC<{
   onSelectMemory: (id: string) => void;
 }> = ({ mindmap, memories, isDarkMode, onSelectMemory }) => {
   const svgRef = useRef<SVGSVGElement>(null);
+  const emptyRef = useRef<HTMLDivElement>(null);
   const animRef = useRef<number>(0);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
@@ -170,17 +171,25 @@ const KnowledgeGraph: React.FC<{
   const graphRef = useRef<{ nodes: GraphNode[]; links: GraphLink[] }>({ nodes: [], links: [] });
   const [tick, setTick] = useState(0);
   const dragRef = useRef<{ nodeId: string; offsetX: number; offsetY: number } | null>(null);
+  const isEmpty = graphRef.current.nodes.length === 0;
 
-  // Measure container
+  // Measure the container the graph is mounted in so the canvas fills the
+  // space the modal gives it.  The observer is re-attached when the empty
+  // placeholder is swapped for the SVG: on the first render the graph has not
+  // been built yet, so svgRef is still null and a mount-only effect would
+  // leave the canvas pinned at its 800x500 default.
   useEffect(() => {
-    const el = svgRef.current?.parentElement;
+    const el = (svgRef.current || emptyRef.current)?.parentElement;
     if (!el) return;
-    const ro = new ResizeObserver(([e]) => {
-      setDimensions({ width: e.contentRect.width || 800, height: Math.max(400, e.contentRect.height) });
+    const apply = (w: number, h: number) => setDimensions({
+      width: Math.max(320, Math.round(w) || 800),
+      height: Math.max(320, Math.round(h) || 500),
     });
+    apply(el.clientWidth, el.clientHeight);
+    const ro = new ResizeObserver(([e]) => apply(e.contentRect.width, e.contentRect.height));
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [isEmpty]);
 
   // Build graph when data changes
   useEffect(() => {
@@ -235,7 +244,7 @@ const KnowledgeGraph: React.FC<{
 
   if (nodes.length === 0) {
     return (
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: 400, opacity: 0.5 }}>
+      <div ref={emptyRef} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', minHeight: 400, opacity: 0.5 }}>
         <Empty description="No mind-map nodes yet. Memories will appear here as the model organizes them into domains." />
       </div>
     );
@@ -829,9 +838,11 @@ const MemoryBrowser: React.FC<MemoryBrowserProps> = ({ visible, onClose }) => {
       key: 'graph',
       label: '🌐 Knowledge Graph',
       children: (
-        <div style={{ height: 'calc(70vh - 100px)', minHeight: 400 }}>
-          <KnowledgeGraph mindmap={mindmap} memories={memories} isDarkMode={isDarkMode} onSelectMemory={handleGraphSelect} />
-          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 12, justifyContent: 'center' }}>
+        <div style={{ height: 'calc(80vh - 150px)', minHeight: 400, display: 'flex', flexDirection: 'column' }}>
+          <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+            <KnowledgeGraph mindmap={mindmap} memories={memories} isDarkMode={isDarkMode} onSelectMemory={handleGraphSelect} />
+          </div>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginTop: 8, justifyContent: 'center', flexShrink: 0 }}>
             {Object.entries(LAYER_LABELS).map(([layer, label]) => (
               <div key={layer} style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 11, opacity: 0.7 }}>
                 <div style={{ width: 8, height: 8, borderRadius: '50%', background: LAYER_COLORS[layer] }} />

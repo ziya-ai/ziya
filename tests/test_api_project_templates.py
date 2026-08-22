@@ -303,7 +303,43 @@ class TestCreationSeedsSettings:
         assert second["settings"]["defaultSkillIds"] == first["settings"]["defaultSkillIds"]
 
 
-# ── 6. Snapshot round trip ───────────────────────────────────────────────
+# ── 6. Explicit template application to existing projects ───────────────
+
+class TestApplyTemplateToExistingProject:
+    def test_applies_software_defaults_and_records_provenance(self, client, ziya_home):
+        pid = _make_project(ziya_home, "legacy", "/tmp/legacy")
+        r = client.post(
+            f"/api/v1/projects/{pid}/apply-template",
+            json={"templateId": "software_development"},
+        )
+        assert r.status_code == 200
+        settings = r.json()["settings"]
+        assert settings["templateId"] == "software_development"
+        assert CONT_DOCS_ID in settings["defaultSkillIds"]
+        assert TESTS_ID in settings["defaultSkillIds"]
+
+    def test_unions_template_skills_with_existing_project_defaults(self, client, ziya_home):
+        pid = _make_project(ziya_home, "configured", "/tmp/configured", settings={
+            "defaultContextIds": [], "defaultSkillIds": ["builtin-concise"],
+        })
+        settings = client.post(
+            f"/api/v1/projects/{pid}/apply-template",
+            json={"templateId": "software_development"},
+        ).json()["settings"]
+        assert settings["defaultSkillIds"][0] == "builtin-concise"
+        assert CONT_DOCS_ID in settings["defaultSkillIds"]
+        assert TESTS_ID in settings["defaultSkillIds"]
+
+    def test_unknown_template_is_404(self, client, ziya_home):
+        pid = _make_project(ziya_home, "legacy2", "/tmp/legacy2")
+        r = client.post(
+            f"/api/v1/projects/{pid}/apply-template",
+            json={"templateId": "does-not-exist"},
+        )
+        assert r.status_code == 404
+
+
+# ── 7. Snapshot round trip ───────────────────────────────────────────────
 
 class TestSnapshotRoundTrip:
     def test_snapshot_captures_templatable_settings(self, client, ziya_home):

@@ -45,6 +45,13 @@ MODEL_ALIASES: dict[str, dict[str, str]] = {
     "anthropic": {
         "sonnet": "claude-sonnet-4-6",
         "opus": "claude-opus-4-8",
+        # Retired by Anthropic — claude-sonnet-4-20250514 and
+        # claude-opus-4-20250514 on 2026-06-15, claude-opus-4-1-20250805 on
+        # 2026-08-05.  Entries removed; keep the old names resolving so saved
+        # settings land on a live model instead of a not_found_error (404):
+        "claude-sonnet-4": "claude-sonnet-4-6",
+        "claude-opus-4": "claude-opus-4-5",
+        "claude-opus-4-1": "claude-opus-4-5",
     },
     "zai": {
         "glm": "glm-5.2",
@@ -591,8 +598,10 @@ MODEL_CONFIGS = {
         },
         "opus4.1": {
             "model_id": {
-                "us": "us.anthropic.claude-opus-4-1-20250805-v1:0",
-                "global": "global.anthropic.claude-opus-4-1-20250805-v1:0"
+                # No global. inference profile exists for Opus 4.1 — verified
+                # 2026-08-19: GetInferenceProfile returns ResourceNotFoundException
+                # and Converse rejects the ID.  us. is the only valid prefix.
+                "us": "us.anthropic.claude-opus-4-1-20250805-v1:0"
             },
             "available_regions": ["us-east-1", "us-east-2", "us-west-2"],
             "region_restricted": True,  # Only available in US regions
@@ -1632,36 +1641,6 @@ MODEL_CONFIGS = {
             "supports_adaptive_thinking": True,
             "native_function_calling": True,
             "unsupported_parameters": ["temperature", "top_k", "top_p"],
-        },
-        "claude-sonnet-4": {
-            "model_id": "claude-sonnet-4-20250514",
-            "family": "claude",
-            "token_limit": 200000,
-            "max_output_tokens": 64000,
-            "default_max_output_tokens": 16384,
-            "supports_vision": True,
-            "supports_thinking": True,
-            "native_function_calling": True,
-        },
-        "claude-opus-4": {
-            "model_id": "claude-opus-4-20250514",
-            "family": "claude",
-            "token_limit": 200000,
-            "max_output_tokens": 128000,
-            "default_max_output_tokens": 16384,
-            "supports_vision": True,
-            "supports_thinking": True,
-            "native_function_calling": True,
-        },
-        "claude-opus-4-1": {
-            "model_id": "claude-opus-4-1-20250805",
-            "family": "claude",
-            "token_limit": 200000,
-            "max_output_tokens": 128000,
-            "default_max_output_tokens": 16384,
-            "supports_vision": True,
-            "supports_thinking": True,
-            "native_function_calling": True,
         },
         "claude-opus-4-5": {
             "model_id": "claude-opus-4-5-20251101",

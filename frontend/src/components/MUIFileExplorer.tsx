@@ -1518,8 +1518,10 @@ export const MUIFileExplorer = () => {
           <Box sx={{
             minHeight: 0,
             position: 'relative',
+            // Dimmed while the scan is still deepening the tree, but left
+            // interactive: expanding folders and selecting files during a
+            // scan must keep working.
             opacity: (isScanning && muiTreeData && muiTreeData.length > 0) ? 0.7 : 1,
-            pointerEvents: (isScanning && muiTreeData && muiTreeData.length > 0) ? 'none' : 'auto',
             transition: 'opacity 0.3s ease',
             '& .MuiBox-root': {
               maxWidth: '100%'

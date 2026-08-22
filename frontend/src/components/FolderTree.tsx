@@ -197,8 +197,10 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
             // Single call with delay to ensure backend is ready
             updateModelInfo();
         };
+        window.addEventListener('modelChanged', handleModelChange);
         window.addEventListener('modelSettingsChanged', handleModelChange);
         return () => {
+            window.removeEventListener('modelChanged', handleModelChange);
             window.removeEventListener('modelSettingsChanged', handleModelChange);
         };
     }, [fetchModelId, updateModelInfo]);
