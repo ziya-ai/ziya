@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
@@ -126,6 +127,362 @@ def normalize_render_options(options: Optional[Dict[str, Any]]) -> Dict[str, Any
             elif options[k] is not None:
                 merged[k] = options[k]
     return merged
+
+
+# ---------------------------------------------------------------------------
+# Self-contained HTML serializer (runs IN THE PAGE via page.evaluate)
+# ---------------------------------------------------------------------------
+#
+# This browser-side program turns the live rendered #print-render-root into a
+# standalone, inert, offline-viewable HTML document.  It is a plain JS string
+# (not f-string / not templated) so it never interpolates untrusted data; its
+# only input is the {title, footerHtml, embedImages} arg object Playwright
+# passes as the evaluate() argument.
+_SELF_CONTAINED_HTML_JS = r"""
+(opts) => {
+  const title = (opts && opts.title) || 'Ziya Conversation Export';
+  const footerHtml = (opts && opts.footerHtml) || '';
+  const embedImages = !(opts && opts.embedImages === false);
+
+  // --- 1. Collect CSS from all same-origin stylesheets, INLINING it and
+  //        DROPPING any prefers-color-scheme:dark @media block so a saved
+  //        file cannot flip dark on a dark-mode host (HTML-04). --------------
+  const isDarkMedia = (txt) =>
+    /@media[^{]*prefers-color-scheme\s*:\s*dark/i.test(txt || '');
+  const cssChunks = [];
+  for (const sheet of Array.from(document.styleSheets)) {
+    let rules;
+    try { rules = sheet.cssRules; } catch (e) { rules = null; }
+    if (!rules) continue;  // cross-origin sheet: skip (nothing external inlined)
+    for (const rule of Array.from(rules)) {
+      const txt = rule.cssText || '';
+      if (!txt) continue;
+      if (rule.type === CSSRule.MEDIA_RULE && isDarkMedia(txt)) continue;
+      cssChunks.push(txt);
+    }
+  }
+
+  // --- 2. Clone the rendered conversation and neutralize it. ----------------
+  const src = document.getElementById('print-render-root');
+  const root = src ? src.cloneNode(true) : document.createElement('div');
+
+  // Remove every script node (the export is inert; no live JS travels).
+  root.querySelectorAll('script').forEach((n) => n.remove());
+
+  // Remove interactive artifacts: buttons, apply/copy/retry controls,
+  // toolbars, scroll indicators.  These are chat-UI affordances with no
+  // meaning in a static transcript and can carry click handlers.
+  const interactiveSelectors = [
+    'button',
+    '[role="button"]',
+    'input', 'textarea', 'select',
+    '.copy-button', '.copy-code-button', '.code-copy',
+    '.apply-changes', '.apply-button', '.diff-apply',
+    '.toolbar', '.code-toolbar', '.editor-toolbar',
+    '.scroll-indicator', '.scroll-to-bottom',
+    '[contenteditable]',
+    '[data-print-hide]',
+  ];
+  root.querySelectorAll(interactiveSelectors.join(',')).forEach((n) => n.remove());
+
+  // Defense-in-depth: strip inline event handlers and dangerous link schemes
+  // from whatever remains (the React DOM is already escaped; this makes the
+  // route path provably >= the Python path's link-scheme rejection).
+  const DANGER_SCHEME = /^\s*(javascript|vbscript|data\s*:\s*text\/html)\s*:/i;
+  root.querySelectorAll('*').forEach((el) => {
+    for (const attr of Array.from(el.attributes)) {
+      const name = attr.name.toLowerCase();
+      if (name.startsWith('on')) { el.removeAttribute(attr.name); continue; }
+      if ((name === 'href' || name === 'xlink:href' || name === 'src') &&
+          DANGER_SCHEME.test(attr.value || '')) {
+        el.removeAttribute(attr.name);
+      }
+    }
+  });
+
+  // --- 3. Embed same-origin <img> as data URIs so the file needs no network.
+  //        (Diagrams are already inline <svg> or data-URI <img>; this covers
+  //        any http(s) same-origin image.)  Cross-origin images are left as-is
+  //        rather than fetched — we do NOT enable any new remote loading. -----
+  const imageWork = [];
+  if (embedImages) {
+    root.querySelectorAll('img').forEach((img) => {
+      const s = img.getAttribute('src') || '';
+      if (!s || s.startsWith('data:')) return;
+      let url;
+      try { url = new URL(s, document.baseURI); } catch (e) { return; }
+      if (url.origin !== location.origin) return;  // never fetch cross-origin
+      imageWork.push(
+        fetch(url.href).then((r) => r.blob()).then((blob) => new Promise((res) => {
+          const fr = new FileReader();
+          fr.onloadend = () => { img.setAttribute('src', String(fr.result)); res(); };
+          fr.onerror = () => res();
+          fr.readAsDataURL(blob);
+        })).catch(() => {})
+      );
+    });
+  }
+
+  const finish = () => {
+    const body = root.outerHTML;
+    // Pin light color scheme; carry the inlined CSS; append the shared footer.
+    const doc =
+      '<!DOCTYPE html>\n<html lang="en"><head><meta charset="UTF-8">' +
+      '<meta name="viewport" content="width=device-width, initial-scale=1.0">' +
+      '<title>' + title.replace(/[<>&]/g, (c) => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c])) + '</title>' +
+      '<style>:root{color-scheme:light}html,body{color-scheme:light;background:#ffffff}</style>' +
+      '<style>' + cssChunks.join('\n') + '</style>' +
+      '</head><body class="ziya-html-export">' +
+      body + footerHtml +
+      '</body></html>';
+    return doc;
+  };
+
+  if (imageWork.length === 0) return finish();
+  return Promise.all(imageWork).then(finish);
+}
+"""
+
+
+# ---------------------------------------------------------------------------
+# PDF outline / bookmark synthesis (QUAL-01)
+# ---------------------------------------------------------------------------
+#
+# Chromium's ``page.pdf()`` emits NO outline (bookmark tree), so a long
+# transcript exports as an unnavigable wall of pages.  Chromium DOES honour the
+# CSS GCPM ``bookmark-level`` property, but ONLY on the print-media pagination
+# path — and this pipeline deliberately captures with ``media="screen"`` (the
+# chat UI's real styling), so that route is unavailable (verified: 0 outline
+# items via bookmark-level under screen media).
+#
+# Instead we synthesise the outline in two capture passes + a pypdf post-pass:
+#
+#   1. PROBE pass: inject an OUT-OF-FLOW sentinel token (absolutely positioned,
+#      ~invisible) at the start of every ``.print-message`` and capture a PDF.
+#      Because the sentinel is out of flow it does NOT change pagination, but it
+#      DOES land in the text layer, so we can read back which PAGE each message
+#      begins on via the extracted text (screen layout width != PDF layout
+#      width, so a DOM-side measurement would be wrong — the text layer is the
+#      ground truth, matching the PDF-09b lesson).
+#   2. CLEAN pass: remove the sentinels and re-capture.  Verified to produce
+#      IDENTICAL pagination to the probe pass, with ZERO sentinel leakage into
+#      the shipped text layer (so copy-paste / text_quality stays clean).
+#   3. pypdf ``add_outline_item`` stamps one bookmark per message onto the clean
+#      bytes, its destination the message's start page.
+#
+# The whole feature is best-effort: any failure (pypdf missing, empty mapping)
+# falls back to returning the clean bytes unchanged, so the outline can never
+# break a capture that would otherwise have succeeded.
+
+# Injected in the browser to place per-message sentinels.  Plain JS string (no
+# interpolation of untrusted data).  Returns [{index, label, token}].
+_OUTLINE_SENTINEL_INJECT_JS = r"""
+() => {
+  const root = document.getElementById('print-render-root');
+  if (!root) return [];
+  const msgs = Array.from(root.querySelectorAll('.print-message'));
+  const out = [];
+  msgs.forEach((m, i) => {
+    const roleEl = m.querySelector('.print-message-role');
+    const label = roleEl ? (roleEl.textContent || '').trim()
+                         : (m.getAttribute('data-role') || '');
+    const token = 'ZYAOUTLINEANCHOR' + i + 'X';
+    const span = document.createElement('span');
+    span.textContent = token;
+    span.setAttribute('data-zya-outline-anchor', String(i));
+    // Out of flow so pagination is unchanged; ~invisible but still rendered
+    // into the text layer so pypdf/pdfplumber can read its page.
+    span.style.position = 'absolute';
+    span.style.left = '0';
+    span.style.top = '0';
+    span.style.fontSize = '2px';
+    span.style.color = 'rgba(255,255,255,0.004)';
+    span.style.pointerEvents = 'none';
+    span.style.userSelect = 'none';
+    if (getComputedStyle(m).position === 'static') m.style.position = 'relative';
+    m.insertBefore(span, m.firstChild);
+    out.push({ index: i, label, token });
+  });
+  return out;
+};
+"""
+
+# Injected in the browser to strip the sentinels before the clean capture.
+_OUTLINE_SENTINEL_REMOVE_JS = r"""
+() => {
+  const nodes = document.querySelectorAll('[data-zya-outline-anchor]');
+  nodes.forEach(e => e.remove());
+  return document.querySelectorAll('[data-zya-outline-anchor]').length;
+};
+"""
+
+# Outline bookmark labels cap (a runaway conversation should not produce a
+# thousand-entry tree; the check only needs >= 2 with resolvable destinations).
+_OUTLINE_MAX_ITEMS = 400
+
+
+def _map_sentinels_to_pages(
+    probe_pdf: bytes, anchors: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Read the probe PDF's text layer and resolve each sentinel to a page.
+
+    Returns [{index, label, page}] for every sentinel whose token was found,
+    ordered by page then message index.  Never raises.
+    """
+    try:
+        from pypdf import PdfReader
+    except Exception:  # pragma: no cover - pypdf is a required dep for outline
+        return []
+    try:
+        reader = PdfReader(io.BytesIO(probe_pdf))
+        # Strip spaces: Chromium can inject stray spaces between glyphs of a
+        # tiny token, so compare against a space-collapsed page string.
+        page_text = [
+            (p.extract_text() or "").replace(" ", "") for p in reader.pages
+        ]
+    except Exception:
+        return []
+    mapped: List[Dict[str, Any]] = []
+    for a in anchors:
+        token = a.get("token")
+        if not token:
+            continue
+        page = next(
+            (i for i, t in enumerate(page_text) if token in t), None
+        )
+        if page is None:
+            continue
+        mapped.append(
+            {"index": a.get("index"), "label": a.get("label") or "", "page": page}
+        )
+    mapped.sort(key=lambda d: (d["page"], d["index"] if d["index"] is not None else 0))
+    return mapped
+
+
+def _synthesize_outline(clean_pdf: bytes, mapping: List[Dict[str, Any]]) -> bytes:
+    """Stamp a per-message bookmark tree onto ``clean_pdf`` using ``mapping``.
+
+    Best-effort: returns ``clean_pdf`` unchanged on any failure or empty
+    mapping.  Each bookmark's title is the role label plus the 1-based message
+    number; its destination is the message's start page.
+    """
+    if not mapping:
+        return clean_pdf
+    try:
+        from pypdf import PdfReader, PdfWriter
+    except Exception:  # pragma: no cover
+        return clean_pdf
+    try:
+        writer = PdfWriter(clone_from=io.BytesIO(clean_pdf))
+        n_pages = len(writer.pages)
+        added = 0
+        for item in mapping:
+            if added >= _OUTLINE_MAX_ITEMS:
+                break
+            page = item.get("page")
+            if page is None or page < 0 or page >= n_pages:
+                continue
+            label = item.get("label") or "Message"
+            idx = item.get("index")
+            num = (idx + 1) if isinstance(idx, int) else added + 1
+            title = f"{label} (message {num})" if label else f"Message {num}"
+            writer.add_outline_item(title, page)
+            added += 1
+        if added == 0:
+            return clean_pdf
+        buf = io.BytesIO()
+        writer.write(buf)
+        return buf.getvalue()
+    except Exception:
+        logger.warning("PDF outline synthesis failed; shipping outline-less PDF",
+                       exc_info=True)
+        return clean_pdf
+
+
+# ---------------------------------------------------------------------------
+# Document metadata (QUAL-02)
+# ---------------------------------------------------------------------------
+#
+# Chromium's ``page.pdf()`` copies the page's ``<title>`` (the injected app
+# shell — 'Ziya - Code Assistant') into /Title, leaves /Creator as 'Chromium',
+# and sets NO /Author or /Subject.  A file manager, PDF library, or assistive
+# tech then mislabels the document.  We stamp conversation-specific Info-dict
+# fields with a pypdf post-pass in the SAME clone-and-write cycle as the QUAL-01
+# outline, so a well-made export names itself.
+#
+# Chromium's default /Title values (case-insensitive) that must be REPLACED by
+# the conversation title rather than trusted.
+_CHROMIUM_DEFAULT_TITLES = {
+    "", "about:blank", "untitled", "chromium", "ziya - code assistant",
+    "ziya conversation export", "ziya session transcript",
+}
+_METADATA_CREATOR = "Ziya PDF Exporter"
+_METADATA_SUBJECT = "Ziya conversation export"
+
+
+def _build_document_metadata(
+    *,
+    title: Optional[str] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+) -> Dict[str, str]:
+    """Assemble the Info-dict fields QUAL-02 stamps on the captured PDF.
+
+    /Title  — the conversation title (falls back to a generic export label only
+              when none is supplied); NEVER the app-shell '<title>'.
+    /Author — the model/provider that produced the transcript, else 'Ziya'.
+    /Subject, /Creator — fixed export-identifying strings.
+
+    Returns only the keys that should be written (never empty values), so the
+    caller's ``add_metadata`` merge leaves Chromium's parseable /CreationDate
+    intact.
+    """
+    md: Dict[str, str] = {
+        "/Subject": _METADATA_SUBJECT,
+        "/Creator": _METADATA_CREATOR,
+    }
+    clean_title = (title or "").strip()
+    if not clean_title or clean_title.lower() in _CHROMIUM_DEFAULT_TITLES:
+        clean_title = "Ziya Conversation Export"
+    md["/Title"] = clean_title
+    model_s = (model or "").strip()
+    provider_s = (provider or "").strip()
+    generic = {"", "unknown", "test-model", "test-provider"}
+    if model_s.lower() not in generic and provider_s.lower() not in generic:
+        md["/Author"] = f"{model_s} ({provider_s})"
+    elif model_s.lower() not in generic:
+        md["/Author"] = model_s
+    elif provider_s.lower() not in generic:
+        md["/Author"] = provider_s
+    else:
+        md["/Author"] = "Ziya"
+    return md
+
+
+def _apply_document_metadata(pdf_bytes: bytes, metadata: Dict[str, str]) -> bytes:
+    """Merge ``metadata`` into the PDF Info dict via pypdf.
+
+    Best-effort: returns ``pdf_bytes`` unchanged on any failure or empty
+    metadata, so metadata stamping can never break an otherwise-good capture.
+    ``add_metadata`` MERGES, so any Chromium field not overridden here (notably
+    the parseable /CreationDate) is preserved.
+    """
+    if not metadata:
+        return pdf_bytes
+    try:
+        from pypdf import PdfWriter
+    except Exception:  # pragma: no cover
+        return pdf_bytes
+    try:
+        writer = PdfWriter(clone_from=io.BytesIO(pdf_bytes))
+        writer.add_metadata(metadata)
+        buf = io.BytesIO()
+        writer.write(buf)
+        return buf.getvalue()
+    except Exception:
+        logger.warning("PDF metadata stamping failed; shipping default metadata",
+                       exc_info=True)
+        return pdf_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -227,16 +584,76 @@ class ConversationRenderSession:
         page.on("console", _on_console)
         page.on("pageerror", _on_pageerror)
 
-        await page.goto(
+        response = await page.goto(
             f"{self._base_url}/print",
             wait_until="networkidle",
             timeout=timeout_ms,
         )
 
+        # Fail loudly if the shell itself did not load.  A non-2xx body (e.g. a
+        # 404 JSON error when the /print SPA passthrough is missing from
+        # app/routes/page_routes.py) reaches "networkidle" instantly, so the
+        # goto above looks successful and the failure only surfaces later as an
+        # opaque "window.__renderConversation is not a function" TypeError.
+        # Checking the status here names the actual problem.
+        # Require a real int: a mocked page.goto() yields a Mock whose .status
+        # is another Mock, and comparing that to an int raises TypeError.  A
+        # driver guard must never be able to crash the render it is protecting.
+        status = getattr(response, "status", None) if response is not None else None
+        if isinstance(status, int) and not isinstance(status, bool) and status >= 400:
+            raise RuntimeError(
+                f"GET {self._base_url}/print returned HTTP {status}; the SPA "
+                f"shell never loaded, so the /print route could not mount. "
+                f"Check that a server-side shell passthrough for /print is "
+                f"registered in app/routes/page_routes.py."
+            )
+
+        # Force a LIGHT prefers-color-scheme for the whole render (SHARED — this
+        # runs before both capture_pdf() and extract_html()).  `prefers-color-
+        # scheme` is a NON-REACTIVE theme vector: no amount of React
+        # setTheme('light') can override a `@media (prefers-color-scheme: dark)`
+        # rule, because it keys off the host/OS colour scheme, not app state.  A
+        # headless context that inherits a dark OS/CI colour scheme would
+        # otherwise let such a rule paint dark regions onto the light export
+        # page (user defect #6).  Emulating light here neutralises that vector
+        # for EVERY shared-route consumer; capture_pdf()'s later
+        # emulate_media(media="screen") leaves the colour scheme untouched.
+        try:
+            await page.emulate_media(color_scheme="light")
+        except Exception:  # pragma: no cover - older Playwright / defensive
+            pass
+
         # A whole conversation easily exceeds URL length limits, so inject via
         # the imperative API (the large-payload channel /render also exposes).
         payload_with_timeout = {**payload, "renderTimeoutMs": timeout_ms}
         payload_json = json.dumps(payload_with_timeout)
+
+        # Wait for PrintRenderPage to define the injector before calling it.
+        # Calling it directly turns *any* mount failure -- 404 shell, a bundle
+        # built before /print existed, a lazy-chunk load error, a crash in a
+        # provider above the component -- into the same misleading
+        # "not a function" TypeError.  Waiting converts all of those into a
+        # timeout carrying the page diagnostics that identify the real cause.
+        try:
+            await page.wait_for_function(
+                "() => typeof window.__renderConversation === 'function'",
+                timeout=timeout_ms,
+            )
+        except Exception as inject_err:
+            diag = await self._collect_diagnostics(page, console_log, pageerror_log)
+            logger.error(
+                "window.__renderConversation was never defined. Diagnostics: %s",
+                diag,
+            )
+            raise RuntimeError(
+                f"window.__renderConversation was never defined after "
+                f"{timeout_ms}ms -- PrintRenderPage did not mount. "
+                f"page_url={page.url!r} "
+                f"page_error={diag.get('page_error')!r} "
+                f"console_tail={diag.get('console_tail')!r} "
+                f"pageerrors={diag.get('pageerrors')!r}"
+            ) from inject_err
+
         success = await page.evaluate(
             f"window.__renderConversation({json.dumps(payload_json)})"
         )
@@ -327,15 +744,39 @@ class ConversationRenderSession:
         *,
         timeout_ms: int = 60_000,
         margin: Optional[Dict[str, str]] = None,
+        outline: bool = True,
+        metadata: Optional[Dict[str, str]] = None,
     ) -> bytes:
         """Render the conversation and return PDF bytes.
 
         Uses ``page.pdf()`` with A4, explicit margins and
         ``print_background=True`` so backgrounds (diff colours, highlight
         spans, code-block fills) are preserved.
+
+        When ``outline`` is true (default) a navigable per-message bookmark tree
+        is synthesised (QUAL-01): a PROBE capture with out-of-flow sentinels
+        establishes each message's start page, then the sentinels are removed
+        and a CLEAN capture is post-processed with pypdf to stamp the outline.
+        The outline pass is best-effort — any failure returns the clean bytes
+        unchanged, so it can never break an otherwise-successful capture.
+
+        Document metadata (QUAL-02) is always stamped on the returned bytes:
+        the conversation title as /Title (never the app-shell <title>), plus
+        /Author /Subject /Creator.  ``metadata`` overrides the fields derived
+        from the payload; pass an explicit ``{}`` to skip the metadata pass.
         """
         async with self._lock:
             await self._ensure_browser()
+
+        # QUAL-02: conversation-specific document metadata.  Computed from the
+        # payload (or the ``metadata`` override) and stamped on the final bytes,
+        # so /Title is the conversation title, not the app-shell <title>, and
+        # /Author /Subject /Creator are set rather than Chromium defaults.
+        doc_metadata = metadata if metadata is not None else _build_document_metadata(
+            title=payload.get("title"),
+            model=payload.get("model"),
+            provider=payload.get("provider"),
+        )
 
         # page.pdf() requires headless Chromium and the "print" media emulation
         # off (we want screen styles, which is what the chat UI uses).
@@ -348,12 +789,41 @@ class ConversationRenderSession:
             pdf_margin = margin or {
                 "top": "12mm", "bottom": "16mm", "left": "10mm", "right": "10mm",
             }
-            return await page.pdf(
-                format="A4",
-                print_background=True,
-                margin=pdf_margin,
-                prefer_css_page_size=False,
-            )
+
+            async def _capture() -> bytes:
+                return await page.pdf(
+                    format="A4",
+                    print_background=True,
+                    margin=pdf_margin,
+                    prefer_css_page_size=False,
+                )
+
+            if not outline:
+                return _apply_document_metadata(await _capture(), doc_metadata)
+
+            # QUAL-01: two-pass outline synthesis.  Failures degrade to a plain
+            # single-pass capture rather than losing the export.
+            anchors: List[Dict[str, Any]] = []
+            try:
+                anchors = await page.evaluate(_OUTLINE_SENTINEL_INJECT_JS)
+            except Exception:  # pragma: no cover - defensive
+                logger.warning("outline sentinel injection failed", exc_info=True)
+                anchors = []
+
+            if not anchors:
+                return _apply_document_metadata(await _capture(), doc_metadata)
+
+            probe_pdf = await _capture()
+            try:
+                await page.evaluate(_OUTLINE_SENTINEL_REMOVE_JS)
+            except Exception:  # pragma: no cover - defensive
+                logger.warning("outline sentinel removal failed", exc_info=True)
+            clean_pdf = await _capture()
+
+            mapping = _map_sentinels_to_pages(probe_pdf, anchors)
+            # QUAL-02: stamp document metadata in the same post-process cycle.
+            outlined = _synthesize_outline(clean_pdf, mapping)
+            return _apply_document_metadata(outlined, doc_metadata)
         finally:
             await page.close()
 
@@ -375,6 +845,56 @@ class ConversationRenderSession:
             await self._open_and_render(page, payload, timeout_ms=timeout_ms)
             return await page.evaluate(
                 "() => document.getElementById('print-render-root').outerHTML"
+            )
+        finally:
+            await page.close()
+
+    async def extract_export_html(
+        self,
+        payload: Dict[str, Any],
+        *,
+        timeout_ms: int = 60_000,
+        embed_images: bool = True,
+    ) -> str:
+        """Render the conversation and return a SELF-CONTAINED standalone HTML doc.
+
+        This is the Card II route-driven high-fidelity export.  Unlike
+        :meth:`extract_html` (which returns only the raw ``#print-render-root``
+        fragment for measurement), this produces a complete ``<!DOCTYPE html>``
+        document that opens faithfully offline in any browser:
+
+          * every applicable CSS rule from the app's own stylesheets is INLINED
+            into a single ``<style>`` (nothing is ``<link>``-ed);
+          * ``@media (prefers-color-scheme: dark)`` rules are DROPPED and the
+            document is pinned to ``color-scheme: light`` so a downloaded file
+            never flips dark on a dark-mode machine (HTML-04);
+          * interactive artifacts (buttons, apply-changes controls, toolbars,
+            scroll indicators, ``contenteditable``) and ALL ``<script>`` nodes
+            are removed — the file is inert;
+          * same-origin ``<img>`` are embedded as ``data:`` URIs when
+            ``embed_images`` (so no network fetch is needed to view them);
+          * ``on*`` inline handlers and ``javascript:``/``vbscript:`` hrefs are
+            stripped as a defense-in-depth pass over the already-escaped DOM.
+
+        The heavy lifting runs IN THE PAGE (one ``page.evaluate`` after the
+        render completes) so it operates on the live computed DOM.  Security
+        posture is inherited from :meth:`_open_and_render` (Chromium sandbox via
+        ``build_chromium_launch_args``, no remote-resource loading enabled).
+        """
+        async with self._lock:
+            await self._ensure_browser()
+        page = await self._browser.new_page()
+        try:
+            await self._open_and_render(page, payload, timeout_ms=timeout_ms)
+            title = payload.get("title") or "Ziya Conversation Export"
+            footer_html = payload.get("footerHtml") or ""
+            return await page.evaluate(
+                _SELF_CONTAINED_HTML_JS,
+                {
+                    "title": title,
+                    "footerHtml": footer_html,
+                    "embedImages": bool(embed_images),
+                },
             )
         finally:
             await page.close()
@@ -485,8 +1005,17 @@ async def export_conversation_pdf(
         messages, options=opts, footer_html=footer_html, title=title,
     )
 
+    # QUAL-02: derive conversation-specific document metadata from the values
+    # export_conversation_pdf already has (title/model/provider), rather than
+    # re-plumbing them through the injected payload.
+    doc_metadata = _build_document_metadata(
+        title=title, model=model, provider=provider,
+    )
+
     session = await get_render_session(server_port)
-    pdf_bytes = await session.capture_pdf(payload, timeout_ms=timeout_ms)
+    pdf_bytes = await session.capture_pdf(
+        payload, timeout_ms=timeout_ms, metadata=doc_metadata,
+    )
 
     meta = {
         "message_count": len(messages),

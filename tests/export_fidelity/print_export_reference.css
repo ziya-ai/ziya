@@ -1,0 +1,131 @@
+/*
+ * print-export.css — shared fidelity print stylesheet for the /print export DOM.
+ *
+ * CANONICAL SOURCE OF TRUTH.  The shipped frontend file
+ * `frontend/src/styles/print-export.css` is byte-identical to this reference
+ * (guarded by tests/export_fidelity/test_print_css_fragmentation.py) and is
+ * imported by `PrintRenderPage`.  Keeping the canonical copy under
+ * tests/export_fidelity/ lets the proxy PDF generator and the guard test read
+ * one file, so the audited layout is exactly the layout that ships.
+ *
+ * Consumed by BOTH export backends and therefore SHARED (Cards II & III):
+ *   - the PDF pipeline (app/services/pdf_exporter.capture_pdf -> page.pdf())
+ *   - Card II's HTML extraction (ConversationRenderSession.extract_html())
+ *
+ * Two concerns, deliberately separated:
+ *
+ *   1. OVERSIZED-ELEMENT SCALING (SHARED — helps HTML too): a diagram / figure
+ *      wider than its column or taller than one page is scaled to fit rather
+ *      than overflowing.  In HTML this stops horizontal clipping of a 1500px-
+ *      wide diagram; in PDF it stops a too-tall figure from being bumped
+ *      wholesale to the next page and leaving a huge white band.
+ *
+ *   2. PAGE FRAGMENTATION (effective only in paged/PDF output): break-inside /
+ *      orphans / widows / break-after hints so Chromium's paged output never
+ *      bisects a *page-sized-or-smaller* atomic block (table / figure / diff)
+ *      nor strands a heading at a page bottom.  These are LAYOUT properties,
+ *      NOT `@media print` rules on purpose: the pipeline emulates `screen`
+ *      media (pdf_exporter.capture_pdf) so an `@media print { ... }` block would
+ *      never match — but Chromium still honours fragmentation properties in
+ *      page.pdf().  Card II (HTML) ignores them (no pages), which is correct:
+ *      they are inert, not harmful, in a single-page document.
+ *
+ * DELIBERATE NON-RULES (learned by measurement, kept as guard-rails):
+ *   - `pre` (code) is NOT `break-inside: avoid`.  A long listing is legitimately
+ *     taller than a page and MUST be allowed to flow across the boundary;
+ *     forcing it whole only manufactures near-empty pages (the very defect #5/#7
+ *     this file exists to remove).  It is only wrap-constrained so wide lines do
+ *     not clip in a non-scrollable capture.
+ *   - tables are NOT `table-layout: fixed` / `word-break`.  Cramming 10 columns
+ *     into a fixed layout wraps cell text mid-word and destroys text
+ *     extractability (content_completeness).  Tables only get a max-width and an
+ *     atomic break hint.
+ *   - the figure `max-height` cap is 45vh, NOT ~90vh.  A ~full-page figure is
+ *     atomic (break-inside:avoid) and cannot share a page with the content
+ *     above it, so it still jumps to a fresh page and leaves a huge white band
+ *     (measured: 86vh -> 0.556 band, FAIL; 45vh -> 0.168 band, PASS).  45vh is
+ *     the largest cap at which the fixture's tall figure fits below its heading
+ *     on the same page.  A figure genuinely taller than that is better shown at
+ *     readable-but-fitting size than at full size on an otherwise blank page.
+ *
+ * ALL rules are scoped under `.ziya-print` (the class PrintRenderPage stamps on
+ * `#print-render-content`) so the live chat UI is never affected.  No `@media
+ * print`, no A4 constant baked in — page height is expressed with `vh`, which
+ * maps to the page content box in Chromium's paged output.
+ */
+
+/* ── 1. Oversized-element scaling (SHARED: PDF + HTML) ──────────────────── */
+
+/* Figures / diagrams / images: never wider than the column, never taller than
+ * a fraction of a page (see the 45vh rationale above).  `!important` is
+ * required to beat inline `max-width: none` / fixed width/height attributes the
+ * renderer may stamp on an <svg>.  With `height: auto` and a constrained axis,
+ * replaced elements (svg/img) scale PROPORTIONALLY, so a 480x1500 figure shrinks
+ * to fit instead of overflowing onto (or off) the next page. */
+.ziya-print img,
+.ziya-print svg,
+.ziya-print .diagram svg,
+.ziya-print .mermaid-container svg,
+.ziya-print figure svg {
+  display: block;
+  max-width: 100% !important;
+  height: auto !important;
+  max-height: 45vh !important;
+  object-fit: contain;
+}
+
+/* Keep wide atomic blocks inside the column. */
+.ziya-print pre,
+.ziya-print table,
+.ziya-print .diagram,
+.ziya-print .diff-view {
+  max-width: 100%;
+}
+
+/* A headless capture cannot scroll, so an over-wide code line would be clipped
+ * at the page edge.  Wrap instead.  (Line COUNT of the fixture's ~50-char lines
+ * is unchanged; this only rescues genuinely over-wide lines.) */
+.ziya-print pre,
+.ziya-print pre[class*="language-"] {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── 2. Page fragmentation (effective only in paged/PDF output) ─────────── */
+
+/* Keep genuinely atomic, page-sized-or-smaller blocks whole across a break.
+ * NOTE: `pre` is intentionally absent — long code must be allowed to split. */
+.ziya-print table,
+.ziya-print figure,
+.ziya-print .diagram,
+.ziya-print .mermaid-container,
+.ziya-print .diff-view,
+.ziya-print .katex-display,
+.ziya-print img,
+.ziya-print svg {
+  break-inside: avoid;
+  page-break-inside: avoid; /* legacy alias for older engines */
+}
+
+/* Never strand a heading at the bottom of a page: keep it with what follows.
+ * Together with the figure scaling above, this un-orphans a heading that
+ * precedes a tall figure (the heading + now-fits figure move together). */
+.ziya-print h1,
+.ziya-print h2,
+.ziya-print h3,
+.ziya-print h4,
+.ziya-print h5,
+.ziya-print h6 {
+  break-after: avoid;
+  page-break-after: avoid;
+  break-inside: avoid;
+  orphans: 3;
+  widows: 3;
+}
+
+/* Minimum lines kept together for flowing text. */
+.ziya-print p,
+.ziya-print li {
+  orphans: 3;
+  widows: 3;
+}

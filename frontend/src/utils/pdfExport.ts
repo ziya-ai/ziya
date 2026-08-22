@@ -1,9 +1,24 @@
 /**
- * PDF Export Utility
+ * PDF Export Utility — CLIENT-SIDE FALLBACK.
  *
- * Captures the post-rendered conversation DOM (with all formatting,
- * syntax highlighting, rendered diagrams, embedded images, etc.)
- * and produces a PDF via the browser's native print engine.
+ * The primary PDF path is now server-side: `ExportConversationModal`
+ * POSTs to `/api/export/pdf`, which renders the whole conversation
+ * through the real MarkdownRenderer pipeline in headless Chromium
+ * (see `app/services/pdf_exporter.py` + the `/print` route). That path
+ * is higher fidelity and observable to a test harness.
+ *
+ * This module is retained DELIBERATELY as the explicit fallback for the
+ * one case the server path cannot satisfy: when Playwright/Chromium is
+ * not installed on the server, `/api/export/pdf` returns HTTP 501. The
+ * modal detects that specific status and calls `exportConversationAsPdf`
+ * so the user still gets a PDF via the browser's own print engine,
+ * rasterising the live DOM. The selection is explicit and tested
+ * (`tests/export_fidelity/test_pdf_fallback_selection.py`), not incidental.
+ *
+ * This path captures the CLIENT-rendered DOM and ends in the browser
+ * print dialog, so it is lower fidelity (subject to the user's print
+ * settings) and cannot be measured by the export-fidelity harness. Do
+ * not route the primary flow back through here.
  *
  * The header/footer metadata (version, model, provider, Ziya URL)
  * matches what the markdown and HTML exports produce, fetched live

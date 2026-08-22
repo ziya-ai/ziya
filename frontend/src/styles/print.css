@@ -1,0 +1,203 @@
+/*
+ * Print/export fidelity — page-fragmentation and oversized-figure control.
+ *
+ * SCOPE.  Every rule is gated on `body.ziya-print-mode`, the class the /print
+ * route (PrintRenderPage) puts on <body> for the duration of an export.  So
+ * these rules affect ONLY the export DOM — the PDF pipeline (page.pdf) AND the
+ * HTML pipeline (extract_html), both of which drive the same /print route — and
+ * NEVER the live app chrome.
+ *
+ * WHY NOT @media print.  The PDF pipeline captures with
+ * `page.emulate_media(media="screen")` (app/services/pdf_exporter.py ->
+ * capture_pdf), because the chat UI is styled for screen and we want that
+ * styling in the export.  Under screen emulation an `@media print { … }` block
+ * would NEVER match, so the break rules must be plain rules scoped to the
+ * print-mode class instead.  CSS fragmentation properties
+ * (break-inside / orphans / widows / break-after) are inert in a continuous
+ * (non-paginated) context such as the HTML export, but Chromium DOES honour
+ * them while paginating during page.pdf(), so applying them unconditionally
+ * here is safe for both consumers.
+ *
+ * SHARED (Cards II / III).  The `max-width` figure rule below prevents the
+ * horizontal overflow of a too-wide diagram in the HTML export as well; the
+ * page-break rules are simply inert there.  Oversized *height* fitting is done
+ * imperatively in PrintRenderPage (JS), because mermaid bakes
+ * `width/height … !important` inline on its <svg>, and an inline `!important`
+ * declaration outranks any author stylesheet — so author CSS, even with
+ * `!important`, cannot shrink it.  See PrintRenderPage.fitOversizedFigures.
+ */
+
+/* ── Keep atomic blocks whole across a page boundary ─────────────────────── */
+/* A diagram, figure, table, short quote or a display-math block should not be
+   bisected by a page break when it fits on a page.  (An element still taller
+   than a full page after JS scaling will of course be split by necessity —
+   break-inside:avoid is a preference Chromium honours only when the element
+   can actually fit.)
+   NOTE: we deliberately do NOT hold `pre`/`.diff-view` blocks atomic.  A long
+   code block or diff is routinely taller than one page and is MEANT to flow
+   across the boundary; forcing it whole would shove it onto a fresh page and
+   leave a large empty band behind it (user defect #5).  Long code splits
+   naturally; only self-contained figures are held atomic.
+   NEW-3 (Card IV): a *diff* renders as a real `<table class="diff-table …">`
+   (see MarkdownRenderer -> `diff-table ${viewType…}`; index.css `table.diff-table`),
+   so a bare `table` selector would sweep every diff into the atomic set and
+   contradict the intent above — a page-tall diff would be forced whole, leaving
+   the reported blank band after its 'Modify:' header (or stranding the header
+   at a page bottom with the body overleaf).  We therefore hold ONLY genuine
+   content tables atomic and exclude diff tables (`.diff-table` and its
+   `.diff-table-hunk` variant, both of which carry the `.diff-table` class) so
+   they flow across the boundary.  Header↔body binding is handled by the
+   `.diff-view-controls` rule below. */
+body.ziya-print-mode table:not(.diff-table),
+body.ziya-print-mode figure,
+body.ziya-print-mode blockquote,
+body.ziya-print-mode .mermaid-container,
+body.ziya-print-mode .mermaid-wrapper,
+body.ziya-print-mode .d3-container,
+body.ziya-print-mode .diagram,
+body.ziya-print-mode .katex-display {
+  break-inside: avoid;
+  page-break-inside: avoid; /* legacy alias for older layout engines */
+}
+
+/* ── Bind a diff's 'Modify: <path>' header to the diff body it introduces ── */
+/*
+ * NEW-3 (Card IV), second half.  The file header ('Modify: …', 'Create New
+ * File: …', etc.) is rendered as `div.diff-view-controls`, a SIBLING that sits
+ * directly above the `div.diff-container` holding the diff `table.diff-table`.
+ * Now that the diff table flows (rule above), the header must not be left
+ * stranded at the bottom of a page with the body starting on the next one:
+ * `break-after: avoid` binds the header to the block that follows it, so the
+ * header moves to the next page WITH the first rows of its body — exactly the
+ * user's expectation ("the header should move to the next page and align with
+ * the shifted body").  `break-inside: avoid` keeps the one-line header itself
+ * from splitting.  Scoped to body.ziya-print-mode (shared with the HTML export,
+ * inert in its continuous context); NOT @media print (capture_pdf emulates
+ * screen media).
+ */
+body.ziya-print-mode .diff-view-controls {
+  break-after: avoid;
+  page-break-after: avoid;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+/* ── Never strand a heading at the bottom of a page ──────────────────────── */
+/* `break-after: avoid` binds a heading to the block that follows it, so a
+   heading is never orphaned at a page bottom with its content on the next page
+   (user defect #7). */
+body.ziya-print-mode h1,
+body.ziya-print-mode h2,
+body.ziya-print-mode h3,
+body.ziya-print-mode h4,
+body.ziya-print-mode h5,
+body.ziya-print-mode h6 {
+  break-after: avoid;
+  page-break-after: avoid;
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+/* ── Don't leave one or two dangling lines across a break ────────────────── */
+body.ziya-print-mode p,
+body.ziya-print-mode li {
+  orphans: 3;
+  widows: 3;
+}
+
+/* ── Figures must not overflow the printable width ───────────────────────── */
+/* SHARED with the HTML export: caps figure/image width to the container so a
+   wide diagram or image cannot spill past the page edge.  For a mermaid <svg>
+   whose width is baked inline with !important this rule is outranked (handled
+   in JS instead); it still constrains plain <img> and any non-!important svg. */
+body.ziya-print-mode .mermaid-container svg,
+body.ziya-print-mode .mermaid-wrapper svg,
+body.ziya-print-mode .d3-container svg,
+body.ziya-print-mode figure svg,
+body.ziya-print-mode figure img,
+body.ziya-print-mode img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* ── Preserve class-derived colours through PDF print economy ────────────── */
+/*
+ * ROOT CAUSE of user defects #1 (colours absent), #3 (highlight lost) and #4
+ * (diff add/remove lost) on the class-painted constructs.  When a background
+ * or fill comes from a *stylesheet class* (Prism theme, highlight <mark>, diff
+ * insert/delete, code-block fill, table zebra) rather than an inline style,
+ * Chromium is free — under its default `print-color-adjust: economy` — to drop
+ * that class-painted colour during page.pdf() to "save ink", even with
+ * print_background=True.  print_background merely permits backgrounds; it does
+ * NOT force economy off.  `print-color-adjust: exact` (and the -webkit- alias
+ * for the Chromium version in use) is what makes the browser reproduce the
+ * colours faithfully.
+ *
+ * This is gated on body.ziya-print-mode (NOT @media print — capture_pdf uses
+ * emulate_media('screen'), so an @media print block would never match) and so
+ * is SHARED with Card II's HTML export, whose extracted DOM keeps the same
+ * class-derived colours only if this declaration travels with it.
+ *
+ * Foreground text colour (e.g. Prism token colours) is not itself subject to
+ * background economy, but declaring exact here is harmless and belt-and-braces
+ * for any renderer that paints a token *background*.
+ */
+body.ziya-print-mode,
+body.ziya-print-mode * {
+  -webkit-print-color-adjust: exact !important;
+  print-color-adjust: exact !important;
+  color-adjust: exact !important; /* legacy alias */
+}
+
+/* ── Text highlighting must be a visible, light, class-derived colour ─────── */
+/*
+ * Defect #3: a highlighted phrase (<mark> / .highlight / .search-highlight)
+ * loses its colour in the PDF.  Two failure routes are closed here:
+ *   1. A bare <mark> with no author rule falls back to the UA default
+ *      (bright #ffff00), which is both wrong for the light theme and prone to
+ *      being economised away.  We give it the same GitHub-light highlight the
+ *      chat UI uses (#fff176) as a STYLESHEET (class-derived) colour — the
+ *      exact case PDF-01 is about — so it is faithful AND, with the exact rule
+ *      above, guaranteed to survive.
+ *   2. The DARK fixture variant may carry a dark highlight fill; forcing the
+ *      light background here composites it onto the white page (supports #6).
+ * black-on-yellow text keeps contrast on the white page.
+ */
+body.ziya-print-mode mark,
+body.ziya-print-mode .highlight,
+body.ziya-print-mode .search-highlight {
+  background-color: #fff176 !important;
+  color: #000000 !important;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* ── Long code lines must WRAP, never clip at the right margin ───────────── */
+/*
+ * PDF-09 (code-line half).  A single code/diff line longer than the printable
+ * content width was SILENTLY CLIPPED at the right content margin during
+ * page.pdf(): the glyphs past the margin were dropped from the page raster AND
+ * from the text layer, even though the whole line was present in the rendered
+ * DOM (a `<pre>` defaults to `white-space: pre`, which never wraps).  Card I
+ * proved the fix empirically by injecting this rule via Playwright
+ * add_style_tag on the REAL /print page and re-capturing: LONGTOK40 /
+ * LONGTOK79 / LONGLINE_END_MARK were recovered fail->pass with ZERO regression
+ * (canonical MRK_TBLCELL_5t2 still present; diff green/red pixel counts and
+ * page count unchanged).
+ *
+ *   - white-space: pre-wrap   keeps indentation/newlines but ALLOWS wrapping at
+ *                             normal break opportunities (spaces).
+ *   - overflow-wrap: anywhere + word-break: break-word   let an unbroken long
+ *                             TOKEN (no spaces) break mid-token rather than
+ *                             overflow the margin.
+ *
+ * Scoped to body.ziya-print-mode (NOT @media print — capture_pdf emulates
+ * screen media, so an @media print block would never match) and therefore
+ * SHARED with Card II's HTML export, which inherits the same wrap behaviour.
+ */
+body.ziya-print-mode pre,
+body.ziya-print-mode pre code {
+  white-space: pre-wrap !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+}

@@ -4,10 +4,15 @@ import { CopyOutlined, DownloadOutlined, GithubOutlined, CloudOutlined, FileText
 import { useActiveChat } from '../context/ActiveChatContext';
 import { useTheme } from '../context/ThemeContext';
 import { captureAllVisualizations } from '../utils/visualizationCapture';
-// NOTE: the legacy client-side exportConversationAsPdf (utils/pdfExport.ts) is
-// retired from the PDF path in Stage 2 — handlePdfExport now POSTs to
-// /api/export/pdf and downloads real PDF bytes. The util file itself is left
-// in place (its import removed here) until Stage 7 deletes it.
+// PDF export is server-side by default: handlePdfExport POSTs to
+// /api/export/pdf and downloads real PDF bytes rendered in headless Chromium.
+// The client-side exportConversationAsPdf (utils/pdfExport.ts) is KEPT as an
+// EXPLICIT fallback: when the server has no Playwright/Chromium the endpoint
+// returns HTTP 501, and we then render the PDF from the live DOM via the
+// browser print dialog so the user is never left without an export. The
+// selection is explicit (501 => fallback) and tested in
+// tests/export_fidelity/test_pdf_fallback_selection.py.
+import { exportConversationAsPdf } from '../utils/pdfExport';
 import { useProject } from '../context/ProjectContext';
 import { hydrateConversationMessages } from '../utils/conversationHydration';
 import type { Message } from '../utils/types';
@@ -36,6 +41,13 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
     const [target, setTarget] = useState<'public' | 'internal'>('public');
     const [isExporting, setIsExporting] = useState(false);
     const [exportedContent, setExportedContent] = useState<string | null>(null);
+    // Which HTML fidelity tier produced the last export ("route" = real
+    // renderer, "python" = regex fallback), plus any degradation reason /
+    // paste-size warning.  Lets the UI tell the user when the lower-fidelity
+    // fallback was used instead of silently downgrading.
+    const [htmlExportMeta, setHtmlExportMeta] = useState<{
+        mode?: string; fidelity?: string; fallback_reason?: string; size_warning?: string;
+    } | null>(null);
     const [isPdfExporting, setIsPdfExporting] = useState(false);
     const [pasteUrl, setPasteUrl] = useState<string | null>(null);
     const [captureProgress, setCaptureProgress] = useState<number>(0);
@@ -194,9 +206,28 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
                 }),
             });
 
+            if (response.status === 501) {
+                // Playwright/Chromium is not installed on the server, so the
+                // high-fidelity server path is unavailable. Fall back to the
+                // explicit client-side path: render the live DOM to a PDF via
+                // the browser's own print engine. Lower fidelity, but the user
+                // still gets a PDF instead of a hard failure.
+                onProgress(30, 'Server renderer unavailable — using browser print…');
+                await exportConversationAsPdf({
+                    title: 'Ziya Session Transcript',
+                    includeFooter: true,
+                    roundLimit,
+                    includeHuman,
+                    includeCollapsed,
+                    onProgress,
+                });
+                message.info('Server PDF renderer unavailable; used the browser print dialog.');
+                return;
+            }
+
             if (!response.ok) {
-                // Surface server-side failure as a REAL error instead of the
-                // old "print dialog opened" silent success.
+                // Surface any OTHER server-side failure as a REAL error instead
+                // of the old "print dialog opened" silent success.
                 let detail = `PDF export failed (HTTP ${response.status})`;
                 try {
                     const errBody = await response.json();
@@ -264,6 +295,54 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
 
             const effectiveFormat = opts?.formatOverride || format;
 
+            // HTML is DUAL-MODE: route through /api/export/rendered so a
+            // browser-equipped server produces high-fidelity output from the
+            // real renderer (Prism/KaTeX/diff/diagrams), falling back to the
+            // Python exporter otherwise.  The response reports which tier ran.
+            // Markdown keeps the existing /api/export-conversation path.
+            if (effectiveFormat === 'html') {
+                setCaptureStatus('Rendering HTML export…');
+                const htmlResp = await fetch('/api/export/rendered', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        conversation_id: currentConversationId,
+                        messages: currentMessages,
+                        format: 'html',
+                        target,
+                        // Route mode filters in the /print page (single source
+                        // of truth), so send raw messages + option knobs.
+                        roundLimit,
+                        includeHuman,
+                        includeCollapsed,
+                        includeFooter: true,
+                        embed_images: embedImages,
+                    }),
+                });
+                setCaptureProgress(100);
+                setCaptureStatus('Export complete!');
+                if (!htmlResp.ok) throw new Error('Export failed');
+                const htmlData = await htmlResp.json();
+                setExportedContent(htmlData.content);
+                setHtmlExportMeta({
+                    mode: htmlData.mode,
+                    fidelity: htmlData.fidelity,
+                    fallback_reason: htmlData.fallback_reason,
+                    size_warning: htmlData.size_warning,
+                });
+                if (htmlData.mode === 'python' && htmlData.fidelity === 'fallback') {
+                    message.warning(
+                        htmlData.fallback_reason
+                            ? `Used the lower-fidelity HTML fallback (${htmlData.fallback_reason}).`
+                            : 'Used the lower-fidelity HTML fallback (no server renderer available).'
+                    );
+                }
+                if (htmlData.size_warning) {
+                    message.warning(htmlData.size_warning);
+                }
+                return htmlData.content;
+            }
+
             const response = await fetch('/api/export-conversation', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -283,6 +362,7 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
 
             const data = await response.json();
             setExportedContent(data.content);
+            setHtmlExportMeta(null);
             return data.content;
         } catch (error) {
             message.error('Failed to export conversation');
@@ -457,6 +537,7 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
     useEffect(() => {
         setExportedContent(null);
         setPasteUrl(null);
+        setHtmlExportMeta(null);
     }, [exportMode, format, embedImages, target, roundLimit, includeHuman, includeCollapsed]);
 
     const renderOptions = () => (
@@ -596,6 +677,17 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
                             </Radio>
                         </Space>
                     </Radio.Group>
+                    {format === 'html' && htmlExportMeta && (
+                        <Text
+                            type={htmlExportMeta.fidelity === 'high' ? 'success' : 'warning'}
+                            style={{ display: 'block', marginTop: 8, fontSize: 12 }}
+                        >
+                            {htmlExportMeta.fidelity === 'high'
+                                ? '✓ High-fidelity HTML (rendered by the real Ziya renderer).'
+                                : `⚠ Lower-fidelity fallback HTML${htmlExportMeta.fallback_reason ? ` (${htmlExportMeta.fallback_reason})` : ' (no server renderer available)'}.`}
+                            {htmlExportMeta.size_warning ? ` ${htmlExportMeta.size_warning}` : ''}
+                        </Text>
+                    )}
                 </div>
             )}
 
