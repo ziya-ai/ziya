@@ -304,6 +304,81 @@ def _read_session_nonce(config_path: Path) -> Optional[str]:
         return None
 
 
+def _session_delivery_warnings(config_path: Path) -> list:
+    """Best-effort preflight: conditions under which a freshly minted session
+    grant cannot be DELIVERED to the running server, surfaced at mint time.
+
+    A session grant is enforced by the shell subprocess, but it only reaches
+    that subprocess if the long-running server's *in-memory* manager forwards
+    it at spawn. Two observed real-world conditions break that delivery while
+    every individual component still "succeeds", leaving the user with a
+    signed grant that silently never takes effect (2026-08-22 ffmpeg
+    incident):
+
+      1. **Stale server code.** The server writes ``.session_nonce`` once, in
+         ``MCPManager.__init__`` — so its mtime IS the server start time. If
+         the installed grant-delivery code (``app/mcp/manager.py``, resolved
+         relative to this module so we check the same installation the server
+         launched from) is NEWER than that, the running server imported an
+         older module and may lack the forwarding path entirely. Python never
+         reloads it; only a server restart can.
+      2. **Multiple live servers.** ``.session_nonce`` is a single
+         last-writer-wins file. With two servers up, a grant can only ever
+         verify on whichever wrote the nonce last — grants aimed at the other
+         die silently on nonce mismatch inside its subprocess.
+
+    Advisory only (warnings, never refusals): the subprocess remains the
+    enforcement authority, and these heuristics can misfire (clock skew,
+    reinstalled-but-unchanged files, ps formats). Each check fails soft.
+    """
+    warnings = []
+
+    # (1) Server vintage vs installed delivery code, via mtime comparison.
+    try:
+        nonce_mtime = _session_nonce_path(config_path).stat().st_mtime
+        manager_py = Path(__file__).resolve().parent.parent / "mcp" / "manager.py"
+        code_mtime = manager_py.stat().st_mtime
+        if code_mtime > nonce_mtime + 1.0:
+            import datetime as _dt
+            _fmt = lambda t: _dt.datetime.fromtimestamp(t).strftime("%Y-%m-%d %H:%M")
+            warnings.append(
+                "The running server started at "
+                f"{_fmt(nonce_mtime)}, but the installed grant-delivery code "
+                f"({manager_py}) was updated at {_fmt(code_mtime)}. The server "
+                "is running the OLDER in-memory code and may be unable to "
+                "forward this grant to its shell subprocess. If the grant "
+                "does not take effect after \"Apply now\", restart the Ziya "
+                "server first, then re-run this command."
+            )
+    except OSError:
+        pass
+
+    # (2) More than one live Ziya server sharing this control plane.
+    try:
+        import subprocess as _sp
+        out = _sp.run(
+            ["ps", "-axo", "pid=,command="],
+            capture_output=True, text=True, timeout=5,
+        ).stdout
+        servers = [
+            line.strip() for line in out.splitlines()
+            if "/bin/ziya" in line and "ziya-approve" not in line
+        ]
+        if len(servers) > 1:
+            listing = "\n".join(f"      {s[:120]}" for s in servers)
+            warnings.append(
+                f"{len(servers)} Ziya server processes are running, but the "
+                "session nonce file is single-slot (last writer wins):\n"
+                f"{listing}\n    This grant will only verify on the server "
+                "that most recently wrote ~/.ziya/.session_nonce; on any "
+                "other server it fails the nonce check silently."
+            )
+    except (OSError, _sp.SubprocessError):
+        pass
+
+    return warnings
+
+
 def _read_pending_session_env(config_path: Path) -> Optional[Dict[str, str]]:
     """The transient requested shell env for an ephemeral grant, or None.
 
@@ -388,6 +463,12 @@ def _approve_session(config_path: Path, provider: str, assume_yes: bool) -> int:
             "start). Start Ziya, then re-run.\n"
         )
         return 2
+
+    # Delivery preflight: a valid signature is worthless if the running server
+    # cannot forward the grant. Warn (never refuse) BEFORE the human confirms,
+    # so a doomed mint is visible at the prompt instead of after a silent clamp.
+    for _warning in _session_delivery_warnings(config_path):
+        sys.stdout.write(f"\n⚠️  {_warning}\n")
 
     if not assume_yes and not _confirm(
         "\nGrant this escalation for the CURRENT server session only "

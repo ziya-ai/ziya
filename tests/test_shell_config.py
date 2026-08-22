@@ -6,6 +6,7 @@ commands and that the merge logic from plugin providers works.
 """
 
 import json
+import os
 import pytest
 
 from app.config.shell_config import DEFAULT_SHELL_CONFIG, get_default_shell_config
@@ -111,7 +112,10 @@ class TestShellServerTimeout:
             "jsonrpc": "2.0", "id": 2, "method": "tools/call",
             "params": {
                 "name": "run_shell_command",
-                "arguments": {"command": "echo hello", "timeout": 9999}
+                # A root is required to reach execution; without one the server
+                # refuses before the timeout clamp is exercised.
+                "arguments": {"command": "echo hello", "timeout": 9999,
+                              "_project_root": os.getcwd()}
             }
         })
         # Should succeed (not error) — timeout was clamped internally
@@ -124,7 +128,8 @@ class TestShellServerTimeout:
             "jsonrpc": "2.0", "id": 3, "method": "tools/call",
             "params": {
                 "name": "run_shell_command",
-                "arguments": {"command": "echo hello", "timeout": 0}
+                "arguments": {"command": "echo hello", "timeout": 0,
+                              "_project_root": os.getcwd()}
             }
         })
         # Should succeed without hanging forever

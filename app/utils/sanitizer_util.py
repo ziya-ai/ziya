@@ -1,5 +1,6 @@
 # lets move sanitizers here to clean up code flow and make them reusable
 
+import re
 from typing import Any
 
 from app.utils.logging_utils import logger
@@ -8,6 +9,21 @@ from app.utils.logging_utils import logger
 # Below this length a span cannot reach the detector's evidence floor, so
 # scoring it is wasted work on the hot send path.
 _MIN_SCANNABLE = 750
+
+# Positional thinking-panel markers minted by the frontend
+# (frontend/src/utils/thinkingBlocks.ts: thinkingMarker).  The marker is
+# committed into message content to anchor the collapsible reasoning panel,
+# so it survives storage and is replayed inside assistant turns on every
+# subsequent request.  Measured live (2026-08-19, bedrock-mantle,
+# claude-fable-5): a 157k-token payload REFUSED with category
+# "reasoning_extraction" ("duplicating model outputs"), and passed with
+# nothing changed but these markers removed -- an assistant turn peppered
+# with "THINKING:" markers reads to the classifier as captured
+# chain-of-thought being fed back.  U+27E8/U+27E9 delimiters; the pattern
+# mirrors THINKING_MARKER_RE in thinkingBlocks.ts exactly, so it cannot
+# match ordinary prose or source code (the frontend constructs the literal
+# from parts precisely so it never appears in its own source).
+_THINKING_MARKER_RE = re.compile("\u27e8THINKING:[a-z0-9]+:\\d+\u27e9")
 
 
 def sanitize_message_content(content: Any, describe: str = "message") -> Any:
@@ -42,6 +58,17 @@ def sanitize_message_content(content: Any, describe: str = "message") -> Any:
     def _clean_text(text: str, where: str) -> str:
         if not isinstance(text, str) or not text:
             return text
+
+        # Strip frontend thinking-panel markers first: unlike the paste
+        # detectors below, this applies at any length (a marker is ~20
+        # chars) and is a measured refusal trigger on bedrock-mantle.
+        markers = _THINKING_MARKER_RE.findall(text)
+        if markers:
+            text = _THINKING_MARKER_RE.sub("", text)
+            logger.info(
+                "🧯 THINKING_MARKERS: stripped %d positional thinking "
+                "marker(s) from %s", len(markers), where,
+            )
 
         text, replaced = normalize_paste_artifacts(text)
         if replaced:

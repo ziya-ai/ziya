@@ -329,7 +329,10 @@ def _extract_command_substitutions(command: str) -> list:
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from app.config.shell_config import get_default_shell_config
 from app.config.write_policy import WritePolicyManager
-from app.config.scope_canonical import is_env_scope_authorized, strip_escalations
+from app.config.scope_canonical import (
+    is_env_scope_authorized, strip_escalations,
+    SIG_ENV_KEY, SESSION_GRANT_ENV_KEY, SESSION_NONCE_ENV_KEY,
+)
 # Heredoc detection + body-stripping live in write_policy as the single source
 # of truth.  shell_server previously kept a twin _HEREDOC_RE that had to be
 # hand-synced ("kept in lockstep"); importing the shared helper removes that
@@ -377,6 +380,7 @@ class ShellServer:
         # __init__ use self._scope_env, never os.environ directly.
         if is_env_scope_authorized(os.environ):
             self._scope_env = dict(os.environ)
+            self._scope_clamp_notice = None
         else:
             print(
                 "🔒 SCOPE_GATE: unsigned/invalid escalation in environment — "
@@ -384,6 +388,33 @@ class ShellServer:
                 file=sys.stderr,
             )
             self._scope_env = strip_escalations(os.environ)
+            # Capture WHY for the humans downstream. The clamp itself is the
+            # right security behavior, but a one-line stderr warning is
+            # invisible from the chat/tool surface — a user who has just
+            # "approved" an escalation sees only generic BLOCKED errors with
+            # no hint that their config was silently discarded (2026-08-22
+            # ffmpeg incident). The notice is appended to policy-block
+            # messages below so the failure explains itself where it is felt.
+            _sig = bool(os.environ.get(SIG_ENV_KEY))
+            _grant = bool(os.environ.get(SESSION_GRANT_ENV_KEY))
+            _nonce = bool(os.environ.get(SESSION_NONCE_ENV_KEY))
+            if _grant and not _nonce:
+                _why = ("a session grant was supplied without a session nonce; "
+                        "the spawning server is likely running stale code that "
+                        "cannot forward grants — restart the Ziya server")
+            elif _grant:
+                _why = ("the session grant did not verify for this session "
+                        "(stale grant from a previous server start, or minted "
+                        "for another server); redo `sudo ziya-approve --session`")
+            elif _sig:
+                _why = ("ZIYA_SCOPE_SIG did not match the escalation delta "
+                        "(config changed after signing); re-run `sudo ziya-approve`")
+            else:
+                _why = "no signature or session grant accompanied the escalated values"
+            self._scope_clamp_notice = (
+                "Escalated shell config was present at startup but FAILED "
+                f"verification and was clamped to the built-in floor: {_why}"
+            )
 
         # Yolo mode — bypass command allowlist (except always_blocked)
         self.yolo_mode = self._scope_env.get('YOLO_MODE', 'false').lower() in ('true', '1', 'yes')
@@ -1781,6 +1812,11 @@ class ShellServer:
                 # addition to the base WritePolicyManager. Pop it so it
                 # never reaches the underlying shell command.
                 task_scope = arguments.pop("_task_scope", None) if isinstance(arguments, dict) else None
+                # The caller's project root, authoritative for this request: it
+                # is the working directory AND the root the write policy
+                # resolves its relative paths against. Popped for the same
+                # reason as _task_scope -- it is not a shell argument.
+                project_root = arguments.pop("_project_root", None) if isinstance(arguments, dict) else None
                 command = arguments.get("command")
                 # Handle timeout parameter - convert string to number if needed
                 _default_timeout, _ceiling = self._timeout_bounds(task_scope)
@@ -1808,6 +1844,7 @@ class ShellServer:
                 # command absent from the base allowlist is denied here before
                 # the grant is ever consulted. Clear the scope in finally.
                 self.write_checker.set_task_scope(task_scope)
+                self.write_checker.set_project_root(project_root)
                 try:
                     # Check if command is allowed
                     allowed, denial_reason = self.is_command_allowed(command)
@@ -1819,7 +1856,8 @@ class ShellServer:
                                 "code": -32602,
                                 "message": f"🚫 BLOCKED: {denial_reason}\n\n" +
                                          f"📋 Allowed commands: {self.get_allowed_commands_description()}\n\n" +
-                                         f"💡 Tip: You can configure allowed commands in the Shell Configuration settings."
+                                         f"💡 Tip: You can configure allowed commands in the Shell Configuration settings." +
+                                         (f"\n\n⚠️ {self._scope_clamp_notice}" if self._scope_clamp_notice else "")
                             }
                         }
 
@@ -1829,20 +1867,45 @@ class ShellServer:
                     )
                 finally:
                     self.write_checker.clear_task_scope()
+                    self.write_checker.clear_project_root()
                 if not write_ok:
                     return {
                         "jsonrpc": "2.0",
                         "id": request_id,
                         "error": {
                             "code": -32602,
-                            "message": f"🚫 WRITE BLOCKED: {write_reason}"
+                            "message": f"🚫 WRITE BLOCKED: {write_reason}" +
+                                       (f"\n\n⚠️ {self._scope_clamp_notice}" if self._scope_clamp_notice else "")
                         }
                     }
 
                 try:
-                    # The parent spawns a separate instance of this server per project,
-                    # so our env reflects the correct project directory.
-                    cwd = os.environ.get("ZIYA_USER_CODEBASE_DIR")
+                    # The caller's root is the only authority. This server's own
+                    # environment is NOT consulted and need not be set at all:
+                    # it names whichever project the process was launched in,
+                    # which an instance outliving a project switch -- or one
+                    # respawned by a restart that never set the variable --
+                    # reports with total confidence while executing in the wrong
+                    # tree. Refuse rather than run somewhere unattributable:
+                    # without a root neither the working directory nor the write
+                    # policy's relative safe_write_paths can be anchored, so the
+                    # command would be authorized against a project no caller
+                    # named.
+                    cwd = project_root
+                    if not cwd or not os.path.isdir(cwd):
+                        return {
+                            "jsonrpc": "2.0",
+                            "id": request_id,
+                            "error": {
+                                "code": -32602,
+                                "message": (
+                                    f"🚫 NO PROJECT ROOT: refusing to execute. The caller "
+                                    f"supplied no usable project root (got {cwd!r}), so the "
+                                    f"working directory and the write policy's relative "
+                                    f"paths cannot be anchored to a project."
+                                )
+                            }
+                        }
                     
                     print(f"Executing command: {command}", file=sys.stderr)
                     if cwd and os.path.isdir(cwd):
