@@ -178,7 +178,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
 
   // Monitor FolderProvider render performance
   // Get current project from ProjectContext
-  const { currentProject } = useProject();
+  const { currentProject, isLoadingProject } = useProject();
   // Remove performance monitoring that's causing overhead
 
   // Create ref to avoid stale closures in async callbacks
@@ -213,6 +213,12 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   const cleanupCheckedKeys = useCallback(async () => {
     const checkedKeys = checkedKeysRef.current;
     if (!folders || checkedKeys.length === 0) return;
+    // Never prune against a partial tree. During a scan the backend serves a
+    // tree that is still deepening, so a folder selected in a subtree the
+    // scanner has not reached yet is absent from `folders` and would be
+    // silently dropped. isScanning is a dependency of this callback, so the
+    // effect below re-runs when the scan ends and prunes against the full tree.
+    if (isScanning) return;
 
     // Use ref to get the LATEST project path (prevents stale closures)
     const projectPath = currentProjectRef.current?.path;
@@ -276,7 +282,7 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
     } catch (error) {
       console.warn('Failed to cleanup checked keys:', error);
     }
-  }, [folders, setCheckedKeys, currentProject]);
+  }, [folders, setCheckedKeys, currentProject, isScanning]);
 
   // Run cleanup when folders are loaded
   useEffect(() => {
@@ -965,24 +971,39 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
   }, [setCheckedKeys]);
 
   useEffect(() => {
-    // Make folder fetching completely asynchronous and non-blocking
+    // Wait for ProjectContext to settle before the first fetch.
+    //
+    // This effect used to run with [] deps, firing fetchFolders() at mount —
+    // before ProjectContext had resolved a project. fetchFolders() reads
+    // window.__ZIYA_CURRENT_PROJECT_PATH__, which was still null, so the
+    // request went out as a bare GET /api/folders with no project_path and no
+    // X-Project-Root header. The server then fell back to get_project_root()
+    // -> ZIYA_USER_CODEBASE_DIR -> cwd and scanned that whole tree. For a user
+    // who launched from their home directory this meant scanning $HOME: tens of
+    // thousands of files, hitting the 240s BFS cap, saturating the scan
+    // threadpool, and delaying conversation sync by minutes.
+    //
+    // Gating on isLoadingProject keeps the no-project case working (the fetch
+    // still fires once ProjectContext gives up and leaves currentProject null,
+    // where the cwd fallback is the correct behaviour), while ensuring that if
+    // a project IS resolved we never issue an unscoped scan request first.
+    if (isLoadingProject) return;
+    if (currentProject?.path) return;  // project-change effect below handles it
+
     const asyncInit = async () => {
-      // Use requestIdleCallback to ensure this doesn't block the main thread
       if ('requestIdleCallback' in window) {
         requestIdleCallback(() => {
           fetchFolders();
         });
       } else {
-        // Fallback for browsers without requestIdleCallback
         setTimeout(() => {
           fetchFolders();
         }, 100);
       }
     };
 
-    // Call the async function
     asyncInit();
-  }, []); // Add empty dependency array
+  }, [isLoadingProject, currentProject?.path]);
 
   // Re-fetch when the active project changes (e.g. after ProjectContext finishes loading)
   const prevProjectPath = useRef<string | null>(null);
