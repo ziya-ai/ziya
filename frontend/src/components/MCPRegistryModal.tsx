@@ -131,6 +131,22 @@ interface RegistryStats {
     fetchTime?: number;
 }
 
+// Mirrors _SUPPORT_LEVEL_RANK in app/mcp/registry/interface.py; 0 = most
+// trustworthy. The previous inline array was consulted with indexOf(), which
+// returns -1 for an absent value -- and 'In development' was missing, so those
+// services sorted AHEAD of Recommended. An unrecognized level now goes to the
+// end explicitly rather than riding a sentinel to the front.
+const SUPPORT_LEVEL_RANK: Record<string, number> = {
+    'Recommended': 0,
+    'Supported': 1,
+    'Community': 2,
+    'Under assessment': 3,
+    'In development': 4,
+    'Experimental': 5,
+};
+const supportRank = (level?: string): number =>
+    SUPPORT_LEVEL_RANK[level ?? ''] ?? Number.MAX_SAFE_INTEGER;
+
 const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose }) => {
     const [availableServices, setAvailableServices] = useState<MCPService[]>([]);
     const [totalAvailableServices, setTotalAvailableServices] = useState<number>(0);
@@ -294,7 +310,10 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
     const loadAvailableServices = async () => {
         setLoading(true);
         try {
-            const response = await fetch('/api/mcp/registry/services');
+            // The route defaults to max_results=2000; the internal registry
+            // alone has >5000 entries, so the default silently truncates the
+            // catalogue that local search then filters over.
+            const response = await fetch('/api/mcp/registry/services?max_results=10000');
             if (response.ok) {
                 const data = await response.json();
                 setAvailableServices(data.services);
@@ -376,6 +395,16 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
             setLoading(false);
         }
     };
+
+    // Local substring match over the already-loaded catalogue. Search has to
+    // narrow the list immediately rather than waiting on the slow server-side
+    // tool search round trip.
+    const matchesQuery = (s: Partial<MCPService>, q: string) =>
+        !q ||
+        (s.serviceName?.toLowerCase().includes(q) ?? false) ||
+        (s.serviceId?.toLowerCase().includes(q) ?? false) ||
+        (s.serviceDescription?.toLowerCase().includes(q) ?? false) ||
+        (s.tags || []).some(t => t.toLowerCase().includes(q));
     
     // Clear search when switching away from browse tab
     useEffect(() => {
@@ -1149,9 +1178,12 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                     <div ref={browseServicesScrollRef} style={{ height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
                         {/* Summary Stats Card */}
                         {(() => {
-                            // Calculate filtered stats
-                            let displayServices = searchQuery && toolSearchResults.length > 0 
-                                ? toolSearchResults.map(result => result.service).filter(s => s.serviceId) as Partial<MCPService>[]
+                            // Calculate filtered stats. Mirrors the list below:
+                            // local match plus any server-side tool hits.
+                            const statsQuery = searchQuery.trim().toLowerCase();
+                            let displayServices: Partial<MCPService>[] = statsQuery
+                                ? availableServices.filter(s => matchesQuery(s, statsQuery) ||
+                                    toolSearchResults.some(r => r.service?.serviceId === s.serviceId))
                                 : availableServices;
 
                             // Apply provider filter to display services
@@ -1351,7 +1383,7 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                         </Card>
 
                         <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
-                            {loading ? (
+                            {loading && availableServices.length === 0 ? (
                                 <div style={{ textAlign: 'center', padding: '40px' }}>
                                     <Spin size="large" tip={searchQuery ? "Searching services..." : "Loading MCP servers from all registries..."} />
                                 </div>
@@ -1362,15 +1394,29 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                 />
                             ) : (
                                 (() => {
-                                    // Apply filters
-                                    let filtered = searchQuery && toolSearchResults.length > 0 
-                                        ? toolSearchResults.map(result => ({
-                                            ...result.service,
-                                            // Fill in missing fields from full service data
-                                            ...availableServices.find(s => s.serviceId === result.service.serviceId),
-                                            _matchingTools: result.matchingTools // Add matching tools info
-                                        })).filter(s => s.serviceId) as MCPService[]
-                                        : availableServices;
+                                    // Apply filters. Search filters the loaded
+                                    // catalogue locally so typing narrows the
+                                    // list right away; server-side tool hits
+                                    // are merged in and annotated.
+                                    const q = searchQuery.trim().toLowerCase();
+                                    const toolMatches = new Map<string, any[]>(
+                                        toolSearchResults
+                                            .filter(r => r.service?.serviceId)
+                                            .map(r => [r.service.serviceId as string, r.matchingTools])
+                                    );
+                                    let filtered: MCPService[] = availableServices;
+                                    if (q) {
+                                        filtered = availableServices.filter(s =>
+                                            toolMatches.has(s.serviceId) || matchesQuery(s, q));
+                                        const localIds = new Set(filtered.map(s => s.serviceId));
+                                        const remoteOnly = toolSearchResults
+                                            .filter(r => r.service?.serviceId && !localIds.has(r.service.serviceId!))
+                                            .map(r => r.service as MCPService);
+                                        filtered = [...filtered, ...remoteOnly];
+                                    }
+                                    filtered = filtered.map(s => toolMatches.has(s.serviceId)
+                                        ? ({ ...s, _matchingTools: toolMatches.get(s.serviceId) } as unknown as MCPService)
+                                        : s);
 
                                     // Filter by selected providers
                                     if (selectedProviders.length > 0) {
@@ -1398,8 +1444,7 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                                         } else if (sortBy === 'updated') {
                                             return new Date(b.lastUpdatedAt).getTime() - new Date(a.lastUpdatedAt).getTime();
                                         } else {
-                                            const supportOrder = ['Recommended', 'Supported', 'Community', 'Under assessment', 'Experimental'];
-                                            return supportOrder.indexOf(a.supportLevel) - supportOrder.indexOf(b.supportLevel);
+                                            return supportRank(a.supportLevel) - supportRank(b.supportLevel);
                                         }
                                     });
 

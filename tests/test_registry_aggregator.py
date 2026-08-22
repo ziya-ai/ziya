@@ -297,14 +297,33 @@ def mock_providers(monkeypatch, sample_service_official, sample_service_pulsemcp
     official = MockProvider('official-mcp', [sample_service_official])
     pulsemcp = MockProvider('pulsemcp', [sample_service_pulsemcp])
     
-    # Patch get_provider_registry
+    # Replace BOTH provider stores on the global registry singleton, and
+    # restore them afterwards.
+    #
+    # get_available_providers() unions _providers with _provider_classes and
+    # lazily instantiates anything found only in the latter, so replacing
+    # _providers alone left every real provider class registered by
+    # initialize_registry_providers() reachable -- the aggregator then fanned
+    # out to the live network (measured: "201 unique services from 6
+    # providers" instead of the 2 mocks).  That made these tests pass alone
+    # and fail whenever a test calling initialize_registry_providers() had run
+    # first.  Not restoring them also leaked the mocks into every later test.
     registry = get_provider_registry()
+    saved_providers = registry._providers
+    saved_provider_classes = registry._provider_classes
+    saved_defaults = registry._default_providers
     registry._providers = {
         'official-mcp': official,
         'pulsemcp': pulsemcp
     }
-    
-    return registry
+    registry._provider_classes = {}
+    registry._default_providers = ['official-mcp', 'pulsemcp']
+
+    yield registry
+
+    registry._providers = saved_providers
+    registry._provider_classes = saved_provider_classes
+    registry._default_providers = saved_defaults
 
 
 @pytest.mark.asyncio
@@ -332,7 +351,7 @@ async def test_aggregator_deduplication(
 
 
 @pytest.mark.asyncio
-async def test_aggregator_caching():
+async def test_aggregator_caching(mock_providers):
     """Test that aggregator caches results."""
     aggregator = RegistryAggregator()
     
@@ -349,7 +368,7 @@ async def test_aggregator_caching():
 
 
 @pytest.mark.asyncio
-async def test_aggregator_force_refresh():
+async def test_aggregator_force_refresh(mock_providers):
     """Test force refresh bypasses cache."""
     aggregator = RegistryAggregator()
     

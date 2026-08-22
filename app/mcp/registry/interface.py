@@ -27,6 +27,32 @@ class SupportLevel(Enum):
     COMMUNITY = "Community"
     EXPERIMENTAL = "Experimental"
 
+    @property
+    def rank(self) -> int:
+        """Ordering rank, 0 = most trustworthy.
+
+        Ordering lives here rather than in a list at each call site because the
+        two consumers had drifted into disagreeing, each wrongly: the aggregator
+        sorted on the DISPLAY STRING descending, which is alphabetical and put
+        "Under assessment" ahead of "Recommended", and the browse list ranked
+        via indexOf() on a hand-maintained array that omitted IN_DEVELOPMENT --
+        yielding -1, which sorts ahead of Recommended. A member added without a
+        rank here raises rather than silently sorting to one end.
+        """
+        return _SUPPORT_LEVEL_RANK[self]
+
+
+# Declared separately so a new SupportLevel member with no entry raises a
+# KeyError on first use, instead of defaulting to a position nobody chose.
+_SUPPORT_LEVEL_RANK = {
+    SupportLevel.RECOMMENDED: 0,
+    SupportLevel.SUPPORTED: 1,
+    SupportLevel.COMMUNITY: 2,
+    SupportLevel.UNDER_ASSESSMENT: 3,
+    SupportLevel.IN_DEVELOPMENT: 4,
+    SupportLevel.EXPERIMENTAL: 5,
+}
+
 
 class InstallationType(Enum):
     """Type of installation method."""

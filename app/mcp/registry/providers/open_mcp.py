@@ -24,12 +24,31 @@ class OpenMCPProvider(RegistryProvider):
     """Provider for open-mcp.org registry."""
     
     def __init__(self):
-        self.identifier = "open-mcp"
-        self.name = "Open MCP"
         self.description = "Community registry of MCP servers (API not yet available)"
         self.base_url = "https://api.open-mcp.org"
         self.enabled = False  # Disabled until API is available
-        self.is_internal = False
+
+    # These four are abstract @property members on RegistryProvider.  Assigning
+    # them as instance attributes in __init__ does NOT satisfy ABCMeta -- the
+    # class stays abstract and every instantiation raises TypeError, which
+    # RegistryProviderRegistry.get_provider() catches and logs, silently
+    # dropping this provider from get_available_providers() entirely.
+    @property
+    def name(self) -> str:
+        return "Open MCP"
+
+    @property
+    def identifier(self) -> str:
+        return "open-mcp"
+
+    @property
+    def is_internal(self) -> bool:
+        return False
+
+    @property
+    def supports_search(self) -> bool:
+        # search_tools() targets an API that does not exist yet.
+        return False
     
     async def list_services(
         self, 
@@ -133,6 +152,21 @@ class OpenMCPProvider(RegistryProvider):
             logger.error(f"Error searching Open MCP tools: {e}")
             return []
     
+    async def validate_service(self, service_id: str) -> bool:
+        """Validate that a service is still available.
+
+        Required by the RegistryProvider ABC.  The open-mcp.org API does not
+        exist yet, so while self.enabled is False nothing can be validated and
+        this reports False rather than making a doomed request.
+        """
+        if not self.enabled:
+            return False
+        try:
+            await self.get_service_detail(service_id)
+            return True
+        except Exception:
+            return False
+
     async def install_service(self, service_id: str, config_path: str) -> InstallationResult:
         """Install service from open-mcp registry."""
         try:
