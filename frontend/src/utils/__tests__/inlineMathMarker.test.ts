@@ -228,3 +228,88 @@ describe('inline-math marker: classifier decisions unchanged', () => {
         expect(out).toContain(MATH_INLINE_MARKER_PREFIX);
     });
 });
+
+/**
+ * The split contract, asserted on VISIBLE TEXT.
+ *
+ * MarkdownRenderer's `renderWithInlineMath` partitions a text run with
+ * `text.split(MATH_INLINE_MARKER_SPLIT_RE)`, renders any segment that IS a
+ * marker as KaTeX, and emits every other segment as literal text. That makes
+ * the number of capture groups in the split pattern load-bearing:
+ * `String.prototype.split` appends EVERY capture to the result, so a nested
+ * group meant the base64 payload was emitted a second time, on its own, and
+ * fell through to the literal branch. Rendered output read
+ *
+ *   λ → μ⁻XGxhbWJkYSBcdG8gXG11XnstfQ==
+ *
+ * i.e. correct math immediately followed by its own encoding.
+ *
+ * The suites above could not see this: `extractMathThroughLexer` keeps only
+ * segments for which `isInlineMathMarker` is true and silently drops the rest,
+ * so the duplicate payload segment was never examined. These tests instead
+ * reconstruct what the user actually reads.
+ */
+describe('inline-math marker: split emits no payload residue', () => {
+    /**
+     * Mirror `renderWithInlineMath`: markers become a sentinel, everything
+     * else is literal text. The joined result is what reaches the screen.
+     */
+    const renderToVisibleText = (text: string, sentinel = '⟦MATH⟧'): string =>
+        text.split(MATH_INLINE_MARKER_SPLIT_RE)
+            .map(part => (part && isInlineMathMarker(part) ? sentinel : (part || '')))
+            .join('');
+
+    it('splits into strictly alternating literal / marker segments', () => {
+        const parts = processInlineMath('a $x$ b')
+            .split(MATH_INLINE_MARKER_SPLIT_RE)
+            .filter(p => p !== '' && p !== undefined);
+        // 'a ', marker, ' b' — a third "payload" segment means a nested group.
+        expect(parts).toHaveLength(3);
+        expect(parts.map(isInlineMathMarker)).toEqual([false, true, false]);
+    });
+
+    it('leaves no base64 payload in the visible text', () => {
+        // The exact reported case: two spans, one of them ending in '=='.
+        const src = 'which diverges as $\\lambda \\to \\mu^{-}$ — '
+            + 'the familiar knee at $\\rho \\approx 1$.';
+        const visible = renderToVisibleText(processInlineMath(src));
+
+        expect(visible).toBe('which diverges as ⟦MATH⟧ — the familiar knee at ⟦MATH⟧.');
+        // Payload residue would show up as the encoding of the LaTeX itself.
+        // Asserted per-span rather than with a generic base64-shaped regex:
+        // that alphabet also matches ordinary English words ("diverges"),
+        // so a broad pattern would fail on correct output.
+        for (const latex of ['\\lambda \\to \\mu^{-}', '\\rho \\approx 1']) {
+            expect(visible).not.toContain(encodeInlineMathMarker(latex)
+                .slice(MATH_INLINE_MARKER_PREFIX.length, -1));
+        }
+    });
+
+    it('drops nothing: non-math text round-trips byte-identically', () => {
+        // Pairs the negative assertion above with a positive one — the split
+        // must not lose literal text either.
+        const src = 'let $x$ vary while $y = 2$ holds, but $5 is money.';
+        expect(renderToVisibleText(processInlineMath(src), '$MATH$'))
+            .toBe('let $MATH$ vary while $MATH$ holds, but $5 is money.');
+    });
+
+    it('payload alphabets that end in padding do not leak', () => {
+        // '=' padding sits outside [A-Za-z0-9+/] and is the boundary most
+        // likely to be mis-grouped, so exercise all three padding lengths.
+        for (const latex of ['\\mu^{-}', '\\mu^{--}', '\\mu^{---}']) {
+            const visible = renderToVisibleText(processInlineMath(`v $${latex}$ w`));
+            expect(visible).toBe('v ⟦MATH⟧ w');
+        }
+    });
+
+    it('the split pattern has exactly one capture group', () => {
+        // Direct structural assertion, so a future refactor that re-wraps
+        // MATH_INLINE_MARKER_RE.source fails here with an obvious message
+        // rather than as mysterious base64 in the rendered page.
+        const probe = new RegExp(MATH_INLINE_MARKER_SPLIT_RE.source);
+        const m = encodeInlineMathMarker('x').match(probe);
+        expect(m).not.toBeNull();
+        expect(m!.length - 1).toBe(1);
+    });
+});
+

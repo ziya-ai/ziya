@@ -38,65 +38,66 @@ function backendProfiles(): string[] {
         .map(m => m[1]);
 }
 
-/** Languages routed into the LaTeX case by determineTokenType. */
-function routedLangs(): string[] {
+/**
+ * Both MarkdownRenderer.tsx and latexPlugin.ts were refactored to delegate to
+ * the shared registry (constants/latexProfiles.ts) instead of keeping their
+ * own literal lang lists/maps -- see that file's docstring. What must hold
+ * now is DELEGATION: these two sites call into the registry rather than
+ * re-implementing it, so a profile added to the registry is automatically
+ * picked up everywhere without a fourth hand-edited site reappearing.
+ */
+
+/** Whether MarkdownRenderer's LaTeX routing step delegates to the registry. */
+function markdownRendererDelegatesRouting(): boolean {
     const src = read('frontend/src/components/MarkdownRenderer.tsx');
-    // The consolidated routing condition returning 'circuitikz'.
-    const block = src.match(
-        /if \(lang === 'circuitikz'[\s\S]{0,400}?return 'circuitikz';/);
-    if (!block) throw new Error('LaTeX routing condition not found');
-    return [...block[0].matchAll(/lang === '([a-z0-9-]+)'/g)].map(m => m[1]);
+    return /isLatexFenceLang\s*\(\s*lang\s*\)/.test(src)
+        && /return 'circuitikz';/.test(src);
 }
 
-/** lang -> profile map inside the render case. */
-function langToProfile(): Record<string, string> {
+/** Whether MarkdownRenderer's render case resolves the profile via the registry. */
+function markdownRendererDelegatesProfileLookup(): boolean {
     const src = read('frontend/src/components/MarkdownRenderer.tsx');
-    const block = src.match(
-        /LATEX_LANG_TO_PROFILE:\s*Record<string, string>\s*=\s*\{([\s\S]*?)\}/);
-    if (!block) throw new Error('LATEX_LANG_TO_PROFILE map not found');
-    const out: Record<string, string> = {};
-    for (const m of block[1].matchAll(/'([a-z0-9-]+)':\s*'([a-z0-9-]+)'/g)) {
-        out[m[1]] = m[2];
-    }
-    return out;
+    return /latexProfileForLang\s*\(/.test(src);
 }
 
-describe('LaTeX fence routing is complete across all three layers', () => {
-    it('routes every backend profile from a fence language', () => {
-        const routed = routedLangs();
-        for (const profile of backendProfiles()) {
-            expect(routed).toContain(profile);
-        }
+/** Whether latexPlugin's canHandle set is built from the registry, not a literal. */
+function latexPluginDelegatesTypeSet(): { built: boolean; literal: RegExpMatchArray | null } {
+    const src = read('frontend/src/plugins/d3/latexPlugin.ts');
+    const built = /LATEX_TYPES\s*=\s*new Set\(\s*LATEX_PROFILE_KEYS\s*\)/.test(src)
+        && /import\s*\{[^}]*LATEX_PROFILE_KEYS[^}]*\}\s*from\s*['"].*latexProfiles['"]/.test(src);
+    // A literal array (e.g. new Set(['circuitikz', 'tikz', ...])) would mean
+    // the delegation regressed back into a fourth hand-maintained list.
+    const literal = src.match(/LATEX_TYPES\s*=\s*new Set\(\[([^\]]*)\]/);
+    return { built, literal };
+}
+
+describe('LaTeX fence routing delegates to the shared registry (no literal re-lists)', () => {
+    it('MarkdownRenderer routes fence languages via isLatexFenceLang', () => {
+        expect(markdownRendererDelegatesRouting()).toBe(true);
     });
 
-    it('maps every routed language to a real backend profile', () => {
-        const profiles = backendProfiles();
-        const map = langToProfile();
-        for (const [lang, profile] of Object.entries(map)) {
-            expect(profiles).toContain(profile);
-        }
-        // Every routed lang must either map to a profile or be the deliberate
-        // ```latex code-block exception.
-        for (const lang of routedLangs()) {
-            if (lang === 'latex') continue;
-            expect(Object.keys(map)).toContain(lang);
-        }
+    it('MarkdownRenderer resolves the backend profile via latexProfileForLang', () => {
+        expect(markdownRendererDelegatesProfileLookup()).toBe(true);
     });
 
-    it('declares every backend profile in the plugin canHandle set', () => {
-        const src = read('frontend/src/plugins/d3/latexPlugin.ts');
-        const set = src.match(/LATEX_TYPES\s*=\s*new Set\(\[([^\]]*)\]/);
-        expect(set).toBeTruthy();
-        const types = [...set![1].matchAll(/'([a-z0-9-]+)'/g)].map(m => m[1]);
-        for (const profile of backendProfiles()) {
-            expect(types).toContain(profile);
-        }
+    it('MarkdownRenderer imports the routing/profile helpers from the registry', () => {
+        const src = read('frontend/src/components/MarkdownRenderer.tsx');
+        expect(src).toMatch(
+            /import\s*\{[^}]*isLatexFenceLang[^}]*latexProfileForLang[^}]*\}\s*from\s*['"].*latexProfiles['"]|import\s*\{[^}]*latexProfileForLang[^}]*isLatexFenceLang[^}]*\}\s*from\s*['"].*latexProfiles['"]/
+        );
     });
 
-    it('self-test: the extractors actually find something', () => {
-        expect(backendProfiles().length).toBeGreaterThanOrEqual(4);
-        expect(routedLangs().length).toBeGreaterThanOrEqual(4);
-        expect(Object.keys(langToProfile()).length).toBeGreaterThanOrEqual(4);
+    it('latexPlugin builds its canHandle set from LATEX_PROFILE_KEYS, not a literal list', () => {
+        const { built, literal } = latexPluginDelegatesTypeSet();
+        expect(built).toBe(true);
+        expect(literal).toBeNull();
+    });
+
+    it('self-test: the delegation checks actually run against non-trivial source', () => {
+        const rendererSrc = read('frontend/src/components/MarkdownRenderer.tsx');
+        const pluginSrc = read('frontend/src/plugins/d3/latexPlugin.ts');
+        expect(rendererSrc.length).toBeGreaterThan(1000);
+        expect(pluginSrc.length).toBeGreaterThan(200);
     });
 });
 

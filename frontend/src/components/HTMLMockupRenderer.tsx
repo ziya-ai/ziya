@@ -1,12 +1,19 @@
 import React, { useState, useEffect, useRef, useId } from 'react';
 import { Button, Tooltip, Modal, message } from 'antd';
-import { EyeOutlined, CodeOutlined, CopyOutlined, ExpandOutlined } from '@ant-design/icons';
+import { EyeOutlined, CodeOutlined, CopyOutlined, ExpandOutlined, BulbOutlined } from '@ant-design/icons';
 import { useTheme } from '../context/ThemeContext';
 import { sanitizeMockupHtml } from '../utils/domSanitize';
+import type { MockupVariant } from '../utils/mockupFence';
 
 interface HTMLMockupRendererProps {
     html: string;
     isStreaming?: boolean;
+    /**
+     * 'mockup' (default) frames the block for UX review. 'figure' renders the
+     * graphic bare, for a block used to inline an illustration in discussion
+     * rather than to propose an interface.
+     */
+    variant?: MockupVariant;
 }
 
 // HTML sanitization for mockups rendered in a sandboxed (allow-scripts,
@@ -33,9 +40,20 @@ const sanitizeHTML = (html: string): string => {
     return sanitizeMockupHtml(sanitized);
 };
 
-export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, isStreaming = false }) => {
+export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, isStreaming = false, variant = 'mockup' }) => {
     const { isDarkMode } = useTheme();
     const [showSource, setShowSource] = useState(false);
+    // The preview surface follows the app theme, so a mockup destined for the
+    // real UI is judged against the background it will actually sit on. The
+    // override exists because a mockup has to be legible in BOTH themes and
+    // the author needs to check the other one without flipping the whole app;
+    // it is exposed only inside the pop-out, since checking both themes is
+    // design work and the inline header is also the frame around figures that
+    // are simply part of a conversation. A figure never gets the override —
+    // it has one correct background, the one the message is already on.
+    const [previewOverride, setPreviewOverride] = useState<null | boolean>(null);
+    const previewDark = previewOverride === null ? isDarkMode : previewOverride;
+    const previewBg = previewDark ? '#1f1f1f' : '#ffffff';
     const [isFullscreen, setIsFullscreen] = useState(false);
     const iframeRef = useRef<HTMLIFrameElement>(null);
     const [iframeHeight, setIframeHeight] = useState(150); // Start small, grow to fit
@@ -60,10 +78,20 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
             margin: 0;
             padding: 0;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            /* Don't set background or color on body - let mockups define their own */
-            /* Mockups are self-contained designs that should look the same in any theme */
+            /* The preview surface behind this iframe is painted with the app
+               theme, so the iframe must supply a matching foreground. Leaving
+               'color' unset made it fall back to the browser default (black),
+               which rendered any mockup that didn't hardcode its own color as
+               black-on-#1f1f1f in dark mode — illegible, and not a faithful
+               preview of how the same markup renders inside the real UI. */
             background-color: transparent;
-            /* Remove color property entirely so it doesn't inherit to mockup content */
+            color: ${previewDark ? '#e6e6e6' : '#1f1f1f'};
+            color-scheme: ${previewDark ? 'dark' : 'light'};
+        }
+        /* Chrome for a mockup that relies on borders/rules for structure. */
+        body {
+            --mockup-border: ${previewDark ? '#434343' : '#e8e8e8'};
+            --mockup-muted: ${previewDark ? '#a0a0a0' : '#666666'};
         }
         * {
             box-sizing: border-box;
@@ -124,8 +152,12 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
 </html>
     `;
     
-    const inlineIframeContent = createIframeContent(inlineMockupId);
-    const fullscreenIframeContent = createIframeContent(`${mockupId}-fullscreen`);
+    // Recreated when previewDark flips so the toggle actually re-renders the
+    // iframe document (srcDoc is the only channel into the sandbox).
+    const inlineIframeContent = React.useMemo(
+        () => createIframeContent(inlineMockupId), [sanitizedHTML, previewDark, inlineMockupId]);
+    const fullscreenIframeContent = React.useMemo(
+        () => createIframeContent(`${mockupId}-fullscreen`), [sanitizedHTML, previewDark, mockupId]);
     
     // Listen for height updates from iframe
     useEffect(() => {
@@ -149,6 +181,31 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
         });
     };
     
+    // A figure is an inline graphic, not a design artifact. It gets no frame,
+    // no header and no controls — the surrounding message is its container,
+    // and a transparent body lets it sit flush on the conversation surface.
+    // The iframe is still the boundary: the sandbox and sanitization pass are
+    // identical, only the chrome differs.
+    if (variant === 'figure') {
+        return (
+            <div style={{ margin: '12px 0' }}>
+                <iframe
+                    srcDoc={inlineIframeContent}
+                    ref={iframeRef}
+                    sandbox="allow-scripts"
+                    style={{
+                        width: '100%',
+                        height: `${iframeHeight}px`,
+                        border: 'none',
+                        background: 'transparent',
+                        transition: 'height 0.3s ease'
+                    }}
+                    title="HTML Mockup Preview"
+                />
+            </div>
+        );
+    }
+
     return (
         <>
             <div style={{
@@ -179,6 +236,7 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
                         <Tooltip title="View Source">
                             <Button
                                 size="small"
+                                aria-label="View source"
                                 icon={<CodeOutlined />}
                                 onClick={() => setShowSource(!showSource)}
                             />
@@ -186,6 +244,7 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
                         <Tooltip title="Copy HTML">
                             <Button
                                 size="small"
+                                aria-label="Copy HTML"
                                 icon={<CopyOutlined />}
                                 onClick={copyHTML}
                             />
@@ -193,6 +252,7 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
                         <Tooltip title="Pop-out">
                             <Button
                                 size="small"
+                                aria-label="Pop-out"
                                 icon={<ExpandOutlined />}
                                 onClick={() => setIsFullscreen(true)}
                             />
@@ -222,7 +282,7 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
                 
                 {/* Mockup preview in iframe */}
                 <div style={{
-                    backgroundColor: isDarkMode ? '#1f1f1f' : '#ffffff',
+                    backgroundColor: previewBg,
                     padding: '16px'
                 }}>
                     <iframe
@@ -243,7 +303,24 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
             
             {/* Fullscreen modal */}
             <Modal
-                title="UI Mockup"
+                title={
+                    <span style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        UI Mockup
+                        {/* Both-theme legibility is a design check, so the
+                            override lives here rather than on the inline
+                            header, which also frames conversational figures. */}
+                        <Tooltip title={`Preview on ${previewDark ? 'light' : 'dark'} background`}>
+                            <Button
+                                size="small"
+                                aria-label="Toggle preview background"
+                                icon={<BulbOutlined />}
+                                type={previewOverride !== null ? 'primary' : 'default'}
+                                ghost={previewOverride !== null}
+                                onClick={() => setPreviewOverride(!previewDark)}
+                            />
+                        </Tooltip>
+                    </span>
+                }
                 open={isFullscreen}
                 onCancel={() => setIsFullscreen(false)}
                 footer={null}
@@ -256,7 +333,8 @@ export const HTMLMockupRenderer: React.FC<HTMLMockupRendererProps> = ({ html, is
                         width: '100%',
                         height: '80vh',
                         border: 'none',
-                        borderRadius: '4px'
+                        borderRadius: '4px',
+                        backgroundColor: previewBg
                     }}
                     sandbox="allow-scripts"
                     title="HTML Mockup Fullscreen"
