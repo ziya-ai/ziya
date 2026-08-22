@@ -49,7 +49,8 @@ def gemini_pro_family_extension(prompt: str, context: dict) -> str:
     gemini_instructions = """
 GEMINI-SPECIFIC INSTRUCTIONS:
 1.  Provide answers in a clear, direct, and helpful manner.
-2.  When generating code changes, strictly adhere to the git diff format specified in the instructions.
+2.  Apply changes to targets under "Writable paths (effective)" with the
+    available direct-write tool; use the specified git diff format otherwise.
 3.  For tool usage, generate only the function call and wait for the result.
 """
     
@@ -215,7 +216,7 @@ GEMINI ADVANCED AGENT STRATEGY:
    - **One Step at a Time**: For complex tasks, execute a tool, wait for the result, then proceed. Don't chain blind assumptions.
 
 3. **Code Modification**:
-   - **Diff Format**: Use standard git diffs for all code changes.
+   - **Write Method**: Use direct-write tools for targets listed under "Writable paths (effective)"; use standard git diffs for all other code changes.
    - **Precision**: Ensure context lines in diffs match the file *exactly* (whitespace, comments).
    - **Verification**: If you are unsure of the file state, read it first. Don't guess.
 

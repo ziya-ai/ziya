@@ -88,11 +88,12 @@ def mcp_usage_guidelines(prompt: str, context: dict) -> str:
     # Start building MCP guidelines
     mcp_guidelines = """
 
-🚨 CRITICAL FILE MODIFICATION PROHIBITION 🚨
-═══════════════════════════════════════════════
-NEVER use tools to:
 ## MCP Tool Usage - CRITICAL INSTRUCTIONS
 **EXECUTE TOOLS WHEN REQUESTED - Never simulate or describe what you would do.**
+
+File writes are governed by the effective write policy listed under
+"Writable paths (effective)" in the Session Context above. That listing is
+authoritative — do not assume a narrower set than it states.
 
 """
     
@@ -169,7 +170,9 @@ later turns, but a conclusion built on an invented result IS. You will act on it
 and it will contradict what the tool actually returns later — which reads as a
 broken tool layer when the real cause is that the result was never obtained.
 
-"Do I need information not in the context? Am I about to modify a file? If modifying files, I must provide a Git diff patch instead!"
+"Do I need information not in the context? Am I about to modify a file? If so,
+is the target listed under Writable paths (effective)? Use direct write for an
+effectively writable target; otherwise provide a Git diff patch."
 3. **Shell commands**: Use read-only commands (ls, cat, grep) when possible; format output as terminal session
 4. **Error handling**: Show actual errors and try alternatives
 5. **Verification**: Use tools to verify system state only when assumptions aren't sufficient
@@ -178,7 +181,7 @@ broken tool layer when the real cause is that the result was never obtained.
 
     # Add shell-specific warning if shell command tool is available
     if any("shell" in tool.lower() or "run_shell_command" in tool for tool in available_tools):
-        mcp_guidelines += """
+        mcp_guidelines += f"""
 
 🛑 SHELL WRITE POLICY (ENFORCED AT RUNTIME) 🛑
 The shell blocks write operations to project files at runtime:
@@ -192,11 +195,12 @@ BLOCKED:
 ALLOWED:
 - All read-only commands — unrestricted
 - Computation: `python3 -c '...'`, `python3 -m pytest`, `echo expr | bc`
-- Writes to approved paths: .ziya/, /tmp/ (plus project-configured patterns)
+- Writes to approved paths: {_get_shell_writable_summary()}
 - Git safe operations: status, log, show, diff, blame, etc.
 
-For ALL code changes to project files, provide git diffs.
-Shell is for reading, analyzing, and running computations — not modifying project files.
+Code changes to paths OUTSIDE the approved set above require a git diff.
+Paths INSIDE the approved set may be written directly with `file_write`.
+The "Writable paths (effective)" listing in the Session Context is authoritative.
 
 Do NOT prefix commands with `cd` to the current working directory — the shell
 already runs there. Use `cd` only to enter a different subdirectory.
@@ -206,6 +210,44 @@ already runs there. Use `cd` only to enter a different subdirectory.
     modified_prompt = prompt + mcp_guidelines
     logger.debug(f"MCP_GUIDELINES: Extended prompt by {len(mcp_guidelines)} chars")
     return modified_prompt
+
+
+def _get_shell_writable_summary() -> str:
+    """Summarize the effective writable set for the shell policy block.
+
+    Previously this block hardcoded ".ziya/, /tmp/ (plus project-configured
+    patterns)".  Because it is appended AFTER the computed Session Context
+    block, that static text contradicted — and by recency won over — the
+    accurate listing, so models concluded a configured path such as
+    ``tests/`` was read-only.  Reading the real policy keeps the two blocks
+    in agreement.  Falls back to the generic phrasing only if the policy
+    manager is unavailable.
+    """
+    try:
+        from app.config.write_policy import effective_policy_for_root
+        from app.context import get_project_root_or_none
+        # Root-addressed: this block is rendered per request, and the
+        # root-blind read described whichever project last touched the
+        # shared policy manager -- so it could contradict the Session
+        # Context block it is supposed to agree with.
+        policy = effective_policy_for_root(
+            get_project_root_or_none() or "") or {}
+    except Exception as e:
+        logger.debug(f"Could not read write policy for shell prompt: {e}")
+        return ".ziya/, /tmp/ (plus project-configured patterns)"
+
+    entries = [
+        p for p in (policy.get("safe_write_paths") or [])
+        if p not in ("/dev/null",)
+    ]
+    entries += [p for p in (policy.get("allowed_write_patterns") or []) if p]
+    mode = policy.get("direct_write_mode", "none")
+    summary = ", ".join(entries) if entries else "(none)"
+    if mode == "all_files":
+        summary += " — plus any file in the project (direct_write_mode=all_files)"
+    elif mode == "new_files":
+        summary += " — plus NEW files anywhere in the project (direct_write_mode=new_files)"
+    return summary
 
 # Removed _get_tool_description() function as it was hardcoding shell tool descriptions
 # even when shell server was disabled. Now we only show descriptions for actually enabled tools.
