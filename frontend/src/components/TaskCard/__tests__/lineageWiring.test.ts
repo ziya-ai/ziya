@@ -27,6 +27,13 @@ import * as path from 'path';
 
 const TILE = path.join(__dirname, '..', 'TaskCardInlineTile.tsx');
 const src = fs.readFileSync(TILE, 'utf8');
+// The status palette moved to runStatusVocabulary when the conversation
+// sidebar needed it too (the tile now aliases RUN_STATUS_FILL/_FG).  The
+// colour assertion below follows the definition rather than being deleted:
+// what it guards -- that partial is amber and not mistaken for a success or
+// a failure -- is unchanged by where the map lives.
+const VOCAB = path.join(__dirname, '..', 'runStatusVocabulary.ts');
+const vocabSrc = fs.readFileSync(VOCAB, 'utf8');
 
 describe('lineage state naming is internally consistent', () => {
   // The failure mode: `const [attempts, setAttempts]` alongside
@@ -173,8 +180,10 @@ describe('the inline components are the ones that render', () => {
 describe('partial is a first-class status in the tile', () => {
   it('has a colour and an icon', () => {
     // A missing Record entry is a TS error, but a wrong-looking one is
-    // not — so assert the amber and the half-disc specifically.
-    expect(src).toMatch(/partial: '#d29922'/);
+    // not — so assert the amber and the half-disc specifically.  The
+    // colour lives in the shared vocabulary; the ICON is still the tile's
+    // own, so the two are read from different files on purpose.
+    expect(vocabSrc).toMatch(/partial: '#d29922'/);
     expect(src).toMatch(/partial: <span aria-hidden>◐<\/span>/);
   });
 

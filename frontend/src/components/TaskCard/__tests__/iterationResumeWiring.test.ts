@@ -55,8 +55,15 @@ describe('detail panel', () => {
   it('renders the controls only when an iteration is focused', () => {
     // Block-level focus already has its own buttons in the run map; the
     // iteration controls are meaningless without an index.
+    //
+    // The condition also excludes a PARALLEL loop, whose iterations the
+    // server refuses to resume from (they receive previous=None, so a
+    // start index would silently run fewer iterations than the card asks
+    // for while reporting the loop complete).  That gate is asserted in
+    // holdPriorityFixes.test.ts; here it only has to not break the
+    // is-an-iteration-focused requirement this test owns.
     expect(PANEL).toMatch(
-      /isIter && \(onRetryIteration \|\| onContinueIteration\)/,
+      /isIter && !isParallelLoop && \(onRetryIteration \|\| onContinueIteration\)/,
     );
   });
 

@@ -28,10 +28,10 @@ import type {
 } from '../../../types/task_run';
 import type { LiveTaskState } from '../../../hooks/useTaskRunStream';
 
-// MarkdownRenderer drags in the whole markdown/katex/mermaid stack and
+// TaskMarkdown delegates to MarkdownRenderer, which drags in the whole markdown/katex/mermaid stack and
 // none of it is under test here.
-jest.mock('../../MarkdownRenderer', () => ({
-  MarkdownRenderer: ({ markdown }: { markdown: string }) => (
+jest.mock('../TaskMarkdown', () => ({
+  TaskMarkdown: ({ markdown }: { markdown: string }) => (
     <div data-testid="md">{markdown}</div>
   ),
 }));

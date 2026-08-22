@@ -48,6 +48,29 @@ class TaskRunStorage(BaseStorage[TaskRun]):
     def _run_file(self, run_id: str) -> Path:
         return self.runs_dir / f"{run_id}.json"
 
+    def read_run_file(self, path: str) -> Optional[dict]:
+        """Read ONE run file by absolute path, returning the raw dict.
+
+        Exists for the status-index cache, which is per-file by design: it
+        re-reads only the records whose own mtime moved, so it needs a
+        single-path reader rather than ``list()``.
+
+        Returns the raw dict rather than a ``TaskRun``: the index needs four
+        fields (status, source_conversation_id, root_run_id, attempt) and
+        Pydantic-validating a ~108 KB record with nested block states and
+        iteration summaries to read four of them is most of the cost this
+        cache exists to avoid.  Decryption still happens — ``_read_json``
+        owns that — so the saving is validation, not I/O.
+
+        None for an unreadable or undecryptable file, matching the cache's
+        contract: one bad record is skipped, not fatal to the index.
+        """
+        try:
+            return self._read_json(Path(path))
+        except Exception as e:  # noqa: BLE001 — one bad file is not fatal
+            logger.debug(f"status-index: unreadable run file {path}: {e}")
+            return None
+
     def _iteration_dir(self, run_id: str) -> Path:
         return self.runs_dir / run_id / "iterations"
 
@@ -148,6 +171,17 @@ class TaskRunStorage(BaseStorage[TaskRun]):
             run.error = error
         run.updated_at = int(time.time() * 1000)
         self._write_json(self._run_file(run_id), run.model_dump())
+        # The sidebar's project-wide status index memoises on the run
+        # DIRECTORY's mtime, and rewriting a file's contents does not
+        # reliably bump that — so a run going running -> held would leave
+        # every conversation row stale until some unrelated write happened
+        # to create or delete a file.  Cheap: the index is process-local
+        # and this only drops a dict reference.
+        try:
+            from ..utils.run_status_index import invalidate_for
+            invalidate_for(str(self.runs_dir))
+        except Exception:  # noqa: BLE001 — an indicator must never break a write
+            pass
         return run
 
     def record_activity(
@@ -250,7 +284,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         now = time.time()
         if status == "running" and state.started_at is None:
             state.started_at = now
-        elif status in ("done", "failed", "cancelled", "skipped"):
+        elif status in ("done", "failed", "cancelled", "skipped", "held"):
             state.completed_at = now
         if error:
             state.error = error[:500]
@@ -367,6 +401,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
     def mark_held(
         self, run_id: str, reason: str = "",
         block_id: str = "", error: Optional[str] = None,
+        faults: Optional[dict] = None, gate_reason: Optional[str] = None,
     ) -> Optional[TaskRun]:
         """Record that a run stopped on an infrastructure fault.
 
@@ -378,6 +413,11 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         work got done, whereas "held" describes why it stopped, and
         collapsing the two would lose the actionable half (the
         infrastructure needs fixing, not the card).
+
+        ``faults`` is the aggregate from infra_gate.summarize — the
+        breadth of the collapse, written ONCE here rather than
+        incremented per fault, because this class does unguarded
+        read-modify-write and concurrent siblings would lose writes.
         """
         run = self.get(run_id)
         if not run:
@@ -385,11 +425,23 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         run.status = "held"  # type: ignore[assignment]
         run.held_reason = reason or None
         run.held_at_block_id = block_id or None
+        if faults:
+            run.held_faults = faults
+        if gate_reason:
+            run.held_gate_reason = gate_reason
         if error:
             run.error = error
         run.completed_at = time.time()
         run.updated_at = int(time.time() * 1000)
         self._write_json(self._run_file(run_id), run.model_dump())
+        # Same reason as update_status: a hold is the single most important
+        # transition for the sidebar to reflect promptly, and it rewrites a
+        # file in place rather than adding one.
+        try:
+            from ..utils.run_status_index import invalidate_for
+            invalidate_for(str(self.runs_dir))
+        except Exception:  # noqa: BLE001
+            pass
         return run
 
     def request_pause(self, run_id: str) -> Optional[TaskRun]:
@@ -525,6 +577,70 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         if state is None:
             return
         state.iteration_summaries.append(summary)
+        run.block_states[block_id] = state
+        run.updated_at = int(time.time() * 1000)
+        self._write_json(self._run_file(run_id), run.model_dump())
+
+    def seed_replayed_iterations(
+        self, run_id: str, block_id: str, summaries: List[IterationSummary],
+        block_type: str = "repeat",
+        create_if_missing: bool = False,
+    ) -> None:
+        """Install a resumed loop's replayed prefix in one write.
+
+        Called at launch, before the executor coroutine is scheduled, so
+        it cannot race the executor's own ``append_iteration_summary``
+        calls — both rewrite the whole run file, so an interleaving would
+        drop one side's records entirely.
+
+        Existing summaries are preserved and the merged list is sorted by
+        index, so this is safe to call on a block that already has
+        records even though the launch path never does.  A same-index
+        collision keeps the EXECUTED record: a summary this run produced
+        is a better description of it than one carried from a prior
+        attempt.
+        """
+        if not summaries:
+            return
+        run = self.get(run_id)
+        if not run:
+            return
+        state = run.block_states.get(block_id)
+        if state is None and create_if_missing:
+            # A resume point inside a CALLED card has no state at launch:
+            # _seed_block_states walks only the caller's tree, and the
+            # callee's blocks are not seeded until the Call executes.
+            # Returning here dropped the entire replayed prefix for
+            # precisely the shape that banks the most work — a wide
+            # parallel fan-out inside a Call — and the loss is not
+            # cosmetic: the NEXT resume selects which iterations to bank
+            # by reading these summaries, so their absence makes it
+            # re-run work whose artifacts it is holding.
+            #
+            # Gated on an explicit opt-in rather than done unconditionally:
+            # storage cannot tell a legitimate callee block from a stale or
+            # misspelled id, and minting state for the latter puts a
+            # phantom row in the run map for a block no card contains.  The
+            # launch path passes True because its caller has already
+            # resolved the id against the card snapshot AND the call
+            # snapshots — so existence is established before storage is
+            # asked to record it.
+            state = TaskRunBlockState(
+                block_id=block_id, block_type=block_type, status="queued",
+            )
+            run.block_states[block_id] = state
+        if state is None:
+            logger.debug(
+                f"seed_replayed_iterations: block {block_id} not seeded; "
+                f"skipping {len(summaries)} replayed records"
+            )
+            return
+        executed = {s.index for s in state.iteration_summaries}
+        merged = list(state.iteration_summaries) + [
+            s for s in summaries if s.index not in executed
+        ]
+        merged.sort(key=lambda s: s.index)
+        state.iteration_summaries = merged
         run.block_states[block_id] = state
         run.updated_at = int(time.time() * 1000)
         self._write_json(self._run_file(run_id), run.model_dump())

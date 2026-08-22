@@ -491,6 +491,10 @@ async def execute_task_block(
         logger.debug("Usage baseline unavailable: %s", e)
     tool_call_count = 0
     collected_text: List[str] = []
+    # Tracks whether any text has arrived since the most recent tool call.
+    # False at end of stream means the response stopped at a tool boundary
+    # — see the truncated_summary guard below.
+    _text_since_last_tool = False
     decisions: List[str] = []
     # Run-level consecutive-failure breaker.  The per-call breakers in
     # MCPManager.call_tool (turn ceiling, repetitive-call) do NOT protect
@@ -814,6 +818,7 @@ async def execute_task_block(
                 content = chunk.get("content", "")
                 if content:
                     collected_text.append(content)
+                    _text_since_last_tool = True
                     await _emit({
                         "type": "task_text_delta",
                         "run_id": run_id,
@@ -864,6 +869,10 @@ async def execute_task_block(
                 # which the relay's delta-collapsing already breaks on.
                 if collected_text and not collected_text[-1].endswith("\n"):
                     collected_text.append("\n\n")
+                # Same boundary, second purpose: a tool call re-opens the
+                # question of whether the model ever closed its response.
+                # Reset AFTER the seam append so the gap logic is unchanged.
+                _text_since_last_tool = False
                 _result = chunk.get("result", "")
                 _tool_name = chunk.get("tool_name") or "tool"
                 _args = chunk.get("args")
@@ -1098,6 +1107,35 @@ async def execute_task_block(
         )
         assessment_failed = True
         assessment_signature = assessment_signature or "empty_summary"
+    # Narrower sibling of the empty_summary guard above, covering the case
+    # that guard cannot see: a NON-empty transcript that stops at a tool
+    # boundary because the stream ended before the model delivered a closing
+    # turn (streaming_tool_executor's 'no_activity' / 'max_iterations' exits,
+    # typically an empty completion returned after a tool result).  What
+    # survives is the interstitial narration between tool calls — prose that
+    # reads like a summary and is not one.
+    #
+    # Measured cost of not checking: a roster task wrote its output file and
+    # emitted both artifact parts, then went silent on the turn that would
+    # have carried its machine-parsed result.  It was recorded "done", and
+    # the 26-way fan-out reading its summary dispatched 0 iterations.
+    #
+    # Both conditions are required, because either alone has a plausible
+    # innocent explanation: no-text-after-the-last-tool would misfire on a
+    # model that legitimately closes on a tool call, and a missing
+    # self_assessment tag would misfire on a model that ignores the tag
+    # instruction.  Together they mean the response did not reach its end.
+    elif (tool_call_count > 0 and not _text_since_last_tool
+            and self_assessment is None):
+        decisions.append(
+            "truncated_summary: the stream ended immediately after a tool "
+            "call, with no closing response and no self_assessment tag. "
+            "The summary holds only the narration between tool calls, so it "
+            "is not a result — recorded as failed rather than passing a "
+            "partial transcript forward as a success."
+        )
+        assessment_failed = True
+        assessment_signature = assessment_signature or "truncated_summary"
 
     from app.utils.artifact_summary import truncate_summary
     artifact = Artifact(

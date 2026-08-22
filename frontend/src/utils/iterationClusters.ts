@@ -51,6 +51,11 @@ export function analyzeFailures(
   for (const [blockId, state] of Object.entries(blockStates)) {
     for (const s of state.iteration_summaries) {
       if (s.status !== 'failed') continue;
+      // A replayed failure belongs to the attempt that produced it, not
+      // to this one.  Clustering it here would re-report a failure the
+      // user is already resuming past as a fresh occurrence, inflating
+      // the pattern count they are using to decide what to fix.
+      if (s.replayed) continue;
       const ref: IterationRef = { blockId, index: s.index };
       if (s.signature) {
         const arr = bySig.get(s.signature);

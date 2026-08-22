@@ -149,6 +149,10 @@ export interface Block {
   repeat_count?: number | null;
   repeat_max?: number | null;
   repeat_parallel?: boolean;
+  /** Max iterations in flight when repeat_parallel is set.  null = the
+   *  backend default (8); 0 = unbounded.  See
+   *  block_executor._resolve_concurrency. */
+  repeat_max_concurrency?: number | null;
   repeat_propagate?: PropagateMode;
   repeat_until?: string | null;
   repeat_for_each_source?: string | null;

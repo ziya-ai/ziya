@@ -7,13 +7,13 @@
  * SUMMARY_COLLAPSE_THRESHOLD constant has a reasonable value.
  */
 
-// MarkdownRenderer pulls in ``marked`` (ESM-only) which jest's
+ // TaskMarkdown delegates to MarkdownRenderer, which pulls in ``marked`` (ESM-only) which jest's
 // default transform can't load.  Mock it to a passthrough so this
 // test exercises TaskCardInlineTile structure without dragging the
 // markdown renderer (and its transitive deps) into the test bundle.
-jest.mock('../../MarkdownRenderer', () => ({
+ jest.mock('../TaskMarkdown', () => ({
   __esModule: true,
-  MarkdownRenderer: ({ markdown }: { markdown: string }) =>
+   TaskMarkdown: ({ markdown }: { markdown: string }) =>
     require('react').createElement('pre', null, markdown),
 }));
 

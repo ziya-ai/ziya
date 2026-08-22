@@ -40,6 +40,70 @@ async def list_task_runs(
     return _get_storage(project_id).list(card_id=card_id)
 
 
+@router.get("/status-index")
+async def get_run_status_index(project_id: str) -> Dict[str, Any]:
+    """Per-conversation run-status counts for the whole project.
+
+    Exists because the sidebar's gear cluster was fed by the open chat's
+    bindings alone, so a run that held or failed in ANY other conversation
+    was invisible until that conversation was visited — which defeats the
+    purpose of a background indicator.
+
+    Deliberately a projection rather than ``list_task_runs`` above: run
+    records carry block states, iteration summaries and artifacts and are
+    encrypted at rest (measured: 134 records / 14.5 MB in one project, mean
+    108 KB), so polling the full list to learn eight status strings would
+    cost CPU proportional to total run HISTORY on every tick.  Counts are
+    per attempt-lineage, matching the tile list, so a card retried twice
+    reports one gear rather than three.
+
+    ``live`` tells the client whether to keep polling; when false nothing
+    can change without a user action, so it can stop.  ``built_at`` is the
+    memo's age, exposed for debugging a stale-looking sidebar.
+    """
+    from ..utils.run_status_index import cache_for, has_live_runs
+    storage = _get_storage(project_id)
+    cache = cache_for(str(storage.runs_dir))
+    # A PER-FILE reader, not ``list``: the cache re-reads only the records
+    # whose own mtime moved.  Passing the zero-arg ``list`` here type-checks
+    # nowhere and fails silently — the cache's broad per-file except (there
+    # so one corrupt record cannot break the index) swallows the TypeError
+    # and every run summarises to None, so the index comes back empty and
+    # every gear on every unopened row is simply absent, with no error.
+    index = cache.get(storage.read_run_file)
+    return {
+        "conversations": index,
+        "live": has_live_runs(index),
+        "built_at": cache.built_at,
+    }
+
+
+@router.get("/callee-context/{card_id}", response_model=List[Dict[str, Any]])
+async def get_callee_context(project_id: str, card_id: str):
+    """Runs that invoked ``card_id`` as a Call target and are still live or held.
+
+    ``list_task_runs(card_id=...)`` above filters on ``run.card_id``, which
+    is the CALLER — so a card that only ever runs as a callee has no runs by
+    that measure and its deck page showed nothing, even while it was the
+    card holding a study.  A Call executes inline in the caller's run, so
+    CL0 calling CL1..CL6 produces exactly one run record, owned by CL0.
+
+    This resolves the other direction from data already persisted: the
+    caller's ``call_snapshots`` records each resolved callee's key and its
+    block tree, and that tree is the callee's own ``card.root`` with its own
+    ids — so ``held_at_block_id`` from the caller's run is directly
+    meaningful against the callee's own card, which is what lets the deck
+    mark up CL1's blocks without per-callee run records existing.
+
+    ``held_in_callee`` on each entry is the discriminator the UI must gate
+    on: a hold in CL2 is returned as context for a CL1 page (CL1 did take
+    part in a held run) but must not be drawn on CL1's blocks, because
+    pointing at a card that is fine is worse than showing nothing.
+    """
+    from ..utils.callee_hold_lookup import find_callee_holds
+    return find_callee_holds(_get_storage(project_id).list(), card_id)
+
+
 @router.get("/{run_id}/lineage", response_model=List[TaskRun])
 async def get_run_lineage(project_id: str, run_id: str):
     """Every attempt in this run's lineage, oldest attempt first.
@@ -430,11 +494,26 @@ async def resume_run_from_block(
             detail="Run has no card_snapshot; it predates resume support.",
         )
 
-    from ..utils.resume_targets import resolve_resume_point
-    resume_point, user_target, err = resolve_resume_point(root, block_id, mode)
+    from ..utils.resume_targets import (
+        parallel_replay_indices, resolve_resume_point, resume_call_chain,
+    )
+    # ``call_snapshots`` is required, not enrichment: a Call runs its target
+    # inline, so a run held inside a called card records a
+    # ``held_at_block_id`` naming a CALLEE block — an id present in no tree
+    # this endpoint otherwise sees.  Without it every such request 404'd,
+    # leaving Restart as the only offered recovery for a multi-phase study.
+    _calls = run.call_snapshots or {}
+    resume_point, user_target, err = resolve_resume_point(
+        root, block_id, mode, call_snapshots=_calls,
+    )
     if err and user_target is None:
         # Unknown block id.
         raise HTTPException(status_code=404, detail=err)
+    if user_target and user_target != block_id:
+        logger.info(
+            f"resume-from: normalized {block_id} -> {user_target} "
+            f"(run {run_id[:8]}, mode={mode})"
+        )
     if err:
         # Known block, but the request cannot be honoured — e.g.
         # continuing past the last block would launch a run that replays
@@ -461,6 +540,78 @@ async def resume_run_from_block(
         if st.artifact is not None
     }
 
+    # Banked iterations of a PARALLEL fan-out at the resume point.  This is
+    # what makes resuming a wide fan-out worth doing at all: a 20-agent
+    # audit that lost one subagent to an expired credential re-runs one, not
+    # twenty.  Read here, at launch, rather than during execution — the
+    # source run may be deleted while the new one is still going.
+    #
+    # Retry only: a ``continue`` resumes AFTER the loop, so the loop replays
+    # as a block and its iterations are never re-planned.
+    fanout_artifacts: Dict[int, Any] = {}
+    fanout_summaries: List[IterationSummary] = []
+    _st = (run.block_states or {}).get(resume_point)
+    if mode == "retry" and _st is not None:
+        _idxs = parallel_replay_indices(
+            root, resume_point,
+            [s.model_dump() for s in (_st.iteration_summaries or [])],
+            _calls,
+        )
+        for _i in (_idxs or []):
+            _got = storage.read_iteration_artifact(run_id, resume_point, _i)
+            if _got is not None:
+                fanout_artifacts[_i] = _got
+        # Iterations this run INHERITED rather than executed.  Their
+        # summaries are absent whenever the resume point sits inside a
+        # Call: launch-time seeding walks only the CALLER's tree, so
+        # ``seed_replayed_iterations`` finds no block state to write into
+        # and drops the whole prefix, while the artifact copies — which
+        # need no state — still land.  Selection above reads summaries,
+        # so without this a chain of resumes re-runs banked work whose
+        # artifacts it is already holding: measured on run 9099930d as
+        # 52 of 60 iterations re-run in order to redo 2.
+        #
+        # Excluding executed indices is what stops this undoing the
+        # resume: an index this attempt actually ran must be judged on
+        # that record, not on the one it inherited.
+        if _idxs is not None and run.resumed_from_block_id == resume_point:
+            _executed = {
+                _s.index for _s in (_st.iteration_summaries or [])
+                if not _s.replayed
+            }
+            for _k in (run.resume_iteration_artifacts or {}):
+                _i = int(_k)
+                if _i in fanout_artifacts or _i in _executed:
+                    continue
+                _got = storage.read_iteration_artifact(
+                    run_id, resume_point, _i)
+                if _got is None:
+                    continue
+                fanout_artifacts[_i] = _got
+                # Only passes are ever banked, so a carried artifact is
+                # by construction a retained pass.
+                fanout_summaries.append(IterationSummary(
+                    index=_i, status="passed", has_artifact=True,
+                    replayed=True,
+                ))
+        # Display record for the replayed set, carried verbatim so a
+        # preserved iteration keeps its own status and timings rather than
+        # reading as though this attempt produced it.  ``replayed=True`` is
+        # what keeps them out of every progress aggregate.
+        for _s in (_st.iteration_summaries or []):
+            if _s.index in fanout_artifacts:
+                fanout_summaries.append(IterationSummary(
+                    index=_s.index, status=_s.status,
+                    signature=_s.signature, duration_ms=_s.duration_ms,
+                    tokens=_s.tokens, has_artifact=True, replayed=True,
+                ))
+        if fanout_artifacts:
+            logger.info(
+                f"resume-from: banking {len(fanout_artifacts)} passed "
+                f"iteration(s) of parallel loop {resume_point} "
+                f"(run {run_id[:8]})"
+            )
+
     from .task_cards import _launch_run_for_card
     new_run = await _launch_run_for_card(
         project_id=project_id,
@@ -470,6 +621,10 @@ async def resume_run_from_block(
         resume_root=root_block,
         resume_from_block_id=resume_point,
         resume_artifacts=resume_artifacts,
+        # Reached THROUGH these Calls rather than replaying them whole.
+        resume_call_chain=resume_call_chain(root, _calls, resume_point),
+        resume_iteration_artifacts=fanout_artifacts,
+        resume_iteration_summaries=fanout_summaries,
         # Lineage: this attempt continues the source run's chain.
         parent_run_id=run.id,
         root_run_id=run.root_run_id or run.id,
@@ -592,12 +747,24 @@ async def resume_run_from_iteration(
         if run.resumed_from_block_id == block_id else {}
     )
 
-    from ..utils.resume_targets import resolve_iteration_resume
+    # ``resume_call_chain`` MUST be imported here, not merely somewhere in
+    # this module: these are function-local imports, so the copy inside
+    # ``resume_run_from_block`` does not bind the name in this scope.  It
+    # is called below, and without this line every request to this
+    # endpoint raises NameError — a 500 on the one path that exists to
+    # rescue a run that has already cost hours.
+    from ..utils.resume_targets import (
+        resolve_iteration_resume, resume_call_chain,
+    )
     start, err = resolve_iteration_resume(
         root, block_id, index,
         [s.model_dump() for s in (state.iteration_summaries or [])],
         mode,
         inherited=inherited,
+        # A loop inside a CALLED card is invisible to the caller's tree, so
+        # without this the resolver reports "block not found" for a loop
+        # that is plainly on screen in the run map.
+        call_snapshots=(run.call_snapshots or {}),
     )
     if err:
         # 422 rather than 400: the request is well-formed, but this
@@ -645,6 +812,45 @@ async def resume_run_from_iteration(
         if got is not None:
             iteration_artifacts[summary.index] = got
 
+    # The replayed prefix as DISPLAY record, distinct from
+    # ``iteration_artifacts`` above (which is execution input).  Every
+    # index below the start point gets an entry even when its full
+    # artifact was not retained, because the question the dot strip
+    # answers is "did this iteration happen and was it kept?" — and an
+    # absent dot answers the first question wrongly.
+    #
+    # Status/signature/timings are carried verbatim from the source
+    # record: a preserved iteration that FAILED must still read as
+    # failed, or the resumed run would quietly recolour a prior
+    # attempt's failure green.  ``replayed=True`` is what keeps these
+    # out of every progress aggregate.
+    recorded_prefix = {
+        s.index: s for s in (state.iteration_summaries or [])
+        if s.index < start
+    }
+    resume_iteration_summaries = []
+    for idx in range(start):
+        src = recorded_prefix.get(idx)
+        if src is not None:
+            resume_iteration_summaries.append(IterationSummary(
+                index=idx,
+                status=src.status,
+                signature=src.signature,
+                duration_ms=src.duration_ms,
+                tokens=src.tokens,
+                has_artifact=idx in iteration_artifacts,
+                replayed=True,
+            ))
+        elif idx in iteration_artifacts:
+            # Inherited from an attempt further back: this run has the
+            # artifact but never held a summary for it (a chain of
+            # resumes).  Passed is the honest reading — a failed
+            # iteration is never accepted as a resume predecessor.
+            resume_iteration_summaries.append(IterationSummary(
+                index=idx, status="passed",
+                has_artifact=True, replayed=True,
+            ))
+
     from .task_cards import _launch_run_for_card
     new_run = await _launch_run_for_card(
         project_id=project_id,
@@ -657,7 +863,12 @@ async def resume_run_from_iteration(
         resume_from_block_id=block_id,
         resume_artifacts=resume_artifacts,
         resume_from_iteration=start,
+        # A serial loop inside a called card is a valid mid-loop target now;
+        # the gate needs the chain to walk through the Call to reach it.
+        resume_call_chain=resume_call_chain(
+            root, run.call_snapshots or {}, block_id),
         resume_iteration_artifacts=iteration_artifacts,
+        resume_iteration_summaries=resume_iteration_summaries,
         parent_run_id=run.id,
         root_run_id=run.root_run_id or run.id,
         attempt=(run.attempt or 1) + 1,

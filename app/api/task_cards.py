@@ -97,55 +97,36 @@ def _denial_reason_message(reason: str) -> str:
     return "Escalation not authorized."
 
 
-@router.get("/{card_id}/scope-status")
-async def get_card_scope_status(project_id: str, card_id: str):
-    """Per-block escalation-approval status for a card (ASR F-001).
+def _escalation_rows(
+    card, deck_scope, *, project_id: str = "", card_id: str = "",
+    check_approvals: bool = True,
+):
+    """Per-leaf-task escalation rows for a card — saved OR unsaved.
 
-    For every LEAF TASK block whose EFFECTIVE scope (deck-level project
-    scope + the card's own scope + every ancestor block's scope + its
-    own, merged additively — see app.models.task_card.merge_scopes)
-    grants a privilege escalation (shell_commands or writable paths),
-    report whether a signed approval record matches the CURRENT
-    effective-scope hash. Drives the "needs approval" banner in
-    TaskCardEditor.
+    Shared by the saved-card status endpoint and the unsaved-proposal
+    preview endpoint so both derive escalation through the SAME floor
+    subtraction (``scope_canonical.task_escalation_block``).  Deriving it
+    client-side instead would either cry wolf on a card writing only
+    inside a floor safe-write path like ``.ziya/`` or — the direction
+    that actually matters — miss a real grant whose command happens to
+    look familiar.
 
-    Container blocks are not reported: only leaf tasks are gated at
-    runtime (see the walk below). Their scopes still count, arriving via
-    each descendant's ancestor chain.
-    Blocks with no escalation (or restriction-only scopes) are omitted — they
-    run at the floor and need no approval. The signCommand is the exact
-    ``ziya-approve`` invocation that mints the missing record.
+    ``check_approvals=False`` is the proposal case: the spec's blocks
+    carry no persisted ids yet, so no approval could exist for them and
+    no ``signCommand`` is mintable.  Every escalating row comes back
+    ``authorized=False`` / ``needsSignature=True``, and nothing is
+    staged for the out-of-process signer.
+
+    Returns ``(rows, staged_scopes)``; ``staged_scopes`` is always empty
+    when ``check_approvals`` is False.
     """
     from app.config import scope_canonical as sc
     from app.utils import scope_approvals as sa
     from app.models.task_card import merge_scopes
 
-    # Refresh the approval-TTL breadcrumb the out-of-process signer reads to
-    # auto-stamp a policy-compliant expires_at. It is otherwise written only
-    # once at server startup (main.py), which is racy and permanent: if the
-    # policy bound was unresolved at that moment, the build predates that
-    # writer, or the policy was tightened after startup, the file is missing
-    # or stale and the signer mints an UNBOUNDED approval that the fail-closed
-    # TTL gate then rejects ("Signed without an expiry" — re-sign loop that
-    # never converges). This endpoint runs immediately before the operator
-    # copies signCommand and signs, has the live in-process policy, and
-    # already writes under get_ziya_home(), so it is the natural refresh
-    # point. Best-effort: never fail the editor's status check over UX state.
-    try:
-        sa.write_approval_policy_breadcrumb()
-    except Exception as e:  # noqa: BLE001
-        logger.warning(f"Could not refresh approval-TTL breadcrumb: {e}")
-
-    card = _get_storage(project_id).get(card_id)
-    if not card:
-        raise HTTPException(status_code=404, detail="Task card not found")
-
-    project = ProjectStorage(get_ziya_home()).get(project_id)
-    deck_scope = getattr(project.settings, "taskScope", None) if project else None
-
-    blocks = []
+    rows = []
     staged_scopes = {}  # "project:card:block" -> {name, scope} for the signer
-    for block, ancestor_scopes in _walk_blocks(card.root):
+    for position, (block, ancestor_scopes) in enumerate(_walk_blocks(card.root)):
         # Only LEAF task blocks are reportable.  The runtime gate lives in
         # execute_task_block (authorize_scope keyed on block.id), and
         # block_executor calls that for block_type == "task" only — a
@@ -170,28 +151,39 @@ async def get_card_scope_status(project_id: str, card_id: str):
         escalation = sc.task_escalation_block(scope)
         if not escalation:
             continue  # no privilege-bearing escalation -> nothing to approve
+        # An unsaved spec's blocks have id "" (ids are assigned by
+        # TaskCardStorage.create), and several of them would collide on
+        # that empty string as a display key.  Fall back to a positional
+        # key, which keeps the rows distinct without implying a
+        # persisted identity the caller could sign against.
+        block_id = getattr(block, "id", "") or ""
+        row_key = block_id or f"#{position}"
+        authorized = False
         denial_reason = None
-        try:
-            authorized, denial_reason = sa.is_scope_authorized_with_reason(block.id, scope)
-        except Exception as e:  # noqa: BLE001 — status must never 500 the editor
-            logger.warning(f"scope-status check failed for block {block.id}: {e}")
-            authorized = False
-            denial_reason = "check_failed"
+        if check_approvals:
+            try:
+                authorized, denial_reason = sa.is_scope_authorized_with_reason(
+                    block_id, scope)
+            except Exception as e:  # noqa: BLE001 — must never 500 the editor
+                logger.warning(f"scope-status check failed for {block_id}: {e}")
+                authorized = False
+                denial_reason = "check_failed"
         sign_command = ""
-        if not authorized:
+        if check_approvals and not authorized:
             sign_command = (
                 f"sudo ziya-approve --task {card_id} "
-                f"--block {block.id} --project {project_id}"
+                f"--block {block_id} --project {project_id}"
             )
-            # Stage the DECRYPTED scope so the out-of-process signer (which runs
-            # under sudo with no plugin system / KEK and therefore cannot
-            # decrypt the card itself) can recompute the identical scope hash.
-            # Stage the full scope shape (shell_commands + paths) that
-            # task_escalation_block reads, NOT the reduced escalation block, so
-            # the signer's hash matches what the runtime gate re-derives. This
-            # cannot widen authority: the gate independently re-hashes the real
-            # card, so a stale staging just fails the match and clamps to floor.
-            staged_scopes[f"{project_id}:{card_id}:{block.id}"] = {
+            # Stage the DECRYPTED scope so the out-of-process signer (which
+            # runs under sudo with no plugin system / KEK and therefore
+            # cannot decrypt the card itself) can recompute the identical
+            # scope hash.  Stage the full scope shape (shell_commands +
+            # paths) that task_escalation_block reads, NOT the reduced
+            # escalation block, so the signer's hash matches what the
+            # runtime gate re-derives.  This cannot widen authority: the
+            # gate independently re-hashes the real card, so a stale
+            # staging just fails the match and clamps to floor.
+            staged_scopes[f"{project_id}:{card_id}:{block_id}"] = {
                 "name": getattr(block, "name", "") or "",
                 "scope": {
                     "shell_commands": list(getattr(scope, "shell_commands", []) or []),
@@ -202,16 +194,73 @@ async def get_card_scope_status(project_id: str, card_id: str):
                     ],
                 },
             }
-        blocks.append({
-            "blockId": block.id,
+        rows.append({
+            "blockId": row_key,
             "name": getattr(block, "name", "") or "",
             "hasEscalation": True,
             "authorized": bool(authorized),
+            # True whenever this block's escalation is not currently
+            # active.  The single field every UI surface reads to decide
+            # whether to say "needs signing" — so the proposal block, the
+            # live preview and the deck badge cannot drift apart.
+            "needsSignature": not authorized,
             "escalation": {k: list(v) for k, v in escalation.items()},
             "signCommand": sign_command,
             "denialReason": denial_reason,
-            "denialMessage": _denial_reason_message(denial_reason) if denial_reason else None,
+            "denialMessage": (_denial_reason_message(denial_reason)
+                              if denial_reason else None),
         })
+    return rows, staged_scopes
+
+
+@router.get("/{card_id}/scope-status")
+async def get_card_scope_status(project_id: str, card_id: str):
+    """Per-block escalation-approval status for a card (ASR F-001).
+
+    For every LEAF TASK block whose EFFECTIVE scope (deck-level project
+    scope + the card's own scope + every ancestor block's scope + its
+    own, merged additively — see app.models.task_card.merge_scopes)
+    grants a privilege escalation (shell_commands or writable paths),
+    report whether a signed approval record matches the CURRENT
+    effective-scope hash. Drives the "needs approval" banner in
+    TaskCardEditor.
+
+    Container blocks are not reported: only leaf tasks are gated at
+    runtime (see the walk below). Their scopes still count, arriving via
+    each descendant's ancestor chain.
+    Blocks with no escalation (or restriction-only scopes) are omitted — they
+    run at the floor and need no approval. The signCommand is the exact
+    ``ziya-approve`` invocation that mints the missing record.
+    """
+    from app.utils import scope_approvals as sa
+
+    # Refresh the approval-TTL breadcrumb the out-of-process signer reads to
+    # auto-stamp a policy-compliant expires_at. It is otherwise written only
+    # once at server startup (main.py), which is racy and permanent: if the
+    # policy bound was unresolved at that moment, the build predates that
+    # writer, or the policy was tightened after startup, the file is missing
+    # or stale and the signer mints an UNBOUNDED approval that the fail-closed
+    # TTL gate then rejects ("Signed without an expiry" — re-sign loop that
+    # never converges). This endpoint runs immediately before the operator
+    # copies signCommand and signs, has the live in-process policy, and
+    # already writes under get_ziya_home(), so it is the natural refresh
+    # point. Best-effort: never fail the editor's status check over UX state.
+    try:
+        sa.write_approval_policy_breadcrumb()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Could not refresh approval-TTL breadcrumb: {e}")
+
+    card = _get_storage(project_id).get(card_id)
+    if not card:
+        raise HTTPException(status_code=404, detail="Task card not found")
+
+    project = ProjectStorage(get_ziya_home()).get(project_id)
+    deck_scope = getattr(project.settings, "taskScope", None) if project else None
+
+    blocks, staged_scopes = _escalation_rows(
+        card, deck_scope, project_id=project_id, card_id=card_id,
+        check_approvals=True,
+    )
 
     # Merge-write the staging file: replace this card's entries (drop stale ones
     # for blocks now approved/changed), preserve other cards' staged scopes.
@@ -234,7 +283,48 @@ async def get_card_scope_status(project_id: str, card_id: str):
 
     return {
         "cardId": card_id,
+        "preview": False,
         "anyUnapproved": any(not b["authorized"] for b in blocks),
+        "anyNeedsSignature": any(b["needsSignature"] for b in blocks),
+        "blocks": blocks,
+    }
+
+
+@router.post("/scope-preview")
+async def preview_card_scope(project_id: str, body: TaskCardCreate):
+    """Escalation preview for an UNSAVED card spec.
+
+    Exists because the by-id status endpoint cannot answer for a spec
+    that was never persisted.  The AI-authored proposal block and its
+    preview modal used a synthetic ``'draft'`` id, so they requested
+    ``/task-cards/draft/scope-status``, took the 404, and silently
+    rendered no warning — making the one moment the user decides whether
+    to run a model-authored card the one moment its privilege escalation
+    was invisible.
+
+    Reports the same rows as ``scope-status`` but with
+    ``authorized=False`` / ``needsSignature=True`` throughout: the spec's
+    blocks have no persisted ids, so no approval could exist for them and
+    no ``signCommand`` is mintable until the card is saved.  Read-only —
+    persists nothing and stages nothing for the signer, so previewing a
+    proposal the user never accepts leaves no trace.
+    """
+    project = ProjectStorage(get_ziya_home()).get(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    deck_scope = getattr(project.settings, "taskScope", None)
+
+    # The deck scope is included for the same reason the saved path
+    # includes it: it is a real layer of the effective scope, so omitting
+    # it here would under-report escalation that the run will actually
+    # request.  A TaskCardCreate exposes ``root`` and ``scope`` exactly as
+    # a TaskCard does, so the walk needs no adapter.
+    blocks, _staged = _escalation_rows(body, deck_scope, check_approvals=False)
+    return {
+        "cardId": "",
+        "preview": True,
+        "anyUnapproved": any(not b["authorized"] for b in blocks),
+        "anyNeedsSignature": any(b["needsSignature"] for b in blocks),
         "blocks": blocks,
     }
 
@@ -294,6 +384,8 @@ async def _launch_run_for_card(
     resumed_from_block_id: str = None,
     resume_from_iteration: int = None,
     resume_iteration_artifacts: dict = None,
+    resume_iteration_summaries: list = None,
+    resume_call_chain: list = None,
 ) -> TaskRun:
     """Shared helper: validates the card, creates a TaskRun, seeds
     block_states, and schedules the background executor task.
@@ -335,6 +427,90 @@ async def _launch_run_for_card(
     # replayed; a normal launch uses the live card.
     root_block = resume_root if resume_root is not None else card.root
 
+    # ── Structural validation ───────────────────────────────────
+    # Block sets extra="allow" and declares no validators, so an
+    # authoring defect is accepted silently and surfaces only when the
+    # executor reaches the block.  For a long fan-out that is hours in;
+    # for an orchestrator whose Call blocks ARE the deck, a typo in the
+    # last target costs every earlier phase before it is discovered.
+    #
+    # Errors block the launch, warnings do not — refusing to run on a
+    # warning would be a behaviour change rather than a safety net.
+    #
+    # Deliberately raises rather than minting a held run: this executes
+    # synchronously in the request (unlike the credentials preflight
+    # below, which runs inside the background coroutine where no HTTP
+    # response is left to fail), so a 422 reaches the caller directly.
+    # A run record would also be actively wrong — record_run() bumps
+    # run_count, so a launch that never executed would corrupt the
+    # deck's "never run" vs "has history" distinction, and a held run
+    # advertises resume affordances for progress that does not exist.
+    # The refusal is persisted to its own append-only log instead.
+    #
+    # Resume paths are validated too: they execute a snapshot tree, and
+    # a snapshot of a broken card is still broken.
+    _skip_validation = os.environ.get(
+        "ZIYA_SKIP_CARD_VALIDATION", "",
+    ).strip().lower() in ("1", "true", "yes")
+    if not _skip_validation:
+        try:
+            from ..context import get_project_root_or_none as _get_root
+            from ..utils.task_card_validation import validate_card_tree
+            _vres = validate_card_tree(
+                root_block, project_id=project_id, project_root=_get_root(),
+            )
+        except Exception as e:  # noqa: BLE001
+            # A validator fault must never be the reason a launch fails.
+            logger.warning(f"📋 TASK_LAUNCH: validation skipped: {e}")
+            _vres = None
+        if _vres is not None:
+            for _w in _vres.warnings:
+                logger.info(f"📋 TASK_LAUNCH: warning [{_w.path}]: {_w.message}")
+            if not _vres.ok:
+                logger.warning(
+                    f"📋 TASK_LAUNCH: refused - {len(_vres.errors)} "
+                    f"structural error(s) in card {card_id[:8]}"
+                )
+                # Record the refusal.  These are the only trace of the
+                # defect class that never becomes a run, so they are the
+                # one class nobody pays for and therefore nobody
+                # remembers.  Best-effort by construction: the sink must
+                # not turn an actionable 422 into a 500.
+                try:
+                    from ..storage.task_card_refusals import (
+                        RefusalLog, build_refusal_record,
+                    )
+                    RefusalLog(get_project_dir(project_id)).record(
+                        build_refusal_record(
+                            card_id=card_id,
+                            card_name=card.name or "",
+                            result=_vres,
+                            is_resume=resume_root is not None,
+                            project_id=project_id,
+                        )
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(f"📋 TASK_LAUNCH: refusal not logged: {e}")
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "message": (
+                            "Task card has structural errors and was not "
+                            "launched."
+                        ),
+                        "errors": [
+                            {"message": f.message, "block_id": f.block_id,
+                             "path": f.path}
+                            for f in _vres.errors
+                        ],
+                        "warnings": [
+                            {"message": f.message, "block_id": f.block_id,
+                             "path": f.path}
+                            for f in _vres.warnings
+                        ],
+                    },
+                )
+
     # Deck-level (project-wide) permissions baseline — the outermost
     # scope layer, merged additively with the card's own scope and
     # every ancestor block's scope (see app.models.task_card.merge_scopes
@@ -367,6 +543,66 @@ async def _launch_run_for_card(
     ))
     storage.record_run(card_id)
     _seed_block_states(run_storage, run.id, root_block)
+
+    # Mid-loop resume: install the replayed prefix as this run's own
+    # record.  Must come AFTER _seed_block_states (which replaces the
+    # whole state object, wiping iteration_summaries) and BEFORE the
+    # executor coroutine is scheduled below (both write the full run
+    # file, so an interleaving would lose records).
+    #
+    # Without this the resumed run recorded only the iterations it
+    # executed, so a resume at 3 of 5 rendered a two-dot strip counting
+    # from 1 — indistinguishable from a fresh two-iteration run, and
+    # reading as though the three banked iterations had been thrown away.
+    # They had not; nothing said so.
+    #
+    # Also fires for a PARALLEL fan-out resume, which banks an index SET
+    # rather than a prefix and therefore leaves ``resume_from_iteration``
+    # unset — gating on that alone dropped the display record for exactly
+    # the shape where the most work is preserved, so a 19-of-20 resume
+    # rendered a one-dot strip.
+    if resumed_from_block_id and (
+        resume_from_iteration or resume_iteration_artifacts
+    ):
+        try:
+            from ..models.task_run import IterationSummary
+            prefix = [
+                IterationSummary(**s) if isinstance(s, dict) else s
+                for s in (resume_iteration_summaries or [])
+            ]
+            run_storage.seed_replayed_iterations(
+                run.id, resumed_from_block_id, prefix,
+                # A resume point inside a called card has no seeded state
+                # yet: _seed_block_states above walks only ``root_block``,
+                # and a Call names its callee rather than inlining it.
+                # Safe specifically here — the resume endpoint located this
+                # id in the card snapshot or a call snapshot before banking
+                # a single artifact against it, so it is a block this run
+                # will genuinely execute, not a stale or misspelled id.
+                block_type="repeat",
+                create_if_missing=True,
+            )
+            # Copy the carried artifacts into THIS run's iteration files.
+            # The dot strip's open action fetches
+            # /task-runs/{this_run}/iterations/{block}/{index}, so without
+            # the copy every replayed dot is a visible circle that 404s on
+            # click — worse than an absent dot, since it looks openable.
+            # Also makes the run self-contained: the source may be deleted
+            # while this one is still going.
+            for idx, val in (resume_iteration_artifacts or {}).items():
+                if val is None:
+                    continue
+                art = val if isinstance(val, Artifact) else Artifact(**val)
+                run_storage.write_iteration_artifact(
+                    run.id, resumed_from_block_id, int(idx), art,
+                )
+        except Exception as e:
+            # Non-fatal: the prefix is a display and audit convenience.
+            # Failing the launch over it would trade a cosmetic gap for
+            # the lost work the whole resume path exists to recover.
+            logger.warning(
+                f"📋 TASK_LAUNCH: replayed-prefix seeding failed: {e}"
+            )
 
     # Snapshot the card definition at launch so later edits to the card
     # cannot retroactively rewrite what this run is displayed to have
@@ -501,6 +737,10 @@ async def _launch_run_for_card(
                 overrides=dict(parameter_overrides or {}),
                 deck_scope=deck_scope,
                 card_scope=card.scope,
+                # Outermost hop of the hold breadcrumb.  Without it, a hold
+                # inside a called card reports a path that starts at the
+                # CALLEE and omits the card the user actually launched.
+                root_card_label=(card.name or card.id),
                 # Resume state.  ``resume_skipping`` starts True only
                 # when a target was given, so a normal launch is
                 # untouched: the gate in execute_block is inert unless
@@ -517,6 +757,12 @@ async def _launch_run_for_card(
                     for k, v in (resume_iteration_artifacts or {}).items()
                     if v is not None
                 },
+                # Descend-through-Call hint.  Without it the gate replays a
+                # Call whole (empty body -> _subtree_contains False), so a
+                # target inside a called card is unreachable and the run
+                # reports success having executed nothing — which is worse
+                # than the 404 that behaviour replaced.
+                resume_call_chain=list(resume_call_chain or []),
             )
             logger.info(f"🚀 TASK_RUN: {run_id[:8]} → execute_block start (type={block.block_type})")
 
@@ -562,13 +808,26 @@ async def _launch_run_for_card(
             _kind = getattr(e, "infra_kind", "")
             if _kind:
                 _blk = getattr(e, "block_id", "") or ""
+                # The aggregate, not just the exception that happened to
+                # survive gather().  ctx accumulated every fault in
+                # memory; this is the single write of that record.
+                _faults = None
+                _gate = None
+                try:
+                    _faults = ctx.infra_summary()
+                    _gate = ctx.infra_gated_reason
+                except Exception:  # noqa: BLE001 — surfacing must not mask the hold
+                    pass
                 run_storage.mark_held(
                     run_id, reason=_kind, block_id=_blk, error=str(e),
+                    faults=_faults, gate_reason=_gate,
                 )
                 await _emit_run("held", error=str(e))
+                _n = (_faults or {}).get("fault_count", 1)
                 logger.warning(
                     f"⏸️ Task run held ({_kind}): {run_id[:8]} at block "
-                    f"{_blk[:14] or '?'} — {e}"
+                    f"{_blk[:14] or '?'} — {_n} fault(s)"
+                    + (f", gate: {_gate}" if _gate else "") + f" — {e}"
                 )
             else:
                 _st = _terminal("failed")

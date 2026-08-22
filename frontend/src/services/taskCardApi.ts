@@ -85,6 +85,22 @@ export const taskCardApi = {
   ): Promise<CardScopeStatus> {
     return json(await fetch(`${base(projectId)}/${cardId}/scope-status`));
   },
+
+  // Escalation preview for an UNSAVED spec (an AI-authored proposal, or a
+  // draft not yet created).  Server-side rather than computed here because
+  // the floor subtraction — a card writing only inside `.ziya/` is NOT an
+  // escalation — lives in app/config/scope_canonical.py, and a client copy
+  // would either false-alarm or, worse, miss a real grant.  Read-only: it
+  // persists nothing, so previewing a proposal the user rejects is free.
+  async scopePreview(
+    projectId: string, body: TaskCardCreate,
+  ): Promise<CardScopeStatus> {
+    return json(await fetch(`${base(projectId)}/scope-preview`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }));
+  },
 };
 
 export interface CardScopeBlockStatus {
@@ -92,6 +108,11 @@ export interface CardScopeBlockStatus {
   name: string;
   hasEscalation: boolean;
   authorized: boolean;
+  /** True whenever this block's escalation is not currently active. The
+   *  single field every surface reads to decide whether to say "needs
+   *  signing", so the proposal block, live preview and deck badge cannot
+   *  drift apart. Optional for tolerance of an older server response. */
+  needsSignature?: boolean;
   escalation: Record<string, string[]>;
   signCommand: string;
   /** Machine-readable denial code (e.g. "no_record", "scope_hash_mismatch",
@@ -107,5 +128,10 @@ export interface CardScopeBlockStatus {
 export interface CardScopeStatus {
   cardId: string;
   anyUnapproved: boolean;
+  /** True when at least one block needs signing. */
+  anyNeedsSignature?: boolean;
+  /** True when this came from the stateless preview endpoint, i.e. the card
+   *  is not saved so no signature could exist and no signCommand is mintable. */
+  preview?: boolean;
   blocks: CardScopeBlockStatus[];
 }

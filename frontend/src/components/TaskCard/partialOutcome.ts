@@ -66,7 +66,13 @@ export function progressCounts(run: TaskRun | null | undefined): ProgressCounts 
     // Iterations are counted for EVERY block, including invisible
     // wrappers: an iteration is work that happened regardless of
     // whether its owner has a row on screen.
+    //
+    // Replayed records are the one exception: they are a prior
+    // attempt's work, seeded onto this run so the dot strip can show it
+    // was preserved.  Counting them here would report "5 loop
+    // iterations passed" for a resume that executed two.
     for (const s of st.iteration_summaries ?? []) {
+      if (s.replayed) continue;
       if (s.status === 'passed') out.passedIterations += 1;
       else if (s.status === 'failed') out.failedIterations += 1;
     }

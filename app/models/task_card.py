@@ -315,6 +315,18 @@ class Block(BaseModel):
     repeat_count: Optional[int] = None
     repeat_max: Optional[int] = None
     repeat_parallel: bool = False
+    # Maximum iterations in flight when ``repeat_parallel`` is set.
+    # None uses DEFAULT_REPEAT_CONCURRENCY (see block_executor); 0 or a
+    # negative value means unbounded, which is what this field exists to
+    # stop being the default — a for_each over a 60-item planner roster
+    # previously opened 60 concurrent model streams and was throttled by
+    # the provider, turning a rate-limit response into 60 task failures.
+    #
+    # The sibling swarm system has enforced a cap since it was written
+    # (delegate_manager.DEFAULT_MAX_CONCURRENCY = 8, "to stay below API
+    # rate limits"); Task Cards are the newer primitive and inherited
+    # none of it.
+    repeat_max_concurrency: Optional[int] = None
     repeat_propagate: Literal["none", "last", "all"] = "last"
     repeat_until: Optional[str] = None
     repeat_for_each_source: Optional[str] = None

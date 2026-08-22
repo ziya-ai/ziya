@@ -7,7 +7,7 @@
 import type { Artifact } from '../types/task_card';
 import type { TaskBinding } from '../types/task_binding';
 import type {
-  TaskRun, IterationsQuery, IterationsResponse,
+  TaskRun, IterationsQuery, IterationsResponse, CalleeContext,
 } from '../types/task_run';
 
 /**
@@ -54,6 +54,67 @@ export async function listTaskRuns(
   if (opts?.cardId) url.searchParams.set('card_id', opts.cardId);
   const res = await fetch(url.toString(), { headers: projectHeaders() });
   if (!res.ok) throw new Error(`listTaskRuns failed: ${res.status}`);
+  return res.json();
+}
+
+/** Per-conversation run-status counts for the whole project. */
+export interface RunStatusIndex {
+  /** conversation id -> { status: lineage count } */
+  conversations: Record<string, Record<string, number>>;
+  /** True while something can still change on its own. */
+  live: boolean;
+  /** When the server's memo was last rebuilt; for debugging staleness. */
+  built_at: number;
+}
+
+/**
+ * Project-wide run status, for conversations that are NOT open.
+ *
+ * Distinct from listTaskRuns: that returns whole run records (block
+ * states, iteration summaries, artifacts) which are large and encrypted at
+ * rest, so polling it to learn status strings costs work proportional to
+ * total run history.  This returns only the counts the sidebar renders.
+ *
+ * Returns an empty index on 404 so a sidebar still renders against a
+ * server that predates this route.
+ */
+export async function getRunStatusIndex(
+  projectId: string,
+): Promise<RunStatusIndex> {
+  const res = await fetch(`${runsBase(projectId)}/status-index`, {
+    headers: projectHeaders(),
+  });
+  if (res.status === 404) {
+    return { conversations: {}, live: false, built_at: 0 };
+  }
+  if (!res.ok) throw new Error(`getRunStatusIndex failed: ${res.status}`);
+  return res.json();
+}
+
+/**
+ * Runs that invoked this card as a Call target and are still live or held.
+ *
+ * Distinct from listTaskRuns({cardId}), which filters on the run's OWNER.
+ * A Call runs inline in the caller's run, so a card used only as a callee
+ * (CL1 inside CL0) owns no runs and looked idle even while it was the card
+ * holding a study.  This asks the other question: who is running me?
+ *
+ * Callers MUST gate per-block markup on `held_in_callee`.  A hold in a
+ * sibling callee is returned as context — this card did take part in a
+ * held run — but drawing it on this card's blocks would point at a card
+ * that is fine.
+ */
+export async function getCalleeContext(
+  projectId: string, cardId: string,
+): Promise<CalleeContext[]> {
+  const res = await fetch(
+    `${runsBase(projectId)}/callee-context/${encodeURIComponent(cardId)}`,
+    { headers: projectHeaders() },
+  );
+  // A deck page must render with or without this: it is supplementary
+  // context, not the card itself.  An older server has no such route.
+  if (res.status === 404) return [];
+  if (!res.ok) throw new Error(`getCalleeContext failed: ${res.status}`);
   return res.json();
 }
 

@@ -15,6 +15,7 @@ import {
   CheckCircleOutlined, CloseCircleOutlined, ExclamationCircleOutlined,
   ClockCircleOutlined, ThunderboltOutlined, ReloadOutlined, EditOutlined,
   PauseOutlined, PlayCircleOutlined, StepForwardOutlined, ApiOutlined,
+  WarningOutlined,
 } from '@ant-design/icons';
 import { useProject } from '../../context/ProjectContext';
 import type { TaskBinding } from '../../types/task_binding';
@@ -31,8 +32,11 @@ import { TaskRunMap } from './TaskRunMap';
 import { BlockDetailPanel } from './BlockDetailPanel';
 import { ArtifactViewer } from './ArtifactViewer';
 import { RunRecoveryBanner } from './RunRecoveryBanner';
-import { blockLabel, findBlockById, resolveBlockStatus } from './runMapModel';
+import {
+  blockLabel, findBlockInRun, resolveBlockStatus,
+} from './runMapModel';
 import { deriveRunControls, heldLabel } from './runControls';
+import { RUN_STATUS_FILL, RUN_STATUS_FG } from './runStatusVocabulary';
 import {
   attemptSummary, firstFailedBlock, isPartial, progressCounts, progressPhrase,
   provenance, resumeKindLabel, sideEffectSummary,
@@ -42,7 +46,8 @@ import FailureClusters from './FailureClusters';
 import { analyzeFailures } from '../../utils/iterationClusters';
 import { formatLastActivity } from './liveActivity';
 import { awaitsUser, decideAutoCollapse } from './autoCollapse';
-import { MarkdownRenderer } from '../MarkdownRenderer';
+import { TaskMarkdown } from './TaskMarkdown';
+import { useCardSignatureStatus } from './useCardSignatureStatus';
 import './task-card-inline-tile.css';
 
 interface Props {
@@ -55,29 +60,15 @@ interface Props {
   hideWhenTerminal?: boolean;
 }
 
-const STATUS_COLORS: Record<RunStatus, string> = {
-  queued: '#7d8590',
-  running: '#1f6feb',
-  paused: '#8957e5',
-  done: '#3fb950',
-  partial: '#d29922',
-  failed: '#f85149',
-  cancelled: '#d29922',
-  // Violet, matching 'paused': both mean "stopped, not broken".  A red
-  // or amber here would read as a verdict on the work, which is exactly
-  // the misreading 'held' exists to prevent.
-  held: '#8957e5',
-};
-
-// Icon/text foreground variant. STATUS_COLORS.running (#1f6feb) is tuned as
-// a *filled* Tag background (white text on top reads fine at ~4.6:1), but
-// used directly as a foreground glyph color against the dark tile
-// background (#303a46) it drops to ~2.5:1 contrast — barely readable in
-// dark mode. Swap in a lighter accent for icon/text foreground use only.
-const STATUS_ICON_COLORS: Record<RunStatus, string> = {
-  ...STATUS_COLORS,
-  running: '#58a6ff',
-};
+// The colour vocabulary moved to runStatusVocabulary.ts when the
+// conversation sidebar needed it too.  Aliased rather than renamed at
+// every use site: the names are load-bearing in this file's JSX, and a
+// rename would bury a mechanical change in an otherwise unrelated diff.
+// The distinction between the two maps is preserved there and documented
+// at the definition — FILL for a chip background, FG for a glyph drawn
+// directly on a surface.
+const STATUS_COLORS = RUN_STATUS_FILL;
+const STATUS_ICON_COLORS = RUN_STATUS_FG;
 
 const STATUS_ICONS: Record<RunStatus, React.ReactNode> = {
   queued: <ClockCircleOutlined />,
@@ -117,7 +108,7 @@ const SUMMARY_COLLAPSE_THRESHOLD = 280;
  */
 const ArtifactSummary: React.FC<{ summary: string }> = ({ summary }) => {
   const body = (
-    <MarkdownRenderer
+    <TaskMarkdown
       markdown={summary}
       enableCodeApply={false}
       isStreaming={false}
@@ -454,6 +445,12 @@ export const TaskCardInlineTile: React.FC<Props> = ({ binding, hideWhenTerminal 
 const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }) => {
   const { currentProject } = useProject();
   const projectId = currentProject?.id ?? '';
+
+  // Signature status: shown while running and after finishing, because a
+  // clamped run is indistinguishable from an authorized one otherwise —
+  // the permission failure surfaces mid-iteration as an opaque error.
+  const { unsignedCount, needsSigning, status: scopeStatus } =
+    useCardSignatureStatus(projectId, binding.card_id);
 
   /**
    * Which attempt in the lineage the body shows.  Defaults to the
@@ -892,12 +889,17 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
     setExpanded(v => !v);
   }, [noteInteraction, expanded]);
 
-  // Iteration counts from block_states
+  // Iteration counts from block_states, over iterations THIS attempt
+  // executed.  Replayed records are excluded for the same reason they
+  // are in progressCounts: they are seeded from a prior attempt so the
+  // run map can show the work was preserved, and folding them in here
+  // would report a resume's inherited passes as its own.
   const iterCounts = useMemo(() => {
     if (!run) return null;
     let passed = 0, failed = 0, total = 0;
     for (const state of Object.values(run.block_states)) {
       for (const s of state.iteration_summaries) {
+        if (s.replayed) continue;
         total++;
         if (s.status === 'passed') passed++;
         if (s.status === 'failed') failed++;
@@ -1024,6 +1026,20 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
         <Tag color={statusColor} style={{ marginLeft: 'auto', fontSize: 10 }}>
           {run.status}
         </Tag>
+        {/* Signature state travels with the card wherever it is shown.
+            Placed before the attempt ordinal so it is never pushed off
+            the visible row by a long lineage. */}
+        {needsSigning && (
+          <Tooltip title={
+            `${unsignedCount} block(s) request shell/write permissions beyond ` +
+            `the default safe set without a signature. Those blocks run ` +
+            `clamped to the floor.`}>
+            <Tag icon={<WarningOutlined />} color="warning"
+              style={{ marginLeft: 4, fontSize: 10 }}>
+              unsigned · {unsignedCount}
+            </Tag>
+          </Tooltip>
+        )}
         {/* Attempt ordinal.  Present as soon as a lineage exists, so a
             user looking at attempt 3 is never left wondering whether
             attempts 1 and 2 still exist. */}
@@ -1147,6 +1163,36 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
           <div className="tc-tile__description">{displayCard.description}</div>
         )}
 
+        {/* Signature notice ahead of the partial banner: when a run
+            stopped because a clamped block could not do its work, the
+            missing signature IS the verdict, and reading "stopped at
+            step 3" first sends the user hunting through the trace for a
+            cause that is stated right here. */}
+        {needsSigning && (
+          <div className="tc-staged-signing-notice" role="alert">
+            🔒 <strong>Requires signing.</strong>{' '}
+            {unsignedCount === 1 ? 'One block requests' : `${unsignedCount} blocks request`}{' '}
+            shell/write permissions beyond the default safe set without a
+            signature, so {unsignedCount === 1 ? 'it runs' : 'they run'} clamped
+            to the default floor. Open the card in Task Cards for the{' '}
+            <code>ziya-approve</code> command.
+            {(scopeStatus?.blocks ?? [])
+              .filter(b => b.needsSignature ?? !b.authorized)
+              .map(b => (
+                <div key={b.blockId} style={{ marginTop: 4, opacity: 0.85 }}>
+                  ⚠ {b.name || b.blockId}
+                  {Object.entries(b.escalation).map(([field, vals]) => (
+                    <span key={field} style={{
+                      marginLeft: 6, fontFamily: 'ui-monospace, monospace',
+                    }}>
+                      {field}: {vals.join(', ')}
+                    </span>
+                  ))}
+                </div>
+              ))}
+          </div>
+        )}
+
         {/* Banner first: "how far did it get / did it change anything"
             outranks the run map, because a user arriving at a stopped
             run needs the verdict before the detail. */}
@@ -1156,7 +1202,10 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
             failedBlockLabel={(() => {
               const fb = firstFailedBlock(run);
               if (!fb || !displayCard) return null;
-              const b = findBlockById(displayCard.root, fb.block_id);
+              // block_states carries CALLEE blocks too, so the card's own
+              // tree alone leaves a called card's failure unnamed.
+              const b = findBlockInRun(
+                displayCard.root, run.call_snapshots, fb.block_id);
               return b ? blockLabel(b) : null;
             })()}
           />
@@ -1173,7 +1222,9 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
           const target = recoveryTarget(run);
           if (!target) return null;   // done run / no recorded stages
           const b = displayCard
-            ? findBlockById(displayCard.root, target.blockId) : null;
+            ? findBlockInRun(
+                displayCard.root, run.call_snapshots, target.blockId)
+            : null;
           return (
             <RunRecoveryBanner
               run={run}
@@ -1228,7 +1279,13 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
         )}
 
         {focus && displayCard && (() => {
-          const fb = findBlockById(displayCard.root, focus.blockId);
+          // TaskRunMap splices callee trees in from ``call_snapshots``, so
+          // a focusable row can name a block that is not in the card's own
+          // tree.  Searching only the card returned null and the panel
+          // rendered nothing at all — clicking a called card's row did
+          // visibly nothing.
+          const fb = findBlockInRun(
+            displayCard.root, run.call_snapshots, focus.blockId);
           if (!fb) return null;
           return (
             <div className="tc-focus">
@@ -1456,6 +1513,13 @@ const StagedCardTile: React.FC<{ binding: TaskBinding }> = ({ binding }) => {
   const [card, setCard] = useState<TaskCard | null>(null);
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A staged card IS persisted (the /goal flow creates it before staging),
+  // so the by-id status endpoint applies here — unlike the chat proposal
+  // block, which has no card yet and uses the preview endpoint.
+  //
+  // Shared with LaunchedCardTile via the hook: a per-tile copy of this
+  // logic is exactly how the launched tile ended up never checking.
+  const { unsignedCount } = useCardSignatureStatus(projectId, binding.card_id);
 
   useEffect(() => {
     if (!projectId) return;
@@ -1468,6 +1532,14 @@ const StagedCardTile: React.FC<{ binding: TaskBinding }> = ({ binding }) => {
 
   const handleRun = async () => {
     if (!projectId) return;
+    if (unsignedCount > 0) {
+      const ok = window.confirm(
+        `${unsignedCount} task(s) in this goal request shell/write permissions ` +
+        `beyond the default safe set, and that escalation is not signed.\n\n` +
+        `The run will start, but those tasks are clamped to the default floor. ` +
+        `Open Task Cards to sign them first.\n\nRun anyway?`);
+      if (!ok) return;
+    }
     setLaunching(true);
     setError(null);
     try {
@@ -1501,7 +1573,19 @@ const StagedCardTile: React.FC<{ binding: TaskBinding }> = ({ binding }) => {
         <span>🎯</span>
         <strong>{card?.name ?? 'Goal'}</strong>
         <Tag color="default">staged</Tag>
+        {unsignedCount > 0 && (
+          <Tag color="warning">Needs signing · {unsignedCount}</Tag>
+        )}
       </div>
+      {unsignedCount > 0 && (
+        <div className="tc-staged-signing-notice" role="alert">
+          🔒 <strong>Requires signing.</strong>{' '}
+          {unsignedCount === 1 ? 'One task requests' : `${unsignedCount} tasks request`}{' '}
+          shell/write permissions beyond the default safe set. Run works either
+          way, but those tasks are clamped to the default floor until signed —
+          open Task Cards for the <code>ziya-approve</code> command.
+        </div>
+      )}
       {instructions && (
         <details>
           <summary><strong>Instructions</strong></summary>

@@ -4,6 +4,7 @@ import { ScrollProvider } from './ScrollContext';
 import { ConversationListProvider } from './ConversationListContext';
 import { ActiveChatProvider } from './ActiveChatContext';
 import { Conversation, Message, ConversationFolder } from "../utils/types";
+import type { TaskBinding } from '../types/task_binding';
 import { v4 as uuidv4 } from "uuid";
 import { db } from '../utils/db';
 import * as syncMerge from '../utils/syncMerge';
@@ -90,6 +91,22 @@ interface ChatContext {
     runningTaskConversations: Set<string>;
     addRunningTaskConversation: (id: string) => void;
     removeRunningTaskConversation: (id: string) => void;
+    /**
+     * Task bindings per conversation, for the sidebar's per-status gear
+     * cluster.  A MAP OF BINDINGS rather than more boolean Sets: the
+     * previous design carried one Set for "running", and generalizing it
+     * to eight statuses — several of them terminal-but-interesting, with
+     * a count each — would mean eight Sets to keep mutually consistent,
+     * where the underlying data is one list per conversation and every
+     * status is a projection of it.  Sets also cannot carry a count.
+     *
+     * Keeps ``runningTaskConversations`` untouched above: that Set is set
+     * optimistically at launch (before any run record exists) to make the
+     * gear appear immediately, which this map cannot do because it is
+     * populated from server state.  The two answer different questions.
+     */
+    conversationTaskBindings: Map<string, TaskBinding[]>;
+    setConversationTaskBindings: (id: string, bindings: TaskBinding[]) => void;
     setCurrentConversationId: (id: string) => void;
     addMessageToConversation: (message: Message, targetConversationId: string, isNonCurrentConversation?: boolean) => void;
     currentMessages: Message[];
@@ -173,6 +190,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const isStreamingAny = streamingConversations.size > 0;
     const setIsStreaming: Dispatch<SetStateAction<boolean>> = useCallback(() => {}, []);
     const [runningTaskConversations, setRunningTaskConversations] = useState<Set<string>>(() => new Set());
+    const [conversationTaskBindings, setConversationTaskBindingsState] = useState<Map<string, TaskBinding[]>>(() => new Map());
     const [isLoadingConversation, setIsLoadingConversation] = useState(false);
     // Gates the sidebar's "loading" vs "empty" distinction.  Set true by the
     // first commit of a conversation list for a project — whichever of the
@@ -539,6 +557,36 @@ export function ChatProvider({ children }: ChatProviderProps) {
             return next;
         });
     }, []);
+
+    /**
+     * Record a conversation's bindings for the sidebar's gear cluster.
+     *
+     * Bails out when the run statuses are unchanged.  Without that check
+     * this fires on every bindings refresh — including the polling one —
+     * and each call replaces the Map identity, re-rendering the entire
+     * conversation list several times a minute for no visible change.
+     * Only ``run_status`` per binding id is compared, because that is the
+     * only field the gear cluster reads; a binding whose anchor or
+     * attempt moved changes nothing on this surface.
+     */
+    const setConversationTaskBindings = useCallback(
+        (id: string, bindings: TaskBinding[]) => {
+            if (!id) return;
+            setConversationTaskBindingsState(prev => {
+                const before = prev.get(id);
+                if (before && before.length === bindings.length) {
+                    const sig = (arr: TaskBinding[]) => arr
+                        .map(b => `${b.id}:${b.run_status ?? ''}`)
+                        .sort().join('|');
+                    if (sig(before) === sig(bindings)) return prev;
+                }
+                if (!before && bindings.length === 0) return prev;
+                const next = new Map(prev);
+                if (bindings.length === 0) next.delete(id);
+                else next.set(id, bindings);
+                return next;
+            });
+        }, []);
 
     const getProcessingState = useCallback((conversationId: string): ProcessingState => {
         return processingStates.get(conversationId)?.state || 'idle';
@@ -2850,10 +2898,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 try {
                     // 1. Fetch from server
                     // Use summaries (no messages) for polling — only fetch full data on version mismatch
+                    const tFetch = performance.now();
                     const serverChats = await syncApi.listChats(projectId, false);
+                    console.log(`⏱️ SYNC[${projectId.substring(0, 8)}]: listChats(${serverChats.length}) took ${(performance.now() - tFetch).toFixed(0)}ms`);
 
                     // 2. Load current IndexedDB state
                     let allConversations: Conversation[];
+                    const tShells = performance.now();
                     try {
                         // Use shells (metadata only) for sync — we only need versions/ids
                         // Loading full message arrays for all 695 conversations causes OOM
@@ -2862,6 +2913,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         console.warn('📡 SERVER_SYNC: IndexedDB unavailable, using server as sole source:', dbErr);
                         allConversations = [];
                     }
+                    console.log(`⏱️ SYNC[${projectId.substring(0, 8)}]: getConversationShells(${allConversations.length}) took ${(performance.now() - tShells).toFixed(0)}ms`);
 
                     // 2a. Migrate untagged conversations (only on first sync)
                     if (serverSyncedForProject.current !== projectId) {
@@ -4618,6 +4670,8 @@ export function ChatProvider({ children }: ChatProviderProps) {
         runningTaskConversations,
         addRunningTaskConversation,
         removeRunningTaskConversation,
+        conversationTaskBindings,
+        setConversationTaskBindings,
         setConversations,
         setIsStreaming,
         conversations,
@@ -4844,6 +4898,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         setIsStreaming={setIsStreaming}
                         streamingConversations={streamingConversations}
                         runningTaskConversations={runningTaskConversations}
+                        conversationTaskBindings={conversationTaskBindings}
                         addStreamingConversation={addStreamingConversation}
                         removeStreamingConversation={removeStreamingConversation}
                         streamedContentMap={streamedContentMap}
