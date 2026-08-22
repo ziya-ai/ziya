@@ -453,6 +453,63 @@ describe('stripBareProseFences', () => {
         const fences = result.split('\n').filter(l => /^`{4,}\s*$/.test(l));
         expect(fences.length).toBe(0);
     });
+
+    it('does not swallow a real tagged fence into a preceding stray bare fence ("How the three combine" regression)', () => {
+        // A stray/unterminated bare fence immediately followed by a real
+        // lang-tagged block (e.g. ```mermaid). The close-search for the bare
+        // fence must not walk past the tagged opener and grab the tagged
+        // block's own close as if it paired with the bare fence -- that
+        // mis-pairing swallows the mermaid opener as "inner content" and
+        // truncates/garbles the diagram.
+        const input = [
+            'Some prose.',
+            '',
+            BT,
+            '',
+            BT + 'mermaid',
+            'flowchart TB',
+            '    A --> B',
+            BT,
+            '',
+            'Trailing prose.',
+        ].join('\n');
+        const result = stripBareProseFences(input);
+        // The stray bare fence is dropped without disturbing the real block.
+        expect(result).toContain(BT + 'mermaid');
+        expect(result).toContain('flowchart TB');
+        expect(result).toContain('    A --> B');
+        expect(result).toContain('Trailing prose.');
+        // Exactly one fence pair remains: the tagged mermaid block's own.
+        const openers = result.split('\n').filter(l => /^`{3,}mermaid\s*$/.test(l));
+        expect(openers.length).toBe(1);
+        const bareFences = result.split('\n').filter(l => /^`{3,}\s*$/.test(l));
+        expect(bareFences.length).toBe(1); // only the mermaid block's closer
+    });
+
+    it('preserves a shorter tagged fence nested inside a longer bare wrapper that never closes before EOF', () => {
+        // Companion to the regression above: a longer bare fence (4
+        // backticks) wrapping a properly-closed SHORTER tagged fence (3
+        // backticks) must still find ITS OWN close further down, rather
+        // than aborting the search merely because a tagged opener exists
+        // in between. The fLen >= check exists precisely for this case.
+        const input = [
+            BT4,
+            'Some markdown prose that mentions a block:',
+            '',
+            BT + 'diff',
+            '+ added',
+            BT,
+            '',
+            'more prose',
+            BT4,
+        ].join('\n');
+        const result = stripBareProseFences(input);
+        expect(result).toContain(BT + 'diff');
+        expect(result).toContain('+ added');
+        expect(result).toContain('more prose');
+        const bt4 = result.split('\n').filter(l => /^`{4,}\s*$/.test(l));
+        expect(bt4.length).toBe(0);
+    });
 });
 
 // ---------------------------------------------------------------------------

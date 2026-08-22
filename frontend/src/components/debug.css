@@ -87,17 +87,20 @@
     color: #e6e6e6;
 }
 
-/* Test results status colors - light mode */
+/* Test results status colors - light mode.  These base rules ARE the
+   light-mode rules (the .dark variants override them below), so the
+   original antd-default hues sat at 2.3-3.3:1 on white — a pass/fail
+   signal you have to lean in to read. */
 .debug-container .status-success {
-    color: #52c41a;
+    color: #1a7f37;
 }
 
 .debug-container .status-failed {
-    color: #ff4d4f;
+    color: #cf222e;
 }
 
 .debug-container .status-pending {
-    color: #1890ff;
+    color: #0969da;
 }
 
 /* Test results status colors - dark mode */
