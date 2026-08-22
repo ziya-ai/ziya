@@ -174,10 +174,55 @@ _VIZ_BLOCK_TYPES = frozenset({
     'designinspector', 'packet', 'html-mockup', 'plotly',
 })
 
+# Block types whose body legally contains fence lines, AND whose body lines
+# carry a structural prefix that keeps those fences off column 0. This is the
+# inverse of the "atomic fence" property in
+# frontend/src/components/fenceScanner.ts: for a diagram block an inner fence
+# proves the closer is missing, but in a unified diff every body line begins
+# with '+', '-' or ' ', so a fence inside one is content.
+#
+# Deliberately limited to diff-family languages. ``markdown`` also bears
+# fences but has no such prefix, so an inner fence there sits at column 0 and
+# is genuinely indistinguishable from a closer — that case is handled by
+# requiring a wider outer fence (the backtick_count guard), which is the only
+# construction CommonMark itself can disambiguate. Adding markdown here would
+# trade this bug for a worse one: a truncated markdown block would never be
+# detected at all.
+_FENCE_BEARING_BLOCK_TYPES = frozenset({
+    'diff', 'patch', 'udiff',
+})
+
+# Fence languages that may legitimately carry a trailing variant modifier in
+# their info string, e.g. "```html-mockup figure". Consulted by the
+# code-block tracker, whose prose-suppression heuristic rejects any info
+# string containing a space — correct before modifiers existed, but it made a
+# modified fence invisible in BOTH directions: the opener was dropped so the
+# block never opened, then its real closer (arriving with in_block False) was
+# read as a bare OPENER and left a phantom block wedged open, while a
+# genuinely truncated modified block reported closed and escaped detection.
+#
+# Keyed on the base language rather than the full string, mirroring
+# parseMockupFence in frontend/src/utils/mockupFence.ts.
+_MODIFIER_BEARING_BLOCK_TYPES = frozenset({
+    'html-mockup', 'ui-mockup', 'mockup',
+})
+
+
+def fence_base_lang(info: str) -> str:
+    """First whitespace-delimited token of a fence info string, lowercased."""
+    if not info:
+        return ''
+    return info.strip().split()[0].lower()
+
 # Matches a named fence opening line (3+ backticks followed by a language tag).
 # The colon in tags like "thinking:step-1" is intentionally excluded so those
 # outer blocks are not themselves treated as viz targets.
-_FENCE_OPEN_RE = re.compile(r'^(`{3,})\s*([a-zA-Z][\w.-]*)(\s*)$')
+#
+# Trailing modifiers are permitted (group 3) because a viz fence may carry a
+# variant, e.g. "```html-mockup figure". Requiring end-of-line straight after
+# the tag made such an opener invisible to both repairs below, so a nested or
+# stray-fenced figure silently rendered as literal text.
+_FENCE_OPEN_RE = re.compile(r'^(`{3,})\s*([a-zA-Z][\w.-]*)(\s+\S.*)?$')
 
 # Matches a bare (untagged) fence on its own line followed by optional blank
 # lines.  Used to detect stray empty fences the model emits before a viz

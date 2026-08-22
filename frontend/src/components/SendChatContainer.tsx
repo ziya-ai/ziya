@@ -35,7 +35,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   const [isDraggingOver, setIsDraggingOver] = useState(false);
   const [isSendingFeedback, setIsSendingFeedback] = useState(false);
   const [currentToolId, setCurrentToolId] = useState<string | null>(null);
-  const [feedbackStatus, setFeedbackStatus] = useState<'idle' | 'pending' | 'queued' | 'delivered' | 'undelivered'>('idle');
+  const [feedbackStatus, setFeedbackStatus] = useState<'idle' | 'pending' | 'queued' | 'delivered' | 'resubmitting'>('idle');
   const [throttlingError, setThrottlingError] = useState<any>(null);
   const [showContinueButton, setShowContinueButton] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState<{
@@ -56,6 +56,15 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   const pendingInjectRef = useRef<Map<string, string>>(new Map());
   // Initialize with undefined to avoid circular dependency during initial render
   const prevConversationIdRef = useRef<string | undefined>(undefined);
+  // Feedback text sent during the current turn that has not been confirmed
+  // delivered, bound to the conversation it was typed into. Pruned by the
+  // feedbackDelivered ack; anything still here when the turn ends is
+  // auto-submitted as an ordinary message rather than stranded.
+  const pendingFeedbackRef = useRef<{ conversationId: string; texts: string[] } | null>(null);
+  // Latest committed messages / auto-submit entry point, read from effects
+  // that must not close over a stale render.
+  const currentMessagesRef = useRef<Message[]>([]);
+  const submitRecoveredFeedbackRef = useRef<((text: string) => void) | null>(null);
 
   const {
     currentConversationId,
@@ -83,6 +92,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   // A send running for a different conversation (user switched tabs) must not block.
   const isSubmitting = submittingConversationId === currentConversationId;
   const shouldSendAsFeedback = isCurrentlyStreaming && inputValue.trim().length > 0;
+  currentMessagesRef.current = currentMessages;
 
   // Disabled when: no content, OR this conversation is streaming, OR server is unreachable
   const isDisabled = useMemo(() =>
@@ -158,6 +168,16 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     const handleDelivered = (event: CustomEvent) => {
       if (event.detail?.conversationId === currentConversationId) {
         console.log('📝 FEEDBACK: Delivery confirmed via SSE:', event.detail.message);
+        // The backend joins the whole drained batch into one injection, so an
+        // untruncated ack retires exactly the texts it names; a truncated one
+        // (>= 80 chars, the executor's cap) cannot be matched, so clear all —
+        // over-clearing loses a recovery, under-clearing duplicates a send.
+        const ack: string = event.detail.message || '';
+        const pf = pendingFeedbackRef.current;
+        if (pf) {
+          pf.texts = ack.length >= 80 ? [] : pf.texts.filter(t => !ack.includes(t));
+          if (pf.texts.length === 0) pendingFeedbackRef.current = null;
+        }
         setFeedbackStatus('delivered');
         // Auto-clear after 4s
         setTimeout(() => setFeedbackStatus('idle'), 4000);
@@ -192,24 +212,26 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     return () => ws.removeEventListener('message', wsHandler);
   }, [isCurrentlyStreaming, currentConversationId]);
 
-  // Reset feedback status when streaming ends.
-  // If feedback was still 'queued' (accepted by the server but never confirmed
-  // 'delivered' via the SSE feedbackDelivered event), the turn ended before the
-  // model consumed it — the backend straggler path re-enqueues it for the next
-  // turn. Surface an 'undelivered' warning instead of silently flipping to idle,
-  // which previously hid the loss from the user.
+  // Turn ended: reset the status chip, and auto-submit any feedback the turn
+  // never consumed. The backend used to re-enqueue stranded feedback "for the
+  // next turn", but nothing drains that queue until another turn starts, so the
+  // text sat there indefinitely while the chip claimed it was deferred. The
+  // turn it was aimed at is over, so a new turn is the only place it can land.
+  // Held (not dropped) while the user is looking at a different conversation,
+  // since the send needs this conversation's history.
   useEffect(() => {
-    if (!isCurrentlyStreaming) {
-      setFeedbackStatus((prev) => {
-        if (prev === 'queued') {
-          console.warn('📝 FEEDBACK: turn ended while still queued — deferred to next turn');
-          setTimeout(() => setFeedbackStatus('idle'), 6000);
-          return 'undelivered';
-        }
-        return 'idle';
-      });
+    const stranded = pendingFeedbackRef.current;
+    if (stranded
+        && stranded.conversationId === currentConversationId
+        && !isCurrentlyStreaming) {
+      pendingFeedbackRef.current = null;
+      console.warn('📝 FEEDBACK: turn ended without consuming feedback — auto-submitting:', stranded.texts);
+      setFeedbackStatus('resubmitting');
+      submitRecoveredFeedbackRef.current?.(stranded.texts.join('\n\n'));
+      return;
     }
-  }, [isCurrentlyStreaming]);
+    if (!isCurrentlyStreaming && !stranded) setFeedbackStatus('idle');
+  }, [isCurrentlyStreaming, currentConversationId]);
 
   // Listen for throttling errors from chatApi
   useEffect(() => {
@@ -971,6 +993,15 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       }
 
       if (sent) {
+        // Retained so a turn that ends without consuming this text can
+        // auto-submit it instead of stranding it.
+        const prevPending = pendingFeedbackRef.current;
+        pendingFeedbackRef.current = {
+          conversationId: currentConversationId,
+          texts: prevPending && prevPending.conversationId === currentConversationId
+            ? [...prevPending.texts, feedbackText]
+            : [feedbackText],
+        };
         setFeedbackStatus('queued');
         console.log('🔄 FEEDBACK:', feedbackText);
 
@@ -1124,6 +1155,41 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     isCurrentlyStreaming, currentConversationId, setUserHasScrolled, addMessageToConversation,
     addStreamingConversation, removeStreamingConversation, currentMessages, send, attachedDocuments
   ]);
+
+  // Auto-submit feedback the turn ended without consuming. The turn it was
+  // aimed at is over, so it becomes an ordinary message — a new turn — rather
+  // than being deferred to a turn that may never start. Deliberately does not
+  // touch the editor: the user may have typed something new in the meantime.
+  const submitRecoveredFeedback = useCallback(async (text: string) => {
+    const targetConversationId = currentConversationId;
+    setSubmittingConversationId(targetConversationId);
+    try {
+      const userMessage = {
+        role: 'human' as const,
+        content: text,
+        _timestamp: Date.now(),
+      };
+      addMessageToConversation(userMessage, targetConversationId);
+      addStreamingConversation(targetConversationId);
+      const messagesToSend = [
+        ...currentMessagesRef.current.filter(m => !m.muted),
+        userMessage,
+      ];
+      await send({
+        messages: messagesToSend,
+        question: text,
+        conversationId: targetConversationId,
+        includeReasoning: true,
+      });
+    } catch (error) {
+      console.error('📝 FEEDBACK: auto-submit of stranded feedback failed:', error);
+      removeStreamingConversation(targetConversationId);
+    } finally {
+      setSubmittingConversationId(null);
+    }
+  }, [currentConversationId, addMessageToConversation, addStreamingConversation,
+      removeStreamingConversation, send]);
+  submitRecoveredFeedbackRef.current = submitRecoveredFeedback;
 
   // Handle keyboard events - must be after sendToolFeedback and handleSend
   const handleKeyDown = useCallback((e: KeyboardEvent<HTMLDivElement>) => {
@@ -1460,20 +1526,18 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
               gap: '6px',
               color: feedbackStatus === 'delivered'
                 ? (isDarkMode ? '#95de64' : '#52c41a')
-                : feedbackStatus === 'undelivered'
-                ? (isDarkMode ? '#ff7875' : '#cf1322')
                 : (isDarkMode ? '#faad14' : '#d48806'),
               transition: 'opacity 0.3s',
               opacity: 1,
             }}>
               <span style={{
                 display: 'inline-block',
-                animation: (feedbackStatus !== 'delivered' && feedbackStatus !== 'undelivered')
+                animation: feedbackStatus !== 'delivered'
                   ? 'pulse 1.2s ease-in-out infinite' : 'none',
               }}>
                 {feedbackStatus === 'pending' ? '⏳ Sending…'
                   : feedbackStatus === 'queued' ? '📤 Queued — awaiting model…'
-                  : feedbackStatus === 'undelivered' ? '⚠️ Deferred to next turn'
+                  : feedbackStatus === 'resubmitting' ? '↩️ Turn ended — sending as a new message'
                   : '✅ Delivered to model'}
               </span>
             </div>
