@@ -110,6 +110,68 @@ export function keySignatureMap(key: string | undefined): Record<string, string>
 }
 
 /**
+ * Every key signature name VexFlow's `Stave.addKeySignature` / `KeySignature`
+ * accepts -- the majors and their relative minors, exactly the union of the
+ * SHARP_COUNT and FLAT_COUNT tables above (which is why it is derived from
+ * them rather than restated: the two can never drift out of sync).
+ *
+ * VexFlow has no tolerance here: `new KeySignature(spec)` looks the name up in
+ * its own `keySignatures` table and THROWS `Vex.RuntimeError('BadKeySignature',
+ * ...)` on anything outside the ~30 recognised keys.  That throw is the sole
+ * trigger of the music-renderer hang catalogued as Issue 28 -- an adversarial
+ * `keySignature: "F####bbb-9"` escapes render(), the SVG never mounts, and the
+ * render hangs to the 30s cap with zero output.
+ */
+export const KNOWN_KEY_SIGNATURES: ReadonlySet<string> = new Set([
+  ...Object.keys(SHARP_COUNT),
+  ...Object.keys(FLAT_COUNT),
+]);
+
+/** True when `key` is a key signature VexFlow will accept without throwing. */
+export function isKnownKeySignature(key: unknown): boolean {
+  return typeof key === 'string' && KNOWN_KEY_SIGNATURES.has(key.trim());
+}
+
+/**
+ * Coerce an arbitrary spec `keySignature` to one VexFlow will draw, or `null`
+ * when there is nothing to draw.
+ *
+ * This is the single choke point every `stave.addKeySignature` call must pass
+ * through: a value VexFlow recognises is returned trimmed and unchanged; a
+ * value it would throw on (`"F####bbb-9"`, `"Z#b-9"`, `""`, a number, an
+ * object) is coerced to `"C"` -- the neutral no-accidental signature -- with a
+ * console warning, following the plugin's established "unknown input degrades
+ * to the safe default, never guessed" convention (mirrors sanitizeDuration).
+ * `undefined`/`null`/empty returns `null` so the caller can skip drawing a
+ * signature entirely rather than forcing a "C" glyph onto a spec that asked
+ * for none.
+ *
+ * Degrading a bad key to "C" rather than dropping the accidental logic is the
+ * conservative choice: "C" adds no sharps/flats, so no pitch a performer reads
+ * is altered -- exactly the invariant filterPitch/keySignatureMap already
+ * preserve for an unrecognised key (they filter nothing).  Pure and DOM-free
+ * so it can be unit-tested. Exported for regression testing.
+ */
+export function sanitizeKeySignature(raw: unknown): string | null {
+  if (raw == null) return null;
+  if (typeof raw !== 'string') {
+    console.warn(
+      `musicPlugin: keySignature must be a string (got ${typeof raw}); `
+      + `falling back to "C".`,
+    );
+    return 'C';
+  }
+  const name = raw.trim();
+  if (name === '') return null;
+  if (KNOWN_KEY_SIGNATURES.has(name)) return name;
+  console.warn(
+    `musicPlugin: unknown keySignature "${name}", falling back to "C" `
+    + `(a bad key would otherwise throw in VexFlow and hang the render).`,
+  );
+  return 'C';
+}
+
+/**
  * Accidental state within one bar: `letter+octave` -> accidental in force.
  *
  * Created per measure by the caller and discarded at the barline (rule 5).
