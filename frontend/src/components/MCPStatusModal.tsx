@@ -73,6 +73,7 @@ interface MCPStatus {
     config_exists?: boolean;
     config_search_paths?: string[];
     config_error?: string;
+    config_findings?: ConfigFinding[];
     server_configs?: Record<string, { 
         enabled: boolean;
         description?: string;
@@ -116,11 +117,35 @@ interface MCPPrompt {
     arguments: any[];
 }
 
+// Structured reason a server never started, from the backend preflight check.
+// Present only on failure; null on a healthy server.
+interface PreflightFailure {
+    code: string;
+    summary: string;
+    detail: string;
+    searched: string[];
+    hint: string;
+}
+
+// A single problem with one entry in mcp_config.json. Advisory: 'warning'
+// entries were handled and still work, 'error' entries do not load at all.
+interface ConfigFinding {
+    server: string;
+    code: string;
+    severity: 'error' | 'warning';
+    summary: string;
+    detail: string;
+    line?: number | null;
+    suggestion?: string | null;
+}
+
 interface ServerDetails {
     tools: MCPTool[];
     resources: MCPResource[];
     prompts: MCPPrompt[];
     logs?: string[];
+    startup_stage?: string | null;
+    preflight_failure?: PreflightFailure | null;
 }
 
 type PermissionLevel = 'enabled' | 'disabled' | 'ask';
@@ -219,6 +244,11 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                 headers: { 'Content-Type': 'application/json' },
             });
             if (response.ok) {
+                // Drop cached per-server details: fetchServerDetails() returns
+                // early when a cache entry exists, so without this a re-run
+                // after installing a missing command would keep showing the
+                // old failure and read as "the retry did nothing".
+                setServerDetails({});
                 await fetchMCPStatus();
                 window.dispatchEvent(new Event('mcpStatusChanged'));
             }
@@ -417,6 +447,10 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
         }
     };
 
+    // No force flag: the only refresh path is Reload Config / Re-run preflight,
+    // which clears the whole serverDetails cache rather than refetching one
+    // entry. A per-server force would be a second, subtly different refresh
+    // path with no caller.
     const fetchServerDetails = async (serverName: string) => {
         if (serverDetails[serverName]) return; // Already fetched
 
@@ -667,6 +701,78 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                             showIcon
                             icon={<WarningOutlined />}
                             style={{ marginBottom: 0 }}
+                        />
+                    )}
+
+                    {/* Per-entry config problems. Distinct from config_error
+                        above: the file parsed, but these entries are wholly or
+                        partly ignored. Without this the only symptom is a
+                        configured server being silently absent. */}
+                    {!!status.config_findings?.length && (
+                        <Alert
+                            type={status.config_findings.some(f => f.severity === 'error') ? 'error' : 'warning'}
+                            showIcon
+                            style={{ marginTop: '16px', marginBottom: 0 }}
+                            message={
+                                <span>
+                                    {status.config_findings.length} problem
+                                    {status.config_findings.length === 1 ? '' : 's'} in your MCP config
+                                    {status.config_findings.some(f => f.severity === 'error') && (
+                                        <Tag color="red" style={{ marginLeft: 8, fontSize: 10 }}>
+                                            {status.config_findings.filter(f => f.severity === 'error').length} blocking
+                                        </Tag>
+                                    )}
+                                </span>
+                            }
+                            description={
+                                <div>
+                                    <div style={{ fontSize: 12, opacity: 0.85, marginBottom: 10 }}>
+                                        The file is valid JSON, but these entries cannot be used as written.
+                                    </div>
+                                    {status.config_findings.map((f, i) => (
+                                        <div
+                                            key={`${f.server}-${f.code}-${i}`}
+                                            style={{
+                                                display: 'flex',
+                                                gap: 10,
+                                                padding: '8px 0',
+                                                borderTop: i === 0 ? 'none' : `1px solid ${isDarkMode ? '#303030' : '#f0f0f0'}`,
+                                            }}
+                                        >
+                                            <span style={{
+                                                fontFamily: 'monospace',
+                                                fontSize: 11,
+                                                minWidth: 34,
+                                                color: f.severity === 'error' ? '#ff4d4f' : '#faad14',
+                                            }}>
+                                                {f.line ? `L${f.line}` : '—'}
+                                            </span>
+                                            <div style={{ fontSize: 12.5 }}>
+                                                <div style={{ marginBottom: 2 }}>
+                                                    {f.server && (
+                                                        <code style={{
+                                                            background: isDarkMode ? '#000' : '#f5f5f5',
+                                                            padding: '1px 5px',
+                                                            borderRadius: 3,
+                                                            marginRight: 6,
+                                                        }}>
+                                                            {f.server}
+                                                        </code>
+                                                    )}
+                                                    <Text strong>{f.summary}</Text>
+                                                </div>
+                                                <div style={{ opacity: 0.85, lineHeight: 1.5 }}>
+                                                    {f.detail}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                    <div style={{ fontSize: 12, marginTop: 10, opacity: 0.8 }}>
+                                        Edit <code>{status.config_path}</code> and click{' '}
+                                        <strong>Reload Config</strong> to re-check.
+                                    </div>
+                                </div>
+                            }
                         />
                     )}
 
@@ -1270,6 +1376,121 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                         <Text type="secondary" style={{ fontSize: '12px', marginBottom: 8, display: 'block' }}>
                                                             Server logs (startup, errors, and recent activity)
                                                         </Text>
+                                                        {/* A preflight failure means no process was ever
+                                                            created, so the absence of logs is the expected
+                                                            outcome rather than a fault. Explain that first,
+                                                            above any log tail. */}
+                                                        {serverDetails[name]?.preflight_failure && (
+                                                            <div style={{
+                                                                border: `1px solid ${isDarkMode ? '#7a2626' : '#ffccc7'}`,
+                                                                borderRadius: 6,
+                                                                overflow: 'hidden',
+                                                                marginBottom: 12,
+                                                            }}>
+                                                                <div style={{
+                                                                    background: isDarkMode ? '#2b1416' : '#fff2f0',
+                                                                    borderLeft: '3px solid #ff4d4f',
+                                                                    padding: '12px 14px',
+                                                                }}>
+                                                                    <div style={{
+                                                                        display: 'flex',
+                                                                        alignItems: 'center',
+                                                                        gap: 8,
+                                                                        marginBottom: 6,
+                                                                    }}>
+                                                                        <Tag color="red" style={{ margin: 0, fontSize: 10 }}>
+                                                                            NEVER STARTED
+                                                                        </Tag>
+                                                                        <Text strong style={{ fontSize: 13 }}>
+                                                                            {serverDetails[name]?.preflight_failure?.summary}
+                                                                        </Text>
+                                                                    </div>
+                                                                    <div style={{ fontSize: 12.5, lineHeight: 1.6 }}>
+                                                                        {serverDetails[name]?.preflight_failure?.detail}
+                                                                    </div>
+                                                                </div>
+
+                                                                <div style={{ padding: '12px 14px' }}>
+                                                                    {!!serverDetails[name]?.preflight_failure?.searched?.length && (
+                                                                        <>
+                                                                            <Text type="secondary" style={{
+                                                                                fontSize: 10.5,
+                                                                                textTransform: 'uppercase',
+                                                                                letterSpacing: '.5px',
+                                                                                display: 'block',
+                                                                                marginBottom: 6,
+                                                                            }}>
+                                                                                Resolution trace
+                                                                            </Text>
+                                                                            <pre style={{
+                                                                                background: isDarkMode ? '#0a0a0a' : '#fafafa',
+                                                                                border: `1px solid ${isDarkMode ? '#262626' : '#f0f0f0'}`,
+                                                                                borderRadius: 4,
+                                                                                padding: '9px 11px',
+                                                                                fontSize: 11,
+                                                                                lineHeight: 1.7,
+                                                                                margin: '0 0 12px 0',
+                                                                                maxHeight: 130,
+                                                                                overflow: 'auto',
+                                                                                whiteSpace: 'pre-wrap',
+                                                                                wordBreak: 'break-all',
+                                                                            }}>
+{`searched ${serverDetails[name]?.preflight_failure?.searched?.length} location(s):
+${serverDetails[name]?.preflight_failure?.searched?.join('\n')}`}
+                                                                            </pre>
+                                                                        </>
+                                                                    )}
+
+                                                                    {serverDetails[name]?.preflight_failure?.hint && (
+                                                                        <Alert
+                                                                            type="info"
+                                                                            showIcon
+                                                                            message="Suggested fix"
+                                                                            description={
+                                                                                <div style={{ fontSize: 12.5 }}>
+                                                                                    {serverDetails[name]?.preflight_failure?.hint}
+                                                                                </div>
+                                                                            }
+                                                                            style={{ marginBottom: 12 }}
+                                                                        />
+                                                                    )}
+
+                                                                    <Space>
+                                                                        <Button
+                                                                            size="small"
+                                                                            type="primary"
+                                                                            icon={<ReloadOutlined />}
+                                                                            loading={loading}
+                                                                            onClick={reinitializeMCP}
+                                                                        >
+                                                                            Re-run preflight
+                                                                        </Button>
+                                                                        <Button
+                                                                            size="small"
+                                                                            onClick={() => {
+                                                                                const f = serverDetails[name]?.preflight_failure;
+                                                                                const report = [
+                                                                                    `MCP server: ${name}`,
+                                                                                    `stage: ${serverDetails[name]?.startup_stage ?? 'unknown'}`,
+                                                                                    `code: ${f?.code}`,
+                                                                                    `summary: ${f?.summary}`,
+                                                                                    `detail: ${f?.detail}`,
+                                                                                    `hint: ${f?.hint}`,
+                                                                                    '',
+                                                                                    'searched:',
+                                                                                    ...(f?.searched ?? []),
+                                                                                ].join('\n');
+                                                                                navigator.clipboard?.writeText(report);
+                                                                                message.success('Diagnostic report copied');
+                                                                            }}
+                                                                        >
+                                                                            Copy report
+                                                                        </Button>
+                                                                    </Space>
+                                                                </div>
+                                                            </div>
+                                                        )}
+
                                                         {serverDetails[name]?.logs?.length ? (
                                                             <pre style={{ 
                                                                 backgroundColor: isDarkMode ? '#1f1f1f' : '#f5f5f5',
@@ -1283,7 +1504,7 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                                                             }}>
                                                                 {serverDetails[name]?.logs?.join('\n')}
                                                             </pre>
-                                                        ) : (
+                                                        ) : !serverDetails[name]?.preflight_failure && (
                                                             <Empty 
                                                                 description={server.connected ? "No recent logs" : "Server disconnected - no logs available"} 
                                                                 image={Empty.PRESENTED_IMAGE_SIMPLE} 

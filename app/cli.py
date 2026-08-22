@@ -773,6 +773,16 @@ def setup_env(args):
     # -- CLI-only: enable MCP by default for CLI sessions -------------------
     os.environ.setdefault("ZIYA_ENABLE_MCP", "true")
 
+    # A CLI-only user never reaches the web server's lifespan hook, so seed
+    # the starter mcp_config.json here too — otherwise "ziya chat" users are
+    # the ones left with no on-disk hint about where servers are configured.
+    # Idempotent and non-fatal; an existing file is not modified.
+    try:
+        from app.utils.mcp_config_seed import ensure_mcp_config_seed
+        ensure_mcp_config_seed()
+    except Exception:
+        pass
+
 def resolve_files(paths: List[str], root: str) -> List[str]:
     """Resolve file/directory paths to list of files."""
     import glob
@@ -1935,7 +1945,14 @@ class CLI:
             # reaches this same method with _interactive cleared and keeps the
             # full batch budget. Task Cards and /goal never arrive here at all
             # (they run via app/agents/task_executor.py).
-            async for chunk in executor.stream_with_tools(openai_messages, tools, conversation_id=self.conversation_id, cancel_event=cancel_event, interactive=self._interactive):
+            # project_root is stated explicitly rather than left to a fallback:
+            # the shell server refuses any command arriving without a root, and
+            # CLI mode has no HTTP layer to supply one. /root (/cd) keeps both
+            # the env var and the process cwd current, so they agree here.
+            async for chunk in executor.stream_with_tools(
+                openai_messages, tools, conversation_id=self.conversation_id,
+                project_root=(os.environ.get("ZIYA_USER_CODEBASE_DIR") or os.getcwd()),
+                cancel_event=cancel_event, interactive=self._interactive):
                 if self._cancellation_requested:
                     raise asyncio.CancelledError("User cancelled operation")
                 yield chunk
@@ -4227,9 +4244,14 @@ def _create_cli_session(args, files=None) -> 'CLI':
     standard setup_env → plugins → auth → resolve_files → CLI() sequence.
     """
     _init_and_authenticate(args)
+    root = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
     if files is None:
-        root = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
         files = resolve_files(args.files, root) if getattr(args, 'files', None) else []
+    # Match the GUI's /api/default-included-folders auto-inclusion so CLI
+    # sessions see project steering docs (AGENTS.md / root README.md).
+        # Mirror the GUI's /api/default-included-folders seeding so fresh CLI
+        # sessions pick up project steering docs (AGENTS.md / root README.md).
+    files = add_auto_included_docs(files, root)
     return CLI(files=files)
 
 
@@ -4320,9 +4342,10 @@ def cmd_chat(args):
         os._exit(1)
     
     root = ziya_env("ZIYA_USER_CODEBASE_DIR") or os.getcwd()
-    files = resolve_files(args.files, root) if args.files else []
+    files = add_auto_included_docs(resolve_files(args.files, root) if args.files else [], root)
     cli = CLI(files=files)
     cli._plugins_future = _plugins_future
+    files = add_auto_included_docs(files, root)
     cli._ephemeral = getattr(args, 'ephemeral', False)
     cli._pending_join = getattr(args, 'join', False)
     asyncio.run(_run_async_cli(cli))
