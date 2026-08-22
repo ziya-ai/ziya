@@ -76,8 +76,119 @@ const DEFAULT_PALETTE = [
  *
  * Exported for regression testing.
  */
+/**
+ * Resolve a conflicting DUAL-SHAPE chord spec.
+ *
+ * A chord spec may legitimately arrive in EITHER the matrix form
+ * (`matrix: number[][]`, direct d3 input) OR the links form
+ * (`nodes` + `links`, the richer LLM-friendly NAMED form). Some inputs
+ * (Issue 50) supply BOTH at once. The render path and `isChordSpec` both
+ * test `Array.isArray(spec.matrix)` FIRST, so the matrix wins
+ * unconditionally and the entire nodes/links structure — potentially dozens
+ * of named nodes and links plus their colors/groups — is SILENTLY DROPPED,
+ * leaving a diagram of bare numeric-index arcs (major silent data loss).
+ *
+ * The links form carries strictly MORE information than a bare numeric
+ * matrix (named nodes, per-node colors, richer link structure), so when both
+ * are present the links form is the safe choice: preferring it can at worst
+ * re-derive an equivalent matrix, whereas preferring the matrix throws away
+ * the named structure with no recovery. This helper DROPS the `matrix` field
+ * when a NON-EMPTY links form (nodes.length > 0 AND links is an array)
+ * co-exists with it, so downstream shape-selection consistently uses the
+ * higher-information form.
+ *
+ * Guards (spec returned byte-identical, ref-equal): matrix-only specs,
+ * links-only specs, specs whose nodes array is empty/absent, and non-object
+ * specs are all left untouched — this resolves ONLY the genuine
+ * both-present conflict, it is not a catch-all rewrite.
+ *
+ * Exported for regression testing.
+ */
+/**
+ * Normalize `nodes` / `links` supplied as a KEYED OBJECT MAP into the array
+ * form the links path expects.
+ *
+ * The links form is documented as `nodes: [{id}]` / `links: [{source,target}]`,
+ * but LLMs (Issue 50) routinely key `nodes` by id:
+ *   `nodes: { "Alpha": { color }, "Beta": { color }, ... }`
+ * Every downstream consumer (`isChordSpec`, `buildMatrix`, the render path)
+ * calls `Array.isArray(nodes)`; for an object map that is FALSE, so:
+ *   - if a `matrix` is ALSO present, the matrix short-circuits and the named
+ *     graph is silently dropped (Issue 50 headline), and
+ *   - if no matrix is present, `isChordSpec` returns false -> "No compatible
+ *     plugin found" -> silent retry-to-timeout, zero output.
+ * Either way the entire named graph is lost.
+ *
+ * This converts an object-map `nodes` to `[{ id: <key>, ...value }]` (the map
+ * KEY is the node identity that links reference, so it is forced as `id`),
+ * and an object-map `links` to its `Object.values`. Arrays are returned
+ * REF-EQUAL (untouched) so array-form specs are behavior-identical; this is a
+ * shape-normalization gap fix, not a catch-all. Also normalizes the
+ * `data.nodes` / `data.links` nesting.
+ *
+ * Exported for regression testing.
+ */
+export function normalizeChordCollections(spec: any): any {
+  if (typeof spec !== 'object' || spec === null) return spec;
+
+  const isPlainMap = (v: any): boolean =>
+    v !== null && typeof v === 'object' && !Array.isArray(v);
+
+  const nodesToArray = (nodes: any): any[] =>
+    Object.keys(nodes).map((key) => {
+      const val = nodes[key];
+      return isPlainMap(val) ? { ...val, id: key } : { id: key };
+    });
+
+  const linksToArray = (links: any): any[] => Object.values(links);
+
+  let changed = false;
+  const next: any = { ...spec };
+
+  if (isPlainMap(spec.nodes)) { next.nodes = nodesToArray(spec.nodes); changed = true; }
+  if (isPlainMap(spec.links)) { next.links = linksToArray(spec.links); changed = true; }
+
+  if (isPlainMap(spec.data)) {
+    const d = spec.data;
+    if (isPlainMap(d.nodes) || isPlainMap(d.links)) {
+      const nd: any = { ...d };
+      if (isPlainMap(d.nodes)) nd.nodes = nodesToArray(d.nodes);
+      if (isPlainMap(d.links)) nd.links = linksToArray(d.links);
+      next.data = nd;
+      changed = true;
+    }
+  }
+
+  return changed ? next : spec;
+}
+
+export function resolveChordShapeConflict(spec: any): any {
+  if (typeof spec !== 'object' || spec === null) return spec;
+  const hasMatrix = Array.isArray(spec.matrix) && spec.matrix.length > 0
+    && Array.isArray(spec.matrix[0]);
+  if (!hasMatrix) return spec;
+  const nodes = spec.nodes || spec.data?.nodes;
+  const links = spec.links || spec.data?.links;
+  const hasLinksForm = Array.isArray(nodes) && nodes.length > 0
+    && Array.isArray(links);
+  if (!hasLinksForm) return spec;
+  // Both present -> prefer the richer links form; drop the conflicting matrix
+  // so the render path takes the nodes/links branch instead of short-circuiting
+  // on the matrix.
+  const { matrix, ...rest } = spec;
+  return rest;
+}
+
 export function resolveChordSpec(spec: any): any {
   if (typeof spec !== 'object' || spec === null) return spec;
+
+  // Normalize object-map `nodes`/`links` -> array form first (Issue 50), then
+  // resolve a conflicting dual-shape (both `matrix` AND `nodes`+`links`) so
+  // downstream shape-selection uses the higher-information links form rather
+  // than silently dropping it. Order matters: the conflict resolver requires
+  // an ARRAY links form, which the normalization guarantees.
+  spec = normalizeChordCollections(spec);
+  spec = resolveChordShapeConflict(spec);
 
   // Already structured (matrix form OR links form)?
   const hasMatrix = Array.isArray(spec.matrix) && spec.matrix.length > 0
@@ -97,6 +208,11 @@ export function resolveChordSpec(spec: any): any {
     return spec;
   }
   if (typeof parsed !== 'object' || parsed === null) return spec;
+
+  // Same object-map normalization + dual-shape conflict resolution for a
+  // wrapped/parsed definition.
+  parsed = normalizeChordCollections(parsed);
+  parsed = resolveChordShapeConflict(parsed);
 
   const pMatrix = Array.isArray(parsed.matrix) && parsed.matrix.length > 0
     && Array.isArray(parsed.matrix[0]);
@@ -157,6 +273,57 @@ function isChordSpec(spec: any): boolean {
   const nodes = resolved.nodes || resolved.data?.nodes;
   const links = resolved.links || resolved.data?.links;
   return Array.isArray(nodes) && Array.isArray(links) && nodes.length > 0;
+}
+
+/**
+ * Normalize a links-form `nodes` array to `ChordNode` objects.
+ *
+ * The links form is documented to accept `nodes: [{ id, label?, color? }]`,
+ * but LLMs (and this stress corpus, Issue 38) routinely pass `nodes` as a
+ * flat array of plain STRINGS: `["Alpha", "Beta", "Gamma"]`. Downstream,
+ * `buildMatrix` indexes by `node.id` and the render path maps `node.label`/
+ * `node.color`; for a string node every one of those is `undefined`, so the
+ * index map collapses to a single `undefined -> i` entry, EVERY link's
+ * `idx.get(link.source)` returns undefined, every link is skipped, the matrix
+ * is all-zero, and d3.chord() emits a blank canvas — total, silent data loss.
+ *
+ * This coerces each entry to a `{ id }` object:
+ *   - a string       -> { id: string }
+ *   - a number/bool   -> { id: String(value) }  (defensive; JSON shorthand)
+ *   - an object with a usable id/label/name/key -> { id, label?, color? }
+ *
+ * Already-object nodes with an `id` are preserved (spread) so object-form
+ * specs are behavior-identical — this is a normalization gap fix, not a
+ * catch-all rewrite. Entries with no derivable id (null/undefined/empty
+ * object) fall back to their positional index as the id so they still occupy
+ * an arc slot rather than corrupting the index map.
+ *
+ * Exported for regression testing.
+ */
+export function normalizeChordNodes(nodes: any[]): ChordNode[] {
+  if (!Array.isArray(nodes)) return [];
+  return nodes.map((node, i): ChordNode => {
+    if (typeof node === 'string') {
+      return { id: node };
+    }
+    if (typeof node === 'number' || typeof node === 'boolean') {
+      return { id: String(node) };
+    }
+    if (node !== null && typeof node === 'object') {
+      // Prefer an explicit id; fall back to common aliases, then index.
+      const rawId = node.id ?? node.name ?? node.key ?? node.label;
+      const id = rawId === undefined || rawId === null || rawId === ''
+        ? String(i)
+        : String(rawId);
+      const out: ChordNode = { ...node, id };
+      if (node.label !== undefined) out.label = String(node.label);
+      if (node.color !== undefined) out.color = node.color;
+      return out;
+    }
+    // null / undefined / other -> positional placeholder so the arc slot
+    // is preserved and the index map stays 1:1 with node order.
+    return { id: String(i) };
+  });
 }
 
 /**
@@ -226,7 +393,7 @@ export const chordPlugin: D3RenderPlugin = {
         ? spec.colors
         : names.map((_, i) => DEFAULT_PALETTE[i % DEFAULT_PALETTE.length]);
     } else {
-      const nodes: ChordNode[] = (spec.nodes || spec.data?.nodes || []).map((n: any) => ({ ...n }));
+      const nodes: ChordNode[] = normalizeChordNodes(spec.nodes || spec.data?.nodes || []);
       const links: ChordLink[] = (spec.links || spec.data?.links || []).map((l: any) => ({ ...l }));
       matrix = buildMatrix(nodes, links);
       names = nodes.map(node => node.label || node.id);

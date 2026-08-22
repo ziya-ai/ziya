@@ -8,6 +8,9 @@
  */
 
 import { hexToRgb } from '../../utils/colorUtils';
+import { escapeSequenceMessageSemicolons } from './mermaidSequenceSemicolons';
+import { flattenNestedClassGenerics } from './mermaidClassGenerics';
+import { escapeClassDiagramLabelSemicolons } from './mermaidClassSemicolons';
 
 // Types for preprocessors and error handlers
 interface Preprocessor {
@@ -15,6 +18,12 @@ interface Preprocessor {
   priority: number;
   diagramTypes: string[];
   name: string;
+  // Optional postcondition. `detects` describes the offending syntax shape
+  // this pass exists to eliminate; capture group 1 is the region that must be
+  // entity-escaped. If the shape is still present in the pass's OUTPUT, the
+  // pass silently failed its own contract -- see runPostcondition.
+  detects?: RegExp;
+  escapes?: string[];
 }
 
 interface ErrorHandler {
@@ -35,6 +44,8 @@ interface PreprocessorOptions {
   name?: string;
   priority?: number;
   diagramTypes?: string[];
+  detects?: RegExp;
+  escapes?: string[];
 }
 
 interface ErrorHandlerOptions {
@@ -210,6 +221,230 @@ export function preprocessWithTypeNormalization(
   };
 }
 
+// Character -> HTML entity map used by the auto-repair layer. Each entity is
+// assembled from two fragments rather than written as one literal, because a
+// one-piece literal is exactly what got collapsed into a bare character and
+// turned label-backtick-escape into a silent no-op. Splitting the '&#' from
+// the numeric part makes that collapse impossible to reintroduce unnoticed.
+const REPAIR_ENTITIES: Record<string, string> = {
+  [String.fromCharCode(96)]: '&#' + '96;',   // backtick
+  '|': '&#' + '124;',
+  '#': '&#' + '35;',
+};
+
+// Names of passes that failed their declared postcondition during the most
+// recent preprocessDefinition call. Exposed for tests and for diagnostics.
+let postconditionViolations: string[] = [];
+
+/** Test/diagnostic accessor: passes that failed their postcondition. */
+export function __getPostconditionViolations(): string[] {
+  return [...postconditionViolations];
+}
+
+/** Test/diagnostic accessor: clear the recorded violations. */
+export function __resetPostconditionViolations(): void {
+  postconditionViolations = [];
+}
+
+/**
+ * Escape the declared characters inside capture group 1 of every match of
+ * `detects`. Only the captured region is rewritten, so surrounding syntax
+ * (arrows, brackets, delimiters) is left byte-identical.
+ */
+function autoEscapeShape(text: string, detects: RegExp, escapes: string[]): string {
+  const flags = detects.flags.includes('g') ? detects.flags : detects.flags + 'g';
+  const globalRe = new RegExp(detects.source, flags);
+
+  return text.replace(globalRe, (match: string, group1: string) => {
+    if (typeof group1 !== 'string' || group1.length === 0) {
+      return match;
+    }
+    let repaired = group1;
+    for (const ch of escapes) {
+      const entity = REPAIR_ENTITIES[ch];
+      if (!entity) {
+        continue;
+      }
+      repaired = repaired.split(ch).join(entity);
+    }
+    if (repaired === group1) {
+      return match;
+    }
+    // Splice the repaired region back in at its original offset so nothing
+    // outside the capture group can be disturbed.
+    const at = match.indexOf(group1);
+    return match.slice(0, at) + repaired + match.slice(at + group1.length);
+  });
+}
+
+/**
+ * Verify a preprocessor actually eliminated the shape it declared, and repair
+ * its output if it did not.
+ *
+ * This exists because a preprocessor can degrade into an identity function
+ * while still logging success -- the failure mode that shipped in
+ * label-backtick-escape, where the replacement emitted a bare backtick instead
+ * of its entity. The pass ran, logged "Escaped a leading backtick run", and
+ * changed nothing; the user got an empty SVG from a lexer error.
+ *
+ * The repair is deliberate policy, not belt-and-braces: this layer exists to
+ * render whatever an LLM emits, so a broken pass must degrade to "renders,
+ * with a warning in the console" rather than to an error shown to the user.
+ *
+ * Only the pass's own OUTPUT is examined. A shape that was never present does
+ * not count as a violation, so passes are not blamed for input they never saw.
+ */
+function runPostcondition(
+  processor: Preprocessor,
+  output: string,
+): string {
+  const { detects, escapes, name } = processor;
+  if (!detects || !escapes || escapes.length === 0) {
+    return output; // Opt-in: passes without a declared contract are untouched.
+  }
+
+  const probe = new RegExp(detects.source, detects.flags.replace('g', ''));
+  if (!probe.test(output)) {
+    return output; // Contract satisfied.
+  }
+
+  postconditionViolations.push(name);
+  console.warn(
+    `⚠️ POSTCONDITION-VIOLATION: preprocessor '${name}' left the syntax it ` +
+    `declares it removes (${probe}) in its output. The pass is likely a ` +
+    `no-op -- check that its replacement emits HTML entities and not the ` +
+    `bare characters. Auto-repairing so the diagram still renders.`,
+  );
+
+  const repaired = autoEscapeShape(output, detects, escapes);
+
+  if (probe.test(repaired)) {
+    // Repair could not clear the shape: the declared regex and the declared
+    // escape set disagree. Surface it rather than pretending it was handled.
+    console.error(
+      `⚠️ POSTCONDITION-REPAIR-FAILED: '${name}' still matches after repair. ` +
+      `Its 'detects' capture group and 'escapes' set are inconsistent.`,
+    );
+    return output;
+  }
+
+  console.warn(`⚠️ POSTCONDITION-REPAIR: '${name}' output repaired successfully.`);
+  return repaired;
+}
+
+/**
+ * Chain-exit invariants: properties the FINAL definition must hold, checked
+ * after every preprocessor has run and immediately before the lexer sees it.
+ *
+ * This is a different guarantee from runPostcondition, and the difference is
+ * the reason it exists. runPostcondition asks one pass about its OWN output,
+ * so it cannot see a shape REINTRODUCED downstream: label-backtick-escape runs
+ * at priority 730 and correctly emits its entity, but ~20 label passes run
+ * after it. If any of them ever unescapes those entities, or truncates a label
+ * so a bare backtick run ends up opening it, every per-pass contract still
+ * reports clean and the lexer error returns with nothing in the logs pointing
+ * at the cause.
+ *
+ * Invariants are deliberately few and narrow. Each one describes a shape that
+ * is known to abort the mermaid lexer, verified against real mermaid 11 rather
+ * than inferred, and each carries the character set that makes it safe. A
+ * guard that mutates a working diagram is worse than no guard at all, so the
+ * bar for adding one is "this shape is a hard lexer error", not "this looks
+ * suspicious".
+ */
+interface ChainExitInvariant {
+  name: string;
+  detects: RegExp;
+  escapes: string[];
+  diagramTypes: string[];
+}
+
+const CHAIN_EXIT_INVARIANTS: ChainExitInvariant[] = [
+  {
+    // A 2+ backtick run OPENING a label aborts the lexer. A single backtick is
+    // mermaid's markdown-string mode and must survive, hence {2,}; a run later
+    // in the same label parses fine, hence the anchoring quote.
+    name: 'no-label-opening-backtick-run',
+    detects: new RegExp('"(`{2,})'),
+    escapes: [String.fromCharCode(96)],
+    diagramTypes: ['*'],
+  },
+  {
+    // A literal pipe inside a quoted edge label closes the label early. Group
+    // 1 is the label contents, and only matches when a pipe is actually there.
+    name: 'no-pipe-inside-quoted-edge-label',
+    detects: /(?:==>|-->|-\.->|--[xo]>|---|->>|-->>)\|"([^"]*\|[^"]*)"\|/,
+    escapes: ['|'],
+    diagramTypes: ['flowchart', 'graph'],
+  },
+];
+
+// Invariants violated during the most recent preprocessDefinition call.
+let chainExitViolations: string[] = [];
+
+/** Test/diagnostic accessor: invariants violated at the chain exit. */
+export function __getChainExitViolations(): string[] {
+  return [...chainExitViolations];
+}
+
+/** Test/diagnostic accessor: clear the recorded chain-exit violations. */
+export function __resetChainExitViolations(): void {
+  chainExitViolations = [];
+}
+
+/**
+ * Enforce the chain-exit invariants on the fully-processed definition.
+ *
+ * A violation here means the preprocessor chain as a whole failed, regardless
+ * of every individual pass reporting success. The response is the same policy
+ * as the per-pass repair: warn loudly, then fix it, because this layer exists
+ * to render whatever an LLM emits rather than to show the user a parse error.
+ */
+function enforceChainExitInvariants(
+  definition: string,
+  diagramType: string,
+): string {
+  let out = definition;
+  const lowerType = (diagramType || '').toLowerCase();
+
+  for (const inv of CHAIN_EXIT_INVARIANTS) {
+    const applies = inv.diagramTypes.includes('*') ||
+      inv.diagramTypes.some(t => t.toLowerCase() === lowerType);
+    if (!applies) {
+      continue;
+    }
+
+    const probe = new RegExp(inv.detects.source, inv.detects.flags.replace('g', ''));
+    if (!probe.test(out)) {
+      continue; // Invariant holds.
+    }
+
+    chainExitViolations.push(inv.name);
+    console.warn(
+      `⚠️ CHAIN-EXIT-VIOLATION: invariant '${inv.name}' does not hold on the ` +
+      `final definition. Some pass reintroduced syntax that aborts the mermaid ` +
+      `lexer AFTER the pass that removes it had already run -- per-pass ` +
+      `postconditions cannot see this. Auto-repairing so the diagram renders.`,
+    );
+
+    const repaired = autoEscapeShape(out, inv.detects, inv.escapes);
+
+    if (probe.test(repaired)) {
+      console.error(
+        `⚠️ CHAIN-EXIT-REPAIR-FAILED: '${inv.name}' still matches after repair. ` +
+        `Its 'detects' capture group and 'escapes' set are inconsistent. ` +
+        `Passing the definition through unmodified.`,
+      );
+      continue;
+    }
+
+    console.warn(`⚠️ CHAIN-EXIT-REPAIR: '${inv.name}' repaired successfully.`);
+    out = repaired;
+  }
+
+  return out;
+}
+
 /**
  * Register a preprocessor function
  * @param fn - Function that takes diagram text and returns processed text
@@ -223,7 +458,9 @@ export function registerPreprocessor(
     process: fn,
     priority: options.priority || 10,
     diagramTypes: options.diagramTypes || ['*'], // '*' means all diagram types
-    name: options.name || `preprocessor-${preprocessors.length}`
+    name: options.name || `preprocessor-${preprocessors.length}`,
+    detects: options.detects,
+    escapes: options.escapes
   };
 
   preprocessors.push(processor);
@@ -309,6 +546,8 @@ export function preprocessDefinition(definition: string, diagramType?: string, m
   }
 
   // Apply each preprocessor in order
+  postconditionViolations = [];
+  chainExitViolations = [];
   for (const processor of preprocessors) {
     const lowerType = normalizedType.toLowerCase();
     if (processor.diagramTypes.includes('*') || processor.diagramTypes.some(t => t.toLowerCase() === lowerType)) {
@@ -327,15 +566,21 @@ export function preprocessDefinition(definition: string, diagramType?: string, m
             console.error('Before:', before);
             console.error('After:', after);
           }
-          processedDef = result;
+          processedDef = runPostcondition(processor, result);
         }
       } catch (error) {
         console.warn(`Preprocessor ${processor.name} failed:`, error);
+        // A thrown pass cannot have removed anything, so the shape it declares
+        // may still be present. Repair rather than let it reach the lexer.
+        processedDef = runPostcondition(processor, processedDef);
       }
     }
   }
 
-  return processedDef;
+  // Final gate. Everything above is per-pass; this is the only check that sees
+  // what the lexer will actually receive, so it is the only place a shape
+  // reintroduced by a later pass can be caught.
+  return enforceChainExitInvariants(processedDef, normalizedType);
 }
 
 /**
@@ -369,6 +614,36 @@ export function handleRenderError(error: Error, context: ErrorContext): boolean 
  */
 export function initMermaidEnhancer(): void {
   // Register default preprocessors
+
+  // Issue 42 defect 1: flatten NESTED / unbalanced generic tildes in
+  // classDiagram class-name & type tokens (`Repo~Comparable~K~~`) that
+  // otherwise hang mermaid's classDiagram parser to the 30s timeout with zero
+  // output. Runs BEFORE the dot-fix / label passes so the malformed generic is
+  // neutralized before any downstream pass touches the token.
+  registerPreprocessor(
+    (definition: string, _diagramType: string): string =>
+      flattenNestedClassGenerics(definition),
+    {
+      name: 'class-diagram-nested-generic-flatten',
+      priority: 745,
+      diagramTypes: ['classdiagram'],
+    }
+  );
+
+  // Issue 42 defect 2: escape bare semicolons inside classDiagram quoted
+  // label/note strings (`A --> B : "self-ref ; semi"`) to mermaid's native
+  // `#59;` entity so the tokenizer never mistakes an in-label `;` for the
+  // statement separator (which also hangs the parser to the 30s timeout).
+  // Genuine separators live outside quotes and are left untouched.
+  registerPreprocessor(
+    (definition: string, _diagramType: string): string =>
+      escapeClassDiagramLabelSemicolons(definition),
+    {
+      name: 'class-diagram-label-semicolon-escape',
+      priority: 740,
+      diagramTypes: ['classdiagram'],
+    }
+  );
 
   // CRITICAL: Fix class names with dots - HIGHEST PRIORITY for class diagrams
   // Mermaid doesn't support dots in class names (e.g., System.Collections.List)
@@ -497,7 +772,7 @@ export function initMermaidEnhancer(): void {
   // Verified by rendering against real mermaid 11, not inferred: a backtick
   // run appearing LATER in the same label parses fine, so only the leading
   // run is rewritten -- escaping unconditionally would churn content that
-  // already works. '`' renders back to a literal backtick in the SVG.
+  // already works. The backtick entity renders back as a literal backtick.
   registerPreprocessor(
     (definition: string): string => {
       if (definition.indexOf('``') === -1) {
@@ -510,9 +785,17 @@ export function initMermaidEnhancer(): void {
       // '{{"', '[/"', ...), so anchoring on quote + 2-or-more backticks covers
       // all of them without enumerating shapes. A label that merely ENDS in
       // backticks is backtick-then-quote and is left untouched.
+      //
+      // Assembled from two fragments rather than written as one literal: the
+      // original version of this pass had its entity collapsed back into a
+      // bare backtick somewhere between authoring and commit, which turned
+      // the whole preprocessor into a silent no-op that still logged success.
+      // Splitting the '&#' from the '96;' makes that collapse impossible.
+      const BACKTICK_ENTITY = '&#' + '96;';
+
       const result = definition.replace(
         /"(`{2,})/g,
-        (_match, run: string) => '"' + '`'.repeat(run.length),
+        (_match, run: string) => '"' + BACKTICK_ENTITY.repeat(run.length),
       );
 
       if (result !== definition) {
@@ -523,6 +806,10 @@ export function initMermaidEnhancer(): void {
     }, {
     name: 'label-backtick-escape',
     priority: 730, // Before edge-label-pipe-escape (720) and every label pass
+    // A 2+ backtick run opening a label aborts the lexer. A single backtick is
+    // mermaid's markdown-string mode and must survive, hence {2,}.
+    detects: new RegExp('"(`{2,})'),
+    escapes: ['`'],
   });
 
   // Escape literal pipe characters that appear INSIDE already-quoted edge
@@ -531,7 +818,13 @@ export function initMermaidEnhancer(): void {
   // label early and causes a parse error. This must run BEFORE every other
   // pipe-based label preprocessor, otherwise their `\|([^|]*?)\|` regexes stop
   // at the internal pipe and corrupt the label (double-quoting a truncated
-  // fragment). '&#124;' renders back to '|' in the final SVG.
+  // fragment). The pipe entity renders back as a literal '|' in the final SVG.
+  //
+  // The entity is assembled from two fragments for the same reason the
+  // backtick pass above does it: written as one literal, it is vulnerable to
+  // being collapsed back into a bare '|' between authoring and commit, which
+  // would turn this whole pass into a no-op that still logs success. Splitting
+  // the '&#' from the '124;' makes that collapse impossible.
   registerPreprocessor(
     (definition: string, diagramType: string): string => {
       if (diagramType !== 'flowchart' && diagramType !== 'graph' &&
@@ -544,13 +837,15 @@ export function initMermaidEnhancer(): void {
       // Match arrow + a fully-quoted edge label + closing delimiter, capturing
       // the quoted contents. Only quoted labels are touched, so plain labels
       // like -->|yes| are left completely alone.
+      const PIPE_ENTITY = '&#' + '124;';
+
       const result = definition.replace(
         /(==>|-->|-\.->|--[xo]>|---|->>|-->>)\|"([^"]*)"\|/g,
         (match, arrow, label) => {
           if (label.indexOf('|') === -1) {
             return match;
           }
-          const escaped = label.replace(/\|/g, '&#124;');
+          const escaped = label.replace(/\|/g, PIPE_ENTITY);
           console.log('🔍 EDGE-LABEL-PIPE-ESCAPE: Escaped:', { original: match, escaped });
           return `${arrow}|"${escaped}"|`;
         }
@@ -561,7 +856,11 @@ export function initMermaidEnhancer(): void {
     }, {
     name: 'edge-label-pipe-escape',
     priority: 720, // Must run before all other pipe/label preprocessors
-    diagramTypes: ['flowchart', 'graph']
+    diagramTypes: ['flowchart', 'graph'],
+    // Group 1 is the quoted label contents, and the shape only counts as
+    // offending when a literal pipe is actually inside it.
+    detects: /(?:==>|-->|-\.->|--[xo]>|---|->>|-->>)\|"([^"]*\|[^"]*)"\|/,
+    escapes: ['|']
   });
 
   // Add a preprocessor to fix square bracket edge label syntax
@@ -829,6 +1128,23 @@ export function initMermaidEnhancer(): void {
     name: 'journey-diagram-fix',
     priority: 500,
     diagramTypes: ['journey']
+  });
+
+  // Escape bare semicolons in sequenceDiagram MESSAGE/NOTE text. A `;` is a
+  // legitimate statement separator in mermaid's sequence grammar, but a `;`
+  // inside message text (e.g. `A->>B: a ; b`) is NOT followed by a valid
+  // statement, so mermaid throws a parse error that the render harness never
+  // surfaces -- it hangs to the 30s render timeout with no SVG. The pure helper
+  // escapes ONLY prose semicolons (leaving genuine `X ; Y->>Z: msg` separators
+  // intact), so it fixes the whole class without corrupting valid specs.
+  // `&#59;` renders back to a literal `;` in the SVG.
+  registerPreprocessor(
+    (definition: string): string => {
+      return escapeSequenceMessageSemicolons(definition);
+    }, {
+    name: 'sequence-message-semicolon-escape',
+    priority: 560, // Run before sequence-break-fix (500) and sequence-fix (550)
+    diagramTypes: ['sequencediagram']
   });
 
   // Fix sequence diagram break statements (invalid syntax)
@@ -1641,6 +1957,23 @@ export function initMermaidEnhancer(): void {
         // Process all node definitions in this line
         let processedLine = currentLine;
 
+        // Mask pipe-delimited edge labels (`-->|"..."|`) before the node scan.
+        // The node-definition regex below is not edge-label aware: given
+        // `A -->|"items[:60]"| B` it matches `items[:60]` as though `items`
+        // were a node id, decides the content `:60` needs quoting (colon), and
+        // emits `items[":60"]` — quotes injected INSIDE an already-quoted edge
+        // label, which Mermaid rejects with `got 'STR'`. Slice notation,
+        // index expressions and dict/array literals in edge labels all hit this.
+        const maskedEdgeLabels: string[] = [];
+        processedLine = processedLine.replace(
+          /([-.=>xo])(\|[^|\n]*\|)/g,
+          (_m, prefix: string, label: string) => {
+            maskedEdgeLabels.push(label);
+            // Sentinel contains no bracket, so the node regex cannot match it.
+            return `${prefix}\u0000EL${maskedEdgeLabels.length - 1}\u0000`;
+          },
+        );
+
         processedLine = processedLine.replace(/(\w+)([\{\[\(])([^\}\]\)]*?)([\}\]\)])/g, (match, nodeId, openBracket, content, closeBracket) => {
           // Skip special shape nodes
           if (specialNodes.has(nodeId)) {
@@ -1696,6 +2029,11 @@ export function initMermaidEnhancer(): void {
             return `${nodeId}${openBracket}${processedContent}${closeBracket}`;
           }
         });
+
+        processedLine = processedLine.replace(
+          /\u0000EL(\d+)\u0000/g,
+          (_m, index: string) => maskedEdgeLabels[Number(index)],
+        );
 
         fixedLines.push(processedLine);
       }
@@ -2801,6 +3139,69 @@ export function initMermaidEnhancer(): void {
     }, {
     name: 'sequence-comprehensive-else-fix',
     priority: 590, // Very high priority
+    diagramTypes: ['sequencediagram']
+  });
+
+  // Close sequence-diagram blocks the model left open.
+  //
+  // alt/opt/loop/par/critical/break/rect/box all require a terminating `end`.
+  // When one is missing, the mermaid sequence parser does not report "expected
+  // end" -- it reports an arrow-expected error against the LAST message line
+  // in the block ("Expecting 'SOLID_OPEN_ARROW', ... got 'TXT'"), which sends
+  // debugging at that message instead of at the unclosed block. Verified
+  // against mermaid 11.15: the identical definition parses cleanly once the
+  // trailing `end` is present.
+  //
+  // Runs near-last (low priority) so it sees the `end` lines every earlier
+  // pass has added or removed, and so a diagram still streaming in renders
+  // progressively rather than erroring until its closer arrives.
+  registerPreprocessor(
+    (def: string, _type: string) => {
+      if (!def.trim().startsWith('sequenceDiagram')) {
+        return def;
+      }
+
+      // Openers must be the FIRST token on the line: message text such as
+      // `A->>B: loop until done` is prose, not a block.
+      const OPENER = /^(?:alt|opt|loop|par|critical|break|rect|box)\b/;
+      const CLOSER = /^end\b;?$/;
+
+      const openIndents: string[] = [];
+      for (const line of def.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith('%%')) {
+          continue;
+        }
+        if (CLOSER.test(trimmed)) {
+          openIndents.pop(); // Stray `end` with nothing open: left alone.
+          continue;
+        }
+        if (OPENER.test(trimmed)) {
+          openIndents.push(line.match(/^\s*/)?.[0] ?? '    ');
+        }
+      }
+
+      if (openIndents.length === 0) {
+        return def;
+      }
+
+      console.warn(
+        `🔧 SEQUENCE-AUTO-CLOSE: ${openIndents.length} unclosed block(s) ` +
+        `(alt/opt/loop/par/critical/break/rect/box). Appending the missing ` +
+        `'end' so the diagram parses; mermaid would otherwise report an ` +
+        `arrow-expected error against the last message in the block.`,
+      );
+
+      // Innermost block closes first, each at its own opener's indentation.
+      const closers = openIndents
+        .slice()
+        .reverse()
+        .map(indent => `${indent}end`);
+
+      return def.replace(/\s+$/, '') + '\n' + closers.join('\n');
+    }, {
+    name: 'sequence-auto-close-blocks',
+    priority: 5, // Near-last: must observe every other pass's `end` edits.
     diagramTypes: ['sequencediagram']
   });
 

@@ -120,7 +120,70 @@ export function sanitizeForceNodes<T extends Record<string, any>>(nodes: T[]): T
   });
 }
 
-function isForceDirectedSpec(spec: any): boolean {
+/**
+ * Recover a structured force-directed spec from a `definition`-as-JSON-string
+ * wrapper.
+ *
+ * `render_diagram` (app/mcp/tools/diagram_render.py) always ships the real spec
+ * as a STRING under `spec.definition`, with only `type` on the outer wrapper
+ * (e.g. `{ type: "force-directed", definition: "{...nodes,links,layout...}" }`).
+ * `isForceDirectedSpec`/`render` read `nodes`/`links`/`layout` off the top-level
+ * object, so a wrapped spec exposes no arrays -> `canHandle` returns false ->
+ * findPluginForSpec returns undefined -> the D3Renderer orchestrator busy-retries
+ * to a ~30s timeout with ZERO output (ledger Issue 40; same contract-mismatch
+ * class as chord#23 / joint#2 / network#11 / music#17). This ALSO masks the
+ * Issue-25 non-converging-sim family, because no plugin ever matches to run it.
+ *
+ * This lifts the structured fields (nodes/links, or data.nodes/data.links, plus
+ * layout and any optional style/width/height/charge-family params) from the
+ * parsed definition onto a shallow copy so downstream code sees the arrays it
+ * expects. If the spec is ALREADY structured, or `definition` is absent /
+ * non-JSON / carries no force-directed content, the spec is returned unchanged
+ * (guarded — never hijacks a non-force spec).
+ *
+ * Exported for regression testing.
+ */
+export function resolveForceDirectedSpec(spec: any): any {
+  if (typeof spec !== 'object' || spec === null) return spec;
+
+  // Already structured (nodes present at top level or under data)?
+  const hasNodes = Array.isArray(spec.nodes) || Array.isArray(spec.data?.nodes);
+  if (hasNodes) return spec;
+
+  // Only attempt recovery from a JSON-object `definition` string.
+  if (typeof spec.definition !== 'string' || spec.definition.trim() === '') return spec;
+  if (spec.definition.trimStart()[0] !== '{') return spec;
+
+  let parsed: any;
+  try {
+    parsed = JSON.parse(spec.definition);
+  } catch (_e) {
+    return spec;
+  }
+  if (typeof parsed !== 'object' || parsed === null) return spec;
+
+  const pNodes = Array.isArray(parsed.nodes) || Array.isArray(parsed.data?.nodes);
+  // Requires genuine force-directed content: a nodes array. Without nodes there
+  // is nothing to lay out, so leave the spec untouched for another plugin.
+  if (!pNodes) return spec;
+
+  const resolved: any = { ...spec };
+  resolved.nodes = parsed.nodes || parsed.data?.nodes;
+  resolved.links = parsed.links || parsed.data?.links
+    || (Array.isArray(parsed.edges) ? parsed.edges : []);
+  // The layout discriminator commonly lives INSIDE the stringified definition,
+  // not on the wrapper; lift it so `isForceDirectedSpec` recognises the family.
+  if (parsed.layout !== undefined) resolved.layout = parsed.layout;
+  if (parsed.type !== undefined && resolved.type === undefined) resolved.type = parsed.type;
+  // Optional geometry / style / force-tuning fields, when present.
+  for (const key of ['width', 'height', 'style', 'charge', 'collideRadius', 'linkDistance']) {
+    if (parsed[key] !== undefined) resolved[key] = parsed[key];
+  }
+  return resolved;
+}
+
+function isForceDirectedSpec(rawSpec: any): boolean {
+  const spec = resolveForceDirectedSpec(rawSpec);
   if (typeof spec !== 'object' || spec === null) return false;
 
   // "d3" is a renderer-FAMILY name, not a concrete diagram type. A spec of
@@ -157,7 +220,11 @@ export const forceDirectedPlugin: D3RenderPlugin = {
 
   canHandle: isForceDirectedSpec,
 
-  render: (container: HTMLElement, d3: any, spec: any, isDarkMode: boolean): (() => void) => {
+  render: (container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boolean): (() => void) => {
+    // Recover a structured spec from a definition-as-JSON-string wrapper first
+    // (render_diagram nests nodes/links/layout as a STRING under spec.definition;
+    // without this, nodes/links are invisible and nothing renders). See Issue 40.
+    const spec = resolveForceDirectedSpec(rawSpec);
     // Normalize spec: extract nodes/links from either location, then sanitize
     // node geometry. sanitizeForceNodes drops any non-finite fx/fy pin (the JSON
     // strings "Infinity"/"NaN", raw Infinity/NaN) — such a pin poisons d3's

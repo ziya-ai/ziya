@@ -89,18 +89,20 @@ describe('resolveSpecWidth', () => {
 });
 
 describe('resolveAutosize', () => {
-  it("pairs 'container' width with pad/padding", () => {
-    // Correctness constraint, not preference: Vega-Lite REJECTS
-    // autosize 'fit' together with width 'container'.
+  it("pairs 'container' width with fit-x/padding", () => {
+    // Vega-Lite warns that width:'container' "only works well with autosize
+    // 'fit' or 'fit-x'". 'pad' adds axis/label extent outside a plot area
+    // already sized to the full container, so the view overflows.
     expect(resolveAutosize({}, 'container'))
-      .toEqual({ type: 'pad', contains: 'padding' });
+      .toEqual({ type: 'fit-x', contains: 'padding' });
   });
 
-  it("overrides an authored 'fit' autosize when width is 'container'", () => {
-    // The reported spec carried exactly this autosize.
-    const spec = { autosize: { type: 'fit', contains: 'content' } };
+  it("overrides an authored 'pad' autosize when width is 'container'", () => {
+    // A spec authored with pad + container width overflows its container;
+    // the resolver corrects the pairing rather than honouring it.
+    const spec = { autosize: { type: 'pad', contains: 'padding' } };
     expect(resolveAutosize(spec, 'container'))
-      .toEqual({ type: 'pad', contains: 'padding' });
+      .toEqual({ type: 'fit-x', contains: 'padding' });
   });
 
   it('keeps an authored autosize for a pixel (composite) width', () => {
@@ -136,7 +138,7 @@ describe('applySizing', () => {
     const report = applySizing(spec, CONTAINER_W);
 
     expect(spec.width).toBe('container');
-    expect(spec.autosize).toEqual({ type: 'pad', contains: 'padding' });
+    expect(spec.autosize).toEqual({ type: 'fit-x', contains: 'padding' });
     expect(report.replacedWidth).toBe(600);
     // Height is untouched — it remains a concrete pixel value by design.
     expect(spec.height).toBe(400);
@@ -168,7 +170,7 @@ describe('applySizing', () => {
     for (const spec of specs) {
       applySizing(spec, CONTAINER_W);
       if (spec.width === 'container') {
-        expect(spec.autosize).toEqual({ type: 'pad', contains: 'padding' });
+        expect(spec.autosize).toEqual({ type: 'fit-x', contains: 'padding' });
       } else {
         expect(typeof spec.width).toBe('number');
         expect(spec.autosize.type).not.toBe('pad');

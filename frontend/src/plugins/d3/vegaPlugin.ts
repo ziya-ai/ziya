@@ -1,6 +1,7 @@
 import { type EmbedOptions } from 'vega-embed';
 import { D3RenderPlugin } from '../../types/d3';
 import { getZoomScript } from '../../utils/popupScriptUtils';
+import { sanitizeVegaSpec } from './vegaGraphSanitizer';
 
 /**
  * Full Vega renderer plugin.
@@ -386,6 +387,15 @@ export const vegaPlugin: D3RenderPlugin = {
     }
     // Rewrite v5 expression syntax to v6 function-call form
     vegaSpec = rewriteV5Expressions(vegaSpec);
+
+    // (Issue 34) Sanitize degenerate graph/geometry data BEFORE the runtime
+    // touches it: drop force-`link` links whose endpoint doesn't resolve to a
+    // node (d3-force throws `node not found` → blank canvas) and GeoJSON
+    // features with null geometry/coordinates (d3-geo throws per feature). Both
+    // are no-ops for specs without force/geoshape transforms.
+    try {
+      sanitizeVegaSpec(vegaSpec);
+    } catch { /* never let sanitization itself break a render */ }
 
     container.innerHTML = '';
     container.style.position = 'relative';
