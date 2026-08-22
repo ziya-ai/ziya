@@ -411,7 +411,17 @@ class StreamingToolExecutor:
                 'description': description,
                 'input_schema': input_schema
             }
-            logger.debug(f"🔍 TOOL_SCHEMA: Final schema for '{name}': {json.dumps(result, indent=2)}")
+            # Gated, and default=str, because the f-string form ran on EVERY
+            # request whether or not debug was enabled: ~4.5ms per request over
+            # a 69-tool payload, and a TypeError on any schema holding a
+            # non-serializable value.  That exception escaped through the
+            # caller's list comprehension (_load_and_prepare_tools), so one bad
+            # tool aborted ALL tool loading instead of losing one log line.
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "🔍 TOOL_SCHEMA: Final schema for '%s': %s",
+                    name, json.dumps(result, indent=2, default=str),
+                )
             return result
 
     def _commands_similar(self, cmd1: str, cmd2: str) -> bool:
@@ -1551,6 +1561,11 @@ class StreamingToolExecutor:
                     total += len(b.get('content', ''))
                 elif btype == 'tool_use':
                     total += len(json.dumps(b.get('input', {})))
+                elif btype == 'thinking':
+                    # Echoed reasoning is part of the request payload; omitting
+                    # it here understates the conversation size that the
+                    # size-based guards act on.
+                    total += len(b.get('thinking', ''))
         return total
 
     def _classify_and_handle_error(self, error, error_str, iteration, tool_results,
@@ -1596,6 +1611,18 @@ class StreamingToolExecutor:
         is_transient = any(ind in error_str for ind in [
             "internalServerException", "ServiceUnavailableException",
             "The system encountered an unexpected error",
+            # Bedrock returned HTTP 200 with a zero-event stream — no
+            # exception, no content. bedrock.py's _parse_stream detects the
+            # empty stream and yields a retryable ErrorEvent, but the
+            # ErrorEvent branch re-raises it as a bare Exception carrying
+            # only the message, so this list is the only thing that can
+            # classify it. Absent that, it fell through to 'generic':
+            # should_retry=False and an error_chunk with no error_type, so
+            # task_executor saw an unclassified error, raised
+            # TaskExecutorError instead of TaskInfraError, and marked the
+            # block "failed" (not "held") while the exception tore down the
+            # enclosing deck run past its on_failure policy.
+            "Bedrock returned an empty response",
             # Model-side generation glitch: the sampler emitted a malformed
             # toolUse token sequence and Bedrock aborted the stream. Arrives
             # as a botocore EventStreamError raised out of the provider's
@@ -1950,9 +1977,38 @@ class StreamingToolExecutor:
                             tokens += calibrator.estimate_tokens(tr_content, model_family=model_family)
                         else:
                             tokens += len(tr_content) // 4
+                    elif isinstance(tr_content, list):
+                        for item in tr_content:
+                            if isinstance(item, str):
+                                text = item
+                            elif (
+                                isinstance(item, dict)
+                                and item.get('type') == 'text'
+                            ):
+                                text = item.get('text', '')
+                            else:
+                                continue
+                            if has_calibration and calibrator:
+                                tokens += calibrator.estimate_tokens(
+                                    text, model_family=model_family
+                                )
+                            else:
+                                tokens += len(text) // 4
                 elif block_type == 'tool_use':
                     input_json = json.dumps(block.get('input', {}))
                     tokens += len(input_json) // 4
+                elif block_type == 'thinking':
+                    # Echoed reasoning is billed as input on the turn it is
+                    # replayed in, so it must be estimated like any other
+                    # block.  Omitting it made a thinking+tool_use turn
+                    # estimate at zero while actually costing tokens, and the
+                    # gap surfaced as unexplained drift in the bucketed
+                    # estimate-vs-actual diagnostic below.
+                    _thk = block.get('thinking', '')
+                    if has_calibration and calibrator:
+                        tokens += calibrator.estimate_tokens(_thk, model_family=model_family)
+                    else:
+                        tokens += len(_thk) // 4
         return tokens
 
     @staticmethod
@@ -2161,6 +2217,25 @@ class StreamingToolExecutor:
                     pending_feedback_refcounts.pop(conversation_id, None)
 
     async def _stream_with_tools_impl(self, messages: List[Dict[str, Any]], tools: Optional[List] = None, conversation_id: Optional[str] = None, project_root: Optional[str] = None, is_delegate: bool = False, extra_tools: Optional[List] = None, cancel_event: Optional[asyncio.Event] = None, tool_allowlist: Optional[List[str]] = None, interactive: bool = False) -> AsyncGenerator[Dict[str, Any], None]:
+        # Re-assert the request-scoped project root into THIS task's context.
+        #
+        # An async generator borrows the caller's context on each __anext__ --
+        # it has none of its own -- and server._keepalive_wrapper drives
+        # stream_chunks via asyncio.ensure_future(_next()) once per step, which
+        # copies the context. So set_project_root() in stream_chunks lands in
+        # the copy owned by the task that ran up to the FIRST yield, and every
+        # later step reads the unset default.
+        #
+        # That split is why the system prompt showed the correct project (built
+        # before the first yield) while tool dispatch did not: workspace_path
+        # resolved to None in MCPManager.call_tool, the workspace-routing gate
+        # was skipped, and shell commands ran in the global client whose
+        # subprocess cwd is the server's launch directory. Observed as `pwd`
+        # reporting a different project than the one the tab had selected.
+        if project_root:
+            from app.context import set_project_root
+            set_project_root(project_root)
+
         # --- Concurrent feedback monitor ---
         # Instead of relying solely on discrete polling points, run a
         # background task that continuously drains the feedback queue and
@@ -2845,6 +2920,12 @@ class StreamingToolExecutor:
             empty_tool_calls_this_iteration = 0  # Track empty tool calls in this iteration
             thinking_text = ""  # Track thinking/reasoning content (DeepSeek R1)
             thinking_tag_opened = False  # Whether we've emitted the opening <thinking-data> tag
+            # Completed signed thinking blocks from THIS iteration, echoed back
+            # in the assistant turn so the model's reasoning survives the tool
+            # round-trip instead of being re-derived from scratch each time.
+            # Per-iteration by design: only the turn whose tool_use the pending
+            # tool_result answers needs them, and nothing is persisted.
+            completed_thinking_blocks: List[Dict[str, Any]] = []
             deferred_feedback_messages: List[str] = []  # Feedback caught during tool exec, injected after conversation is built
             continuation_happened = False  # Track if code block continuation occurred
 
@@ -2927,6 +3008,7 @@ class StreamingToolExecutor:
                     # implicit close+reopen). Used as a one-directional reset
                     # signal for the non-prefill block-continuation stall cap.
                     'fence_transitions': 0,
+                    'fence_indent': 0,
                     'accumulated_content': ''
                 }
                 
@@ -2949,8 +3031,8 @@ class StreamingToolExecutor:
                 # Stream via provider — yields normalized StreamEvent objects
                 from app.providers.base import (
                     TextDelta, ToolUseStart, ToolUseInput, ToolUseEnd,
-                    UsageEvent, ThinkingDelta, ErrorEvent, ErrorType, StreamEnd,
-                    ProcessingEvent)
+                    UsageEvent, ThinkingDelta, ThinkingBlock, ErrorEvent,
+                    ErrorType, StreamEnd, ProcessingEvent)
                 async for stream_event in self.provider.stream_response(
                     conversation, system_content, bedrock_tools, provider_config
                 ):
@@ -3040,6 +3122,21 @@ class StreamingToolExecutor:
                         chunk = {'type': 'content_block_delta',
                                  'delta': {'type': 'thinking_delta',
                                            'thinking': stream_event.content}}
+                    elif isinstance(stream_event, ThinkingBlock):
+                        # Completed reasoning block — collected for passback,
+                        # never turned into a display chunk (ThinkingDelta
+                        # already streamed the visible text).  Kept in arrival
+                        # order so the echoed turn matches the block order the
+                        # model actually produced.
+                        completed_thinking_blocks.append(
+                            {'type': 'redacted_thinking',
+                             'data': stream_event.data or ''}
+                            if stream_event.block_type == 'redacted_thinking'
+                            else {'type': 'thinking',
+                                  'thinking': stream_event.content,
+                                  'signature': stream_event.signature}
+                        )
+                        continue
                     elif isinstance(stream_event, ErrorEvent):
                         if stream_event.retryable:
                             # Raise so the outer except handler applies
@@ -3871,7 +3968,28 @@ Please retry the tool call with valid JSON. Ensure:
                     # to prevent hallucinated tool narratives from poisoning future iterations
                     assistant_text = self._sanitize_assistant_text(assistant_text)
 
-                    conversation.append(self.provider.build_assistant_message(assistant_text, tool_uses))
+                    # Echo this turn's signed thinking blocks back so the model
+                    # resumes its reasoning instead of reconstructing it from
+                    # the tool_result alone.  The kwarg is omitted entirely for
+                    # providers that do not advertise support, so their
+                    # build_assistant_message signatures stay untouched.
+                    _tb_pass = (
+                        completed_thinking_blocks
+                        if (completed_thinking_blocks
+                            and self.provider.supports_feature('thinking_passback')
+                            and not ziya_env("ZIYA_DISABLE_THINKING_PASSBACK"))
+                        else None
+                    )
+                    if _tb_pass:
+                        logger.debug(
+                            "🧠 THINKING_PASSBACK: echoing %d block(s) in the "
+                            "assistant turn (iteration %s)",
+                            len(_tb_pass), iteration,
+                        )
+                        conversation.append(self.provider.build_assistant_message(
+                            assistant_text, tool_uses, thinking_blocks=_tb_pass))
+                    else:
+                        conversation.append(self.provider.build_assistant_message(assistant_text, tool_uses))
             
                 # Add tool results to conversation BEFORE filtering
                 logger.debug(f"🔍 ITERATION_END_CHECK: tools_executed_this_iteration = {tools_executed_this_iteration}, tool_results count = {len(tool_results)}")
@@ -4575,7 +4693,16 @@ Please retry the tool call with valid JSON. Ensure:
                             logger.debug(f"🔍 MAX_ITERATIONS: Reached maximum iterations ({iteration}), ending stream")
                         else:
                             logger.debug(f"🔍 NO_ACTIVITY: No tools or text in iteration {iteration}, ending stream")
-                        yield {'type': 'stream_end'}
+                        # Carry the exit reason.  Both verdicts here mean the
+                        # model stopped WITHOUT delivering a closing turn:
+                        # 'no_activity' is an empty completion that outlived the
+                        # nudge/retry budget, 'max_iterations' is a budget cut.
+                        # A bare stream_end is indistinguishable from a normal
+                        # completion, which is how a Task Card block recorded a
+                        # transcript stopping at a tool call as a SUCCESS and
+                        # fed it downstream.  Additive key only; consumers that
+                        # ignore it are unaffected.
+                        yield {'type': 'stream_end', 'reason': _reason}
                         break
                 
                 # Clean up iteration resources to prevent memory leaks
@@ -4662,25 +4789,30 @@ Please retry the tool call with valid JSON. Ensure:
                     {'type': 'feedback', 'message': _m} for _m in _staged
                 )
             if _leftover:
-                logger.warning(
-                    f"🔄 FEEDBACK_STRAGGLER: {len(_leftover)} feedback item(s) "
-                    f"captured during turn teardown for {conversation_id}; "
-                    f"re-enqueueing for next turn instead of dropping."
-                )
-                try:
-                    from app.server import _enqueue_feedback
-                    for _item in _leftover:
-                        # Normalize back to the queue's wire shape ('tool_feedback');
-                        # the monitor re-normalizes to {'type':'feedback',...} on drain.
-                        if _item.get('type') == 'feedback':
-                            _enqueue_feedback(conversation_id, {
-                                'type': 'tool_feedback',
-                                'message': _item.get('message', ''),
-                            })
-                        else:
-                            _enqueue_feedback(conversation_id, _item)
-                except (ImportError, RuntimeError, KeyError) as _req_err:
-                    logger.debug(f"Feedback straggler re-enqueue failed: {_req_err}")
+                # An 'interrupt' straggler is moot here: the turn it would have
+                # interrupted is already over.
+                _msgs = [
+                    _m for _m in (
+                        _i.get('message', '') for _i in _leftover
+                        if _i.get('type') == 'feedback'
+                    ) if _m.strip()
+                ]
+                if _msgs:
+                    logger.warning(
+                        f"🔄 FEEDBACK_STRAGGLER: {len(_msgs)} feedback item(s) "
+                        f"captured during turn teardown for {conversation_id}; "
+                        f"the composer auto-submits its retained copy as a new "
+                        f"turn."
+                    )
+                # These used to be re-enqueued onto the conversation's feedback
+                # queue "for the next turn".  Nothing drains that queue until a
+                # new turn starts, so the text sat there indefinitely while the
+                # user was shown a "deferred to next turn" chip for feedback
+                # that was never going to arrive.  Emitting a chunk here does
+                # not help either: the SSE relay has already broken on
+                # stream_end.  The composer owns the recovery, and a re-enqueued
+                # copy would now be injected a SECOND time if another turn did
+                # start, so the item is deliberately dropped here.
         
         # ------------------------------------------------------------------
         # Autocompaction hook: if this conversation is a delegate, compress
@@ -4791,16 +4923,66 @@ Please retry the tool call with valid JSON. Ensure:
         # not matching this is treated as an untyped fence (``block_type``
         # = None), which the continuation path already handles via the
         # ``block_type or 'code'`` fallback.
+        from app.text_delta_processor import (
+            _FENCE_BEARING_BLOCK_TYPES,
+            _MODIFIER_BEARING_BLOCK_TYPES,
+            fence_base_lang,
+        )
         _LANG_TAG_RE = re.compile(r'^[a-zA-Z][a-zA-Z0-9+#_\-]{0,30}$')
         lines = text.split('\n')
         for line in lines:
-            stripped = line.strip()
+            # CommonMark allows at most 3 spaces of indent on a fence, and a
+            # fence line inside a DIFF body always carries a '+'/'-'/' '
+            # prefix. line.strip() erased that prefix, so a context line
+            # holding a fence (' ```html-mockup' — routine when patching any
+            # markdown or prompt file) was read as a real opener. Stripping
+            # only the right side, and bounding the left indent, keeps the
+            # prefix visible so such a line is correctly ignored.
+            stripped = line.rstrip()
+            _indent = len(stripped) - len(stripped.lstrip(' \t'))
+            stripped = stripped.lstrip(' \t')
+            if _indent > 3:
+                continue  # over-indented: not a fence per CommonMark
+            # A fence-bearing block opened at column 0 can only be acted on by
+            # a column-0 fence; anything indented is its body content. This
+            # must gate BOTH fence branches, not just the lang-tagged opener
+            # below: the diff body's bare closer ('   ```') was reaching the
+            # close branch and closing the diff early, after which the diff's
+            # real column-0 closer had nothing to close and fell through to
+            # the bare-opener branch — creating a PHANTOM open block that left
+            # in_block=True at stream end. That fired the block_continue
+            # continuation prompt against an already-complete response, on
+            # every response containing a diff that patches a fenced file.
+            # Mirrors the diff-scoped exception in
+            # frontend/src/components/fenceScanner.ts matchFenceClose.
+            if (stripped.startswith('```')
+                    and tracker.get('in_block')
+                    and (tracker.get('block_type') or '').lower()
+                    in _FENCE_BEARING_BLOCK_TYPES
+                    and tracker.get('fence_indent', 0) == 0
+                    and _indent > 0):
+                logger.debug(
+                    f"🔍 TRACKER: indented fence inside "
+                    f"{tracker['block_type']} body is content, not a fence"
+                )
+                continue
             if stripped.startswith('```'):
                 # Count ALL leading backticks (handles ````, `````, etc.)
                 backtick_count = len(stripped) - len(stripped.lstrip('`'))
                 # Extract language/type AFTER all leading backticks
                 lang_or_type = stripped[backtick_count:].strip()
                 
+                # A recognised base language followed by a variant modifier
+                # ("html-mockup figure") is a real opener, not prose. Reduce it
+                # to the base language before the space-suppression heuristic
+                # below sees it — that heuristic cannot distinguish the two,
+                # and treating a modified fence as prose leaves the tracker
+                # wedged open past the block's real closer.
+                if ' ' in lang_or_type:
+                    _base = fence_base_lang(lang_or_type)
+                    if _base in _MODIFIER_BEARING_BLOCK_TYPES:
+                        lang_or_type = _base
+
                 if lang_or_type:
                     # 2a-narrow: an info string containing a space is almost
                     # certainly prose that happens to start a line with the
@@ -4841,12 +5023,14 @@ Please retry the tool call with valid JSON. Ensure:
                         tracker['in_block'] = True
                         tracker['block_type'] = None
                         tracker['backtick_count'] = backtick_count
+                        tracker['fence_indent'] = _indent
                         tracker['accumulated_content'] = line + '\n'
                         tracker['fence_transitions'] = tracker.get('fence_transitions', 0) + 1
                         continue
                     tracker['in_block'] = True
                     tracker['block_type'] = lang_or_type
                     tracker['backtick_count'] = backtick_count
+                    tracker['fence_indent'] = _indent
                     tracker['accumulated_content'] = line + '\n'
                     tracker['fence_transitions'] = tracker.get('fence_transitions', 0) + 1
                     logger.debug(f"🔍 TRACKER: Opened {lang_or_type} block ({backtick_count} backticks)")
@@ -4858,6 +5042,7 @@ Please retry the tool call with valid JSON. Ensure:
                     tracker['in_block'] = False
                     tracker['block_type'] = None
                     tracker['backtick_count'] = 0
+                    tracker['fence_indent'] = 0
                     tracker['fence_transitions'] = tracker.get('fence_transitions', 0) + 1
                     logger.debug(f"🔍 TRACKER: Closed block ({backtick_count} backticks)")
                 else:
@@ -4871,6 +5056,7 @@ Please retry the tool call with valid JSON. Ensure:
                     tracker['in_block'] = True
                     tracker['block_type'] = None  # untyped
                     tracker['backtick_count'] = backtick_count
+                    tracker['fence_indent'] = _indent
                     tracker['accumulated_content'] = line + '\n'
                     tracker['fence_transitions'] = tracker.get('fence_transitions', 0) + 1
                     logger.debug(
