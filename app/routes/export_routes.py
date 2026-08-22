@@ -60,23 +60,39 @@ class RenderedExportRequest(BaseModel):
     """Request body for POST /api/export/rendered."""
 
     conversation_id: Optional[str] = None
+    project_id: Optional[str] = None
     messages: List[Dict[str, Any]]
     format: str = Field(default="markdown", pattern="^(markdown|html)$")
     target: str = Field(default="public")
     theme: str = Field(default="light", pattern="^(dark|light)$")
     image_format: str = Field(default="svg", pattern="^(svg|png)$")
+    # HTML export is DUAL-MODE: "route" (high-fidelity real renderer) /
+    # "python" (regex fallback) / "auto" (route when a browser is available).
+    # None == auto (respecting ZIYA_HTML_EXPORT_MODE). Ignored for markdown.
+    html_mode: Optional[str] = Field(default=None, pattern="^(route|python|auto)$")
+    embed_images: bool = Field(default=True)
+    # Preserve the modal option semantics for the route-driven /print render.
+    round_limit: Optional[int] = Field(default=None, alias="roundLimit")
+    include_human: bool = Field(default=True, alias="includeHuman")
+    include_collapsed: bool = Field(default=True, alias="includeCollapsed")
+    include_footer: bool = Field(default=True, alias="includeFooter")
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 @router.post("/rendered")
 async def export_rendered(request: RenderedExportRequest) -> Dict[str, Any]:
-    """Export a conversation with server-side rendered diagram images.
+    """Export a conversation with server-side rendered diagrams.
 
-    Uses the headless Playwright renderer to produce diagram images
-    entirely on the server.  For plugin export targets, CLI exports,
-    and API consumers that do not have a browser.
+    * ``format="markdown"`` — regex exporter with server-side diagram images
+      (unchanged).
+    * ``format="html"`` — DUAL-MODE HTML export
+      (:func:`app.services.html_exporter.export_conversation_html`): the
+      route-driven real-renderer tier when a browser is available, else the
+      Python fallback.  The response reports which mode produced the output
+      (``mode``, ``fidelity``, ``fallback_reason``) so the caller/UI can tell.
     """
     import os
-    from app.utils.conversation_exporter import export_conversation_rendered
     from app.agents.models import ModelManager
     from app.utils.version_util import get_current_version
 
@@ -84,7 +100,48 @@ async def export_rendered(request: RenderedExportRequest) -> Dict[str, Any]:
     endpoint = ziya_env("ZIYA_ENDPOINT")
     version = get_current_version()
     port = ziya_env("ZIYA_PORT")
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        port = 6969
 
+    if request.format == "html":
+        from app.services.html_exporter import export_conversation_html
+
+        options = {
+            "roundLimit": request.round_limit,
+            "includeHuman": request.include_human,
+            "includeCollapsed": request.include_collapsed,
+            "includeFooter": request.include_footer,
+        }
+        # Route mode does its OWN diagram rendering in the real renderer.  The
+        # Python fallback still needs server-side diagram images, so hand those
+        # over as captured_diagrams (used only if the route tier degrades).
+        from app.utils.conversation_exporter import render_diagrams_server_side
+        captured = []
+        try:
+            diag = await render_diagrams_server_side(
+                request.messages, theme=request.theme,
+                format=request.image_format, server_port=port,
+            )
+            captured = list(diag.values())
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Server-side diagram render skipped: %s", exc)
+
+        return await export_conversation_html(
+            request.messages,
+            mode=request.html_mode,
+            options=options,
+            target=request.target,
+            version=version,
+            model=model_alias,
+            provider=endpoint,
+            server_port=port,
+            embed_images=request.embed_images,
+            captured_diagrams=captured,
+        )
+
+    from app.utils.conversation_exporter import export_conversation_rendered
     result = await export_conversation_rendered(
         messages=request.messages,
         format_type=request.format,
@@ -107,6 +164,8 @@ class PluginExportRequest(BaseModel):
     target_id: str
     format: str = Field(default="markdown", pattern="^(markdown|html)$")
     theme: str = Field(default="light", pattern="^(dark|light)$")
+    # HTML dual-mode selector (route/python/auto); None == auto. Ignored for markdown.
+    html_mode: Optional[str] = Field(default=None, pattern="^(route|python|auto)$")
 
 
 @router.post("/to-target")
@@ -143,18 +202,41 @@ async def export_to_target(request: PluginExportRequest) -> Dict[str, Any]:
     endpoint = ziya_env("ZIYA_ENDPOINT")
     version = get_current_version()
     port = ziya_env("ZIYA_PORT")
+    try:
+        port_int = int(port)
+    except (TypeError, ValueError):
+        port_int = 6969
 
-    # Render the export with server-side diagrams
-    export_result = await export_conversation_rendered(
-        messages=request.messages,
-        format_type=request.format,
-        target=request.target_id,
-        theme=request.theme,
-        version=version,
-        model=model_alias,
-        provider=endpoint,
-        server_port=port,
-    )
+    # Render the export.  HTML goes through the DUAL-MODE exporter (route-driven
+    # real renderer when a browser is available, else the Python fallback) so a
+    # plugin target receives the same high-fidelity HTML the download path does.
+    # Markdown keeps the existing server-side-diagram path.
+    export_mode = None
+    export_fidelity = None
+    if request.format == "html":
+        from app.services.html_exporter import export_conversation_html
+        export_result = await export_conversation_html(
+            request.messages,
+            mode=getattr(request, "html_mode", None),
+            target=request.target_id,
+            version=version,
+            model=model_alias,
+            provider=endpoint,
+            server_port=port_int,
+        )
+        export_mode = export_result.get("mode")
+        export_fidelity = export_result.get("fidelity")
+    else:
+        export_result = await export_conversation_rendered(
+            messages=request.messages,
+            format_type=request.format,
+            target=request.target_id,
+            theme=request.theme,
+            version=version,
+            model=model_alias,
+            provider=endpoint,
+            server_port=port,
+        )
 
     # Render diagram images as separate files for targets that need them
     diagram_images = await render_diagrams_server_side(
@@ -177,6 +259,12 @@ async def export_to_target(request: PluginExportRequest) -> Dict[str, Any]:
         'version': version,
         'diagrams_count': export_result.get('diagrams_count', 0),
     }
+    # Tell the target which fidelity tier produced HTML (route vs python).
+    if export_mode:
+        metadata['export_mode'] = export_mode
+        metadata['export_fidelity'] = export_fidelity
+        if export_result.get('fallback_reason'):
+            metadata['fallback_reason'] = export_result['fallback_reason']
 
     try:
         push_result = await provider.export(
@@ -185,6 +273,11 @@ async def export_to_target(request: PluginExportRequest) -> Dict[str, Any]:
             metadata=metadata,
             images=images_dict if images_dict else None,
         )
+        if isinstance(push_result, dict) and export_mode:
+            push_result.setdefault('mode', export_mode)
+            push_result.setdefault('fidelity', export_fidelity)
+            if export_result.get('fallback_reason'):
+                push_result.setdefault('fallback_reason', export_result['fallback_reason'])
         return push_result
     except Exception as exc:
         logger.error("Export to %s failed: %s", request.target_id, exc, exc_info=True)
