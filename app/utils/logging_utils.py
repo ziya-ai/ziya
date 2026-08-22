@@ -101,6 +101,18 @@ class ModeAwareLogger:
         self._ensure_configured()
         self._logger.critical(msg, *args, **kwargs)
     
+    def isEnabledFor(self, level) -> bool:
+        """Whether *level* would be emitted, mirroring logging.Logger.
+
+        Without this delegate a caller cannot cheaply ask whether a debug
+        message is wanted, so expensive arguments (json.dumps of a payload,
+        a joined traceback) end up built unconditionally inside f-strings and
+        then discarded.  Any code holding a stdlib logger can already make
+        this check; wrapping the logger hid it.
+        """
+        self._ensure_configured()
+        return self._logger.isEnabledFor(level)
+
     @property
     def mode(self) -> ZiyaMode:
         """Get current execution mode."""
