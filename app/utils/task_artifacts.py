@@ -246,7 +246,23 @@ def build_part(
             abs_path, guessed, err = _validate_file_path(file_path)
             if err:
                 return None, err
-            part["file_uri"] = abs_path
+            # Persist a copy into the run's own artifacts dir so the blob
+            # route (which only ever looks in task_runs/{run_id}/artifacts/)
+            # can serve it later — the original path (e.g. a script's own
+            # output dir, /tmp, elsewhere in the project) is not servable
+            # by basename and 404s otherwise.  Falls back to the original
+            # absolute path when there is no active run/artifacts dir
+            # (e.g. tests that open a collector with artifacts_dir=None).
+            copied_uri = None
+            try:
+                copied_uri, copy_err = save_artifact_blob(
+                    Path(abs_path).name, Path(abs_path).read_bytes(),
+                )
+                if copy_err:
+                    logger.debug(f"artifact file copy skipped: {copy_err}")
+            except OSError as e:
+                logger.debug(f"artifact file copy skipped: {e}")
+            part["file_uri"] = copied_uri or abs_path
             if media_type or guessed:
                 part["media_type"] = media_type or guessed
             try:

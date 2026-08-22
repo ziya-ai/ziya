@@ -54,6 +54,24 @@ Orthogonal options:
   (controls whether an iteration's instruction gets templated with
   a prior iteration's artifact; the iteration's conversation remains
   fresh either way)
+- repeat_max: upper bound on iterations
+
+`repeat_max` is a **cost ceiling**, and in for-each mode it clips the
+resolved roster rather than raising: a 112-item queue under
+`repeat_max: 60` dispatches the first 60. Exceeding the ceiling silently
+would be worse, so the clip stands — but it is no longer invisible. The
+truncation is logged, recorded on the execution context, and surfaced as
+a decision on the loop's own artifact naming both counts
+("60 dispatched, 52 never run"). It is a decision and not a failure: the
+loop completed every iteration it planned, so an enclosing `on_failure`
+policy is unaffected.
+
+This matters because a clipped fan-out is otherwise indistinguishable
+from a complete one after the fact, and a downstream stage that reads an
+output *directory* rather than the roster cannot tell the difference —
+which is how a reintegration phase came to report a finished pass having
+investigated 60 of 112 capabilities, with nothing anywhere naming the
+other 52.
 
 ### Parallel (implicit/explicit)
 Stacking blocks is an implicit sequence. For concurrent execution of
@@ -78,12 +96,23 @@ preamble the same way prior-iteration results are.
 
 **Named variables (the adjunct).** For the minority of cases wanting a
 reusable value referenced by name, declare variables (name → literal)
-read via `{{var.NAME}}` templating. Values are authored as literals
-(strings, numbers, booleans, arrays, objects); field access works for
-structured values (`{{var.config.timeout}}`). An unknown variable name
-is left verbatim in the rendered text, so typos surface to the author
-rather than silently rendering empty. Launch-time `parameter_overrides`
-win over authored values at read time.
+read via `{{var.NAME}}` templating, or by bare name (`{{NAME}}`) — the
+two forms are equivalent. Values are authored as literals (strings,
+numbers, booleans, arrays, objects); field access works for structured
+values (`{{var.config.timeout}}`, `{{config.timeout}}`). An unknown
+variable name is left verbatim in the rendered text, so typos surface to
+the author rather than silently rendering empty. Reserved placeholder
+heads (`index`, `item`, `previous`, `previous_sibling`, `all`, `var`,
+`sibling(...)`) are resolved first and cannot be shadowed by a variable
+that shares their name. Launch-time `parameter_overrides` win over
+authored values at read time.
+
+Both tiers are rendered against the same bindings: a `{{NAME}}` or
+`{{var.NAME}}` reference works in prose context as well as in task
+instructions. Prose does not *require* templating, but it must not
+silently swallow it — a card that wrote `DEPLOY_COMMAND: {{DEPLOY_COMMAND}}`
+as a prose given previously handed the agent the literal braces, which
+read as an unfillable placeholder rather than as an authoring error.
 
 **Placement is the reset policy.** A State block at the top of a
 once-running body (the card root wrapper, or before an inner loop) sets
@@ -146,8 +175,10 @@ An artifact is what flows out of a task. Structure:
   failure to enable clustering of similar failures; null on success)
 
 Artifacts are referenceable by templating: when a downstream task's
-instructions contain `{{previous.artifact.outputs[0]}}`, it gets
-rendered at dispatch time.
+instructions contain `{{previous.outputs.NAME}}` — naming a part the
+prior task emitted via `emit_artifact` — it gets rendered at dispatch
+time.  Parts are addressed by NAME, not by index; see §Propagation
+for why the indexed form was not implemented.
 
 ## Runtime semantics
 
@@ -215,19 +246,113 @@ Inside a sequence:
 | `{{sibling("block-id")}}` | a named sibling's Artifact |
 
 Field access follows the Artifact schema: `{{previous.summary}}`,
-`{{previous.outputs[0].text}}`, `{{previous.decisions}}`.  Missing
-fields substitute to the empty string and log a warning; they do not
-crash dispatch.
+`{{previous.decisions}}`, and `{{previous.outputs.NAME}}` for a part
+emitted under that name.  Keys may be appended to reach inside a data
+part's object: `{{sibling("plan").outputs.roster.slugs}}`.  Missing
+fields substitute to the empty string; they do not crash dispatch.
+Unknown placeholders (typos) are preserved verbatim so the authoring
+mistake is visible — that distinction is the contract: *known
+placeholder, unavailable data* renders empty, *unknown placeholder*
+stays literal.
+
+##### Gathering a loop's outputs — `outputs_all.NAME`
+
+`outputs.NAME` is **last-wins**: it returns the most recent part under
+that name.  That is right for a single task (a task that emits a part,
+spots a problem and re-emits under the same name means the correction)
+and wrong across a loop, where each iteration's part belongs to a
+different worker and none supersedes another.
+
+A Repeat already accumulates every iteration's `outputs` onto its own
+artifact, so the data was never lost — but a 60-wide audit loop whose
+workers each emit `audit` held all 60 parts while every template
+reference resolved to iteration 59 alone.  Nothing errored; the value
+was simply the last one.
+
+`{{previous_sibling.outputs_all.audit}}` returns **every** matching part
+as a JSON array, in iteration order (dispatch order in the parallel
+path too, since `asyncio.gather` preserves it).  A trailing dotted path
+projects one field across iterations —
+`{{...outputs_all.audit.subsystem}}` → `["alpha","beta","gamma"]` —
+which is the shape that lets one fan-out's results drive the next.
+
+An absent name renders `[]`, not `""`, so a downstream `for_each` source
+stays parseable: an empty array honestly says "nothing to iterate",
+whereas `""` would be unresolvable and fail the block.  Iterations whose
+part lacks the projected key are dropped rather than contributing
+`null`, which would be indistinguishable from a worker reporting null.
+
+#### Refused launches are recorded
+
+A refusal creates no `TaskRun`, and that is deliberate: `record_run()`
+bumps `run_count`, so a record for work that never executed would
+corrupt the deck's "never run" vs "has history" distinction, and a
+`held` run advertises resume controls for progress that does not exist.
+
+The cost is that refusals would otherwise vanish — and they are the one
+defect class nobody pays for, therefore the one nobody remembers.  They
+are appended instead to
+`~/.ziya/projects/{pid}/task_card_refusals.jsonl`, following
+`app/storage/proposals.py`: append-only JSONL inside the standard ALE
+envelope, read-modify-write per append, capped at
+`MAX_RETAINED_REFUSALS` (5,000, oldest dropped) so the rewrite cost
+stays bounded.  Category is `task_definition`, matching card
+definitions — a record holds finding messages and block paths, never
+task instructions.
+
+Each record carries a `signature`: a hash of the sorted **error
+messages** only, excluding card id, card name, block ids and paths.
+Two cards broken the same way therefore share a signature, which is
+what makes `cluster_by_signature()` able to report "this defect has
+been hit 14 times across 6 cards" rather than listing 200 refusals.
+Warnings are excluded from the signature: they do not cause the
+refusal, and including them would split one defect class across every
+incidental warning combination that accompanied it.  `is_resume`
+distinguishes a refused resume — where the *snapshot* was already
+broken when it ran — from an author having just broken a card.
+
+Writes are best-effort and never raise: the caller is on its way to
+returning a 422 that names a real defect, and a failed sink must not
+replace that with a 500.
+
+**No indexed part access.**  An earlier draft of this document
+specified `{{previous.outputs[0].text}}`.  It was never implemented and
+has been withdrawn rather than built: emission order is not a contract
+a card author can rely on (a task that conditionally emits a diagnostic
+part shifts every later index), so a positional reference silently
+resolves to the wrong part instead of failing.  Named access is the
+only form.  Where several parts belong together, `emit_artifact`'s
+`group`/`label`/`seq` fields carry the relationship.
 
 A Repeat's `for_each` source may itself contain placeholders
 (`{{sibling("plan-id")}}`, `{{previous_sibling}}`, `{{var.X}}`),
 rendered at the Repeat's dispatch time against the artifacts completed
-so far in the run.  The rendered text is parsed as a JSON array; if it
-is prose that merely CONTAINS a JSON array (the typical planner-task
-summary), the first embedded array is extracted.  This enables the
-canonical decomposition shape: Task("plan") → Repeat(for_each over the
-plan's output).  An unparseable source falls back to count-based
-iteration.
+so far in the run.  Two parsing modes, chosen by the shape of the
+source:
+
+- **Precise** — the source is exactly one `outputs.NAME` or
+  `outputs_all.NAME` reference, e.g.
+  `{{sibling("plan").outputs.roster.slugs}}` or
+  `{{sibling("fan").outputs_all.audit.subsystem}}`.  Parsed strictly:
+  only a whole-string JSON array is accepted.  Preferred, because the
+  author named an exact structured value and scanning its rendering for
+  an incidental `[` would substitute something else.  (In practice both
+  modes parse an identical whole-string array identically; the mode
+  chiefly determines which remedy an unresolvable source reports.)
+- **Lenient** — any other templated source.  The first JSON array found
+  in the rendered text is extracted, which is what makes a planner
+  task's prose summary usable.
+
+This enables the canonical decomposition shape: Task("plan") →
+Repeat(for_each over the plan's output).
+
+A source that is a static literal and unparseable falls back to
+count-based iteration.  A TEMPLATED source that resolves to no array
+does NOT: it fails the Repeat block.  Falling back there ran the body
+`repeat_max` times with `item=null`, turning a broken hand-off into a
+wide fan-out over nothing — expensive, and it produced a run record
+that looked populated.  An empty resolved array (`[]`) is legitimate and
+yields zero iterations without failing.
 
 ### Iteration result storage at scale
 
@@ -447,6 +572,82 @@ the failed iterations via the query endpoint and the model writes
 prose over them.  The task-card system does not own a bespoke
 summarization path; it owns the queryable substrate that a chat turn
 can draw from.
+
+### Self-improvement
+
+A container block (Group / Repeat / Until / Parallel) may carry
+`self_improve: true`.  After that level completes, a judge model call
+evaluates the outcome against the block's `improve_criterion` (or, when
+none is authored, the objective inferred from the level's own task
+text) and returns one of three verdicts:
+
+- **accept** — the outcome is adequate, or no text change would
+  tangibly and meaningfully affect the next run.  Also the
+  fail-conservative default for any judge transport/parse failure, so
+  a flaky evaluator can never spin a card through edits.
+- **revise** — a specific weakness in the task text caused a real
+  deficiency, and a concrete text change would meaningfully improve
+  the next run.  Carries the patch.
+- **stop** — deficient for reasons text cannot fix (permissions,
+  environment, external state).  Recorded so later runs' judges see it.
+
+The bar for `revise` is deliberately high: stylistic preference is not
+grounds to rewrite.  Cards should converge, not wander.
+
+On `revise`, the patch is applied and **that level restarts** with the
+revised text, up to its revision budget.
+
+**Text, never privilege.**  A patch may touch only `instructions` and
+`state_context`, keyed by block ids that already exist within the
+improving level's own subtree.  This is enforced three ways, each
+independent:
+
+1. The field whitelist (`app/utils/self_improve.py::
+   IMPROVABLE_TEXT_FIELDS`) — validation rejects any other field.
+2. A structure fingerprint (the tree hashed with whitelisted text
+   stripped) asserted before persistence — a patch that changed
+   anything but text is refused even if the applier regresses.
+3. The scope-approval hash (`scope_canonical.task_scope_hash`) covers
+   only privilege-bearing fields, so a text-only patch keeps signed
+   approvals valid — and the existing-id keying is what makes that
+   hold in practice: a whole-tree replacement would mint fresh ids for
+   dropped blocks, orphaning approvals and silently dropping those
+   blocks to the permission floor.  Patches cannot mint ids at all.
+
+**Durability is two artifacts.**  The patched card (persisted to the
+live definition, best-effort against drift — ids edited away since
+launch simply don't apply) is what makes run N+1 better.  The
+append-only per-project **lesson ledger**
+(`~/.ziya/projects/{pid}/task_card_lessons.jsonl`, same capped-JSONL
+shape as the refusal log) is what stops the judge re-deriving — and
+re-reverting — the same lesson every run: recent lessons for the same
+(card, block) are fed to the judge, and a patch whose content hash was
+already applied for that (card, block) is refused outright (the
+oscillation guard).  Records are best-effort; a failed ledger write
+never fails the run.
+
+**Budgets bound nesting.**  Self-improving levels multiply: 3 revisions
+inside 3 revisions is 9 executions of the inner subtree.  Per-block
+`improve_max` (default 2; explicit 0 = observe-only — judge and record
+lessons, never edit) bounds each level; `ZIYA_TASK_IMPROVE_RUN_MAX`
+(default 10) bounds the product across the whole run.
+
+**Drift is a policy, not an accident.**  `improve_drift:
+"conservative"` (default) instructs the judge to correct toward the
+stated objective only — never to expand scope or ambition beyond the
+ask.  Opt-in `"expansive"` permits strengthening beyond it.  Many
+layers of judges with significant iteration can grow a thing more
+powerful than what was asked for; that is occasionally the point and
+usually not, so it requires the explicit opt-in.
+
+**Audit note.**  `card_snapshot` records the tree a run *launched*
+with; an in-run revision means later passes of that level executed
+revised text.  The revision trail is recorded as `improve_revision`
+events (block id, revision index, verdict, rationale, applied /
+persisted flags) and as ledger records carrying the full patch, so a
+run remains reconstructable.  A Repeat that restarts also re-records
+iteration summaries; the `improve_revision` events are what segment
+the passes.
 
 ## UX shape
 

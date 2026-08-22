@@ -115,18 +115,43 @@ capabilities and operation of the system.
         'name': 'Tests for Everything',
         'description': 'Test every feature added, enhanced, or repaired',
         'visibility': USER_SELECTABLE,
-        'keywords': ['test', 'tests', 'coverage', 'pytest', 'jest', 'regression'],
+        'keywords': [
+            'test', 'tests', 'coverage', 'pytest', 'jest', 'regression',
+            # The skill now covers integration seams as well as "write a
+            # test", so a question about a wiring gap should match it.
+            'wiring', 'integration', 'end-to-end', 'seam',
+        ],
         'prompt': '''Create and validate test cases for every feature and function that
 is added, enhanced, or repaired.
 
 - Periodically evaluate the test architecture as a whole to ensure it stays
-  organized and usable and that coverage is maintained.
+  organized and usable and that coverage is maintained. Watch for suites
+  that pass while the feature is broken; no coverage metric shows that.
+- Test the SEAM, not just the halves. The costliest defects are two correct
+  pieces that never meet: defined but never called, added to a type but not
+  to the provider that mounts it, a new map key the consumer's fallback
+  still swallows. Assert the connection at every hop a change crosses.
+- Prefer one end-to-end assertion over ten unit tests, and assert on what
+  the outermost surface shows rather than an intermediate the test built.
+- A test that passes against unpatched code certifies the bug. Confirm it
+  FAILS without the fix, and pair every "does not happen" assertion with a
+  positive one that the path ran at all.
+- Anchor on identifiers, not formatting -- not list position, line
+  adjacency, or a fixed-size file slice. Scope, then assert membership.
 - Do NOT run tests against a diff patch you have no evidence has been
   applied. Providing a diff is not evidence that it was applied; only
   directly writing the file, or observing the change already present in the
   file content, is sufficient.
+- Re-read files instead of trusting earlier output from the same session,
+  and use the project's real test runner. Stale reads and missing
+  transforms both look like regressions.
+- Attribute every failure before reporting it: caused by this change,
+  pre-existing, or pending unapplied work.
 - Do NOT mark a test that demonstrates a legitimate bug as expected-to-fail.
-  A failing test reflecting a real defect is a finding, not a nuisance.''',
+  A failing test reflecting a real defect is a finding, not a nuisance.
+- When a refactor legitimately breaks a test, update the assertion to FOLLOW
+  the change; delete it only if the design it asserts was rejected. A test
+  red for many sessions is no longer a signal.''',
         'color': '#65a30d',
     },
     {
@@ -332,7 +357,10 @@ other block (except Task and State, which are leaves with no body).
 **Repeat** — wraps a body, runs it N times.  Modes:
 - `"count"` — run exactly `repeat_count` times
 - `"until"` — run until the body artifact does not fail, max `repeat_max`
-- `"for_each"` — run once per item in a list
+- `"for_each"` — run once per item in `repeat_for_each_source`: a JSON
+  array literal, or a reference to a prior task's emitted data part such
+  as `{{sibling("plan").outputs.roster.slugs}}` (preferred — see
+  Propagation below).  `{{item}}` is the current item.
 Orthogonal: `repeat_parallel: true|false`, `repeat_propagate: "none"|"last"|"all"`.
 
 ```
@@ -488,7 +516,7 @@ file task by its name in `tasks.yaml`:
 }
 ```
 
-Two constraints to author within:
+Three constraints to author within:
 - **Permissions do not cross the call.** The callee runs with its OWN
   approved scope; the caller's grants are not visible to it, and the
   caller cannot lend it permissions.  Do not put a scope on the Call block
@@ -498,6 +526,36 @@ Two constraints to author within:
   self-sufficient.  The only things that reach it are run-scoped State
   givens and prior-sibling results.  A callee needing per-call inputs is a
   sign the work belongs inline in this card instead.
+- **A name target must be unique in the deck.** Resolution tries the card
+  id first, then falls back to a case-insensitive scan of every card in
+  the project.  Two saved cards sharing a name make the target ambiguous
+  and directory order decides which runs, so an orchestrator can silently
+  call a stale duplicate.  Prefer distinct names, and delete superseded
+  copies rather than leaving them saved alongside.
+
+### Failure policy — on_failure
+
+Any container (Group / Repeat / Until / Schedule) may set `on_failure`
+for the implicit sequence formed by its body:
+
+- `"continue"` (the DEFAULT when unset) — every later sibling runs even
+  after an earlier one fails, and the failed result flows onward as
+  `{{previous_sibling}}`.
+- `"stop"` — the sequence halts at the first failed child; remaining
+  siblings are marked skipped and the failure propagates upward.
+
+**Set `"stop"` on any body whose stages depend on each other.** The
+default exists for backward compatibility, not because it is usually
+right: a dependent pipeline left on `continue` does not stop when its
+foundation fails, it keeps running on missing or wrong input and produces
+a confident, worthless result at the end.
+
+This matters more than it looks, because **a container's artifact is its
+LAST child's** — so under `continue` a failed early stage followed by a
+passing late stage reports the container as SUCCEEDED, and a Call block
+wrapping it reports success to its own caller.  The failure is not merely
+tolerated, it becomes invisible.  `"stop"` is what keeps a failure
+visible to the level above.
 
 ## Propagation (templating)
 
@@ -505,12 +563,59 @@ A block's `instructions` may reference prior results via `{{ }}` templates,
 rendered at dispatch time:
 - Inside a Repeat body: `{{index}}`, `{{item}}` (for_each), `{{previous}}`
   (propagate=last), `{{all}}` (propagate=all) — field access like
-  `{{previous.summary}}`, `{{previous.outputs[0].text}}`.
+  `{{previous.summary}}`, `{{previous.decisions}}`.
 - Inside a sequence: `{{previous_sibling}}`, `{{sibling("block-id")}}`.
+- **Named artifact parts**: `{{previous_sibling.outputs.NAME}}`,
+  `{{sibling("block-id").outputs.NAME}}`, `{{previous.outputs.NAME}}` —
+  resolve a part a prior task declared with
+  `emit_artifact(name="NAME", ...)`.  Append keys to reach inside a data
+  part's object: `{{sibling("plan").outputs.roster.slugs}}`.
+  There is no indexed form: parts are addressed by name, not position,
+  because emission order is not a stable contract.
 - Anywhere in scope of a State block: `{{var.NAME}}` for a declared
   variable; State's `state_context` prose needs no template at all — it
   is injected automatically.
-Missing fields render as empty strings — never crash.
+Missing fields render as empty strings — never crash.  Unknown
+placeholders (typos) are left verbatim so the mistake is visible.
+
+### Driving a fan-out from structured output (preferred)
+
+A `for_each` source may name an artifact part instead of relying on the
+upstream task's prose.  This is the reliable way to fan out, because it
+reads the exact value the planner declared rather than scanning its
+summary for the first `[`:
+
+```
+{"block_type": "repeat", "repeat_mode": "for_each",
+ "repeat_for_each_source": "{{sibling(\\"plan\\").outputs.roster.slugs}}",
+ "repeat_parallel": true, "body": [ ]}
+```
+
+The planner task emits the list inside a data part:
+`emit_artifact(name="roster", part_type="data", data={"slugs": [...]})`.
+A data part must be a JSON **object**, so the list always lives under a
+key — hence the trailing `.slugs`.
+
+A source that is exactly one `outputs.…` reference is parsed STRICTLY
+(whole-string JSON array only).  Any other templated source keeps the
+lenient behavior of extracting the first JSON array found in the text.
+Either way, a templated source that resolves to no array FAILS the
+Repeat block rather than silently falling back to count-based iteration
+over `item=null` — so a wide fan-out cannot quietly run over nothing.
+
+With the lenient form you must instruct the upstream task to emit
+exactly one JSON array and no other bracketed text; with the precise
+form you do not.
+
+Prefer the precise form for EVERY fan-out, not merely wide ones.  The
+difference is not stylistic: a summary can be LOST while artifact parts
+survive.  A summary is assembled from the prose a task streams, so if its
+closing turn never arrives — an empty completion after the last tool call
+— what remains is the narration BETWEEN tool calls, which reads like a
+summary and holds no array.  `emit_artifact` parts are collected as they
+are emitted and are unaffected.  Measured cost: a roster task wrote its
+file and emitted its parts, lost only its final turn, and a 26-way
+fan-out reading `{{previous_sibling.summary}}` dispatched zero iterations.
 
 ## Scope (what a task can touch)
 
@@ -546,6 +651,27 @@ sets its own:
   the container's own scope.
 Omit `scope` entirely for a task that needs only its default (safe,
 read-mostly) permissions — most tasks don't need to set this.
+
+### Escalation needs a human signature
+
+`shell_commands`, and `write` on a path outside the default safe-write
+set (`.ziya/`, `/tmp/`), are a privilege ESCALATION. They do not take
+effect just because you asked for them: they require an out-of-band
+`ziya-approve` signature the user must make, and you cannot make it.
+Until it exists, those blocks run at the default floor — so a task told
+to run `npm` or write to `src/` will fail partway through rather than
+being refused up front.
+
+Two consequences for how you author a card:
+
+- **Ask for the minimum.** Every escalating block adds a signing step
+  before the card is useful. A task that only needs to write scratch
+  state should write under `.ziya/`, which needs no signature.
+- **Say so in the card's `description`** when any block does escalate,
+  naming what it needs and why ("needs `npm` to build the frontend").
+  The UI flags the escalation and offers the signing command, but it
+  cannot explain why the card needs it — only you can, and the user is
+  deciding whether to sign based on that.
 
 ## Output artifacts (what a task preserves)
 
@@ -673,8 +799,13 @@ model passes `timeout` on every invocation:
 ## Output format
 
 Emit a fenced JSON block with language tag `task-card`.  The user can
-preview it and click **Start**; launching creates a run bound to the chat
-and the inline tile shows live status.
+preview it, **Save to deck** (persists it without running — also the
+prerequisite for signing any escalation, since signatures key on
+persisted block ids), or click **Start** to launch a run bound to the
+chat, after which the inline tile shows live status.  If any block
+escalates, the proposal block says so before the user commits, and Start
+asks for confirmation — so escalate only where the work genuinely
+requires it.
 
 ## Choosing a root block — decision guide
 
@@ -731,6 +862,16 @@ a single Task that generates the report.
   Schedule root when the work should recur.
 - `instructions` should be self-contained — the Task runs in a sandboxed
   conversation and cannot see anything outside its scope.
+- Set `on_failure: "stop"` on every container whose body is a dependent
+  pipeline.  Unset means `continue`, which runs later stages on failed
+  input and — because a container reports its LAST child's result — can
+  report the whole container as succeeded.
+- A task's LAST act should be prose, not a tool call.  The summary is
+  built from streamed prose, so a task that stops immediately after a
+  tool call has no summary of its own work; that is detected and recorded
+  as a failure rather than passing a partial transcript forward.  End
+  instructions with something to say ("…then state what you found"),
+  not with a bare write.
 - Any task whose work product is worth keeping (a file, a chart, a
   measurement, a verdict) should be told in its `instructions` to
   `emit_artifact` it, with the `group`/`label` to use. If that task
@@ -827,19 +968,23 @@ for math:
 
 `music: C4/q, D4/q, E4/q, F4/q`
 
-Duration codes: `w` whole, `h` half, `q` quarter, `8` eighth, `16` sixteenth.
-Append `.` for dotted (`q.`). Write the pitch as letter + optional accidental
+Duration codes: `w` whole, `h` half, `q` quarter, `8` eighth, `16` sixteenth,
+`32` thirty-second, `64` sixty-fourth, `128` (for the fastest ornamental runs).
+Append `.` for dotted, and stack dots for double- and triple-dotted values up to
+four (`q.` dotted quarter, `q..` double-dotted, `q...` triple-dotted) -- ordinary
+in Baroque and Romantic rhythm.  Write the pitch as letter + optional accidental
  + octave with NO slash: `C4` is middle C, `C#5` and `Bb4` carry accidentals.
-The duration MUST be one of those codes -- any other value (a bare number like
-`4`, an out-of-range code like `999`, or a huge integer) is treated as an error:
-the fenced block falls back to a quarter note with a console warning, and the
-inline form declines to render, rather than freezing the staff.
+The duration MUST be one of those codes -- any OTHER value (a code that is not a
+duration like `4x`, an out-of-range code like `999`, or a huge integer) is
+treated as an error: the fenced block falls back to a quarter note with a console
+warning, and the inline form declines to render, rather than freezing the staff.
 
 The inline form supports notes only -- there is no annotation syntax. Text
 above or below a note requires the fenced block below, whose `annotations`
-field does this properly. Do not write `^"text"` or `_"text"` inline: the
-parser stops at the `^` and silently drops every note after it, so the staff
-renders short rather than reporting an error.
+field does this properly. If you write `^"text"` or `_"text"` inline the form
+DECLINES to render and falls back to showing the raw text, rather than
+silently dropping the notes after the annotation -- so use the fenced block
+for any annotated phrase.
 
 **Complete scores (full chrome, multi-note/multi-voice)** — for anything with
 more than a few notes, multiple voices, tablature, or harp pedal diagrams, use
@@ -854,7 +999,7 @@ a ```music``` fenced code block with a JSON spec:
   "notes": [
     {
       "keys": ["c/5"],                       // one entry per note in a chord
-      "duration": "q",                       // w, h, q, 8, 16 (+ "." for dotted)
+      "duration": "q",                       // w h q 8 16 32 64 128, "." adds a dot (up to "q...")
       "annotations": [                       // optional text above/below the note
         {"text": "Cmaj7", "position": "above"}
       ],
@@ -886,13 +1031,41 @@ the active clef on its own.
 ]
 ```
 
-Durations are the same codes as notes: `w h q 8 16`, and `"q."` for a dotted
-rest.  A whole-measure silence is one `{"rest": true, "duration": "w"}`.
+Durations are the same codes as notes: `w h q 8 16 32 64 128`, and `"q."` (or a
+double-dotted `"q.."`) for a dotted rest.  A whole-measure silence is one
+`{"rest": true, "duration": "w"}`.
 
 Rests occupy beat time exactly as notes do, so count them when filling a bar.
 They also occupy an INDEX in the notes array: a slur, tie, hairpin or bracket
 referencing note 3 counts rests among the first three entries.  Do not anchor
 a slur or tie to a rest — attach spans to the sounding notes on either side.
+
+### Multi-measure rest
+
+In an instrumental PART, a run of empty bars is written as ONE symbol -- a
+thick horizontal H-bar with the number of bars above it -- so the player counts
+"8 bars rest" from a single mark instead of reading eight identical empty bars.
+Use a `measures`-based staff and give the resting bar `"multiRest": N` (the bar
+count) and NO notes:
+
+```
+{
+  "type": "music",
+  "clef": "treble",
+  "timeSignature": "4/4",
+  "measures": [
+    {"notes": [{"keys": ["c/5"], "duration": "q"}, {"keys": ["d/5"], "duration": "q"},
+               {"keys": ["e/5"], "duration": "q"}, {"keys": ["f/5"], "duration": "q"}]},
+    {"multiRest": 8},
+    {"notes": [{"keys": ["g/5"], "duration": "h"}, {"keys": ["e/5"], "duration": "h"}]}
+  ]
+}
+```
+
+`multiRest` must be an integer of 1 or more; any other value is skipped with a
+console warning.  The bar is silent, so any `notes` given alongside `multiRest`
+are ignored.  This is a per-measure field (it lives on a `measures[]` entry),
+so it works on any staff of a grand staff as well.
 
 Do not put `articulations`, `dynamic`, `fingering` or `chordSymbol` on a rest;
 those belong on sounding notes.
@@ -916,6 +1089,39 @@ different marking (snap pizzicato), not a harmonic.
 Ornaments (a note's `ornaments` list): `trill mordent mordent-inverted turn
 turn-inverted`.
 
+Tremolo (a note's `tremolo` field): an integer `1`, `2` or `3` giving the
+number of slashes drawn through the note's stem -- a single-note (measured)
+tremolo, meaning the note is rapidly repeated (`3` is the common
+"as-fast-as-possible" buzz).  It applies to one note or chord:
+
+```json
+{ "keys": ["g/4"], "duration": "q", "tremolo": 3 }
+```
+
+Use it for a repeated-note tremolo on a single pitch; a two-note (alternating)
+tremolo between different pitches is not yet supported.  A value outside 1..3
+is ignored.
+
+## Breath marks and caesuras (a note's `breath` field)
+
+Put `breath` on a note to draw a phrasing break ABOVE the staff, just AFTER
+that note -- where a wind or vocal player breathes, or (a caesura) the
+"railroad-tracks" grand pause:
+
+```json
+"notes": [
+  {"keys": ["a/4"], "duration": "q", "breath": "comma"},
+  {"keys": ["c/5"], "duration": "q", "breath": "caesura"}
+]
+```
+
+Values: `comma` (the ordinary breath, a small curved comma -- also `true` as a
+shorthand), `tick` (a terser slanted stroke), `caesura` (the two parallel
+diagonal strokes marking a grand pause -- also `grand-pause`/`railroad`), and
+`caesura-curved` (the curved-stroke caesura).  The mark belongs to the gap
+after its note, so it is drawn off the note's right edge; an unknown value is
+skipped with a warning.
+
 ## Accidentals are ABSOLUTE, not inherited from the key signature
 
 A `keys` entry is the SOUNDING pitch, so spell the accidental you want and do
@@ -936,6 +1142,27 @@ wrong PITCHES, cluttered with a natural on nearly every note.
 The check: a diatonic passage in a key with accidentals should render with
 almost NO accidentals on the noteheads.  A natural on nearly every note means
 the pitches are being cancelled rather than inherited.
+
+An accidental holds for the rest of its BAR: once a note has printed a sharp,
+flat or natural, later notes of the SAME pitch (same letter AND octave) in the
+same measure print bare, and the sign is re-shown after the next barline --
+exactly as published scores engrave it.  Keep spelling every entry as its true
+sounding pitch (`"f#/5"` even on the third F-sharp of a bar); the renderer
+drops the redundant repeated glyph for you, so you never write a note bare to
+suppress a sign.  A DIFFERENT pitch or a changed accidental (an F-natural after
+an F-sharp) still prints, since it is new information.
+
+Set `"cautionaryAccidentals": true` on the spec to add courtesy (cautionary)
+accidentals -- the parenthesised reminder published editions print when a pitch
+altered in one bar returns in the NEXT bar sounding differently.  An `f#/4` in
+bar 1 followed by a plain `f/4` in bar 2 gets a parenthesised natural on that
+`f`, reassuring the reader the sharp no longer applies across the barline; the
+mark is added only to a note that would otherwise print bare (a note carrying
+its own accidental is already its own reminder) and only for a one-bar-back
+change.  Leave it off for a clean, minimally-marked score; turn it on to match
+the Dorico/Finale house style where such reminders are expected.  As always,
+keep spelling every note as its true sounding pitch -- the renderer decides
+where a courtesy mark is warranted.
 
 A pitchless entry -- no `keys`, or an empty `keys` array -- is drawn as a REST
 of its duration, with a console warning.  `{"rest": true}` is the documented
@@ -962,9 +1189,18 @@ Beaming runs per measure, so a group never crosses a barline.  Rests break a
 beam group.  Notes a quarter or longer are never beamed, so `autoBeam` is
 harmless on music that has none.
 
-`beamGroups` overrides the beat grouping, as [numerator, denominator] pairs:
-`"beamGroups": [[3, 8]]` beams 6/8 as two groups of three rather than three
-groups of two.
+By default `autoBeam` groups by the meter's natural beat: a quarter-note beat
+in 2/4, 3/4 and 4/4, and a dotted-quarter beat in the compound meters (6/8
+beams as two groups of three, 9/8 as three, 12/8 as four).  This follows a
+mid-score meter change too: if a later measure sets its own `timeSignature`
+(e.g. 4/4 changing to 6/8), the bars after the change beam by the NEW meter's
+beat -- the 6/8 bars in dotted-quarter beats, not the opening 4/4's.
+`beamGroups` OVERRIDES that default, as [numerator, denominator] pairs -- e.g.
+`"beamGroups": [[1, 4]]` forces 6/8 into quarter-note groups instead of its
+default dotted-quarter beats.  Each number must be a whole number >= 1; a pair
+with a zero or negative value is ignored (a bad entry is skipped and the
+remaining valid ones still apply, falling back to the meter's default grouping
+if none are left).
 
 For a grouping the automatic pass cannot express, give explicit `beams` by
 note index (0-based, into that staff's own note list, counting rests):
@@ -983,7 +1219,10 @@ warned about rather than guessed at.
 
 `slurs` vs `ties`: a tie joins two notes of the SAME pitch into one sustained
 sound; a slur groups DIFFERENT pitches into a phrase.  They look similar but
-mean different things, so pick by meaning, not appearance.
+mean different things, so pick by meaning, not appearance.  A tie between two
+CHORDS ties every pitch the two chords share automatically -- one arc per
+common note -- so `{"from": 0, "to": 1}` on two C-E-G chords draws three ties,
+not one; you do not name the individual notes.
 
 ## Tuplets (triplets, quintuplets, ...)
 
@@ -1010,7 +1249,10 @@ rescales the notes so the group occupies the right amount of time.
 
 `from`/`to` are 0-based indices into the note list (counting rests), inclusive,
 same as `slurs` and `beams`.  A bare span is a triplet: `num` defaults to the
-number of notes and `inSpaceOf` to 2.  For other tuplets give both:
+number of notes and `inSpaceOf` to 2.  Both must be whole numbers of at least
+1 (they set how the notes' beat time is rescaled); a `num` or `inSpaceOf` of 0
+or a negative/fractional value is rejected and the tuplet is skipped.  For
+other tuplets give both:
 
 ```
 "tuplets": [{"from": 0, "to": 4, "num": 5, "inSpaceOf": 4}]   // quintuplet
@@ -1018,9 +1260,11 @@ number of notes and `inSpaceOf` to 2.  For other tuplets give both:
 
 `ratioed: true` prints the full "5:4" instead of just "5"; `bracketed` forces
 the enclosing bracket on or off (default: on for unbeamed notes, off for
-beamed); `position` is `above` (default) or `below`.  Beam a tuplet with
-`autoBeam` or an explicit `beams` span exactly as you would any other notes --
-tuplets and beams are independent.
+beamed); `position` is `above` (default) or `below`.  The number always honours
+`position` regardless of stem or beam direction, so a beamed run of high notes
+keeps its "3" above the staff, clear of any lyrics or dynamics below.  Beam a
+tuplet with `autoBeam` or an explicit `beams` span exactly as you would any
+other notes -- tuplets and beams are independent.
 
 ## Grace notes (appoggiatura, acciaccatura, ornamental runs)
 
@@ -1045,6 +1289,31 @@ through its stem), and leave it off for the appoggiatura.
 Give two or more grace notes to write an ornamental run; they are beamed
 together automatically.  A grace chord uses several `keys` in one grace note,
 exactly like a normal chord.
+
+## Cue notes (small editorial / ossia notes)
+
+Set `cue: true` on a note to engrave it small -- a CUE note, the roughly
+two-thirds-size note published scores use for an editorial suggestion, a
+colla-parte lead-in, or an ossia alternative.  Unlike a grace note a cue note
+KEEPS its beat time and occupies real rhythmic space in the bar; only its
+size changes.  The whole note shrinks together -- notehead, stem and flag --
+so it stays internally consistent.  Use a number 0.3..1 instead of `true` to
+set an explicit scale.
+
+```music
+{
+  "type": "music", "clef": "treble", "timeSignature": "4/4", "autoBeam": true,
+  "notes": [
+    {"keys": ["c/5"], "duration": "q"},
+    {"keys": ["e/5"], "duration": "8", "cue": true},
+    {"keys": ["f/5"], "duration": "8", "cue": true},
+    {"keys": ["g/5"], "duration": "q", "cue": true},
+    {"keys": ["c/5"], "duration": "q"}
+  ]
+}
+```
+
+`cue` is ignored on a rest (a rest has no notehead to shrink).
 
 ## Lyrics (vocal underlay)
 
@@ -1072,7 +1341,10 @@ connecting hyphen ("Twin-kle"); `single` (the default) and `end` do not — use
 on the last syllable of a word.
 
 For a word held across several notes (a melisma), set `"extend": true` on the
-syllable to draw the held extender line to the next note:
+syllable.  The extender line spans the WHOLE melisma — it runs from the
+syllable to the last note sung on it, i.e. the note just before the next
+syllable in the same verse (or the final note when this is the last syllable),
+exactly one continuous line however many notes the word is held over:
 
 ```
 {"keys": ["a/5"], "duration": "8", "lyric": {"text": "joy", "extend": true}}
@@ -1095,6 +1367,53 @@ Do not put a `lyric` on a rest — attach syllables to the sounding notes.
 A bare `fingering` value sits below the staff (the piano convention);
 `position` accepts `above below left right`.  `stringNumber` is for bowed and
 plucked instruments and always draws above.
+
+A note's `tremolo` draws measured-tremolo slashes across its stem: `1` = repeat
+in eighths, `2` = sixteenths, `3` = thirty-seconds (the count is clamped to
+1-3).  `true` is shorthand for a single slash.  It works on single notes and on
+chords (the slashes cross the shared stem).
+
+```
+{"keys": ["g/4"], "duration": "q", "tremolo": 3}
+{"keys": ["c/5", "e/5", "g/5"], "duration": "h", "tremolo": 2}
+```
+
+A note's `arpeggio` draws a chord roll -- the vertical wavy line to the left of
+a chord meaning "spread the notes instead of striking them together".  Use
+`"arpeggio"` (or `true`) for the plain directionless roll, `"arpeggio-up"` /
+`"arpeggio-down"` to add the directional arrow published scores use.  Guitar
+strokes `"brush-up"` / `"brush-down"` / `"rasgueado-up"` / `"rasgueado-down"`
+are also available.  It attaches to the whole chord, so only put it on a note
+whose `keys` name two or more pitches; an unknown name is skipped.
+
+```
+{"keys": ["c/4", "e/4", "g/4"], "duration": "h", "arpeggio": "arpeggio"}
+{"keys": ["d/4", "f/4", "a/4"], "duration": "h", "arpeggio": "arpeggio-up"}
+```
+
+## Sustain pedal (piano)
+
+`pedals` is a spec- or staff-level list of sustain-pedal markings, each a
+`{"from", "to"}` pair of note indices into the staff's own note list (the same
+index convention as `slurs`/`hairpins`): the pedal is pressed at `from` and
+released at `to`.  It is drawn on its own band below the staff, beneath the
+dynamics.  `style` chooses the notation: `"bracket"` (default) is the modern
+line-with-hooks bracket; `"text"` is the older `Ped. ... *`.  Like the other
+spans a pedal must stay within one system; one that would cross a line break is
+skipped with a console warning.
+
+```
+{
+  "type": "music", "clef": "bass", "timeSignature": "4/4",
+  "notes": [
+    {"keys": ["c/3", "e/3", "g/3"], "duration": "q"},
+    {"keys": ["d/3", "f/3", "a/3"], "duration": "q"},
+    {"keys": ["e/3", "g/3", "c/4"], "duration": "q"},
+    {"keys": ["g/3", "c/4", "e/4"], "duration": "q"}
+  ],
+  "pedals": [{"from": 0, "to": 3}]
+}
+```
 
 ## Labeled chords and triads (per note)
 
@@ -1133,17 +1452,48 @@ An above-staff bracket is raised automatically when a `tempo` is also present,
 since both occupy the band above the top staff.  Add `"line": N` (stave-line
 units from the staff) only if you need to clear something else as well.
 
-`trillLines` draws the wavy line that extends a trill across a run of notes.
-Pair it with a `trill` ornament on the first note for a full `tr~~~~~`:
+`trillLines` draws a full trill across a run of notes.  For the default
+`trill` wiggle the leading `tr` glyph is added automatically, so a trill line
+is self-sufficient — you do NOT need to add a separate ornament:
 
 ```
-"notes": [{"keys": ["c/5"], "duration": "q", "ornaments": ["trill"]}, ...],
-"trillLines": [{"from": 0, "to": 3}]
+"notes": [{"keys": ["c/5"], "duration": "q"}, ...],
+"trillLines": [{"from": 0, "to": 3}]        // renders  tr~~~~~
 ```
 
 `wiggle` selects the glyph: `trill` (default), `vibrato`, `vibrato-wide`,
-`sawtooth`.  A per-note `trill` ornament marks ONE note; a trill line spans a
-range — use both together, not one instead of the other.
+`sawtooth`.  The `vibrato`/`sawtooth` wiggles are NOT trills and draw the wavy
+line alone (no `tr`).  A per-note `trill` ornament marks ONE note; a trill line
+spans a range.  If you put a `trill` ornament on the start note yourself the
+auto `tr` is suppressed so it is not printed twice.
+
+## Piano pedal lines (spec or staff level)
+
+```
+"pedals": [{"from": 0, "to": 3}]
+```
+
+`pedals` draws a piano pedal line beneath the staff, spanning from the note
+where the pedal is depressed (`from`) to where it is released (`to`) — the
+same `{from, to}` note-index span as slurs and hairpins.  The common damper
+pedal is the default; use it under a run of notes that should ring together:
+
+```
+"notes": [{"keys": ["c/3","e/3","g/3"], "duration": "q"}, ...],
+"pedals": [{"from": 0, "to": 3, "style": "bracket"}]
+```
+
+`pedal` chooses which of the three real pedals: `sustain` (default, damper,
+right foot), `sostenuto` (middle), or `una-corda` (soft, left).
+
+`style` chooses how a SUSTAIN pedal is drawn: `bracket` (default, the modern
+L-shaped line), `text` (the traditional "Ped." … release star ✱), or `mixed`
+("Ped." then a bracket).  `style` is ignored for `sostenuto` / `una-corda`,
+which always print their own engraved wording ("Sost. Ped." / "una corda").
+
+Add `"line": N` (stave-line units below the staff) to drop the pedal line
+clear of lyrics or a dynamic sharing the band.  Like every other span, a
+pedal line cannot cross a system break.
 
 ## Title block (title, subtitle, composer, lyricist)
 
@@ -1183,7 +1533,14 @@ tempo mark or brackets above it.
     {"type": "begin-end", "label": "1.", "measures": [2, 2]},
     {"type": "begin-end", "label": "2.", "measures": [3, 3]}
   ],
-  "measureNumber": 12,
+  "measureNumber": 12,             // number stamped on the FIRST system only
+  "measureNumbers": true,          // number the first bar of EVERY system
+                                   // (running count from measureNumber, else 1)
+  "pickup": true,                  // first measure is a pickup (anacrusis):
+                                   // it is NOT numbered, so the first FULL bar
+                                   // is bar 1 (published convention).  Only
+                                   // affects numbering; write the short upbeat
+                                   // as measures[0] and it engraves as-is.
   "section": "B",                  // rehearsal-mark style label
   "notes": [ ... ]
 }
@@ -1193,7 +1550,9 @@ tempo mark or brackets above it.
 marking, or `bpm` alone (`{"bpm": 120}`) for a plain "♩ = 120" -- the beat
 unit defaults to a quarter, so `duration` is only needed for a non-quarter
 metronome mark (e.g. `{"duration": "8", "bpm": 160}`); `dots` puts
-augmentation dots on the beat unit.
+augmentation dots on the beat unit.  `bpm` must be a positive number: a
+non-numeric, zero or negative value is ignored (the mark shows the `name`
+alone rather than a dangling "♩ =").
 
 A repeat ending is a bracket ("1.", "2.") scoped to the measures of ONE
 ending, not the whole line.  A real repeat needs BOTH a 1st and a 2nd
@@ -1282,8 +1641,8 @@ the same meter.  The spec-level `timeSignature` is the OPENING meter only.
 ```
 
 `measures` works inside a `staves` entry too, for a multi-measure grand staff.
-Span indices (`slurs`, `ties`, `brackets`, `hairpins`, `trillLines`) count
-notes across the whole staff and ignore the measure divisions, so a slur or
+Span indices (`slurs`, `ties`, `brackets`, `hairpins`, `trillLines`, `pedals`)
+count notes across the whole staff and ignore the measure divisions, so a slur or
 tie may cross a barline.
 
 Prefer a flat `notes` list for a single bar; reach for `measures` as soon as
@@ -1319,7 +1678,7 @@ Controls, all optional:
   width that is too narrow crowds the notes rather than breaking the line.
 
 One real constraint: a span cannot cross a system break.  `slurs`, `ties`,
-`glissandos`, `hairpins`, `brackets`, `trillLines`, `tuplets` and explicit
+`glissandos`, `hairpins`, `brackets`, `trillLines`, `pedals`, `tuplets` and explicit
 `beams` are drawn between two notes on the SAME line — the underlying
 renderer has no way to split one into two partial arcs, and given endpoints on
 different systems it would draw a single arc sprawling down the page.  Such a
@@ -1329,6 +1688,36 @@ inside a line or move the break (`systemBreak`) to suit the phrasing.
 On a multi-staff score, give each staff a `shortName` alongside `name`:
 the full name is printed beside the first system and the short form beside
 each continuation system, as published scores do.
+
+## Multi-measure rest (measure level)
+
+In an instrumental PART, a run of silent bars is NOT written as one empty
+whole-rest bar after another -- a published part consolidates them into a
+single multi-measure rest: the thick horizontal H-bar with the number of bars
+engraved above it, which the player counts once instead of tracking a row of
+identical empty measures.  Set `multiRest` on a measure to that bar count
+(`multiMeasureRest` is accepted as an alias for the same field):
+
+```
+{
+  "type": "music", "clef": "treble", "timeSignature": "4/4",
+  "measures": [
+    {"notes": [{"keys": ["g/4"], "duration": "q"}, ...]},
+    {"multiRest": 4},          // ONE H-bar marked "4": four bars of rest
+    {"notes": [{"keys": ["c/5"], "duration": "q"}, ...]}
+  ]
+}
+```
+
+- The value is the number of bars the rest stands for (a positive whole
+  number).  It replaces the whole bar: any `notes` on that measure are ignored,
+  since the bar is silent by definition.
+- Prefer this over writing N separate `{"rest": true, "duration": "w"}` bars
+  whenever a part rests for two or more consecutive measures -- that is what a
+  reader expects to see.
+- Works mid-line or as a whole system, and coexists with wrapping, dynamics
+  and multi-voice staves.  A non-positive or fractional value is ignored (the
+  measure then draws whatever `notes` it carries).
 
 ```
 "staves": [
@@ -1396,6 +1785,71 @@ compact encoding — `^` flat, `-` natural, `v` sharp, one character per pedal
 in order D C B | E F G A (the `|` divides left-foot from right-foot pedals).
 Renders as a small glyph row above the stave at that note's position.
 
+## Cross-staff beaming (keyboard)
+
+A running keyboard figure often flows from the bass staff up into the treble
+(or back) under ONE continuous beam.  A per-staff `beams` / `autoBeam` cannot
+join it — each addresses a single staff's own notes — so name the run at the
+SPEC level with `crossStaffBeams`.  Each entry lists its members as
+`[staffIndex, noteIndex]` pairs into the addressed staves' own `notes`, IN
+PLAYING ORDER (left to right), so the beam can thread between staves in the
+order the two note lists cannot encode alone.  `stemDirection` ("up" default,
+or "down") forces the whole group's stems onto one side, which a beam requires;
+"up" places the beam between the staves, the usual keyboard case.
+
+```
+{
+  "type": "music", "timeSignature": "4/4",
+  "staves": [
+    {"clef": "treble", "notes": [
+      {"keys": ["c/5"], "duration": "8"}, {"keys": ["e/5"], "duration": "8"}]},
+    {"clef": "bass", "notes": [
+      {"keys": ["c/3"], "duration": "8"}, {"keys": ["g/3"], "duration": "8"}]}
+  ],
+  "crossStaffBeams": [
+    {"stemDirection": "up",
+     "notes": [[1, 0], [1, 1], [0, 0], [0, 1]]}
+  ]
+}
+```
+
+Here the run plays bass c3, bass g3, then treble c5, e5 under a single beam.
+An out-of-range pair, or a run whose members land on different systems, is
+skipped with a warning rather than drawn wrongly.  Only meaningful with
+`staves`; on a single staff use `beams` / `autoBeam` instead.
+
+## Cross-staff slurs and ties (keyboard)
+
+When a phrase or a held pitch is passed from one hand's staff into the other,
+the arc joining the two notes lives on DIFFERENT staves, which a per-staff
+`slurs` / `ties` entry cannot reach — each addresses one staff's own notes.
+Name it at the SPEC level with `crossStaffSlurs`.  Each entry has a `from` and
+a `to`, and each of those is a `[staffIndex, noteIndex]` pair into the
+addressed staff's own `notes`.  `curve` chooses "slur" (default, the phrase arc
+between two different pitches) or "tie" (holding ONE sustained pitch across the
+staff change).
+
+```
+{
+  "type": "music",
+  "staves": [
+    {"clef": "treble", "notes": [
+      {"keys": ["g/4"], "duration": "q"}, {"keys": ["c/5"], "duration": "q"}]},
+    {"clef": "bass", "notes": [
+      {"keys": ["c/3"], "duration": "q"}, {"keys": ["g/4"], "duration": "q"}]}
+  ],
+  "crossStaffSlurs": [
+    {"curve": "slur", "from": [1, 0], "to": [0, 1]},
+    {"curve": "tie",  "from": [1, 1], "to": [0, 0]}
+  ]
+}
+```
+
+The slur arcs from bass c3 up to treble c5; the tie holds the g4 shared between
+bass n1 and treble n0.  An out-of-range endpoint, or a span whose ends land on
+different systems, is skipped with a warning.  Only meaningful with `staves`;
+within one staff use `slurs` / `ties`.
+
 ## Independent voices on one staff (keyboard, SATB, counterpoint)
 
 When two simultaneous lines share a single staff — soprano above alto, or a
@@ -1426,6 +1880,31 @@ Put `voices` on a `staves[]` entry for a multi-voice staff inside a grand staff
 voices is not something the engine can draw.  `autoBeam` beams every voice,
 each on its own stem side.  Set forced stem directions on a two-voice staff:
 without them the lines overlap ambiguously.
+
+Two spellings express the same multi-voice, multi-measure music, and you may
+use whichever nests more naturally:
+- VOICE-MAJOR — `voices: [ {stemDirection, measures: [...]}, ... ]` — one list
+  per line, each carrying that line's bars (shown above);
+- MEASURE-MAJOR — `measures: [ {voices: [...], endBar, ...}, ... ]` — one list
+  per bar, each carrying that bar's voices.  Bar-level fields (`endBar`,
+  `timeSignature`, `systemBreak`, `multiRest`) stay on the measure and
+  apply to every voice in it.
+
+```
+{
+  "type": "music", "timeSignature": "4/4", "autoBeam": true,
+  "measures": [
+    {"voices": [
+      {"stemDirection": "up",   "notes": [
+        {"keys": ["e/5"], "duration": "8"}, {"keys": ["f/5"], "duration": "8"},
+        {"keys": ["g/5"], "duration": "8"}, {"keys": ["a/5"], "duration": "8"}]},
+      {"stemDirection": "down", "notes": [{"keys": ["c/4"], "duration": "h"}]}]},
+    {"endBar": "final", "voices": [
+      {"stemDirection": "up",   "notes": [{"keys": ["g/5"], "duration": "h"}]},
+      {"stemDirection": "down", "notes": [{"keys": ["e/4"], "duration": "h"}]}]}
+  ]
+}
+```
 
 Guidance:
 - Prefer inline `music:` for anything you'd describe in one sentence of music.

@@ -72,10 +72,10 @@ export const RepeatBlockEditor: React.FC<Props> = ({ block, onChange, onDelete, 
           <input
             type="text"
             className="tc-text-input tc-flex-grow"
-            placeholder='["item1", "item2"] or {{sibling("plan-block-id")}}'
+            placeholder='["item1", "item2"] or {{sibling("plan-id").outputs.NAME.key}}'
             value={block.repeat_for_each_source ?? ''}
             onChange={e => update({ repeat_for_each_source: e.target.value || null })}
-            title='Items to iterate over: a JSON array literal, or a template like {{sibling("plan-block-id")}} resolved when the loop starts. The first JSON array found in the resolved text drives the iterations; if none is found, falls back to count.'
+            title='Items to iterate over: a JSON array literal, or a template resolved when the loop starts. Preferred: name a prior task&apos;s emit_artifact data part, e.g. {{sibling("plan-id").outputs.roster.slugs}} — parsed strictly (whole-string array). Other templated sources use the first JSON array found in the resolved text. A templated source that resolves to no array fails the block rather than looping over nothing.'
           />
         )}
         <label className="tc-checkbox-label">
@@ -85,6 +85,27 @@ export const RepeatBlockEditor: React.FC<Props> = ({ block, onChange, onDelete, 
             onChange={e => update({ repeat_parallel: e.target.checked })}
           /> parallel
         </label>
+        {block.repeat_parallel && (
+          <>
+            <span className="tc-label-dim">at most</span>
+            <input
+              type="number" min={0}
+              className="tc-num-input"
+              placeholder="8"
+              value={block.repeat_max_concurrency ?? ''}
+              onChange={e => {
+                const raw = e.target.value.trim();
+                // Empty clears back to the backend default rather than
+                // pinning 0, which means unbounded — the opposite intent.
+                if (!raw) { update({ repeat_max_concurrency: null }); return; }
+                const n = parseInt(raw, 10);
+                update({ repeat_max_concurrency: Number.isNaN(n) ? null : Math.max(0, n) });
+              }}
+              title="Maximum iterations running at once. Blank uses the default (8), which keeps a wide fan-out below provider rate limits. 0 means unbounded — only appropriate when the body does no model work."
+            />
+            <span className="tc-label-dim">at a time</span>
+          </>
+        )}
         <select
           className="tc-select tc-select-right"
           value={propagate}

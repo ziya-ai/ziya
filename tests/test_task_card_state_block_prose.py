@@ -2,13 +2,21 @@
 Tests for the State block's PROSE context — the conversational baseline.
 
 A State block's ``state_context`` is freeform English givens that flow
-into every in-scope task automatically, with no {{var}} templating.  This
-is the primary form most cards use; named ``state_variables`` are the
-optional formal adjunct (covered in test_task_card_state_block.py).
+into every in-scope task automatically, with no {{var}} templating
+REQUIRED.  This is the primary form most cards use; named
+``state_variables`` are the optional formal adjunct (covered in
+test_task_card_state_block.py).
+
+Templating is not required in prose but does WORK there: prose is
+rendered against the same bindings as the task's instructions, so a
+{{var.NAME}} or bare {{NAME}} given resolves rather than reaching the
+agent as literal braces (see test_task_card_state_var_reference.py for
+that contract and the run it was derived from).  Prose containing no
+resolvable placeholder is unaffected, which is what the cases below pin.
 
 Contract under test (app/agents/block_executor.py):
   - prose flows into a following task's effective instructions as a
-    standing-context preamble, verbatim, without templating;
+    standing-context preamble, preserved intact;
   - placement is the reset policy, same as variables — but because prose
     is keyed by block id, re-execution in a loop OVERWRITES (idempotent),
     never duplicates;

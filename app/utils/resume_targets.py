@@ -64,6 +64,7 @@ def resolve_iteration_resume(
     summaries: List[Dict[str, Any]],
     mode: str = "retry_iteration",
     inherited: Optional[Dict[int, Any]] = None,
+    call_snapshots: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[int], Optional[str]]:
     """Resolve a click on an iteration dot into a loop start index.
 
@@ -111,7 +112,13 @@ def resolve_iteration_resume(
     if mode not in ("retry_iteration", "continue_iteration"):
         return None, f"unknown iteration resume mode {mode!r}"
 
-    node = find_block(root, block_id)
+    # Resolved within its OWNING tree, so a loop inside a called card is
+    # found.  Its iterations are already recorded against this run (callee
+    # block states persist), and the executor now walks through the call to
+    # reach the loop itself, so there is nothing left to refuse: a mid-loop
+    # resume of a callee loop is the same operation as one in the caller.
+    tree, _chain = locate_block(root, call_snapshots, block_id)
+    node = find_block(tree, block_id) if tree is not None else None
     if node is None:
         return None, f"Block {block_id} not found in this run's card snapshot."
     if not is_loop_node(node):
@@ -120,10 +127,17 @@ def resolve_iteration_resume(
             "Use retry or continue to resume from this block instead."
         )
     if node.get("repeat_parallel"):
+        # Still refused, and still for the original reason: an INDEX has no
+        # meaning where iterations receive ``previous=None``.  But the
+        # remedy is no longer expensive — a block-level retry of a parallel
+        # loop replays every banked iteration and re-runs only the ones
+        # that never finished (see ``parallel_replay_indices``), so pointing
+        # the user at it costs them nothing.
         return None, (
             "This loop runs its iterations in parallel, so they do not "
-            "depend on each other and there is no meaningful point to "
-            "resume from. Retry the whole loop instead."
+            "depend on each other and there is no single point to resume "
+            "from. Retry the loop instead — iterations that already "
+            "succeeded are replayed from record, not re-run."
         )
     if index < 0:
         return None, "Iteration index must be zero or greater."
@@ -169,6 +183,170 @@ def snapshot_contains(node: Dict[str, Any], target_id: str) -> bool:
     return any(
         snapshot_contains(c, target_id) for c in (node.get("body") or [])
     )
+
+
+# Bound on how many Call frames a target may be unwound through.  Matches
+# the executor's own MAX_CALL_DEPTH in spirit rather than by import (this
+# module deliberately depends on nothing), and the loop below also
+# terminates on a repeated id, so this is a cap against a run file whose
+# ``call_snapshots`` were hand-edited into a cycle.
+MAX_CALL_UNWIND = 8
+
+
+def enclosing_call_block(
+    call_snapshots: Optional[Dict[str, Any]], target_id: str,
+) -> Optional[str]:
+    """The id of the Call block whose CALLEE tree contains ``target_id``.
+
+    A Call runs its target inline in the caller's run, so the callee's
+    blocks stream status and persist in ``run.block_states`` — but the
+    callee's TREE is in neither the card nor ``card_snapshot``.  It lives
+    only in ``run.call_snapshots``, keyed by the Call block's own id (see
+    ``block_executor._record_call_audit``), and the recorded tree carries
+    the callee card's OWN block ids.
+
+    That asymmetry is the defect this exists for: a run held inside a
+    called card records a ``held_at_block_id`` naming a callee block, which
+    ``find_resume_target`` cannot see at all.  Every resume request built
+    from it 404'd, so a multi-phase study that died on an expired
+    credential could not be continued by any route except Restart — which
+    discards every phase it had already paid for.
+
+    Returns None when ``target_id`` is not inside any recorded callee,
+    which is the normal case for a block in the caller's own tree.
+    """
+    hit = enclosing_call(call_snapshots, target_id)
+    return hit[0] if hit else None
+
+
+def enclosing_call(
+    call_snapshots: Optional[Dict[str, Any]], target_id: str,
+) -> Optional[Tuple[str, Dict[str, Any]]]:
+    """``(call_block_id, callee_root)`` for the call containing ``target_id``.
+
+    The root is returned alongside the id because every caller that needs
+    to know a block is inside a callee also needs that callee's TREE — to
+    resolve the block's position, its successor, or its label.  Looking it
+    up twice invited the two lookups to disagree.
+    """
+    for call_block_id, snap in (call_snapshots or {}).items():
+        if not isinstance(snap, dict):
+            continue
+        root = snap.get("root")
+        if isinstance(root, dict) and snapshot_contains(root, target_id):
+            return call_block_id, root
+    return None
+
+
+def locate_block(
+    root: Dict[str, Any],
+    call_snapshots: Optional[Dict[str, Any]],
+    block_id: str,
+) -> Tuple[Optional[Dict[str, Any]], List[str]]:
+    """Find the tree ``block_id`` lives in, and how to reach it.
+
+    Returns ``(tree, call_chain)``:
+
+    * ``tree`` — the block tree actually containing ``block_id``: this
+      run's own ``card_snapshot`` root, or the recorded root of the callee
+      that owns it.  None when the id is nowhere.
+    * ``call_chain`` — Call block ids that must be DESCENDED INTO to reach
+      it, outermost first.  Empty for a block in the caller's own tree.
+
+    This replaces an earlier design that substituted the Call block for the
+    callee block and resumed there.  That was wrong in the way that costs
+    the most: a fan-out held on iteration 19 of 20 inside a called card
+    re-entered the callee from its own start and re-ran every banked
+    iteration — measured at 14 hours of work discarded by a control
+    labelled "resume".  The chain lets the executor's resume gate walk
+    THROUGH the call to the real block instead (see
+    ``block_executor.ExecutionContext.resume_call_chain``).
+
+    Walks outward from the target rather than inward from the root because
+    only the outward direction is indexed: ``call_snapshots`` maps a call
+    block id to its callee tree, so "who contains this?" is a scan of that
+    map, while "what does this call contain?" would require resolving
+    targets by name against live cards.
+    """
+    if snapshot_contains(root, block_id):
+        return root, []
+    tree: Optional[Dict[str, Any]] = None
+    chain: List[str] = []
+    seen = {block_id}
+    current = block_id
+    for _ in range(MAX_CALL_UNWIND):
+        hit = enclosing_call(call_snapshots, current)
+        if hit is None:
+            return None, []
+        call_id, callee_root = hit
+        if call_id in seen:
+            return None, []      # cycle in a hand-edited run file
+        seen.add(call_id)
+        if tree is None:
+            # First hop out: this callee is the tree holding the target.
+            tree = callee_root
+        chain.append(call_id)
+        if snapshot_contains(root, call_id):
+            chain.reverse()      # innermost-first -> outermost-first
+            return tree, chain
+        current = call_id
+    return None, []
+
+
+def resume_call_chain(
+    root: Dict[str, Any],
+    call_snapshots: Optional[Dict[str, Any]],
+    block_id: str,
+) -> List[str]:
+    """Just the chain from ``locate_block`` — the executor's descent hint."""
+    return locate_block(root, call_snapshots, block_id)[1]
+
+
+def parallel_replay_indices(
+    root: Dict[str, Any],
+    block_id: str,
+    summaries: Optional[List[Dict[str, Any]]],
+    call_snapshots: Optional[Dict[str, Any]] = None,
+) -> Optional[List[int]]:
+    """Iterations of a PARALLEL loop that a resume can replay from record.
+
+    Returns None when ``block_id`` is not a parallel loop, so the caller
+    can tell "nothing to bank" apart from "not applicable".
+
+    Only ``passed`` iterations holding a retained artifact qualify.  Both
+    conditions matter and for different reasons:
+
+    * a ``failed`` iteration is the work the user is resuming to redo, so
+      replaying it would make the resume a no-op that reports success;
+    * an iteration past PASS_ARTIFACT_RETENTION_CAP has only a summary on
+      disk, and replaying an absent artifact would drop its outputs from
+      the loop's result while still counting it done.
+
+    Index-set semantics, not a prefix, because a parallel fan-out has no
+    ordering to take a prefix of: iterations receive ``previous=None``, so
+    each one is independent and "which ones are already banked" is the
+    only question with an answer.  That is also why this is safe where
+    ``resolve_iteration_resume`` correctly refuses — it is not resuming
+    the loop AT an index, it is re-running the subset that never finished.
+    """
+    tree, _chain = locate_block(root, call_snapshots, block_id)
+    if tree is None:
+        return None
+    node = find_block(tree, block_id)
+    if not is_loop_node(node) or not (node or {}).get("repeat_parallel"):
+        return None
+    out: List[int] = []
+    for s in (summaries or []):
+        if s.get("status") != "passed" or not s.get("has_artifact", True):
+            continue
+        if s.get("replayed"):
+            # Carried from an earlier attempt.  Still replayable — the
+            # artifact was copied onto this run at launch — so it counts.
+            pass
+        idx = s.get("index")
+        if isinstance(idx, int) and idx >= 0:
+            out.append(idx)
+    return sorted(set(out))
 
 
 def find_resume_target(
@@ -262,6 +440,7 @@ def next_execution_target(
 
 def resolve_resume_point(
     root: Dict[str, Any], block_id: str, mode: str = "retry",
+    call_snapshots: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Resolve a user's click into the block the new run resumes at.
 
@@ -282,14 +461,38 @@ def resolve_resume_point(
     if mode not in ("retry", "continue"):
         return None, None, f"unknown resume mode {mode!r} (expected retry | continue)"
 
-    normalized = find_resume_target(root, block_id)
+    # ``call_snapshots`` is what makes a hold inside a called card
+    # resumable at all: without it the callee's block ids are invisible to
+    # this tree and the request is rejected as unknown.  Resolution happens
+    # WITHIN the tree that owns the block — the callee's own recorded root
+    # when it is inside a call — so the resume point is the real block
+    # rather than the Call block standing in for it.  The executor reaches
+    # it via the descent chain (``resume_call_chain``).
+    tree, _chain = locate_block(root, call_snapshots, block_id)
+    if tree is None:
+        return None, None, f"Block {block_id} not found in this run's card snapshot."
+
+    normalized = find_resume_target(tree, block_id)
     if normalized is None:
         return None, None, f"Block {block_id} not found in this run's card snapshot."
 
     if mode == "retry":
         return normalized, normalized, None
 
-    successor = next_execution_target(root, normalized)
+    # Successor within the owning tree.  When the target is the LAST block
+    # of a callee there is nothing after it there, so continue at the block
+    # after the Call itself — walking out one frame at a time, which is
+    # what "continue past the final stage of Phase 1" has to mean.
+    successor = next_execution_target(tree, normalized)
+    if successor is None:
+        _tree, chain = locate_block(root, call_snapshots, normalized)
+        for call_id in reversed(chain):
+            parent_tree, _ = locate_block(root, call_snapshots, call_id)
+            if parent_tree is None:
+                break
+            successor = next_execution_target(parent_tree, call_id)
+            if successor is not None:
+                break
     if successor is None:
         return None, normalized, (
             "Nothing follows this block, so there is nothing to continue "

@@ -84,13 +84,22 @@ export function resolveBlockStatus(
   const persisted = run?.block_states?.[blockId]?.status;
   let status = (live ?? persisted ?? 'queued') as BlockStatus;
   const terminal = run
-    && ['done', 'partial', 'failed', 'cancelled'].includes(run.status);
+    && ['done', 'partial', 'failed', 'cancelled', 'held'].includes(run.status);
   if (terminal && status === 'running') {
     // A stale 'running' under a terminal run degrades to the run's own
     // outcome — except 'partial', which is a RUN-level classification
     // and meaningless for a single block.  A block left running when a
     // partial run unwound was interrupted, so say that instead.
-    status = (run!.status === 'partial'
+    //
+    // 'held' takes the same exception, for a sharper reason: the run's
+    // held_at_block_id names the ONE block that raised the fault, so
+    // painting every stale-running block 'held' would claim N faults
+    // where there was one and make the hold's location unfindable.  A
+    // block still running when a held run unwound was cut off by the
+    // fault, not the source of it — which is what 'cancelled' means
+    // here, and matches the iteration records the executor persists for
+    // gate-cancelled siblings.
+    status = (run!.status === 'partial' || run!.status === 'held'
       ? 'cancelled'
       : run!.status) as BlockStatus;
   }
@@ -110,6 +119,13 @@ export interface DotModel {
     index: number;
     status: 'passed' | 'failed' | 'cancelled';
     hasArtifact: boolean;
+    /**
+     * Carried from an earlier attempt, not executed by this run.  Drawn
+     * dimmed so a resumed loop shows its preserved prefix as preserved
+     * rather than restarting the count — which read as the banked
+     * iterations having been discarded.
+     */
+    replayed: boolean;
   }>;
   /** Count of older iterations collapsed out of view. */
   overflow: number;
@@ -130,6 +146,7 @@ export function buildDots(
       index: s.index,
       status: s.status,
       hasArtifact: s.has_artifact,
+      replayed: !!s.replayed,
     })),
     overflow: total - shown.length,
     total,
@@ -247,6 +264,39 @@ export function findBlockById(
   if (root.id === id) return root;
   for (const child of root.body ?? []) {
     const found = findBlockById(child, id);
+    if (found) return found;
+  }
+  return null;
+}
+
+/**
+ * Find a block by id in a run's FULL tree — the card's own blocks plus
+ * every recorded callee.
+ *
+ * A Call is named, not inlined, so a callee's blocks are in neither the
+ * card nor ``card_snapshot``; they exist only in ``run.call_snapshots``.
+ * ``findBlockById`` over the card root therefore returns null for a block
+ * inside a called card, and every label derived from it degraded silently
+ * to the raw id — which is how the recovery banner came to read
+ * "↻ Retry b-cf96c4e2".  That fallback was the visible tell for a much
+ * larger defect: the resume request itself 404'd, because the server
+ * searched the same tree.
+ *
+ * The card's own tree wins.  A Call block's id is a KEY of
+ * ``call_snapshots`` and never a node inside one, so the id spaces are
+ * disjoint today; the precedence is asserted anyway so a future change
+ * that inlines callees cannot silently resolve a caller block to a
+ * callee's.
+ */
+export function findBlockInRun(
+  root: Block | undefined | null,
+  callSnapshots: Record<string, { root?: Block }> | undefined | null,
+  id: string,
+): Block | null {
+  const own = findBlockById(root, id);
+  if (own) return own;
+  for (const snap of Object.values(callSnapshots ?? {})) {
+    const found = findBlockById(snap?.root, id);
     if (found) return found;
   }
   return null;

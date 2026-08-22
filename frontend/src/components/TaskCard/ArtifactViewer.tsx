@@ -19,7 +19,7 @@
  */
 
 import React, { useState } from 'react';
-import { MarkdownRenderer } from '../MarkdownRenderer';
+import { TaskMarkdown } from './TaskMarkdown';
 import type { ArtifactPart } from '../../types/task_card';
 import {
   groupArtifactParts, blobUrlForPart, isImagePart,
@@ -51,7 +51,7 @@ const PartBody: React.FC<PartProps> = ({ part, projectId, runId }) => {
     const isError = part.status === 'error';
     return (
       <div className={isError ? 'tc-art__text tc-art__text--error' : 'tc-art__text'}>
-        <MarkdownRenderer
+        <TaskMarkdown
           markdown={part.text}
           enableCodeApply={false}
           isStreaming={false}

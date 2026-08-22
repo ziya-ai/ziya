@@ -34,6 +34,12 @@ export type ResumeKind = 'initial' | 'retry_from' | 'continue_from' | 'rerun';
  * Per-block lifecycle status — RunStatus plus 'skipped' (a sibling
  * that never ran because of on_failure="stop").  Drives the run map.
  */
+/**
+ * Per-block lifecycle status.  'held' marks the block an infrastructure
+ * fault was raised at — distinct from 'failed' because a hold means the
+ * environment needs fixing and the run can resume, whereas a failure
+ * means the card or the code does.  Mirrors app/models/task_run.py.
+ */
 export type BlockStatus = RunStatus | 'skipped';
 export type IterationStatus = 'passed' | 'failed' | 'cancelled';
 
@@ -68,6 +74,43 @@ export interface CallSnapshot {
   root?: Block;
 }
 
+/**
+ * A card's position inside somebody else's run, from
+ * GET /task-runs/callee-context/{card_id}.
+ *
+ * Exists because a Call executes inline in the caller's run: CL0 calling
+ * CL1..CL6 produces ONE run record owned by CL0, so CL1 has no runs of its
+ * own and its deck page could not show that it was the card holding the
+ * study.  Mirrors app/utils/callee_hold_lookup.find_callee_holds.
+ */
+export interface CalleeContext {
+  /** The CALLER's run. */
+  run_id: string;
+  run_status: RunStatus;
+  /** Card that owns the run — not this card. */
+  caller_card_id: string;
+  /** The Call block inside the caller that invoked this card. */
+  call_block_id: string;
+  callee_target?: string | null;
+  /**
+   * This card's block tree as recorded at resolution time.  Carries this
+   * card's OWN block ids, which is what makes held_at_block_id meaningful
+   * here rather than only in the caller's frame.
+   */
+  callee_root?: Block | null;
+  held_at_block_id?: string | null;
+  /**
+   * True when the held block is inside THIS card's subtree.  Gate all
+   * per-block markup on this: false means the hold belongs to a sibling
+   * callee and is context only.
+   */
+  held_in_callee: boolean;
+  held_reason?: string | null;
+  held_faults?: HeldFaults | null;
+  held_gate_reason?: string | null;
+  updated_at: number;
+}
+
 export interface PermissionsSnapshot {
   schema_version?: number;
   project_root?: string | null;
@@ -81,6 +124,13 @@ export interface IterationSummary {
   duration_ms: number;
   tokens: number;
   has_artifact: boolean;
+  /**
+   * Carried from an earlier attempt rather than executed by this run —
+   * a mid-loop resume's replayed prefix.  Rendered as a dimmed dot so
+   * the preserved work is visible, and excluded from every progress
+   * aggregate.  Absent on runs written before the field existed.
+   */
+  replayed?: boolean;
 }
 
 /**
@@ -107,6 +157,27 @@ export interface TaskRunBlockState {
   iteration_summaries: IterationSummary[];
 }
 
+/**
+ * Breadth of an infrastructure collapse, mirroring the dict written by
+ * app/utils/infra_gate.summarize.
+ */
+export interface HeldFaults {
+  /** How many iterations/subagents faulted. */
+  fault_count: number;
+  /** Width of the widest fan-out entered, i.e. the denominator. */
+  fanout_width: number;
+  /** Most frequent kind, session-level kinds winning ties. */
+  primary_kind?: string | null;
+  /** Histogram of kind -> count. */
+  kinds: Record<string, number>;
+  /** Outermost card -> faulting subagent, the breadcrumb. */
+  call_path: string[];
+  /** True for a session-level kind or a majority of the fan-out. */
+  fleet_wide: boolean;
+  /** Distinct block ids that faulted. */
+  block_ids: string[];
+}
+
 export interface TaskRun {
   id: string;
   card_id: string;
@@ -116,6 +187,21 @@ export interface TaskRun {
   held_reason?: string | null;
   /** Block the run stopped at; the natural resume target for a held run. */
   held_at_block_id?: string | null;
+  /**
+   * Aggregate fault record (app/utils/infra_gate.summarize).  Exists
+   * because held_reason/held_at_block_id describe ONE fault, whereas a
+   * hold inside a fan-out is a progressive collapse: without the breadth
+   * the UI reports the first subagent's fault as though it were the whole
+   * event, leaving "which card / which subagent / how widespread"
+   * unanswered unless the user expands every child.
+   */
+  held_faults?: HeldFaults | null;
+  /**
+   * Why the fleet gate fired, in prose.  Null when a single task held
+   * without gating a fan-out, so its PRESENCE means "this stopped the
+   * fleet, not just me".
+   */
+  held_gate_reason?: string | null;
   started_at?: number | null;
   completed_at?: number | null;
   error?: string | null;

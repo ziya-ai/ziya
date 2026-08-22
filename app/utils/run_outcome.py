@@ -78,8 +78,19 @@ def _get(state: Any, field: str, default: Any = None) -> Any:
 
 
 def _iteration_statuses(state: Any) -> List[str]:
+    """Statuses of iterations THIS run executed.
+
+    Replayed records are excluded: a mid-loop resume seeds its loop with
+    the prefix it inherited (see IterationSummary.replayed), and counting
+    those as progress would let a resume that died on its first real
+    iteration be reclassified ``partial`` on the strength of a prior
+    attempt's passes — asserting this attempt left workspace changes it
+    never made.
+    """
     out: List[str] = []
     for summary in (_get(state, "iteration_summaries", []) or []):
+        if _get(summary, "replayed", False):
+            continue
         status = _get(summary, "status", None)
         if isinstance(status, str):
             out.append(status)

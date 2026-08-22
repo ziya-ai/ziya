@@ -14,7 +14,7 @@ import type { LiveTaskState } from '../../hooks/useTaskRunStream';
 import type { IterationsResponse, RunStatus } from '../../types/task_run';
  import { collapseEventRuns, bucketEventsByIteration, type DeltaRun, type DisplayEvent, type EventBucket, type RawEvent } from './eventLog';
  import { truncatePreview } from './previewText';
- import { MarkdownRenderer } from '../MarkdownRenderer';
+ import { TaskMarkdown } from './TaskMarkdown';
  import { stripTaskMetaTags } from './completionCheck';
  import { isRunOver } from './runControls';
 
@@ -179,7 +179,7 @@ const LiveTextTab: React.FC<{
       {entries.map(([blockId, content]) => (
         <div key={blockId} className="tc-tile__inspector-block">
           <div className="tc-tile__inspector-block-id">block {blockId}</div>
-            <MarkdownRenderer
+            <TaskMarkdown
               markdown={stripTaskMetaTags(content)}
               enableCodeApply={false}
               breaks={true}
@@ -242,7 +242,7 @@ const IterationSectionsView: React.FC<{
               )}
             </summary>
             <div className="tc-tile__inspector-iter-body">
-              <MarkdownRenderer
+              <TaskMarkdown
                 markdown={stripTaskMetaTags(it.streamText)}
                 enableCodeApply={false}
                 breaks={true}

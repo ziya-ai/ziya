@@ -368,6 +368,34 @@
 .tc-block-label-state { color: #2dd4bf; }
 .tc-block-body-state { padding: 10px 12px; }
 
+/* Call block — pink (a reference to work defined elsewhere; a leaf) */
+.tc-block-call {
+  border-color: #f778ba;
+  background: linear-gradient(180deg, rgba(247,120,186,0.06), transparent 30%);
+  box-shadow: inset 3px 0 0 #f778ba;
+}
+.tc-block-call > .tc-block-header {
+  background: rgba(247,120,186,0.08);
+  border-bottom-color: rgba(247,120,186,0.2);
+}
+.tc-block-label-call { color: #f778ba; }
+.tc-block-body-call { padding: 10px 12px; }
+
+.tc-call-row {
+  display: flex; align-items: center; gap: 6px;
+}
+.tc-call-status {
+  font-size: 10px; margin-top: 4px;
+  color: var(--tc-muted, #7d8590);
+  font-family: ui-monospace, monospace;
+}
+.tc-call-status-bad { color: #f0883e; }
+.tc-call-hint {
+  font-size: 10px; margin-top: 6px;
+  color: var(--tc-muted, #7d8590);
+  line-height: 1.4;
+}
+
 .tc-state-row {
   display: flex;
   align-items: center;
@@ -630,3 +658,28 @@ textarea.tc-text-input {
 .tc-block-body-scope-row .tc-perms-row {
   margin: 0 0 6px 0;
 }
+/* ── Light status palette ───────────────────────────────────────────
+ * Same defect as the inline tile: these block-type colours are
+ * GitHub-dark values (#f2cc60, #2dd4bf, #56d364, #7ee787 …) while the
+ * canvas flips to light via --tc-canvas-bg, so every block label and
+ * scope chip lands between 1.54:1 and 2.9:1.  The block FILLS are 6-8%
+ * alpha tints and read in both themes, so only the ink moves here. */
+body:not(.dark) .tc-block-task .tc-block-label,
+body:not(.dark) .tc-chip-tool,
+body:not(.dark) .tc-template-hint-chip { color: #0969da; }
+body:not(.dark) .tc-block-label-repeat { color: #8a5a00; }
+body:not(.dark) .tc-block-label-parallel { color: #6639ba; }
+body:not(.dark) .tc-block-label-until,
+body:not(.dark) .tc-call-status-bad { color: #bc4c00; }
+body:not(.dark) .tc-block-label-schedule,
+body:not(.dark) .tc-chip-file { color: #1a7f37; }
+body:not(.dark) .tc-block-label-state { color: #0f766e; }
+body:not(.dark) .tc-block-label-call { color: #bf3989; }
+body:not(.dark) .tc-chip-skill { color: #8250df; }
+body:not(.dark) .tc-model-warn { color: #9a6700; }
+body:not(.dark) .tc-scope-approval-reason { color: #8a5a00; }
+body:not(.dark) .tc-block-unknown { color: #cf222e; }
+/* The chip well is a WHITE-alpha fill, invisible on a light canvas — so
+ * the chips had no ground of their own to sit on, only borrowed
+ * contrast from the block tint behind them. */
+body:not(.dark) .tc-chip { background: rgba(0,0,0,0.05); }

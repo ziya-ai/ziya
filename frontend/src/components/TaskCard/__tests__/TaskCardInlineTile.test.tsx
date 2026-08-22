@@ -6,11 +6,11 @@
  */
 import React from 'react';
 
-// MarkdownRenderer pulls in ``marked`` (ESM-only) which jest's
+// TaskMarkdown delegates to MarkdownRenderer, which pulls in ``marked`` (ESM-only) which jest's
 // default transform can't load.  Mock to a passthrough.
-jest.mock('../../MarkdownRenderer', () => ({
+jest.mock('../TaskMarkdown', () => ({
   __esModule: true,
-  MarkdownRenderer: ({ markdown }: { markdown: string }) =>
+  TaskMarkdown: ({ markdown }: { markdown: string }) =>
     require('react').createElement('pre', null, markdown),
 }));
 

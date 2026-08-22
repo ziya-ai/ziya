@@ -112,6 +112,20 @@ class _RepeatingProvider:
         self.build_assistant_message = None  # set from executor's provider
         self.build_tool_result_message = None
 
+    def supports_feature(self, feature_name: str) -> bool:
+        """Mirror BaseProvider.supports_feature, which defaults to False.
+
+        Required because stream_with_tools queries
+        ``supports_feature('image_tool_results')`` when assembling tool
+        results - 12 lines BEFORE the repeated-block detection this test
+        exercises.  A fake without it raised AttributeError inside the
+        loop's broad ``except``, which logged and ended the iteration:
+        detection never ran, no injection fired, and the test failed as
+        though the recovery mechanism were broken.  The production guard
+        was fine the whole time.
+        """
+        return False
+
     async def stream_response(self, conversation, system_content, tools, config):
         self.iterations += 1
         recovered = any(

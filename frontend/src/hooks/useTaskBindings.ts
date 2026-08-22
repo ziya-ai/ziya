@@ -107,5 +107,11 @@ export function useTaskBindings(chatId: string | undefined) {
     return map;
   }, [bindings, supersededIds]);
 
-  return { bindingsByAnchor, loading, refresh };
+  // ``bindings`` is exposed flat as well as grouped: the conversation
+  // list needs per-status COUNTS across the whole chat, which the
+  // anchor-keyed map cannot answer without the caller flattening it back
+  // out — and a caller that flattens the map has already lost the staged
+  // bindings the map drops.  Grouping is a render concern; counting is
+  // not.
+  return { bindings, bindingsByAnchor, loading, refresh };
 }

@@ -67,8 +67,15 @@ ResumeKind = Literal[
 # marks a sibling that never ran because an earlier sibling failed
 # under the container's on_failure="stop" policy.  Drives the run map
 # (frontend/src/components/TaskCard/TaskRunMap.tsx).
+#
+# "held" marks the block an infrastructure fault was raised at.  Without
+# it, a held run's faulting block is written as "failed" — identical to a
+# genuine failure of the work — so the run map cannot show WHERE on the
+# tree the hold is, and every node has to be opened to find out.  The
+# distinction is the same one RunStatus already draws: "failed" means fix
+# the card, "held" means fix the environment and resume.
 BlockStatus = Literal[
-    "queued", "running", "done", "failed", "cancelled", "skipped",
+    "queued", "running", "done", "failed", "cancelled", "skipped", "held",
 ]
 
 
@@ -113,6 +120,102 @@ class IterationSummary(BaseModel):
     # False when the iteration was a passing run beyond the retention
     # cap (50 passes per Repeat block).
     has_artifact: bool = True
+    # True when this record was CARRIED from an earlier attempt rather
+    # than executed by this run.  A mid-loop resume replays iterations
+    # before its start index (see block_executor._execute_repeat), and
+    # until now it recorded nothing for them — so a run resumed at 3 of 5
+    # had two summaries, and the run map's dot strip restarted its count
+    # at 1, reading as though the banked work had been discarded.  The
+    # prefix is seeded at launch (api.task_runs.resume_run_from_iteration
+    # -> api.task_cards._launch_run_for_card) so the resumed run is a
+    # self-contained record of the whole loop.
+    #
+    # Load-bearing as an EXCLUSION: every consumer that counts iterations
+    # as work this run performed must skip these, or a resume would
+    # inflate its own progress with a prior attempt's results.  See
+    # run_outcome._iteration_statuses, partialOutcome.progressCounts,
+    # iterationClusters.analyzeFailures, and the tile's iterCounts.
+    replayed: bool = False
+
+
+class SupersededBlockState(BaseModel):
+    """A block's state from an EARLIER attempt, displaced by a re-run.
+
+    ``block_states`` holds one slot per block id, so re-executing a
+    block on a later attempt overwrites the record of what it did on the
+    earlier one.  That was survivable while every attempt was its own
+    run file — the prior record lived in the prior file — and becomes
+    outright data loss once attempts share a run, which is what in-place
+    continuation does.
+
+    Ordered oldest first, so ``history[0]`` is the block's first outcome
+    and the live fields on ``TaskRunBlockState`` are always its current
+    one.  A reader asking "what happened to this block" gets the whole
+    sequence from one record.
+    """
+    model_config = {"extra": "allow"}
+
+    # Which attempt produced this outcome.  Load-bearing for display:
+    # without it an entry has no position in the narrative and cannot be
+    # labelled ("attempt 1: failed — timeout").
+    attempt: int = 1
+    status: BlockStatus = "queued"
+    started_at: Optional[float] = None
+    completed_at: Optional[float] = None
+    artifact: Optional[Artifact] = None
+    error: Optional[str] = None
+    # Displaced by the same overwrite that displaces the status, so it
+    # has to be carried here too: a loop that ran 4 of 5 iterations,
+    # held, then re-ran would otherwise lose the four.
+    iteration_summaries: List[IterationSummary] = Field(default_factory=list)
+
+
+class AttemptRecord(BaseModel):
+    """One attempt at executing a run, as an audit record.
+
+    Attempt identity used to be welded to run-object identity: a resume
+    created a NEW run file so the faulted attempt stayed immutable.  That
+    bought the audit trail at the price of resetting ``block_states`` on
+    every continuation — which is why a resumed run replayed its
+    completed blocks as ``skipped`` and drew them struck through.  Prior
+    state WAS retained, but under a different id, so the tile could only
+    ever show the reconstruction rather than the thing itself.
+
+    Separating the two puts the audit data here, append-only, and lets
+    ``block_states`` persist across attempts and simply keep being true.
+    Every fact the separate-file design recorded per attempt is a field
+    below; none of them needed a separate file to hold them.
+    """
+    model_config = {"extra": "allow"}
+
+    attempt: int = 1
+    # Why this attempt exists.  "initial" for the original launch.
+    resume_kind: Optional[ResumeKind] = None
+    resumed_from_block_id: Optional[str] = None
+    resume_from_iteration: Optional[int] = None
+    started_at: Optional[float] = None
+    completed_at: Optional[float] = None
+    # Terminal status THIS attempt reached.  Left None while it is the
+    # live attempt: the run's own ``status`` is the live answer, and
+    # duplicating it would create two sources of truth for one fact.
+    status: Optional[RunStatus] = None
+    error: Optional[str] = None
+    # Hold facts, per attempt.  These live on TaskRun today, where a
+    # continuation necessarily clears them — the run is no longer held.
+    # Recording them here is what keeps "attempt 2 held on an expired
+    # credential" legible after attempt 3 succeeded.
+    held_reason: Optional[str] = None
+    held_at_block_id: Optional[str] = None
+    held_faults: Optional[Dict[str, Any]] = None
+    held_gate_reason: Optional[str] = None
+    # Captured per attempt because both can legitimately differ between
+    # attempts: the write policy may have been widened to unblock the
+    # retry, and the card may have been edited in between.  A single
+    # run-level snapshot would attribute the CURRENT values to every
+    # attempt, which is the opposite of an audit trail.
+    permissions_snapshot: Optional[Dict[str, Any]] = None
+    card_snapshot: Optional[Dict[str, Any]] = None
+    parameter_overrides: Dict[str, Any] = Field(default_factory=dict)
 
 
 class TaskRunBlockState(BaseModel):
@@ -129,6 +232,16 @@ class TaskRunBlockState(BaseModel):
     # For Repeat blocks: one summary per iteration.  Empty for Task
     # and Parallel blocks.
     iteration_summaries: List[IterationSummary] = Field(default_factory=list)
+    # Outcomes displaced by a later attempt re-running this block,
+    # oldest first.  Empty on the common path.  Populated only by
+    # ``TaskRunStorage.update_block_status``, which pushes the current
+    # record down before overwriting it — see SupersededBlockState for
+    # why the overwrite is otherwise data loss.
+    #
+    # Load-bearing as an EXCLUSION, the same way IterationSummary.
+    # replayed is: a consumer counting what a run accomplished must read
+    # the live fields only, or a retried block would be counted twice.
+    history: List[SupersededBlockState] = Field(default_factory=list)
 
 
 class TaskRun(BaseModel):
@@ -148,6 +261,26 @@ class TaskRun(BaseModel):
     # reconstructing it by eye from the run map.
     held_reason: Optional[str] = None
     held_at_block_id: Optional[str] = None
+    # Aggregate fault record for the hold, from
+    # app.utils.infra_gate.summarize.  Exists because ``held_reason`` and
+    # ``held_at_block_id`` describe ONE fault, and a hold in a fan-out is
+    # a progressive collapse rather than an instant: reporting the first
+    # subagent's fault as though it were the whole event leaves the three
+    # questions a reader actually has unanswered — which card, which
+    # subagent, and how widespread.
+    #
+    # Keys: fault_count, fanout_width, primary_kind, kinds (histogram),
+    # call_path (outermost card -> faulting subagent), fleet_wide,
+    # block_ids.  ``call_path`` is what lets the run tile show
+    # "CL0 → CL1 → audit-mcp-security" without the user expanding
+    # anything, and ``fleet_wide`` distinguishes a dead credential from
+    # one throttled sibling — a distinction ``held_reason`` alone cannot
+    # carry, since both are infra kinds but call for opposite responses.
+    held_faults: Optional[Dict[str, Any]] = None
+    # Why the gate fired, in prose, from app.utils.infra_gate.gate_reason.
+    # Null when the run held without a fan-out gate (a single task's
+    # fault), so its presence means "this stopped the fleet, not just me".
+    held_gate_reason: Optional[str] = None
     # Soft-cancel flag.  Block executor checks at iteration and
     # sibling boundaries.  See design/task-cards.md §Cancellation.
     cancel_requested: bool = False
@@ -264,6 +397,22 @@ class TaskRun(BaseModel):
     parent_run_id: Optional[str] = None
     # 1-based position in the lineage; displayed as "attempt N of M".
     attempt: int = 1
+    # Append-only audit record, one entry per attempt, oldest first.
+    # ``attempt`` above is the count; this is the evidence.
+    #
+    # Exists so a continuation can execute IN PLACE — same run id, same
+    # block_states — without discarding what the earlier attempts did.
+    # The previous design got its audit trail from run-object identity
+    # (one file per attempt), which forced every continuation to start
+    # from an empty block_states and rebuild it by replay; the replay
+    # wrote ``skipped``, and the run map struck through work that had in
+    # fact completed.  The trail is the same set of facts either way, so
+    # it moves here and the run object stops being per-attempt.
+    #
+    # Empty on runs written before this existed.  Consumers must treat
+    # that as "one attempt, described by the run's own fields" rather
+    # than as "no attempts".
+    attempts: List[AttemptRecord] = Field(default_factory=list)
     # Why this run exists.  None on records written before lineage
     # tracking, which is indistinguishable from "initial" — acceptable,
     # since that is what those runs were.

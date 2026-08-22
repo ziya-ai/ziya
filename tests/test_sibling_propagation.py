@@ -140,12 +140,23 @@ async def test_explicit_previous_sibling_template_resolves(ctx):
 
 @pytest.mark.asyncio
 async def test_first_sibling_sees_no_sibling_context(ctx):
-    """The first sibling has no prior.  A {{previous_sibling}} reference
-    at this position is an authoring mistake (there is no prior sibling),
-    so it is preserved VERBATIM — consistent with task_templating's
-    "unknown/unavailable placeholders surface to the author" philosophy.
-    The key guarantees: no sibling-context preamble is injected, and the
-    first sibling is never given a prior it doesn't have."""
+    """The first sibling has no prior, so {{previous_sibling}} renders EMPTY.
+
+    This assertion was inverted (it required verbatim preservation) and
+    contradicted both the module contract and its own sibling test
+    ``test_reference_to_not_yet_run_block_is_empty``, which was written
+    in the same commit and had been failing ever since.  task_templating
+    reserves literal preservation for UNKNOWN placeholders (typos);
+    a known placeholder whose data is unavailable renders empty — the
+    documented precedent being {{previous}} on iteration 0.
+
+    Leaving it literal was not a harmless nicety: the raw text
+    ``{{previous_sibling.summary}}`` was reaching the model as part of
+    its instructions.
+
+    The load-bearing guarantee is unchanged: no sibling-context preamble
+    is injected, so the first sibling is never handed a prior it lacks.
+    """
     stub, received = _recording_stub({"a": "first"})
     group = _group("g", [
         _task("a", "the prior was {{previous_sibling.summary}}"),
@@ -156,9 +167,10 @@ async def test_first_sibling_sees_no_sibling_context(ctx):
     # No sibling-context preamble on the first sibling (the load-bearing
     # guarantee — it must not be handed a prior it doesn't have).
     assert "previous step" not in received["a"]
-    # The placeholder is preserved verbatim (no prior → no resolution),
-    # surfacing the mis-placed reference rather than silently emptying it.
-    assert received["a"] == "the prior was {{previous_sibling.summary}}"
+    # Known-but-unavailable placeholder → empty, and crucially the raw
+    # template text never reaches the model.
+    assert received["a"] == "the prior was "
+    assert "{{" not in received["a"]
 
 
 @pytest.mark.asyncio

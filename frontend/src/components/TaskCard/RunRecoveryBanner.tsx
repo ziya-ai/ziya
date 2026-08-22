@@ -26,6 +26,7 @@ import React from 'react';
 import type { TaskRun } from '../../types/task_run';
 import type { RecoveryTarget } from './recoveryTarget';
 import { progressCounts } from './partialOutcome';
+import { describeBreadth, describeGate, deriveHoldChain } from './holdChain';
 
 interface Props {
   run: TaskRun;
@@ -57,6 +58,14 @@ export const RunRecoveryBanner: React.FC<Props> = ({
     keptParts.push(`${n} passed loop iteration${n === 1 ? '' : 's'}`);
   }
 
+  // Inert for a non-held run, so this is safe to derive unconditionally.
+  // The tree is omitted on purpose: this surface needs the run-level facts
+  // (kind, breadth, remedy) and not per-block positions, which the run map
+  // owns -- passing a tree here would compute a positions map nothing reads.
+  const hold = deriveHoldChain(run, null);
+  const holdBreadth = describeBreadth(hold.faults);
+  const holdGate = describeGate(hold);
+
   return (
     <div className="tc-recover" role="region" aria-label="Resume this run">
       <div className="tc-recover__head">
@@ -64,6 +73,37 @@ export const RunRecoveryBanner: React.FC<Props> = ({
           ? 'This run stopped on an infrastructure fault — it can be continued'
           : 'This run can be continued without starting over'}
       </div>
+
+      {/* Breadth strip.  Deliberately ONE line rather than the fuller
+          treatment: the run map's rows already say where the hold is and
+          what is blocked behind it, so restating the fault in prose here
+          would say the same thing twice and push the actual controls
+          further down.  What the rows cannot carry is BREADTH -- whether
+          a credential died and took the whole fleet or one subagent got
+          throttled -- and that is the distinction that decides whether
+          the user goes and fixes something or just resumes.  Rendered
+          only when the backend supplied an aggregate, so a hold recorded
+          before held_faults existed degrades to the head line above
+          rather than to "0 of 0". */}
+      {holdBreadth && (
+        <div className="tc-recover__breadth" title={holdGate ?? undefined}>
+          <span className="tc-recover__pause">⏸</span>
+          {hold.faults?.fleet_wide && (
+            <span className="tc-recover__fleet">
+              FLEET {hold.faults.fault_count}/{hold.faults.fanout_width}
+            </span>
+          )}
+          {hold.kind && (
+            <code className="tc-recover__kind">{hold.kind}</code>
+          )}
+          {!hold.faults?.fleet_wide && (
+            <span className="tc-recover__breadth-n">{holdBreadth}</span>
+          )}
+          {holdGate && (
+            <span className="tc-recover__remedy">· {holdGate}</span>
+          )}
+        </div>
+      )}
 
       <div className="tc-recover__note">
         {kept ? (

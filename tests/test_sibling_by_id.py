@@ -178,3 +178,96 @@ async def test_loop_rerun_last_write_wins(ctx):
         await execute_block(group, ctx)
     # Registry holds the LAST body iteration's summary.
     assert ctx.artifact_registry["body"].summary == "iter-3"
+
+
+# ── The narrowed templating guard ──────────────────────────────
+#
+# _apply_templating_to_task used to return early whenever a run had no
+# bindings, no variables, no context notes, no prior sibling AND an empty
+# artifact registry — which is exactly the state of the FIRST block in a
+# run.  Any sequence-scoped placeholder there was handed to the model as
+# raw template text.  The guard now also renders when the instructions
+# reference a prior block's result, while still leaving loop-scoped
+# placeholders literal outside a loop.
+
+@pytest.mark.asyncio
+async def test_first_block_sibling_reference_does_not_leak_literal(ctx):
+    """The regression: {{sibling(...)}} in the FIRST block of a run.
+
+    Nothing has completed, so the registry is empty and the old guard
+    skipped rendering entirely, leaking the template text into the
+    model's instructions.
+    """
+    stub, received = _recording_stub({"first": "F"})
+    group = _group("g", [
+        _task("first", 'later={{sibling("second").summary}}'),
+        _task("second", "runs after"),
+    ])
+    with patch("app.agents.block_executor.execute_task_block", side_effect=stub):
+        await execute_block(group, ctx)
+    assert received["first"] == "later="
+    assert "{{" not in received["first"]
+
+
+@pytest.mark.asyncio
+async def test_lone_task_sibling_reference_renders_empty(ctx):
+    """A single-block run: no sequence at all, still must not leak."""
+    stub, received = _recording_stub({"only": "O"})
+    lone = _task("only", 'ref={{sibling("nothing")}} end')
+    with patch("app.agents.block_executor.execute_task_block", side_effect=stub):
+        await execute_block(lone, ctx)
+    assert received["only"] == "ref= end"
+
+
+@pytest.mark.asyncio
+async def test_loop_placeholder_still_literal_outside_a_loop(ctx):
+    """The guard must stay narrow.
+
+    {{index}} resolves to "0" against default bindings, so rendering it
+    outside a loop would assert an iteration that never happened.  It
+    must remain literal even now that sequence placeholders render.
+    """
+    stub, received = _recording_stub({"only": "O"})
+    lone = _task("only", "plain {{index}} and {{item}}")
+    with patch("app.agents.block_executor.execute_task_block", side_effect=stub):
+        await execute_block(lone, ctx)
+    assert received["only"] == "plain {{index}} and {{item}}"
+
+
+@pytest.mark.asyncio
+async def test_mixed_reference_renders_the_whole_string(ctx):
+    """Documents a sharp edge: the render decision is per-STRING.
+
+    Once any sequence placeholder opts a task into rendering, EVERY known
+    placeholder in the same instructions resolves — so {{index}} beside a
+    {{sibling(...)}} reference becomes "0" even with no loop active,
+    whereas alone it would stay literal.
+
+    Pinned rather than "fixed": making the choice per-placeholder would
+    mean rendering a template twice under different rules, and the
+    combination is an authoring mistake either way ({{index}} outside a
+    loop is meaningless).  Recorded here so the behavior is discovered
+    from a test rather than from a confusing run.
+    """
+    stub, received = _recording_stub({"only": "O"})
+    lone = _task("only", 'sib={{sibling("x")}} idx={{index}}')
+    with patch("app.agents.block_executor.execute_task_block", side_effect=stub):
+        await execute_block(lone, ctx)
+    assert received["only"] == "sib= idx=0"
+
+
+def test_sequence_placeholder_matcher():
+    """Unit-level: which placeholders opt a task into rendering."""
+    from app.agents.block_executor import _references_sequence_placeholder as f
+    assert f('{{sibling("a")}}')
+    assert f("{{previous_sibling}}")
+    assert f("{{ previous_sibling.summary }}")
+    assert f("{{sibling('a').outputs.r.k}}")
+    # Loop-scoped and var placeholders must NOT trigger rendering.
+    assert not f("{{index}}")
+    assert not f("{{item}}")
+    assert not f("{{var.x}}")
+    assert not f("{{previous.summary}}")
+    assert not f("no placeholders")
+    assert not f("")
+    assert not f(None)

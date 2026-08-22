@@ -12,6 +12,7 @@ import { BlockEditor } from './BlockEditor';
 import { BlockScopeButton } from './BlockScopeButton';
 import { TaskCardDragProvider } from './DragContext';
 import { taskCardApi, type CardScopeStatus } from '../../services/taskCardApi';
+import { CARD_SCOPE_REFRESH_EVENT } from './useCardSignatureStatus';
 import { makeGroupBlock } from '../../utils/taskCardBlocks';
 import './task-card-editor.css';
 
@@ -27,10 +28,18 @@ interface Props {
   // card's escalation/signature status — so the deck-list "Unsigned" badge
   // refreshes in lock-step with the in-editor warning after a re-check.
   onScopeStatusChange?: (cardId: string, status: CardScopeStatus | null) => void;
+  // True when `card` is an UNSAVED spec: an AI-authored proposal being
+  // previewed, or a draft not yet created.  Escalation is then resolved
+  // through the stateless scope-preview endpoint instead of the by-id
+  // status endpoint.  Without this the proposal preview passed its
+  // synthetic 'draft' id to /task-cards/draft/scope-status, took the 404
+  // on every re-check, and showed no escalation warning at all.
+  previewMode?: boolean;
 }
 
 export const TaskCardEditor: React.FC<Props> = ({
   card, onChange, projectId, onSave, onLaunch, saving, onScopeStatusChange,
+  previewMode,
 }) => {
   // Escalation-approval status (ASR F-001). A saved card whose blocks request
   // shell/write escalation shows which blocks are unsigned and the exact
@@ -48,17 +57,44 @@ export const TaskCardEditor: React.FC<Props> = ({
   const [scopeStatus, setScopeStatus] = React.useState<CardScopeStatus | null>(null);
   const [scopeCheckPending, setScopeCheckPending] = React.useState(false);
   const [scopeCheckError, setScopeCheckError] = React.useState<string | null>(null);
+  // Latest card, read by refreshScopeStatus WITHOUT being a dependency of
+  // it.  Putting the mutable fields in the dep list would change the
+  // callback's identity on every keystroke, and in preview mode that is a
+  // scope-preview POST per character typed.
+  const cardRef = React.useRef(card);
+  cardRef.current = card;
   const refreshScopeStatus = React.useCallback(async (opts?: { manual?: boolean }) => {
-    if (!projectId || !card.id) {
+    // Check previewMode FIRST: an unsaved spec carries a synthetic id
+    // ('draft') that is truthy but not fetchable, so the old id-only guard
+    // let it through to a 404.
+    if (!projectId || (!previewMode && !card.id)) {
       setScopeStatus(null);
       onScopeStatusChange?.(card.id, null);
       return;
     }
     if (opts?.manual) { setScopeCheckPending(true); setScopeCheckError(null); }
     try {
-      const st = await taskCardApi.scopeStatus(projectId, card.id);
+      const c = cardRef.current;
+      const st = previewMode
+        ? await taskCardApi.scopePreview(projectId, {
+            name: c.name, description: c.description, root: c.root,
+            scope: c.scope, tags: c.tags, is_template: c.is_template,
+          })
+        : await taskCardApi.scopeStatus(projectId, card.id);
       setScopeStatus(st);
       onScopeStatusChange?.(card.id, st);
+      // Tell every other surface showing this card to re-check.  Signing
+      // happens out of band (`ziya-approve` in a terminal), so nothing
+      // in-app marks the transition: without this broadcast an open
+      // inline tile keeps its stale "unsigned" badge until it remounts,
+      // which is the "only shows after you exit and come back" defect.
+      // Skipped in preview mode — an unsaved spec has no persisted id
+      // for another surface to key on.
+      if (!previewMode && card.id) {
+        window.dispatchEvent(new CustomEvent(CARD_SCOPE_REFRESH_EVENT, {
+          detail: { cardId: card.id },
+        }));
+      }
     } catch (e) {
       setScopeStatus(null);  // status is advisory; never block editing on it
       if (opts?.manual) {
@@ -67,10 +103,20 @@ export const TaskCardEditor: React.FC<Props> = ({
     } finally {
       if (opts?.manual) setScopeCheckPending(false);
     }
-  }, [projectId, card.id, onScopeStatusChange]);
-  // Re-check whenever the card id changes or its scope-bearing content changes.
-  React.useEffect(() => { void refreshScopeStatus(); },
-    [refreshScopeStatus, JSON.stringify(card.root)]);
+  }, [projectId, previewMode, card.id, onScopeStatusChange]);
+  // Re-check when the card id or its scope-bearing content changes.
+  //
+  // Debounced: the root dep changes on every keystroke inside an
+  // instructions textarea and each change is a network round trip, so the
+  // undebounced version fired a request per character.
+  //
+  // card.scope is included deliberately — a CARD-level grant is a layer of
+  // every leaf's effective scope, so editing it changes the escalation, yet
+  // it previously triggered no re-check and the banner went stale.
+  React.useEffect(() => {
+    const t = setTimeout(() => { void refreshScopeStatus(); }, 400);
+    return () => clearTimeout(t);
+  }, [refreshScopeStatus, JSON.stringify(card.root), JSON.stringify(card.scope)]);
 
   const setRoot = (root: Block) => onChange({ ...card, root });
   const setName = (name: string) => onChange({ ...card, name });
@@ -124,12 +170,28 @@ export const TaskCardEditor: React.FC<Props> = ({
       {scopeStatus?.anyUnapproved && (
         <div className="tc-scope-approval-warning" role="alert">
           <div className="tc-scope-approval-title">
-            🔒 Unsigned privilege escalation — not active
+            {scopeStatus.preview
+              ? '🔒 Needs signing before these permissions take effect'
+              : '🔒 Unsigned privilege escalation — not active'}
           </div>
           <div className="tc-scope-approval-body">
-            This card requests shell/write permissions beyond the default safe
-            set. Until approved, these blocks run at the default floor. Approval
-            requires a privileged gesture the agent cannot perform.
+            {scopeStatus.preview ? (
+              <>
+                This card requests shell/write permissions beyond the default
+                safe set. It will still run — but these blocks are clamped to
+                the default floor until the escalation is signed, so work that
+                depends on the extra permissions fails partway through rather
+                than up front. Signing requires a privileged gesture the agent
+                cannot perform. Save the card to the deck to get the exact
+                <code> ziya-approve </code> command for each block.
+              </>
+            ) : (
+              <>
+                This card requests shell/write permissions beyond the default
+                safe set. Until approved, these blocks run at the default floor.
+                Approval requires a privileged gesture the agent cannot perform.
+              </>
+            )}
           </div>
           {scopeStatus.blocks.filter(b => !b.authorized).map(b => (
             <div key={b.blockId} className="tc-scope-approval-block">
@@ -146,26 +208,39 @@ export const TaskCardEditor: React.FC<Props> = ({
                   {field}: {vals.join(', ')}
                 </div>
               ))}
-              <code className="tc-scope-approval-cmd">{b.signCommand}</code>
+              {/* Empty for an unsaved spec: no persisted block id exists to
+                  sign against yet, so rendering a bare <code> would show an
+                  empty box that reads as a broken command. */}
+              {b.signCommand && (
+                <code className="tc-scope-approval-cmd">{b.signCommand}</code>
+              )}
             </div>
           ))}
-          <button
-            className="tc-btn tc-btn-secondary tc-scope-approval-recheck"
-            onClick={() => void refreshScopeStatus({ manual: true })}
-            disabled={scopeCheckPending}
-          >
-            {scopeCheckPending ? '⏳ Checking…' : '↻ Re-check (after signing)'}
-          </button>
-          {scopeCheckError && (
-            <div className="tc-scope-approval-check-error">
-              Re-check failed: {scopeCheckError}
-            </div>
-          )}
-          {!scopeCheckPending && !scopeCheckError && scopeStatus?.anyUnapproved && (
-            <div className="tc-scope-approval-check-hint">
-              Still unsigned as of the last check — verify you signed the block(s)
-              listed above in the same environment this server reads from.
-            </div>
+          {/* Re-check is meaningless for an unsaved spec: no approval can
+              exist for block ids that were never assigned, so the button
+              could only ever report "still unsigned" — which reads as
+              breakage rather than as the expected state. */}
+          {!scopeStatus.preview && (
+            <>
+              <button
+                className="tc-btn tc-btn-secondary tc-scope-approval-recheck"
+                onClick={() => void refreshScopeStatus({ manual: true })}
+                disabled={scopeCheckPending}
+              >
+                {scopeCheckPending ? '⏳ Checking…' : '↻ Re-check (after signing)'}
+              </button>
+              {scopeCheckError && (
+                <div className="tc-scope-approval-check-error">
+                  Re-check failed: {scopeCheckError}
+                </div>
+              )}
+              {!scopeCheckPending && !scopeCheckError && scopeStatus?.anyUnapproved && (
+                <div className="tc-scope-approval-check-hint">
+                  Still unsigned as of the last check — verify you signed the block(s)
+                  listed above in the same environment this server reads from.
+                </div>
+              )}
+            </>
           )}
         </div>
       )}

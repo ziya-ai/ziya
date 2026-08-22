@@ -1,3 +1,23 @@
+/* Signing notice on a staged goal tile.  Amber rather than red: an
+   unsigned card is not broken and the run is not refused — it is clamped
+   to the default floor.  A red treatment would read as a failure and
+   push users to dismiss it. */
+.tc-staged-signing-notice {
+  margin: 6px 0 2px;
+  padding: 8px 10px;
+  border: 1px solid rgba(250, 140, 22, 0.45);
+  border-left: 3px solid #fa8c16;
+  border-radius: 6px;
+  background: rgba(250, 140, 22, 0.1);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.tc-staged-signing-notice code {
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  padding: 0 3px;
+}
+
 /* ── Inspector drawer ─────────────────────────────────────── */
 .task-card-inline-tile.staged {
   border-style: dashed;
@@ -818,17 +838,22 @@
 .tc-tile__iter-passed { color: #3fb950; }
 .tc-tile__iter-failed { color: #f85149; }
 
-/* Light mode overrides */
-@media (prefers-color-scheme: light) {
-  .tc-tile {
-    background: #ffffff;
-    color: #1f2328;
-    border-color: rgba(0,0,0,0.1);
-  }
-  .tc-tile--receipt:hover { background: rgba(0,0,0,0.03); }
-  .tc-tile__header { background: rgba(0,0,0,0.02); }
-  .tc-tile__header:hover { background: rgba(0,0,0,0.04); }
+/* Light mode overrides, keyed on `body.dark` rather than on
+ * `prefers-color-scheme`.  The app theme is class-based (ThemeContext
+ * toggles `body.dark`) and the card's own background comes from
+ * `--tc-card-bg`, which follows that class — so an OS-dark / app-light
+ * machine got a WHITE card with every rule in these blocks inert, and
+ * the whole dark palette rendered on it.  A media query cannot see the
+ * app's theme; this is the same `body:not(.dark)` convention index.css
+ * already uses. */
+body:not(.dark) .tc-tile {
+  background: #ffffff;
+  color: #1f2328;
+  border-color: rgba(0,0,0,0.1);
 }
+body:not(.dark) .tc-tile--receipt:hover { background: rgba(0,0,0,0.03); }
+body:not(.dark) .tc-tile__header { background: rgba(0,0,0,0.02); }
+body:not(.dark) .tc-tile__header:hover { background: rgba(0,0,0,0.04); }
 
 /* ── Run map (TaskRunMap) ─────────────────────────────────────── */
 .tc-map {
@@ -864,6 +889,56 @@
 }
 .tc-map__icon--queued, .tc-map__icon--skipped { color: #7d8590; }
 .tc-map__icon--cancelled { color: #d29922; }
+/* Violet, matching the run-level 'held' chip and 'paused': both mean
+ * "stopped, not broken".  Red or amber here would read as a verdict on
+ * the work, which is the misreading 'held' exists to prevent. */
+.tc-map__icon--held { color: #8957e5; }
+
+/* ---- Infrastructure-hold position markers ----
+ *
+ * A hold is not a property of one block: the block that raised the fault,
+ * the containers above it, and everything that never got to run are three
+ * different situations.  Without a per-row marker the only way to find
+ * which subagent broke was to open each one, which is what these exist to
+ * remove.  Three distinct weights, loudest at the fault. */
+.tc-map__hold {
+  flex: none;
+  font-size: 9px;
+  letter-spacing: 0.4px;
+  padding: 0 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+/* The fault itself: the one row a reader is looking for. */
+.tc-map__hold--local {
+  background: #8957e5;
+  color: #fff;
+  font-weight: 700;
+}
+/* A container holding because a descendant faulted.  Outlined rather than
+ * filled so a deep tree does not stack five solid badges up the margin
+ * and out-shout the one row that matters. */
+.tc-map__hold--descendant {
+  color: #b392f0;
+  border: 1px solid rgba(137,87,229,0.45);
+  font-weight: 600;
+}
+/* Never ran.  Muted to near-chrome: this is the most numerous position in
+ * a wide deck, and at any higher weight the blocked rows drown the fault. */
+.tc-map__hold--ancestor {
+  color: #6e7681;
+  font-style: italic;
+}
+.tc-map__row--hold-local {
+  background: rgba(137,87,229,0.14);
+  box-shadow: inset 3px 0 0 #8957e5;
+}
+.tc-map__row--hold-local .tc-map__label { font-weight: 600; color: #e6d9ff; }
+/* Blocked rows dim their label the way skipped rows do — they share the
+ * same meaning ("did not run") — but WITHOUT the line-through, which
+ * asserts a decision was made about them.  Nothing decided anything about
+ * a blocked block; an upstream fault simply stopped the run first. */
+.tc-map__row--hold-ancestor .tc-map__label { opacity: 0.5; }
 @keyframes tc-map-throb {
   0%, 100% { transform: scale(1);   text-shadow: 0 0 0 rgba(88,166,255,0); }
   50%      { transform: scale(1.3); text-shadow: 0 0 7px rgba(88,166,255,0.85); }
@@ -1030,6 +1105,197 @@
   color: #79c0ff;
   margin-bottom: 5px;
 }
+/* ---- CalleeHoldPanel (1A) ----
+ *
+ * A card's own view of a hold it is stuck inside.  Deck-side rather than
+ * tile-side: this card has no run of its own (a Call runs inline in the
+ * caller's run), so none of the tile chrome applies to it. */
+.tc-callee {
+  border: 1px solid rgba(137,87,229,0.4);
+  background: rgba(137,87,229,0.1);
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+/* The healthy case (3A) is a single quiet line, not a bordered panel:
+ * reporting position must not look like reporting a problem. */
+.tc-callee--ok {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-color: rgba(88,166,255,0.3);
+  background: rgba(31,111,235,0.08);
+  padding: 5px 9px;
+  font-size: 11px;
+}
+.tc-callee__live {
+  background: #1f6feb;
+  color: #fff;
+  font-size: 9px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  flex: none;
+}
+.tc-callee__in { color: #8b949e; }
+.tc-callee__head { font-weight: 600; margin-bottom: 6px; }
+.tc-callee__pause { color: #8957e5; }
+.tc-callee__caller {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  color: #58a6ff;
+  background: rgba(0,0,0,0.25);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.tc-callee__breadth {
+  display: flex; align-items: center; gap: 6px;
+  flex-wrap: wrap; margin-bottom: 6px;
+}
+.tc-callee__fleet {
+  background: #f85149; color: #fff;
+  font-size: 9px; font-weight: 700; letter-spacing: 0.3px;
+  padding: 1px 6px; border-radius: 3px; flex: none;
+}
+.tc-callee__kind {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 10px; color: #c9d1d9;
+  background: rgba(0,0,0,0.3); padding: 1px 5px; border-radius: 3px;
+}
+.tc-callee__n { color: #8b949e; font-size: 11px; }
+.tc-callee__remedy {
+  font-size: 11px; color: #c9d1d9;
+  line-height: 1.5; margin-bottom: 8px;
+}
+.tc-callee__map {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11.5px;
+  background: rgba(0,0,0,0.2);
+  border-radius: 4px;
+  padding: 4px;
+}
+.tc-callee__row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 2px 6px; border-radius: 3px;
+}
+.tc-callee__icon { width: 13px; text-align: center; font-weight: 700; flex: none; }
+.tc-callee__icon--local, .tc-callee__icon--descendant { color: #8957e5; }
+.tc-callee__icon--ancestor { color: #484f58; }
+.tc-callee__icon--none { color: #3fb950; }
+.tc-callee__label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc-callee__row--local {
+  background: rgba(137,87,229,0.14);
+  box-shadow: inset 3px 0 0 #8957e5;
+}
+.tc-callee__row--local .tc-callee__label { font-weight: 600; color: #e6d9ff; }
+/* Dimmed but NOT struck through: nothing decided anything about a blocked
+ * block, an upstream fault simply stopped the run before reaching it. */
+.tc-callee__row--ancestor .tc-callee__label { opacity: 0.5; }
+.tc-callee__badge {
+  flex: none; font-size: 9px; letter-spacing: 0.4px;
+  padding: 0 5px; border-radius: 3px; white-space: nowrap;
+}
+.tc-callee__badge--local { background: #8957e5; color: #fff; font-weight: 700; }
+.tc-callee__badge--descendant {
+  color: #b392f0; border: 1px solid rgba(137,87,229,0.45); font-weight: 600;
+}
+.tc-callee__badge--ancestor { color: #6e7681; font-style: italic; }
+
+/* Light palette for the callee hold panel.  It carried NO light values at
+ * all: its chips are dark translucent fills (rgba(0,0,0,0.25-0.3)) that
+ * become mid-grey on a white card, and the #c9d1d9 / #e6d9ff ink on them
+ * then measures 1.33-1.54:1 — the least readable surface in this file
+ * after the recovery banner.  Keyed on `body.dark` like the rest. */
+body:not(.dark) .tc-callee {
+  border-color: rgba(102,57,186,0.35);
+  background: rgba(102,57,186,0.06);
+}
+body:not(.dark) .tc-callee--ok {
+  border-color: rgba(9,105,218,0.3);
+  background: rgba(9,105,218,0.05);
+}
+body:not(.dark) .tc-callee__in,
+body:not(.dark) .tc-callee__n { color: #57606a; }
+body:not(.dark) .tc-callee__pause { color: #6639ba; }
+/* Dark ink on a light chip, rather than light ink on a chip that is no
+ * longer dark once the card beneath it turns white. */
+body:not(.dark) .tc-callee__caller {
+  color: #0550ae;
+  background: rgba(0,0,0,0.05);
+}
+body:not(.dark) .tc-callee__kind {
+  color: #24292f;
+  background: rgba(0,0,0,0.06);
+}
+body:not(.dark) .tc-callee__remedy { color: #1f2328; }
+body:not(.dark) .tc-callee__map { background: rgba(0,0,0,0.04); }
+body:not(.dark) .tc-callee__fleet { background: #cf222e; }
+body:not(.dark) .tc-callee__icon--local,
+body:not(.dark) .tc-callee__icon--descendant { color: #6639ba; }
+body:not(.dark) .tc-callee__icon--ancestor { color: #8c959f; }
+body:not(.dark) .tc-callee__icon--none { color: #1a7f37; }
+body:not(.dark) .tc-callee__row--local {
+  background: rgba(102,57,186,0.10);
+  box-shadow: inset 3px 0 0 #6639ba;
+}
+body:not(.dark) .tc-callee__row--local .tc-callee__label { color: #4c2889; }
+body:not(.dark) .tc-callee__badge--local { background: #6639ba; }
+body:not(.dark) .tc-callee__badge--descendant {
+  color: #6639ba; border-color: rgba(102,57,186,0.5);
+}
+body:not(.dark) .tc-callee__badge--ancestor { color: #57606a; }
+
+/* One-line hold breadth strip (2B).  Violet to match the run-level
+ * 'held' chip -- the banner's own head is blue (#79c0ff) because it
+ * speaks about RECOVERY, whereas this line speaks about the FAULT, and
+ * the two should not read as one sentence. */
+.tc-recover__breadth {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  padding: 5px 8px;
+  margin-bottom: 8px;
+  border-radius: 4px;
+  background: rgba(137,87,229,0.1);
+  border-left: 3px solid #8957e5;
+}
+.tc-recover__pause { color: #8957e5; flex: none; }
+/* Red, against the violet strip: 'fleet-wide' is the one fact here that
+ * is genuinely bad news -- every subagent shares the dead dependency --
+ * and it is what separates "go fix your credential" from "resume later".
+ * The strip stays violet so the HOLD still reads as "stopped, not
+ * broken"; only this badge escalates. */
+.tc-recover__fleet {
+  background: #f85149;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  flex: none;
+}
+.tc-recover__kind {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 10px;
+  color: #c9d1d9;
+  background: rgba(0,0,0,0.3);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.tc-recover__breadth-n { color: #8b949e; }
+/* Truncates rather than wrapping to a third line: the remedy is a
+ * convenience restatement of the kind, and the title attribute carries
+ * it in full. */
+.tc-recover__remedy {
+  color: #8b949e;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
 .tc-recover__note {
   font-size: 12px;
   line-height: 1.55;
@@ -1079,11 +1345,67 @@
 }
 .tc-recover__alt strong { color: #d29922; }
 
-@media (prefers-color-scheme: light) {
-  .tc-recover__head { color: #0b4ea2; }
-  .tc-recover__note strong { color: #0b4ea2; }
-  .tc-recover__btn { color: #0b4ea2; }
+/* Light palette for the recovery banner.  Keyed on `body.dark` for the
+ * reason given at the first light block: as a media query none of this
+ * applied on an OS-dark / app-light machine, which left the Retry
+ * button's #cfe4ff on rgba(88,166,255,0.16) over a white card at
+ * 1.06:1 — an invisible label on the one control this banner exists to
+ * offer, and the reason it was reported as unreadable.
+ *
+ * The dark values (#79c0ff text, #58a6ff borders, pale blue fills) all
+ * assume a near-black card.  On a white one they collapse into a single
+ * hue: text, border and focus ring all become the same pale blue. */
+body:not(.dark) .tc-recover {
+  border-color: rgba(9,105,218,0.35);
+  background: rgba(9,105,218,0.06);
+  border-left-color: #0969da;
 }
+body:not(.dark) .tc-recover__head { color: #0969da; }
+body:not(.dark) .tc-recover__note { color: #1f2328; }
+body:not(.dark) .tc-recover__note strong { color: #0969da; }
+/* Breadth strip. #c9d1d9 over a 30%-black chip measures 1.48:1 here and
+ * the #8b949e supporting text 2.83:1, so the fault kind — the one word
+ * in this banner the user has to act on — was the least readable thing
+ * on it. Dark text on a light chip instead of light-on-dark. */
+body:not(.dark) .tc-recover__kind {
+  color: #24292f;
+  background: rgba(0,0,0,0.06);
+}
+body:not(.dark) .tc-recover__remedy,
+body:not(.dark) .tc-recover__breadth-n { color: #57606a; }
+/* Solid white fill, full-strength accent text and border: at 1.06:1 the
+ * dark treatment was not a low-contrast button, it was a blank one. */
+body:not(.dark) .tc-recover__btn {
+  background: #ffffff;
+  border-color: #0969da;
+  color: #0969da;
+}
+body:not(.dark) .tc-recover__btn:hover:not(:disabled) { background: rgba(9,105,218,0.10); }
+body:not(.dark) .tc-recover__btn:focus-visible { outline-color: #0969da; }
+/* The base rule dims :disabled with opacity, which is applied AFTER
+ * colour and so re-creates the same failure on the in-flight state
+ * (2.36:1 even on the fixed pair).  Signal busy with the fill and the
+ * progress cursor, and keep the label readable — a user watching a
+ * resume start needs to see WHICH action is running. */
+body:not(.dark) .tc-recover__btn:disabled {
+  opacity: 1;
+  background: rgba(9,105,218,0.06);
+  border-color: rgba(9,105,218,0.45);
+}
+body:not(.dark) .tc-recover__btn--continue {
+  border-color: rgba(31,35,40,0.35);
+  color: #57606a;
+}
+body:not(.dark) .tc-recover__btn--continue:hover:not(:disabled) { background: rgba(31,35,40,0.06); }
+body:not(.dark) .tc-recover__btn--continue:disabled {
+  background: rgba(31,35,40,0.04);
+  border-color: rgba(31,35,40,0.3);
+}
+body:not(.dark) .tc-recover__alt {
+  border-top-color: rgba(9,105,218,0.18);
+  color: #57606a;
+}
+body:not(.dark) .tc-recover__alt strong { color: #9a6700; }
 .tc-prov__head {
   color: #58a6ff; font-weight: 600; margin-bottom: 3px;
 }
@@ -1166,6 +1488,22 @@
  * full-strength, take a pointer, and ring on hover/focus. */
 .tc-map__dot--openable { cursor: pointer; }
 .tc-map__dot:disabled { opacity: 0.4; cursor: default; }
+
+/* Replayed: carried from an earlier attempt.  Keeps the pass/fail hue
+ * (the outcome is real) but drops to a fraction of its weight and takes
+ * a hairline ring, so a resumed loop reads as "prefix preserved, tail
+ * executed" at a glance.  Dimming alone would collide with the inert
+ * treatment above, hence the ring: a replayed dot is usually openable,
+ * an inert one never is.
+ *
+ * Deliberately NOT greyscale — the whole point is that a preserved
+ * FAILURE still reads as a failure. */
+.tc-map__dot--replayed {
+  opacity: 0.45;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.35);
+}
+.tc-map__dot--replayed.tc-map__dot--openable:hover,
+.tc-map__dot--replayed.tc-map__dot--selected { opacity: 0.85; }
 .tc-map__dot--openable:hover,
 .tc-map__dot--openable:focus-visible,
 .tc-map__dot--selected { outline: 2px solid #58a6ff; outline-offset: 1px; }
@@ -1212,9 +1550,29 @@
 .tc-cluster__indices { font-size: 10px; color: #7d8590; margin-top: 4px; }
 .tc-cluster__error { color: #f85149; }
 
-@media (prefers-color-scheme: light) {
-  .tc-map { background: rgba(0,0,0,0.03); border-color: rgba(0,0,0,0.1); }
+body:not(.dark) .tc-map { background: rgba(0,0,0,0.03); border-color: rgba(0,0,0,0.1); }
+/* The row buttons carry their low-emphasis baseline in OPACITY (0.62 /
+ * 0.55), which is applied after colour — so over a white map they land
+ * at 1.68:1 and 1.55:1 and no colour override alone can rescue them.
+ * These are the per-row resume controls, i.e. exactly the affordance
+ * that has already been reported as undiscoverable once. Light mode
+ * carries the emphasis in colour, at full opacity. */
+body:not(.dark) .tc-map__resume {
+  color: #0969da;
+  border-color: rgba(9,105,218,0.5);
+  opacity: 1;
 }
+body:not(.dark) .tc-map__resume:hover { background: rgba(9,105,218,0.10); }
+body:not(.dark) .tc-map__continue {
+  color: #57606a;
+  border-color: rgba(31,35,40,0.35);
+  opacity: 1;
+}
+body:not(.dark) .tc-map__continue:hover { background: rgba(31,35,40,0.08); }
+body:not(.dark) .tc-map__tag { color: #57606a; }
+/* The running row's label (#cfe4ff, 1.21:1 here) is corrected in the
+ * later light block as #0b4ea2 / 6.23:1, not duplicated here — an
+ * earlier declaration of it would only be overridden by that one. */
 
 /* ── Clickable rows + focused block detail ────────────────────── */
 .tc-map__row { cursor: pointer; }
@@ -1365,6 +1723,16 @@
 }
 .tc-iter-resume__note strong { color: #adbac7; font-weight: 600; }
 
+/* Parallel loop: mid-loop resume is refused server-side, so this variant
+ * carries the explanation and NO buttons.  Neutral grey rather than the
+ * blue actionable treatment above -- it is information, not an offer, and
+ * a blue panel with nothing to click reads as a broken control. */
+.tc-iter-resume--unavailable {
+  border-color: rgba(128, 128, 128, 0.3);
+  background: rgba(128, 128, 128, 0.06);
+}
+.tc-iter-resume--unavailable .tc-iter-resume__note { margin-bottom: 0; }
+
 .tc-iter-resume__actions { display: flex; gap: 6px; flex-wrap: wrap; }
 
 .tc-iter-resume__btn {
@@ -1393,20 +1761,125 @@
   background: rgba(128, 128, 128, 0.14);
 }
 
-@media (prefers-color-scheme: light) {
-  .tc-map__row:hover { background: rgba(0,0,0,0.04); }
-  .tc-map__row--selected { background: rgba(31,111,235,0.1); }
-  .tc-map__row--running { background: rgba(31,111,235,0.14); }
-  .tc-map__row--running:hover { background: rgba(31,111,235,0.22); }
-  .tc-map__row--running .tc-map__label { color: #0b4ea2; }
-  .tc-map__tag--running { color: #0b4ea2; background: rgba(31,111,235,0.12); }
-  /* The amber-on-dark foregrounds fall below usable contrast on white,
-     so the banner's text darkens while its fill stays amber. */
-  .tc-partial__head, .tc-partial__hazard { color: #8a5a00; }
-  .tc-partial__error { background: rgba(248,81,73,0.1); color: #8c1f1f; }
-  .tc-prov__head { color: #0b4ea2; }
-  .tc-rail__row--current { color: #1f2328; }
+/* Light palette for the mid-loop resume panel.  #58a6ff on its own
+ * translucent-blue fill measures 2.53:1 over a white card and the
+ * neutral rgba(170,170,170,0.95) continue button 2.21:1.  The
+ * `:disabled` rule dims with opacity, which is applied AFTER colour and
+ * so reproduced exactly the blank in-flight button the recovery
+ * banner's Retry had — this is the same defect on a second surface. */
+body:not(.dark) .tc-iter-resume {
+  border-color: rgba(9,105,218,0.3);
+  background: rgba(9,105,218,0.05);
 }
+body:not(.dark) .tc-iter-resume--unavailable {
+  border-color: rgba(31,35,40,0.25);
+  background: rgba(31,35,40,0.04);
+}
+body:not(.dark) .tc-iter-resume__note { color: #57606a; }
+body:not(.dark) .tc-iter-resume__note strong { color: #1f2328; }
+body:not(.dark) .tc-iter-resume__btn {
+  color: #0969da;
+  border-color: rgba(9,105,218,0.55);
+  background: #ffffff;
+}
+body:not(.dark) .tc-iter-resume__btn:hover:not(:disabled) {
+  background: rgba(9,105,218,0.10);
+}
+/* Busy is carried by the fill and the progress cursor, not by fading the
+ * label out of legibility. */
+body:not(.dark) .tc-iter-resume__btn:disabled {
+  opacity: 1;
+  background: rgba(9,105,218,0.06);
+  border-color: rgba(9,105,218,0.4);
+}
+body:not(.dark) .tc-iter-resume__btn--continue {
+  color: #57606a;
+  border-color: rgba(31,35,40,0.35);
+}
+body:not(.dark) .tc-iter-resume__btn--continue:hover:not(:disabled) {
+  background: rgba(31,35,40,0.06);
+}
+
+body:not(.dark) .tc-map__row:hover { background: rgba(0,0,0,0.04); }
+body:not(.dark) .tc-map__row--selected { background: rgba(31,111,235,0.1); }
+body:not(.dark) .tc-map__row--running { background: rgba(31,111,235,0.14); }
+body:not(.dark) .tc-map__row--running:hover { background: rgba(31,111,235,0.22); }
+body:not(.dark) .tc-map__row--running .tc-map__label { color: #0b4ea2; }
+body:not(.dark) .tc-map__tag--running { color: #0b4ea2; background: rgba(31,111,235,0.12); }
+/* The amber-on-dark foregrounds fall below usable contrast on white,
+   so the banner's text darkens while its fill stays amber. */
+body:not(.dark) .tc-partial__head,
+body:not(.dark) .tc-partial__hazard { color: #8a5a00; }
+body:not(.dark) .tc-partial__error { background: rgba(248,81,73,0.1); color: #8c1f1f; }
+body:not(.dark) .tc-prov__head { color: #0b4ea2; }
+body:not(.dark) .tc-rail__row--current { color: #1f2328; }
+
+/* ── Light status palette ──────────────────────────────────────────
+ * The status colours throughout this file are GitHub-DARK values, picked
+ * against #0d1117.  Light mode swaps the card to #ffffff via
+ * --tc-card-bg but the ink does not move, so the entire status
+ * vocabulary lands between 1.3:1 and 2.5:1 — enough to notice something
+ * is there, not enough to read it, and below the 3:1 non-text floor as
+ * well.  Four entries (#3fb950, #58a6ff, #d29922, #e3b341) account for
+ * most of the affected rules, so these are grouped by MEANING rather
+ * than restated selector by selector.
+ *
+ * Longer term this palette belongs in --tc-status-* variables beside
+ * --tc-card-bg in index.css, so it flips once instead of being
+ * overridden here.  This block uses the mechanism the file already has
+ * rather than introducing a second one alongside it. */
+body:not(.dark) .tc-tile__resume,
+body:not(.dark) .tc-tile__iter--passed .tc-tile__iter-status,
+body:not(.dark) .tc-tile__iter-passed,
+body:not(.dark) .tc-map__icon--done,
+body:not(.dark) .tc-rail__shown,
+body:not(.dark) .tc-detail__status--done,
+body:not(.dark) .tc-tile__inspector-done--done { color: #1a7f37; }
+body:not(.dark) .tc-tile__resume { border-color: #1a7f37; }
+body:not(.dark) .tc-tile__rerun,
+body:not(.dark) .tc-tile__progress,
+body:not(.dark) .tc-map__icon--running,
+body:not(.dark) .tc-rail__kind,
+body:not(.dark) .tc-focus__crumb,
+body:not(.dark) .tc-detail__status--running { color: #0969da; }
+body:not(.dark) .tc-tile__rerun { border-color: #0969da; }
+body:not(.dark) .tc-rail__kind { border-color: rgba(9,105,218,0.5); }
+body:not(.dark) .tc-tile__rerun--restart,
+body:not(.dark) .tc-tile__inspector-fallback-banner,
+body:not(.dark) .tc-map__icon--cancelled,
+body:not(.dark) .tc-detail__status--cancelled,
+body:not(.dark) .tc-tile__inspector-done--partial,
+body:not(.dark) .tc-tile__inspector-done--cancelled { color: #9a6700; }
+body:not(.dark) .tc-tile__rerun--restart { border-color: #9a6700; }
+/* Replayed amber matches .tc-partial__head above, so the two surfaces
+ * still read as one idea rather than two different warnings. */
+body:not(.dark) .tc-detail__origin--replayed,
+body:not(.dark) .tc-detail__origin-note,
+body:not(.dark) .tc-detail__status--replayed { color: #8a5a00; }
+body:not(.dark) .tc-tile__vars-label,
+body:not(.dark) .tc-tile__var-name,
+body:not(.dark) .tc-trail__item--model .tc-trail__note { color: #0f766e; }
+/* Held violet.  Its DARK values measure only 2.51:1 against the dark
+ * card — a separate pre-existing dark-mode problem, not fixed here. */
+body:not(.dark) .tc-tile__held,
+body:not(.dark) .tc-map__hold--descendant,
+body:not(.dark) .tc-map__icon--held { color: #6639ba; }
+body:not(.dark) .tc-map__row--hold-local .tc-map__label { color: #4c2889; }
+body:not(.dark) .tc-map__hold--ancestor,
+body:not(.dark) .tc-map__icon--queued,
+body:not(.dark) .tc-map__icon--skipped,
+body:not(.dark) .tc-detail__status--skipped,
+body:not(.dark) .tc-detail__status--queued,
+body:not(.dark) .tc-cluster__indices { color: #57606a; }
+body:not(.dark) .tc-map__icon--failed,
+body:not(.dark) .tc-detail__status--failed,
+body:not(.dark) .tc-detail__error,
+body:not(.dark) .tc-detail__error-label,
+body:not(.dark) .tc-tile__error-msg,
+body:not(.dark) .tc-tile__error-dismiss,
+body:not(.dark) .tc-cluster__error,
+body:not(.dark) .tc-tile__iter-failed,
+body:not(.dark) .tc-tile__iter--failed .tc-tile__iter-status { color: #cf222e; }
 
 /* With motion suppressed the animated cues carry nothing, so the static
  * ones (accent bar, tint, weighted label, "running" chip) are the whole

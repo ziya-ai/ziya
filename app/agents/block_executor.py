@@ -21,8 +21,11 @@ is kept.  Every failing iteration is always persisted in full.
 """
 
 import asyncio
+import contextlib
 import hashlib
 import logging
+import os
+import re
 import traceback
 import time
 from dataclasses import dataclass, field, replace
@@ -112,6 +115,15 @@ class ExecutionContext:
     # task as a standing-context preamble.  Insertion order preserved.
     context_notes: Dict[str, str] = field(default_factory=dict)
 
+    # Roster truncations, keyed by the repeat block's id:
+    # {"roster": N, "dispatched": M} whenever ``repeat_max`` clipped a
+    # for_each source.  Recorded at planning time and read back when the
+    # loop returns, so the block's artifact can state its own reduced
+    # scope.  Without it a clipped fan-out is indistinguishable from a
+    # complete one after the fact — measured as a 112-item queue reported
+    # as a finished pass having dispatched 60, nothing naming the other 52.
+    roster_truncations: Dict[str, Dict[str, int]] = field(default_factory=dict)
+
     # Sibling-result stack, one slot per active sequence depth.  Each
     # _execute_sequence pushes a slot on entry and writes the most-recent
     # completed sibling's artifact into it after each child runs; the
@@ -137,6 +149,57 @@ class ExecutionContext:
     # by the name the caller used, so A→A is caught even when the two
     # references spell the target differently.
     call_stack: List[str] = field(default_factory=list)
+
+    # Human-readable labels for the same stack, outermost first.
+    # Maintained in PARALLEL with ``call_stack`` rather than derived from
+    # it, because that stack holds ``resolved.key`` — ``card:<uuid>``.
+    # Keying by id is correct there and load-bearing (it is what catches
+    # A→A under two different names), and useless as a breadcrumb: a user
+    # shown ``card:8f3a1c04-…`` learns nothing about which phase of their
+    # study broke.  ``resolved.label`` is the card's name, so this carries
+    # that instead and the hold surface reads "CL0 → CL1 → …".
+    call_labels: List[str] = field(default_factory=list)
+
+    # Name of the card that owns this run — the OUTERMOST hop of the
+    # breadcrumb.  Nothing is pushed onto ``call_labels`` for it (it was
+    # never "called"), so without this a hold inside CL1 under CL0
+    # produced a path that started at CL1 and omitted the one card the
+    # reader already has on screen and uses to orient.
+    root_card_label: Optional[str] = None
+
+    # Infrastructure faults observed anywhere in this run, in the order
+    # they occurred.  Accumulated IN MEMORY, deliberately: a hold is not
+    # the first fault, it is the terminal state of a progressive
+    # collapse, and its breadth is the actionable part — but
+    # TaskRunStorage does unguarded read-modify-write (get -> mutate ->
+    # _write_json, no lock, no atomic replace), so N concurrent siblings
+    # incrementing a counter on the run file would lose writes and
+    # under-report the very number that matters.  One aggregate write
+    # happens at the end instead, in the run's own handler.
+    #
+    # Read by _infra_gate_open() to decide whether to keep admitting
+    # work; the kind-dependent policy lives in app.utils.infra_gate
+    # because the enforcement site (here), the surfacing layer and the
+    # tests must not each carry their own copy of it.
+    infra_faults: List["InfraFault"] = field(default_factory=list)
+    # Width of the fan-out currently executing, i.e. the denominator for
+    # the proportional gate.  Set by _execute_repeat before dispatch and
+    # restored after, so a nested loop's width does not leak to the
+    # enclosing one.  Zero outside a fan-out, where only session-level
+    # kinds can gate.
+    infra_fanout_width: int = 0
+    # Widest fan-out this run has entered, latched and never restored.
+    # ``infra_fanout_width`` is restored on exit so a nested loop cannot
+    # corrupt its parent's denominator — but the hold surface reads its
+    # denominator LATER, from the top-level handler, by which time every
+    # loop has exited and the live width is back to 0.  Reading the live
+    # value there would report fanout_width=0 and silently destroy the
+    # ``fleet_wide`` signal, which is the whole point of the aggregate.
+    infra_widest_fanout: int = 0
+    # Set once the gate has fired, so the decision is made exactly once
+    # and every subsequent boundary reads the same answer rather than
+    # re-evaluating a policy whose inputs are still growing.
+    infra_gated_reason: Optional[str] = None
 
     # ---- Resume-from-block support ----
     # Set when this run is a resume of an earlier run (see the resume
@@ -190,6 +253,35 @@ class ExecutionContext:
     resume_iteration_artifacts: Dict[int, Artifact] = field(
         default_factory=dict,
     )
+    # ---- Resume THROUGH a Call ----
+    # Call block ids the resume walk must DESCEND INTO rather than replay,
+    # outermost first.  A Call has an empty ``body``, so
+    # ``_subtree_contains`` reports a callee target as absent and the gate
+    # replays the whole call — which is why a run held on iteration 19 of a
+    # fan-out inside a called card had no resume path except re-entering
+    # that callee from its own start and re-running every banked iteration.
+    # Measured on one study: 14 hours of completed work discarded by a
+    # control labelled "resume".
+    #
+    # Supplied by the resume endpoint from the SOURCE run's
+    # ``call_snapshots`` (app.utils.resume_targets.locate_block), the only
+    # record of a callee's tree — the callee is named, not inlined, so it is
+    # in neither the card nor ``card_snapshot``.  Empty for a normal launch
+    # and for a resume targeting the caller's own tree, so this is inert on
+    # every pre-existing path.
+    resume_call_chain: List[str] = field(default_factory=list)
+
+    def resume_descend_ids(self) -> List[str]:
+        """Ids whose enclosing CONTAINERS must be descended into.
+
+        The resume target plus every Call on the way to it.  The chain
+        members matter independently of the target: the caller's root
+        container encloses the outermost Call but NOT the target, so
+        testing the target alone made the root itself replay and nothing
+        ran at all.
+        """
+        out = [self.resume_from_block_id] if self.resume_from_block_id else []
+        return out + list(self.resume_call_chain)
 
     def effective_scope(self, leaf_scope: Optional[TaskScope] = None) -> Optional[TaskScope]:
         """Merge deck + card + every active ancestor's scope + an
@@ -208,6 +300,64 @@ class ExecutionContext:
         run = self.storage.get(self.run_id)
         return bool(run and run.cancel_requested)
 
+    def record_infra_fault(self, exc: BaseException, index: Optional[int] = None) -> None:
+        """Note an infrastructure fault against this run.
+
+        Called from the fan-out's per-iteration except BEFORE the
+        exception propagates, so the aggregate is complete even though
+        only one exception survives to the top-level handler.
+        """
+        from app.utils.infra_gate import InfraFault
+        kind = getattr(exc, "infra_kind", "")
+        if not kind:
+            return
+        # Labels, not keys — and rooted at the card that owns the run, so
+        # the breadcrumb names every hop instead of starting mid-chain.
+        # Falls back to the key stack only when no labels were captured at
+        # all, so a path built by an older code path still yields
+        # something rather than nothing.
+        _hops: List[str] = []
+        if self.root_card_label:
+            _hops.append(self.root_card_label)
+        _hops.extend(self.call_labels)
+        _path = tuple(_hops) if _hops else tuple(self.call_stack)
+        self.infra_faults.append(InfraFault(
+            kind=kind,
+            block_id=getattr(exc, "block_id", "") or "",
+            call_path=_path,
+            index=index,
+            at=time.time(),
+        ))
+
+    def infra_gate_closed(self) -> bool:
+        """True once observed faults justify refusing to admit new work.
+
+        Evaluated at the same boundaries as ``cancel_requested``.  The
+        decision is latched in ``infra_gated_reason``: re-deciding on
+        every boundary against a still-growing fault list would let a
+        gate that fired at a third of the fan-out silently un-fire as
+        later siblings completed successfully.
+        """
+        if self.infra_gated_reason:
+            return True
+        if not self.infra_faults:
+            return False
+        from app.utils.infra_gate import gate_reason
+        reason = gate_reason(self.infra_faults, self.infra_fanout_width)
+        if reason:
+            self.infra_gated_reason = reason
+            logger.warning(f"⏸️ INFRA_GATE closed: {reason}")
+            return True
+        return False
+
+    def infra_summary(self) -> Dict[str, Any]:
+        """Aggregate fault record for the hold surface."""
+        from app.utils.infra_gate import summarize
+        return summarize(
+            self.infra_faults,
+            self.infra_widest_fanout or self.infra_fanout_width,
+        )
+
     def pause_requested(self) -> bool:
         if self.storage is None:
             return False
@@ -215,8 +365,141 @@ class ExecutionContext:
         return bool(run and run.pause_requested)
 
 
+# Stores that answer "where in the tree am I", as distinct from "which
+# run is this".  Only these are private to a concurrent iteration; every
+# other field stays shared, because the run is genuinely one run.
+_ITERATION_PRIVATE = (
+    "binding_stack", "sibling_stack", "artifact_registry", "scope_stack",
+)
+
+
+class _IterationScope:
+    """A per-iteration view of an ``ExecutionContext``.
+
+    A parallel Repeat runs its iterations as concurrent asyncio Tasks that
+    all shared ONE context, while templating resolves ``{{item}}`` from
+    ``ctx.binding_stack[-1]`` and ``{{previous_sibling}}`` from
+    ``ctx.sibling_stack[-1]``.  Both are plain lists, so the top element
+    belonged to whichever iteration pushed most recently rather than to
+    the one doing the read.  Iterations suspend at every await -- the
+    model call, and the ``_emit`` on each block transition -- so the
+    interleaving is the normal case, not a race needing bad luck.
+
+    Measured on an 8-wide two-stage fan-out: all eight iterations resolved
+    ``{{item}}`` to the EIGHTH item, the first seven items were never
+    processed, and the loop still reported eight passed iterations.
+    Nothing raised, so the wrong answers were indistinguishable from
+    right ones.
+
+    ``scope_stack`` is private for a related reason rather than a measured
+    one: it feeds ``effective_scope()``, whose merge unions ``tools`` /
+    ``skills`` / ``shell_commands``, so a concurrent sibling's entry can
+    only ever WIDEN a leaf task's grants.  A uniform fan-out pushes
+    identical scopes and so cannot show it, but a body whose blocks carry
+    different tool lists would leak one into the other.
+
+    Everything else -- ``storage``, ``variables``, the infra-fault state,
+    the cancel and pause flags -- delegates to the parent, which is what
+    keeps a fault recorded inside an iteration reaching the run and the
+    infra gate closing for the whole fan-out.  Copying rather than
+    starting empty preserves nesting: an inner loop still sees the
+    enclosing iteration's bindings and ancestor scopes beneath its own.
+    """
+
+    __slots__ = _ITERATION_PRIVATE + ("_parent",)
+
+    def __init__(self, parent: "ExecutionContext") -> None:
+        object.__setattr__(self, "_parent", parent)
+        for _name in _ITERATION_PRIVATE:
+            _got = getattr(parent, _name)
+            object.__setattr__(
+                self, _name,
+                dict(_got) if isinstance(_got, dict) else list(_got),
+            )
+
+    def __getattr__(self, name: str):
+        # Reached only for names absent from __slots__ -- i.e. everything
+        # that is genuinely run-scoped rather than tree-position state.
+        parent = object.__getattribute__(self, "_parent")
+        got = getattr(parent, name)
+        # A METHOD must be re-bound to THIS view before it is returned.
+        # Forwarded as the parent's bound method, "self" inside it is the
+        # PARENT, so a method reading a private store reads the shared
+        # copy rather than this iteration's own.  Measured:
+        # effective_scope() reads self.scope_stack and returned None for
+        # a view whose own stack held the leaf's scope -- and task_executor
+        # reads every scope field behind "if scope else", so the leaf
+        # silently lost its writable paths, fell to the tool floor, and
+        # ran a declared model_tier of "large" on the default model.
+        # Invisible, and worse than the bug this class exists to fix.
+        #
+        # Safe for the writers too: record_infra_fault and
+        # infra_gate_closed touch only shared fields, which __getattr__
+        # and __setattr__ route to the parent whatever self is bound to.
+        if getattr(got, "__self__", None) is parent:
+            return got.__func__.__get__(self)
+        return got
+
+    def __setattr__(self, name: str, value) -> None:
+        if name in _ITERATION_PRIVATE:
+            object.__setattr__(self, name, value)
+            return
+        # Scalar run state (infra_gated_reason, infra_fanout_width, ...)
+        # must land on the shared parent, or the gate would close on a
+        # copy discarded the moment the iteration ends.
+        setattr(object.__getattribute__(self, "_parent"), name, value)
+
+
 class BlockExecutionCancelled(Exception):
     """Raised internally when cancel is observed at a boundary."""
+
+
+# Default ceiling on concurrent in-flight children of a parallel
+# container (a Parallel block, or a Repeat with repeat_parallel).
+#
+# Matches delegate_manager.DEFAULT_MAX_CONCURRENCY deliberately: both
+# fan work out to the same provider under the same account rate limit,
+# so two different caps would just be two different ways to get
+# throttled.  Overridable per-block via ``repeat_max_concurrency`` and
+# globally via ZIYA_TASK_MAX_CONCURRENCY.
+DEFAULT_REPEAT_CONCURRENCY = 8
+
+
+def _resolve_concurrency(block_value: Optional[int], planned: int) -> int:
+    """Resolve the effective concurrency limit for a parallel container.
+
+    Precedence: explicit per-block value, then ZIYA_TASK_MAX_CONCURRENCY,
+    then DEFAULT_REPEAT_CONCURRENCY.  A value <= 0 at either the block or
+    env layer means unbounded and is returned as 0 — an explicit opt-out
+    for a fan-out of cheap non-model work, where the cap is pure latency.
+
+    Never raises: an unparseable env value is ignored rather than
+    failing a launch over a typo in the environment.
+    """
+    if block_value is not None:
+        return max(0, int(block_value))
+    raw = (os.environ.get("ZIYA_TASK_MAX_CONCURRENCY") or "").strip()
+    if raw:
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            logger.warning(
+                "ZIYA_TASK_MAX_CONCURRENCY=%r is not an integer - ignoring", raw
+            )
+    return DEFAULT_REPEAT_CONCURRENCY
+
+
+def _concurrency_gate(limit: int, planned: int):
+    """An async context manager bounding concurrent entries, or a no-op.
+
+    Returns a null gate when the limit is 0 (unbounded) or already at or
+    above ``planned``, so the common small fan-out adds no semaphore
+    bookkeeping and the emitted log line stays truthful about whether
+    anything was actually throttled.
+    """
+    if limit <= 0 or planned <= limit:
+        return contextlib.nullcontext()
+    return asyncio.Semaphore(limit)
 
 
 async def _emit(ctx: "ExecutionContext", event: Dict[str, Any]) -> None:
@@ -380,7 +663,16 @@ async def execute_block(block: Block, ctx: ExecutionContext) -> Artifact:
             # persisted anywhere.  Re-running them is how {{var.NAME}} is
             # rebuilt without a variables snapshot on disk.
             pass
-        elif _subtree_contains(block, ctx.resume_from_block_id):
+        elif block.block_type == "call" and block.id in ctx.resume_call_chain:
+            # A Call on the path to the target.  Descend: _execute_call
+            # resolves the callee and dispatches its REAL tree, whose ids
+            # are the ids the target and the replay artifacts are keyed by
+            # (task_call._resolve_card returns the callee card's own root),
+            # so the gate then applies inside the callee exactly as it does
+            # in the caller.  This cannot be inferred from the tree — a
+            # Call's body is empty — which is why the chain is passed in.
+            pass
+        elif _subtree_contains_any(block, ctx.resume_descend_ids()):
             # A container on the path to the target: descend so the inner
             # sequence keeps skipping its own earlier children.  Only
             # reachable for group/root containers, because loop-body
@@ -427,7 +719,16 @@ async def execute_block(block: Block, ctx: ExecutionContext) -> Artifact:
         await _mark_block_status(ctx, block, "cancelled")
         raise
     except Exception as exc:
-        await _mark_block_status(ctx, block, "failed", error=str(exc))
+        # An infra fault marks the block "held", not "failed": the two ask
+        # for different responses, and writing "failed" here made the
+        # faulting block indistinguishable from a genuine work failure in
+        # the run map — so the only way to find where a fan-out collapsed
+        # was to open every subagent.
+        await _mark_block_status(
+            ctx, block,
+            "held" if getattr(exc, "infra_kind", "") else "failed",
+            error=str(exc),
+        )
         raise
     finally:
         ctx.scope_stack.pop()
@@ -459,6 +760,47 @@ def _call_failure(summary: str) -> Artifact:
     return Artifact(summary=summary, failed=True, created_at=time.time())
 
 
+def _sequence_child_failure(child: Block, exc: Exception) -> Artifact:
+    """A failed artifact standing in for a sibling that raised.
+
+    ``on_failure`` is documented in terms of "the first child whose
+    artifact is failed" (design/task-cards.md §Failure policy), so a
+    child that RAISES has no artifact for the policy to inspect and
+    formerly bypassed it entirely: the exception unwound every
+    enclosing sequence to the run boundary, making ``stop`` and
+    ``continue`` behave identically -- the run died either way -- while
+    remaining siblings went unmarked and the outputs already
+    accumulated from earlier siblings were discarded along with the
+    artifact that was never returned.
+
+    Converting here restores that contract and matches the two
+    containers that already do this: ``_execute_parallel`` records a
+    failed child and ``_execute_repeat`` a failed iteration, each
+    re-raising ONLY infra faults.
+
+    Deliberately NOT done inside ``execute_block``: the root callers
+    (api.task_cards, cli_card_runner, task_scheduler) read an escaping
+    TaskExecutorError to populate the run's ``error`` field, so
+    swallowing it there would blank that field for every root-level
+    task.  ``execute_block``'s own handler has already written this
+    child's block_state as "failed" with this error before re-raising,
+    so what this adds is the sequence-level view, not the record.
+    """
+    err = "".join(traceback.format_exception_only(type(exc), exc)).strip()
+    label = child.name or child.id or child.block_type
+    logger.warning(
+        "⛔ SEQUENCE: child %s raised %s -- converted to a failed "
+        "artifact so on_failure governs: %s",
+        label, type(exc).__name__, err,
+    )
+    return Artifact(
+        summary=f"{label} raised {type(exc).__name__}: {err}",
+        decisions=[f"child {label!r} raised, not returned: {err}"],
+        failed=True,
+        created_at=time.time(),
+    )
+
+
 def _seed_callee_block_states(ctx: "ExecutionContext", root: Block) -> None:
     """Register the callee subtree in the run's ``block_states``.
 
@@ -474,15 +816,29 @@ def _seed_callee_block_states(ctx: "ExecutionContext", root: Block) -> None:
     """
     if ctx.storage is None or ctx.binding_stack:
         return
+    # State this run already holds for the callee's blocks.  Seeding blind
+    # is destructive: set_block_state REPLACES the whole state object, so
+    # a loop inside the callee loses the iteration_summaries a resume
+    # installed for it — the records that tell the NEXT resume which
+    # iterations are already banked.
+    try:
+        _run = ctx.storage.get(ctx.run_id)
+        _existing = dict((_run.block_states or {}) if _run else {})
+    except Exception:  # noqa: BLE001 — bookkeeping only
+        _existing = {}
     stack = [root]
     while stack:
         node = stack.pop()
         if node.id:
             try:
+                _prior = _existing.get(node.id)
                 ctx.storage.set_block_state(ctx.run_id, TaskRunBlockState(
                     block_id=node.id,
                     block_type=node.block_type,
                     status="queued",
+                    iteration_summaries=list(
+                        getattr(_prior, "iteration_summaries", None) or []
+                    ),
                 ))
             except Exception as exc:  # noqa: BLE001 — bookkeeping only
                 logger.debug(f"seed callee block state failed: {exc}")
@@ -620,10 +976,14 @@ async def _execute_call(block: Block, ctx: ExecutionContext) -> Artifact:
     ctx.scope_stack = []
     ctx.card_scope = resolved.card_scope
     ctx.call_stack.append(resolved.key)
+    # Display counterpart of the key stack (see ExecutionContext.call_labels).
+    # Pushed and popped in lockstep so the two can never disagree about depth.
+    ctx.call_labels.append(resolved.label or resolved.key)
     try:
         artifact = await _run_callee(resolved, ctx)
     finally:
         ctx.call_stack.pop()
+        ctx.call_labels.pop()
         # Restore the SAME list object the enclosing execute_block pushed
         # onto, so its own ``finally: ctx.scope_stack.pop()`` still pops
         # the frame it owns.
@@ -671,6 +1031,23 @@ def _subtree_contains(block: Block, target_id: Optional[str]) -> bool:
         return True
     for child in (block.body or []):
         if _subtree_contains(child, target_id):
+            return True
+    return False
+
+
+def _subtree_contains_any(
+    block: Block, target_ids: List[str],
+) -> bool:
+    """True if ``block``'s subtree holds ANY of ``target_ids``.
+
+    The resume gate must descend into a container that encloses the target
+    OR the next Call on the way to it.  Those are different ids living at
+    different depths — the caller's root encloses ``call-p1`` but not the
+    callee block inside it — so a single-id test made the root replay and
+    the resume execute nothing at all.
+    """
+    for target_id in target_ids:
+        if _subtree_contains(block, target_id):
             return True
     return False
 
@@ -787,7 +1164,10 @@ def _build_iteration_context(bindings: "task_templating.IterationBindings") -> s
     return "\n".join(lines)
 
 
-def _build_state_context(ctx: "ExecutionContext") -> str:
+def _build_state_context(
+    ctx: "ExecutionContext",
+    bindings: Optional[task_templating.IterationBindings] = None,
+) -> str:
     """Build the standing-context preamble from State-block prose.
 
     This is the conversational baseline: freeform givens authored in a
@@ -795,11 +1175,21 @@ def _build_state_context(ctx: "ExecutionContext") -> str:
     author needing any {{var}} templating.  Multiple State blocks'
     notes are joined in insertion order.  Returns empty string when no
     prose givens are active.
+
+    Prose is rendered against ``bindings`` when supplied.  Templating is
+    not REQUIRED in prose, but it must WORK there: authors reasonably
+    write "DEPLOY_COMMAND: {{var.DEPLOY_COMMAND}}" as a given, and the
+    previous verbatim-only handling passed the braces through to the
+    agent unresolved.  Because unknown placeholders are preserved by
+    ``render``, prose with no resolvable placeholder is byte-identical
+    to the old behaviour.
     """
     notes = [n.strip() for n in ctx.context_notes.values() if n and n.strip()]
     if not notes:
         return ""
     body = "\n\n".join(notes)
+    if bindings is not None:
+        body = task_templating.render(body, bindings)
     return f"[Assumptions and context for this task -- treat these as given]\n{body}"
 
 
@@ -827,6 +1217,32 @@ def _build_sibling_context(ctx: "ExecutionContext") -> str:
     )
 
 
+# Placeholders whose value is a PRIOR BLOCK'S RESULT.  Their honest
+# rendering when no such result exists is the empty string, so they must
+# be rendered even on a run where nothing has completed yet — unlike
+# {{index}}, which resolves to "0" against default bindings and would
+# assert an iteration that never happened.
+#
+# That asymmetry is why _apply_templating_to_task cannot simply always
+# render: the early-return below is what keeps loop-scoped placeholders
+# literal outside a loop.  Narrowing it rather than removing it
+# preserves that, while fixing the first-block case where
+# {{sibling("x")}} and {{previous_sibling}} were handed to the model as
+# raw template text — the registry is empty and no sibling has completed
+# when the FIRST block of a run renders, which is precisely the state the
+# guard treated as "nothing to substitute".
+_SEQUENCE_PLACEHOLDER_RE = re.compile(
+    r"\{\{\s*(?:sibling\(|previous_sibling\b)"
+)
+
+
+def _references_sequence_placeholder(instructions: Optional[str]) -> bool:
+    """True if ``instructions`` reference a prior block's result."""
+    if not instructions or "{{" not in instructions:
+        return False
+    return bool(_SEQUENCE_PLACEHOLDER_RE.search(instructions))
+
+
 def _apply_templating_to_task(block: Block, ctx: ExecutionContext) -> Block:
     """Return a shallow copy of the task block with instructions rendered
     against the innermost active iteration bindings, then prepended with
@@ -841,7 +1257,8 @@ def _apply_templating_to_task(block: Block, ctx: ExecutionContext) -> Block:
     sibling_prev = ctx.sibling_stack[-1] if ctx.sibling_stack else None
     if (not ctx.binding_stack and not ctx.variables and not ctx.overrides
             and not ctx.context_notes and sibling_prev is None
-            and not ctx.artifact_registry):
+            and not ctx.artifact_registry
+            and not _references_sequence_placeholder(block.instructions)):
         return block
     base = ctx.binding_stack[-1] if ctx.binding_stack else task_templating.IterationBindings()
     # Merge run-scoped variables with launch-time overrides (overrides
@@ -860,9 +1277,12 @@ def _apply_templating_to_task(block: Block, ctx: ExecutionContext) -> Block:
     rendered = task_templating.render(block.instructions, bindings)
     # Assemble preambles, prose givens first (the conversational
     # baseline), then the auto iteration-context (loop-only).  Both are
-    # standing context the task receives without templating.
+    # standing context the task receives without needing templating —
+    # but prose is rendered against the same bindings as the
+    # instructions, so a {{var.X}} given resolves rather than reaching
+    # the agent as literal braces.
     preambles: List[str] = []
-    state_ctx = _build_state_context(ctx)
+    state_ctx = _build_state_context(ctx, bindings)
     if state_ctx:
         preambles.append(state_ctx)
     sibling_ctx = _build_sibling_context(ctx)
@@ -948,7 +1368,25 @@ async def _execute_sequence(
                 ctx, chargeable=_is_step_boundary(child) and not _free)
             if ctx.cancel_requested():
                 raise BlockExecutionCancelled()
-            last = await execute_block(child, ctx)
+            try:
+                last = await execute_block(child, ctx)
+            except BlockExecutionCancelled:
+                # A stop request is not a verdict on the work: it must
+                # keep unwinding so the run records "cancelled".
+                raise
+            except Exception as exc:
+                # An infra fault likewise keeps unwinding:
+                # api.task_cards reads ``infra_kind`` off the live
+                # exception to mark the run "held" -- which preserves
+                # the resume position -- instead of "failed", so
+                # converting one here would cost the run exactly what
+                # a hold exists to protect.  Only a failure OF THE
+                # WORK is convertible.  BaseException (the infra
+                # gate's CancelledError, KeyboardInterrupt) is not
+                # caught at all.
+                if getattr(exc, "infra_kind", ""):
+                    raise
+                last = _sequence_child_failure(child, exc)
             acc_outputs.extend(last.outputs or [])
             acc_decisions.extend(last.decisions or [])
             # Make this sibling's result visible to the next sibling.
@@ -987,10 +1425,37 @@ async def _execute_parallel(
     if not block.body:
         return Artifact(summary="(empty parallel block)", created_at=time.time())
     start = time.time()
+    # Bound concurrency: a Parallel block with many model-invoking
+    # children hits the same provider rate limit as a parallel Repeat.
+    limit = _resolve_concurrency(
+        getattr(block, "repeat_max_concurrency", None), len(block.body),
+    )
+    gate = _concurrency_gate(limit, len(block.body))
+    if limit and len(block.body) > limit:
+        logger.info(
+            f"⛓️ PARALLEL: {block.id} running {len(block.body)} children "
+            f"at concurrency {limit}"
+        )
+
+    async def _gated(child: Block) -> Artifact:
+        async with gate:
+            return await execute_block(child, ctx)
+
     children = await asyncio.gather(
-        *[execute_block(c, ctx) for c in block.body],
+        *[_gated(c) for c in block.body],
         return_exceptions=True,
     )
+    # Infra faults propagate rather than becoming a failed child: see the
+    # matching guard in _execute_repeat.  A held run keeps its resume
+    # position; a failed one does not, and the fault is not a verdict on
+    # any child's work.
+    for result in children:
+        if isinstance(result, BaseException) and getattr(result, "infra_kind", ""):
+            logger.warning(
+                f"⏸️ PARALLEL: {block.id} aborting — infra fault "
+                f"({getattr(result, 'infra_kind', '')}) in one child"
+            )
+            raise result
     outputs: List[ArtifactPart] = []
     decisions: List[str] = []
     any_failed = False
@@ -1020,8 +1485,24 @@ async def _execute_repeat(
 ) -> Artifact:
     """Execute a Repeat block in its declared mode.  One iteration is
     one top-to-bottom pass of the body."""
-    iterations = _plan_iterations(block, ctx)
+    try:
+        iterations = _plan_iterations(block, ctx)
+    except ForEachSourceError as e:
+        # An unresolvable templated fan-out source is an authoring or
+        # upstream-output defect, not a crash: return a failed artifact
+        # so the enclosing container's on_failure policy decides whether
+        # the run stops, exactly as an unresolvable Call target does.
+        summary = f"for_each source did not resolve - 0 iterations run. {e}"
+        logger.warning("🔁 REPEAT: %s", summary)
+        return Artifact(
+            summary=summary,
+            decisions=[f"for_each source unresolved for block {block.id!r}"],
+            failed=True,
+            created_at=time.time(),
+        )
     if not iterations:
+        # An EMPTY resolved list is legitimate (a planner that found
+        # nothing to do), unlike an unresolvable source above.
         return Artifact(summary="(repeat with 0 iterations)", created_at=time.time())
 
     start = time.time()
@@ -1081,7 +1562,18 @@ async def _execute_repeat(
             previous=previous,
             all_summaries=list(all_prior or []),
         )
-        ctx.binding_stack.append(bindings)
+        # Concurrent iterations must not share the stores that describe
+        # tree position.  A parallel fan-out interleaves at every await,
+        # so pushing these bindings onto the shared context leaves every
+        # iteration reading whichever sibling pushed last -- see
+        # _IterationScope for the measured consequence.
+        #
+        # Serial loops keep the shared context deliberately: they cannot
+        # interleave, so there is nothing to isolate, and copying would
+        # change what a later iteration sees of an earlier one's inner
+        # blocks -- a behaviour change unrelated to this defect.
+        iter_scope = _IterationScope(ctx) if block.repeat_parallel else ctx
+        iter_scope.binding_stack.append(bindings)
         # Stamp the iteration context so nested task_executor emissions
         # tag streaming deltas with the *iteration owner*'s block_id
         # (this repeat block) rather than the inner task block.  The
@@ -1092,11 +1584,26 @@ async def _execute_repeat(
         iter_ctx_token = set_task_iteration_context(block.id, index)
         try:
             artifact = await _execute_sequence(
-                block.body, ctx,
+                block.body, iter_scope,
                 on_failure=(block.on_failure or "continue"),
             )
+        except BaseException as exc:
+            # Record before propagating.  gather() surfaces only ONE
+            # exception, so an aggregate assembled after it has already
+            # lost the other N-1 — and the hold would report the first
+            # subagent's fault as though it were the whole event.
+            # Recording HERE is also what lets the concurrent watcher see
+            # the fault while siblings are still running or still queued
+            # behind the concurrency gate, which is the only point at
+            # which cancelling them can still save work.
+            ctx.record_infra_fault(exc, index=index)
+            raise
         finally:
-            ctx.binding_stack.pop()
+            if iter_scope is ctx:
+                # Shared stack: undo the push.  A private scope is
+                # discarded whole, so popping it would only mutate a
+                # list nobody reads again.
+                ctx.binding_stack.pop()
             reset_task_iteration_context(iter_ctx_token)
         # Seal timing if the body didn't.
         if not artifact.duration_ms:
@@ -1113,19 +1620,88 @@ async def _execute_repeat(
         return artifact
 
     if block.repeat_parallel and block.repeat_mode in (None, "count", "for_each"):
+        # Selective replay.  A parallel fan-out has no ordering, so a resume
+        # cannot take a PREFIX of it — but it can skip the iterations that
+        # already produced an artifact and execute only the ones that never
+        # finished.  That is the entire value of resuming a wide fan-out: a
+        # 20-agent audit that lost one subagent to an expired credential
+        # re-runs one subagent, not twenty.
+        #
+        # Until now this branch built its task list from
+        # ``range(len(iterations))`` unconditionally while only the serial
+        # branch consulted the banked prefix, so the hold surface's promise
+        # of preserved progress was broken for the one block shape most
+        # likely to hold.  Keyed on MEMBERSHIP rather than a start index,
+        # because ``previous=None`` here means index order carries no
+        # dependency: a gap in the middle is filled, not re-run wholesale.
+        _banked: Dict[int, Artifact] = {}
+        if block.id and block.id == ctx.resume_from_block_id:
+            _banked = {
+                i: a for i, a in ctx.resume_iteration_artifacts.items()
+                if a is not None and 0 <= i < len(iterations)
+            }
+        _todo = [i for i in range(len(iterations)) if i not in _banked]
+        for _i in sorted(_banked):
+            _art = _banked[_i]
+            last_artifact = _art
+            outputs.extend(_art.outputs)
+            await _emit(ctx, {
+                "type": "iteration_completed",
+                "block_id": block.id, "index": _i,
+                "status": "passed", "replayed": True,
+                "duration_ms": 0, "tokens": 0,
+            })
+        if _banked:
+            logger.info(
+                f"🔁 REPEAT: {block.id} replaying {len(_banked)} banked "
+                f"iteration(s), executing {len(_todo)} of {len(iterations)}"
+            )
+        # Denominator for the proportional infra gate.  Saved/restored so a
+        # nested loop cannot leave a stale width behind for its parent.
+        # Sized to what is actually DISPATCHED: gating against the card's
+        # declared width would under-report a second collapse, since one
+        # fault out of one executing iteration is fleet-wide while one out
+        # of twenty is not.
+        _saved_width = ctx.infra_fanout_width
+        ctx.infra_fanout_width = len(_todo)
+        ctx.infra_widest_fanout = max(
+            ctx.infra_widest_fanout, len(_todo),
+        )
         # Parallel iterations cannot see each other's outputs — propagation
         # is last/all relative to prior iterations, which is ill-defined
         # when everything runs concurrently.  Bindings still carry index
         # and item; previous/all are left empty.  The design doc treats
         # propagation as a sequential-loop feature.
+        #
+        # Concurrency is bounded (see _resolve_concurrency).  The gate is
+        # acquired INSIDE _run_one rather than around create_task on
+        # purpose: the cancel watcher below polls every entry of
+        # ``pending`` and cancels the not-yet-done ones, so each iteration
+        # must own a Task from the outset.  Gating dispatch instead would
+        # leave queued iterations with no task to cancel and make a
+        # cancelled 60-wide fan-out wait for the queue to drain.
+        _limit = _resolve_concurrency(
+            block.repeat_max_concurrency, len(_todo),
+        )
+        _gate = _concurrency_gate(_limit, len(_todo))
+        if _limit and len(_todo) > _limit:
+            logger.info(
+                f"⛓️ REPEAT: {block.id} running {len(_todo)} parallel "
+                f"iterations at concurrency {_limit}"
+            )
+
+        async def _run_one_gated(i: int) -> Artifact:
+            async with _gate:
+                return await _run_one(
+                    i,
+                    item=iterations[i].get("item"),
+                    previous=None,
+                    all_prior=None,
+                )
+
         pending = [
-            asyncio.create_task(_run_one(
-                i,
-                item=iterations[i].get("item"),
-                previous=None,
-                all_prior=None,
-            ))
-            for i in range(len(iterations))
+            asyncio.create_task(_run_one_gated(i))
+            for i in _todo
         ]
         # Poll cancel_requested while iterations run.  The serial path
         # checks between iterations; the parallel path has no natural
@@ -1138,38 +1714,111 @@ async def _execute_repeat(
                         if not t.done():
                             t.cancel()
                     return
+                # Infra gate.  This is the ONLY place cancelling a
+                # sibling can still save work: gather(return_exceptions=
+                # True) does not short-circuit — it waits for every task —
+                # so by the time it returns, all N siblings have already
+                # run to completion against the same dead dependency.
+                # Measured: a fast-failing task alongside three 0.6 s
+                # siblings returned at 0.60 s with every task .done(), so
+                # a post-gather cancel() loop is a no-op that merely reads
+                # as if it bounded the damage.
+                if ctx.infra_gate_closed():
+                    n = sum(1 for t in pending if not t.done())
+                    if n:
+                        logger.warning(
+                            f"⏸️ INFRA_GATE cancelling {n} in-flight "
+                            f"sibling(s) in block {block.id}"
+                        )
+                    for t in pending:
+                        if not t.done():
+                            t.cancel()
+                    return
                 await asyncio.sleep(0.25)
         watcher = asyncio.create_task(_watch_cancel())
-        results = await asyncio.gather(*pending, return_exceptions=True)
-        watcher.cancel()
+        try:
+            results = await asyncio.gather(*pending, return_exceptions=True)
+        finally:
+            watcher.cancel()
+            # Restore on every exit, including the infra re-raise below:
+            # a stale width would corrupt an enclosing fan-out's
+            # proportional gate.  Safe for the hold surface because
+            # ctx.infra_widest_fanout latches the width independently.
+            ctx.infra_fanout_width = _saved_width
+        # An infrastructure fault is not an iteration result.  Materialising
+        # it as a failed Artifact below discards the ``infra_kind`` attribute
+        # that api.task_cards reads off the live exception to decide between
+        # mark_held and update_status("failed") — so a whole fan-out dying on
+        # one expired credential was recorded as N failures of the work, the
+        # loop advanced to the next iteration into the same dead dependency,
+        # and the run lost the resume position a hold preserves.
+        #
         # Materialise any exceptional iteration as a failed Artifact so
         # the persistence contract in design/task-cards.md ("every failing
         # iteration is always persisted") holds for both execution paths.
-        for idx, r in enumerate(results):
+        #
+        # This runs BEFORE the infra re-raise below, deliberately: raising
+        # first skipped this loop entirely, so a gate-cancelled fan-out
+        # persisted NO iteration records -- the run map had nothing to draw
+        # for the very event that stopped the run, and the contract above
+        # was silently false on exactly the path that most needs it.
+        for _pos, r in enumerate(results):
+            # Position in ``results`` maps to an ITERATION INDEX through
+            # ``_todo``.  With banked iterations skipped the two differ, so
+            # using the position directly would record iteration 19's
+            # failure against index 0 — corrupting the very record the NEXT
+            # resume reads to decide what is already banked.
+            idx = _todo[_pos]
             if isinstance(r, Artifact):
                 last_artifact = r
                 outputs.extend(r.outputs)
                 continue
             if isinstance(r, BaseException):
                 err_text = "".join(traceback.format_exception_only(type(r), r)).strip()
+                # A sibling the infra gate cancelled is not a failure of
+                # the work: the harness killed it deliberately because a
+                # peer hit dead infrastructure.  asyncio.CancelledError is
+                # NOT a subclass of Exception, so it never reaches
+                # execute_block's ``except Exception`` and would otherwise
+                # be recorded here as a generic failure — making a fan-out
+                # look N-wide broken when only the faulting subset was,
+                # and blaming the card for the environment's fault.
+                _cancelled = isinstance(r, asyncio.CancelledError)
+                _iter_status = "cancelled" if _cancelled else "failed"
                 synth = Artifact(
-                    summary=f"Iteration {idx} raised {type(r).__name__}",
+                    summary=(
+                        f"Iteration {idx} cancelled — a sibling hit an "
+                        f"infrastructure fault"
+                        if _cancelled
+                        else f"Iteration {idx} raised {type(r).__name__}"
+                    ),
                     decisions=[err_text],
                     duration_ms=0,
                     created_at=time.time(),
-                    failed=True,
+                    failed=not _cancelled,
                 )
                 synth.signature = _derive_signature(synth)
                 await _record_iteration(block, ctx, idx, synth)
                 await _emit(ctx, {
                     "type": "iteration_completed",
                     "block_id": block.id, "index": idx,
-                    "status": "failed",
+                    "status": _iter_status,
                     "signature": synth.signature,
                     "duration_ms": 0,
                     "tokens": 0,
                 })
                 last_artifact = synth
+        # Now that every iteration is on record, re-raise so the run holds
+        # rather than being reported as a failure of the work.  Order
+        # matters: raising before the loop above left the run map with no
+        # iteration records for the collapse that stopped the run.
+        for r in results:
+            if isinstance(r, BaseException) and getattr(r, "infra_kind", ""):
+                logger.warning(
+                    f"🔁 REPEAT: {block.id} aborting fan-out — infra fault "
+                    f"({getattr(r, 'infra_kind', '')}) in one iteration"
+                )
+                raise r
         # If cancellation fired, surface it the same way the serial path does.
         if ctx.cancel_requested():
             raise BlockExecutionCancelled()
@@ -1204,6 +1853,12 @@ async def _execute_repeat(
             await _wait_if_paused(ctx, chargeable=False)
             if ctx.cancel_requested():
                 raise BlockExecutionCancelled()
+            # Serial fan-out: the gate stops admitting further iterations.
+            # Cheaper than the parallel case (no work is in flight to
+            # cancel) and strictly more effective — nothing after the
+            # gating fault runs at all.
+            if ctx.infra_gate_closed():
+                break
             # Honour propagate mode.  "none" isolates iterations entirely
             # (no prior info reaches templating or auto-injection).
             # Anything else surfaces the previous artifact; "all" also
@@ -1230,14 +1885,124 @@ async def _execute_repeat(
         "block_id": block.id,
         "at": time.time(),
     })
+    # Scope reduction, surfaced on the block's own artifact.  The loop
+    # completed every iteration it PLANNED, so this is not a failure —
+    # but "ran 60 of 60 planned" and "ran 60 of the 112 asked for" are
+    # different results, and only the second is honest when repeat_max
+    # clipped the roster.  Recorded as a decision rather than a failure
+    # so an enclosing on_failure policy is unaffected.
+    _decisions = list(last_artifact.decisions if last_artifact else [])
+    _trunc = ctx.roster_truncations.get(block.id or "")
+    if _trunc:
+        _skipped = _trunc["roster"] - _trunc["dispatched"]
+        _decisions.append(
+            f"scope reduced by repeat_max: {_trunc['roster']} items "
+            f"resolved, {_trunc['dispatched']} dispatched, {_skipped} "
+            f"never run — this block's result covers "
+            f"{_trunc['dispatched']}/{_trunc['roster']} of its roster"
+        )
     return Artifact(
         summary=(last_artifact.summary if last_artifact else "(no iterations completed)"),
-        decisions=(last_artifact.decisions if last_artifact else []),
+        decisions=_decisions,
         outputs=outputs,
         duration_ms=elapsed_ms,
         created_at=time.time(),
         failed=bool(last_artifact and last_artifact.failed),
     )
+
+
+class ForEachSourceError(Exception):
+    """A templated ``for_each`` source resolved to no usable item list.
+
+    Its own type because the remedy is specific and the alternative is
+    catastrophic: falling back to count-based iteration runs the body
+    ``repeat_max`` times with ``item=None``, so a 60-wide fan-out whose
+    roster failed to resolve becomes 60 agents each told to process the
+    empty string — hours of spend producing a run record that looks
+    populated.  "I cannot determine the item list" is never legitimately
+    "iterate blindly", so this surfaces as a failed block instead.
+    """
+
+
+# A for_each source that is EXACTLY one artifact-part reference and
+# nothing else, e.g. '{{sibling("recon").outputs.roster.slugs}}'.
+# Anchored and whole-string because mixing a precise reference into
+# surrounding prose means the author wants the lenient path.  The
+# trailing dotted path is required in practice: a data part must be a
+# JSON object (task_artifacts.build_part enforces it), so a fan-out
+# list always lives under a key.
+#
+# ``outputs_all`` is admitted alongside ``outputs``, and its trailing
+# path is OPTIONAL: the plural form already renders a JSON array, so
+# '{{sibling("fan").outputs_all.audit}}' is a complete fan-out source
+# with no projection needed.  Both paths parse an identical whole-string
+# array identically (verified across nested, bracketed-text and
+# whitespace-padded cases), so this changes no parse result — what it
+# changes is the FAILURE message: an unresolvable gathered source now
+# gets the precise-reference remedy ("have the upstream task
+# emit_artifact a data part under that key") instead of the prose-scrape
+# advice, which is misleading for a reference that never involved prose.
+_PRECISE_SOURCE_RE = re.compile(
+    r"^\s*\{\{\s*(?:"
+    r"sibling\(\s*['\"][^'\"]+['\"]\s*\)"
+    r"|previous_sibling|previous"
+    r")\.outputs(?:_all)?\.[a-zA-Z_][a-zA-Z0-9_]*"
+    r"(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*\s*\}\}\s*$"
+)
+
+
+def _resolve_for_each_items(
+    block: Block, ctx: Optional["ExecutionContext"],
+) -> Optional[List[Any]]:
+    """Resolve a for_each source to its item list, or raise.
+
+    Three cases, deliberately distinguished:
+
+    1. **Untemplated literal** (no ``{{``) — parsed leniently, and an
+       unparseable literal returns None so the historical count
+       fallback still applies.  A static source is an authoring-time
+       value the author can see; degrading it costs nothing at runtime.
+    2. **Precise reference** (whole source is one ``outputs.…``
+       reference) — parsed STRICTLY.  The author named an exact
+       structured part, so scanning its rendering for an incidental
+       array would substitute a different value than the one requested.
+    3. **Templated prose** — parsed leniently (the planner-summary
+       shape this feature was built for).
+
+    Cases 2 and 3 RAISE ``ForEachSourceError`` when no list is found,
+    rather than falling back to count.
+    """
+    raw = block.repeat_for_each_source
+    templated = bool(raw and "{{" in raw)
+    source = (
+        _render_for_each_source(block, ctx)
+        if (ctx is not None and templated) else raw
+    )
+    precise = bool(raw and _PRECISE_SOURCE_RE.match(raw))
+    items = task_templating.parse_for_each_source(source, strict=precise)
+    if items is not None:
+        return items
+    if not templated:
+        return None      # static literal: legacy count fallback
+    # Templated and unresolved — fail loudly.  The rendered text is
+    # included (bounded) because the usual causes are visible in it: an
+    # empty render (the referenced part was never emitted) or prose with
+    # no array (the agent ignored the output-format instruction).
+    shown = (source or "").strip()
+    detail = (
+        "resolved to empty text" if not shown
+        else f"resolved to {len(shown)} chars containing no JSON array: "
+             f"{shown[:280]!r}"
+    )
+    hint = (
+        " The source names an exact artifact part, so only a whole-string "
+        "JSON array is accepted - have the upstream task emit_artifact a "
+        "data part holding the list under that key."
+        if precise else
+        " Have the upstream task emit_artifact a data part and reference "
+        "it precisely, or ensure its summary contains exactly one JSON array."
+    )
+    raise ForEachSourceError(f"for_each source {raw!r} {detail}.{hint}")
 
 
 def _render_for_each_source(
@@ -1282,6 +2047,9 @@ def _plan_iterations(
     When ``ctx`` is provided, a for_each source containing {{...}}
     placeholders is rendered against the run's completed artifacts and
     variables first, so a planner Task's output can drive the fan-out.
+
+    Raises ``ForEachSourceError`` when a TEMPLATED source yields no
+    item list — see ``_resolve_for_each_items``.
     """
     mode = block.repeat_mode or "count"
     if mode == "count":
@@ -1291,14 +2059,29 @@ def _plan_iterations(
         n_max = int(block.repeat_max or 1)
         return [{"index": i, "item": None} for i in range(max(0, n_max))]
     if mode == "for_each":
-        source = (
-            _render_for_each_source(block, ctx)
-            if ctx is not None else block.repeat_for_each_source
-        )
-        items = task_templating.parse_for_each_source(source)
+        items = _resolve_for_each_items(block, ctx)
         if items is not None:
             # Respect repeat_max as an upper bound when provided.
             if block.repeat_max and block.repeat_max > 0:
+                if len(items) > block.repeat_max:
+                    # Clipping is legitimate — repeat_max is a cost
+                    # ceiling — but clipping SILENTLY is not: the run then
+                    # reports a complete pass over a reduced scope, and a
+                    # downstream stage that reads the output directory has
+                    # no way to notice.
+                    logger.warning(
+                        "🔁 REPEAT: %s roster truncated by repeat_max: "
+                        "%d resolved, %d dispatched, %d never run",
+                        block.id, len(items), block.repeat_max,
+                        len(items) - block.repeat_max,
+                    )
+                    # ctx is optional on unit paths, so this must not be
+                    # the thing that turns a working call into an error.
+                    if ctx is not None:
+                        ctx.roster_truncations[block.id or ""] = {
+                            "roster": len(items),
+                            "dispatched": block.repeat_max,
+                        }
                 items = items[: block.repeat_max]
             return [{"index": i, "item": it} for i, it in enumerate(items)]
         # Fallback: no parseable source → treat like count.

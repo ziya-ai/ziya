@@ -52,9 +52,30 @@ const __rIC: (cb: (deadline?: IdleDeadline) => void, opts?: { timeout: number })
     (window as any).requestIdleCallback
         ? (window as any).requestIdleCallback.bind(window)
         : ((cb: (deadline?: IdleDeadline) => void) => window.setTimeout(cb, 16) as unknown as number);
+// Diagnostic tracing. Every exit path below used to be silent, so a queue that
+// never ran was indistinguishable from a queue that ran cleanly: the only
+// MSG_QUEUE log was gated behind `processed > 0 && sliceMs > 16`, which is
+// unreachable when processed stays 0. Disable with
+// `window.__MSG_QUEUE_DEBUG = false` before load.
+const __mqDebug = () => typeof window !== 'undefined' && (window as any).__MSG_QUEUE_DEBUG !== false;
+const __mq = (msg: string) => { if (__mqDebug()) console.log(`📝 MSG_QUEUE: ${msg}`); };
+let __messageQueueScheduledAt = 0;
 const __processMessageQueue = () => {
-    if (__messageQueueProcessing) return;
-    if (__messageRenderQueue.length === 0) return;
+    // A stuck `processing` latch is a permanent deadlock: the flag is set here
+    // but only cleared INSIDE the rIC callback, so if that callback never
+    // fires, every later call returns here and nothing ever drains. Report how
+    // long it has been latched so the stall is visible rather than silent.
+    if (__messageQueueProcessing) {
+        __mq(`skip: already processing (latched ${(performance.now() - __messageQueueScheduledAt).toFixed(0)}ms ago, queue=${__messageRenderQueue.length})`);
+        return;
+    }
+    // Traced so that "no MSG_QUEUE output at all" is unambiguous: it then means
+    // nothing was ever enqueued (an upstream message-loading problem) rather
+    // than the queue silently short-circuiting here.
+    if (__messageRenderQueue.length === 0) {
+        __mq('skip: queue empty');
+        return;
+    }
     // Pause idle mounting while the tab is backgrounded. Everything in this
     // queue is a SETTLED message (live streaming renders through
     // StreamedContent.tsx, not this path), so these mounts are pure idle work
@@ -63,9 +84,15 @@ const __processMessageQueue = () => {
     // is paused while hidden — is what produces the "barrage on refocus" drain.
     // We resume on the visibilitychange listener below. Streaming is
     // unaffected: it never enters this queue.
-    if (typeof document !== 'undefined' && document.hidden) return;
+    if (typeof document !== 'undefined' && document.hidden) {
+        __mq(`skip: document.hidden (queue=${__messageRenderQueue.length}); waiting for visibilitychange`);
+        return;
+    }
     __messageQueueProcessing = true;
+    __messageQueueScheduledAt = performance.now();
+    __mq(`scheduling rIC (queue=${__messageRenderQueue.length}, timeout=500)`);
     __rIC((deadline?: IdleDeadline) => {
+        __mq(`rIC fired after wait=${(performance.now() - __messageQueueScheduledAt).toFixed(0)}ms (queue=${__messageRenderQueue.length})`);
         __messageRenderQueue.sort((a, b) => b.priority - a.priority);
         __messageQueueProcessing = false;
 
@@ -118,6 +145,7 @@ const __processMessageQueue = () => {
         // on every large conversation. A slice that itself runs >16ms (one
         // frame) is the thing that actually janks; that's what we flag now.
         const sliceMs = performance.now() - sliceStart;
+        __mq(`slice drained ${processed} (queue=${__messageRenderQueue.length} remaining, ${sliceMs.toFixed(0)}ms)`);
         if (processed > 0 && sliceMs > 16) {
             console.warn(`📝 MSG_QUEUE: slice mounted ${processed} message(s) in ${sliceMs.toFixed(0)}ms (>1 frame — possible jank); ${slowCount} waited >500ms (max ${maxWaitMs.toFixed(0)}ms, expected under paced drain)`);
         }
@@ -175,6 +203,7 @@ const LazyMarkdownRenderer: React.FC<React.ComponentProps<typeof MarkdownRendere
             scheduledAt: performance.now(),
             label: `markdown-mount-${++__messageQueueSeq}`,
         };
+        __mq(`enqueued ${entry.label} (queue=${__messageRenderQueue.length + 1})`);
         __messageRenderQueue.push(entry);
         __processMessageQueue();
 
@@ -192,6 +221,13 @@ const LazyMarkdownRenderer: React.FC<React.ComponentProps<typeof MarkdownRendere
                         // lets React batch concurrent mounts that arrive in
                         // the same frame.
                         const idx = __messageRenderQueue.indexOf(entry);
+                        // Traced because this path bypasses the queue entirely:
+                        // on-screen messages mount here and never wait for an
+                        // rIC slot, so a queue stall cannot explain blank text
+                        // for a message that is visible. Distinguishing "mounted
+                        // via observer" from "waited in queue" tells us whether
+                        // the render queue is even the right layer to suspect.
+                        __mq(`observer bypass -> immediate mount ${entry.label} (was queued at idx ${idx})`);
                         if (idx >= 0) __messageRenderQueue.splice(idx, 1);
                         mountedRef.current = true;
                         setMounted(true);
@@ -404,20 +440,26 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     const activeChatRef = useRef(useActiveChat());
     const convListRef = useRef(useConversationList());
     const scrollRef = useRef(useScrollContext());
-    const folderRef = useRef(useFolderContext());
     const projectRef = useRef(useProject());
 
     // Keep refs current on every render (cheap assignment, no state change)
     const activeChat = useActiveChat();
     const convList = useConversationList();
     const scrollCtx = useScrollContext();
-    const folderCtx = useFolderContext();
+    // Deliberately NOT subscribed to FolderContext. The only consumer here was
+    // a folderRef that nothing ever read, so the subscription's sole effect was
+    // to re-render this whole component on every FolderContext value change —
+    // including scanProgress, which the progress poller writes once per second
+    // for a scan's entire duration. That starved the idle-time queue that mounts
+    // MarkdownRenderer, so message text stayed blank until the scan finished.
+    // Any future need for folder state here must use a narrow selector, not the
+    // whole context value.
     const projectCtx = useProject();
     activeChatRef.current = activeChat;
     convListRef.current = convList;
 
     // Task card bindings for the current chat
-    const { bindingsByAnchor } = useTaskBindings(currentConversationId);
+    const { bindings, bindingsByAnchor } = useTaskBindings(currentConversationId);
 
     // Reconciler for the "running task" gear in the conversation
     // list.  Launch handlers eagerly add the conversation to
@@ -436,7 +478,21 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
         runningTaskConversations,
         addRunningTaskConversation,
         removeRunningTaskConversation,
+        setConversationTaskBindings,
     } = useChatContext();
+
+    // Publish this conversation's bindings so the sidebar can render a
+    // gear per run status with a count.  Replaces deriving a single
+    // boolean here: every terminal status — done, failed, cancelled,
+    // partial, held — collapsed to "not running" and rendered as nothing,
+    // so a conversation whose overnight study died looked identical to
+    // one that had never run a task.  The list needs the statuses
+    // themselves, and only this component holds them.
+    useEffect(() => {
+        if (!currentConversationId) return;
+        setConversationTaskBindings(currentConversationId, bindings);
+    }, [currentConversationId, bindings, setConversationTaskBindings]);
+
     useEffect(() => {
         if (!currentConversationId) return;
         let hasRunning = false;
@@ -451,6 +507,10 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                 // recent additions AND describe the case a user is most
                 // likely to be looking at (a run that ended without
                 // finishing), so the omission hit the common path.
+                //
+                // This flag now only drives the optimistic pre-binding
+                // window; every terminal status is reported by the gear
+                // cluster from the published bindings above.
                 if (b.run_status && !isRunOver(b.run_status)) {
                     hasRunning = true;
                     break;
@@ -517,7 +577,6 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
     // Earliest possible signal that a project switch is happening
     const isSwitchingProject = projectCtx.isLoadingProject || isProjectSwitching;
     scrollRef.current = scrollCtx;
-    folderRef.current = folderCtx;
     projectRef.current = projectCtx;
 
     const setQuestion = useSetQuestion();
