@@ -29,6 +29,25 @@ body.allow-scroll {
   position: static;
 }
 
+/* Print/export route (/print): release the single-viewport app clamp.
+   The base `body` rule pins the document to one viewport
+   (overflow:hidden; height:100vh; position:fixed) so the app chrome never
+   scrolls.  `allow-scroll` above only lifts overflow+position — the
+   `height:100vh` clamp remains, which makes Chromium's page.pdf() (and any
+   fixed-viewport screenshot) capture ONLY the first A4 box and silently drop
+   everything below the fold.  The /print route renders a WHOLE conversation
+   that must flow to its natural content height and paginate, so it needs the
+   height clamp released too.  SHARED: applies equally to the PDF (page.pdf)
+   and HTML (extract_html) export consumers of the /print DOM — do not make it
+   PDF-specific. */
+body.ziya-print-mode {
+  overflow: visible;
+  position: static;
+  height: auto;
+  min-height: 100vh;
+  width: 100%;
+}
+
 /* Ensure streaming content remains visible */
 .streaming .diff-container,
 .streaming pre,
@@ -387,9 +406,13 @@ body:not(.dark) .panel-toggle.ant-btn-primary:hover {
   background-color: currentColor;
 }
 
+/* The overlay this sits in (.loading-overlay) declares no background, so
+ * the tip renders straight onto the page.  This base rule IS the
+ * light-mode rule — `.dark` overrides it just below — so white here was
+ * white-on-white at 1.00:1, visible only as a smudge from the shadow. */
 .ant-spin-text {
-  color: #ffffff;
-  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  color: #1f2328;
+  text-shadow: none;
 }
 
 .dark .ant-spin-text {
