@@ -25,6 +25,20 @@ class RegistryAggregator:
         self.provider_registry = get_provider_registry()
         self._unified_cache: Dict[str, RegistryServiceInfo] = {}
         self._last_refresh: Optional[datetime] = None
+        # True when the last refresh had a provider fail. A partial result must
+        # not be cached for the full TTL, or one expired credential pins an
+        # incomplete catalogue in place for five minutes.
+        self._last_fetch_partial: bool = False
+        # Memo for the search fan-out, keyed on (query, resolved provider set).
+        self._search_cache: Dict[str, tuple] = {}
+        self._search_cache_max = 64
+        # A search fan-out is memoised per (query, provider set). Without this
+        # the debounced search box re-ran the whole fan-out on every keystroke,
+        # and a provider whose search_tools re-fetches its entire catalogue
+        # (official-mcp, github, and the CLI-backed internal registry, which
+        # spawns a ~20s subprocess) paid that cost once per character typed.
+        self._search_cache: Dict[str, tuple] = {}
+        self._search_cache_max = 64
     
     def _compute_service_fingerprint(self, service: RegistryServiceInfo) -> str:
         """
@@ -164,9 +178,11 @@ class RegistryAggregator:
             include_internal: Whether to include internal registries
             force_refresh: Force refresh even if cache is valid
         """
-        # Check cache (5 minute TTL)
         from datetime import timedelta
+        # Never cache a partial refresh: callers cannot tell that providers
+        # were omitted, and an immediate retry may recover a transient failure.
         if (not force_refresh and 
+            not self._last_fetch_partial and
             self._last_refresh and 
             datetime.now() - self._last_refresh < timedelta(minutes=5) and
             self._unified_cache):
@@ -178,19 +194,24 @@ class RegistryAggregator:
         # Get all providers
         providers = self.provider_registry.get_available_providers(include_internal)
         
-        # Fetch from all providers in parallel
+        # Fetch from all providers in parallel. A useful global ranking needs
+        # more than two candidates when max_results is small; 50 is the
+        # provider interface's standard page size.
         tasks = []
         for provider in providers:
-            tasks.append(self._fetch_from_provider(provider, max_results * 2))
+            fetch_limit = max(50, max_results * 2)
+            tasks.append(self._fetch_from_provider(provider, fetch_limit))
         
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
         # Collect all services
         all_services: Dict[str, List[RegistryServiceInfo]] = defaultdict(list)
         
+        had_failure = False
         for result in results:
             if isinstance(result, Exception):
                 logger.warning(f"Provider fetch failed: {result}")
+                had_failure = True
                 continue
             
             for service in result:
@@ -206,14 +227,22 @@ class RegistryAggregator:
         # Update cache
         self._unified_cache = unified
         self._last_refresh = datetime.now()
+        self._last_fetch_partial = had_failure
         
         logger.info(f"Unified registry: {len(unified)} unique services from {len(providers)} providers")
         
-        # Sort by relevance (support level, download count, etc.)
+        # Sort by relevance (support level, download count, etc.).
+        #
+        # The rank is NEGATED because the whole tuple is sorted reverse=True for
+        # the count fields (more downloads/stars first). Sorting on
+        # support_level.value here was sorting the DISPLAY STRING descending,
+        # i.e. alphabetically, which ranked "Under assessment" above
+        # "Recommended" -- so truncating to max_results discarded the
+        # recommended servers first.
         sorted_services = sorted(
             unified.values(),
             key=lambda s: (
-                s.support_level.value,  # Higher support level first
+                -s.support_level.rank,  # Most trustworthy first
                 s.download_count or 0,  # More downloads first
                 s.star_count or 0,      # More stars first
                 -len(s.tags)            # More tags last (less is more specific)
@@ -239,7 +268,13 @@ class RegistryAggregator:
             while len(all_services) < max_results:
                 # Calculate how many more services we need
                 remaining = max_results - len(all_services)
-                page_size = min(remaining, 500)  # Max 500 per page
+                # Do NOT clamp below what the caller asked for. A provider with
+                # no pagination (the CLI-backed internal registry) returns its
+                # own truncated slice and next_token=None, so the loop breaks
+                # after one page -- turning a 500-item page hint into a hard
+                # 500-item ceiling on a 5218-entry registry. Paginating
+                # providers self-clamp to their own API max.
+                page_size = remaining
                 
                 result = await provider.list_services(
                     max_results=page_size,
@@ -265,19 +300,68 @@ class RegistryAggregator:
         except Exception as e:
             logger.error(f"Error fetching from provider {provider.identifier}: {e}")
             logger.exception(e)  # Full traceback for debugging
-            return []
+            raise
     
+        # Memoised per (query, resolved provider set). Without this the
+        # debounced search box re-ran the entire fan-out on every keystroke,
+        # and a provider whose search_tools re-fetches its whole catalogue
+        # paid that cost once per character typed.
+        from datetime import timedelta
+        cache_key = "\x00".join([
+            query.strip().lower(),
+            str(max_results),
+            ",".join(sorted(p.identifier for p in providers)),
+        ])
+        cached = self._search_cache.get(cache_key)
+        if cached:
+            cached_at, cached_results = cached
+            if datetime.now() - cached_at < timedelta(minutes=5):
+                logger.info(f"Using cached search for '{query}'")
+                return cached_results
+
     async def search_unified(
         self,
         query: str,
         max_results: int = 20,
-        include_internal: bool = True
+        include_internal: bool = True,
+        provider_filter: Optional[List[str]] = None
     ) -> List[ToolSearchResult]:
         """
         Search across all registries with unified results.
+
+        provider_filter narrows which providers are QUERIED, not merely which
+        results survive. Filtering only afterwards still paid every provider's
+        full search cost -- for the CLI-backed Amazon provider that is a ~20s
+        subprocess per request even when one registry was wanted.
         """
         providers = self.provider_registry.get_available_providers(include_internal)
         
+        if provider_filter:
+            wanted = set(provider_filter)
+            # A filter naming only unknown ids (e.g. the frontend's synthetic
+            # "builtin") selects nothing, which matches the previous behaviour
+            # of querying everything and then post-filtering it all away.
+            providers = [p for p in providers if p.identifier in wanted]
+
+        # Keyed on the RESOLVED provider set, not the requested filter: a
+        # provider that has since become unavailable must not be able to serve
+        # cached results still attributed to it.
+        from datetime import timedelta
+        cache_key = "\x00".join([
+            query.strip().lower(),
+            str(max_results),
+            ",".join(sorted(p.identifier for p in providers)),
+        ])
+        cached = self._search_cache.get(cache_key)
+        if cached:
+            cached_at, cached_results = cached
+            if datetime.now() - cached_at < timedelta(minutes=5):
+                logger.info(
+                    f"Using cached search for '{query}' "
+                    f"({len(cached_results)} results)"
+                )
+                return cached_results
+
         # Search all providers in parallel
         tasks = []
         for provider in providers:
@@ -325,7 +409,27 @@ class RegistryAggregator:
             reverse=True
         )
         
-        return sorted_results[:max_results]
+        final_results = sorted_results[:max_results]
+
+        # Bounded: the debounced box produces one key per prefix typed, so an
+        # unbounded dict would grow with keystrokes for the process lifetime.
+        if len(self._search_cache) >= self._search_cache_max:
+            self._search_cache.clear()
+        self._search_cache[cache_key] = (datetime.now(), final_results)
+
+        return final_results
+
+    def invalidate_caches(self) -> None:
+        """Drop both the unified listing and the search memo.
+
+        A provider refresh re-fetches that provider's catalogue directly,
+        bypassing the aggregator entirely, so without this a just-refreshed
+        registry would keep answering searches from results computed before
+        it changed -- a refresh that visibly does nothing.
+        """
+        self._unified_cache = {}
+        self._last_refresh = None
+        self._search_cache = {}
 
 
 # Global aggregator instance
