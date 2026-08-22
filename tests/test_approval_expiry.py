@@ -100,14 +100,16 @@ class TestPolicyBound:
         monkeypatch.setattr("app.plugins.get_max_approval_ttl", lambda: None,
                             raising=False)
         rec = {"approved_at": int(time.time())}  # no expires_at
-        assert sa._within_policy_bound(rec) is True
+        assert sa._within_policy_bound(rec) == (True, None)
 
     def test_policy_denies_unbounded(self, monkeypatch):
         sa = self._reload()
         monkeypatch.setattr("app.plugins.get_max_approval_ttl",
                             lambda: 30 * 86400, raising=False)
         rec = {"approved_at": int(time.time())}  # no expires_at under a policy
-        assert sa._within_policy_bound(rec) is False
+        ok, reason = sa._within_policy_bound(rec)
+        assert ok is False
+        assert reason == f"unbounded_approval_requires_expiry:{30 * 86400}"
 
     def test_policy_allows_within_bound(self, monkeypatch):
         sa = self._reload()
@@ -115,7 +117,7 @@ class TestPolicyBound:
                             lambda: 30 * 86400, raising=False)
         now = int(time.time())
         rec = {"approved_at": now, "expires_at": now + 10 * 86400}
-        assert sa._within_policy_bound(rec) is True
+        assert sa._within_policy_bound(rec) == (True, None)
 
     def test_policy_denies_over_bound(self, monkeypatch):
         sa = self._reload()
@@ -123,4 +125,6 @@ class TestPolicyBound:
                             lambda: 30 * 86400, raising=False)
         now = int(time.time())
         rec = {"approved_at": now, "expires_at": now + 60 * 86400}
-        assert sa._within_policy_bound(rec) is False
+        ok, reason = sa._within_policy_bound(rec)
+        assert ok is False
+        assert reason.startswith("approval_lifetime_exceeds_policy:")

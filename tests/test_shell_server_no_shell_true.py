@@ -370,7 +370,11 @@ class TestHandleRequestSecure(unittest.TestCase):
                     "method": "tools/call",
                     "params": {
                         "name": "run_shell_command",
-                        "arguments": {"command": "echo hello"}
+                        # _project_root is mandatory: the server refuses any
+                        # command without one, so it must be supplied to reach
+                        # the shell=False assertion this test exists for.
+                        "arguments": {"command": "echo hello",
+                                      "_project_root": os.getcwd()}
                     }
                 }))
             finally:

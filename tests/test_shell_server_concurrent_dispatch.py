@@ -52,7 +52,13 @@ def _pipeline_result(stdout=""):
 
 
 def _request(req_id, command, task_scope=None):
-    params = {"name": "run_shell_command", "arguments": {"command": command}}
+    # Every request carries _project_root: the server refuses commands without
+    # one, so omitting it here would make these concurrency tests assert
+    # nothing but the refusal path.
+    params = {
+        "name": "run_shell_command",
+        "arguments": {"command": command, "_project_root": os.getcwd()},
+    }
     if task_scope is not None:
         params["arguments"]["_task_scope"] = task_scope
     return {"jsonrpc": "2.0", "id": req_id, "method": "tools/call", "params": params}

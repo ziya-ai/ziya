@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Modal, Switch, Input, Button, List, Tag, Space, message, Divider, Checkbox, Collapse, Alert, Slider } from 'antd';
-import { PlusOutlined, DeleteOutlined, WarningOutlined } from '@ant-design/icons';
+import { PlusOutlined, DeleteOutlined, WarningOutlined, CopyOutlined } from '@ant-design/icons';
 
 interface ShellConfigModalProps {
     visible: boolean;
@@ -30,9 +30,45 @@ interface ShellConfig {
     alwaysBlocked: string[];
     signatureStatus?: SignatureStatus;
     sessionPending?: boolean;
+    // Applied temporary grant (verified server-side against the current
+    // session nonce). Powers the "Temporary grant active" indicator.
+    sessionGrant?: {
+        active: boolean;
+        provider?: string;
+        grantedBy?: string;
+        grantedAt?: number;
+        delta: Record<string, string[]>;
+    } | null;
 }
 
 const { Panel } = Collapse;
+
+// A terminal command the user must run, rendered as a distinct copyable
+// block. Previously these (`sudo ziya-approve` ...) were inline <code>
+// fragments buried in prose — easy to skim past, painful to retranscribe.
+// rgba grays render legibly on both light and dark themes.
+const CmdBlock: React.FC<{ cmd: string }> = ({ cmd }) => (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
+        <code style={{
+            flex: 1, display: 'block', padding: '6px 10px', fontSize: 13,
+            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+            borderRadius: 6, background: 'rgba(128, 128, 128, 0.15)',
+            border: '1px solid rgba(128, 128, 128, 0.35)',
+            userSelect: 'all', whiteSpace: 'nowrap', overflowX: 'auto',
+        }}>
+            {cmd}
+        </code>
+        <Button
+            size="small"
+            icon={<CopyOutlined />}
+            title="Copy command"
+            onClick={() => navigator.clipboard?.writeText(cmd).then(
+                () => message.success('Copied'),
+                () => message.error('Copy failed')
+            )}
+        />
+    </div>
+);
 
 const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose }) => {
     const [config, setConfig] = useState<ShellConfig | null>(null);
@@ -55,7 +91,9 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
         }
     }, [visible]);
 
-    const fetchShellConfig = async () => {
+    // Returns the fresh config (or null) so callers — e.g. the post-Save
+    // check — can branch on the just-fetched signatureStatus.
+    const fetchShellConfig = async (): Promise<ShellConfig | null> => {
         try {
             const response = await fetch('/api/mcp/shell-config');
             if (response.ok) {
@@ -74,6 +112,7 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                 // state, so a modal close/reopen must restore it from the
                 // server's sessionPending flag rather than losing it.
                 setSessionStaged(!!data.sessionPending);
+                return normalized;
             }
         } catch (error) {
             console.error('Failed to fetch shell config:', error);
@@ -90,6 +129,7 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
             });
             setOriginalConfig(null);
         }
+        return null;
     };
 
     // Restart the shell server so it re-reads the persisted config from disk,
@@ -148,6 +188,34 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
         } finally {
             setRestarting(false);
         }
+    };
+
+    // Interstitial for the session-only path. The footer button's "(this
+    // session)" suffix proved too easy to read past — users ran the sudo
+    // ceremony without registering that the grant evaporates on restart.
+    // Spell out the temporary/persistent fork once, in a modal that cannot
+    // be skimmed away, BEFORE anything is staged.
+    const confirmSessionStage = () => {
+        Modal.confirm({
+            title: 'Temporary grant — this session only',
+            icon: <WarningOutlined style={{ color: '#faad14' }} />,
+            content: (
+                <div>
+                    <p style={{ marginBottom: 8 }}>
+                        This stages your changes as a <b>temporary</b> grant: after
+                        signing, it lasts only until the Ziya server restarts, and{' '}
+                        <b>nothing is written to the persistent config</b>.
+                    </p>
+                    <p style={{ marginBottom: 0 }}>
+                        Want it to survive restarts? Use <b>Save (persistent)</b>{' '}
+                        instead, then sign with <code>sudo ziya-approve</code>.
+                    </p>
+                </div>
+            ),
+            okText: 'Stage temporary grant',
+            cancelText: 'Cancel',
+            onOk: () => requestSessionGrant(),
+        });
     };
 
     // Stage an EPHEMERAL escalation request: write the current fields to the
@@ -252,14 +320,30 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                         }
                     }));
 
-                    message.success(
-                        result.message ||
-                        'Saved and restarted. Any privilege beyond the default floor stays clamped until you run `sudo ziya-approve`.'
+                    // Re-fetch so signatureStatus reflects the file just
+                    // written. If this save introduced (or kept) an unsigned
+                    // escalation, keep the modal OPEN: the signing walkthrough
+                    // lives in this modal's warning banner, and closing here
+                    // was exactly how "I saved but nothing invited me to sign"
+                    // happened — the invitation only reappeared on reopen.
+                    const fresh = await fetchShellConfig();
+                    const needsSignature = !!(
+                        fresh?.signatureStatus?.hasEscalation &&
+                        !fresh.signatureStatus.authorized
                     );
+                    if (needsSignature) {
+                        message.warning(
+                            'Saved — but the new privileges are NOT active ' +
+                            'until signed. Follow the steps in the warning below.',
+                            6
+                        );
+                    } else {
+                        message.success(result.message || 'Saved and restarted.');
+                        onClose();
+                    }
                 } else {
                     message.error(result.message || 'Failed to update shell configuration');
                 }
-                onClose();
             } else {
                 message.error('Failed to save shell configuration');
             }
@@ -313,7 +397,7 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
             Modal.confirm({
                 title: 'Unsaved Changes',
                 icon: <WarningOutlined style={{ color: '#faad14' }} />,
-                content: 'You have unsaved changes. Save them to ~/.ziya/mcp_config.json and restart the shell server? Privileges beyond the default floor remain clamped until signed with `sudo ziya-approve`.',
+                content: 'Save (persistent) writes your edits to ~/.ziya/mcp_config.json and restarts the shell server — new privileges still need `sudo ziya-approve` afterwards (the modal will walk you through it). Discard closes without changing anything.',
                 okText: 'Save Changes',
                 cancelText: 'Discard Changes',
                 okButtonProps: {
@@ -370,18 +454,19 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                 <Button
                     key="apply-session"
                     loading={loading}
-                    onClick={requestSessionGrant}
-                    title="Stage this escalation for the current server session only. Nothing is written to the durable config; you sign it with `sudo ziya-approve --session` and it is voided on the next server restart."
+                    onClick={confirmSessionStage}
+                    title="Temporary: stage this escalation for the current server session only. Signed with `sudo ziya-approve --session`; voided on the next server restart; never written to the persistent config."
                 >
-                    Apply (this session)
+                    This session only…
                 </Button>,
                 <Button
                     key="save"
                     type="primary"
                     loading={loading}
                     onClick={() => saveConfig(true)}
+                    title="Persistent: write to ~/.ziya/mcp_config.json and restart. New privileges beyond the default floor still require `sudo ziya-approve` before taking effect. Discards any staged session-only request."
                 >
-                    Save
+                    Save (persistent)
                 </Button>
             ]}
         >
@@ -433,9 +518,10 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                                     </div>
                                 ))}
                                 <div style={{ marginTop: 10 }}>
-                                    <b>Durable</b> (persists across restarts): run{' '}
-                                    <code>sudo ziya-approve</code>, then:
+                                    <b>To activate</b> (persists across restarts): run this
+                                    in a terminal…
                                 </div>
+                                <CmdBlock cmd="sudo ziya-approve" />
                                 <Button
                                     size="small"
                                     type="primary"
@@ -452,18 +538,18 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
 
                 {sessionStaged && (
                     <Alert
-                        type="info"
+                        type="warning"
                         showIcon
                         style={{ marginBottom: 16 }}
-                        message="Ephemeral escalation staged for this session"
+                        message="Temporary grant staged — this session only"
                         description={
                             <div>
-                                Your requested escalation is staged but <b>not yet active</b>,
-                                and is <b>not written to the durable config</b>. To activate it
-                                for the current server session only, run:
-                                <div style={{ marginTop: 8 }}>
-                                    <code>sudo ziya-approve --session</code>
-                                </div>
+                                Your requested escalation is staged but <b>not yet
+                                active</b>. It is <b>temporary</b>: nothing is written to
+                                the persistent config, and once active it is voided the
+                                next time the Ziya server restarts. To activate it, run
+                                this in a terminal…
+                                <CmdBlock cmd="sudo ziya-approve --session" />
                                 <Button
                                     size="small"
                                     type="primary"
@@ -482,9 +568,42 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                                     Discard
                                 </Button>
                                 <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
-                                    This grant is voided automatically on the next server
-                                    restart. For permanent access, use <b>Save</b> +{' '}
-                                    <code>sudo ziya-approve</code> instead.
+                                    For permanent access use <b>Save (persistent)</b>{' '}
+                                    instead — note that Save discards this staged request
+                                    and starts the persistent path, which requires its own{' '}
+                                    <code>sudo ziya-approve</code> signature.
+                                </div>
+                            </div>
+                        }
+                    />
+                )}
+
+                {config.sessionGrant?.active && (
+                    <Alert
+                        type="success"
+                        showIcon
+                        style={{ marginBottom: 16 }}
+                        message="Temporary grant active — this session only"
+                        description={
+                            <div>
+                                <div style={{ marginBottom: 6 }}>
+                                    These privileges are live via a temporary grant
+                                    {config.sessionGrant.provider
+                                        ? ` (signed via ${config.sessionGrant.provider})`
+                                        : ''}
+                                    . They are <b>not</b> in the persistent config and
+                                    are <b>voided automatically when the Ziya server
+                                    restarts</b>.
+                                </div>
+                                {Object.entries(config.sessionGrant.delta).map(([field, vals]) => (
+                                    <div key={field} style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                                        {field}: {vals.join(', ')}
+                                    </div>
+                                ))}
+                                <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
+                                    To keep these across restarts, use{' '}
+                                    <b>Save (persistent)</b> +{' '}
+                                    <code>sudo ziya-approve</code>.
                                 </div>
                             </div>
                         }

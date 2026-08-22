@@ -34,6 +34,15 @@ _TASK_SCOPE: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
     "ziya_shell_task_scope", default=None
 )
 
+# Per-call project root, same rationale as _TASK_SCOPE above: one
+# ShellWriteChecker is shared across concurrently-dispatched requests, so the
+# root a request is anchored to cannot live on the instance. Supplied by the
+# caller on every call; the process environment is deliberately not a fallback,
+# since it names whichever project the server process was launched in.
+_PROJECT_ROOT: ContextVar[Optional[str]] = ContextVar(
+    "ziya_shell_project_root", default=None
+)
+
 
 class ShellWriteChecker:
     def __init__(self, pm: WritePolicyManager):
@@ -78,6 +87,24 @@ class ShellWriteChecker:
 
     def clear_task_scope(self) -> None:
         _TASK_SCOPE.set({})
+
+    @property
+    def _project_root(self) -> str:
+        """The project root the caller anchored THIS request to."""
+        return _PROJECT_ROOT.get() or ""
+
+    def set_project_root(self, root: Optional[str]) -> None:
+        """Anchor this request's write checks to *root*.
+
+        The caller states which project the command belongs to; the checker
+        never infers it from the process environment. Passing the root through
+        to WritePolicyManager also makes it load THAT project's policy rather
+        than whichever project last touched the shared manager.
+        """
+        _PROJECT_ROOT.set(root or None)
+
+    def clear_project_root(self) -> None:
+        _PROJECT_ROOT.set(None)
 
     @property
     def policy(self):
@@ -300,7 +327,7 @@ class ShellWriteChecker:
         # handling in shell_server.py).
         if _is_special_device(target_path):
             return True
-        if self.pm.is_write_allowed(target_path):
+        if self.pm.is_write_allowed(target_path, self._project_root):
             return True
         return self._task_scope_grants_write(target_path)
 
@@ -310,8 +337,13 @@ class ShellWriteChecker:
         entries = self._task_scope.get("writable") or []
         if not entries:
             return False
-        project_root = self._task_scope.get("project_root") or os.environ.get(
-            "ZIYA_USER_CODEBASE_DIR", ""
+        # Both candidates are caller-supplied for this call, so they agree in
+        # practice; the task envelope wins because the grant was minted against
+        # that frame. Neither falls back to the environment: a grant resolved
+        # against the wrong root would authorize writes into a project nobody in
+        # the request chain named.
+        project_root = (
+            self._task_scope.get("project_root") or self._project_root
         )
         raw = (target_path or "").strip().strip("'\"")
         expanded = os.path.expanduser(raw)
