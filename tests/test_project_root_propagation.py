@@ -31,13 +31,14 @@ therefore pinned here rather than assumed:
 2. Concurrent requests carrying different roots must not observe each
    other's value.
 
-The final test asserts the documented server-mode fallback behavior:
-with no header, workspace_path is None and the workspace-scoped branch
-does NOT engage. That is deliberate (manager.py:2205-2215 keeps it None
-so concurrent tabs on different projects never misroute to a stale
-shared root), and the frontend supplies the header plus a ``project_root``
-body field as a second channel. The test documents the consequence so a
-future change that silently starts falling back is visible.
+The final tests assert that with no header, workspace_path is None and the
+workspace-scoped branch does NOT engage -- in EVERY mode. There is no
+environment fallback: ``ZIYA_USER_CODEBASE_DIR`` names whichever project the
+process was launched in, not the project a given call belongs to, so consulting
+it silently attributes a command to the wrong tree. Callers state their own
+root (HTTP via the header, Task Cards / delegates / the CLI via
+``stream_with_tools(project_root=...)``), and the shell server refuses a call
+that carries none -- see tests/test_shell_project_root_required.py.
 """
 
 import anyio
@@ -55,17 +56,18 @@ from app.context import (
 from app.middleware.project_context import ProjectContextMiddleware
 
 
-def _resolve_routing(arguments, ziya_mode="server", startup_cwd=None):
+def _resolve_routing(arguments, ziya_mode="server"):
     """Mirror of MCPManager.call_tool's routing resolution.
 
     Kept as a local mirror rather than importing call_tool so these tests
     exercise the ContextVar/middleware contract without needing a live
     manager, connected clients, or subprocesses. The shape is asserted
     against the real thing in tests/test_shell_session_isolation.py.
+
+    ``ziya_mode`` is retained only to prove it makes no difference: the mode
+    used to select an environment fallback, and no longer does.
     """
     workspace_path = arguments.get("_workspace_path") or get_project_root_or_none()
-    if workspace_path is None and ziya_mode != "server":
-        workspace_path = startup_cwd
     conversation_id = arguments.get("conversation_id") or get_conversation_id_or_none()
     instance_key = (
         f"{workspace_path}::{conversation_id}" if conversation_id else workspace_path
@@ -254,31 +256,25 @@ class TestEndToEndRoutingResolution:
         )
 
 
-class TestServerModeFallbackIsDeliberate:
-    """Pin the documented no-header behavior in server mode."""
+class TestNoEnvironmentFallbackInAnyMode:
+    """Pin the no-header behavior: no root, in every mode."""
 
     def test_no_header_server_mode_skips_workspace_scoping(self):
-        """With no header, server mode intentionally does NOT fall back to env.
-
-        manager.py keeps workspace_path None in server mode so concurrent
-        tabs on different projects never misroute to a stale shared root.
-        The consequence -- the workspace-scoped branch does not engage, so
-        the call uses the global serial client -- is asserted here so it
-        stays a visible, deliberate tradeoff.
-        """
-        routing = _resolve_routing(
-            {"command": "ls"}, ziya_mode="server", startup_cwd="/startup/cwd"
-        )
+        """With no header, server mode does NOT fall back to env."""
+        routing = _resolve_routing({"command": "ls"}, ziya_mode="server")
         assert routing["workspace_path"] is None
         assert routing["workspace_scoped_engages"] is False
 
-    def test_no_header_cli_mode_falls_back_to_env(self):
-        """CLI/chat mode HAS no middleware, so the env fallback is required."""
-        routing = _resolve_routing(
-            {"command": "ls"}, ziya_mode="cli", startup_cwd="/startup/cwd"
-        )
-        assert routing["workspace_path"] == "/startup/cwd"
-        assert routing["workspace_scoped_engages"] is True
+    def test_no_header_cli_mode_also_has_no_root(self):
+        """CLI mode has no middleware either, and gets no env rescue.
+
+        The CLI now states its root explicitly at the call site
+        (CLIChat._stream passes project_root=), so reaching here with None
+        means no caller named a root -- and the shell server refuses.
+        """
+        routing = _resolve_routing({"command": "ls"}, ziya_mode="cli")
+        assert routing["workspace_path"] is None
+        assert routing["workspace_scoped_engages"] is False
 
     def test_explicit_workspace_path_wins_over_contextvar(self):
         """Callers that DO inject _workspace_path are authoritative."""

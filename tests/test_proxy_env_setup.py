@@ -31,9 +31,25 @@ def _make_args(**overrides):
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
+    """Isolate the network vars, and restore them afterwards.
+
+    setup_environment assigns os.environ directly, which monkeypatch cannot
+    undo for a var that was unset beforehand.  The ca_bundle tests therefore
+    leaked SSL_CERT_FILE / AWS_CA_BUNDLE / REQUESTS_CA_BUNDLE for the rest of
+    the process, pointing at a tmp_path PEM whose body is the literal text
+    "fake".  Every later test that built an SSL context from it died with
+    "ssl.SSLError: [X509] PEM lib", and subprocesses (the AWS credential
+    process) inherited the same broken bundle.
+    """
+    saved = {var: os.environ.get(var) for var in NETWORK_VARS}
     for var in NETWORK_VARS:
         monkeypatch.delenv(var, raising=False)
     yield
+    for var, value in saved.items():
+        if value is None:
+            os.environ.pop(var, None)
+        else:
+            os.environ[var] = value
 
 
 def test_proxy_flag_sets_proxy_env(monkeypatch):

@@ -151,9 +151,30 @@ def _count_chats(chats_dir) -> int:
 async def get_current_project():
     """Get or create project for current working directory."""
     storage = get_project_storage()
-    from app.context import get_project_root
-    cwd = get_project_root()
-    
+    # Use the REQUEST-SCOPED root only. get_project_root() falls back to
+    # ZIYA_USER_CODEBASE_DIR and then os.getcwd() -- both the server's launch
+    # directory -- so a request arriving without X-Project-Root (notably during
+    # frontend bootstrap, before __ZIYA_CURRENT_PROJECT_PATH__ is assigned)
+    # silently resolved to whatever directory the server was started in.
+    #
+    # That is not a harmless read: get_by_path() maps it to a real project
+    # record and touch() then stamps lastAccessedAt on it, so an unrelated
+    # project becomes "most recently accessed". The frontend's reload path
+    # (/last-accessed, plus the localStorage id written from this response)
+    # then restores THAT project -- a tab whose live state was correct all
+    # session came back rooted somewhere else, and the wrong value persisted
+    # after the original cause was gone.
+    from app.context import get_project_root_or_none
+    cwd = get_project_root_or_none()
+    if not cwd:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No project root for this request. Send X-Project-Root, or use "
+                "/projects/startup (pure read) to discover the launch directory."
+            ),
+        )
+
     project = storage.get_by_path(cwd)
     if not project:
         # Auto-create project for current directory
