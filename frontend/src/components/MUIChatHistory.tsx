@@ -34,7 +34,6 @@ import ListItemText from '@mui/material/ListItemText';
 import IconButton from '@mui/material/IconButton';
 import Tooltip from '@mui/material/Tooltip';
 import { Divider as AntDivider } from 'antd';
-
 // MUI icons
 import CreateNewFolderIcon from '@mui/icons-material/CreateNewFolder';
 import FolderIcon from '@mui/icons-material/Folder';
@@ -55,7 +54,9 @@ import SettingsIcon from '@mui/icons-material/Settings';
 import SearchIcon from '@mui/icons-material/Search';
 import CloseIcon from '@mui/icons-material/Close';
 import AddCommentIcon from '@mui/icons-material/AddComment';
-
+import RunStatusGears from './TaskCard/RunStatusGears';
+import type { TaskBinding } from '../types/task_binding';
+import { useRunStatusIndex } from '../hooks/useRunStatusIndex';
 // Ant Design Icons for the menu items
 import {
   EditOutlined,
@@ -121,6 +122,21 @@ interface ChatTreeItemProps {
   // Conversation has a task card with a non-terminal run.  Renders a
   // distinct gear affordance instead of the chat-streaming spinner.
   isRunningTask?: boolean;
+  /**
+   * This conversation's task bindings.  Drives a gear per run status with
+   * a count — see RunStatusGears.  Distinct from ``isRunningTask``, which
+   * is set optimistically at launch before any run record exists and so
+   * covers the window this cannot: bindings arrive from the server.
+   */
+  taskBindings?: ReadonlyArray<TaskBinding>;
+  /**
+   * Pre-counted statuses from the project-wide index, for conversations
+   * that are not open.  ``taskBindings`` wins when present: the open
+   * chat's bindings are fresher than a polled projection, and they are
+   * what the tile itself renders from, so preferring them keeps the row
+   * and the tile from disagreeing while a run is actively changing.
+   */
+  taskStatusCounts?: Record<string, number>;
   hasUnreadResponse?: boolean;
   conversationCount?: number;
   // Open-work indicators (conversation rows only): parked+active beads and
@@ -185,6 +201,8 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     isEphemeralItem = false,
     isStreaming = false,
     isRunningTask = false,
+    taskBindings,
+    taskStatusCounts,
     hasUnreadResponse = false,
     conversationCount = 0,
     openBeadCount = 0,
@@ -494,7 +512,30 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                 </Box>
               </Box>
             )}
-            {isRunningTask && !isStreaming && (
+            {/* Per-status gears with counts.  REPLACES the single
+                "Task running…" line rather than sitting beside it: both
+                would draw a gear for a running task, and two gears for one
+                run is worse than the problem being fixed.
+
+                The optimistic ``isRunningTask`` path is kept for the window
+                before any binding exists — set at launch, so it covers the
+                gap where the server has no run record yet — but only when
+                the cluster has nothing to say, so the two cannot overlap. */}
+            {taskBindings && taskBindings.length > 0 ? (
+              <RunStatusGears
+                bindings={taskBindings}
+                suppressLive={isStreaming}
+              />
+            ) : taskStatusCounts && Object.keys(taskStatusCounts).length > 0 ? (
+              /* Not the open chat: statuses come from the project-wide
+                 index.  This branch is the whole point of that index — a
+                 run that held or failed in a conversation the user has not
+                 visited this session previously rendered nothing at all. */
+              <RunStatusGears
+                counts={taskStatusCounts}
+                suppressLive={isStreaming}
+              />
+            ) : isRunningTask && !isStreaming ? (
               <Box sx={{
                 display: 'flex',
                 alignItems: 'center',
@@ -503,10 +544,10 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
               }}>
                 <SpinningGear sx={{ fontSize: '12px', mr: 0.5 }} />
                 <Typography variant="caption" sx={{ fontSize: '11px' }}>
-                  Task running…
+                  Task starting…
                 </Typography>
               </Box>
-            )}
+            ) : null}
             {isStreaming && (
               <Box sx={{
                 display: 'flex',
@@ -989,10 +1030,17 @@ const MUIChatHistory = () => {
     loadConversationAndScrollToMessage,
     streamingConversations,
     runningTaskConversations,
+    conversationTaskBindings,
   } = useActiveChat();
 
   const { isDarkMode } = useTheme();
   const { projects, currentProject, switchProject } = useProject();
+
+  // Project-wide run status, so a row that is NOT the open conversation
+  // still reports its tasks.  Polls only while something is live and the
+  // tab is visible; see the hook for the gating and why this is a cheap
+  // projection rather than the run list.
+  const { index: runStatusIndex } = useRunStatusIndex(currentProject?.id);
   const [expandedNodes, setExpandedNodes] = useState<React.Key[]>([]);
   const chatHistoryRef = useRef<HTMLDivElement>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -2756,6 +2804,25 @@ const MUIChatHistory = () => {
     const activeConvIds = new Set<string>();
     streamingConversations.forEach(id => activeConvIds.add(id));
     runningTaskConversations.forEach(id => activeConvIds.add(id));
+    // Task-status membership is an ordering input for the same reason the
+    // other two are: a gear cluster appears, changes status, or gains a
+    // count without any timestamp moving, so omitting it leaves the cached
+    // sort order — and therefore the rendered list — stale.  The run
+    // statuses are part of the key, not just the ids: a conversation whose
+    // only run went running -> held must invalidate the order even though
+    // its membership did not change.
+    conversationTaskBindings.forEach((arr, id) => {
+      activeConvIds.add(id + ':' + arr.map(x => x.run_status ?? '').sort().join(','));
+    });
+    // Same reasoning for the project-wide index: a run finishing in a
+    // conversation the user is not looking at changes that row's gears
+    // without touching any timestamp, so the cached order has to be
+    // invalidated or the row keeps its old indicator.  Statuses AND counts
+    // are in the key, since "2 done" -> "3 done" is a visible change.
+    Object.entries(runStatusIndex.conversations).forEach(([id, counts]) => {
+      const sig = Object.keys(counts).sort().map(s => `${s}=${counts[s]}`).join(',');
+      activeConvIds.add('idx:' + id + ':' + sig);
+    });
     Array.from(activeConvIds).sort().forEach(id => oh.add('act:' + id));
     const sortHash = oh.value();
 
@@ -3261,7 +3328,7 @@ const MUIChatHistory = () => {
     } catch {}
 
     return result;
-  }, [conversations, folders, pinnedFolders, isProjectSwitching, currentProject?.id, streamingConversations, runningTaskConversations]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [conversations, folders, pinnedFolders, isProjectSwitching, currentProject?.id, streamingConversations, runningTaskConversations, conversationTaskBindings, runStatusIndex]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Debounce treeData updates: during startup, conversations change 4+ times
   // in rapid succession. Only rebuild the flattened tree once things settle.
@@ -3348,14 +3415,26 @@ const MUIChatHistory = () => {
     return guides;
   }, [flatNodes]);
 
-  // Measure available height for the virtual list
-  const treeContainerRef = useRef<HTMLDivElement>(null);
+  // Measure available height for the virtual list.
+  //
+  // The container is mounted by a late branch of the render — it does not
+  // exist while the loading spinner or the empty state is on screen.  A plain
+  // ref plus a mount-only effect therefore observed nothing on a cold start:
+  // the effect ran with a null ref, bailed out, and never re-ran, leaving the
+  // list pinned at its fallback height regardless of the parent's real size.
+  // Tracking the node in state re-runs the effect when it actually appears.
+  const treeContainerRef = useRef<HTMLDivElement | null>(null);
+  const [treeContainerEl, setTreeContainerEl] = useState<HTMLDivElement | null>(null);
+  const attachTreeContainer = useCallback((el: HTMLDivElement | null) => {
+    treeContainerRef.current = el;
+    setTreeContainerEl(el);
+  }, []);
   const [treeContainerHeight, setTreeContainerHeight] = useState(600);
   // Drives the bottom-fade affordance: without it a row that happens to align
   // flush with the container edge reads as the end of the list.
   const [listScrollOffset, setListScrollOffset] = useState(0);
   useEffect(() => {
-    const el = treeContainerRef.current;
+    const el = treeContainerEl;
     if (!el) return;
     // Set initial height immediately
     setTreeContainerHeight(el.clientHeight || 600);
@@ -3365,7 +3444,7 @@ const MUIChatHistory = () => {
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [treeContainerEl]);
 
   const showFolderConfigDialog = (folderId?: string) => {
     const isEditing = !!folderId;
@@ -3863,7 +3942,7 @@ const MUIChatHistory = () => {
             </Typography>
           </Box>
         ) : (
-          <div ref={treeContainerRef} style={{ flexGrow: 1, overflow: 'hidden', paddingTop: 8, display: 'flex', flexDirection: 'column', minHeight: 0, position: 'relative' }}>
+          <div ref={attachTreeContainer} style={{ flexGrow: 1, overflow: 'hidden', paddingTop: 8, display: 'flex', flexDirection: 'column', minHeight: 0, position: 'relative' }}>
             {/* Root-level drop zone: visible only during drag when first item is a folder */}
             {customDragState.isDragging && flatNodes.length > 0 && flatNodes[0].isFolder && (
               <div
@@ -3964,7 +4043,17 @@ const MUIChatHistory = () => {
                   node.conversation?.hasUnreadResponse && nodeId.substring(5) !== currentConversationId;
                 const convId = !isFolder && nodeId.startsWith('conv-') ? nodeId.substring(5) : null;
                 const isStreamingConv = !!(convId && streamingConversations.has(convId));
+                // Optimistic pre-binding indicator only; every terminal
+                // status is reported by the gear cluster from the bindings
+                // below.  This declaration was overwritten when the
+                // superseded held-Set change landed, leaving the row's
+                // isRunningTask prop referencing an undeclared name.
                 const isRunningTaskConv = !!(convId && runningTaskConversations.has(convId));
+                const rowTaskBindings = convId ? conversationTaskBindings.get(convId) : undefined;
+                // Project-wide fallback for rows that are not the open
+                // conversation, which is every row but one.
+                const rowTaskCounts = convId
+                  ? runStatusIndex.conversations[convId] : undefined;
                 const conversationCount = isFolder ? node.conversationCount : 0;
                 const openBeadCount = isFolder ? 0 : (node.conversation?.openBeadCount || 0);
                 const openWorkItemCount = isFolder ? 0 : (node.conversation?.openWorkItemCount || 0);
@@ -4041,6 +4130,8 @@ const MUIChatHistory = () => {
                       isEphemeralItem={isEphemeralItem}
                       isStreaming={isStreamingConv} hasUnreadResponse={hasUnreadResponse}
                       isRunningTask={isRunningTaskConv}
+                      taskBindings={rowTaskBindings}
+                      taskStatusCounts={rowTaskCounts}
                       isGlobalByInheritanceOnly={isGlobalByInheritanceOnly}
                       openBeadCount={openBeadCount} openWorkItemCount={openWorkItemCount}
                       conversationCount={conversationCount}

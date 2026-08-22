@@ -20,7 +20,7 @@ import { Spin } from 'antd';
 import type { Block, Artifact } from '../../types/task_card';
 import type { TaskRun, TaskRunBlockState } from '../../types/task_run';
 import { blockOrigin, formatCompletedAt } from './partialOutcome';
-import { MarkdownRenderer } from '../MarkdownRenderer';
+import { TaskMarkdown } from './TaskMarkdown';
 import { ArtifactViewer } from './ArtifactViewer';
 import { stripTaskMetaTags } from './completionCheck';
 import { blockConfigLines, blockEmoji, blockLabel } from './runMapModel';
@@ -66,7 +66,7 @@ const ArtifactBody: React.FC<{
 }> = ({ artifact, projectId, runId }) => (
   <>
     {artifact.summary
-      ? <MarkdownRenderer markdown={artifact.summary} enableCodeApply={false}
+      ? <TaskMarkdown markdown={artifact.summary} enableCodeApply={false}
           isStreaming={false} isSubRender={true} />
       : <div className="tc-detail__empty">(no summary)</div>}
     {artifact.decisions && artifact.decisions.length > 0 && (
@@ -95,6 +95,16 @@ export const BlockDetailPanel: React.FC<Props> = ({
   projectId, runId,
   onRetryIteration, onContinueIteration, resumingIteration,
 }) => {
+  // Mirrors app/utils/resume_targets.resolve_iteration_resume's first
+  // refusal.  Read off the block rather than passed in, so the gate
+  // cannot be forgotten by a caller: every surface that renders this
+  // panel gets the same answer from the same field the server checks.
+  // Only `repeat` carries the flag — an `until` loop is serial by
+  // construction, so it is never gated here.
+  const isParallelLoop = !!(
+    block && block.block_type === 'repeat' && block.repeat_parallel
+  );
+
   const config = blockConfigLines(block);
   const artifact = blockState?.artifact ?? null;
   const error = blockState?.error ?? null;
@@ -168,7 +178,29 @@ export const BlockDetailPanel: React.FC<Props> = ({
             it: a loop's output can be long, and an action the user came
             here to take should not be reachable only by scrolling past
             the thing they were reading. */}
-        {isIter && (onRetryIteration || onContinueIteration) && (
+        {/* Parallel loops refuse mid-loop resume outright — the server
+            422s with "they do not depend on each other, so there is no
+            meaningful point to resume from" — because iterations receive
+            previous=None and honouring a start index would silently run
+            FEWER iterations than the card asks for while reporting the
+            loop complete.  The refusal is correct; offering a control
+            that can only ever fail is not, and on a 20-wide fan-out the
+            dot strip is exactly where a user reaches first after a hold.
+            Explain instead, naming the resume that does work. */}
+        {isIter && isParallelLoop && (
+          <div className="tc-iter-resume tc-iter-resume--unavailable">
+            <div className="tc-iter-resume__note">
+              This loop ran its iterations <strong>in parallel</strong>, so
+              they do not build on each other and there is no meaningful
+              point to resume from — re-running one would leave the others
+              unrun while the loop reported complete. Use{' '}
+              <strong>↻ Retry</strong> on the loop itself, which re-runs
+              every iteration; stages <em>before</em> the loop still replay
+              from record.
+            </div>
+          </div>
+        )}
+        {isIter && !isParallelLoop && (onRetryIteration || onContinueIteration) && (
           <div className="tc-iter-resume">
             <div className="tc-iter-resume__note">
               Iterations before the one you pick are <strong>replayed from
@@ -222,7 +254,7 @@ export const BlockDetailPanel: React.FC<Props> = ({
           // <self_assessment> meta tags before rendering (stripTaskMetaTags);
           // this focused-block view rendered the raw stream and either
           // showed the literal tag text or had it silently swallowed as HTML.
-          <MarkdownRenderer markdown={stripTaskMetaTags(liveText)} enableCodeApply={false}
+          <TaskMarkdown markdown={stripTaskMetaTags(liveText)} enableCodeApply={false}
             isStreaming={status === 'running'} isSubRender={true} />
         ) : artifact ? (
           <ArtifactBody artifact={artifact} />

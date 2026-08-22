@@ -16,6 +16,7 @@ import React, { createContext, useContext, useMemo, Dispatch, SetStateAction } f
 import { Message } from '../utils/types';
 import type { ProcessingState } from './ChatContext';
 import type { ThinkingBlockData } from '../utils/thinkingBlocks';
+import type { TaskBinding } from '../types/task_binding';
 
 export interface ActiveChatContextValue {
   currentConversationId: string;
@@ -40,6 +41,12 @@ export interface ActiveChatContextValue {
   setIsStreaming: Dispatch<SetStateAction<boolean>>;
   streamingConversations: Set<string>;
     runningTaskConversations: Set<string>;
+  /**
+   * Per-conversation task bindings, for the sidebar's per-status gear
+   * cluster.  See ChatContext for why this is bindings rather than more
+   * boolean Sets.
+   */
+  conversationTaskBindings: Map<string, TaskBinding[]>;
   addStreamingConversation: (id: string) => void;
   removeStreamingConversation: (id: string) => void;
   // Streaming content maps
@@ -85,6 +92,7 @@ export const ActiveChatProvider: React.FC<
       setIsStreaming: value.setIsStreaming,
       streamingConversations: value.streamingConversations,
       runningTaskConversations: value.runningTaskConversations,
+      conversationTaskBindings: value.conversationTaskBindings,
       addStreamingConversation: value.addStreamingConversation,
       removeStreamingConversation: value.removeStreamingConversation,
       streamedContentMap: value.streamedContentMap,
@@ -110,6 +118,7 @@ export const ActiveChatProvider: React.FC<
       value.isStreaming,
       value.streamingConversations,
       value.runningTaskConversations,
+      value.conversationTaskBindings,
       value.streamedContentMap,
       value.reasoningContentMap,
       value.dynamicTitleLength,
@@ -141,4 +150,13 @@ export function useActiveChat(): ActiveChatContextValue {
   const ctx = useContext(ActiveChatContext);
   if (!ctx) throw new Error('useActiveChat must be used within ActiveChatProvider');
   return ctx;
+}
+
+/**
+ * Non-throwing variant for components that render both inside the chat
+ * (where the provider exists) and standalone in tests or embedded views.
+ * Returns undefined rather than throwing when no provider is mounted.
+ */
+export function useActiveChatOptional(): ActiveChatContextValue | undefined {
+  return useContext(ActiveChatContext);
 }

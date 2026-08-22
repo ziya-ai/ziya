@@ -6,7 +6,8 @@ Covers:
 - on_failure="stop" applies inside a Repeat body each iteration
 - for_each source templating: a planner sibling's artifact drives the
   fan-out via {{sibling("id")}}, including embedded-array extraction
-- unresolvable source falls back to count-based iteration
+- an unresolvable TEMPLATED source fails the Repeat block, while an
+  empty resolved list runs zero iterations without failing
 - parse_for_each_source embedded-array extraction unit cases
 """
 
@@ -119,15 +120,48 @@ async def test_for_each_from_planner_sibling_artifact(fake_tasks):
     assert "Process beta now" in echo_calls[1]["instructions"]
 
 
-async def test_for_each_unresolvable_source_falls_back_to_count(fake_tasks):
+async def test_for_each_unresolvable_templated_source_fails_block(fake_tasks):
+    """An unresolvable templated source must FAIL, not silently degrade.
+
+    The historical behaviour was a fallback to count-based iteration,
+    which ran the body with {{item}} rendering to empty string — so a
+    fan-out whose upstream list never materialised looked like it had
+    done its work.  With repeat_max set as a safety bound that meant
+    repeat_max bogus iterations, each burning a full model turn.
+    """
     rpt = Block(
         block_type="repeat", id="r", repeat_mode="for_each",
         repeat_for_each_source='{{sibling("nonexistent")}}',
+        repeat_max=60,
         body=[_task("echo", "echo", "Process {{item}}")],
     )
-    await execute_block(rpt, _ctx())
-    # No parseable source -> count fallback (repeat_max/count default 1).
-    assert len([c for c in fake_tasks if c["name"] == "echo"]) == 1
+    artifact = await execute_block(rpt, _ctx())
+    # Nothing ran: the failure is reported instead of manufactured work.
+    assert [c for c in fake_tasks if c["name"] == "echo"] == []
+    assert artifact.failed is True
+    # The source text is surfaced so the author can see what to fix.
+    assert "nonexistent" in artifact.summary
+
+
+async def test_for_each_empty_resolved_list_runs_nothing_without_failing(
+    fake_tasks,
+):
+    """An empty list is a legitimate planner result, not a defect.
+
+    Distinct from the unresolvable case above: the upstream task ran,
+    emitted a list, and the list was empty ("nothing to do").  Failing
+    here would halt an enclosing on_failure="stop" sequence over a
+    correct outcome.
+    """
+    plan = _task("plan", "plan", "Nothing to process: []")
+    rpt = Block(
+        block_type="repeat", id="r", repeat_mode="for_each",
+        repeat_for_each_source='{{sibling("plan")}}',
+        body=[_task("echo", "echo", "Process {{item}}")],
+    )
+    grp = Block(block_type="group", id="g", body=[plan, rpt])
+    await execute_block(grp, _ctx())
+    assert [c for c in fake_tasks if c["name"] == "echo"] == []
 
 
 def test_plan_iterations_without_ctx_uses_raw_source():

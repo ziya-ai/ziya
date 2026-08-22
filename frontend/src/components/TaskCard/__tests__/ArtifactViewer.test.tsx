@@ -17,10 +17,11 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import { ArtifactViewer } from '../ArtifactViewer';
 import type { ArtifactPart } from '../../../types/task_card';
 
-// MarkdownRenderer pulls in the whole markdown/plugin stack; the viewer
+// TaskMarkdown delegates to MarkdownRenderer, which pulls in the whole
+// markdown/plugin stack; the viewer
 // only needs it to display text, so render text verbatim in tests.
-jest.mock('../../MarkdownRenderer', () => ({
-  MarkdownRenderer: ({ markdown }: { markdown: string }) => <div>{markdown}</div>,
+jest.mock('../TaskMarkdown', () => ({
+  TaskMarkdown: ({ markdown }: { markdown: string }) => <div>{markdown}</div>,
 }));
 
 const PROJECT = 'proj-1';

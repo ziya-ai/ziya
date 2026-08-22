@@ -18,12 +18,19 @@ import {
 import { useProject } from '../../context/ProjectContext';
 import { useChatContext } from '../../context/ChatContext';
 import type { TaskCard, Block, TaskScope } from '../../types/task_card';
+import type { TaskRun } from '../../types/task_run';
 import { useTaskRunStream } from '../../hooks/useTaskRunStream';
 import { taskCardApi, type CardScopeStatus } from '../../services/taskCardApi';
-import { cancelTaskRun } from '../../services/taskRunApi';
+import { cancelTaskRun, listTaskRuns } from '../../services/taskRunApi';
 import { createBinding } from '../../services/taskBindingApi';
 import { TaskCardEditor } from './TaskCardEditor';
 import { BlockScopeButton } from './BlockScopeButton';
+import { DeckRunList } from './DeckRunList';
+import {
+  hasLiveRuns, indexRunsByCard, summarizeCardRuns,
+} from './deckRunIndex';
+import { PROPOSED_TAG } from '../TaskCardLaunchButton';
+import { CalleeHoldPanel } from './CalleeHoldPanel';
 
 // Client-only pin set, mirroring the conversation sidebar's
 // ZIYA_PINNED_FOLDERS pattern (see MUIChatHistory.tsx). Task Cards have no
@@ -41,6 +48,64 @@ function loadPinnedCardIds(): Set<string> {
   return new Set();
 }
 
+// Deck sidebar width — personal, per-browser, like the pin set above.
+const SIDEBAR_WIDTH_KEY = 'ZIYA_TASK_DECK_SIDEBAR_WIDTH';
+const SIDEBAR_MIN_WIDTH = 180;
+const SIDEBAR_MAX_WIDTH = 600;
+const SIDEBAR_DEFAULT_WIDTH = 260;
+
+const clampSidebarWidth = (w: number): number =>
+  Math.max(SIDEBAR_MIN_WIDTH, Math.min(SIDEBAR_MAX_WIDTH, w));
+
+function loadSidebarWidth(): number {
+  try {
+    const raw = localStorage.getItem(SIDEBAR_WIDTH_KEY);
+    const parsed = raw ? parseInt(raw, 10) : NaN;
+    if (Number.isFinite(parsed)) return clampSidebarWidth(parsed);
+  } catch (error) {
+    console.error('Error loading task deck sidebar width:', error);
+  }
+  return SIDEBAR_DEFAULT_WIDTH;
+}
+
+// Dialog (modal) size — same personal, per-browser treatment as the
+// sidebar width above.  Stored raw and clamped on read, so moving between
+// a laptop and a large display doesn't strand the dialog at a size the
+// smaller screen cannot show.
+const DIALOG_SIZE_KEY = 'ZIYA_TASK_DECK_DIALOG_SIZE';
+const DIALOG_MIN_WIDTH = 640;
+const DIALOG_MIN_HEIGHT = 320;
+const DIALOG_DEFAULT_WIDTH = 1000;
+
+// Chrome the Modal adds around the body (title bar, paddings) plus its
+// default 100px top offset.  The stored height is the body's inner
+// height, so the viewport cap has to leave room for this.
+const DIALOG_CHROME_HEIGHT = 220;
+
+const clampDialogWidth = (w: number): number =>
+  Math.max(DIALOG_MIN_WIDTH, Math.min(window.innerWidth - 32, w));
+const clampDialogHeight = (h: number): number =>
+  Math.max(DIALOG_MIN_HEIGHT, Math.min(window.innerHeight - DIALOG_CHROME_HEIGHT, h));
+
+function loadDialogSize(): { width: number; height: number } {
+  // Default height matches the previous hard-coded 70vh body.
+  const fallbackWidth = DIALOG_DEFAULT_WIDTH;
+  const fallbackHeight = Math.round(window.innerHeight * 0.7);
+  try {
+    const raw = localStorage.getItem(DIALOG_SIZE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as { width?: number; height?: number };
+      return {
+        width: clampDialogWidth(Number.isFinite(parsed.width) ? parsed.width! : fallbackWidth),
+        height: clampDialogHeight(Number.isFinite(parsed.height) ? parsed.height! : fallbackHeight),
+      };
+    }
+  } catch (error) {
+    console.error('Error loading task deck dialog size:', error);
+  }
+  return { width: clampDialogWidth(fallbackWidth), height: clampDialogHeight(fallbackHeight) };
+}
+
 // Tags double as "folders" for Task Cards (no dedicated folder model
 // server-side). A tag prefixed with this marker is treated as a folder
 // membership rather than a plain search-matchable tag, so it can be
@@ -48,6 +113,14 @@ function loadPinnedCardIds(): Set<string> {
 const FOLDER_TAG_PREFIX = 'folder:';
 const folderNameFromTag = (tag: string): string => tag.slice(FOLDER_TAG_PREFIX.length);
 const folderTagFromName = (name: string): string => `${FOLDER_TAG_PREFIX}${name}`;
+
+// Cards saved straight from an AI proposal in chat (see
+// TaskCardLaunchButton). Grouped separately so a burst of accepted
+// proposals doesn't bury hand-authored cards, and because they're the
+// ones most likely to still need their permissions signed. Deliberately a
+// plain tag, not a `folder:` one, so it does not consume the card's single
+// folder slot — a proposal can still be filed into a folder.
+const isProposed = (c: TaskCard): boolean => c.tags.includes(PROPOSED_TAG);
 
 interface Props {
   visible: boolean;
@@ -73,7 +146,8 @@ export const TaskCardsLibrary: React.FC<Props> = ({
   visible, onClose, chatId, anchorMessageId, initialCardId,
 }) => {
   const { currentProject, updateProject } = useProject();
-  const { addRunningTaskConversation, startNewChat } = useChatContext();
+  const { addRunningTaskConversation, startNewChat, loadConversation } =
+    useChatContext();
   const projectId = currentProject?.id ?? '';
 
   // Deck-level (project-wide) Task Card permissions baseline — merged
@@ -95,6 +169,13 @@ export const TaskCardsLibrary: React.FC<Props> = ({
   // cardId -> escalation/signature status, for the deck-list badge.
   const [scopeMap, setScopeMap] = useState<Record<string, CardScopeStatus>>({});
 
+  // cardId -> that card's runs, newest first.  One project-wide request
+  // rather than a fetch per card: the deck opens with every card visible,
+  // so per-card fetching would be an N-request burst on every open — the
+  // reason the deck previously settled for the card's `run_count` integer
+  // and could say nothing about whether anything was still running.
+  const [runIndex, setRunIndex] = useState<Map<string, TaskRun[]>>(new Map());
+
   // Pinned card ids — client-only (see loadPinnedCardIds above).
   const [pinnedIds, setPinnedIds] = useState<Set<string>>(() => loadPinnedCardIds());
   useEffect(() => {
@@ -112,6 +193,124 @@ export const TaskCardsLibrary: React.FC<Props> = ({
     });
   }, []);
 
+  // Resizable list pane.  Width is committed to localStorage only on
+  // pointer-up so a drag doesn't produce a write per mousemove frame.
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => loadSidebarWidth());
+  const [resizing, setResizing] = useState(false);
+  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragRef.current = { startX: e.clientX, startWidth: sidebarWidth };
+    setResizing(true);
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    if (!resizing) return;
+    const onMove = (e: MouseEvent) => {
+      if (!dragRef.current) return;
+      const { startX, startWidth } = dragRef.current;
+      setSidebarWidth(clampSidebarWidth(startWidth + (e.clientX - startX)));
+    };
+    const onUp = () => {
+      dragRef.current = null;
+      setResizing(false);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    const prevUserSelect = document.body.style.userSelect;
+    const prevCursor = document.body.style.cursor;
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+    return () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.userSelect = prevUserSelect;
+      document.body.style.cursor = prevCursor;
+    };
+  }, [resizing]);
+
+  useEffect(() => {
+    if (resizing) return;
+    try {
+      localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth));
+    } catch (error) {
+      console.error('Error saving task deck sidebar width:', error);
+    }
+  }, [sidebarWidth, resizing]);
+
+  // Resizable dialog.  The grip sits at the bottom-right of the body, so a
+  // horizontal drag moves the width by 2x the pointer delta: the Modal is
+  // centre-aligned, so its right edge only advances by half of any width
+  // increase.  Vertically the Modal is top-anchored, so height tracks the
+  // pointer 1:1.
+  const [dialogSize, setDialogSize] = useState(() => loadDialogSize());
+  const [dialogResizing, setDialogResizing] = useState(false);
+  const dialogDragRef = useRef<
+    { startX: number; startY: number; startWidth: number; startHeight: number } | null
+  >(null);
+
+  const handleDialogResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dialogDragRef.current = {
+      startX: e.clientX, startY: e.clientY,
+      startWidth: dialogSize.width, startHeight: dialogSize.height,
+    };
+    setDialogResizing(true);
+  }, [dialogSize]);
+
+  const resetDialogSize = useCallback(() => {
+    setDialogSize({
+      width: clampDialogWidth(DIALOG_DEFAULT_WIDTH),
+      height: clampDialogHeight(Math.round(window.innerHeight * 0.7)),
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!dialogResizing) return;
+    const onMove = (e: MouseEvent) => {
+      const d = dialogDragRef.current;
+      if (!d) return;
+      setDialogSize({
+        width: clampDialogWidth(d.startWidth + (e.clientX - d.startX) * 2),
+        height: clampDialogHeight(d.startHeight + (e.clientY - d.startY)),
+      });
+    };
+    const onUp = () => {
+      dialogDragRef.current = null;
+      setDialogResizing(false);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+    const prevUserSelect = document.body.style.userSelect;
+    const prevCursor = document.body.style.cursor;
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'nwse-resize';
+    return () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.userSelect = prevUserSelect;
+      document.body.style.cursor = prevCursor;
+    };
+  }, [dialogResizing]);
+
+  useEffect(() => {
+    if (dialogResizing) return;
+    try {
+      localStorage.setItem(DIALOG_SIZE_KEY, JSON.stringify(dialogSize));
+    } catch (error) {
+      console.error('Error saving task deck dialog size:', error);
+    }
+  }, [dialogSize, dialogResizing]);
+
+  // The dialog can now be narrowed below the stored sidebar width, so the
+  // sidebar has to yield rather than squeeze the editor pane to nothing.
+  // Reserve 320px for the editor before honouring the sidebar's width.
+  const effectiveSidebarWidth = Math.min(
+    sidebarWidth,
+    Math.max(SIDEBAR_MIN_WIDTH, dialogSize.width - 320),
+  );
+
   // Active run tracking — id is seeded on launch; hook streams status.
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const { run: activeRun, refresh: refreshActiveRun } =
@@ -120,6 +319,15 @@ export const TaskCardsLibrary: React.FC<Props> = ({
   const reload = useCallback(async () => {
     if (!projectId) return;
     setLoading(true);
+    // Runs are supplementary to the card list, so this is its own
+    // try/catch: a deck that refuses to render its cards because the run
+    // endpoint hiccuped is strictly worse than one showing no run badges.
+    try {
+      setRunIndex(indexRunsByCard(await listTaskRuns(projectId)));
+    } catch (e) {
+      console.debug('TaskCardsLibrary: run list fetch failed', e);
+      setRunIndex(new Map());
+    }
     try {
       const list = await taskCardApi.list(projectId);
       setCards(list);
@@ -146,6 +354,31 @@ export const TaskCardsLibrary: React.FC<Props> = ({
   }, [projectId]);
 
   useEffect(() => { if (visible) reload(); }, [visible, reload]);
+
+  // Keep the run rows current while the deck is open and something is
+  // actually live.  Gated on `hasLiveRuns` in both directions: an idle
+  // deck issues no requests at all, and a deck watching a running card
+  // does not need a manual Refresh to notice it finished — the previous
+  // behaviour, where a card's state was only as fresh as the last open.
+  //
+  // Polling rather than the WS stream used for a single active run: this
+  // watches EVERY card's runs, and opening a socket per run would be a
+  // connection per row for a surface the user glances at.
+  const runsLive = hasLiveRuns(runIndex);
+  useEffect(() => {
+    if (!visible || !projectId || !runsLive) return;
+    let cancelled = false;
+    const timer = setInterval(async () => {
+      try {
+        const runs = await listTaskRuns(projectId);
+        if (!cancelled) setRunIndex(indexRunsByCard(runs));
+      } catch {
+        // Transient: keep the last good index rather than blanking the
+        // rows on one failed poll.
+      }
+    }, 4000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [visible, projectId, runsLive]);
 
   // Keep the deck-list "Unsigned" badge in lock-step with the editor's own
   // re-check: when the open editor re-fetches a card's escalation status
@@ -295,30 +528,76 @@ export const TaskCardsLibrary: React.FC<Props> = ({
     onClose();
   }, [projectId, draft, addRunningTaskConversation, onClose]);
 
+  // Unsigned escalation on the card about to be launched.  Read from
+  // scopeMap, which the open editor keeps current via
+  // onScopeStatusChange, so this never needs its own fetch.
+  const draftUnsignedCount = useMemo(() => {
+    if (!draft) return 0;
+    const st = scopeMap[draft.id];
+    if (!st) return 0;
+    return st.blocks.filter(b => b.needsSignature ?? !b.authorized).length;
+  }, [draft, scopeMap]);
+
+  // Same gate as the chat proposal block: launching with unsigned
+  // escalation is allowed (authorize_scope clamps to the floor) but must
+  // not be silent, or the clamp resurfaces mid-run as an opaque
+  // permission failure well after the user has stopped watching.
+  const confirmIfUnsigned = useCallback((onProceed: () => void) => {
+    if (draftUnsignedCount === 0) { onProceed(); return; }
+    Modal.confirm({
+      title: 'Run without signed permissions?',
+      okText: 'Run anyway',
+      cancelText: 'Cancel',
+      width: 520,
+      content: (
+        <div style={{ fontSize: 13 }}>
+          <p style={{ marginTop: 0 }}>
+            {draftUnsignedCount === 1
+              ? '1 task in this card requests'
+              : `${draftUnsignedCount} tasks in this card request`}
+            {' '}shell or write permissions beyond the default safe set, and
+            that escalation is <strong>not signed</strong>.
+          </p>
+          <p style={{ marginBottom: 0 }}>
+            The run will start, but those tasks are clamped to the default
+            floor — so work depending on the extra permissions fails partway
+            through rather than up front. The banner in the editor lists the{' '}
+            <code>ziya-approve</code> command for each block.
+          </p>
+        </div>
+      ),
+      onOk: onProceed,
+    });
+  }, [draftUnsignedCount]);
+
   const handleLaunchCurrent = useCallback(async () => {
     if (!projectId || !draft || !chatId) return;
-    try {
-      await launchToChat(chatId, anchorMessageId ?? null);
-      message.success('Task launched in current conversation');
-    } catch (e) {
-      message.error(`Launch failed: ${String(e)}`);
-    }
-  }, [projectId, draft, chatId, anchorMessageId, launchToChat]);
+    confirmIfUnsigned(async () => {
+      try {
+        await launchToChat(chatId, anchorMessageId ?? null);
+        message.success('Task launched in current conversation');
+      } catch (e) {
+        message.error(`Launch failed: ${String(e)}`);
+      }
+    });
+  }, [projectId, draft, chatId, anchorMessageId, launchToChat, confirmIfUnsigned]);
 
   const handleLaunchNew = useCallback(async () => {
     if (!projectId || !draft) return;
-    try {
-      // Name the new conversation after the card; startNewChat returns the
-      // id and sets it current, so the user navigates there automatically.
-      const newId = await startNewChat(null, draft.name);
-      if (!newId) { message.error('Could not create a new conversation'); return; }
-      // New chat has no messages → no anchor; the tile anchors at the top.
-      await launchToChat(newId, null);
-      message.success('Task launched in new conversation');
-    } catch (e) {
-      message.error(`Launch failed: ${String(e)}`);
-    }
-  }, [projectId, draft, startNewChat, launchToChat]);
+    confirmIfUnsigned(async () => {
+      try {
+        // Name the new conversation after the card; startNewChat returns the
+        // id and sets it current, so the user navigates there automatically.
+        const newId = await startNewChat(null, draft.name);
+        if (!newId) { message.error('Could not create a new conversation'); return; }
+        // New chat has no messages → no anchor; the tile anchors at the top.
+        await launchToChat(newId, null);
+        message.success('Task launched in new conversation');
+      } catch (e) {
+        message.error(`Launch failed: ${String(e)}`);
+      }
+    });
+  }, [projectId, draft, startNewChat, launchToChat, confirmIfUnsigned]);
 
   const handleCancel = useCallback(async () => {
     if (!projectId || !activeRun) return;
@@ -330,6 +609,26 @@ export const TaskCardsLibrary: React.FC<Props> = ({
       message.error(`Cancel failed: ${String(e)}`);
     }
   }, [projectId, activeRun, refreshActiveRun]);
+
+  /**
+   * Navigate to the conversation a run is anchored in.
+   *
+   * The deck closes on the way, deliberately: it is a modal covering the
+   * conversation, so navigating behind it is indistinguishable from the
+   * click having done nothing.  No run id is passed along — the tile in
+   * that conversation already renders the run, and its own attempt rail
+   * resolves which attempt of a lineage to show.
+   */
+  const handleOpenRun = useCallback((run: TaskRun) => {
+    const convId = run.source_conversation_id;
+    if (!convId) return;
+    loadConversation(convId);
+    onClose();
+  }, [loadConversation, onClose]);
+
+  /** The selected card's runs, newest first.  Empty until fetched. */
+  const draftRuns = useMemo(
+    () => (draft ? runIndex.get(draft.id) ?? [] : []), [draft, runIndex]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -360,23 +659,30 @@ export const TaskCardsLibrary: React.FC<Props> = ({
   }, [cards, folderOfCard]);
 
   // Grouping for render: pinned cards float to the top regardless of
-  // folder, then folders (alphabetical), then unfiled cards.
+  // folder, then folders (alphabetical), then chat-proposed cards, then
+  // unfiled cards.  Proposals are split out because they arrive in bursts
+  // from conversations and would otherwise bury hand-authored cards.
   const grouped = useMemo(() => {
     const pinned = filtered.filter(c => pinnedIds.has(c.id));
     const unpinned = filtered.filter(c => !pinnedIds.has(c.id));
     const byFolder = new Map<string, TaskCard[]>();
+    const proposed: TaskCard[] = [];
     const unfiled: TaskCard[] = [];
     for (const c of unpinned) {
       const f = folderOfCard(c);
       if (f) {
         if (!byFolder.has(f)) byFolder.set(f, []);
         byFolder.get(f)!.push(c);
+      } else if (isProposed(c)) {
+        // Only when unfiled: an explicitly foldered proposal has been
+        // deliberately organized, so respect that over this grouping.
+        proposed.push(c);
       } else {
         unfiled.push(c);
       }
     }
     const folders = [...byFolder.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-    return { pinned, folders, unfiled };
+    return { pinned, folders, proposed, unfiled };
   }, [filtered, pinnedIds, folderOfCard]);
 
   // Per-row "⋯" context menu — mirrors the conversation sidebar's
@@ -465,11 +771,50 @@ export const TaskCardsLibrary: React.FC<Props> = ({
               </Tag>
             );
           })()}
+          {(() => {
+            // Live / needs-attention badges.  Both can be present at
+            // once — a retry running while the failed attempt it came
+            // from is still on record — so they are separate badges
+            // rather than one derived "state", which would hide
+            // whichever of the two the user was not looking for.
+            const s = summarizeCardRuns(runIndex.get(c.id));
+            if (s.live === 0 && s.attention === 0) return null;
+            return (
+              <>
+                {s.live > 0 && (
+                  <Tooltip title={`${s.live} run(s) still in flight — click the card to open them`}>
+                    <Tag color="blue" style={{ marginInlineEnd: 0, fontSize: 10, lineHeight: '16px', padding: '0 5px' }}>
+                      {s.live === 1 ? 'Running' : `Running · ${s.live}`}
+                    </Tag>
+                  </Tooltip>
+                )}
+                {s.attention > 0 && (
+                  <Tooltip title={
+                    'Runs stopped without finishing: '
+                    + Object.entries(s.byStatus)
+                        .filter(([k]) => k === 'failed' || k === 'partial' || k === 'held')
+                        .map(([k, n]) => `${n} ${k}`).join(', ')
+                  }>
+                    <Tag color="gold" style={{ marginInlineEnd: 0, fontSize: 10, lineHeight: '16px', padding: '0 5px' }}>
+                      {s.attention === 1 ? 'Attention' : `Attention · ${s.attention}`}
+                    </Tag>
+                  </Tooltip>
+                )}
+              </>
+            );
+          })()}
         </div>
         <div style={{ fontSize: 11, opacity: 0.6 }}>
           {c.root.block_type}
           {c.is_template ? ' · template' : ''}
-          {c.run_count > 0 ? ` · ${c.run_count} run${c.run_count === 1 ? '' : 's'}` : ''}
+          {/* Distinguish "saved but never launched" from "has history".
+              A run_count of 0 previously rendered as nothing at all, so a
+              proposal saved-but-not-yet-run looked identical to a card
+              that had been exercised. */}
+          {c.run_count > 0
+            ? ` · ${c.run_count} run${c.run_count === 1 ? '' : 's'}`
+            : ' · never run'}
+          {isProposed(c) ? ' · from chat' : ''}
         </div>
       </div>
       <Dropdown menu={cardMenuItems(c)} trigger={['click']} placement="bottomRight">
@@ -479,13 +824,18 @@ export const TaskCardsLibrary: React.FC<Props> = ({
         />
       </Dropdown>
     </div>
-  ), [selectedId, pinnedIds, scopeMap, cardMenuItems, loadCard]);
+  ), [selectedId, pinnedIds, scopeMap, runIndex, cardMenuItems, loadCard]);
 
   const statusTag = activeRun ? (
     <Tag color={
       activeRun.status === 'running' ? 'blue' :
       activeRun.status === 'done' ? 'green' :
       activeRun.status === 'failed' ? 'red' :
+      // Violet, matching the tile chip: a held run is stopped, not
+      // broken.  Without this case it fell through to 'default' grey and
+      // read as an unremarkable terminal state — indistinguishable at a
+      // glance from queued.
+      activeRun.status === 'held' ? 'purple' :
       activeRun.status === 'cancelled' ? 'orange' : 'default'
     }>{activeRun.status}</Tag>
   ) : null;
@@ -495,13 +845,13 @@ export const TaskCardsLibrary: React.FC<Props> = ({
       title="Task Cards"
       open={visible}
       onCancel={onClose}
-      width={1000}
+      width={dialogSize.width}
       footer={null}
       destroyOnClose
     >
-      <div style={{ display: 'flex', gap: 12, height: '70vh' }}>
+      <div style={{ display: 'flex', gap: 12, height: dialogSize.height }}>
         {/* Left: list */}
-        <div style={{ width: 260, display: 'flex', flexDirection: 'column', gap: 8 }}>
+        <div style={{ width: effectiveSidebarWidth, flexShrink: 0, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
           {currentProject && (
             <BlockScopeButton
               scope={deckScope}
@@ -538,7 +888,18 @@ export const TaskCardsLibrary: React.FC<Props> = ({
                     {cardsInFolder.map(renderCardRow)}
                   </div>
                 ))}
-                {grouped.unfiled.length > 0 && (grouped.pinned.length > 0 || grouped.folders.length > 0) && (
+                {grouped.proposed.length > 0 && (
+                  <div>
+                    <div style={{ padding: '4px 10px', fontSize: 11, opacity: 0.55, fontWeight: 600 }}>
+                      PROPOSED IN CHAT
+                    </div>
+                    {grouped.proposed.map(renderCardRow)}
+                  </div>
+                )}
+                {grouped.unfiled.length > 0 && (
+                  grouped.pinned.length > 0 || grouped.folders.length > 0 ||
+                  grouped.proposed.length > 0
+                ) && (
                   <div style={{ padding: '4px 10px', fontSize: 11, opacity: 0.55, fontWeight: 600 }}>OTHER</div>
                 )}
                 {grouped.unfiled.map(renderCardRow)}
@@ -546,8 +907,23 @@ export const TaskCardsLibrary: React.FC<Props> = ({
             )}
           </div>
         </div>
+        {/* Divider: drag to resize the list pane */}
+        <div
+          onMouseDown={handleResizeStart}
+          onDoubleClick={() => setSidebarWidth(SIDEBAR_DEFAULT_WIDTH)}
+          title="Drag to resize · double-click to reset"
+          style={{
+            flex: '0 0 6px',
+            marginInline: -3,
+            cursor: 'col-resize',
+            borderRadius: 3,
+            alignSelf: 'stretch',
+            background: resizing ? 'rgba(24,144,255,0.45)' : 'rgba(128,128,128,0.18)',
+            transition: resizing ? 'none' : 'background 0.15s',
+          }}
+        />
         {/* Right: editor */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 8, overflow: 'hidden' }}>
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 8, overflow: 'hidden' }}>
           {draft ? (
             <>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -580,6 +956,16 @@ export const TaskCardsLibrary: React.FC<Props> = ({
                 {statusTag}
                 {activeRun?.error && <span style={{ color: '#ff4d4f', fontSize: 12 }}>{activeRun.error}</span>}
               </div>
+              {/* This card's position inside somebody else's run.  Sits
+                  above the editor because it is a fact about the card's
+                  CURRENT state, not about its definition — and because a
+                  card called by a held study previously showed no sign of
+                  it anywhere on this pane. */}
+              <CalleeHoldPanel
+                projectId={projectId}
+                cardId={selectedId}
+                root={draft?.root}
+              />
               <div style={{ flex: 1, overflow: 'auto', border: '1px solid rgba(128,128,128,0.2)', borderRadius: 4, padding: 8 }}>
                 <TaskCardEditor
                   card={draft}
@@ -588,11 +974,42 @@ export const TaskCardsLibrary: React.FC<Props> = ({
                   onScopeStatusChange={handleScopeStatusChange}
                 />
               </div>
+              {/* Run history for this card.  Above the editor rather than
+                  inside it: a run in flight is the thing you check before
+                  editing a card, and burying it under the block tree of a
+                  deep card puts it behind a scroll. */}
+              <div style={{ fontSize: 11, opacity: 0.55, fontWeight: 600 }}>
+                RUNS
+              </div>
+              <DeckRunList runs={draftRuns} onOpen={handleOpenRun} />
             </>
           ) : (
             <Empty description="Select or create a card" style={{ marginTop: 80 }} />
           )}
         </div>
+      </div>
+      {/* Bottom-right grip: drag to resize the dialog itself */}
+      <div
+        onMouseDown={handleDialogResizeStart}
+        onDoubleClick={resetDialogSize}
+        title="Drag to resize the dialog · double-click to reset"
+        style={{
+          height: 14,
+          marginTop: 6,
+          display: 'flex',
+          justifyContent: 'flex-end',
+          alignItems: 'center',
+          cursor: 'nwse-resize',
+        }}
+      >
+        <div style={{
+          width: 11,
+          height: 11,
+          borderRight: '2px solid rgba(128,128,128,0.55)',
+          borderBottom: '2px solid rgba(128,128,128,0.55)',
+          borderBottomRightRadius: 3,
+          opacity: dialogResizing ? 1 : 0.7,
+        }} />
       </div>
       <Modal
         title="New folder"

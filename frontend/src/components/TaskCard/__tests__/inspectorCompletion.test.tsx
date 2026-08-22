@@ -26,10 +26,10 @@ import { isRunOver } from '../runControls';
 import type { LiveTaskState } from '../../../hooks/useTaskRunStream';
 import type { RunStatus } from '../../../types/task_run';
 
-// MarkdownRenderer pulls in the full markdown/katex/mermaid stack, which
+// TaskMarkdown delegates to MarkdownRenderer, which pulls in the full markdown/katex/mermaid stack, which
 // is irrelevant here and slow; the footer is plain DOM.
-jest.mock('../../MarkdownRenderer', () => ({
-  MarkdownRenderer: ({ markdown }: { markdown: string }) => (
+jest.mock('../TaskMarkdown', () => ({
+  TaskMarkdown: ({ markdown }: { markdown: string }) => (
     <div data-testid="md">{markdown}</div>
   ),
 }));
