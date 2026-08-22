@@ -59,11 +59,14 @@
   transform: translateY(-50%) translateX(-3px);
 }
 
-/* Light theme overrides */
-@media (prefers-color-scheme: light) {
-  .cgp-panel { background: rgba(255,255,255,.97); border-left-color: rgba(0,0,0,.08); }
-  .cgp-toggle { background: rgba(255,255,255,.95); border-color: rgba(0,0,0,.12); color: #24292f; }
-  .cgp-close-btn { background: rgba(0,0,0,.05); border-color: rgba(0,0,0,.1); color: #57606a; }
-  .cgp-close-btn:hover { background: rgba(0,0,0,.1); color: #24292f; }
-  .cgp-overlay { background: rgba(0,0,0,.1); }
-}
+/* Light theme overrides, keyed on `body.dark` rather than on the OS
+ * preference.  Ziya's theme is class-based (ThemeContext toggles
+ * `body.dark`), so as a media query none of this applied on an OS-dark
+ * machine running the app in light mode — the panel kept its dark ground
+ * inside otherwise-light chrome.  Matches the `body:not(.dark)`
+ * convention index.css already uses. */
+body:not(.dark) .cgp-panel { background: rgba(255,255,255,.97); border-left-color: rgba(0,0,0,.08); }
+body:not(.dark) .cgp-toggle { background: rgba(255,255,255,.95); border-color: rgba(0,0,0,.12); color: #24292f; }
+body:not(.dark) .cgp-close-btn { background: rgba(0,0,0,.05); border-color: rgba(0,0,0,.1); color: #57606a; }
+body:not(.dark) .cgp-close-btn:hover { background: rgba(0,0,0,.1); color: #24292f; }
+body:not(.dark) .cgp-overlay { background: rgba(0,0,0,.1); }

@@ -122,12 +122,19 @@ async def count_tokens(request: TokenCountRequest) -> Dict[str, int]:
             return {"token_count": token_count}
 
         # Backward-compatible text-only path.
-        token_count = estimate_token_count(text=request.text or "")
+        # Coalesce once and reuse: logging len(request.text) directly raised
+        # TypeError when text was omitted, and the blanket except below then
+        # discarded an already-correct count and returned a fabricated 0.
+        text = request.text or ""
+        token_count = estimate_token_count(text=text)
         
         # Log which method was actually used (calibrator logs this internally)
         method_used = "estimate_token_count"
 
-        logger.debug(f"Counted {token_count} tokens using {method_used} method for text length {len(request.text)}")
+        logger.debug(
+            f"Counted {token_count} tokens using {method_used} method "
+            f"for text length {len(text)}"
+        )
         return {"token_count": token_count}
     except Exception as e:
         logger.error(f"Error counting tokens: {str(e)}", exc_info=True)

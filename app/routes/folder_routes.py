@@ -605,6 +605,43 @@ async def api_get_folders(refresh: bool = False, project_path: str = Query(None)
             logger.info(f"Using provided project_path: {user_codebase_dir}")
         else:
             user_codebase_dir = get_project_root()
+
+            # Refuse to scan a bare home directory that nobody actually asked
+            # for. Three conditions must all hold, so this cannot fire on a
+            # deliberate choice:
+            #
+            #   1. No project_path was supplied (an unscoped request), AND
+            #   2. the resolved root is exactly the user's home directory, AND
+            #   3. the root was NOT explicitly given via --root/--directory
+            #      (ZIYA_EXPLICIT_ROOT unset), so it came from the cwd
+            #      fallback in get_project_root().
+            #
+            # Running `ziya` from inside a project still scans that project:
+            # condition 2 fails. Running `ziya --directory ~` still scans
+            # $HOME: condition 3 fails. What this blocks is the case where a
+            # client issued a request before it knew its project and the cwd
+            # fallback silently pointed at $HOME — which walked tens of
+            # thousands of unrelated files, ran pypdf over personal documents,
+            # hit the BFS timeout, and saturated the scan threadpool for
+            # minutes while real project work queued behind it.
+            home_dir = os.path.abspath(os.path.expanduser("~"))
+            explicit_root = os.environ.get("ZIYA_EXPLICIT_ROOT") == "true"
+            if not explicit_root and os.path.abspath(user_codebase_dir) == home_dir:
+                logger.warning(
+                    f"⛔ Refusing to scan home directory {home_dir} for an "
+                    f"unscoped /api/folders request (no project_path, root not "
+                    f"set via --directory). Returning an empty tree. Start Ziya "
+                    f"in a project directory or pass --directory <path>."
+                )
+                return {
+                    "_home_dir_refused": True,
+                    "_refused_path": home_dir,
+                    "_message": (
+                        "Ziya was started in your home directory, which is too "
+                        "large to scan. Choose a project directory, or restart "
+                        "with --directory <project-path>."
+                    ),
+                }
             
         # Validate the directory exists and is accessible
         if not os.path.exists(user_codebase_dir):
@@ -616,7 +653,13 @@ async def api_get_folders(refresh: bool = False, project_path: str = Query(None)
             return {"error": f"Path is not a directory: {user_codebase_dir}"}
 
         # Restore persisted external paths into server-side caches
-        _restore_external_paths_for_project(user_codebase_dir)
+        # Run on a worker thread: restoring persisted external paths calls
+        # add_external_path_to_cache() per entry, which walks and token-counts
+        # the tree (15s deadline per directory, plus PDF/document extraction).
+        # This endpoint is async def, so calling it inline blocks the event
+        # loop — stalling every unrelated request, including the
+        # project-switch conversation list fetch, until all paths are counted.
+        await asyncio.to_thread(_restore_external_paths_for_project, user_codebase_dir)
             
         # Test basic access
         try:

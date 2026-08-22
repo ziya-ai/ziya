@@ -25,10 +25,32 @@ def test_token_count(client):
         assert data["token_count"] == 150
 
 
-def test_token_count_missing_text(client):
-    """POST /token-count without required text field returns 422."""
-    response = client.post("/api/token-count", json={"messages": [{"role": "user"}]})
-    assert response.status_code == 422
+def test_token_count_missing_text_does_not_hit_error_path(client):
+    """Omitting text must not raise inside the handler.
+
+    Both `text` and `messages` are Optional on TokenCountRequest, so a body
+    without `text` is valid (NOT 422 -- the previous expectation here was
+    wrong).  The real defect it was masking: the debug log called
+    len(request.text) on None, raising TypeError *after* a correct count, and
+    the handler's blanket `except` then discarded that count and returned a
+    fabricated {"token_count": 0}.  A swallowed crash is indistinguishable
+    from a genuine zero, so assert the error path was never taken.
+    """
+    import app.routes.token_routes as token_routes
+
+    errors = []
+    original_error = token_routes.logger.error
+    token_routes.logger.error = lambda msg, *a, **k: errors.append(str(msg))
+    try:
+        response = client.post("/api/token-count", json={})
+    finally:
+        token_routes.logger.error = original_error
+
+    assert response.status_code == 200
+    assert response.json()["token_count"] == 0
+    assert not errors, (
+        f"handler took the exception path instead of counting cleanly: {errors}"
+    )
 
 
 @pytest.mark.skip(reason="get_accurate_token_counts not yet implemented")
