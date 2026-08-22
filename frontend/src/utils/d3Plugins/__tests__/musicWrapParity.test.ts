@@ -20,6 +20,15 @@
  * Every spec here fits one system, which is true of every spec in the older
  * suites too -- so this pins the layout those 194 assertions describe.
  */
+
+// Polyfill structuredClone for jest's jsdom environment: vexflow 5.0.0 uses
+// it in metrics.getFontInfo, and jest's jsdom global does not expose it on
+// Node 20 (a plain-data font-metrics clone, so JSON round-trip suffices).
+if (typeof (globalThis as any).structuredClone !== 'function') {
+  (globalThis as any).structuredClone = (v: any) =>
+    (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
+}
+
 import { renderMusicSpec, type MusicSpec } from '../musicPlugin';
 
 /** Records overlay text so the d3-drawn layers are observable, not just VexFlow. */
