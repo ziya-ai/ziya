@@ -181,6 +181,16 @@ session only, gone on cold start" is therefore a nonce comparison, not a
 session-file with expiry/teardown to get wrong. Transient staging files
 (`pending_session_shell.json`, `session_grant_shell.json`) are cleared on
 successful apply, on explicit discard, and on a superseding durable Save.
+"Successful apply" requires both an advisory verification of the grant against
+the manager's current nonce/trust anchors AND a successful shell restart; any
+refusal leaves the staged files intact for retry, with a message naming the
+reason (stale nonce, another server owning the nonce file, malformed record).
+`ziya-approve --session` additionally runs a mint-time delivery preflight: it
+warns when the running server's start time (the `.session_nonce` mtime)
+predates the installed grant-delivery code — a server running stale in-memory
+modules cannot forward the grant at spawn — and when multiple live servers
+share the single-slot nonce file (last writer wins; grants aimed at any other
+server fail the nonce check silently).
 
 **The provider seam (pluggable trust anchors).** A session grant is honored only
 if signed by a key the subprocess trusts. The grant record carries a `provider`

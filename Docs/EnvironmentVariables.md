@@ -139,6 +139,10 @@ Provider credentials are read directly from the environment (not the `ZIYA_*` na
 |---|---|---|---|
 | `ZIYA_LOG_LEVEL` | str | `INFO` | Python log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
 | `ZIYA_DEBUG_PROMPTS` | bool | `false` | Log full prompt assembly details |
+| `ZIYA_DEBUG_CHUNKS` | bool | `false` | Log raw streaming chunk data |
+| `ZIYA_DISABLE_PROMPT_CACHE` | bool | `false` | Disable Bedrock prompt caching |
+| `ZIYA_DISABLE_THINKING_PASSBACK` | bool | `false` | Stop echoing signed extended-thinking blocks back inside a tool chain. Passback keeps the model's reasoning across tool round-trips instead of making it re-derive the plan each iteration; disable it to isolate a provider or gateway that rejects round-tripped thinking blocks |
+| `ZIYA_DUMP_REQUEST_PARTS` | str | — | Directory to dump the assembled system prompt, tool schemas and request params on the first request |
 
 ## Operational
 
