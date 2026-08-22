@@ -531,9 +531,53 @@ async def lifespan(app: FastAPI):
     _main_event_loop = asyncio.get_running_loop()
     _set_folder_service_event_loop(_main_event_loop)
 
+    # Opt-in event-loop stall detector: ZIYA_DEBUG_LOOP=1
+    #
+    # Diagnoses "server serves nothing for N seconds" symptoms. Any callback or
+    # coroutine step occupying the loop longer than the threshold is logged with
+    # the responsible function and source location, which names a blocking sync
+    # call inside an async handler instead of leaving it to inspection.
+    #
+    # Not enabled by default: debug mode adds per-call overhead and enables
+    # slow-coroutine tracking loop-wide.
+    if os.environ.get("ZIYA_DEBUG_LOOP") == "1":
+        import logging as _dbg_logging
+
+        try:
+            _threshold = float(os.environ.get("ZIYA_DEBUG_LOOP_THRESHOLD", "0.5"))
+        except ValueError:
+            _threshold = 0.5
+        _main_event_loop.set_debug(True)
+        _main_event_loop.slow_callback_duration = _threshold
+        # asyncio reports slow callbacks on its own logger at WARNING. Ensure a
+        # root-logger configuration that raised the level cannot mute them.
+        _aio_log = _dbg_logging.getLogger("asyncio")
+        _aio_log.setLevel(_dbg_logging.WARNING)
+        _aio_log.propagate = True
+        app_logger.warning(
+            f"⏱️  Event-loop debug ENABLED — callbacks slower than {_threshold}s "
+            f"will be logged by the 'asyncio' logger. Unset ZIYA_DEBUG_LOOP to "
+            f"disable (adds per-call overhead)."
+        )
+
     # Initialize Ziya home directory
     ziya_home = get_ziya_home()
     app_logger.info(f"Ziya home directory initialized at {ziya_home}")
+
+    # First-run discoverability: MCPManager._find_config_file() returns None
+    # when no mcp_config.json exists anywhere in its search path, so a new
+    # user has no artifact on disk showing where MCP servers are declared or
+    # what an entry looks like. Seed an inert, self-documenting file with an
+    # empty "mcpServers" and a commented-by-convention example block.
+    # Unconditional on ZIYA_ENABLE_MCP: a user who started with --no-mcp and
+    # later wants servers needs the file to already be there, and seeding it
+    # starts nothing. Never fatal — ensure_mcp_config_seed swallows its own
+    # errors and an existing file is left untouched.
+    try:
+        from app.utils.mcp_config_seed import ensure_mcp_config_seed
+        ensure_mcp_config_seed()
+    except Exception as e:
+        app_logger.debug(f"MCP config seed skipped: {e}")
     
     # Startup - spawn background tasks for heavy initialization
     

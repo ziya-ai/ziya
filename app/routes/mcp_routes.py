@@ -392,6 +392,7 @@ async def get_mcp_status():
             "config_exists": config_info["config_exists"],
             "config_search_paths": config_info["search_paths"],
             "config_error": config_info.get("config_error"),
+            "config_findings": config_info.get("config_findings", []),
             "server_configs": server_configs,
             "token_costs": {
                 "servers": server_token_costs,
@@ -649,6 +650,20 @@ async def get_shell_config():
             # close/reopen, since that staging lives on disk, not in the config.
             _pending_session = (Path.home() / ".ziya" / "pending_session_shell.json").exists()
 
+            # Applied temporary grant, if any. The manager stashes it in
+            # _session_grants and forwards it at every shell spawn; report it
+            # here ONLY if it verifies for the current nonce (the same check
+            # the subprocess runs), so the UI's "Temporary grant active"
+            # indicator can never claim a grant the subprocess would clamp.
+            # Closes the gap where an applied grant was invisible: the staged
+            # banner cleared on apply and nothing showed the live state.
+            from app.utils.session_grant_status import session_grant_status
+            _session_grant = session_grant_status(
+                getattr(mcp_manager, "_session_grants", {}).get("shell"),
+                getattr(mcp_manager, "_session_nonce", "") or "",
+                ephemeral_pubkey_b64=getattr(mcp_manager, "_ephemeral_pubkey_b64", None),
+            )
+
             return {
                 "enabled": True,
                 "allowedCommands": allowed_commands,
@@ -661,6 +676,7 @@ async def get_shell_config():
                 "alwaysBlocked": always_blocked,
                 "signatureStatus": _compute_signature_status(_file_env),
                 "sessionPending": _pending_session,
+                "sessionGrant": _session_grant,
             }
         else:
             # Shell server not connected, but check the actual server config
@@ -761,6 +777,46 @@ async def apply_session_grant():
                            "--session` while the server is running to mint one.",
             }
 
+        # Advisory pre-verification (UX only — the subprocess remains the
+        # enforcement authority and re-verifies at spawn). Without this, a
+        # grant that can never verify (bound to a previous server session, or
+        # minted for ANOTHER server sharing ~/.ziya, or malformed) sails
+        # through: the restart succeeds, the one-shot staging files are
+        # burned, and the subprocess clamps to the floor with nothing but a
+        # stderr line — the user "applied" an escalation that silently never
+        # took effect (2026-08-22 ffmpeg incident). Refuse loudly instead and
+        # leave the staged files intact for a retry without a fresh sudo
+        # ceremony.
+        from app.config.scope_canonical import verify_session_grant
+        _delta = record.get("delta") if isinstance(record.get("delta"), dict) else None
+        _nonce = getattr(mcp_manager, "_session_nonce", "") or ""
+        _refusal = None
+        if _delta is None:
+            _refusal = "the grant record is malformed (no escalation delta)"
+        elif record.get("nonce") != _nonce:
+            _refusal = (
+                "the grant is bound to a different server session — it is "
+                "stale, or was minted while another Ziya server owned "
+                "~/.ziya/.session_nonce. Re-run `sudo ziya-approve --session` "
+                "while THIS server is running, then apply again"
+            )
+        elif not verify_session_grant(
+            _delta,
+            json.dumps(record),
+            _nonce,
+            ephemeral_pubkey_b64=getattr(mcp_manager, "_ephemeral_pubkey_b64", None),
+        ):
+            _refusal = "the grant signature/scope did not verify against the trusted key"
+        if _refusal:
+            # Un-stash the unusable grant so future spawns don't forward it
+            # (the subprocess would clamp to the floor on every spawn).
+            getattr(mcp_manager, "_session_grants", {}).pop("shell", None)
+            return {
+                "success": False,
+                "message": f"Session grant NOT applied: {_refusal}. "
+                           "Staged files were left in place.",
+            }
+
         from app.config.shell_config import _read_mcp_config
         import sys as _sys
         _shell_script = str(Path(__file__).resolve().parent.parent / "mcp_servers" / "shell_server.py")
@@ -783,9 +839,10 @@ async def apply_session_grant():
             # The grant is now live in the manager's in-memory _session_grants
             # (forwarded at every spawn for this server start), so the on-disk
             # staging input and grant record are spent. Remove them ONLY after
-            # a confirmed successful restart, so a failed apply leaves them
-            # intact for a retry. The live authority is the in-memory grant +
-            # nonce; deleting the files does not revoke it.
+            # BOTH the advisory verification above and a successful restart,
+            # so any failed apply leaves them intact for a retry. The live
+            # authority is the in-memory grant + nonce; deleting the files
+            # does not revoke it.
             for _spent in ("pending_session_shell.json", "session_grant_shell.json"):
                 try:
                     (Path.home() / ".ziya" / _spent).unlink()
@@ -1268,8 +1325,17 @@ async def get_mcp_server_details(server_name: str):
             }
         
         mcp_manager = get_mcp_manager()
-        if not mcp_manager.is_initialized or server_name not in mcp_manager.clients:
-            raise HTTPException(status_code=404, detail="Server not found or not initialized")
+        if not mcp_manager.is_initialized:
+            raise HTTPException(status_code=404, detail="MCP not initialized")
+        if server_name not in mcp_manager.clients:
+            # No client for this name. A server rejected during config load is
+            # removed from server_configs entirely, so it has no panel here to
+            # populate — its explanation is reported by the config-findings
+            # panel, which names the offending key and line. A 404 is therefore
+            # correct rather than a dead end: every reachable state that has a
+            # server panel also has a client, because preflight failures
+            # register a diagnostic-carrying stub.
+            raise HTTPException(status_code=404, detail="Server not found")
         
         client = mcp_manager.clients[server_name]
         
@@ -1278,7 +1344,15 @@ async def get_mcp_server_details(server_name: str):
             "resources": [asdict(resource) for resource in client.resources],
             "prompts": [asdict(prompt) for prompt in client.prompts],
             "logs": client.logs if hasattr(client, 'logs') else [],
+            "startup_stage": getattr(client, "startup_stage", None),
+            "preflight_failure": getattr(client, "preflight_failure", None),
         }
+    except HTTPException:
+        # Deliberate status codes (404 for unknown/uninitialized) must reach the
+        # client unchanged. Without this the broad handler below rewrites them
+        # as 500, so the frontend cannot tell "no such server" from "server
+        # error" — a debugging dead end of the same kind this change removes.
+        raise
     except Exception as e:
         logger.error(f"Error getting details for server {server_name}: {e}")
         raise HTTPException(status_code=500, detail=f"Error getting server details: {str(e)}")
@@ -1441,6 +1515,17 @@ async def refresh_registry_provider(provider_id: str):
         # Force refresh by calling list_services with a flag
         # This would clear any caches and fetch fresh data
         result = await provider.list_services(max_results=1000)
+
+        # This refreshes the PROVIDER but bypasses the aggregator, which
+        # memoises both its unified listing and its search fan-out.
+        from app.mcp.registry.aggregator import get_registry_aggregator
+        get_registry_aggregator().invalidate_caches()
+
+        # This refreshes the PROVIDER but bypasses the aggregator, which
+        # memoises both its unified listing and its search fan-out. Without
+        # invalidating them, a refresh appears to do nothing for up to 5 min.
+        from app.mcp.registry.aggregator import get_registry_aggregator
+        get_registry_aggregator().invalidate_caches()
         
         return {
             'success': True,

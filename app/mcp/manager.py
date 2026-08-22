@@ -60,6 +60,45 @@ def build_task_scope_envelope() -> Optional[Dict[str, Any]]:
         return None
 
 
+# Best-effort mapping from a missing launcher to the thing that provides it.
+# Deliberately small: a wrong-but-confident install instruction is worse than
+# none, so unknown commands get a generic PATH explanation instead of a guess.
+_COMMAND_PROVIDERS: Dict[str, Dict[str, str]] = {
+    "npx": {"provides": "Node.js", "install": "brew install node"},
+    "node": {"provides": "Node.js", "install": "brew install node"},
+    "uvx": {"provides": "uv", "install": "brew install uv"},
+    "uv": {"provides": "uv", "install": "brew install uv"},
+    "docker": {"provides": "Docker", "install": "brew install --cask docker"},
+    "bunx": {"provides": "Bun", "install": "brew install oven-sh/bun/bun"},
+    "deno": {"provides": "Deno", "install": "brew install deno"},
+}
+
+
+def _install_hint_for_command(command: str) -> str:
+    """Explain how to obtain a launcher that is missing from PATH.
+
+    Version-manager shims (nvm, asdf, pyenv) are the common false negative:
+    the binary exists in an interactive shell but not in the environment Ziya
+    was launched from, so that case is called out explicitly rather than
+    telling the user to install something they already have.
+    """
+    base = os.path.basename(command)
+    known = _COMMAND_PROVIDERS.get(base)
+    shim_note = (
+        f" If '{base}' is installed via a version manager (nvm, asdf, pyenv), "
+        f"Ziya's PATH may not include its shims — set an absolute path in "
+        f"'command', or start Ziya from a login shell."
+    )
+    if known:
+        return (
+            f"'{base}' is provided by {known['provides']}. "
+            f"Install it with: {known['install']}.{shim_note}"
+        )
+    return (
+        f"Install '{base}' and make sure it is on your PATH.{shim_note}"
+    )
+
+
 def _resolve_bearer_token(server_name: str, auth_config: Dict[str, Any]) -> str:
     """Resolve an MCP server's bearer token, preferring env-var indirection.
 
@@ -123,6 +162,11 @@ class MCPManager:
         
         # Stores a user-facing error message when the config file fails to parse
         self.config_error: Optional[str] = None
+        # Per-server findings from a config that parsed but contains unusable
+        # entries (typo'd keys, wrong value types). Distinct from
+        # config_error, which is whole-file and fatal: these are per-entry and
+        # advisory, so a file can be loadable and still report problems.
+        self.config_findings: List[Dict[str, Any]] = []
 
         # Tool caching to eliminate redundant get_all_tools calls
         self._tools_cache: Optional[List[MCPTool]] = None
@@ -331,8 +375,13 @@ class MCPManager:
             logger.info(f"Found MCP config file at: {project_root_config}")
             return str(project_root_config)
             
-        # Default to user's Ziya directory
-        user_config = Path.home() / ".ziya" / "mcp_config.json"
+        # Default to user's Ziya directory.  Must go through get_ziya_home() so
+        # ZIYA_HOME is honored: the first-run seed writes via get_ziya_home(),
+        # and a hardcoded ~/.ziya here means a ZIYA_HOME run seeds one file and
+        # reads another — the seed appears to have done nothing while the
+        # validator reports findings from the real config instead.
+        from app.utils.paths import get_ziya_home
+        user_config = get_ziya_home() / "mcp_config.json"
         self.config_search_paths.append(str(user_config))
         if user_config.exists():
             logger.info(f"Found MCP config file at: {user_config}")
@@ -348,6 +397,7 @@ class MCPManager:
             "config_exists": self.config_path and Path(self.config_path).exists() if self.config_path else False,
             "search_paths": getattr(self, 'config_search_paths', []),
             "config_error": self.config_error,
+            "config_findings": getattr(self, "config_findings", []),
         }
 
     def _load_persisted_fingerprints(self) -> None:
@@ -599,9 +649,11 @@ class MCPManager:
 
         if self.config_path and os.path.exists(self.config_path):
             logger.debug(f"Loading user MCP configuration from: {self.config_path}")
+            raw_config_text = ""
             try:
                 with open(self.config_path, 'r') as f:
-                    user_config_data = json.load(f)
+                    raw_config_text = f.read()
+                user_config_data = json.loads(raw_config_text)
                 self.config_error = None  # Clear any previous error on successful parse
             except json.JSONDecodeError as e:
                 logger.error(f"Invalid JSON in MCP config file {self.config_path}: {e}")
@@ -614,6 +666,28 @@ class MCPManager:
                 logger.warning("Skipping unreadable config file, using built-in defaults only")
                 self.config_error = f"Failed to read {self.config_path}: {e}"
                 user_config_data = {}
+
+            # Per-entry validation of a file that parsed. Advisory only: this
+            # never rejects a server the loader below would accept, it only
+            # explains entries that are silently unusable. Failure to validate
+            # must not break startup, hence the broad guard.
+            try:
+                from app.mcp.config_validation import validate_config
+                self.config_findings = validate_config(
+                    user_config_data, raw_config_text
+                )
+                if self.config_findings:
+                    _errs = sum(
+                        1 for f in self.config_findings
+                        if f.get("severity") == "error"
+                    )
+                    logger.warning(
+                        f"MCP config validation: {len(self.config_findings)} "
+                        f"problem(s) in {self.config_path} ({_errs} blocking)"
+                    )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"MCP config validation skipped: {e}")
+                self.config_findings = []
             
             try:
                 user_servers = user_config_data.get("mcpServers", {})
@@ -753,22 +827,62 @@ class MCPManager:
                 # Pre-validate command and script paths for clear diagnostics (stdio servers only)
                 if command and not server_config.get("builtin", False):
                     import shutil
-                    skip = False
+                    failure: Optional[Dict[str, Any]] = None
                     expanded_command = os.path.expanduser(command)
                     if not os.path.isabs(expanded_command) and not shutil.which(expanded_command):
-                        logger.info(f"MCP server '{server_name}' skipped: command '{command}' not found in PATH")
-                        skip = True
+                        failure = {
+                            "code": "command_not_on_path",
+                            "summary": f"Command not found on PATH: {command}",
+                            "detail": (
+                                f"Ziya could not launch '{command}', so this server was "
+                                f"skipped before any process was created. There are no "
+                                f"logs because nothing ever ran."
+                            ),
+                            "searched": (os.environ.get("PATH", "") or "").split(os.pathsep),
+                            "hint": _install_hint_for_command(expanded_command),
+                        }
                     elif os.path.isabs(expanded_command) and not os.path.isfile(expanded_command):
-                        logger.info(f"MCP server '{server_name}' skipped: command not found at {command}")
-                        skip = True
-                    if not skip:
+                        failure = {
+                            "code": "command_missing_at_path",
+                            "summary": f"No such file: {command}",
+                            "detail": (
+                                f"The configured command is an absolute path that does "
+                                f"not exist, so no process was created."
+                            ),
+                            "searched": [expanded_command],
+                            "hint": "Correct the 'command' path in your MCP config.",
+                        }
+                    if failure is None:
                         for arg in args:
                             expanded_arg = os.path.expanduser(arg)
                             if os.path.isabs(expanded_arg) and expanded_arg.endswith(('.py', '.js')) and not os.path.isfile(expanded_arg):
-                                logger.info(f"MCP server '{server_name}' skipped: script not found at {arg}")
-                                skip = True
+                                failure = {
+                                    "code": "script_not_found",
+                                    "summary": f"Server script not found: {arg}",
+                                    "detail": (
+                                        f"The command exists but the script it was given "
+                                        f"does not, so no process was created."
+                                    ),
+                                    "searched": [expanded_arg],
+                                    "hint": "Correct the script path in your MCP config.",
+                                }
                                 break
-                    if skip:
+                    if failure is not None:
+                        # Register a non-connecting client so the failure is
+                        # retrievable from /servers/{name}/details instead of
+                        # 404-ing into an empty Logs pane. connect() is never
+                        # called on it (see MCPClient.connect).
+                        logger.info(
+                            f"MCP server '{server_name}' not started: {failure['summary']}"
+                        )
+                        stub_config = server_config.copy()
+                        stub_config["name"] = server_name
+                        stub = MCPClient(stub_config)
+                        stub.preflight_failure = failure
+                        stub.startup_stage = "preflight"
+                        stub.logs.append(f"ERROR: {failure['summary']}")
+                        stub.logs.append(f"INFO: {failure['detail']}")
+                        self.clients[server_name] = stub
                         continue
 
                 if command:
@@ -2205,19 +2319,15 @@ class MCPManager:
         # always correct regardless of which tool-invocation path is live,
         # rather than silently defaulting to the server's startup cwd.
         workspace_path = arguments.get('_workspace_path') or get_project_root_or_none()
-        # CLI/chat mode has no HTTP layer, so ProjectContextMiddleware never
-        # runs and the request-scoped ContextVar above is always None. That
-        # skips the workspace-scoped routing block below, sending shell calls
-        # to the global client whose subprocess cwd was frozen at startup —
-        # which is why /cd (which updates ZIYA_USER_CODEBASE_DIR + chdir +
-        # tears down old-root subprocesses) never actually re-roots the shell.
-        # Fall back to the env var in non-server modes: there is a single
-        # user and no concurrent-request isolation to protect, and the env
-        # var is kept current by CLIChat._switch_root on every /cd. Server
-        # mode intentionally keeps None so concurrent tabs on different
-        # projects never misroute to a stale or shared root.
-        if workspace_path is None and os.environ.get('ZIYA_MODE', 'server') != 'server':
-            workspace_path = os.environ.get('ZIYA_USER_CODEBASE_DIR')
+        # No environment fallback. ZIYA_USER_CODEBASE_DIR is process state: it
+        # names whichever project the process was launched in (or last chdir'd
+        # to), not the project this call belongs to, so consulting it silently
+        # attributes a command to the wrong tree instead of failing. Every
+        # caller states its own root -- HTTP via ProjectContextMiddleware, Task
+        # Cards and delegates via stream_with_tools(project_root=...), and the
+        # CLI likewise -- and a caller that states none is refused downstream
+        # rather than defaulted. Successive fallbacks here are what let a
+        # misrooted shell subprocess go unnoticed for an entire session.
         # ``_task_scope`` is only meaningful to the shell server today
         # (it is the additive write-grant envelope for Task Cards).
         # Preserve it on the way to the shell server, strip it for
@@ -2253,6 +2363,18 @@ class MCPManager:
                 if client.is_connected and any(tool.name == internal_tool_name for tool in client.tools):
                     target_server_name = srv_name
                     break
+
+        # The caller's project root is authoritative for the shell server: it is
+        # the only per-call statement of which project a command belongs to.
+        # Stripped above with the other routing keys, it is re-attached here for
+        # shell only -- exactly as ``_task_scope`` is below, since other servers
+        # reject keys outside their JSON schema. Without it the subprocess
+        # derives both its working directory and the root its write policy
+        # resolves relative safe_write_paths against from its own spawn-time
+        # environment, so an instance outliving a project switch executes and
+        # authorizes writes against the wrong tree.
+        if target_server_name == "shell" and workspace_path and isinstance(arguments, dict):
+            arguments = {**arguments, "_project_root": workspace_path}
 
         # Re-attach ``_task_scope`` only when the target is the shell
         # server.  Other servers (filesystem, git, custom user MCPs)
@@ -2312,6 +2434,23 @@ class MCPManager:
                     asyncio.create_task(self.cleanup_stale_workspace_instances())
                 
                 return result
+        elif target_server_name and self._is_workspace_scoped(target_server_name):
+            # Workspace-scoped server, but no workspace path resolved: the call
+            # falls through to the global client, whose subprocess cwd is the
+            # server's LAUNCH directory rather than the active project. That is
+            # silent today -- a shell command simply runs somewhere else, and
+            # nothing says so. It stayed invisible for an entire session until
+            # a `pwd` happened to contradict the project selected in the tab.
+            #
+            # Warn rather than raise: CLI/delegate flows legitimately reach
+            # here (ZIYA_MODE != 'server' resolves the path from the env
+            # above), so this is a diagnostic, not a gate.
+            logger.warning(
+                f"⚠️ No workspace path for workspace-scoped server "
+                f"'{target_server_name}' — falling back to the global client, "
+                f"which runs in the server's launch directory, not the active "
+                f"project. Tool={internal_tool_name}, conversation={conversation_id}"
+            )
         
         # For non-workspace-scoped servers, inject workspace_path into
         # known path-override parameters (e.g. WorkspaceSearch.searchRoot)

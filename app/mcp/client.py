@@ -209,6 +209,17 @@ class MCPClient:
         self.tools: List[MCPTool] = []
         self.prompts: List[MCPPrompt] = []
         self.logs: List[str] = []  # Store server logs
+        # Furthest point of startup this client reached. Ordered pipeline:
+        # config -> preflight -> spawn -> handshake -> ready. Surfaced in the
+        # GUI so a user can tell whether a failure is in their config file, on
+        # their machine, or inside the server itself.
+        self.startup_stage: str = "config"
+        # Set by the manager when a pre-launch check fails (e.g. command not on
+        # PATH). A client carrying this is never spawned: connect() short
+        # circuits, so a missing binary is not re-invoked on every health check
+        # or reconnect. It stays in the manager's client map purely so its
+        # diagnostic is retrievable.
+        self.preflight_failure: Optional[Dict[str, Any]] = None
         self._last_successful_call = time.time()
         self._last_reconnect_attempt = 0  # Rate limit reconnections
         
@@ -238,7 +249,20 @@ class MCPClient:
         Returns:
             bool: True if connection successful, False otherwise
         """
+        # A preflight failure is terminal for the life of this client: the
+        # command does not exist, so spawning it can only produce the same
+        # error. Refuse here rather than in each caller, so reconnect and
+        # health-check paths cannot resurrect a known-bad launch.
+        if self.preflight_failure:
+            logger.debug(
+                f"Skipping connect for '{self.server_config.get('name', 'unknown')}': "
+                f"preflight failed ({self.preflight_failure.get('code')})"
+            )
+            self.is_connected = False
+            return False
+
         try:
+            self.startup_stage = "spawn"
             # Remote server: use the official MCP SDK transports
             if self._is_remote:
                 return await self._connect_remote()
@@ -477,6 +501,14 @@ class MCPClient:
                 # CRITICAL: Verify process is still alive after initialization
                 if self.process.returncode is not None:
                     logger.error(f"Server {self.server_config.get('name', 'unknown')} died during initialization (exit code: {self.process.returncode})")
+                    # Record the exit code in the client's own log buffer, not
+                    # just the terminal logger: the GUI reads self.logs, so an
+                    # exit code that only reaches stderr is invisible to the
+                    # user debugging in the Logs tab.
+                    self.logs.append(
+                        f"ERROR: Server process exited during initialization "
+                        f"(exit code {self.process.returncode})"
+                    )
                     self.is_connected = False
                     # Try to capture any error output
                     if self.logs:
@@ -531,6 +563,12 @@ class MCPClient:
                 
                 self.capabilities = init_result.get("capabilities", {})
                 self.is_connected = True
+                # The handshake answered, so the remaining risk is capability
+                # loading rather than launch. Recording it here means a server
+                # that hangs in tools/list reports 'handshake' instead of
+                # 'spawn', which distinguishes "never started" from "started
+                # and then stalled" — different problems with different fixes.
+                self.startup_stage = "handshake"
                 
                 # Initialize successful call timestamp on connection
                 self._last_successful_call = time.time()
@@ -540,6 +578,7 @@ class MCPClient:
                 
                 # Load available resources, tools, and prompts
                 await self._load_server_capabilities()
+                self.startup_stage = "ready"
                 
                 logger.debug(f"Successfully connected to MCP server: {self.server_config.get('name', 'unknown')}")
                 return True
@@ -549,6 +588,22 @@ class MCPClient:
                 # Log any available output for debugging
                 if self.process:
                     try:
+                        # Stop the background stderr reader before reading the
+                        # stream here. _capture_logs() owns process.stderr and
+                        # consumes it line by line; racing it with a read()
+                        # split the server's error output between two readers,
+                        # so a genuine startup error could surface as "No output
+                        # from server process" while its text sat in the other
+                        # reader's buffer. Cancelling first makes this the sole
+                        # reader; lines already captured remain in self.logs.
+                        if getattr(self, "_log_capture_task", None):
+                            self._log_capture_task.cancel()
+                            try:
+                                await self._log_capture_task
+                            except asyncio.CancelledError:
+                                pass
+                            self._log_capture_task = None
+
                         # Terminate the process to ensure that reading from stdout/stderr does not block indefinitely.
                         self.process.terminate()
                         try:
@@ -615,7 +670,22 @@ class MCPClient:
                                 raise ValueError(f"npm authentication required for MCP server")
                         
                         if not stdout_output and not stderr_output:
-                            self.logs.append("ERROR: No output from server process")
+                            # Only claim silence if the background reader did not
+                            # already capture output. Asserting "no output" while
+                            # STDERR lines sit in self.logs sends users looking
+                            # for a logging fault instead of reading the error
+                            # that is already in front of them.
+                            already_captured = any(
+                                line.startswith(("STDOUT:", "STDERR:"))
+                                for line in self.logs
+                            )
+                            if not already_captured:
+                                self.logs.append(
+                                    "ERROR: Server process produced no output on "
+                                    "stdout or stderr before exiting. It may have "
+                                    "exited immediately — check the command and "
+                                    "args, and try running them in a terminal."
+                                )
                     except (OSError, ValueError, RuntimeError) as e:
                         logger.error(f"Error reading MCP server output: {e}")
                         self.logs.append(f"ERROR: Failed to read server output - {str(e)}")
@@ -1599,7 +1669,7 @@ class MCPClient:
     # misleading warning on every escalated call, so the validator recognizes
     # and passes them through silently.
     _KNOWN_ROUTING_KEYS = frozenset({
-        "_task_scope", "_workspace_path", "conversation_id",
+        "_task_scope", "_workspace_path", "conversation_id", "_project_root",
     })
 
     def _validate_and_convert_arguments(self, arguments: Dict[str, Any], schema: Dict[str, Any]) -> Optional[Dict[str, Any]]:
