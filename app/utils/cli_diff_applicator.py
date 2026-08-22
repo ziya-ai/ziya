@@ -408,31 +408,55 @@ class CLIDiffApplicator:
         return False
     
     @staticmethod
+    def _removed_lines(diff: str) -> Set[str]:
+        """Set of non-blank removed line contents (whitespace-normalized)."""
+        out: Set[str] = set()
+        for line in diff.splitlines():
+            if (line.startswith('---') or line.startswith('diff ')
+                    or line.startswith('@@') or line.startswith('\\')):
+                continue
+            if line.startswith('-'):
+                stripped = line[1:].strip()
+                if stripped:
+                    out.add(stripped)
+        return out
+
+    @staticmethod
     def _is_sequential_pair(earlier_diff: str, later_diff: str) -> bool:
         """Check if two overlapping diffs are sequential (first prepares
         for the second) rather than the later superseding the earlier.
 
-        Heuristic: if the earlier diff is predominantly subtractive in the
-        overlapping region (removing code to make way) and the later diff
-        adds new code, they're complementary steps, not revisions.
+        Discriminator: two diffs that remove the SAME source line are two
+        attempts at the same edit — the later one is a revision and the
+        earlier must be dropped.  Add/remove *counts* cannot distinguish
+        these cases: a one-line rewrite (-1/+1) and a balanced multi-line
+        rewrite (-2/+2) are revision-shaped, yet an equally balanced pair
+        touching disjoint lines is genuinely sequential.  Comparing which
+        lines are removed separates them directly.
+
+        Beyond that, the earlier diff must remove something (it is clearing
+        the way) and the later must add something (it is filling the space).
         """
-        earlier_adds = 0
+        # Any line removed by both diffs means both target the same edit.
+        if CLIDiffApplicator._removed_lines(earlier_diff) & \
+                CLIDiffApplicator._removed_lines(later_diff):
+            return False
+
         earlier_removes = 0
         later_adds = 0
         for line in earlier_diff.splitlines():
             if line.startswith('@@') or line.startswith('diff ') or line.startswith('---') or line.startswith('+++'):
                 continue
-            if line.startswith('+'):
-                earlier_adds += 1
-            elif line.startswith('-'):
+            if line.startswith('-'):
                 earlier_removes += 1
         for line in later_diff.splitlines():
             if line.startswith('@@') or line.startswith('diff ') or line.startswith('---') or line.startswith('+++'):
                 continue
             if line.startswith('+'):
                 later_adds += 1
-        # Earlier is predominantly a deletion and later adds new content
-        return earlier_removes > 0 and earlier_adds <= 1 and later_adds > 0
+        # An earlier diff that removes nothing is not clearing the way for
+        # anything — a revised pure-addition is a revision, not a step.
+        return earlier_removes > 0 and later_adds > 0
 
     def _deduplicate_diffs(self, diffs: List[DiffBlock]) -> List[DiffBlock]:
         """

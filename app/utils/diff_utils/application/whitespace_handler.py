@@ -12,74 +12,58 @@ from typing import List, Dict, Any, Optional, Tuple
 # Configure logging
 logger = logging.getLogger(__name__)
 
-def is_whitespace_only_diff(hunk: Dict[str, Any]) -> bool:
-    """
-    Check if a hunk contains only whitespace changes.
-    
-    Args:
-        hunk: The hunk to check
-        
-    Returns:
-        True if the hunk only contains whitespace changes, False otherwise
-    """
-    # Extract the removed and added lines
+def is_whitespace_only_diff(hunk: Any) -> bool:
+    """Return whether a parsed hunk or unified diff changes only whitespace."""
     removed_lines = []
     added_lines = []
-    
-    # Extract from old_block and new_block
-    if 'old_block' in hunk and 'new_block' in hunk:
+
+    if isinstance(hunk, str):
+        for line in hunk.splitlines():
+            if line.startswith(('diff ', 'index ', '--- ', '+++ ', '@@')):
+                continue
+            if line.startswith('-'):
+                removed_lines.append(line[1:])
+            elif line.startswith('+'):
+                added_lines.append(line[1:])
+    elif isinstance(hunk, dict):
         for line in hunk.get('old_block', []):
             if line.startswith('-'):
                 removed_lines.append(line[1:])
         for line in hunk.get('new_block', []):
             if line.startswith('+'):
                 added_lines.append(line[1:])
-    
-    # If no changes, not a whitespace-only change
+
     if not removed_lines and not added_lines:
         return False
-    
-    # Special case: empty lines being added or removed
-    if all(not line.strip() for line in removed_lines) or all(not line.strip() for line in added_lines):
-        return True
-    
-    # If different number of non-empty lines, not just whitespace
+
     non_empty_removed = [line for line in removed_lines if line.strip()]
     non_empty_added = [line for line in added_lines if line.strip()]
-    
     if len(non_empty_removed) != len(non_empty_added):
         return False
-    
-    # Compare the non-whitespace content of each pair
-    for removed, added in zip(non_empty_removed, non_empty_added):
-        if re.sub(r'\s+', '', removed) != re.sub(r'\s+', '', added):
-            return False
-    
-    return True
 
-def normalize_whitespace_for_comparison(text: str) -> str:
-    """
-    Normalize whitespace in text for comparison purposes.
-    
-    Args:
-        text: The text to normalize
-        
-    Returns:
-        Normalized text with consistent whitespace
-    """
-    # Replace tabs with spaces
+    return all(
+        re.sub(r'\s+', '', removed) == re.sub(r'\s+', '', added)
+        for removed, added in zip(non_empty_removed, non_empty_added)
+    )
+
+
+def normalize_whitespace_for_comparison(
+    text: str,
+    preserve_indentation: bool = True,
+) -> str:
+    """Normalize whitespace while optionally retaining leading indentation."""
     normalized = text.replace('\t', '    ')
-    
-    # Normalize line endings
     normalized = normalized.replace('\r\n', '\n').replace('\r', '\n')
-    
-    # Collapse multiple spaces to a single space
-    normalized = re.sub(r' +', ' ', normalized)
-    
-    # Trim leading/trailing whitespace
-    normalized = normalized.strip()
-    
-    return normalized
+
+    lines = []
+    for line in normalized.split('\n'):
+        content = line.lstrip(' ')
+        indentation = line[:len(line) - len(content)] if preserve_indentation else ''
+        if not content:
+            lines.append(indentation)
+            continue
+        lines.append(indentation + re.sub(r' +', ' ', content).strip())
+    return '\n'.join(lines)
 
 def compare_ignoring_whitespace(text1: str, text2: str) -> bool:
     """
