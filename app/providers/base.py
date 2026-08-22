@@ -84,6 +84,26 @@ class ThinkingDelta(StreamEvent):
 
 
 @dataclass(frozen=True, slots=True)
+class ThinkingBlock(StreamEvent):
+    """A COMPLETED thinking block, emitted at content_block_stop.
+
+    Distinct from ``ThinkingDelta``, which is display-bound and carries no
+    signature.  This carries the whole block plus the cryptographic
+    ``signature`` the API requires when the block is echoed back, so reasoning
+    state can survive a tool round-trip instead of being re-derived from the
+    tool_result alone on every iteration.
+
+    ``block_type`` is "thinking" or "redacted_thinking"; the latter carries
+    opaque bytes in ``data`` and has no readable content.
+    """
+    content: str = ""
+    signature: Optional[str] = None
+    block_type: str = "thinking"
+    data: Optional[str] = None
+    index: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class ProcessingEvent(StreamEvent):
     """The model is still processing but has not emitted data recently.
 
@@ -215,11 +235,19 @@ class LLMProvider(ABC):
         self,
         text: str,
         tool_uses: List[Dict[str, Any]],
+        thinking_blocks: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Build a conversation-history message for the assistant turn.
 
         ``tool_uses`` is a list of dicts with keys ``id``, ``name``, ``input``.
         The provider formats these into its native tool_use representation.
+
+        ``thinking_blocks``, when supplied, holds completed thinking blocks
+        (already in the provider's native shape) that must be emitted BEFORE
+        any text or tool_use block.  Only providers reporting
+        ``supports_feature("thinking_passback")`` are ever given this; the
+        orchestrator omits the argument entirely otherwise, so implementations
+        that predate it keep working unchanged.
         """
 
     @abstractmethod
@@ -244,6 +272,44 @@ class LLMProvider(ABC):
         support prompt caching (Bedrock, Anthropic) override this.
         """
         return messages
+
+    # Content-block types a cache marker must never be attached to.
+    #
+    # The Anthropic API treats a signed reasoning block as immutable:
+    # adding ANY key to it, cache_control included, fails validation with
+    # "thinking or redacted_thinking blocks in the latest assistant
+    # message cannot be modified", and the entire request 400s.  Observed
+    # on a fable5 tool loop as messages.19.content.1, which killed the
+    # turn outright rather than merely costing a cache hit.
+    _CACHE_INELIGIBLE_BLOCK_TYPES = ("thinking", "redacted_thinking")
+
+    @classmethod
+    def _stamp_cache_control(cls, content_blocks: List[Dict[str, Any]]) -> bool:
+        """Mark the last CACHEABLE block of content_blocks, in place.
+
+        Returns True when a marker is present on exit, False when the
+        message offers no legal target because every block is a reasoning
+        block.  Walking backwards instead of taking [-1] is the whole
+        point: an assistant turn ENDS with a thinking block whenever it
+        carries neither text nor tool_use, which is exactly what
+        build_assistant_message emits for empty text and an empty
+        tool_uses list.
+
+        Placing the marker on an earlier block is still useful, since it
+        just ends the cached prefix before the trailing reasoning blocks.
+        Skipping the message when no legal target exists is deliberate:
+        that forfeits one breakpoint, a recoverable cache miss, whereas
+        stamping the block forfeits the request.
+        """
+        for block in reversed(content_blocks):
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") in cls._CACHE_INELIGIBLE_BLOCK_TYPES:
+                continue
+            if "cache_control" not in block:
+                block["cache_control"] = {"type": "ephemeral"}
+            return True
+        return False
 
     def supports_feature(self, feature_name: str) -> bool:
         """Query whether this provider supports a named capability.
