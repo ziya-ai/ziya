@@ -99,6 +99,11 @@ class _RecordingTool:
 
 def _make_builtin_ctx(direct_tool, **overrides):
     from app.tool_execution import ToolExecContext
+
+    manager = MagicMock()
+    manager._exceeds_turn_ceiling.return_value = False
+    manager._is_repetitive_call.return_value = False
+
     defaults = dict(
         tool_id="toolu_x",
         tool_name="memory_search",
@@ -106,7 +111,7 @@ def _make_builtin_ctx(direct_tool, **overrides):
         args={"query": "obp"},
         all_tools=[direct_tool],
         internal_tool_names=set(),
-        mcp_manager=AsyncMock(),
+        mcp_manager=manager,
         project_root="/proj/root",
         conversation_id="conv-xyz",
         conversation=[],

@@ -172,16 +172,23 @@ class TestNonBedrockPathCancellation:
 
     @pytest.mark.asyncio
     async def test_non_bedrock_path_propagates_cancellation(self, cli_instance):
-        """Google/OpenAI/Anthropic path should re-raise CancelledError from task."""
-        async def cancelling_stream(messages, **kwargs):
+        """Google/OpenAI/Anthropic path should re-raise CancelledError from task.
+
+        Cancellation is injected at StreamingToolExecutor.stream_with_tools —
+        the seam this path actually streams from.  _run_with_tools_from_messages
+        builds its own executor (and, under it, its own provider), so stubbing
+        cli_instance._model.astream never ran: that seam belongs to the no-tools
+        _simple_invoke path, covered by TestSimpleInvokeStreamingCancellation.
+        """
+        async def cancelling_stream(*args, **kwargs):
             yield {'type': 'text', 'content': 'partial'}
             raise asyncio.CancelledError("cancelled")
 
-        cli_instance._model.astream = cancelling_stream
-
         with patch.dict(os.environ, {'ZIYA_ENDPOINT': 'google'}), \
              patch('app.mcp.manager.get_mcp_manager') as mock_mgr, \
-             patch('app.mcp.enhanced_tools.create_secure_mcp_tools', return_value=[MagicMock()]):
+             patch('app.mcp.enhanced_tools.create_secure_mcp_tools', return_value=[MagicMock()]), \
+             patch('app.streaming_tool_executor.StreamingToolExecutor.stream_with_tools',
+                   new=cancelling_stream):
             mock_mgr.return_value = MagicMock(is_initialized=True)
 
             with pytest.raises(asyncio.CancelledError):
