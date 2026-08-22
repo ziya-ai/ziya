@@ -62,6 +62,14 @@ SUPPORTED_DIAGRAM_TYPES: frozenset = frozenset({
     "d3",
 })
 
+#: Markdown rendered through the REAL chat UI and screenshotted, rather than
+#: a diagram drawn by a plugin.  Has no D3 plugin, so -- exactly like the
+#: LaTeX family above -- it must be dispatched BEFORE the support gate or it
+#: would be reported unsupported.
+CHAT_MESSAGE_TYPES: frozenset = frozenset({
+    "chat-message", "chat-markdown", "markdown",
+})
+
 
 class RenderDiagramInput(BaseModel):
     """Input schema for render_diagram."""
@@ -70,7 +78,11 @@ class RenderDiagramInput(BaseModel):
         ...,
         description=(
             "Diagram type: mermaid, graphviz, vega-lite, vega, plotly, "
-            "drawio, packet, joint, d2, chord, force-directed, network, d3."
+            "drawio, packet, joint, d2, chord, force-directed, network, d3. "
+            "Also 'chat-message', which is not a diagram at all: it renders "
+            "MARKDOWN (KaTeX math, fences, tables) through the real chat UI "
+            "and screenshots it, so you can see how a message will actually "
+            "look to the user."
         ),
     )
     definition: str = Field(
@@ -80,6 +92,13 @@ class RenderDiagramInput(BaseModel):
     theme: Literal["dark", "light"] = Field(
         default="light",
         description="Color theme for rendering.",
+    )
+    role: Literal["assistant", "human"] = Field(
+        default="assistant",
+        description=(
+            "For 'chat-message' only: whose message bubble to render. "
+            "Affects styling and paragraph whitespace handling."
+        ),
     )
     format: Literal["png", "svg"] = Field(
         default="png",
@@ -148,7 +167,9 @@ class RenderDiagramTool(BaseMCPTool):
 
     async def execute(self, **kwargs) -> Any:
         """Render the diagram and return image + text content blocks."""
-        kwargs.pop("_workspace_path", None)
+        # Retained rather than discarded: the chat-message renderer needs it
+        # to resolve which project to seed the throwaway conversation into.
+        workspace_path = kwargs.pop("_workspace_path", None)
 
         diagram_type = kwargs.get("type", "")
         definition = kwargs.get("definition", "")
@@ -187,6 +208,19 @@ class RenderDiagramTool(BaseMCPTool):
                 normalized_type, definition, fmt, theme,
             )
 
+        # A chat-message render is neither a plugin diagram nor LaTeX: it
+        # drives the REAL application at "/" and photographs the actual
+        # .message element, so no second render path has to be kept faithful
+        # to the chat pipeline -- the artifact IS the product.  Dispatched
+        # before the support gate for the same reason as LaTeX: it has no D3
+        # plugin, so falling through would report it unsupported.
+        if normalized_type in CHAT_MESSAGE_TYPES:
+            return await self._render_chat_message(
+                definition, theme=theme,
+                role=str(kwargs.get("role") or "assistant"),
+                workspace_path=workspace_path,
+            )
+
         if normalized_type not in SUPPORTED_DIAGRAM_TYPES:
             supported = ", ".join(sorted({
                 "mermaid", "graphviz", "vega-lite", "vega", "plotly",
@@ -199,7 +233,8 @@ class RenderDiagramTool(BaseMCPTool):
                 f"Supported types: {supported}. "
                 f"(LaTeX/TikZ types such as 'circuitikz', 'tikz', 'chemfig' "
                 f"and 'tikz-cd' are handled by the server-side LaTeX renderer "
-                f"and do not appear in this list.)"
+                f"and do not appear in this list, and nor does 'chat-message', "
+                f"which screenshots markdown through the real chat UI.)"
             )
 
         logger.info(
@@ -296,6 +331,95 @@ class RenderDiagramTool(BaseMCPTool):
         except Exception as exc:
             logger.error("render_diagram error: %s", exc, exc_info=True)
             return _error(f"Unexpected error: {exc}")
+
+    async def _render_chat_message(
+        self, definition: str, *, theme: str, role: str,
+        workspace_path: Optional[str],
+    ) -> Any:
+        """Screenshot markdown as the production chat UI renders it.
+
+        Unlike every other branch here, this renders no diagram: it seeds a
+        throwaway conversation, drives the real app at "/", and photographs
+        the actual .message element.  That is the whole point -- mounting
+        MarkdownRenderer on the isolated /render harness with copied props
+        would create a second render path needing hand-sync with the chat
+        call site, and a verdict about math rendering is only worth having
+        if the thing photographed is the thing users see.
+        """
+        from app.config.env_registry import ziya_env
+        from app.utils.chat_screenshot import render_chat_message
+
+        try:
+            png, diag = await render_chat_message(
+                definition, role=role, theme=theme,
+                server_port=ziya_env("ZIYA_PORT"),
+                workspace_path=workspace_path,
+            )
+        except RuntimeError as exc:
+            return _error(str(exc))
+        except Exception as exc:
+            logger.error("chat-message render error: %s", exc, exc_info=True)
+            return _error(f"Chat-message render failed: {exc}")
+
+        dom = diag.get("dom") or {}
+        lines = [
+            f"Rendered markdown through the real chat UI (PNG, "
+            f"{len(png) / 1024:.1f} KB). Definition: {len(definition)} "
+            f"chars, role: {role}, theme: {theme}.",
+        ]
+        # Structural findings ride WITH the image rather than only being
+        # logged: a leaked marker or a KaTeX error span is unambiguous in the
+        # DOM and easy to miss by eye at chat font sizes.
+        if not diag.get("rendered_confirmed"):
+            lines.append(
+                "WARNING: the render never confirmed (no typeset math "
+                "appeared before the timeout). The image is included anyway "
+                "because dropped math is exactly what it would show."
+            )
+        if dom.get("is_lazy_placeholder"):
+            lines.append(
+                "WARNING: the message was still a lazy-mount placeholder, so "
+                "the image does not show rendered content."
+            )
+        if dom.get("katex_error"):
+            lines.append(f"KaTeX error spans: {dom['katex_error']}.")
+        if dom.get("math_fallback"):
+            lines.append(
+                f"Math fell back to monospace in {dom['math_fallback']} place(s)."
+            )
+        if dom.get("leaked_math_marker") or dom.get("leaked_encoded_div"):
+            lines.append(
+                "Internal math markers leaked into the output: the marker "
+                "round-trip in MarkdownRenderer did not complete."
+            )
+        if dom:
+            lines.append(
+                f"DOM: katex={dom.get('katex')}, "
+                f"code_blocks={dom.get('code_blocks')}, "
+                f"tables={dom.get('tables')}, "
+                f"chat_chrome={dom.get('has_chat_chrome')}."
+            )
+        for err in (diag.get("console_errors") or [])[:5]:
+            lines.append(f"console: {err}")
+
+        logger.info(
+            "🎨 render_diagram: chat-message success — %.1f KB, confirmed=%s",
+            len(png) / 1024, diag.get("rendered_confirmed"),
+        )
+        return {
+            "_has_image_content": True,
+            "content": [
+                {
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": base64.b64encode(png).decode("utf-8"),
+                    },
+                },
+                {"type": "text", "text": "\n".join(lines)},
+            ],
+        }
 
     async def _render_latex_direct(
         self, diagram_type: str, definition: str, fmt: str, theme: str,

@@ -44,6 +44,93 @@ def _check_playwright() -> bool:
     return _playwright_available
 
 
+# Maximum pixel extent (in EITHER dimension) of a rendered raster we will
+# emit. The downstream model image pipeline (Bedrock / Anthropic vision) hard-
+# rejects any image whose width OR height exceeds 8000px with
+# "image.source.base64.data: At least one of the image dimensions exceed max
+# allowed size: 8000 pixels" (a ValidationException that aborts the whole
+# turn). A diagram whose NATURAL layout is enormous — a deep top-to-bottom
+# inheritance chain, a very wide record, a huge grid — produces a full-element
+# screenshot far past that cap, so the render "succeeds" yet the bytes are
+# unusable. We defensively downscale any such raster here, at the single choke
+# point every caller (MCP tool + HTTP route) funnels through, so no oversized
+# PNG can ever leave the renderer. This is the upper-bound analog of the
+# graphviz sub-pixel-collapse clamp (frontend Issue 33).
+IMAGE_MAX_DIMENSION_PX = 8000
+
+
+def clamp_png_dimensions(
+    png_bytes: bytes, max_dim: int = IMAGE_MAX_DIMENSION_PX
+) -> bytes:
+    """Downscale a PNG so neither dimension exceeds ``max_dim`` pixels.
+
+    Aspect ratio is preserved; the largest dimension is scaled down to exactly
+    ``max_dim`` and the other dimension scaled proportionally (floored at 1px).
+    A PNG already within the cap is returned BYTE-IDENTICAL (no re-encode), so
+    this is a gap-fill for the oversized case, never a blanket re-compression.
+
+    This is a PURE, side-effect-free helper (given the same input it always
+    returns the same output) so it can be unit-tested without a browser. It is
+    also defensive: any decode/encode failure, a non-PNG payload, or a missing
+    Pillow install returns the original bytes unchanged — a guard must never be
+    able to destroy the image it is protecting.
+    """
+    if not isinstance(png_bytes, (bytes, bytearray)) or len(png_bytes) < 8:
+        return png_bytes
+    if not isinstance(max_dim, int) or max_dim < 1:
+        return png_bytes
+    try:
+        import io
+
+        from PIL import Image
+    except Exception:  # pragma: no cover - Pillow always present in this app
+        return png_bytes
+
+    # These bytes are our OWN trusted render output; the whole point is to
+    # decode a deliberately-large screenshot so we can shrink it. Pillow's
+    # decompression-bomb guard would otherwise raise on very large rasters and
+    # send us down the fallback path — returning the oversized bytes unchanged,
+    # which is exactly the failure we are here to prevent. Neutralize the guard
+    # for the duration of this decode, restoring the prior value afterwards.
+    prev_max_pixels = getattr(Image, "MAX_IMAGE_PIXELS", None)
+    try:
+        Image.MAX_IMAGE_PIXELS = None
+        with Image.open(io.BytesIO(png_bytes)) as img:
+            width, height = img.size
+            if width <= max_dim and height <= max_dim:
+                # Within the cap — do not touch the bytes.
+                return png_bytes
+
+            scale = max_dim / float(max(width, height))
+            new_width = max(1, int(width * scale))
+            new_height = max(1, int(height * scale))
+            # Guard against rounding leaving a dimension one pixel over.
+            new_width = min(new_width, max_dim)
+            new_height = min(new_height, max_dim)
+
+            resized = img.resize((new_width, new_height), Image.LANCZOS)
+            out = io.BytesIO()
+            resized.save(out, format="PNG")
+            logger.info(
+                "Downscaled oversized render raster %dx%d -> %dx%d "
+                "(max_dim=%d) so the downstream image pipeline accepts it",
+                width,
+                height,
+                new_width,
+                new_height,
+                max_dim,
+            )
+            return out.getvalue()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "clamp_png_dimensions failed (%s); returning original bytes", exc
+        )
+        return png_bytes
+    finally:
+        # Always restore the process-wide decompression-bomb limit.
+        Image.MAX_IMAGE_PIXELS = prev_max_pixels
+
+
 def build_chromium_launch_args(no_sandbox: bool = False) -> list:
     """Build the Chromium launch args for the headless renderer.
 
@@ -114,6 +201,36 @@ class DiagramRenderer:
             await self._playwright.stop()
             self._playwright = None
         logger.info("Headless Chromium closed")
+
+    # -- Page acquisition (for harnesses driving a route other than
+    # /render) ---------------------------------------------------------
+
+    @property
+    def base_url(self) -> str:
+        """Origin this renderer's pages are served from."""
+        return self._base_url
+
+    async def acquire_page(
+        self, *, viewport_width: int = 1280, viewport_height: int = 960,
+    ) -> Any:
+        """Return a fresh page on the shared browser.
+
+        Exists so a harness that must screenshot the real application (rather
+        than the isolated /render page) can reuse this one warm Chromium
+        instead of launching a second: startup is ~1s and a duplicate instance
+        doubles the memory floor for the life of the server.  ``new_page``
+        gives each caller its own browser context, so localStorage /
+        sessionStorage seeded by one caller cannot leak into another -- which
+        the chat-message renderer relies on, since it seeds the selected
+        conversation id into sessionStorage.
+
+        The caller owns the returned page and MUST close it.
+        """
+        async with self._lock:
+            await self._ensure_browser()
+        return await self._browser.new_page(
+            viewport={"width": viewport_width, "height": viewport_height},
+        )
 
     # -- Diagnostics --------------------------------------------------
 
@@ -261,17 +378,62 @@ class DiagramRenderer:
 
         try:
             # Navigate to the render harness page
-            await page.goto(
+            response = await page.goto(
                 f"{self._base_url}/render",
                 wait_until="networkidle",
                 timeout=timeout_ms,
             )
+
+            # Fail loudly if the shell itself did not load.  A non-2xx body
+            # (e.g. a 404 when the /render SPA passthrough is missing from
+            # app/routes/page_routes.py) reaches "networkidle" instantly, so
+            # the goto looks successful and the failure only surfaces later as
+            # an opaque "window.__renderDiagram is not a function" TypeError.
+            # Require a real int: a mocked page.goto() yields a Mock whose
+            # .status is another Mock, and comparing that to an int raises
+            # TypeError.  A driver guard must never be able to crash the
+            # render it is protecting.
+            status = getattr(response, "status", None) if response is not None else None
+            if isinstance(status, int) and not isinstance(status, bool) and status >= 400:
+                raise RuntimeError(
+                    f"GET {self._base_url}/render returned HTTP {status}; the "
+                    f"SPA shell never loaded, so the /render route could not "
+                    f"mount. Check that a server-side shell passthrough for "
+                    f"/render is registered in app/routes/page_routes.py."
+                )
 
             # Inject the spec via the imperative API. Tell the in-page
             # harness exactly how long it has to render so its safety
             # timeout fires before Playwright's wait_for_function does.
             spec_with_timeout = {**spec, "renderTimeoutMs": timeout_ms}
             spec_json = json.dumps(spec_with_timeout)
+
+            # Wait for DiagramRenderPage to define the injector before calling
+            # it.  Calling it directly turns *any* mount failure -- 404 shell,
+            # a stale bundle, a lazy-chunk load error, a crash in a provider
+            # above the component -- into the same misleading "not a function"
+            # TypeError, pointing at the frontend when the fault is elsewhere.
+            try:
+                await page.wait_for_function(
+                    "() => typeof window.__renderDiagram === 'function'",
+                    timeout=timeout_ms,
+                )
+            except Exception as inject_err:
+                diag = await self._collect_diagnostics(
+                    page, spec, console_log, pageerror_log
+                )
+                logger.error(
+                    "window.__renderDiagram was never defined. Diagnostics: %s",
+                    diag,
+                )
+                raise RuntimeError(
+                    f"window.__renderDiagram was never defined after "
+                    f"{timeout_ms}ms -- DiagramRenderPage did not mount. "
+                    f"page_url={page.url!r} "
+                    f"console_tail={diag.get('console_tail')!r} "
+                    f"pageerrors={diag.get('pageerrors')!r}"
+                ) from inject_err
+
             success = await page.evaluate(
                 f"window.__renderDiagram({json.dumps(spec_json)})"
             )
@@ -364,8 +526,15 @@ class DiagramRenderer:
                 # Fall through to PNG if no SVG found
                 logger.info("No SVG element found, falling back to PNG screenshot")
 
-            # PNG screenshot of just the diagram container
-            return await container.screenshot(type="png"), diagnostics
+            # PNG screenshot of just the diagram container.
+            # A full-element screenshot captures the ENTIRE natural size of the
+            # diagram, which for an extreme layout (deep TB inheritance chain,
+            # very wide record/method identifier, huge grid) can exceed the
+            # downstream 8000px vision-pipeline cap. Clamp before returning so a
+            # pathologically large-but-otherwise-valid render is downscaled
+            # instead of rejected. See clamp_png_dimensions / Issue 42 defect 3.
+            png_bytes = await container.screenshot(type="png")
+            return clamp_png_dimensions(png_bytes), diagnostics
 
         finally:
             await page.close()
