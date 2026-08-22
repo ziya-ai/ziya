@@ -41,32 +41,69 @@ class SkillStorage(BaseStorage[Skill]):
 
         Adoption of same-named custom skills: when a skill that users
         previously created by hand is later PROMOTED to a built-in (as
-        Continuous Documentation and Tests for Everything were), matching
-        only ``isBuiltIn`` records would leave the old custom copy in place
-        and add a second entry under the same name — two indistinguishable
-        cards in the skills list, only one of which a template can seed.
-        A non-builtin match by name is therefore adopted: the canonical
-        built-in record is written and the superseded custom file removed.
+        Continuous Documentation and Tests for Everything were), the old
+        hand-made copy must be retired or the list shows two
+        indistinguishable cards under one name — and only the built-in one
+        is seedable by a template, so the visible duplicate is also the one
+        that does nothing.  The superseded custom file is deleted and the
+        canonical built-in record written in its place.
+
+        Matching is case- and whitespace-insensitive, and runs whether or
+        not the canonical built-in already exists.  Requiring an exact name
+        match made the whole adoption path unreachable for the very record
+        it was written for ("Tests for everything" vs "Tests for
+        Everything"), and gating it on the built-in being ABSENT meant that
+        once the built-in had been created the duplicate was permanent —
+        which is the state every existing project is in.
         File-discovered skills (``source`` project/user) are NOT adopted —
         they are owned by a file on disk that this code must not delete, and
         a user who wrote a SKILL.md deliberately outranks a shipped default.
+
+        Built-in records whose name has LEFT ``BUILT_IN_SKILLS`` are also
+        removed here.  The on-disk id is derived from the name, so renaming
+        a shipped skill (as Task Decomposition was, to "Task Decomposition,
+        Delegation & Swarm") writes a new file and orphans the old one,
+        which then lists forever as a built-in that no longer exists.
         """
         existing_skills = self.list()
-        existing_by_name = {s.name: s for s in existing_skills if s.isBuiltIn}
+
+        def _name_key(name: str) -> str:
+            return (name or '').strip().lower()
+
+        existing_by_name = {
+            _name_key(s.name): s for s in existing_skills if s.isBuiltIn
+        }
         adoptable_by_name = {
-            s.name: s for s in existing_skills
+            _name_key(s.name): s for s in existing_skills
             if not s.isBuiltIn and s.source not in ('project', 'user')
         }
-        
+        canonical_names = {_name_key(b['name']) for b in BUILT_IN_SKILLS}
+
+        # Retire built-in records whose name is no longer shipped.
+        for stale in existing_skills:
+            if stale.isBuiltIn and _name_key(stale.name) not in canonical_names:
+                orphan_file = self._skill_file(stale.id)
+                if orphan_file.exists():
+                    orphan_file.unlink()
+                    logger.info(
+                        "Removed orphaned built-in skill %r (%s)",
+                        stale.name, stale.id,
+                    )
+
         for built_in_data in BUILT_IN_SKILLS:
             canonical_id = f"builtin-{built_in_data['name'].lower().replace(' ', '-')}"
-            existing = existing_by_name.get(built_in_data['name'])
-            if existing is None:
-                superseded = adoptable_by_name.get(built_in_data['name'])
-                if superseded is not None and superseded.id != canonical_id:
-                    old_file = self._skill_file(superseded.id)
-                    if old_file.exists():
-                        old_file.unlink()
+            name_key = _name_key(built_in_data['name'])
+            existing = existing_by_name.get(name_key)
+
+            superseded = adoptable_by_name.get(name_key)
+            if superseded is not None and superseded.id != canonical_id:
+                old_file = self._skill_file(superseded.id)
+                if old_file.exists():
+                    old_file.unlink()
+                    logger.info(
+                        "Adopted custom skill %r (%s) into built-in %s",
+                        superseded.name, superseded.id, canonical_id,
+                    )
 
             if existing is None:
                 # Brand-new built-in skill
@@ -105,6 +142,17 @@ class SkillStorage(BaseStorage[Skill]):
                     dirty = True
                 if existing.prompt != built_in_data['prompt']:
                     existing.prompt = built_in_data['prompt']
+                    # Recompute alongside the prompt.  ``tokenCount`` is
+                    # rendered to the user ("N tokens" in SkillsSection), so
+                    # a stale value silently misreports what enabling the
+                    # skill costs — and the error grows with every edit to a
+                    # shipped prompt, in the direction that matters (a
+                    # rewritten skill reads as its original, much smaller
+                    # size).  Both the create path above and ``update``
+                    # below already do this; only this sync path did not.
+                    existing.tokenCount = self.token_service.count_tokens(
+                        built_in_data['prompt']
+                    )
                     dirty = True
                 if dirty:
                     self._write_json(self._skill_file(existing.id), existing.model_dump())
