@@ -20,6 +20,8 @@ import { useTheme } from '../context/ThemeContext';
 import { sanitizeModelHtml, sanitizeMathMl } from '../utils/domSanitize';
 import { detectFileOperationSyntax, renderFileOperationSafely } from '../utils/fileOperationParser';
 import { FileOperationRenderer } from './FileOperationRenderer';
+import { parseMockupFence } from '../utils/mockupFence';
+import { FailedHunkList } from './FailedHunkList';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 import 'katex/dist/katex.min.css';
 import {
@@ -34,9 +36,10 @@ import { useProject } from '../context/ProjectContext';
 import { useSendPayload } from '../hooks/useSendPayload';
 import { useStreamingContext } from '../context/StreamingContext';
 import { parseD3Spec } from '../utils/d3SpecParser';
-import { escapeNestedBacktickFences, stripBareProseFences, matchFenceOpen, applyOutsideFences, applyOutsideCodeSpans, splitJsonSpecTrailingContent, upgradeNestedFences, repairAtomicFenceRuns, isPreformattedTextToken } from './fenceScanner';
+import { escapeNestedBacktickFences, stripBareProseFences, matchFenceOpen, applyOutsideFences, applyOutsideCodeSpans, splitJsonSpecTrailingContent, upgradeNestedFences, repairAtomicFenceRuns, repairGluedFenceOpeners, isPreformattedTextToken } from './fenceScanner';
 import {
     processInlineMath,
+    createMathPlaceholderStore,
     decodeInlineMathMarker,
     isInlineMathMarker,
     MATH_INLINE_MARKER_PREFIX,
@@ -672,6 +675,29 @@ const ToolBlock: React.FC<ToolBlockProps> = ({
         }
         // Hard size cap: never hand an oversized blob to the markdown lexer.
         if (content.length > 50000) return false;
+        // ReDoS guard. marked's `link` and `reflink` inline rules backtrack
+        // exponentially only when THREE conditions hold together: a paragraph
+        // has a '[' that never completes as '](' or '][', it has runs of 3+
+        // backticks, and it has enough of them. Measured lex times with a
+        // dangling '[' present, by run width and run count n:
+        //   width 1: flat 0-6ms through n=24 (codespans tokenize cleanly)
+        //   width 3: n=12 3ms, n=20 3656ms, n=24 129456ms
+        //   width 6: n=8 44ms, n=12 33443ms
+        // With no dangling '[' every width is flat at any n. So single-backtick
+        // spans are irrelevant and must NOT be counted -- doing so flags
+        // ordinary prose (e.g. "[1, 2, 3]" beside a few code spans) and
+        // needlessly demotes it to plain text. A cap of 8 runs of 3+ backticks
+        // sits below the cliff for both width 3 and width 6.
+        const MIN_WIDE_BACKTICK_RUNS = 8;
+        const WELL_FORMED_LINK = /!?\[[^\[\]\n]*\](\([^\s)]*\)|\[[^\]\n]*\])/g;
+        for (const para of content.split(/\n\s*\n/)) {
+            if (!para.includes('[')) continue;
+            const wideRuns = para.match(/`{3,}/g);
+            if (!wideRuns || wideRuns.length < MIN_WIDE_BACKTICK_RUNS) continue;
+            // Strip complete links; a '[' left over cannot close, which is
+            // the state that makes the tokenizer backtrack exponentially.
+            if (para.replace(WELL_FORMED_LINK, '').includes('[')) return false;
+        }
         return content.includes('**') || content.includes('[') || content.includes('###') || content.includes('<a href');
     }, [content]);
 
@@ -3034,22 +3060,12 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                             <div style={{ maxHeight: '50vh', overflowY: 'auto' }}>
                                 <p>{data.message}</p>
                                 {data.details?.failed && data.details.failed.length > 0 && (
-                                    <div>
-                                        <p>Failed hunks:</p>
-                                        <ul style={{ marginTop: '8px', paddingLeft: '20px', listStyle: 'none' }}>
-                                            {data.details.failed.map((hunkId, index) => {
-                                                const hunkStatus = data.details?.hunk_statuses?.[hunkId];
-                                                return (
-                                                    <li key={index}>
-                                                        <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} />
-                                                        {`Hunk #${hunkId} failed`}
-                                                        {hunkStatus ? ` in ${hunkStatus.stage || 'unknown'} stage` : ''}
-                                                        {hunkStatus?.error_details ? `: ${JSON.stringify(hunkStatus.error_details)}` : ''}
-                                                    </li>
-                                                );
-                                            })}
-                                        </ul>
-                                    </div>
+                                    <FailedHunkList
+                                        filePath={filePath}
+                                        diff={diff}
+                                        failed={data.details.failed}
+                                        hunkStatuses={data.details?.hunk_statuses}
+                                    />
                                 )}
                             </div>
                         ),
@@ -3070,24 +3086,12 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
                                 <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} />
                                 {result.error || 'Failed to apply changes'}
                             </p>
-                            {errorData.details?.failed && errorData.details.failed.length > 0 && (
-                                <div>
-                                    <p>Failed hunks:</p>
-                                    <ul style={{ marginTop: '8px', paddingLeft: '20px', listStyle: 'none' }}>
-                                        {errorData.details.failed.map((hunkId, index) => {
-                                            const hunkStatus = errorData.details?.hunk_statuses?.[hunkId];
-                                            return (
-                                                <li key={index}>
-                                                    <CloseCircleOutlined style={{ color: '#ff4d4f', marginRight: '8px' }} />
-                                                    {`Hunk #${hunkId} failed`}
-                                                    {hunkStatus ? ` in ${hunkStatus.stage || 'unknown'} stage` : ''}
-                                                    {hunkStatus?.error_details ? `: ${JSON.stringify(hunkStatus.error_details)}` : ''}
-                                                </li>
-                                            );
-                                        })}
-                                    </ul>
-                                </div>
-                            )}
+                            <FailedHunkList
+                                filePath={filePath}
+                                diff={diff}
+                                failed={errorData.details?.failed || []}
+                                hunkStatuses={errorData.details?.hunk_statuses}
+                            />
                         </div>
                     ),
                     duration: 0  // Stay until the user closes it — the payload can be large
@@ -3292,6 +3296,24 @@ interface DiffTokenProps {
     superseded?: boolean;
     isStreaming?: boolean;
 }
+
+// isPrintExportMode: true when this renderer is being driven by the /print
+// route (PrintRenderPage adds `body.ziya-print-mode`).  Live-session
+// affordances that are meaningful in the app but noise in a document — most
+// notably SUPERSEDED diffs (an earlier diff corrected by a later one in the
+// same message; the UI merely fades them to opacity 0.45 but they still land
+// in the PDF as low-contrast noise that inflates page count) — are SUPPRESSED
+// entirely rather than faded when this returns true.  Scoped to the shared
+// print class so Card II's HTML export (extract_html on the same /print DOM)
+// inherits the fix.  Guarded for SSR / non-DOM contexts.
+const isPrintExportMode = (): boolean => {
+    try {
+        return typeof document !== 'undefined'
+            && document.body?.classList?.contains('ziya-print-mode') === true;
+    } catch {
+        return false;
+    }
+};
 
 // isStreaming is a PROP, deliberately not read from context here: the props
 // version is per-message (false for every committed history message), while
@@ -3517,8 +3539,13 @@ const DiffToken = memo(({ token, index, enableCodeApply, isDarkMode, superseded 
         }
     };
 
-    // Show context enhancement overlay when files are missing
-    const contextEnhancementOverlay = (isCheckingFiles || needsContextEnhancement) ? (
+    // Show context enhancement overlay when files are missing.  In an export
+    // (/print route → body.ziya-print-mode) this is a live-session affordance
+    // that is noise in a document (user-reported NEW-2b), so SUPPRESS it there
+    // rather than render it — mirroring the superseded-diff suppression above.
+    // (The overlay is normally driven by streaming-only state that never fires
+    // under /print; this gate hardens against any path that would show it.)
+    const contextEnhancementOverlay = (!isPrintExportMode() && (isCheckingFiles || needsContextEnhancement)) ? (
         <div style={{
             position: 'relative',
             width: '100%',
@@ -4294,8 +4321,11 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
             return 'slidecast';
         }
 
-        // Check for HTML mockup blocks
-        if (lang === 'html-mockup' || lang === 'ui-mockup' || lang === 'mockup') {
+        // Check for HTML mockup blocks. The info string may carry a variant
+        // modifier ("html-mockup figure"), so this matches the base language;
+        // an equality test against the whole string would drop such a fence
+        // through to plain-code rendering.
+        if (parseMockupFence(lang).isMockup) {
             return 'html-mockup';
         }
 
@@ -4573,7 +4603,29 @@ const decodeHtmlEntities = (text: string): string => {
         .replace(/&trade;/g, '™');
 };
 
-const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false, thinkingBlocksMap?: Map<string, ThinkingBlockData[]>, onOpenShellConfig?: () => void, forcedSuperseded: boolean = false): React.ReactNode => {
+// Subscribes to reasoningContentMap on its own so that the map's churn during
+// reasoning (a new Map identity per thinking delta — hundreds per iteration on
+// reasoning-heavy turns) re-renders only this block instead of invalidating the
+// renderedContent memo and re-running renderTokens across the entire message.
+const LiveThinkingBlock: React.FC<{ turnId: string; index: number; isDarkMode: boolean }> =
+    React.memo(({ turnId, index, isDarkMode }) => {
+        const { reasoningContentMap } = useActiveChat();
+        const block = reasoningContentMap?.get(turnId)?.[index];
+        // Unresolvable after a reload (sidecar is session state) or past the
+        // retention cap. Rendering nothing is the intended ephemeral behaviour.
+        if (!block) return null;
+        // isStreaming is per-BLOCK, not per-response: a block whose closing
+        // chunk has arrived is finished even while later iterations still
+        // stream, so it collapses immediately rather than staying open until
+        // the whole turn ends.
+        return (
+            <ThinkingBlock isDarkMode={isDarkMode} isStreaming={!block.complete}>
+                {block.content}
+            </ThinkingBlock>
+        );
+    });
+
+const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false, onOpenShellConfig?: () => void, forcedSuperseded: boolean = false): React.ReactNode => {
     const shouldLog = isDebugLoggingEnabled() &&
         (Date.now() - lastLogTimestamp > 10000);
 
@@ -4719,6 +4771,16 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                     const supersededFileIndices = supersededParts.get(index);
                     const singleFileSuperseded = forcedSuperseded || supersededFileIndices?.has(0) === true;
+                    // NEW-2a: in an EXPORT (/print → PDF/HTML), a superseded diff is
+                    // omitted entirely rather than faded.  In the live session the UI
+                    // greys it (opacity 0.45) so the reader still sees the correction
+                    // history, but in a document it is low-contrast noise that a reader
+                    // cannot distinguish from real content and it inflates page count.
+                    // Suppress only when the WHOLE single-file diff is superseded; the
+                    // multi-file case is handled per-section in renderMultiFileDiff.
+                    if (singleFileSuperseded && isPrintExportMode()) {
+                        return null;
+                    }
                     // Check if this is a multi-file diff and not already a sub-render
                     if (!isSubRender) {
                         const fileDiffs = splitMultiFileDiffs(cleanedDiff);
@@ -4738,7 +4800,11 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
                     return (
                         <React.Suspense key={sk} fallback={null}>
-                            <HTMLMockupRenderer html={tokenWithText.text} isStreaming={isStreaming} />
+                            <HTMLMockupRenderer
+                                html={tokenWithText.text}
+                                isStreaming={isStreaming}
+                                variant={parseMockupFence(tokenWithText.lang).variant}
+                            />
                         </React.Suspense>
                     );
 
@@ -4925,7 +4991,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         };
                         return (
                             <React.Fragment key={frameKey}>
-                                {renderTokens([frameToken], enableCodeApply, isDarkMode, true, isStreaming, thinkingBlocksMap, onOpenShellConfig)}
+                                {renderTokens([frameToken], enableCodeApply, isDarkMode, true, isStreaming, onOpenShellConfig)}
                             </React.Fragment>
                         );
                     };
@@ -4935,7 +5001,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     const renderCaption = (markdown: string): React.ReactNode => {
                         try {
                             const capTokens = marked.lexer(markdown);
-                            return renderTokens(capTokens as any, enableCodeApply, isDarkMode, true, isStreaming, thinkingBlocksMap, onOpenShellConfig);
+                            return renderTokens(capTokens as any, enableCodeApply, isDarkMode, true, isStreaming, onOpenShellConfig);
                         } catch {
                             return <span>{markdown}</span>;
                         }
@@ -5238,7 +5304,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     // 'text' case converts these to <br/>.
                     const filteredPTokens = pTokens.filter(t => t.type !== 'text' || (t as TokenWithText).text !== '' || (t as TokenWithText).text === '\n');
                     if (filteredPTokens.length === 0) return null; // Don't render empty paragraphs
-                    return <p key={sk}>{renderTokens(filteredPTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig)}</p>;
+                    return <p key={sk}>{renderTokens(filteredPTokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, onOpenShellConfig)}</p>;
 
                 case 'list':
                     // Render list, processing items recursively
@@ -5249,7 +5315,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             {listToken.items.map((item, itemIndex) => (
                                 // Render list items using the 'list_item' case below
                                 <React.Fragment key={itemIndex}>
-                                    {renderTokens([item], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig)}
+                                    {renderTokens([item], enableCodeApply, isDarkMode, isSubRender, isStreaming, onOpenShellConfig)}
                                 </React.Fragment>
                             ))}
                         </ListTag>
@@ -5258,7 +5324,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'list_item':
                     const listItemToken = token as Tokens.ListItem;
 
-                    const itemContent = renderTokens(listItemToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig);
+                    const itemContent = renderTokens(listItemToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, onOpenShellConfig);
 
                     // Handle task list items
                     if (listItemToken.task) {
@@ -5287,7 +5353,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                                 <tr>
                                     {tableToken.header.map((cell, cellIndex) => (
                                         <th key={cellIndex} style={{ borderBottom: '2px solid #ddd', padding: '8px', textAlign: tableToken.align[cellIndex] || 'left' }}>
-                                            {renderTokens(cell.tokens || [{ type: 'text', text: cell.text }], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig)}
+                                            {renderTokens(cell.tokens || [{ type: 'text', text: cell.text }], enableCodeApply, isDarkMode, isSubRender, isStreaming, onOpenShellConfig)}
                                         </th>
                                     ))}
                                 </tr>
@@ -5297,7 +5363,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                                     <tr key={rowIndex}>
                                         {row.map((cell, cellIndex) => (
                                             <td key={cellIndex} style={{ border: '1px solid #ddd', padding: '8px', textAlign: tableToken.align[cellIndex] || 'left' }}>
-                                                {renderTokens(cell.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig)}
+                                                {renderTokens(cell.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, onOpenShellConfig)}
                                             </td>
                                         ))}
                                     </tr>
@@ -5538,19 +5604,9 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     const thinkMatch = decodedText.match(THINKING_MARKER_RE);
                     if (thinkMatch) {
                         const [, turnId, idxStr] = thinkMatch;
-                        const block = thinkingBlocksMap?.get(turnId)?.[Number(idxStr)];
-                        // Unresolvable after a reload (sidecar is session
-                        // state) or past the retention cap.  Rendering
-                        // nothing is the intended ephemeral behaviour.
-                        if (!block) return null;
-                        // isStreaming is per-BLOCK, not per-response: a block
-                        // whose closing chunk has arrived is finished even
-                        // while later iterations still stream, so it collapses
-                        // immediately rather than staying open until the whole
-                        // turn ends.
-                        return <ThinkingBlock key={sk} isDarkMode={isDarkMode}
-                                              isStreaming={!block.complete}>
-                            {block.content}</ThinkingBlock>;
+                        return <LiveThinkingBlock key={sk} turnId={turnId}
+                                                  index={Number(idxStr)}
+                                                  isDarkMode={isDarkMode} />;
                     }
 
                     // Handle math expressions in text tokens
@@ -5561,7 +5617,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     // Check if this 'text' token has nested inline tokens (like strong, em, etc.)
                     if (tokenWithText.tokens && tokenWithText.tokens.length > 0) {
                         // If it has nested tokens, render them recursively
-                        return renderTokens(tokenWithText.tokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig);
+                        return renderTokens(tokenWithText.tokens, enableCodeApply, isDarkMode, isSubRender, isStreaming, onOpenShellConfig);
                     } else {
                         // Preformatted block content (no lang tag) can arrive as a
                         // text token — during streaming before the closing fence
@@ -5592,9 +5648,9 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                 // --- Handle Inline Markdown Elements (Recursively) ---
                 case 'strong':
-                    return <strong key={sk}>{renderTokens((token as Tokens.Strong).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig)}</strong>;
+                    return <strong key={sk}>{renderTokens((token as Tokens.Strong).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, onOpenShellConfig)}</strong>;
                 case 'em':
-                    return <em key={sk}>{renderTokens((token as Tokens.Em).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig)}</em>;
+                    return <em key={sk}>{renderTokens((token as Tokens.Em).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, onOpenShellConfig)}</em>;
                 case 'codespan':
                     if (!hasText(tokenWithText)) return null;
                     // No-chrome inline music notation: `music: C4/q, D4/q`
@@ -5608,11 +5664,11 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'br':
                     return <br key={sk} />;
                 case 'del':
-                    return <del key={sk}>{renderTokens((token as Tokens.Del).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig)}</del>;
+                    return <del key={sk}>{renderTokens((token as Tokens.Del).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, onOpenShellConfig)}</del>;
 
                 case 'link':
                     const linkToken = token as Tokens.Link;
-                    return <a key={sk} href={linkToken.href} title={linkToken.title ?? undefined}>{renderTokens(linkToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig)}</a>;
+                    return <a key={sk} href={linkToken.href} title={linkToken.title ?? undefined}>{renderTokens(linkToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, onOpenShellConfig)}</a>;
 
                 case 'escape':
                     if (!hasText(tokenWithText)) return null;
@@ -5634,11 +5690,11 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                 case 'heading':
                     const headingToken = token as Tokens.Heading;
                     const Tag = `h${headingToken.depth}` as keyof JSX.IntrinsicElements;
-                    return <Tag key={sk}>{renderTokens(headingToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig)}</Tag>;
+                    return <Tag key={sk}>{renderTokens(headingToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, onOpenShellConfig)}</Tag>;
                 case 'hr':
                     return <hr key={sk} />;
                 case 'blockquote':
-                    return <blockquote key={sk}>{renderTokens((token as Tokens.Blockquote).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, thinkingBlocksMap, onOpenShellConfig)}</blockquote>;
+                    return <blockquote key={sk}>{renderTokens((token as Tokens.Blockquote).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, onOpenShellConfig)}</blockquote>;
                 case 'space': // Usually ignored
                     return null;
 
@@ -5720,6 +5776,13 @@ const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeAppl
             {fileDiffs.map((diffContent, fileIndex) => {
                 // Create a stable key for each file diff
                 const stableKey = `diff-${index}-file-${fileIndex}`;
+
+                // NEW-2a: omit a superseded file-section entirely in an export
+                // (see isPrintExportMode / DiffToken).  In the live session it is
+                // faded; in a document it is low-contrast noise.
+                if (supersededFileIndices.has(fileIndex) && isPrintExportMode()) {
+                    return null;
+                }
 
                 // Wrap each diff in markdown code block syntax for proper rendering
                 const wrappedDiff = `\`\`\`diff\n${diffContent}\n\`\`\``;
@@ -6005,9 +6068,28 @@ export const MusicInlineRenderer: React.FC<{ dsl: string; isDarkMode: boolean }>
                     const base = seg.replace(/\.*$/, '').toLowerCase();
                     if (base && !VALID_DURATION_BASES.has(base)) {
                         throw new Error(
-                            `unknown duration "${seg}" in inline music (use w h q 8 16, optionally dotted)`,
+                            `unknown duration "${seg}" in inline music (use w h q 8 16 32 64 128, optionally dotted)`,
                         );
                     }
+                }
+                // Reject EasyScore annotation/modifier syntax (^"text" / _"text")
+                // BEFORE parsing.  The inline form supports notes only; when the
+                // DSL carries a `^` or `_`, EasyScore's parser stops at that
+                // character and SILENTLY drops every note after it, so the staff
+                // renders SHORT with no error -- a misleading partial result that
+                // reads as "the notes I wrote after the annotation don't exist".
+                // Fail fast into the text fallback instead (exactly as the
+                // duration guard above does), so the author sees their DSL
+                // verbatim and is pointed at the fenced block, which has a real
+                // `annotations` field.  `^`/`_` are never valid inside a
+                // `key/duration` token (accidentals are #/b/n), so this cannot
+                // reject a legal inline phrase.
+                if (/[\^_]/.test(dsl)) {
+                    throw new Error(
+                        'inline music supports notes only; annotation syntax '
+                        + '(^"text" / _"text") is not supported -- use a fenced '
+                        + '```music``` block with an "annotations" field instead',
+                    );
                 }
                 const notes = score.notes(dsl, { clef: 'treble' });
                 if (notes.length === 0) {
@@ -6036,7 +6118,16 @@ export const MusicInlineRenderer: React.FC<{ dsl: string; isDarkMode: boolean }>
         };
         renderInline();
         return () => { cancelled = true; };
-    }, [dsl]);
+        // isDarkMode is a dependency, not just dsl: the effect READS it to
+        // decide whether to run applyMusicDarkTheme, but the VexFlow staff is
+        // drawn imperatively into a ref'd node that React never re-reconciles.
+        // With only [dsl], a theme toggle re-renders the component yet never
+        // re-runs the effect, so the already-drawn SVG keeps its old ink --
+        // switching to dark left the black-on-#1f1f1f staff at 1.27:1
+        // (invisible), and switching back left dark ink on white.  Listing
+        // isDarkMode re-runs the draw (which clears and repaints the node) so
+        // the notation is re-themed on every toggle.
+    }, [dsl, isDarkMode]);
 
     // The container is mounted UNCONDITIONALLY and merely hidden until the
     // draw succeeds, rather than being swapped in once loading finishes.
@@ -6194,10 +6285,6 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     const previousTokensRef = useRef<(Tokens.Generic | TokenWithText)[]>([]);
     const parseTimeoutRef = useRef<NodeJS.Timeout>();
     const markdownRef = useRef<string>(markdown);
-    // Thinking blocks come from session state, not from parsing the markdown.
-    // Read here (before the render memo below) because useActiveChat is
-    // otherwise destructured further down, after the memo that needs it.
-    const { reasoningContentMap: thinkingBlocksMap } = useActiveChat();
 
     // State for the tokens that are currently displayed with stable reference
     const [displayTokens, setDisplayTokens] = useState<(Tokens.Generic | TokenWithText)[]>([]);
@@ -6360,12 +6447,12 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                 s.replace(/([^\n])\n(`{3,}[a-zA-Z0-9_-]*)(?=\s|$)/g, '$1\n\n$2')
             );
 
-            // Fix: Code fence directly concatenated to text with no newline at all
-            // e.g. "some text:```vega-lite" → "some text:\n\n```vega-lite"
-            // LLMs sometimes omit the newline before a code fence entirely
-            processedMarkdown = applyOutsideFences(processedMarkdown, (s) =>
-                s.replace(/([^\n`])(`{3,}[a-zA-Z][a-zA-Z0-9_-]*)(?=\s|$)/g, '$1\n\n$2')
-            );
+            // Fix: Code fence directly concatenated to text with no newline at
+            // all, e.g. a prose line ending in ':' immediately followed by a
+            // vega-lite opener.  Iterated rather than single-pass: a glued
+            // opener inverts fence parity for the rest of the message, so one
+            // pass only ever repaired the first occurrence in a message.
+            processedMarkdown = repairGluedFenceOpeners(processedMarkdown);
 
     // Split JSON-spec blocks (plotly, vega-lite, …) whose fence was
     // never closed after the JSON value, so trailing prose — or an
@@ -6441,8 +6528,9 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
 
     // IMPORTANT: Extract and protect math blocks BEFORE fence escaping
     // Store them temporarily and restore after fence processing
-    const mathBlocks: { placeholder: string; content: string }[] = [];
-    let mathCounter = 0;
+    // The store owns both directions; see createMathPlaceholderStore for why
+    // restore cannot be a string replacement and why the token is per-store.
+    const mathStore = createMathPlaceholderStore();
 
 
     //
@@ -6519,13 +6607,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // marker pass further down about which spans are math: otherwise a
             // code span's $...$ is lifted out here and restored into text that
             // the later pass treats as eligible.
-            return applyOutsideCodeSpans(part, segment =>
-                segment.replace(/(?<!\$)\$(?!\$)((?:(?!\$).)+?)\$(?!\$)/g, match => {
-                    const placeholder = `__MATH_INLINE_${mathCounter}__`;
-                    mathBlocks.push({ placeholder, content: match });
-                    mathCounter++;
-                    return placeholder;
-                }));
+            return applyOutsideCodeSpans(part, segment => mathStore.protect(segment));
         }).join('');
     }
 
@@ -6540,9 +6622,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     processedMarkdown = escapeNestedBacktickFences(processedMarkdown);
 
     // Restore math blocks after fence escaping
-    for (const { placeholder, content } of mathBlocks) {
-        processedMarkdown = processedMarkdown.replace(placeholder, content);
-    }
+    processedMarkdown = mathStore.restore(processedMarkdown);
 
     // Now math processing will work normally on the restored $$...$$ and $...$ delimiters
 
@@ -6709,6 +6789,20 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             // always valid regardless of spaces/emoji in the display header.
             if (trimmed.startsWith('tool:')) return _match;
 
+            // A recognised base language followed by a variant modifier
+            // ("html-mockup figure") is a real opener, not prose. The space
+            // test below cannot tell the two apart, and rewriting the opener
+            // as a BARE fence plus an orphaned info line loses the block's
+            // language entirely: it renders as an anonymous plaintext code
+            // block with "html-mockup figure" as body line 1, which is the
+            // reported failure. Mirrors the reduction
+            // app/text_delta_processor.py already performs for the streaming
+            // tracker. This was the FIFTH site comparing the WHOLE info
+            // string and the only one that rewrites the source text, so it
+            // was the one missed when the other four moved to base-language
+            // matching — and the only one whose symptom was a lost renderer.
+            if (parseMockupFence(trimmed).isMockup) return _match;
+
             // Allow legitimate patterns: alphanumeric, hyphens, underscores,
             // colons (tool:), pipes (tool labels), dots (draw.io)
             const isValidLangTag = /^[a-zA-Z][a-zA-Z0-9._:|\-]*$/.test(trimmed)
@@ -6724,7 +6818,6 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     );
 
 
-    const lexedTokens = marked.lexer(processedMarkdown, { ...markedOptions, breaks });
     // ReDoS guard for marked's inline link tokenizer.
     //
     // marked 16.4.2's inline.link regex backtracks catastrophically on a
@@ -6756,6 +6849,68 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         }).join('\n');
     }
 
+    // ReDoS guard #2: an unclosed '[' together with wide backtick runs.
+    //
+    // The guard above only recognizes the '](' shape. A different shape is
+    // just as fatal and far more common: a paragraph holding a '[' that never
+    // completes as '](' or '][', plus several runs of 3+ backticks. Measured
+    // marked.lexer times with a dangling '[' present, by run width and count n:
+    //   width 1: flat 0-6ms through n=24 (codespans tokenize cleanly)
+    //   width 3: n=12 3ms, n=20 3656ms, n=24 129456ms
+    //   width 6: n=8 44ms, n=12 33443ms
+    // With no dangling '[' every width stays flat at any n, and width-1 spans
+    // never contribute, so all three conditions are required. A pasted Python
+    // list literal ("cases = [" plus fence strings) hits this at 1101 bytes
+    // with 27 wide runs and does not return within 45s, pegging the main
+    // thread. The '](' cap above cannot see it: there is no '](' at all.
+    //
+    // Scope is the paragraph, not the line: the cost is cumulative across the
+    // lines marked joins into a single paragraph token.
+    const MIN_WIDE_RUNS = 8;
+    const CLOSED_LINK = /!?\[[^\[\]\n]*\](\([^\s)]*\)|\[[^\]\n]*\])/g;
+    if (processedMarkdown.includes('[') && /`{3,}/.test(processedMarkdown)) {
+        const srcLines = processedMarkdown.split('\n');
+        const outLines = srcLines.slice();
+        let inCodeFence = false;
+        let para: number[] = [];
+        const flushPara = () => {
+            if (para.length === 0) return;
+            const text = para.map((i) => srcLines[i]).join('\n');
+            // Strip complete links; a '[' left over cannot close, which is the
+            // state that makes the inline tokenizer backtrack exponentially.
+            // Only runs AFTER that '[' are backtracked over, so counting the
+            // whole paragraph over-reports and demotes safe content: three
+            // paragraphs in one real conversation carry 19-29 wide runs yet lex
+            // in 0-6ms because every dangling '[' sits after all of them. The
+            // leftmost dangling '[' bounds the count, so no later bracket can
+            // raise it -- verified identical to an every-bracket scan over 230
+            // real paragraphs, at O(n) instead of O(n^2).
+            const stripped = text.replace(CLOSED_LINK, (m) => ' '.repeat(m.length));
+            const firstDangling = stripped.indexOf('[');
+            const wide = firstDangling === -1
+                ? null
+                : stripped.slice(firstDangling).match(/`{3,}/g);
+            if (wide && wide.length >= MIN_WIDE_RUNS) {
+                console.warn(
+                    `🛡️ Link ReDoS guard: neutralized paragraph with ${wide.length} ` +
+                    `wide backtick runs and an unclosed '[' to prevent lexer hang`
+                );
+                for (const i of para) {
+                    outLines[i] = srcLines[i].replace(/(^|[^\\])\[/g, '$1\\[');
+                }
+            }
+            para = [];
+        };
+        srcLines.forEach((line, i) => {
+            if (/^\s*(`{3,}|~{3,})/.test(line)) { flushPara(); inCodeFence = !inCodeFence; return; }
+            if (inCodeFence) return;
+            if (line.trim() === '') { flushPara(); return; }
+            para.push(i);
+        });
+        flushPara();
+        processedMarkdown = outLines.join('\n');
+    }
+
     // Debug: capture what reaches the lexer when a vega/vega-lite block is present.
     // Remove after root cause is confirmed.
     if (processedMarkdown.includes('$schema') &&
@@ -6765,6 +6920,10 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             JSON.stringify(processedMarkdown.slice(Math.max(0, fenceEnd - 120), fenceEnd + 3)));
     }
 
+    // Lex AFTER both guards. Previously this call sat above them, so the
+    // sanitized string was computed and thrown away -- the guards were dead
+    // code and the hang they exist to prevent still occurred.
+    const lexedTokens = marked.lexer(processedMarkdown, { ...markedOptions, breaks });
     return lexedTokens as (Tokens.Generic | TokenWithText)[] || [];
 } catch (error) {
     // Don't create fallback code blocks for empty content
@@ -6806,14 +6965,15 @@ useEffect(() => {
 
 // Only memoize the rendered content when not streaming or when streaming completes
 const renderedContent = useMemo(() => {
-    return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender, externalStreaming, thinkingBlocksMap, onOpenShellConfig, superseded);
+    return renderTokens(displayTokens, enableCodeApply, isDarkMode, isSubRender, externalStreaming, onOpenShellConfig, superseded);
 // externalStreaming is a real input to renderTokens (it reaches the Apply
 // button gate), so omitting it froze the tokens rendered mid-stream: the
 // true→false transition at stream end produced no re-render.
-// thinkingBlocksMap is a real input: it changes as reasoning streams in, and
-// omitting it would freeze markers against a stale map so a block would
-// never appear or never collapse.
-}, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender, superseded, externalStreaming, thinkingBlocksMap]);
+// The reasoning map is deliberately not threaded through renderTokens at all:
+// it gets a new identity on every thinking delta, and as a dep here that made
+// this memo re-run renderTokens over the whole message hundreds of times per
+// reasoning-heavy iteration. LiveThinkingBlock subscribes to the map itself.
+}, [displayTokens, enableCodeApply, isDarkMode, forceRender, isSubRender, superseded, externalStreaming]);
 
 // Attach event listeners to throttle retry buttons after render
 const { currentConversationId, currentMessages,

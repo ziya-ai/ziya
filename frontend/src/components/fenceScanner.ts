@@ -31,6 +31,7 @@
  */
 
 import { LATEX_FENCE_LANGS } from '../constants/latexProfiles';
+import { fenceBaseLang } from '../utils/mockupFence';
 
 export type FenceChar = '`' | '~';
 
@@ -258,7 +259,33 @@ export function stripBareProseFences(markdown: string): string {
         if (bareFenceMatch && !insideLangFence) {
             const fLen: number = bareFenceMatch[1].length;
             let closeIdx: number = -1;
+            // Set when the search below is stopped by a real tagged opener
+            // rather than by running off the end of the input. That is
+            // definitive proof the bare fence is stray (any close found
+            // beyond the tagged opener belongs to IT, not to us) -- distinct
+            // from simply finding no close before EOF, where the "orphan"
+            // interpretation is not yet certain and a markdown-content
+            // heuristic decides instead.
+            let abortedByTaggedOpener: boolean = false;
             for (let fj: number = fi + 1; fj < fenceLines.length; fj += 1) {
+                // A real lang-tagged opener between here and the next bare
+                // fence proves the bare fence we're scanning from has no
+                // close of its own (it's a stray/orphan): the tagged block's
+                // own close belongs to IT, not to us. Stop here rather than
+                // consuming that close as if it paired with our bare fence,
+                // which would swallow the tagged opener as "inner content"
+                // and truncate/mis-pair the tagged block.
+                //
+                // Only applies when the mid-opener's run is >= our own fence
+                // length: a SHORTER nested fence (e.g. ```diff inside an
+                // outer ````) is literal content per CommonMark nesting
+                // rules and cannot compete for our close, so it must not
+                // abort the search.
+                const midOpener = matchFenceOpen(fenceLines[fj]);
+                if (midOpener && midOpener.char === '`' && midOpener.indent === 0 && midOpener.info !== '' && midOpener.len >= fLen) {
+                    abortedByTaggedOpener = true;
+                    break;
+                }
                 const closeMatch = fenceLines[fj].match(/^([`]{3,})\s*$/);
                 if (closeMatch && closeMatch[1].length >= fLen) {
                     closeIdx = fj;
@@ -322,6 +349,12 @@ export function stripBareProseFences(markdown: string): string {
                 fenceOutput.push(...innerLines);
                 fenceOutput.push(fenceLines[closeIdx]);
                 fi = closeIdx + 1;
+                continue;
+            } else if (abortedByTaggedOpener) {
+                // Definitively stray: drop just this bare fence line and
+                // let the real tagged block ahead parse normally, without
+                // relying on the remaining-content-looks-like-markdown guess.
+                fi += 1;
                 continue;
             } else {
                 const remainingContent: string = fenceLines.slice(fi + 1).join('\n').trim();
@@ -640,6 +673,42 @@ function col0TaggedOpener(
     return o;
 }
 
+/**
+ * A column-0 opener whose info string is PLAUSIBLE as a language tag: a
+ * short token, optionally followed by simple word modifiers
+ * ("html-mockup figure").
+ *
+ * The repair heuristics below infer "the close is missing" from finding an
+ * opener inside an atomic block. That inference is only sound for a line
+ * that could actually BE an opener. A mermaid node label or html-mockup
+ * body line may quote a fence marker in order to discuss it: such a line
+ * sits at column 0 and matches the CommonMark opener shape, but its info
+ * string carries markup, quotes and punctuation. Accepting it made
+ * repairAtomicFenceRuns synthesize a close mid-diagram and promote the
+ * label line to an opener, destroying a block CommonMark had parsed
+ * correctly (node A rendered alone, the diagram tail spilled out as a
+ * separate code block).
+ *
+ * Scoped to the repair passes on purpose: classifyFenceLines keeps strict
+ * CommonMark semantics, where an odd info string is still a valid opener.
+ * Mirrors _LANG_TAG_RE in app/streaming_tool_executor.py.
+ */
+const PLAUSIBLE_LANG_RE = /^[a-zA-Z][a-zA-Z0-9+#.\-_]{0,30}$/;
+const PLAUSIBLE_MODIFIER_RE = /^[a-zA-Z][a-zA-Z0-9_-]{0,20}$/;
+
+function col0PlausibleOpener(
+    line: string,
+): { char: FenceChar; len: number; info: string; indent: number } | null {
+    const o = col0TaggedOpener(line);
+    if (!o) return null;
+    const tokens = o.info.trim().split(/\s+/);
+    if (!PLAUSIBLE_LANG_RE.test(tokens[0])) return null;
+    for (let k = 1; k < tokens.length; k += 1) {
+        if (!PLAUSIBLE_MODIFIER_RE.test(tokens[k])) return null;
+    }
+    return o;
+}
+
 /** A column-0 bare backtick run (a fence with no info string). */
 function isBareCol0Fence(line: string): boolean {
     return /^`{3,}[ \t]*$/.test(line);
@@ -692,7 +761,11 @@ export function repairAtomicFenceRuns(markdown: string): string {
 
         // Non-atomic opener: its body may legally contain fences. Copy the
         // whole block through untouched so nothing inside it is examined.
-        if (!ATOMIC_FENCE_LANGS.has(open.info.toLowerCase())) {
+        // Matched on the base language: an info string may carry a variant
+        // modifier ("html-mockup figure"), and treating that as a non-atomic
+        // language would silently forfeit the repair for exactly the blocks
+        // most likely to appear several-in-a-row.
+        if (!ATOMIC_FENCE_LANGS.has(fenceBaseLang(open.info))) {
             let j = i + 1;
             while (j < lines.length && !matchFenceClose(lines[j], active)) j += 1;
             if (j >= lines.length) {
@@ -716,7 +789,7 @@ export function repairAtomicFenceRuns(markdown: string): string {
                 closeIdx = j;
                 break;
             }
-            if (col0TaggedOpener(lines[j])) {
+            if (col0PlausibleOpener(lines[j])) {
                 interruptIdx = j;
                 break;
             }
@@ -747,7 +820,7 @@ export function repairAtomicFenceRuns(markdown: string): string {
         if (p < lines.length && isBareCol0Fence(lines[p])) {
             let q = p + 1;
             while (q < lines.length && lines[q].trim() === '') q += 1;
-            if (q < lines.length && col0TaggedOpener(lines[q])) {
+            if (q < lines.length && col0PlausibleOpener(lines[q])) {
                 for (let k = i; k < p; k += 1) out.push(lines[k]);
                 i = p + 1;
             }
@@ -885,4 +958,39 @@ export function applyOutsideCodeSpans(
     }
     out += transform(text.slice(pos));
     return out;
+}
+
+/**
+ * Repair fence openers a model glued directly onto the end of a prose line
+ * (a sentence ending in '.' or ':' immediately followed by a fence opener
+ * with no intervening newline), which CommonMark does not recognise as a
+ * fence at all.
+ *
+ * Must iterate.  A glued opener inverts fence parity for everything after
+ * it: the block's real closing fence is read as an OPENER, so the remainder
+ * of the message classifies as fence content and applyOutsideFences
+ * declines to transform it -- correctly, given the state it was handed.
+ * A single pass therefore repaired only the FIRST glued opener in a
+ * message; in a long multi-chart answer every later one survived and
+ * rendered as literal prose, and the resulting one-backtick offset
+ * re-paired every inline code span in the paragraphs downstream.
+ *
+ * Iteration does not weaken the inside-fence guard: every pass
+ * re-classifies, so a glued fence quoted inside a genuine code block stays
+ * untouched however many passes run.
+ */
+export function repairGluedFenceOpeners(markdown: string): string {
+    let current = markdown;
+    // One pass can repair several openers (one per outside-fence segment);
+    // the cap only bounds pathological input.
+    for (let pass = 0; pass < 32; pass += 1) {
+        const next = applyOutsideFences(current, (s) =>
+            s.replace(/([^\n`])(`{3,}[a-zA-Z][a-zA-Z0-9_-]*)(?=\s|$)/g, '$1\n\n$2'),
+        );
+        if (next === current) {
+            return current;
+        }
+        current = next;
+    }
+    return current;
 }
