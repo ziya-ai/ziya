@@ -13,6 +13,15 @@ from starlette.responses import Response
 from app.context import set_project_root
 from app.utils.logging_utils import logger
 
+# Projects this middleware has already spawned an indexing thread for.
+# Kept separate from integration._indexing_in_progress deliberately: that set
+# is added to inside the worker (after a full-tree get_ignored_patterns walk),
+# so it is claimed far too late to deduplicate concurrent requests, and
+# pre-adding to it would make initialize_ast_capabilities() bail out and skip
+# indexing entirely.
+_ast_kickoff_claimed: set = set()
+_ast_kickoff_lock = threading.Lock()
+
 
 class ProjectContextMiddleware(BaseHTTPMiddleware):
     """
@@ -54,8 +63,20 @@ class ProjectContextMiddleware(BaseHTTPMiddleware):
             from app.utils.directory_util import get_ignored_patterns
 
             abs_root = os.path.abspath(project_root)
-            if abs_root in _initialized_projects or abs_root in _indexing_in_progress:
-                return
+            # Claim the project synchronously, before starting any thread.
+            # Concurrent requests otherwise all pass this check and each spawn
+            # a worker; the losers then race into initialize_ast_capabilities(),
+            # return files_processed=0, and clobber _ast_indexing_status with a
+            # spurious "Indexing returned no files" error while the real index
+            # is still running.
+            with _ast_kickoff_lock:
+                if (
+                    abs_root in _initialized_projects
+                    or abs_root in _indexing_in_progress
+                    or abs_root in _ast_kickoff_claimed
+                ):
+                    return
+                _ast_kickoff_claimed.add(abs_root)
 
             # Update the global status dict that /api/ast/status reads.
             # Without this, the status stays stuck on the error from a
@@ -78,25 +99,33 @@ class ProjectContextMiddleware(BaseHTTPMiddleware):
                 # ZIYA_GITIGNORE_TIMEOUT seconds). Calling it in dispatch()
                 # blocked the event loop — freezing every request — on the
                 # first request after a project switch.
-                patterns = get_ignored_patterns(abs_root)
-                result = initialize_ast_capabilities(abs_root, patterns, max_depth)
-                files = result.get("files_processed", 0)
-                if result.get("initialized") and files > 0:
-                    _ast_indexing_status.update({
-                        'is_indexing': False,
-                        'completion_percentage': 100,
-                        'is_complete': True,
-                        'indexed_files': files,
-                        'total_files': files,
-                        'error': None,
-                    })
-                    _broadcast_ast_complete(files)
-                else:
-                    _ast_indexing_status.update({
-                        'is_indexing': False,
-                        'is_complete': False,
-                        'error': result.get("error", "Indexing returned no files"),
-                    })
+                try:
+                    patterns = get_ignored_patterns(abs_root)
+                    result = initialize_ast_capabilities(abs_root, patterns, max_depth)
+                    files = result.get("files_processed", 0)
+                    if result.get("initialized") and files > 0:
+                        _ast_indexing_status.update({
+                            'is_indexing': False,
+                            'completion_percentage': 100,
+                            'is_complete': True,
+                            'indexed_files': files,
+                            'total_files': files,
+                            'error': None,
+                        })
+                        _broadcast_ast_complete(files)
+                    else:
+                        _ast_indexing_status.update({
+                            'is_indexing': False,
+                            'is_complete': False,
+                            'error': result.get("error", "Indexing returned no files"),
+                        })
+                finally:
+                    # Release the claim unless the project actually indexed, so a
+                    # failed or crashed run can be retried by a later request.
+                    # Successful runs stay claimed via _initialized_projects.
+                    if abs_root not in _initialized_projects:
+                        with _ast_kickoff_lock:
+                            _ast_kickoff_claimed.discard(abs_root)
 
             t = threading.Thread(
                 target=_index_and_update_status,
