@@ -16,7 +16,6 @@ Ziya supports models from multiple providers. The default model is `sonnet4.6` o
 | `sonnet3.5` | Claude 3.5 Sonnet | 200K | |
 | `opus4.6` | Claude Opus 4.6 | 200K (1M extended) | Advanced. Adaptive thinking. |
 | `opus4.5` | Claude Opus 4.5 | 200K | Advanced. |
-| `opus4.1` | Claude Opus 4.1 | 200K | Advanced. |
 | `opus4` | Claude Opus 4 | 200K | Advanced. |
 | `opus3` | Claude Opus 3 | 200K | US regions only. |
 | `haiku-4.5` | Claude Haiku 4.5 | 200K | Fast and cheap. |
@@ -283,8 +282,9 @@ Ziya renders inline diagrams from fenced code blocks. Supported formats:
 | Graphviz | `` ```graphviz `` | DOT language. Full layout engine. |
 | DrawIO | `` ```drawio `` | XML-based diagrams with export and online editor support. |
 | Vega-Lite | `` ```vega-lite `` | JSON data visualization specs. |
-| HTML Mockup | `` ```html-mockup `` | Interactive UI prototypes in sandboxed iframes. |
+| HTML Mockup | `` ```html-mockup `` | Interactive UI prototypes in sandboxed iframes. Add the `figure` modifier (`` ```html-mockup figure ``) to drop the frame and controls for a graphic that is part of the discussion rather than a design under review. The iframe supplies a theme-matched foreground plus `--mockup-border` / `--mockup-muted`, so incidental text can be left unstyled and stay legible in both themes — deliberate colour (brand, status, palette, or a fixed light/dark design) is expected, and should carry its own background so the pairing does not depend on the surface behind it. |
 | Packet | `` ```packet `` | Bit-level protocol frame layouts. |
+| Music | `` ```music `` | Published-quality sheet music (VexFlow). Notes/chords/rests, beaming, tuplets, grace & cue notes, slurs/ties, dynamics/hairpins, articulations, ornaments, lyrics, chord symbols, pedal & harp-pedal lines, measures/repeats/voltas, tempo & navigation marks, title block, multi-voice & grand staff with cross-staff beams/slurs, and multi-system wrapping. A short phrase can also be written inline as `` `music: C4/q, D4/q` ``. |
 | TikZ | `` ```tikz `` | General LaTeX vector drawing. Rendered server-side. |
 | CircuiTikZ | `` ```circuitikz `` | Electronic circuit schematics. |
 | chemfig | `` ```chemfig `` | Chemical structures, reaction schemes, stereochemistry. |
@@ -484,6 +484,225 @@ curl -X POST http://localhost:6969/api/export/to-target \
 
 Plugin export targets are registered via the `ExportProvider` interface. See `app/plugins/interfaces.py` for the contract.
 
+### Conversation PDF Export
+
+Exporting a conversation to PDF (the **PDF** option in the export modal) is
+**server-side rendered**. The client `POST`s the raw conversation to
+`POST /api/export/pdf`; the server renders the whole conversation through the
+real frontend `MarkdownRenderer` pipeline at a hidden `/print` route and
+captures it with headless Chromium (`page.pdf()`, A4, `printBackground`). It is
+not the browser's "Print to PDF" of the on-screen chat — it is a dedicated,
+light-themed render built for print.
+
+Because it drives the same rendering pipeline as the chat UI, the PDF preserves
+what the old client-side print path dropped:
+
+- **Syntax highlighting** (Prism) and **code-block backgrounds**.
+- **Diff add/remove colors** and **text highlight** colors, via
+  `print-color-adjust: exact` in the shared print stylesheet.
+- **Rendered diagrams** (mermaid, D3, graphviz, etc.) as images, including
+  `<canvas>` renderers rasterized to `<img>` so their pixels survive.
+- **KaTeX math**, tables, and `<details>` blocks.
+- **Dark-mode content forced to light** so diagrams and code composite onto the
+  white page instead of leaving dark bands (baked dark mermaid themes are
+  normalized to light before rendering).
+- **Sane pagination** — oversized figures are scaled to fit one page, headings
+  are kept with their content, and long code/diffs split across pages.
+
+The export is also built as a **finished document**, not merely a correct one:
+
+- **Flow-aware figure sizing.** A figure that technically fits a page but cannot
+  fit alongside the prose that introduces it — so it would otherwise be bumped
+  whole onto its own page, stranded from its context behind an empty band — is
+  shrunk the *minimum* needed to keep it with its introducing text. The shrink
+  is bounded: **0.75 is the floor** for flow-driven shrinking (never smaller for
+  flow reasons), while a genuinely oversized figure may still scale below 0.75
+  purely to fit one page. The two cases are tagged (`data-print-fit-reason` =
+  `flow` vs `oversize`).
+- **Live-session chrome and superseded diffs are excluded.** Content that
+  belongs to the interactive session but not to a document is dropped in print
+  mode: a **superseded diff** (an earlier diff the assistant corrected later in
+  the same message — the app merely fades it to 0.45 opacity, which would land
+  in the PDF as low-contrast noise and inflate the page count) is omitted
+  entirely, keeping only the final version; and live-session **UI-chrome notes**
+  (the "Auto-added N file(s) to context … Remove via the A button in the Files
+  panel." banner, context-enhancement warnings, "Checking context…" spinners)
+  are stripped. Both are suppressed at the shared `/print` route, so the HTML
+  export inherits the same hygiene.
+- **A diff header stays with its diff body.** A "Modify: `<path>`" header is
+  bound to the diff it introduces (a `break-after: avoid` relationship) and diff
+  tables are allowed to *flow* across a page boundary rather than being forced
+  whole onto a fresh page, so a header is never stranded at a page bottom with a
+  large empty band above its body.
+- **Wide tables are fit-scaled.** A markdown table far wider than the printable
+  content width is uniformly scaled down (mirroring the oversized-figure fit) so
+  its right-hand columns are no longer clipped off the margin; narrow and
+  ordinary-width tables are left untouched.
+- **A navigable outline.** The PDF carries a **bookmark tree with one entry per
+  message** ("You (message N)" / "Ziya (message N)"), synthesized during
+  capture, so a long conversation can be navigated in any PDF viewer.
+- **Live hyperlinks.** URLs in the conversation body and the footer are real
+  clickable `/Link` annotations, not just blue text.
+- **Sensible document metadata.** `/Title` (the conversation title), `/Author`
+  ("Ziya"), `/Creator` ("Ziya PDF Exporter"), `/Subject`, and creation date are
+  set rather than left at the headless-Chromium defaults.
+- **Embedded fonts.** Every font is embedded (Type0 CID subsets; diagram text
+  uses self-embedded Type3 fonts), so the document renders identically on a
+  machine that does not have those fonts installed.
+- **Vector diagrams.** mermaid/D3 diagrams reach the PDF as vector path
+  operations (not rasterized bitmaps), so they stay crisp at any zoom.
+
+Option filtering (`roundLimit` / `includeHuman` / `includeCollapsed`) happens in
+the `/print` page, so the PDF and HTML exports share one implementation — which
+is why the client sends raw messages instead of pre-filtering them.
+
+**Fallback.** If the server has no Playwright/Chromium installed,
+`/api/export/pdf` returns HTTP `501` and the modal falls back to the
+**client-side** renderer (`frontend/src/utils/pdfExport.ts`), which rasterizes
+the live DOM and opens the browser print dialog. This is lower fidelity (subject
+to the user's print settings) but ensures a PDF is always available.
+
+**Troubleshooting:**
+
+| Symptom | Cause / Fix |
+|---|---|
+| "Server PDF renderer unavailable; used the browser print dialog" | Playwright/Chromium not installed server-side (`501`). Install with `pip install playwright && playwright install chromium`, then restart Ziya, to get the high-fidelity path. |
+| PDF export errors with a non-501 status | A render error or a missing conversation. `404` = conversation id not found; `400` = no message source; `500` = a render failure (check the server log for the `/print` console/pageerror diagnostics the renderer captures). |
+| Export hangs / times out | The `/print` render never reached `data-render-status="complete"` (a very large conversation, or a diagram that never settled). The session has a bounded safety timeout; retry, and check the server log for stuck renders. |
+| Colors or diagrams missing after a frontend change | The `/print` route lives in the built bundle. After editing the print path or `frontend/src/styles/print.css`, rebuild: `cd frontend && npx craco build`. |
+| A very wide table has its right columns cut off | Fixed: tables far wider than the printable width are now uniformly fit-scaled so their right columns are no longer clipped (narrow tables are untouched). Long unbroken code lines also wrap instead of clipping. If a table still looks cramped, it was scaled to fit the page width. |
+
+The fidelity of this path is verified by the shared export-fidelity harness
+under `tests/export_fidelity/` (see `Docs/CONTRIBUTING.md` and the harness
+`README`-style module docstrings): a fast wiring tier runs on every test
+invocation, and an `integration`-marked tier drives a real headless render.
+
+### Conversation HTML Export
+
+Exporting a conversation to HTML (the **HTML** option in the export modal,
+reachable via **Download** — saves a `.html` file — and **Paste** — GitHub Gist
+and plugin targets) is **dual-mode**. Clipboard copy always forces Markdown and
+is out of scope here.
+
+- **High-fidelity mode (route-driven).** When Playwright/Chromium is available,
+  HTML is generated by driving the same shared `/print` route the PDF path uses
+  and extracting self-contained HTML from the rendered DOM. This gives
+  real-renderer fidelity (Prism syntax highlighting, `react-diff-view` per-line
+  diff coloring, KaTeX math, tables, diagrams as images) because it is the exact
+  chat rendering pipeline.
+- **Fallback mode (Python).** When no browser is installed, HTML is produced by
+  the pure-Python exporter (`app/utils/conversation_exporter.py`,
+  `_export_as_html` → `_markdown_to_html_basic`). HTML export **never
+  hard-fails** merely because a browser is absent. The fallback has a lower
+  fidelity ceiling than the real renderer but is itself faithful: it now
+  delivers **syntax highlighting** (Pygments, inline-styled token spans),
+  **per-line diff add/remove backgrounds**, **KaTeX math** (rendered to
+  self-contained MathML via a Node subprocess), **GFM tables** as real
+  `<table>` grids, and a **light-pinned** document that stays light even when
+  opened on a dark-mode machine.
+
+**What each mode preserves**
+
+| Aspect | Route-driven (browser) | Python fallback |
+|---|---|---|
+| Syntax highlighting | Prism (chat theme) | Pygments inline spans |
+| Diff add/remove color | `react-diff-view` per line | per-line background spans |
+| Math | KaTeX HTML+fonts | KaTeX MathML (no external fonts) |
+| Tables | full renderer | real `<table>` grids |
+| Diagrams | embedded images | embedded images (via `/api/export/rendered`) |
+| Dark-mode independence | light-pinned wrapper | light-pinned wrapper |
+| Self-containment | inlined CSS + data-URI assets | inlined CSS + data-URI assets |
+
+Both modes produce a **self-contained** document: all CSS is inlined and any
+diagram images are embedded as data URIs / inline SVG — opening the `.html` with
+the network disconnected loses nothing. Both modes **neutralize XSS**: prose is
+HTML-escaped before any tag is generated and `javascript:` / `vbscript:` /
+`data:` link schemes are rejected, so untrusted conversation content renders as
+inert text in either mode (a hard gate, verified by the fidelity harness).
+
+**How to tell which mode produced the output.** The route-driven mode requires a
+live Ziya server whose built bundle includes `/print`. When Playwright/Chromium
+is unavailable the exporter transparently uses the Python fallback; the returned
+export metadata records the format, and the fallback's markup carries the
+Pygments/MathML/`<table>` structures described above rather than the chat
+renderer's Prism/`react-diff-view`/`.katex`-HTML classes.
+
+**Troubleshooting:**
+
+| Symptom | Cause / Fix |
+|---|---|
+| Downloaded `.html` opens dark on a dark-mode machine | Should not happen — the document is pinned to `color-scheme: light` and carries no `prefers-color-scheme` dark block. If you see this, you are on a stale build; regenerate the export. |
+| Code blocks show no colors in the fallback | Pygments not importable server-side. Reinstall (`pip install pygments`); the exporter degrades to an uncolored block rather than failing. |
+| Math shows as literal `$$...$$` in the fallback | `node` not on `PATH` or `frontend/node_modules/katex` missing. Install the frontend deps and ensure `node` is available; math degrades to escaped LaTeX otherwise (still valid HTML). |
+| A markdown table shows as literal `\| --- \|` pipe text | Should not happen — GFM tables render as real `<table>` grids in both modes. If you see this you are on a stale build. |
+| Diagrams missing from the exported HTML | Diagram images are embedded only when exporting through `POST /api/export/rendered` (server-side diagram render); a plain paste without captured diagrams keeps diagram source as a code block. |
+
+The HTML fidelity of both modes is verified by the same
+`tests/export_fidelity/` harness (18 checks per fixture variant across light and
+forced-dark), including `self_containment`, `dark_mode_independence`,
+`diff_coloring`, `syntax_highlighting`, `math_rendering`, `table_rendering`,
+`structural_validity`, and `xss_neutralized`.
+
+---
+
+### Conversation Markdown Export
+
+Exporting a conversation to Markdown is the **most-used export path**: the
+**Copy to clipboard** action in the export modal **always** produces Markdown
+regardless of the format selector, **Download** saves a `.md` file, and
+**Paste** targets GitHub Gist plus plugin targets. All three run the same pure
+Python exporter (`app/utils/conversation_exporter.py`, `_export_as_markdown`);
+it never requires a browser and never goes through the `/print` route.
+
+**What the Markdown export preserves (losslessly):**
+
+- Full conversation content — every user and assistant turn, in order, under
+  `## 👤 User` / `## 🤖 AI Assistant` headings separated by horizontal rules.
+- Code blocks in **language-tagged fences** (so the consumer applies its own
+  syntax highlighting), and diffs in **` ```diff ` fences** (so Gist colors
+  them with its native diff highlighter).
+- **Math** verbatim (`$…$` inline and `$$…$$` block), **GFM tables**, and
+  collapsible `<details>` sections.
+- **Diagrams**: rendered to embedded images when the frontend captured them,
+  otherwise the diagram **source fence is preserved** (Gist renders mermaid
+  natively; other viewers show the code) — never dropped.
+- Fences are **balanced per message** and **tool-output wrappers are widened**
+  past any interior backtick run, so no fence can "run away" and swallow the
+  rest of the document or leak tool text as prose.
+
+**What it deliberately excludes (export hygiene):**
+
+- **Superseded diffs.** When the assistant re-diffs a file it already diffed
+  earlier in the same message, the UI greys the earlier one out (opacity 0.45).
+  Markdown has no opacity, so a retained stale diff would be indistinguishable
+  from the live one. The exporter ports the frontend supersession algorithm and
+  **drops superseded diffs**, keeping only the final one.
+- **Live-session UI chrome.** The "Auto-added N file(s) to context … Remove via
+  the A button in the Files panel." banner and the "Checking context…" spinner
+  are live-session affordances with no meaning in an exported document; they are
+  **stripped**. The real answer next to them is preserved.
+
+**What it does not attempt:**
+
+- **Color is the consumer's job.** Markdown has no native color, and the export
+  does **not** inject raw HTML `<span style>` / `<mark>` to force diff or
+  highlight colors. Doing so would break the plain-text clipboard path and be
+  stripped by Gist's sanitizer anyway (see the export-fidelity notes). Diff
+  fences and language tags let the *consumer* colorize; that is by design, not a
+  gap.
+- **System and empty messages are skipped.** `role == "system"` messages and
+  messages whose content is empty/whitespace are omitted — the **same policy the
+  HTML export applies** — so an export of a system-only or empty conversation
+  yields just the header and footer (it never crashes). Whether to surface
+  system-prompt content in exports is an open product decision, applied
+  consistently across formats rather than diverging per-format.
+
+Markdown fidelity and hygiene are verified by the `tests/export_fidelity/`
+harness (`md_fence_integrity`, `md_tool_block_fence_integrity`,
+`md_diagram_embedding`, `md_math_preservation`, `md_table_integrity`,
+`md_structural_sanity`, `md_roundtrip_legible`, plus the format-neutral
+`no_superseded_diffs` and `no_ui_chrome` hygiene checks).
+
 ---
 
 ## Local Voice Input
@@ -575,13 +794,20 @@ Inside `ziya chat`, the following slash commands are available:
 
 ### /goal — Autonomous Goals
 
-The `/goal` command lets you define a verifiable objective and have Ziya work on it autonomously until it's done. Under the hood it auto-synthesizes a Task Card with an Until block and launches it immediately.
+The `/goal` command lets you define a verifiable objective and have Ziya work on it autonomously until it's done. Under the hood it auto-synthesizes a Task Card with an Until block and **stages** it — the inline tile shows a `staged` badge with **Run** and **Discard**, so you can review the synthesized instructions and grant permissions before the agent starts working, rather than discovering both mid-run.
 
 ```
 /goal fix all TypeScript errors in frontend/src
 /goal migrate from Pydantic v1 to v2 with all tests passing
 /goal refactor the auth module to use dependency injection
 ```
+
+If any task in the synthesized card requests shell commands or writes outside
+the default safe set (`.ziya/`, `/tmp/`), the staged tile says it needs signing
+and lists how many blocks are affected. **Run** still works — those blocks are
+clamped to the default floor rather than the run being refused — but signing
+first (via the `ziya-approve` command shown in Task Cards) is what makes the
+extra permissions actually take effect.
 
 The agent iterates (up to 15 times by default), re-evaluating whether the goal is met after each pass. Progress is visible via the inline task tile.
 
@@ -636,6 +862,103 @@ pushes that out by a quiet period, so reading is never interrupted mid-sentence.
 Expanding a tile **by hand** does more: it pins the tile open, and only
 collapsing it yourself closes it again. A run held on an infrastructure fault
 never auto-collapses at all, since the receipt offers no way to resume it.
+
+#### When infrastructure breaks under a fan-out
+
+A held run is one that stopped because the *environment* broke — expired
+credentials, a lost endpoint, throttling that outlasted its retries — rather
+than because the work failed. The distinction matters because the two ask for
+opposite responses: a failed run needs the card or the code fixed, a held run
+needs only the infrastructure back before it continues from where it stopped.
+
+Inside a wide fan-out this is not a single event but a collapse. When one
+subagent's credential dies, its siblings are usually about to hit the same wall,
+so the hold reports its **breadth**, not just the first fault: how many
+subagents faulted out of how many ran, which kinds, and the call path from the
+outermost card down to the subagent that raised it. A `fleet-wide` marker
+separates "the credential died and took all 20 auditors" from "one auditor got
+throttled" — both are infrastructure faults, and only one of them means you
+should stop and go fix something.
+
+Whether the remaining subagents are cancelled depends on the kind. An
+authentication fault is session-level: one means every sibling is already dead,
+so the fan-out is cut short immediately rather than burning the rest against a
+dependency known to be gone. Throttling and transient service errors are
+per-request and have already survived several retries with backoff, so a single
+one never aborts a healthy fan-out — the run holds, but the siblings that can
+still finish do. A proportion of the fan-out failing that way does gate it;
+`ZIYA_TASK_INFRA_GATE_RATIO` (default `0.34`) sets that fraction, so the threshold
+scales with the width of the fan-out rather than being a fixed count.
+
+The conversation list carries a **gear per run status**, so what a chat's tasks
+are doing is legible without opening it. The gear is colour-coded to match the
+run tile — blue spinning for running, violet static for paused or held, green
+for done, red for failed, amber for partial or cancelled — and animates only
+while something is genuinely progressing, since a spinning indicator is how you
+decide to keep waiting rather than intervene.
+
+Where a conversation holds more than one task, each status gets its own gear
+with a count beside it: "2 done, 1 held" is a different situation from either
+"3 done" or "1 held", and collapsing them to a single winner would hide
+whichever one you were looking for. Needs-attention states are ordered first so
+a problem cannot be pushed off the end of a narrow row by successes. Counts
+appear from two upward — a "1" beside a lone gear is noise. Retry attempts count
+once, not once per attempt, so a card retried twice reports one gear rather than
+three.
+
+This matters most for terminal states. The gear previously meant only "a task is
+running", so every stopped state — done, failed, cancelled, partial, held —
+rendered as nothing at all, and a conversation whose overnight study died on an
+expired credential looked identical to one that had never run a task.
+
+The indicators cover **every** conversation, not just the one you have open.
+A run that finishes, fails, or holds in a conversation you have not visited
+still updates that row, which is the whole point of a background indicator: the
+work worth being told about is the work you are not currently watching. This is
+polled from a small server-side projection rather than the run records
+themselves — those carry block states, iteration summaries and artifacts and
+are encrypted at rest, so reading them all to learn a few status strings would
+cost work proportional to your entire run history on every tick. Only the
+project you have open is polled, at a 40-second interval, and only while
+something can still change on its own; polling pauses while the window is in
+the background and refreshes on return. On a project with two hundred runs of
+history an idle check costs about four hundredths of a millisecond, so having
+many projects and a long task history does not accumulate cost.
+
+Because a hold propagates up through nested cards, the run map marks every
+row with its position relative to the fault, so you do not have to open each
+subagent to find out which one broke. The block that raised it reads
+**HELD HERE**; the containers above it read **holding**, since they cannot
+finish while a step below them is stopped; and anything that never got to run
+reads **blocked**. Hovering any of them explains the fault and its breadth.
+
+A called card can also answer the question from its own side. A Call runs
+inline in the caller's run, so a six-card study produces one run record owned
+by the outermost card — which meant opening one of the inner cards directly
+showed nothing, even while that card was the one holding the study. Opening it
+now resolves its own portion of the blocking tree: which of *its* blocks is
+held, which of its stages are blocked behind it, and the same breadth and
+remedy the caller shows. A hold in a sibling card is reported as context only
+and never marked on this card's blocks, since pointing at a card that is fine
+is worse than showing nothing.
+
+Within a fan-out, the iteration dots separate the subagents that actually
+faulted from the ones the gate cancelled — a cancelled sibling was killed
+deliberately because a peer hit dead infrastructure, so it is not counted as
+a failure of the work.
+
+One caveat worth knowing before resuming a wide parallel fan-out: resuming
+re-runs **every** iteration of that loop, not only the ones that faulted.
+Parallel iterations do not depend on each other, so there is no meaningful
+point to resume "from" — mid-loop resume is refused for them outright — and
+the block-level resume that remains does not skip the iterations that had
+already succeeded. Stages *before* the loop still replay from record. For an
+expensive fan-out this is the difference between re-running two subagents and
+re-running twenty, so it is worth weighing against simply fixing the
+infrastructure and accepting the repeat. Clicking an iteration of a parallel
+loop therefore explains this rather than offering a control that would be
+refused — the refusal is correct, but discovering it only after clicking is
+not.
 
 #### Resuming a finished run from a block
 
@@ -700,6 +1023,18 @@ Earlier iterations are **replayed from record** rather than re-executed, so
 the first iteration that actually runs receives the same `{{previous}}` and
 `{{all}}` bindings it saw originally. Blocks before the loop replay through
 the existing block-level mechanism, exactly as any other resume.
+
+The resumed run's dot strip shows the replayed iterations as **dimmed dots
+preceding the ones it executed**, so the preserved work is visible as
+preserved. They keep their original colour — a preserved failure still reads
+red — and stay clickable, because the carried artifacts are copied onto the
+resumed run. Without this the strip restarted at one circle, which was
+indistinguishable from a fresh short run and read as though the banked
+iterations had been thrown away.
+
+Replayed iterations are excluded from the run's own progress figures
+("N iterations passed", the partial-run classification, and failure
+clustering), so an attempt is never credited with a prior attempt's results.
 
 Two cases are refused rather than half-supported, because both would produce
 a run that looks successful while feeding empty input to the work:
