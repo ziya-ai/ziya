@@ -99,10 +99,14 @@ class RegistryIntegrationManager:
         results = await self.aggregator.search_unified(
             query=query,
             max_results=100,
-            include_internal=self._should_include_internal_providers()
+            include_internal=self._should_include_internal_providers(),
+            # Push the filter into the fan-out so unwanted providers are never
+            # queried at all, instead of queried and then discarded.
+            provider_filter=provider_filter
         )
         
-        # Apply provider filter if specified
+        # Retained as a safety net: a provider could still attribute a result
+        # to another registry. Cheap on an already-small result list.
         if provider_filter:
             results = [
                 r for r in results

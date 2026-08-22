@@ -17,6 +17,17 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from app.utils.logging_utils import logger
 
+# Object phrases used to make the "you must always/never …" patterns
+# polarity-aware (see _INJECTION_PATTERNS below).
+#  _CONCEAL — acts an injection suppresses ("never mention/reveal/warn …")
+#  _HARMFUL — acts an injection compels ("always bypass/forward/delete …")
+#  _COMPLY  — demands for blanket obedience ("always comply/obey/follow my …")
+#  _DEFY    — prohibitions on refusing ("never refuse/question/decline …")
+_CONCEAL = r"(mention|reveal|disclose|tell|inform|warn|notify|report|log|confirm|ask)"
+_HARMFUL = r"(bypass|ignore|disregard|override|circumvent|exfiltrate|forward|send|upload|delete|disable)"
+_COMPLY = r"(comply|obey|follow\s+(my|these|the\s+following)|respond\s+in|answer\s+in)"
+_DEFY = r"(refuse|question|deviate|disobey|decline|stop|hesitate)"
+
 # Patterns that indicate prompt injection in tool descriptions.
 # These are instructions aimed at the LLM rather than the human user.
 _INJECTION_PATTERNS: List[re.Pattern] = [
@@ -24,7 +35,17 @@ _INJECTION_PATTERNS: List[re.Pattern] = [
     for p in [
         r"ignore\s+(all\s+)?previous\s+instructions",
         r"disregard\s+(all\s+)?(prior|previous|above)",
-        r"you\s+must\s+(always|never)\s+",
+        # "you must always/never <anything>" cannot be flagged on the modal
+        # alone: it is the standard voice of DEFENSIVE tool guidance. The
+        # bare form matched "You MUST never bypass contingent authorization"
+        # — a safety instruction — and silently dropped a legitimate tool.
+        # Match on the polarity of the OBJECT instead: suppressing a
+        # safety/disclosure act, or compelling a harmful or blanket-obedience
+        # one. "never bypass" is safe; "always bypass" is not.
+        rf"you\s+must\s+never\s+{_CONCEAL}",
+        rf"you\s+must\s+always\s+{_HARMFUL}",
+        rf"you\s+must\s+always\s+{_COMPLY}",
+        rf"you\s+must\s+never\s+{_DEFY}",
         r"system\s*:\s*",
         r"<\s*/?\s*system\s*>",
         r"override\s+(security|safety|permissions?|policy)",
