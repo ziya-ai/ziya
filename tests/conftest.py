@@ -25,6 +25,53 @@ def pytest_configure(config):
     config.option.asyncio_mode = "auto"
 
 
+# Vars pytest itself owns and rewrites per test phase.  Snapshotting them is
+# noise, and restoring them would fight pytest's own bookkeeping.
+_ENV_GUARD_IGNORE_PREFIXES = ("PYTEST_",)
+
+
+@pytest.fixture(autouse=True)
+def _restore_environ():
+    """Undo os.environ mutations a test leaves behind.
+
+    Production setup code (app.config.environment.setup_environment,
+    app.cli.setup_env) assigns os.environ DIRECTLY, which monkeypatch cannot
+    undo for a var that was unset beforehand -- so a test using delenv is
+    isolated from its predecessors but never from its successors.  Three
+    separate suite-wide contaminations traced to exactly that:
+
+      * a tmp_path CA bundle whose body was the literal text "fake", left in
+        SSL_CERT_FILE / AWS_CA_BUNDLE / REQUESTS_CA_BUNDLE -- every later test
+        that built an SSL context died with "ssl.SSLError: [X509] PEM lib";
+      * AWS_PROFILE=my-profile -- later suites that ADOPT an already-set
+        profile rather than defaulting then hit "ProfileNotFound";
+      * ZIYA_MAX_OUTPUT_TOKENS=100 -- later config assertions read 100
+        instead of the model's real default.
+
+    Diff-based rather than clear()+update() so only what the test actually
+    changed is touched.
+
+    LIMITATION: this cannot undo MODULE-LEVEL writes.  Pytest imports every
+    test module during collection, before the first test runs, so an
+    import-time ``os.environ[...] = ...`` anywhere in the tree is already in
+    effect when the first snapshot is taken.  Those need fixing at the source.
+    """
+    def _snapshot():
+        return {k: v for k, v in os.environ.items()
+                if not k.startswith(_ENV_GUARD_IGNORE_PREFIXES)}
+
+    before = _snapshot()
+    yield
+    after = _snapshot()
+    for key in after.keys() - before.keys():
+        os.environ.pop(key, None)
+    for key in before.keys() - after.keys():
+        os.environ[key] = before[key]
+    for key in before.keys() & after.keys():
+        if before[key] != after[key]:
+            os.environ[key] = before[key]
+
+
 @pytest.fixture
 def temp_config_dir(tmp_path):
     """Create a temporary config directory for testing."""

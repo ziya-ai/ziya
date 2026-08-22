@@ -27,7 +27,7 @@ from app.utils import template_store
 def isolated_home(tmp_path, monkeypatch):
     """Point ZIYA_HOME at a scratch dir for every test in this module."""
     home = tmp_path / "ziya_home"
-    home.mkdir()
+    home.mkdir(exist_ok=True)
     monkeypatch.setenv("ZIYA_HOME", str(home))
     return home
 
