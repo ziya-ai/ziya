@@ -30,6 +30,34 @@ function wait(ms: number): Promise<void> {
  * one-time cache-bust query param forces a distinct URL → cache miss on
  * the document → fresh bundle hashes.
  */
+
+/**
+ * A promise that stays pending while a hard reload is in flight, so React
+ * does not flash the error boundary during the unload window.
+ *
+ * The watchdog is the point: if the reload does NOT land (replace() blocked,
+ * navigation cancelled, unload handler vetoed), a never-settling promise
+ * leaves the component stuck on its Suspense fallback forever with nothing
+ * in the console.  Because `reloadTriggered` is module-scoped and never
+ * reset, that single stuck reload silently poisons every other lazy chunk
+ * in the page for the rest of its life.  Rejecting after the window has
+ * clearly passed turns an invisible permanent hang into a visible,
+ * recoverable error.
+ */
+const UNLOAD_WATCHDOG_MS = 10_000;
+
+function pendingUntilUnload<T>(): Promise<T> {
+  return new Promise<T>((_resolve, reject) => {
+    setTimeout(() => {
+      reloadTriggered = false;
+      reject(new Error(
+        'Chunk load failed and the recovery reload did not complete. ' +
+        'Reload the page manually to continue.'
+      ));
+    }, UNLOAD_WATCHDOG_MS);
+  });
+}
+
 function hardReload(): void {
   try {
     const url = new URL(window.location.href);
@@ -67,7 +95,7 @@ async function retryImport<T extends React.ComponentType<any>>(
         // A reload triggered by a sibling chunk's failure in this same page is
         // already in flight; the page is about to unload.  Never-settle rather
         // than throw, which would render the root error boundary in the gap.
-        if (reloadTriggered) return new Promise<{ default: T }>(() => {});
+        if (reloadTriggered) return pendingUntilUnload<{ default: T }>();
 
         // Webpack marks failed chunks in its internal JSONP registry.
         // Retrying factory() won't issue a new network request — only a
@@ -77,9 +105,9 @@ async function retryImport<T extends React.ComponentType<any>>(
           sessionStorage.setItem(RELOAD_FLAG, '1');
           sessionStorage.setItem(RELOAD_FLAG_TS, String(Date.now()));
           hardReload();
-          // Never-settling promise prevents React rendering the error
-          // boundary during the brief window before the page unloads.
-          return new Promise(() => {});
+          // Stays pending through the unload window, then rejects if the
+          // reload never landed rather than hanging Suspense forever.
+          return pendingUntilUnload<{ default: T }>();
         }
         // Already reloaded once and still failing — genuine problem.
         throw err;

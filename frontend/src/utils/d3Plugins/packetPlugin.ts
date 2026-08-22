@@ -174,6 +174,38 @@ export function sanitizeFieldBits(bits: unknown): number {
   return Math.min(n, PACKET_MAX_FIELD_BITS);
 }
 
+/**
+ * Default row bit-width when the spec omits (or supplies a degenerate)
+ * `bitWidth`, and the maximum honoured. A packet diagram semantically assumes
+ * an INTEGER bit width: the value drives the ruler tick loop
+ * (`for (b = 0; b < bits; b++)` labelling `bits - 1 - b`) and the grid width
+ * (`GRID_W = bits * BIT_W`).
+ */
+export const PACKET_DEFAULT_BIT_WIDTH = 8;
+export const PACKET_MAX_BIT_WIDTH = 512;
+
+/**
+ * Coerce a top-level `bitWidth` to a POSITIVE INTEGER safe to feed the ruler
+ * and grid geometry. Pure and DOM-free so it is unit-testable in isolation.
+ *
+ * A fractional `bitWidth` (e.g. 31.5) leaks straight into the ruler tick loop:
+ * the loop runs `Math.ceil(bits)` times and prints `bits - 1 - b`, producing
+ * nonsensical fractional, mutually-overlapping tick labels ("30.5 29.5 … 0.5
+ * -0.5") — an illegible ruler plus a spurious negative final tick. Rounding to
+ * an integer restores a clean 0..N-1 ruler.
+ *
+ * Rules (general, spec-agnostic — a no-op for every well-formed integer width):
+ *   - non-finite (NaN, Infinity, null→NaN) or non-number → default (8)
+ *   - < 1                                                → default (8)
+ *   - fractional                                         → rounded to nearest int
+ *   - > PACKET_MAX_BIT_WIDTH                             → clamped to the cap
+ */
+export function sanitizePacketBitWidth(bitWidth: unknown): number {
+  const n = typeof bitWidth === 'number' ? bitWidth : Number(bitWidth);
+  if (!Number.isFinite(n) || n < 1) return PACKET_DEFAULT_BIT_WIDTH;
+  return Math.min(Math.round(n), PACKET_MAX_BIT_WIDTH);
+}
+
 export function defaultLayout(bitWidth: number): LayoutConfig {
   // Scale bit cell width so total grid stays reasonable
   const BIT_W = bitWidth <= 8 ? 56 : bitWidth <= 16 ? 36 : bitWidth <= 32 ? 24 : 16;
@@ -241,7 +273,10 @@ function darkenHex(hex: string, factor: number): string {
 // ── Dimension calculation ───────────────────────────────────────────────────
 
 export function computeDimensions(spec: PacketSpec): { width: number; height: number; layout: LayoutConfig } {
-  const bits = spec.bitWidth ?? 8;
+  // Coerce to a positive integer so the grid width (bits * BIT_W) and the ruler
+  // agree with the plugin (which sanitizes identically) — a fractional/degenerate
+  // bitWidth can never drive geometry.
+  const bits = sanitizePacketBitWidth(spec.bitWidth);
   const L = defaultLayout(bits);
 
   const sections = spec.sections ?? [];
@@ -405,6 +440,57 @@ export function estimateSectionLabelWidth(label: string): number {
     Math.max(w, ln.length * (i === 0 ? SECTION_MAIN_CHAR_W : SECTION_SUB_CHAR_W)), 0);
 }
 
+// ── Bracket label orientation ───────────────────────────────────────────────
+
+/** Font size used for horizontal (unrotated) bracket labels. */
+export const BRACKET_LABEL_FONT = 11;
+/** Bold 11px monospace advance width, approximated (no DOM measurement). */
+const BRACKET_LABEL_CHAR_W = 6.6;
+/**
+ * Widest horizontal bracket label allowed before falling back to rotation.
+ * Rotated text is markedly harder to read and forces a smaller font, so
+ * horizontal is the default; rotation is reserved for labels long enough that
+ * laying them out horizontally would dominate the canvas.
+ */
+export const PACKET_MAX_HORIZ_BRACKET_LABEL_W = 220;
+
+/** Rotated-label sizing (the fallback path): base/min font and glyph width. */
+const ROT_BASE_FONT = 10;
+const ROT_MIN_FONT = 6;
+const ROT_CHAR_W = 6.5;
+
+export interface BracketLabelLayout {
+  /** True when the label is drawn unrotated, reading left-to-right. */
+  horizontal: boolean;
+  fontSize: number;
+  /** Horizontal px the label text consumes; 0 when rotated. */
+  width: number;
+}
+
+/**
+ * Decide how one bracket label is drawn. Pure and DOM-free so the gutter
+ * calculation and the renderer share a single decision and cannot drift.
+ *
+ * Horizontal whenever the label fits PACKET_MAX_HORIZ_BRACKET_LABEL_W — it
+ * reads at a larger font and needs no head-turning. Only longer labels rotate,
+ * and those keep the previous behaviour of scaling down to fit the bracket's
+ * vertical span (`spanH`, px; pass 0 when unknown, which only affects the
+ * rotated font size).
+ */
+export function bracketLabelLayout(label: unknown, spanH = 0): BracketLabelLayout {
+  const text = typeof label === 'string' ? label : String(label ?? '');
+  const w = text.length * BRACKET_LABEL_CHAR_W;
+  if (w <= PACKET_MAX_HORIZ_BRACKET_LABEL_W) {
+    return { horizontal: true, fontSize: BRACKET_LABEL_FONT, width: w };
+  }
+  const textAtBase = text.length * ROT_CHAR_W;
+  let fontSize = ROT_BASE_FONT;
+  if (spanH > 0 && textAtBase > spanH) {
+    fontSize = Math.max(ROT_MIN_FONT, Math.floor(ROT_BASE_FONT * spanH / textAtBase));
+  }
+  return { horizontal: false, fontSize, width: 0 };
+}
+
 export interface BracketGutters {
   left: number;
   right: number;
@@ -453,26 +539,41 @@ export function computeBracketGutters(
 
   let maxLeftDepth = 0;
   let maxRightDepth = 0;
+  let maxLeftHorizW = 0;
+  let maxRightHorizW = 0;
   for (const sec of sections) {
     const allBrackets = (sec.brackets ?? []).map(b =>
       flipLeftToRight ? { ...b, side: 'right' as const } : b);
     for (const br of assignBracketDepths(allBrackets, 'right')) {
       maxRightDepth = Math.max(maxRightDepth, (br.depth ?? 0) + 1);
+      maxRightHorizW = Math.max(maxRightHorizW, bracketLabelLayout(br.label).width);
     }
     for (const br of assignBracketDepths(allBrackets, 'left')) {
       maxLeftDepth = Math.max(maxLeftDepth, (br.depth ?? 0) + 1);
+      maxLeftHorizW = Math.max(maxLeftHorizW, bracketLabelLayout(br.label).width);
     }
   }
+
+  // A horizontal label starts 10px outside the outermost bracket stem (which
+  // sits at 4 + (depth-1)*30) and runs outward, so it widens the SVG only by
+  // what overruns the depth lanes reserved below (BRACKET_W per level plus 14px
+  // for a rotated label's height): max(0, w - 14*depth - 24). Zero for short
+  // labels and for rotated ones (width 0), so existing specs reserve exactly
+  // what they did before.
+  const horizOverflow = (w: number, depth: number): number =>
+    Math.max(0, w - 14 * Math.max(depth, 1) - 24);
 
   // Left brackets sit just left of the widest section label (labels end at
   // gridX - 8): each depth level costs BRACKET_W, plus 14px for label-overlap
   // shifts. Only the overflow past the fixed label column widens the SVG.
   const leftNeeded = maxLeftDepth > 0
     ? maxLabelW + 8 + maxLeftDepth * L.BRACKET_W + 14
+      + horizOverflow(maxLeftHorizW, maxLeftDepth)
     : 0;
   return {
     left: Math.max(0, leftNeeded - L.LABEL_W),
-    right: Math.max(maxRightDepth, 1) * L.BRACKET_W + 14,
+    right: Math.max(maxRightDepth, 1) * L.BRACKET_W + 14
+      + horizOverflow(maxRightHorizW, maxRightDepth),
     flipLeftToRight,
     maxLabelW,
   };
@@ -522,6 +623,106 @@ export function escapeXml(s: string): string {
 
 // Re-export the theme maps so the plugin can use them
 export { THEMES_LIGHT, THEMES_DARK, AUTO_PALETTE_LIGHT, AUTO_PALETTE_DARK };
+
+// ── Section shape normalization ──
+
+/**
+ * Resolve a section's display label, accepting the common `name`/`title`
+ * aliases in addition to the canonical `label`. Pure and DOM-free.
+ *
+ * The renderer draws the label via `sec.label.split('\n')` UNCONDITIONALLY, so
+ * a section keyed with `name` (a very common/plausible alias, mirroring the
+ * field-level `name`/`label` aliasing already present) left `sec.label`
+ * `undefined` and crashed the whole render (blank canvas, total data loss).
+ * Always returns a string so `.split` can never throw.
+ */
+export function sectionLabel(sec: any): string {
+  if (!sec || typeof sec !== 'object') return '';
+  const raw = sec.label ?? sec.name ?? sec.title ?? '';
+  return typeof raw === 'string' ? raw : String(raw);
+}
+
+/**
+ * Coerce a section's `rows` into the tuple-array shape the renderer's draw
+ * loop consumes (`row.forEach(field => field[0]=name, field[1]=bits, ...)`).
+ * Pure and DOM-free.
+ *
+ * Accepts BOTH:
+ *   - the canonical tuple-array row  `[[name, bits, color?], ...]` (unchanged)
+ *   - the object-shape row  `{ fields: [{name, bits, color}, ...] }` (or
+ *     `{ cells: [...] }`) that LLMs frequently emit — each field object is
+ *     mapped to a `[name, bits, color?]` tuple with the usual name/label and
+ *     bits/width/size aliases. Without this, an object-shape row makes the
+ *     draw loop iterate the object's keys (or throw) instead of fields.
+ * Anything unrecognisable becomes an empty row rather than crashing.
+ */
+/**
+ * Coerce a single field into the `[name, bits, color?]` tuple the renderer's
+ * draw loop indexes (`field[0]`, `field[1]`, `field[2]`). Pure and DOM-free.
+ *
+ * A field can arrive as the canonical tuple (`["Ver", 4]`, returned unchanged)
+ * OR as a field OBJECT (`{name:"Ver", bits:4, color?}`) — the shape LLMs emit
+ * most often. On an object, resolves the usual name/label and bits/width/size
+ * aliases; a color is carried through only when present.
+ */
+export function fieldToTuple(f: any): [string, number] | [string, number, string] {
+  if (Array.isArray(f)) return f as [string, number] | [string, number, string];
+  const name = f?.name ?? f?.label ?? '';
+  const bits = f?.bits ?? f?.width ?? f?.size ?? 0;
+  return (f?.color !== undefined && f?.color !== null
+    ? [name, bits, f.color]
+    : [name, bits]) as [string, number] | [string, number, string];
+}
+
+export function normalizeSectionRows(rows: any): PacketSection['rows'] {
+  if (!Array.isArray(rows)) return [];
+  return rows.map((row: any): PacketSection['rows'][number] => {
+    if (Array.isArray(row)) {
+      // An array row's ELEMENTS may themselves be canonical tuples
+      // (`[name, bits]`) OR field objects (`{name, bits}`). The latter is a
+      // very common LLM shape: the row is an array, but each field is an
+      // object, so the draw loop's `field[0]`/`field[1]` index to `undefined`
+      // → every cell collapses to a zero-width, unnamed rect (silent
+      // per-field data loss across the WHOLE diagram). Coerce any object
+      // element to a tuple. When every element is already an array (the
+      // well-formed case) the row is returned BY REFERENCE, so canonical specs
+      // are byte-identical — this is a normalization gap fill, not a catch-all.
+      // The cast is required because TS 5.5+ infers a type predicate for the
+      // `every` callback, narrowing `row` to `any[][]`, which is not assignable
+      // to the fixed-length tuple union even though every element is a tuple.
+      if (row.every((f: any) => Array.isArray(f))) return row as PacketSection['rows'][number];
+      return row.map(fieldToTuple);
+    }
+    const fields = Array.isArray(row?.fields) ? row.fields
+      : Array.isArray(row?.cells) ? row.cells : null;
+    if (fields) return fields.map(fieldToTuple);
+    return [];
+  });
+}
+
+/**
+ * Normalize a single section object into a valid PacketSection: resolve its
+ * label (name/title aliases), coerce its rows into tuple arrays, alias
+ * `theme` -> `color`, and synthesize a placeholder row when the section has no
+ * usable rows/fields (so a bracket-only section can't produce a zero-row draw
+ * that looks empty). Pure and DOM-free. A no-op for well-formed sections whose
+ * `label` and tuple-array `rows` are already correct.
+ */
+export function normalizeSection(sec: any, bitWidth: number): PacketSection {
+  const label = sectionLabel(sec);
+  let rows = normalizeSectionRows(sec?.rows);
+  if (rows.length === 0 && Array.isArray(sec?.fields) && sec.fields.length > 0) {
+    rows = flatFieldsToRows(sec.fields, bitWidth);
+  }
+  if (rows.length === 0) {
+    rows = [[[label || 'Section', bitWidth] as [string, number]]];
+  }
+  const out: PacketSection = { ...(sec && typeof sec === 'object' ? sec : {}), label, rows };
+  if ((out.color === undefined || out.color === null) && typeof sec?.theme === 'string') {
+    out.color = sec.theme;
+  }
+  return out;
+}
 
 // ── Input normalization ─────────────────────────────────────────────────────
 // Accept common "close but wrong" spec formats and coerce them into a valid
@@ -612,10 +813,20 @@ export function normalizePacketSpec(raw: unknown): PacketSpec | null {
   }
   if (!obj || typeof obj !== 'object') return null;
 
-  const title = obj.title || obj.name;
+  const hasSections = Array.isArray(obj.sections) && obj.sections.length > 0;
+  // Only bail for a missing title when there is nothing else to render. When a
+  // valid non-empty `sections` array is present, synthesize a default title
+  // rather than returning null — otherwise the whole (renderable) spec would
+  // fall through to the renderer UNNORMALIZED, so section `name`→`label` and
+  // object-shape-row aliasing never runs and `sec.label.split` crashes.
+  const title = obj.title || obj.name || (hasSections ? 'Packet' : undefined);
   if (!title) return null;
 
-  const bitWidth = obj.bitWidth || obj.bits_per_row || obj.width || 8;
+  // Coerce to a positive integer once here so every downstream consumer
+  // (computeDimensions, the ruler, flatFieldsToRows wrapping) sees the same
+  // clean integer width — a fractional 31.5 can never reach the ruler tick loop.
+  const bitWidth = sanitizePacketBitWidth(
+    obj.bitWidth || obj.bits_per_row || obj.width || PACKET_DEFAULT_BIT_WIDTH);
 
   // Already has sections — accept as-is with aliased fields patched
   if (obj.sections && Array.isArray(obj.sections) && obj.sections.length > 0) {
@@ -699,19 +910,17 @@ export function normalizePacketSpec(raw: unknown): PacketSpec | null {
       };
     }
 
-    // Sections already in the correct {label, rows} format
-    // Validate each section has rows; convert from fields if missing.
-    const validatedSections = obj.sections.map((sec: any) => {
-      if (sec.rows && Array.isArray(sec.rows) && sec.rows.length > 0) {
-        return sec;
-      }
-      // Section has fields but no rows — convert them
-      if (sec.fields && Array.isArray(sec.fields) && sec.fields.length > 0) {
-        return { ...sec, rows: flatFieldsToRows(sec.fields, bitWidth) };
-      }
-      // Fallback: single-cell placeholder row so the renderer doesn't crash
-      return { ...sec, rows: [[[sec.label || 'Section', bitWidth] as [string, number]]] };
-    });
+    // Sections already in (approximately) the correct {label, rows} format.
+    // Route every section through normalizeSection so BOTH shape mismatches
+    // that reach this branch are repaired uniformly: (a) a section keyed with
+    // `name`/`title` instead of `label` (its label is resolved so the
+    // renderer's unconditional `sec.label.split` can never see undefined), and
+    // (b) object-shape rows `{fields:[{name,bits,color}]}` instead of tuple
+    // arrays (coerced to `[name,bits,color?]`). Missing/empty rows fall back to
+    // fields, then to a placeholder row. General across the whole class of
+    // name-keyed / object-row sections; a no-op for already-correct sections.
+    const validatedSections = obj.sections.map((sec: any) =>
+      normalizeSection(sec, bitWidth));
 
     return {
       type: 'packet',
