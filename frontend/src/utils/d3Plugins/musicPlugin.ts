@@ -13,6 +13,7 @@ import {
   filterPitch,
   keySignatureMap,
   newBarState,
+  sanitizeKeySignature,
 } from './musicAccidentals';
 
 export type MusicClef = 'treble' | 'bass' | 'alto' | 'tenor' | 'percussion';
@@ -44,11 +45,142 @@ export interface MusicHairpin extends MusicSpan {
 }
 
 /**
+ * A sustain-pedal marking spanning a run of notes: press at `from`, release at
+ * `to`.  Drawn BELOW the staff, beneath the dynamics band, as published piano
+ * scores set it.
+ *
+ * VexFlow ships a `PedalMarking` primitive, but it is a stave-attached modifier
+ * that positions itself from the notes' resolved geometry the same way the
+ * dynamics/volta layers do -- and, like `TextDynamics`, its vertical placement
+ * is not controllable in VexFlow 5.0 (it lands in the same band the hairpins
+ * and dynamics already occupy).  So -- exactly like the hairpin, dynamics,
+ * volta and trill-glyph layers -- the pedal is hand-drawn with d3 in the
+ * post-format overlay pass (see drawPedalLine), reading the press/release
+ * notes' resolved x, which is the only way to keep it on its own band clear of
+ * the dynamics above it.
+ */
+export interface MusicPedal extends MusicSpan {
+  /**
+   * Which of the three real piano pedals this marking is for.  A piano has
+   * three, and they are NOT engraved alike -- naming the pedal is the only way
+   * to reach the middle or left pedal, which print their own fixed wording
+   * rather than the damper bracket:
+   *   "sustain" (default) -- the damper (right) pedal; drawn per `style` below.
+   *   "sostenuto" -- the middle pedal; always engraved "Sost. Ped." ... "*",
+   *     so `style` is ignored (its bracket/text distinction is a sustain-only
+   *     convention).
+   *   "una-corda" -- the soft (left) pedal; always engraved
+   *     "una corda" ... "tre corde", so `style` is likewise ignored.
+   * An unknown name is skipped with a console warning, matching the plugin's
+   * unknown-name convention.
+   */
+  pedal?: 'sustain' | 'sostenuto' | 'una-corda';
+  /**
+   * How a SUSTAIN pedal is drawn (ignored for sostenuto / una-corda, which
+   * print their own wording above):
+   *   "bracket" (default) -- the modern line-with-down-hooks bracket (Dorico /
+   *     Henle house style): a horizontal rail with a short leg dropping at the
+   *     press and release ends.
+   *   "text" -- the older piano notation: "Ped." at the press, a "*" at the
+   *     release.
+   *   "mixed" -- the hybrid published notation: "Ped." at the press, then a
+   *     bracket running to the release.
+   */
+  style?: 'bracket' | 'text' | 'mixed';
+  /**
+   * Extra distance, in stave-line units, to drop the pedal line BELOW its
+   * default band -- raise it to clear a lyric or a dynamic sharing the space
+   * beneath the staff.  Omitted, the pedal sits on its usual band beneath the
+   * dynamics; a value <= 0 is treated as no drop, so the default path is
+   * byte-identical.
+   */
+  line?: number;
+}
+
+/**
+ * Engraved [press, release] wording for the two named pedals that do NOT use
+ * the sustain bracket/text styles.
+ *
+ * A closed map for the same reason as ARTICULATION_CODES: an unknown `pedal`
+ * value is skipped with a console warning rather than guessed at.  "sustain"
+ * is deliberately ABSENT -- it is drawn by `style` (bracket / text / mixed),
+ * not by fixed wording -- so a lookup miss cleanly distinguishes the
+ * damper-pedal path from a genuinely unknown name.  The release strings are
+ * the published counterparts a score prints ("*" cancels the sostenuto, "tre
+ * corde" restores all three strings after "una corda").
+ */
+export const PEDAL_TYPE_LABELS: Readonly<Record<string, [string, string]>> = {
+  sostenuto: ['Sost. Ped.', '*'],
+  'una-corda': ['una corda', 'tre corde'],
+};
+
+/**
  * An explicit beam over a run of notes, by index into the staff's own note
  * list.  Use this only when the automatic grouping is wrong; `autoBeam` on the
  * spec handles the ordinary case.
  */
 export interface MusicBeam extends MusicSpan {}
+
+/**
+ * A beam that threads across TWO OR MORE staves of a grand staff -- the
+ * running keyboard figure that flows from the bass staff up into the treble
+ * (or back) under ONE continuous beam.
+ *
+ * A per-staff `beams` / `autoBeam` cannot express it: each addresses a SINGLE
+ * staff's own note list, so a run that alternates between the hands (bass,
+ * bass, treble, treble) simply cannot be written -- neither staff's list holds
+ * the run in playing order.  So the members are named at the SPEC level as
+ * `[staffIndex, noteIndex]` pairs into the addressed staves' own `notes`, IN
+ * PLAYING ORDER (left to right), which is the only encoding that can thread the
+ * beam between the two lists.
+ *
+ * VexFlow draws the beam by reading each member note's own stave Y, which is
+ * the standard cross-staff mechanism; a beam requires a single shared stem
+ * side, so every member's stem is forced to `stemDirection`.  Only meaningful
+ * on a multi-staff (`staves`) spec; on one staff use `beams` / `autoBeam`.
+ */
+export interface MusicCrossStaffBeam {
+  /** Members as [staffIndex, noteIndex] pairs, in playing order. */
+  notes: Array<[number, number]>;
+  /**
+   * Force the whole group's stems onto one side, which a beam requires.
+   * "up" (default) puts the beam BETWEEN the staves -- the usual keyboard
+   * case; "down" puts it below.
+   */
+  stemDirection?: 'up' | 'down';
+}
+
+/**
+ * A slur or tie whose two ends lie on DIFFERENT staves of a grand staff -- a
+ * phrase arc, or a single held pitch, passed from one hand's staff into the
+ * other.
+ *
+ * A per-staff `slurs` / `ties` entry cannot express it: each addresses a
+ * SINGLE staff's own note list, so an arc whose endpoints live on two staves
+ * has no one list to index them in.  So the two ends are named at the SPEC
+ * level as `[staffIndex, noteIndex]` pairs into the addressed staves' own
+ * `notes` -- the same encoding MusicCrossStaffBeam uses for its members.
+ *
+ * VexFlow's Curve / StaveTie position themselves from each endpoint note's own
+ * resolved stave Y, which is exactly the cross-staff mechanism the beam relies
+ * on, so a curve whose ends sit on different staves simply arcs between them --
+ * no special primitive is needed, only the two-staff addressing a per-staff
+ * span cannot provide.  Refused (not drawn wrongly) when an endpoint is out of
+ * range or the two ends land on different systems, matching the same-system
+ * rule every other span (see spanEnds) obeys.  Only meaningful on a
+ * multi-staff (`staves`) spec; within one staff use `slurs` / `ties`.
+ */
+export interface MusicCrossStaffSlur {
+  /**
+   * "slur" (default) draws the phrase arc between two different pitches;
+   * "tie" holds ONE sustained pitch across the staff change.
+   */
+  curve?: 'slur' | 'tie';
+  /** Start endpoint as a [staffIndex, noteIndex] pair. */
+  from: [number, number];
+  /** End endpoint as a [staffIndex, noteIndex] pair. */
+  to: [number, number];
+}
 
 /**
  * A tuplet (triplet, quintuplet, ...) over a run of notes, by index into the
@@ -101,6 +233,13 @@ export interface MusicBracket extends MusicSpan {
 /**
  * An extended trill line -- the wavy line after a `tr`, or a vibrato squiggle.
  * A per-note `trill` ornament marks a single note; this spans a range.
+ *
+ * For the default `trill` wiggle the renderer prepends the "tr" glyph to the
+ * start note automatically (a published trill is "tr" + wavy line; a bare
+ * squiggle reads as vibrato, not a trill), so the line is self-sufficient --
+ * no separate ornament is required.  If the start note already carries a
+ * `trill` ornament the auto "tr" is suppressed so it is not printed twice.
+ * The vibrato / sawtooth wiggles are not trills and get no "tr".
  */
 export interface MusicTrillLine extends MusicSpan {
   /** Wiggle glyph, a key of WIGGLE_CODES.  Defaults to "trill". */
@@ -245,6 +384,57 @@ export const ORNAMENT_CODES: Readonly<Record<string, string>> = {
 };
 
 /**
+ * Friendly breath-mark name -> the glyph KIND drawBreathMarks draws.
+ *
+ * A closed map for the same reason as ARTICULATION_CODES/ORNAMENT_CODES: an
+ * unknown name is skipped with a warning rather than guessed at.  Several
+ * spellings collapse onto one kind because a grand pause is called by more
+ * than one name in the wild ("caesura" / "grand pause" / "railroad tracks"),
+ * and an author should not have to know which the renderer prefers.  These are
+ * KINDS rather than VexFlow codes because VexFlow ships no breath-mark
+ * primitive: the marks are hand-drawn as a post-format d3 overlay, exactly
+ * like the trill glyph and dynamics (see drawBreathMarks).
+ */
+export const BREATH_MARKS: Readonly<Record<string, 'comma' | 'tick' | 'caesura' | 'caesura-curved'>> = {
+  comma: 'comma',
+  tick: 'tick',
+  caesura: 'caesura',
+  'grand-pause': 'caesura',
+  railroad: 'caesura',
+  // The alternate published caesura: two BOWED strokes rather than the
+  // straight "railroad-tracks" diagonals.  Given its own kind (not folded onto
+  // 'caesura') so drawBreathMarks can curve it; documented as a `breath` value
+  // in the skill prompt, which is why its omission here left the value looked
+  // up as unknown and silently skipped.
+  'caesura-curved': 'caesura-curved',
+};
+
+/**
+ * Friendly arpeggio / stroke name -> VexFlow `Stroke.Type` key.
+ *
+ * A chord roll (the vertical wavy line to the left of a chord meaning "spread
+ * the notes") is a VexFlow `Stroke` MODIFIER, whose `type` is one of the
+ * numeric `Stroke.Type` constants -- not a string.  A map to the constant's
+ * KEY (resolved to `Stroke.Type[key]` at attach time, the same indirection
+ * BARLINE_TYPES/NAVIGATION_MARKS use) keeps the raw numbers and the internal
+ * enum out of the public spec, and makes the friendly names an author actually
+ * reaches for ("arpeggio", "arpeggio-up") the contract.  Closed for the same
+ * reason as ARTICULATION_CODES: an unknown value is skipped with a warning
+ * rather than guessed at.  The plain "arpeggio" is the directionless roll
+ * (published default); the "-up"/"-down" variants add the arrowhead, and the
+ * guitar brush / rasgueado strokes are the remaining Stroke.Type members.
+ */
+export const ARPEGGIO_STROKE_TYPES: Readonly<Record<string, string>> = {
+  arpeggio: 'ARPEGGIO_DIRECTIONLESS',
+  'arpeggio-up': 'ROLL_UP',
+  'arpeggio-down': 'ROLL_DOWN',
+  'brush-up': 'BRUSH_UP',
+  'brush-down': 'BRUSH_DOWN',
+  'rasgueado-up': 'RASGUEADO_UP',
+  'rasgueado-down': 'RASGUEADO_DOWN',
+};
+
+/**
  * Dynamic marks VexFlow can typeset.  TextDynamics builds each mark from
  * per-letter glyphs and only knows f, p, m, s, z and r, so anything outside
  * this set would emit ASCII or nothing at all.
@@ -253,6 +443,19 @@ export const DYNAMIC_MARKS: ReadonlySet<string> = new Set([
   'ppp', 'pp', 'p', 'mp', 'mf', 'f', 'ff', 'fff', 'sf', 'sfz', 'rfz', 'fp',
 ]);
 
+/**
+ * Dynamics are drawn BELOW the staff, on a consistent band, as a hand-drawn
+ * d3 overlay (see drawDynamicsLayer) rather than via VexFlow's TextDynamics.
+ *
+ * TextDynamics positions its mark with a `line` option resolving to
+ * `stave.getYForLine(line - 3)`, which in principle lands a large `line` (9 ->
+ * getYForLine(6)) two stave-spaces below the bottom line.  In VexFlow 5.0 that
+ * option does NOT move the mark below the staff -- verified against the built
+ * bundle: `line: 9` still rendered `p`/`f` ABOVE the top line, colliding with
+ * the tempo / chord-symbol band.  The overlay places them beneath the staff
+ * reliably and, taking no beat time, cannot displace the notes the way a
+ * parallel TextDynamics voice's padding once had to be engineered around.
+ */
 /**
  * Friendly barline name -> Barline.type key.
  *
@@ -309,7 +512,12 @@ export interface MusicTempo {
   duration?: string;
   /** Augmentation dots on the beat unit. */
   dots?: number;
-  /** Beats per minute. */
+  /**
+   * Beats per minute -- a positive number.  A non-finite, zero or negative
+   * value is ignored (the mark then shows the `name` alone, never a dangling
+   * "♩ ="); an absurdly large value is clamped so the metronome stays on the
+   * system.  See sanitizeTempoBpm.
+   */
   bpm?: number;
 }
 
@@ -395,6 +603,64 @@ export interface MusicMeasure {
    * budget would not have chosen one.
    */
   systemBreak?: boolean;
+  /**
+   * Mark this measure as a pickup (anacrusis) -- an incomplete opening bar
+   * that carries only the upbeat before the first full measure.
+   *
+   * Only meaningful on the FIRST measure.  A pickup already RENDERS today (a
+   * short bar of one or two notes is underfull, and the SOFT-mode voice draws
+   * an underfull bar without complaint), so this flag changes not the notes
+   * but the MEASURE COUNT: published scores do NOT count the anacrusis, they
+   * leave it unnumbered and call the first FULL bar "measure 1".  With
+   * `measureNumbers` on, the pickup bar is therefore skipped and the running
+   * count starts at the second bar, so the numbers read 1, 2, 3, ... over the
+   * complete bars rather than mislabelling the upbeat as bar 1.  Ignored when
+   * `measureNumbers` is not set (there are no numbers to shift).
+   */
+  pickup?: boolean;
+  /**
+   * Draw this measure as a MULTI-MEASURE REST consolidating `multiRest` empty
+   * bars -- the thick horizontal H-bar with the bar count above it that
+   * published instrumental PARTS use so a player counts "8 bars rest" from one
+   * symbol instead of reading eight identical empty bars.  A named
+   * rest-placement gap (a part without it is unreadable at the desk), so the
+   * count is the whole point: `2` reads as two bars, `16` as sixteen.
+   *
+   * The measure carries NO `notes` (any given are ignored, with a warning) --
+   * it is by definition silent.  Internally the bar is filled with a 0-drawn
+   * GhostNote spacer so it claims layout width like any other measure, and the
+   * H-bar + count are hand-drawn as a d3 overlay (see drawMultiMeasureRest)
+   * reading the spacer's resolved x -- exactly like the pedal / volta layers,
+   * because VexFlow's own MultiMeasureRest is a stave-attached modifier that
+   * does not fit the System/voice pipeline this renderer formats through.  A
+   * value below 1 (or non-integer) is not a rest count and is skipped with a
+   * console warning, matching the plugin's unknown-value convention.
+   */
+  multiRest?: number;
+  /**
+   * Alias for `multiRest`.  The skill prompt documents this feature under BOTH
+   * names, so the field is accepted under either spelling (see multiRestOf);
+   * `multiRest` is canonical and wins when both are given.
+   */
+  multiMeasureRest?: number;
+  /**
+   * Independent simultaneous voices for THIS bar -- the MEASURE-MAJOR spelling
+   * of a multi-voice staff, the mirror of the VOICE-MAJOR `staffSpec.voices`.
+   *
+   * The skill prompt documents both axes as equivalent: voice-major
+   * (`voices: [{stemDirection, measures:[...]}]`, one list per line) and
+   * measure-major (`measures: [{voices:[...], endBar, ...}]`, one list per
+   * BAR, each bar carrying its own voices with the bar-level fields on the
+   * measure).  Only voice-major was ever implemented, so a measure-major spec
+   * tested EMPTY at every recognition gate (measureHasContent looked only at
+   * `notes`/`multiRest`) and was rejected as non-music -> "No compatible
+   * plugin" -> ~30s hang / total data loss.  normalizeMeasureMajorVoices
+   * transposes this back to the voice-major shape the render core consumes, so
+   * the two spellings render identically.  Bar-level fields (`endBar`,
+   * `timeSignature`, `systemBreak`, `multiRest`) stay on the measure and apply
+   * to every voice in it.
+   */
+  voices?: MusicVoice[];
 }
 
 /**
@@ -468,6 +734,8 @@ export interface MusicStaff {
   hairpins?: MusicHairpin[];
   brackets?: MusicBracket[];
   trillLines?: MusicTrillLine[];
+  /** Sustain-pedal markings drawn below this staff. */
+  pedals?: MusicPedal[];
   /**
    * Beam this staff's eighths-and-shorter automatically, overriding the
    * spec-level `autoBeam` for this staff only.  `false` leaves the staff
@@ -526,6 +794,27 @@ export interface MusicNoteSpec {
   articulations?: string[];
   /** Ornament names, keys of ORNAMENT_CODES. */
   ornaments?: string[];
+  /**
+   * Chord roll (arpeggio) drawn to the LEFT of a chord, meaning "spread the
+   * notes rather than strike them together".  A friendly name from
+   * ARPEGGIO_STROKE_TYPES: "arpeggio" (the plain directionless roll), or
+   * "arpeggio-up"/"arpeggio-down" to add the arrowhead published scores use;
+   * the guitar strokes "brush-up"/"brush-down"/"rasgueado-up"/"rasgueado-down"
+   * are also accepted.  `true` is shorthand for "arpeggio".  Meaningful only on
+   * a note whose `keys` name two or more pitches (the stroke spans the chord);
+   * an unknown name is skipped with a console warning.
+   */
+  arpeggio?: string | boolean;
+  /**
+   * Single-note tremolo: the number of slashes drawn through the stem, one
+   * (1) through three (3), meaning the note is rapidly repeated.  A repeated-
+   * note tremolo is engraved as beam-slashes across the stem, not as a
+   * separate glyph, which is why it is a stroke COUNT rather than a name in a
+   * lookup table -- there is no "tremolo symbol", only "n slashes".  A value
+   * outside 1..3 is not real notation and is skipped with a console warning,
+   * following the plugin's unknown-name convention.
+   */
+  tremolo?: number;
   /** Dynamic mark placed below this note; must be in DYNAMIC_MARKS. */
   dynamic?: string;
   /** Left-hand fingering digit; a bare value defaults to below the staff. */
@@ -543,6 +832,43 @@ export interface MusicNoteSpec {
    * them does not shift where any main note falls.
    */
   graceNotes?: MusicGraceNote[];
+  /**
+   * A phrasing break drawn ABOVE the staff, just AFTER this note -- where a
+   * wind or vocal player breathes, or (a caesura) the "railroad-tracks" grand
+   * pause.  A friendly name from BREATH_MARKS: "comma" (the ordinary breath, a
+   * small raised comma), "tick" (a terser slanted stroke), or "caesura" (the
+   * two parallel diagonal strokes of a grand pause -- also "grand-pause" /
+   * "railroad"), or "caesura-curved" (that same grand pause drawn with two
+   * BOWED strokes, the alternate published caesura glyph).  `true` is shorthand
+   * for "comma"; a number 0.3..1 sets an
+   * explicit scale for the comma.  An unknown name is skipped with a console
+   * warning, matching the plugin's unknown-name convention.
+   *
+   * Drawn as a d3 overlay (see drawBreathMarks) rather than a VexFlow modifier
+   * for the same reason as the trill glyph and dynamics: VexFlow ships no
+   * breath-mark primitive that engraves after the note, so like those layers
+   * it is hand-drawn after formatting, reading the note's resolved x.
+   */
+  breath?: string | boolean | number;
+  /**
+   * Engrave this note SMALL -- a CUE note, the roughly two-thirds-size note
+   * published scores use for an editorial suggestion, a colla-parte lead-in or
+   * an ossia alternative.  `true` is the 2/3 default; a number 0.3..1 sets an
+   * explicit scale.
+   *
+   * Unlike a grace note a cue note KEEPS its beat time and occupies real
+   * rhythmic space in the bar -- only its SIZE changes -- which is exactly why
+   * it is applied as a post-format visual scale (see drawCueNotes) rather than
+   * built as a different note: VexFlow lays the note out full size (spacing,
+   * stem direction, accidentals all the normal ones) and the rendered glyph
+   * group is then shrunk in place around its notehead, so notehead, stem and
+   * flag shrink together and stay internally consistent.  VexFlow ships no
+   * "cue note" primitive (GraceNote is close but drops beat time) and the
+   * per-element fontScale does not cascade from a StaveNote to its child
+   * noteheads/stem, so -- like the dynamics / trill / breath layers -- the
+   * effect lives in the overlay pass.
+   */
+  cue?: boolean | number;
 }
 
 export interface MusicSpec {
@@ -592,6 +918,8 @@ export interface MusicSpec {
   brackets?: MusicBracket[];
   /** Extended trill / vibrato lines spanning a run of notes. */
   trillLines?: MusicTrillLine[];
+  /** Sustain-pedal markings drawn below the staff (piano). */
+  pedals?: MusicPedal[];
   /**
    * Beam eighths and shorter automatically, per measure, using the meter's
    * natural beat grouping.  Without this every eighth and sixteenth draws an
@@ -609,6 +937,23 @@ export interface MusicSpec {
    * `autoBeam`, so use one or the other for a given run of notes.
    */
   beams?: MusicBeam[];
+  /**
+   * Beams that thread across the staves of a grand staff -- a keyboard run
+   * flowing from one hand's staff into the other under ONE continuous beam.
+   * A per-staff `beams` / `autoBeam` cannot join it (each addresses a single
+   * staff's own notes), so members are named here as [staffIndex, noteIndex]
+   * pairs in playing order; see MusicCrossStaffBeam.  Only meaningful with
+   * `staves`.
+   */
+  crossStaffBeams?: MusicCrossStaffBeam[];
+  /**
+   * Slurs / ties that arc across the staves of a grand staff -- a phrase, or a
+   * single held pitch, passed from one hand's staff into the other.  A
+   * per-staff `slurs` / `ties` cannot join it (each addresses a single staff's
+   * own notes), so each entry's `from`/`to` are [staffIndex, noteIndex] pairs;
+   * see MusicCrossStaffSlur.  Only meaningful with `staves`.
+   */
+  crossStaffSlurs?: MusicCrossStaffSlur[];
   /**
    * Tuplets (triplets, quintuplets, ...) for a single-staff spec, by note
    * index.  Rescales the spanned notes' beat time and draws the number
@@ -675,8 +1020,54 @@ export interface MusicSpec {
   beginBar?: string;
   /** Closing barline, a key of BARLINE_TYPES. */
   endBar?: string;
-  /** Measure number shown above the staff. */
+  /**
+   * Measure number of the OPENING bar.  Drawn above the first system's top
+   * staff on its own; with `measureNumbers` it becomes the starting count the
+   * per-system numbering runs from (so a movement that begins at bar 47 sets
+   * `measureNumber: 47`).  Defaults to 1 for the running count.
+   */
   measureNumber?: number;
+  /**
+   * Number the FIRST measure of EVERY system, as published scores do so a
+   * reader can locate any bar at a glance.
+   *
+   * `measureNumber` alone labels only the opening bar; on a score that wraps to
+   * several systems that leaves every continuation line unnumbered, which is
+   * why a wrapped score needs this.  The running count starts at
+   * `measureNumber` (default 1) and advances by each system's opening-bar
+   * index, so line 2 beginning at the 4th bar shows "4".  Drawn on the top
+   * staff of each system only -- a measure number repeated down every staff of
+   * a grand staff is wrong engraving.
+   */
+  measureNumbers?: boolean;
+  /**
+   * The opening bar is a pickup (anacrusis).  Top-level shorthand, mirroring
+   * how `clef`/`keySignature` fall through to the lone staff, and equivalent
+   * to setting `pickup: true` on `measures[0]` -- either spelling is honoured.
+   *
+   * The short upbeat is written as the first measure and engraves as-is (an
+   * underfull opening bar already draws correctly); the flag only changes the
+   * MEASURE COUNT so that, with `measureNumbers` on, the anacrusis is left
+   * unnumbered and the first FULL bar becomes "measure 1", per published
+   * convention.  No effect without `measureNumbers`.
+   */
+  pickup?: boolean;
+  /**
+   * Add courtesy (cautionary) accidentals -- the parenthesised reminder
+   * published editions print when a pitch altered in one bar returns in the
+   * NEXT bar sounding differently.  An `f#/4` in bar 1 followed by a plain
+   * `f/4` in bar 2 gets a parenthesised natural on that `f`, reassuring the
+   * reader the sharp no longer applies across the barline.
+   *
+   * The mark is added only to a note that would otherwise print BARE (a note
+   * carrying its own accidental is already its own reminder) and only for a
+   * one-bar-back change, matching the Dorico/Finale house style.  Off by
+   * default for a clean, minimally-marked score; the no-flag path is
+   * byte-identical.  As always, spell every note as its true sounding pitch --
+   * the renderer decides where a courtesy mark is warranted (see
+   * planCautionaryAccidentals).
+   */
+  cautionaryAccidentals?: boolean;
   /** Rehearsal-mark style section label, e.g. "A". */
   section?: string;
   /**
@@ -716,12 +1107,63 @@ export interface MusicSpec {
  * unaffected, so this surfaced only on the natural path: measured on an
  * Eb-major bass staff whose spec asked for a plain `e/5`.
  */
+/**
+ * Musical octave bounds.  A key's octave feeds VexFlow's ledger-line loop:
+ * StaveNote.drawLedgerLines iterates ONE stave-line at a time from the staff
+ * out to the notehead (`for (line = 6; line <= highestLine; ++line)` and its
+ * downward twin), and highestLine/lowestLine are derived straight from the
+ * note's octave.  An out-of-range octave -- `c/999` -- therefore drives that
+ * loop through hundreds of thousands of iterations and HANGS the render with a
+ * blank canvas, exactly as an unbounded duration or tempo-dots count does (see
+ * sanitizeDuration and the D25 tempo-dots clamp).  MIDI spans C-1..G9, so this
+ * range admits every real pitch while capping ledger lines at a few dozen.
+ */
+export const MIN_OCTAVE = -1;
+export const MAX_OCTAVE = 9;
+
+/**
+ * Clamp a key's octave into [MIN_OCTAVE, MAX_OCTAVE], returning the (possibly
+ * rewritten) key.
+ *
+ * This is the single choke point that neutralises the ledger-line hang before
+ * a key reaches VexFlow -- the pitch analogue of sanitizeDuration for the
+ * duration path.  It accepts BOTH note grammars the two converters use -- the
+ * StaveNote slash form ("c/5", "c#/5") and the EasyScore slash-less form ("C5",
+ * "C#5") -- and preserves the input's own shape, so it can sit inside both
+ * toEasyScoreKey and toStaveNoteKey without changing which form each emits.  A
+ * key it cannot parse (or whose octave is already in range) is returned
+ * untouched, so the valid path is byte-identical; only a genuinely
+ * out-of-range octave is rewritten, with a console warning matching the
+ * plugin's unknown-value convention.
+ */
+export function clampKeyOctave(key: string): string {
+  const raw = String(key).trim();
+  // group 1: letter + optional accidental; group 2: optional slash; group 3:
+  // signed octave.  The accidental class mirrors the converters' own: an
+  // explicit natural `n`, or up to two sharps/flats.
+  const m = /^([a-gA-G](?:n|[#b]{0,2}))(\/?)(-?\d+)$/.exec(raw);
+  if (!m) return raw;
+  const oct = Number(m[3]);
+  if (!Number.isFinite(oct)) return raw;
+  const clamped = Math.max(MIN_OCTAVE, Math.min(MAX_OCTAVE, oct));
+  if (clamped === oct) return raw;
+  console.warn(
+    `musicPlugin: octave ${oct} in key "${raw}" is outside [${MIN_OCTAVE}, `
+    + `${MAX_OCTAVE}]; clamped to ${clamped} to avoid a ledger-line render hang`,
+  );
+  return `${m[1]}${m[2]}${clamped}`;
+}
+
 export function toEasyScoreKey(key: string): string {
-  const match = /^([a-gA-G])(n|[#b]{1,2})?\/(-?\d+)$/.exec(String(key).trim());
+  // Clamp the octave FIRST so an extreme value (`c/999`) cannot reach VexFlow
+  // and hang the ledger-line loop.  clampKeyOctave preserves the slash form
+  // this function receives from filterPitch, so the match below is unaffected.
+  const safe = clampKeyOctave(key);
+  const match = /^([a-gA-G])(n|[#b]{1,2})?\/(-?\d+)$/.exec(String(safe).trim());
   if (match) return match[1].toUpperCase() + (match[2] ?? '') + match[3];
   // Already in EasyScore form (or unrecognised): pass through with any stray
   // slash removed so a partially-correct key still parses.
-  return String(key).trim().replace('/', '');
+  return String(safe).trim().replace('/', '');
 }
 
 /**
@@ -745,13 +1187,28 @@ export function toEasyScoreKey(key: string): string {
  * A key already in slash form passes through unchanged; a lone "C5" (no slash)
  * is repaired to "C/5" so a partially-correct key still renders rather than
  * hanging.
+ *
+ * The accidental class admits an explicit natural `n` ("cn/5" / "cn5") for the
+ * same reason toEasyScoreKey (its inverse) does: a natural is a real accidental
+ * an author can write on a note, grace notes bypass the key-signature filter
+ * (so the sign is never dropped for them), and -- crucially -- a SLASHLESS
+ * natural was the one form both branches missed.  Without `n` here, "cn5" fell
+ * through to the raw return, and because it is not slash form `new GraceNote`
+ * could not parse it into a pitch/line -- re-triggering the very
+ * non-converging GraceNoteGroup format loop (30s hang, blank canvas) this
+ * function was written to avoid.  Sharps and flats can double ([#b]{0,2}); a
+ * natural is only ever single, so it is a separate alternative rather than a
+ * repeat count.
  */
 export function toStaveNoteKey(key: string): string {
-  const raw = String(key).trim();
+  // Clamp the octave first (same ledger-line-hang guard as toEasyScoreKey);
+  // clampKeyOctave preserves whichever grammar `key` arrives in, so the two
+  // form checks below still classify it correctly.
+  const raw = clampKeyOctave(String(key).trim());
   // Already slash form (letter[accidental]/octave): keep as-is.
-  if (/^[a-gA-G][#b]{0,2}\/-?\d+$/.test(raw)) return raw;
+  if (/^[a-gA-G](?:n|[#b]{0,2})\/-?\d+$/.test(raw)) return raw;
   // EasyScore form (letter[accidental]octave, no slash): insert the slash.
-  const match = /^([a-gA-G])([#b]{0,2})(-?\d+)$/.exec(raw);
+  const match = /^([a-gA-G])(n|[#b]{0,2})(-?\d+)$/.exec(raw);
   if (match) return `${match[1]}${match[2]}/${match[3]}`;
   return raw;
 }
@@ -846,6 +1303,231 @@ export function toNoteStructDuration(
   return { duration: base, dots };
 }
 
+/**
+ * Validate a time-signature string BEFORE it reaches a VexFlow display API,
+ * returning a safe meter or `undefined`.
+ *
+ * The Voice's own meter is already numerically guarded (num/den forced > 0,
+ * else 4/4) so the SOFT voice never gets a degenerate beat budget.  But that
+ * guard protects only the timing path -- the meter is ALSO drawn, through
+ * `stave.addTimeSignature(...)` at each system's clef and through a mid-stave
+ * `new TimeSigNote(...)` at every interior meter change, and BOTH of those
+ * receive the RAW spec string (the per-measure `timeSignature` resolved into
+ * `effectiveMeterByMeasure`, and the top-level one seeding it), not the
+ * guarded value.  VexFlow's TimeSignature.parseTimeSpec THROWS
+ * "BadTimeSignature" on an unparseable spec (e.g. "3" with no slash, "x/4",
+ * "4/0", ""), and that throw propagates out of tickable construction and
+ * aborts the ENTIRE render -- so one fat-fingered mid-score meter change
+ * replaces the whole score with the plugin's red error box, while the exact
+ * same malformed value at the TOP level is silently corrected to 4/4 for the
+ * voice.  This closes that inconsistency for the display path.
+ *
+ * Accepts the two non-fraction meters VexFlow understands -- "C" (common) and
+ * "C|" (cut) -- verbatim, and a plain `n/d` with a positive integer numerator
+ * and denominator; anything else is skipped with a console warning (matching
+ * the plugin's unknown-value convention), so an invalid per-measure change
+ * simply leaves the previous meter in force rather than destroying the score.
+ * Returns `undefined` for an absent meter, so a spec that never set one still
+ * draws no signature -- keeping the no-meter and valid-meter paths identical.
+ *
+ * Exported pure/DOM-free for regression testing.
+ */
+export function sanitizeMeter(raw: string | undefined | null): string | undefined {
+  if (raw == null) return undefined;
+  const s = String(raw).trim();
+  if (s === '') return undefined;
+  // Common / cut time, the two glyph meters VexFlow accepts outside n/d.
+  if (s === 'C' || s === 'C|') return s;
+  const m = /^(\d+)\s*\/\s*(\d+)$/.exec(s);
+  if (m) {
+    const num = Number(m[1]);
+    const den = Number(m[2]);
+    if (num > 0 && den > 0) return `${num}/${den}`;
+  }
+  console.warn(`musicPlugin: invalid timeSignature "${raw}" ignored`);
+  return undefined;
+}
+
+/**
+ * Upper bound for a metronome bpm, in beats per minute.
+ *
+ * Practical published tempi top out well under this even for a fast marcato
+ * (Presto sits around 168-200, Prestissimo rarely past ~208); 999 keeps the
+ * metronome number a legible one-to-three digits and, crucially, caps the
+ * width the mark claims above the staff so an absurd value cannot run the tempo
+ * text off the system.  The cap mirrors the octave (clampKeyOctave) and
+ * layout-dimension (D27) clamps -- a wildly out-of-range numeric input is
+ * pulled back to the edge of the sane range rather than trusted.
+ */
+const MAX_TEMPO_BPM = 999;
+
+/**
+ * Validate a metronome bpm BEFORE it reaches VexFlow's StaveTempo, returning a
+ * safe number or `undefined`.
+ *
+ * StaveTempo.draw renders the bpm with a bare `elText.setText('' + bpm)` -- it
+ * stringifies whatever it is given, with no numeric guard (verified against
+ * vexflow 5.0.0 stavetempo.js).  So an unsanitized bpm prints its raw
+ * JavaScript stringification straight onto the score:
+ *   - NaN / a non-numeric value -> the bpm is falsy, so `if (bpm)` skips it and
+ *     the mark draws a DANGLING "♩ =" with nothing after the equals sign;
+ *   - Infinity -> "♩ = Infinity";
+ *   - a negative bpm -> "♩ = -120" (a negative tempo is meaningless);
+ *   - an astronomically large value -> "♩ = 1e+21" (scientific notation, and it
+ *     runs the mark off the system).
+ * This is the WRONG-OUTPUT sibling of the D25 tempo fix, which sanitized the
+ * beat `duration` and augmentation `dots` but deliberately left `bpm` raw.
+ *
+ * Accepts only a FINITE POSITIVE number: a non-finite or non-positive value is
+ * dropped with a console warning (matching sanitizeMeter's "invalid -> ignore"
+ * convention, and the plugin-wide unknown-value rule), so a bad bpm degrades to
+ * "no bpm" -- the caller then draws the tempo NAME alone rather than a garbled
+ * metronome.  A finite value above MAX_TEMPO_BPM is clamped to the cap (as the
+ * octave / layout clamps do) rather than dropped, since the author clearly
+ * intended a fast tempo.  A fractional bpm (e.g. 92.5, used by some editions)
+ * is preserved; only a long floating tail is trimmed.  A well-formed integer
+ * bpm is returned verbatim, so the valid path is byte-identical.
+ *
+ * Exported pure/DOM-free for regression testing.
+ */
+export function sanitizeTempoBpm(raw: number | undefined | null): number | undefined {
+  if (raw == null) return undefined;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    console.warn(`musicPlugin: invalid tempo bpm "${raw}" ignored`);
+    return undefined;
+  }
+  if (n > MAX_TEMPO_BPM) {
+    console.warn(
+      `musicPlugin: tempo bpm ${n} exceeds ${MAX_TEMPO_BPM}; clamped to `
+      + `${MAX_TEMPO_BPM} to keep the metronome mark on the system`,
+    );
+    return MAX_TEMPO_BPM;
+  }
+  // Trim a long float tail (0.01 bpm precision is finer than any score needs)
+  // without disturbing an integer bpm, which round-trips unchanged.
+  return Math.round(n * 100) / 100;
+}
+
+/**
+ * Validate the `number`/text of a Fingering or StringNumber BEFORE it reaches
+ * VexFlow, returning a safe non-empty string or `undefined`.
+ *
+ * VexFlow's Fingering and StringNumber engrave their `number` option as
+ * LITERAL text -- like StaveTempo's bpm, they stringify whatever they are
+ * given with no numeric guard (verified against vexflow 5.0.0: the option is
+ * passed straight to the glyph's text).  So a degenerate value is printed onto
+ * the staff verbatim, the wrong-output sibling of the D28 tempo-bpm fix:
+ *   - a non-finite NUMBER -> "NaN" / "Infinity" drawn beside the note;
+ *   - the OBJECT form with no `number` (`{position:"below"}`) -> the literal
+ *     "undefined", since `String(undefined)` is "undefined" (verified render);
+ *   - an empty string -> an empty modifier box.
+ *
+ * A finger digit ("1".."5"/0) OR an extended-technique letter -- "T" for the
+ * thumb, "p"/"i"/"m"/"a" for classical-guitar right hand -- is legitimate, so
+ * a non-empty STRING is passed through UNTOUCHED; only a genuinely
+ * unrenderable value is dropped, with a console warning matching the plugin's
+ * unknown-value convention.  The valid path is byte-identical: a normal
+ * "3" / 2 round-trips to the same string it did before.
+ *
+ * Exported pure/DOM-free for regression testing.
+ */
+export function sanitizeModifierNumber(
+  raw: string | number | null | undefined,
+): string | undefined {
+  if (raw == null) {
+    console.warn('musicPlugin: fingering/stringNumber with no number ignored');
+    return undefined;
+  }
+  if (typeof raw === 'number') {
+    if (!Number.isFinite(raw)) {
+      console.warn(
+        `musicPlugin: non-finite fingering/stringNumber "${raw}" ignored`,
+      );
+      return undefined;
+    }
+    return String(raw);
+  }
+  const s = String(raw).trim();
+  if (s === '') {
+    console.warn('musicPlugin: empty fingering/stringNumber ignored');
+    return undefined;
+  }
+  return s;
+}
+
+/**
+ * Upper bound for a measure number.
+ *
+ * Even a complete opera runs a few thousand bars; 100000 is far past any real
+ * score yet keeps the drawn label a legible handful of digits and, crucially,
+ * caps the width the number claims above the staff so an absurd value cannot
+ * run the text off the system.  The cap mirrors MAX_TEMPO_BPM / the octave and
+ * layout-dimension clamps: a wildly out-of-range numeric input is pulled back
+ * to the edge of the sane range rather than trusted.
+ */
+export const MAX_MEASURE_NUMBER = 100000;
+
+/**
+ * Validate the OPENING measure number BEFORE it seeds the running count or
+ * reaches VexFlow's Stave.setMeasure, returning a safe positive integer or
+ * `undefined`.
+ *
+ * This is the last of the numeric-text spec fields to be guarded, the exact
+ * sibling of the D28 tempo-bpm fix (and of sanitizeModifierNumber for
+ * fingering/stringNumber): `measureNumber` is stringified straight onto the
+ * score with no numeric guard.  On the `measureNumbers` path it seeds
+ * `startNumber` and every per-system label is `numberOffset + firstMeasure`,
+ * then drawn as `String(number)` (see drawMeasureNumbers); on the legacy
+ * scalar path it is handed verbatim to `stave.setMeasure`.  So a degenerate
+ * value prints degenerate text:
+ *   - NaN / a non-numeric value -> "NaN" drawn above the first bar of every
+ *     system;
+ *   - Infinity -> "Infinity";
+ *   - a negative or zero number -> a meaningless "0" / "-3" measure label;
+ *   - a fraction (1.5) -> "1.5", which no bar is numbered;
+ *   - an astronomically large value -> "1e+21" (scientific notation), which
+ *     also runs the label off the system.
+ *
+ * Accepts only a FINITE value, truncates it to an integer (a bar index is
+ * whole), and requires it to be positive: a non-finite, non-positive value is
+ * dropped with a console warning (matching sanitizeTempoBpm's "invalid ->
+ * ignore" convention and the plugin-wide unknown-value rule), so the caller
+ * falls back to the default count start of 1 rather than numbering from
+ * nonsense.  A finite value above MAX_MEASURE_NUMBER is clamped to the cap (as
+ * the bpm / octave / layout clamps do) rather than dropped, since the author
+ * clearly intended a high starting bar.  A well-formed positive integer (the
+ * ordinary "start at bar 47" case) round-trips verbatim, so the valid path is
+ * byte-identical.
+ *
+ * Exported pure/DOM-free for regression testing.
+ */
+export function sanitizeMeasureNumber(
+  raw: number | null | undefined,
+): number | undefined {
+  if (raw == null) return undefined;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    console.warn(`musicPlugin: invalid measureNumber "${raw}" ignored`);
+    return undefined;
+  }
+  const i = Math.trunc(n);
+  if (i < 1) {
+    console.warn(
+      `musicPlugin: measureNumber "${raw}" is not a positive bar index; ignored`,
+    );
+    return undefined;
+  }
+  if (i > MAX_MEASURE_NUMBER) {
+    console.warn(
+      `musicPlugin: measureNumber ${i} exceeds ${MAX_MEASURE_NUMBER}; clamped `
+      + `to ${MAX_MEASURE_NUMBER} to keep the label on the system`,
+    );
+    return MAX_MEASURE_NUMBER;
+  }
+  return i;
+}
+
 /** Build the EasyScore note list for a spec, parenthesising chords. */
 /**
  * Build the EasyScore note string for one measure.
@@ -914,6 +1596,122 @@ export function buildNoteString(
 }
 
 /**
+ * A courtesy (cautionary) accidental to draw on one note, addressed by
+ * position WITHIN its measure so the pure planner needs no VexFlow handle.
+ */
+export interface CautionaryMark {
+  /** Index of the note within its measure's own note list. */
+  noteIndex: number;
+  /** Index of the key within the note's chord (0 for a single note). */
+  keyIndex: number;
+  /** VexFlow accidental code to draw parenthesised: "n", "#", "b", "##", "bb". */
+  code: string;
+}
+
+/** Slash-form spec key parse: letter, optional accidental, octave. */
+const CAUTIONARY_KEY_RE = /^([a-gA-G])(n|[#b]{1,2})?\/(-?\d+)$/;
+
+/**
+ * Plan courtesy accidentals for ONE measure, given the measure BEFORE it.
+ *
+ * A courtesy accidental is the parenthesised reminder published editions print
+ * when a pitch altered in one bar returns in the NEXT bar sounding
+ * differently.  It is added only to a note that would otherwise print BARE (a
+ * note carrying its own accidental is already its own reminder) and only when
+ * the SAME pitch (letter AND octave) sounded with a DIFFERENT accidental in
+ * the immediately preceding bar -- the one-bar-back rule the skill prompt
+ * documents.
+ *
+ * Two derived notions drive the decision, both computed the same way the
+ * emit path does so this planner cannot disagree with what is actually drawn:
+ *   - SOUNDING accidental of a note = its explicit accidental if it has one
+ *     ("n" meaning natural), else the key signature's accidental for that
+ *     letter, else natural ("").
+ *   - PRINTS BARE = the signature-filtered pitch carries no accidental glyph,
+ *     i.e. filterPitch drops it (rule 1) because it matches the signature.
+ *     This mirrors filterPitch's own printed-glyph logic in musicAccidentals.ts
+ *     rather than calling it, because filterPitch returns a rewritten pitch
+ *     string, not a "did it print" boolean.
+ *
+ * Only the FIRST occurrence of a pitch in the current bar is marked; a later
+ * repeat needs no reminder.  Pure/DOM-free so it can be unit-tested without a
+ * renderer.
+ */
+export function planCautionaryAccidentals(
+  measureNotes: MusicNoteSpec[],
+  prevMeasureNotes: MusicNoteSpec[] | undefined,
+  keySignature?: string,
+): CautionaryMark[] {
+  if (!Array.isArray(measureNotes) || measureNotes.length === 0) return [];
+  if (!Array.isArray(prevMeasureNotes) || prevMeasureNotes.length === 0) return [];
+
+  const implied = keySignatureMap(keySignature);
+  const sigAcc = (letter: string): string => implied?.[letter.toLowerCase()] ?? '';
+  // The accidental GLYPH filterPitch would emit for this note, so the planner
+  // reasons about exactly what gets drawn rather than a second interpretation
+  // that could disagree with it (see musicAccidentals.ts filterPitch):
+  //   rule 1: explicit sign matches the signature   -> "" (bare, signature supplies it)
+  //   rule 4: bare note in a #/b signature          -> "n" (cancel the signature)
+  //   rule 2: everything else                        -> the explicit sign verbatim
+  const printed = (letter: string, explicit: string): string => {
+    const inSig = sigAcc(letter);
+    if (explicit !== '' && explicit !== 'n' && explicit === inSig) return '';    // rule 1
+    if (explicit === '' && (inSig === '#' || inSig === 'b')) return 'n';         // rule 4
+    return explicit;                                                             // rule 2
+  };
+  // Sounding accidental ("" natural, "#", "b", ...), DERIVED from the printed
+  // glyph so it matches VexFlow's playback of the emitted pitch: a bare note
+  // sounds as the signature, a printed natural sounds natural, else the sign.
+  const sounding = (letter: string, explicit: string): string => {
+    const p = printed(letter, explicit);
+    if (p === '') return sigAcc(letter);
+    if (p === 'n') return '';
+    return p;
+  };
+  // Prints no accidental glyph at all -> a courtesy reminder is warranted here.
+  const printsBare = (letter: string, explicit: string): boolean =>
+    printed(letter, explicit) === '';
+  const parse = (key: string): { letter: string; explicit: string; oct: string } | null => {
+    const m = CAUTIONARY_KEY_RE.exec(String(key).trim());
+    if (!m) return null;
+    return { letter: m[1], explicit: m[2] ?? '', oct: m[3] };
+  };
+
+  // End-of-previous-bar sounding accidental per pitch (letter+octave); the
+  // last occurrence wins, which is the state the reader carries into this bar.
+  const prevSounding = new Map<string, string>();
+  for (const n of prevMeasureNotes) {
+    if (n?.rest || !n?.keys?.length) continue;
+    for (const k of n.keys) {
+      const p = parse(k);
+      if (!p) continue;
+      prevSounding.set(`${p.letter.toLowerCase()}${p.oct}`, sounding(p.letter, p.explicit));
+    }
+  }
+  if (prevSounding.size === 0) return [];
+
+  const marks: CautionaryMark[] = [];
+  const seenThisBar = new Set<string>();
+  measureNotes.forEach((n, noteIndex) => {
+    if (n?.rest || !n?.keys?.length) return;
+    n.keys.forEach((k, keyIndex) => {
+      const p = parse(k);
+      if (!p) return;
+      const id = `${p.letter.toLowerCase()}${p.oct}`;
+      if (seenThisBar.has(id)) return;          // only the first occurrence
+      seenThisBar.add(id);
+      const prev = prevSounding.get(id);
+      if (prev === undefined) return;           // pitch absent last bar -> nothing to remind
+      const now = sounding(p.letter, p.explicit);
+      if (prev === now) return;                 // unchanged -> no reminder
+      if (!printsBare(p.letter, p.explicit)) return; // already prints its own sign
+      marks.push({ noteIndex, keyIndex, code: now === '' ? 'n' : now });
+    });
+  });
+  return marks;
+}
+
+/**
  * True when `value` is a non-empty array of playable entries.  A rest counts:
  * a measure of silence is legitimate content, and rejecting it would make a
  * score that opens with a rest unrenderable.
@@ -921,14 +1719,215 @@ export function buildNoteString(
 const hasNotes = (value: any): boolean => Array.isArray(value) && value.length > 0;
 
 /**
+ * True when a measure carries renderable content: real notes OR a
+ * multi-measure rest (which holds no notes but is legitimate content -- a
+ * part can consist entirely of "16 bars rest").  Used by the recognition
+ * gates so a measures list whose bars are pure MMRs is still admitted.
+ */
+/**
+ * Bar count of a multi-measure rest, honouring BOTH documented spellings.
+ *
+ * The skill prompt names this field `multiRest` in its primary section but
+ * `multiMeasureRest` in a second one -- and the renderer only ever read
+ * `multiRest`, so a spec written against the second section drew a
+ * silently-empty bar: the H-bar and its count never appeared (verified -- the
+ * middle bar of a "quarters / 4-bar rest / halves" spec rendered blank).
+ * Accept either name (canonical `multiRest` wins when both are present) so an
+ * author reaches the feature regardless of which spelling the prompt led them
+ * to, matching the plugin's permissive shape-normalisation convention (see
+ * normalizeVoicesShape).  Returns the RAW value (possibly non-integer) so the
+ * builder's own "integer >= 1" validation still runs and warns.
+ */
+const multiRestOf = (m: any): number | undefined =>
+  m?.multiRest ?? m?.multiMeasureRest;
+
+const measureHasContent = (m: any): boolean =>
+  hasNotes(m?.notes) || (multiRestOf(m) ?? 0) >= 1
+  // A MEASURE-MAJOR bar carries its notes inside its own `voices` and has no
+  // flat `notes`; without this the whole measures list tested empty and the
+  // spec was rejected as non-music (voicesHaveNotes is assigned later in the
+  // module but only CALLED at render time, so the forward reference is safe).
+  || voicesHaveNotes(m?.voices);
+
+/**
  * True when a `voices` list carries renderable notes in any of its voices,
  * whether flat (`voice.notes`) or measure-based (`voice.measures[].notes`).
  * Used by the recognition gates so a multi-voice staff -- which stores its
  * notes only inside `voices[]` -- is accepted rather than mistaken for empty.
  */
-const voicesHaveNotes = (voices: any): boolean =>
-  Array.isArray(voices) && voices.some((v: any) => hasNotes(v?.notes)
+/**
+ * Normalise a `voices` field into the canonical ARRAY-of-voice-objects shape
+ * (`[{notes:[...]}, ...]`) the render core walks and indexes.
+ *
+ * Three spellings occur in the wild and an author cannot be expected to know
+ * which one the internals prefer:
+ *   - ARRAY of voice objects    `[{notes:[...]}, ...]`     (canonical)
+ *   - ARRAY of bare note arrays `[[...], [...]]`
+ *   - KEYED OBJECT              `{"1":[...], "2":[...]}`    (voice-NUMBER keyed,
+ *                               the MusicXML `<voice>` numbering convention),
+ *     whose values may each be a bare note array OR a voice object.
+ *
+ * The keyed-object form matched NO branch of `voicesHaveNotes` (which required
+ * `Array.isArray(voices)`), so a multi-voice spec spelled that way was not
+ * recognised as music at all -> `canHandle` false -> the D3Renderer reported
+ * "No compatible plugin found for spec: {type: music}" and retried to the ~30s
+ * inner timeout with zero output -- total data loss dressed up as a hang, the
+ * same gate-vs-shape class already fixed for the staves/measures branches.
+ *
+ * Returns the array form (a NEW array only when a conversion was needed) or
+ * `undefined` when there are no voices.  A value that is ALREADY an array is
+ * returned BY REFERENCE (never rebuilt) unless it holds bare note-arrays that
+ * must be wrapped -- so specs already using the canonical shape are
+ * byte-identical and this cannot become a catch-all rewrite.
+ *
+ * Exported pure/DOM-free for regression testing.
+ */
+export function normalizeVoicesShape(voices: any): any[] | undefined {
+  if (Array.isArray(voices)) {
+    // An array of bare note-arrays (`[[...],[...]]`) -> wrap each as a voice
+    // object; an array already holding voice objects is returned untouched.
+    if (voices.some((v: any) => Array.isArray(v))) {
+      return voices.map((v: any) => (Array.isArray(v) ? { notes: v } : v));
+    }
+    return voices;
+  }
+  if (voices && typeof voices === 'object') {
+    // Keyed-object polyphony.  Order by NUMERIC voice key when every key is an
+    // integer string ("1","2",...), so voice 1 stays the primary line and the
+    // measure-alignment the secondary-voice pass relies on is preserved; fall
+    // back to insertion order for non-numeric keys.
+    const keys = Object.keys(voices);
+    if (keys.length === 0) return [];
+    const allNumeric = keys.every((k) => /^\d+$/.test(k));
+    const ordered = allNumeric
+      ? keys.slice().sort((a, b) => Number(a) - Number(b))
+      : keys;
+    return ordered.map((k) => {
+      const v = (voices as any)[k];
+      return Array.isArray(v) ? { notes: v } : v;
+    });
+  }
+  return undefined;
+}
+
+const voicesHaveNotes = (voices: any): boolean => {
+  const arr = normalizeVoicesShape(voices);
+  return Array.isArray(arr) && arr.some((v: any) => hasNotes(v?.notes)
     || (Array.isArray(v?.measures) && v.measures.some((m: any) => hasNotes(m?.notes))));
+};
+
+/**
+ * Canonicalise a single staff's `voices` field to the array-of-voice-objects
+ * shape `measuresOf` (via `voices?.[0]`) and the secondary-voice loop index.
+ *
+ * `canHandle` (through `voicesHaveNotes`) now admits a keyed-object
+ * (`voices:{"1":[...]}`) or bare-array (`voices:[[...]]`) spelling, but the
+ * render core reads `staffSpec.voices?.[0]`, which is `undefined` for a keyed
+ * object -> the staff rendered EMPTY (silent data loss the moment detection
+ * started accepting the shape).  Normalising here, at the single point where
+ * staff specs are assembled, keeps every downstream reader on one shape.  A
+ * staff already using the canonical array is returned BY REFERENCE, so
+ * existing single/grand-staff specs render byte-for-byte as before.
+ */
+function normalizeStaffVoiceShape<T extends { voices?: any }>(staffSpec: T): T {
+  const nv = normalizeVoicesShape(staffSpec.voices);
+  return nv && nv !== staffSpec.voices ? { ...staffSpec, voices: nv } : staffSpec;
+}
+
+/**
+ * Transpose a MEASURE-MAJOR multi-voice staff into the canonical VOICE-MAJOR
+ * shape the render core consumes.
+ *
+ * The skill prompt documents TWO equivalent spellings of the same polyphonic
+ * music:
+ *   - VOICE-MAJOR   `voices: [{stemDirection, measures:[...]}, ...]` -- one
+ *     list per line, each carrying that line's bars.  This is the ONLY shape
+ *     the render core reads: measuresOf takes `voices[0]`, the secondary loop
+ *     `voices[1..]`.
+ *   - MEASURE-MAJOR `measures: [{voices:[...], endBar, ...}, ...]` -- one list
+ *     per BAR, each carrying that bar's voices, with the bar-level fields
+ *     (endBar/timeSignature/systemBreak/multiRest) on the measure.
+ *
+ * Only voice-major was ever implemented -- nothing read a MEASURE's `voices`,
+ * and MusicMeasure had no such field -- so a measure-major spec tested EMPTY
+ * at every recognition gate (measureHasContent looked only at `notes`/
+ * `multiRest`), isMusicSpec rejected it, canHandle returned false, and the
+ * D3Renderer reported "No compatible plugin found for spec: {type: music}" and
+ * retried to the ~30s inner timeout with ZERO output -- the same gate-vs-shape
+ * total-data-loss class already fixed for the staves / keyed-object voices
+ * branches.
+ *
+ * This flips the axes: for V = the most voices any bar declares, voice j
+ * collects one measure per bar (`m.voices[j]?.notes`, or the bar's own flat
+ * `notes` for j===0 on a bar with no `voices` at all, so a staff mixing single-
+ * and multi-voice bars still works), carrying the bar-level fields so barlines,
+ * meter changes, wrapping and multi-measure rests still land on the right bar.
+ * Each output voice's `stemDirection` is the first one any bar declares for
+ * that line.  The measure-major `measures` are then dropped so measuresOf falls
+ * through to `voices[0].measures`, the standard primary-voice path.
+ *
+ * A staff that ALREADY has top-level `voices` (voice-major) is returned
+ * untouched -- voice-major wins -- as is a staff whose measures carry no
+ * `voices` at all, so every existing single-voice or measures-based spec is
+ * byte-identical.  Exported pure/DOM-free for regression testing.
+ */
+export function normalizeMeasureMajorVoices<
+  T extends { measures?: any[]; voices?: any },
+>(staffSpec: T): T {
+  // Voice-major already declared -> it wins; do not double-handle.
+  if (staffSpec.voices != null) return staffSpec;
+  const measures = staffSpec.measures;
+  if (!Array.isArray(measures) || measures.length === 0) return staffSpec;
+  // Only act when at least one bar actually carries a `voices` array; a plain
+  // measures-based staff is returned BY REFERENCE, so its layout is unchanged.
+  const anyMeasureVoiced = measures.some(
+    (m: any) => normalizeVoicesShape(m?.voices) !== undefined,
+  );
+  if (!anyMeasureVoiced) return staffSpec;
+
+  // Per-bar canonical voices; a bar without its own `voices` contributes its
+  // flat `notes` as voice 0 only (so a bar of plain notes among voiced bars
+  // still reads as the primary line, with the other voices resting).
+  const perBarVoices: any[][] = measures.map((m: any) => {
+    const nv = normalizeVoicesShape(m?.voices);
+    return nv && nv.length > 0 ? nv : [{ notes: m?.notes ?? [] }];
+  });
+  const voiceCount = Math.max(1, ...perBarVoices.map((v) => v.length));
+
+  // Bar-level fields ride with the MEASURE, not the voice, so re-attach them to
+  // each transposed measure (voice 0 is what measuresOf reads for barlines /
+  // meter; the copies on secondary voices are harmless -- the secondary loop
+  // mirrors voice 0's barlines and reads only each bar's `notes`).
+  const barFields = (m: any): Record<string, unknown> => {
+    const out: Record<string, unknown> = {};
+    for (const k of [
+      'endBar', 'beginBar', 'timeSignature', 'systemBreak', 'pickup',
+      'multiRest', 'multiMeasureRest',
+    ]) {
+      if (m?.[k] !== undefined) out[k] = m[k];
+    }
+    return out;
+  };
+
+  const voices: any[] = [];
+  for (let j = 0; j < voiceCount; j += 1) {
+    let stemDirection: string | undefined;
+    const voiceMeasures = measures.map((m: any, bi: number) => {
+      const vv = perBarVoices[bi][j];
+      if (stemDirection === undefined && vv?.stemDirection) {
+        stemDirection = vv.stemDirection;
+      }
+      return { notes: vv?.notes ?? [], ...barFields(m) };
+    });
+    voices.push({
+      ...(stemDirection !== undefined ? { stemDirection } : {}),
+      measures: voiceMeasures,
+    });
+  }
+
+  const { measures: _drop, ...rest } = staffSpec as any;
+  return { ...rest, voices } as T;
+}
 
 /**
  * A staff's measures, treating a flat `notes` list as a single measure.
@@ -987,7 +1986,7 @@ export const isMusicSpec = (spec: any): spec is MusicSpec => {
   if (hasNotes(spec.notes)) return true;
   // A measures-only spec has no top-level `notes` either.
   if (Array.isArray(spec.measures)
-      && spec.measures.some((m: any) => hasNotes(m?.notes))) return true;
+      && spec.measures.some((m: any) => measureHasContent(m))) return true;
   // A multi-voice single-staff spec puts its notes inside `voices[]` and has
   // no top-level `notes`/`measures` at all -- requiring those would reject it
   // and (via canHandle) surface as "No compatible plugin", the same class of
@@ -1000,7 +1999,7 @@ export const isMusicSpec = (spec: any): spec is MusicSpec => {
     // somewhere rather than accepting the key's mere presence.
     spec.staves.some((staff: any) => hasNotes(staff?.notes)
       || (Array.isArray(staff?.measures)
-          && staff.measures.some((m: any) => hasNotes(m?.notes)))
+          && staff.measures.some((m: any) => measureHasContent(m)))
       || voicesHaveNotes(staff?.voices))
   );
 };
@@ -1015,12 +2014,12 @@ export const isMusicSpec = (spec: any): spec is MusicSpec => {
 const hasMusicContent = (s: any): boolean =>
   typeof s === 'object' && s !== null && (
     hasNotes(s.notes)
-    || (Array.isArray(s.measures) && s.measures.some((m: any) => hasNotes(m?.notes)))
+    || (Array.isArray(s.measures) && s.measures.some((m: any) => measureHasContent(m)))
     || voicesHaveNotes(s.voices)
     || (Array.isArray(s.staves) && s.staves.length > 0
         && s.staves.some((staff: any) => hasNotes(staff?.notes)
           || (Array.isArray(staff?.measures)
-              && staff.measures.some((m: any) => hasNotes(m?.notes)))
+              && staff.measures.some((m: any) => measureHasContent(m)))
           || voicesHaveNotes(staff?.voices)))
   );
 
@@ -1378,6 +2377,66 @@ export function drawLyricLayer(
 }
 
 /**
+ * Dynamic marks (p, mf, f, sfz, ...) drawn BELOW the staff, on a consistent
+ * band, aligned under their notes.
+ *
+ * Published instrumental scores set dynamics beneath the staff; the band above
+ * is reserved for tempo, chord symbols and ornaments.  This was previously
+ * done with VexFlow's TextDynamics positioned by its `line` option, but in
+ * VexFlow 5.0 that option does not move the mark below the staff (verified on
+ * the built bundle: `line: 9`, which should resolve to getYForLine(6) two
+ * spaces under the bottom line, still rendered `p`/`f` ABOVE the top line).
+ * So -- like the harp-pedal, lyric and volta layers -- the dynamics are
+ * hand-drawn with d3 AFTER formatting, reading each note's resolved x.  An
+ * overlay also takes no beat time, so it cannot displace the notes and removes
+ * the need for the parallel GhostNote-padded voice the TextDynamics approach
+ * required to keep note spacing intact.
+ *
+ * The band sits just below the bottom stave line and ABOVE the lyric underlay
+ * (drawLyricLayer drops verse 1 from +26 to +44 when a dynamic is present), so
+ * a note carrying both a dynamic and a lyric keeps them on separate rows.  An
+ * unknown mark (outside DYNAMIC_MARKS) is skipped with a console warning rather
+ * than drawn as ASCII, matching the plugin's unknown-name convention.
+ */
+export function drawDynamicsLayer(
+  d3: any,
+  svg: any,
+  stave: any,
+  renderedNotes: any[],
+  specNotes: MusicNoteSpec[],
+  isDarkMode: boolean,
+): void {
+  const textFill = musicInkColor(isDarkMode);
+  // Bold italic serif is the conventional look of a dynamic; the real SMuFL
+  // dynamic glyphs are VexFlow-internal vector paths that cannot be reused in
+  // a d3 <text>, so a bold-italic serif approximation stands in for them.
+  const DYNAMIC_FONT = 'italic 700 15px "Times New Roman", Georgia, serif';
+  const bottomLineY = typeof stave.getYForLine === 'function' ? stave.getYForLine(4) : 60;
+  // Two stave-spaces below the bottom line -- the standard dynamics band, and
+  // the position the old TextDynamics `line: 9` was aiming for (getYForLine(6)).
+  const y = bottomLineY + 24;
+  const xOf = (note: any): number | null =>
+    note && typeof note.getAbsoluteX === 'function' ? note.getAbsoluteX() : null;
+
+  renderedNotes.forEach((note, i) => {
+    const mark = specNotes[i]?.dynamic;
+    if (!mark) return;
+    if (!DYNAMIC_MARKS.has(mark)) {
+      console.warn(`musicPlugin: unknown dynamic "${mark}" skipped`);
+      return;
+    }
+    const x = xOf(note);
+    if (x == null) return;
+    svg.append('text')
+      .attr('x', x).attr('y', y)
+      .attr('text-anchor', 'middle')
+      .attr('fill', textFill)
+      .style('font', DYNAMIC_FONT)
+      .text(mark);
+  });
+}
+
+/**
  * Height of the title block, in pixels, given which of its parts are present.
  *
  * Returned so the render path can both reserve headroom (grow the canvas and
@@ -1514,6 +2573,367 @@ export function drawStaffLabels(
 }
 
 /**
+ * Measure numbers drawn above the first bar of each system.
+ *
+ * VexFlow's `Stave.setMeasure` DOES render a number for a lone, directly-placed
+ * stave (the legacy scalar `measureNumber` path still uses it), but on a
+ * wrapped multi-system layout -- staves created through `factory.System` -- the
+ * number silently fails to draw.  Verified against the built bundle:
+ * `measureNumbers: true` over four bars wrapping to four systems drew ZERO
+ * numbers on every system, while the identical `setMeasure(1)` on a single
+ * stave drew "1".  So, exactly like the staff-label, volta, lyric and dynamics
+ * layers, the numbers are hand-drawn with d3 AFTER formatting, reading each
+ * system top-stave's resolved x/y via the same getX()/getYForLine() path those
+ * layers rely on (and which the volta overlay already proves works for wrapped
+ * systems).  Placed small, above the top line at the start of the first
+ * note (getNoteStartX, clear of the clef/key/time block), as published scores
+ * set them.
+ */
+export function drawMeasureNumbers(
+  d3: any,
+  svg: any,
+  plans: Array<{ stave: any; number: number }>,
+  isDarkMode: boolean,
+): void {
+  const textFill = musicInkColor(isDarkMode);
+  for (const { stave, number } of plans) {
+    // Anchor the number above the FIRST NOTE of the bar, not the stave's left
+    // edge.  getX() is the barline/clef position, so a number placed there was
+    // drawn directly over the clef glyph -- and on the first system it also
+    // collided with the tempo mark (drawn at stave.x, lifted) and the
+    // rehearsal/`section` mark, crowding all three into the same top-left band.
+    // getNoteStartX() is the x AFTER the clef/key/time block, i.e. the start of
+    // the note area, which is where published scores place a system-start
+    // measure number (above and slightly left of the first note, clear of the
+    // clef and of anything in the far-left band).  Fall back to a fixed inset
+    // past getX() only if getNoteStartX is unavailable.
+    const x = typeof stave.getNoteStartX === 'function'
+      ? stave.getNoteStartX()
+      : (typeof stave.getX === 'function' ? stave.getX() + 40 : 10);
+    const topY = typeof stave.getYForLine === 'function' ? stave.getYForLine(0) : 20;
+    svg.append('text')
+      .attr('x', x).attr('y', topY - 12)
+      .attr('text-anchor', 'middle')
+      .attr('fill', textFill)
+      .style('font', '400 11px "Times New Roman", Georgia, serif')
+      .text(String(number));
+  }
+}
+
+/**
+ * The leading "tr" glyph of a trill line, hand-drawn above a note.
+ *
+ * A published trill is a "tr" FOLLOWED by a wavy line -- a bare squiggle reads
+ * as vibrato, not a trill.  VexFlow's VibratoBracket draws only the wave, so
+ * the "tr" has to come from elsewhere.  The obvious mechanism -- attaching a
+ * `tr` Ornament to the start note before format -- was tried (iter3) and
+ * verified INEFFECTIVE against a fresh bundle: the modifier compiled and
+ * deployed but drew nothing, because the ornament was added to the note after
+ * its ModifierContext had been built during the voice's own pass, so the late
+ * addition never entered the layout.  Rather than fight VexFlow's modifier
+ * timing, the "tr" is hand-drawn here in the post-format overlay pass, exactly
+ * like the dynamics / measure-number / volta / lyric layers the plugin has
+ * standardised on: reading the note's resolved x guarantees it renders and
+ * lands immediately to the LEFT of where the wave begins, so the pair reads as
+ * "tr~~~~~".  An italic serif "tr" stands in for the SMuFL ornament glyph, the
+ * same approximation drawDynamicsLayer makes for the dynamic glyphs, since the
+ * real glyph is a VexFlow-internal vector path unusable in a d3 <text>.
+ */
+export function drawTrillGlyph(
+  d3: any,
+  svg: any,
+  stave: any,
+  note: any,
+  isDarkMode: boolean,
+): void {
+  const textFill = musicInkColor(isDarkMode);
+  const x = note && typeof note.getAbsoluteX === 'function' ? note.getAbsoluteX() : null;
+  if (x == null) return;
+  // Sit just above the top stave line, on the same band the VibratoBracket
+  // wave occupies, and end a few px LEFT of the notehead so the wave (which
+  // starts at the note) runs on from it rather than through it.
+  const topLineY = typeof stave.getYForLine === 'function' ? stave.getYForLine(0) : 20;
+  svg.append('text')
+    .attr('x', x - 4).attr('y', topLineY - 12)
+    .attr('text-anchor', 'end')
+    .attr('fill', textFill)
+    .style('font', 'italic 700 13px "Times New Roman", Georgia, serif')
+    .text('tr');
+}
+
+/**
+ * Breath / caesura marks drawn ABOVE the staff, just AFTER the note they
+ * follow.
+ *
+ * A breath is engraved after a note, at the top of the staff -- a wind or
+ * vocal phrasing break, or (the caesura) the "railroad-tracks" grand pause.
+ * VexFlow ships no breath-mark primitive that engraves after the note, so --
+ * like the trill glyph, dynamics, lyric and volta layers -- it is hand-drawn
+ * with d3 in the post-format overlay pass, reading each note's resolved x so
+ * the mark lands immediately to the RIGHT of its notehead (and left of the
+ * next note, so it reads as a break rather than an accent on the next note).
+ *
+ * The comma uses U+2019 (a raised comma) as a stand-in for the SMuFL
+ * breathMarkComma glyph, which is a VexFlow-internal vector path unusable in a
+ * d3 <text> -- the same approximation drawDynamicsLayer / drawTrillGlyph make.
+ * The tick and caesura are stroke shapes and are drawn as line segments.
+ */
+export function drawBreathMarks(
+  d3: any,
+  svg: any,
+  stave: any,
+  renderedNotes: any[],
+  specNotes: MusicNoteSpec[],
+  isDarkMode: boolean,
+): void {
+  const textFill = musicInkColor(isDarkMode);
+  const topLineY = typeof stave.getYForLine === 'function' ? stave.getYForLine(0) : 20;
+  const xOf = (note: any): number | null =>
+    note && typeof note.getAbsoluteX === 'function' ? note.getAbsoluteX() : null;
+
+  renderedNotes.forEach((note, i) => {
+    const raw = specNotes[i]?.breath;
+    if (raw == null || raw === false) return;
+    // Resolve the friendly value to a kind + scale.  `true` is the comma
+    // shorthand; a number is an explicit comma scale (clamped to 0.3..1); a
+    // string is looked up in BREATH_MARKS, unknown -> skip with a warning.
+    let kind: 'comma' | 'tick' | 'caesura' | 'caesura-curved' = 'comma';
+    let scale = 1;
+    if (raw === true) {
+      // comma, scale 1
+    } else if (typeof raw === 'number') {
+      scale = Math.max(0.3, Math.min(1, raw));
+    } else {
+      const resolved = BREATH_MARKS[String(raw).toLowerCase()];
+      if (!resolved) {
+        console.warn(`musicPlugin: unknown breath "${raw}" skipped`);
+        return;
+      }
+      kind = resolved;
+    }
+
+    const x = xOf(note);
+    if (x == null) return;
+    // Sit just after the notehead, but stay left of the next note so the mark
+    // reads as a break belonging to THIS note rather than an accent on the next.
+    const nextX = i + 1 < renderedNotes.length ? xOf(renderedNotes[i + 1]) : null;
+    const bx = nextX != null && nextX > x ? Math.min(x + 14, (x + nextX) / 2) : x + 12;
+    // Band just above the top stave line, the same as the trill/harp overlays.
+    const y = topLineY - 6;
+
+    if (kind === 'comma') {
+      svg.append('text')
+        .attr('x', bx).attr('y', y)
+        .attr('text-anchor', 'middle')
+        .attr('fill', textFill)
+        .style('font', `700 ${Math.round(18 * scale)}px "Times New Roman", Georgia, serif`)
+        .text('\u2019');
+    } else if (kind === 'tick') {
+      const h = 10 * scale;
+      svg.append('line')
+        .attr('x1', bx - 2 * scale).attr('x2', bx + 3 * scale)
+        .attr('y1', y).attr('y2', y - h)
+        .attr('stroke', textFill).attr('stroke-width', 1.5);
+    } else {
+      // caesura: two parallel strokes marking a grand pause.  The straight
+      // "railroad-tracks" variant draws them as diagonal line segments; the
+      // "caesura-curved" variant bows each stroke into the alternate published
+      // curved-caesura glyph.  Same two-stroke geometry, so the straight path
+      // stays byte-identical (a plain <line> with the original coordinates).
+      const h = 12 * scale;
+      const gap = 4 * scale;
+      const curved = kind === 'caesura-curved';
+      for (const dx of [-gap, gap]) {
+        const x0 = bx + dx - 2 * scale; // bottom-left foot
+        const x1 = bx + dx + 3 * scale; // top-right head
+        if (curved) {
+          // Bow the stroke with a quadratic whose control point is pushed to
+          // the left of the chord, so the pair reads as two curved commas
+          // rather than straight ticks.
+          const cx = x0 - 3 * scale;
+          const cy = y - h / 2;
+          svg.append('path')
+            .attr('d', `M ${x0} ${y} Q ${cx} ${cy} ${x1} ${y - h}`)
+            .attr('fill', 'none')
+            .attr('stroke', textFill).attr('stroke-width', 1.5);
+        } else {
+          svg.append('line')
+            .attr('x1', x0).attr('x2', x1)
+            .attr('y1', y).attr('y2', y - h)
+            .attr('stroke', textFill).attr('stroke-width', 1.5);
+        }
+      }
+    }
+  });
+}
+
+/**
+ * Cue-note scaling: shrink a note engraved with `cue` to ~2/3 size in place.
+ *
+ * A cue note keeps its beat time -- VexFlow lays it out full size and it
+ * occupies real rhythmic space in the bar -- and only its SIZE changes, which
+ * is why this is a post-format visual transform rather than a different note
+ * construction: the layout (horizontal spacing, stem direction, accidentals,
+ * ledger lines) is the ordinary full-size one, and the already-drawn glyph
+ * group is scaled down around its own notehead so notehead, stem and flag
+ * shrink together and stay internally consistent.  VexFlow ships no cue-note
+ * primitive (GraceNote is close but drops beat time), and the per-element
+ * fontScale does NOT cascade from a StaveNote to its child noteheads/stem
+ * (verified against vexflow 5.0.0: noteheads size from `fontInfo`, built at
+ * construction, not from the note's fontScale), so -- exactly like the
+ * dynamics / trill / breath layers -- the effect is applied here by
+ * transforming the note's rendered <g class="vf-stavenote"> element.
+ *
+ * The transform is anchored at the notehead (getAbsoluteX / the first
+ * resolved y) so the head stays put while the stem and flag pull inward,
+ * rather than the whole note sliding toward the canvas origin a bare
+ * `scale()` would cause.  A prior transform (a dark-theme rotation etc.) is
+ * preserved by prepending, never replaced.
+ *
+ * `true` is the 2/3 default; a number is clamped to 0.3..1.  A resolved scale
+ * of >= 1 is a no-op (nothing to shrink), so a full-size request costs
+ * nothing and a note without `cue` is never touched -- keeping the
+ * no-cue path byte-identical.
+ */
+export function drawCueNotes(
+  svg: any,
+  renderedNotes: any[],
+  specNotes: MusicNoteSpec[],
+): void {
+  const root: SVGElement | null = typeof svg?.node === 'function' ? svg.node() : null;
+  if (!root) return;
+  renderedNotes.forEach((note, i) => {
+    const raw = specNotes[i]?.cue;
+    if (raw == null || raw === false) return;
+    const scale = raw === true ? 0.66 : Math.max(0.3, Math.min(1, Number(raw)));
+    // Non-finite (a bad number) or a full-size request -- nothing to do.
+    if (!Number.isFinite(scale) || scale >= 1) return;
+    // The note's rendered group is `vf-<id>` (SVGContext.openGroup prefixes
+    // the note's own id with "vf-"; see stavenote.js draw()).  An attribute
+    // selector rather than `#vf-…` so an id that begins with a digit still
+    // matches.
+    const id = typeof note.getAttribute === 'function' ? note.getAttribute('id') : null;
+    if (!id) return;
+    const group = root.querySelector(`[id="vf-${id}"]`) as SVGElement | null;
+    if (!group) return;
+    // Anchor at the notehead so the shrink is centred there.
+    let cx: number | null = null;
+    let cy: number | null = null;
+    try {
+      if (typeof note.getAbsoluteX === 'function') cx = note.getAbsoluteX();
+      const ys = typeof note.getYs === 'function' ? note.getYs() : null;
+      if (Array.isArray(ys) && ys.length > 0) cy = ys[0];
+    } catch {
+      // getYs throws before layout; a cue note without resolved geometry is
+      // left full size rather than mis-placed.
+      return;
+    }
+    if (cx == null || cy == null) return;
+    const prior = group.getAttribute('transform');
+    const shrink = `translate(${cx},${cy}) scale(${scale}) translate(${-cx},${-cy})`;
+    group.setAttribute('transform', prior ? `${prior} ${shrink}` : shrink);
+  });
+}
+
+/**
+ * True when a measure's LONE tickable is a bare, whole-bar note or rest that
+ * published engraving CENTERS in its measure rather than jamming against the
+ * clef.
+ *
+ * A measure holding a single note/rest that fills the whole bar -- most
+ * commonly a whole rest (an "empty" bar) or a whole note in common time -- is
+ * centered over the measure in every published house style (Gould, "Behind
+ * Bars"): there is no rhythmic reason to place it anywhere else, and a
+ * left-clustered whole note reads as an early downbeat.  VexFlow's Formatter,
+ * given a system wider than the single tickable's minimum width, does NOT
+ * re-center it -- it leaves the lone note at the left start-x with the rest of
+ * the bar empty (verified against vexflow 5.0.0: `{notes:[{keys:["c/5"],
+ * duration:"w"}]}` rendered the whole note hard against the 4/4 signature with
+ * ~250px of blank staff running to the closing barline).
+ *
+ * Deliberately STRICT so it fires only on that unambiguous case and leaves
+ * every other layout byte-identical:
+ *   - the tickable must FILL the whole bar: a whole REST fills any meter (the
+ *     whole-bar-rest convention), a whole NOTE only common time (4/4 or C),
+ *     so a half note in 4/4 -- a legitimately underfull bar -- is NOT moved;
+ *   - it must be BARE: any decoration drawn by a post-format overlay that
+ *     reads the note's resolved x (dynamic, lyric, chord symbol, harp pedal,
+ *     breath, cue, annotation, articulation, ornament, grace, fingering,
+ *     string number) would be stranded at the un-centered x if the note moved,
+ *     so a decorated note is left exactly where VexFlow placed it.
+ *
+ * Pure/DOM-free so the decision can be unit-tested without a renderer; the
+ * geometry (where the centre is) lives in centerLoneWholeBar.
+ */
+export function shouldCenterLoneWholeBar(
+  specNote: MusicNoteSpec | undefined,
+  numBeats: number,
+  beatValue: number,
+): boolean {
+  if (!specNote) return false;
+  const { base } = sanitizeDuration(specNote.duration);
+  if (base !== 'w') return false;                 // only a whole note/rest fills a bar
+  const isRest = Boolean(specNote.rest) || !specNote.keys?.length;
+  // A whole note only fills common time; a whole rest is the whole-bar rest in
+  // any meter.
+  if (!isRest && !(numBeats === 4 && beatValue === 4)) return false;
+  // Any x-reading overlay or decoration disqualifies it: moving the note would
+  // strand the overlay at the old formatted x (the overlays read getAbsoluteX,
+  // which reports where VexFlow placed the note, not this post-hoc transform).
+  const decorated =
+    specNote.dynamic != null || specNote.lyric != null
+    || specNote.chordSymbol != null || specNote.harpPedal != null
+    || specNote.breath != null || specNote.cue != null
+    || specNote.tremolo != null || specNote.arpeggio != null
+    || specNote.fingering != null || specNote.stringNumber != null
+    || (Array.isArray(specNote.annotations) && specNote.annotations.length > 0)
+    || (Array.isArray(specNote.articulations) && specNote.articulations.length > 0)
+    || (Array.isArray(specNote.ornaments) && specNote.ornaments.length > 0)
+    || (Array.isArray(specNote.graceNotes) && specNote.graceNotes.length > 0);
+  return !decorated;
+}
+
+/**
+ * Centre a measure's lone whole-bar note/rest within its measure by
+ * translating its rendered group to the measure's horizontal midpoint.
+ *
+ * Same group-transform mechanism as drawCueNotes (the note's rendered
+ * `vf-<id>` group), applied in the post-format overlay pass so the note's
+ * resolved x already exists.  The target is the geometric centre of the
+ * stave's note area (getNoteStartX .. getNoteEndX) -- no tuning constant: a
+ * whole-bar note sits exactly halfway between the end of the clef/key/time
+ * block and the closing barline, as published scores set it.  A prior
+ * transform is preserved by prepending (the cue shrink is mutually excluded by
+ * shouldCenterLoneWholeBar, but a future overlay may add one).  No-ops when the
+ * note is already centred (|dx| tiny) or its geometry is unavailable, so a
+ * correctly-placed note is byte-identical.
+ */
+export function centerLoneWholeBar(svg: any, stave: any, note: any): void {
+  const root: SVGElement | null = typeof svg?.node === 'function' ? svg.node() : null;
+  if (!root || !note || !stave) return;
+  const startX = typeof stave.getNoteStartX === 'function' ? stave.getNoteStartX() : null;
+  const endX = typeof stave.getNoteEndX === 'function' ? stave.getNoteEndX() : null;
+  if (startX == null || endX == null || !(endX > startX)) return;
+  let cur: number | null = null;
+  try {
+    if (typeof note.getAbsoluteX === 'function') cur = note.getAbsoluteX();
+  } catch {
+    return;
+  }
+  if (cur == null || !Number.isFinite(cur)) return;
+  const target = (startX + endX) / 2;
+  const dx = target - cur;
+  if (!Number.isFinite(dx) || Math.abs(dx) < 2) return;   // already centred
+  const id = typeof note.getAttribute === 'function' ? note.getAttribute('id') : null;
+  if (!id) return;
+  const group = root.querySelector(`[id="vf-${id}"]`) as SVGElement | null;
+  if (!group) return;
+  const prior = group.getAttribute('transform');
+  const shift = `translate(${dx},0)`;
+  group.setAttribute('transform', prior ? `${shift} ${prior}` : shift);
+}
+
+/**
  * Repeat-ending (volta) bracket, drawn over a measure range on one system.
  *
  * VexFlow's `Stave.setVoltaType` is a stave modifier: it can only draw the
@@ -1586,6 +3006,202 @@ export function drawVoltaBracket(
 }
 
 /**
+ * Sustain-pedal marking, drawn below the staff over a press..release range.
+ *
+ * Placed on its own band beneath the dynamics band (drawDynamicsLayer sits at
+ * bottomLine + 24), following published piano engraving where the pedal line
+ * is the lowest marking under the staff.  Like drawVoltaBracket it reads the
+ * resolved x of the press and release notes, so it must run in the post-format
+ * overlay pass; and like the other overlays it picks its own theme-aware ink
+ * and must not be run through the dark-mode remap.
+ *
+ * The damper (sustain) pedal is drawn in one of three published styles:
+ *   "bracket" (default) -- a horizontal rail with a short leg dropping at each
+ *     end (the press and release), the modern Dorico/Henle line notation.
+ *   "text" -- "Ped." at the press and a "*" at the release, the older piano
+ *     notation.
+ *   "mixed" -- "Ped." at the press then a bracket to the release, the hybrid.
+ *
+ * The other two piano pedals are reached by `pedal` and print their own fixed
+ * wording from PEDAL_TYPE_LABELS instead (ignoring `style`): "sostenuto"
+ * engraves "Sost. Ped." ... "*", "una-corda" engraves "una corda" ... "tre
+ * corde".  An optional `line` drops the whole marking further below the staff
+ * to clear a lyric or dynamic sharing the band.
+ */
+export function drawPedalLine(
+  d3: any,
+  svg: any,
+  stave: any,
+  pedal: MusicPedal,
+  fromNote: any,
+  toNote: any,
+  isDarkMode: boolean,
+): void {
+  const textFill = musicInkColor(isDarkMode);
+  const xOf = (note: any): number | null =>
+    note && typeof note.getAbsoluteX === 'function' ? note.getAbsoluteX() : null;
+  const startX = xOf(fromNote);
+  const endX = xOf(toNote);
+  if (startX == null || endX == null) return;
+  // Bottom stave line; the pedal sits a fixed distance below it, clear of the
+  // dynamics band (bottomLine + 24) so the two never overprint.  `line` drops
+  // it further to clear a lyric/dynamic sharing the band; a value <= 0 is no
+  // drop, so the default (no-`line`) placement is byte-identical.
+  const bottomLineY = typeof stave.getYForLine === 'function' ? stave.getYForLine(4) : 60;
+  const spacing = (typeof stave.getYForLine === 'function'
+    ? stave.getYForLine(4) - stave.getYForLine(3)
+    : 10) || 10;
+  const drop = typeof pedal.line === 'number' && pedal.line > 0 ? pedal.line * spacing : 0;
+  const y = bottomLineY + 40 + drop;
+
+  const textFont = 'italic 700 13px "Times New Roman", Georgia, serif';
+  const starFont = '700 14px "Times New Roman", Georgia, serif';
+  const pressText = (label: string): void => {
+    svg.append('text')
+      .attr('x', startX).attr('y', y + 4)
+      .attr('text-anchor', 'start')
+      .attr('fill', textFill)
+      .style('font', textFont)
+      .text(label);
+  };
+  const releaseText = (label: string, star: boolean): void => {
+    svg.append('text')
+      .attr('x', endX + 6).attr('y', y + 4)
+      .attr('text-anchor', 'middle')
+      .attr('fill', textFill)
+      .style('font', star ? starFont : textFont)
+      .text(label);
+  };
+
+  // A named non-sustain pedal (sostenuto / una-corda) prints its own fixed
+  // engraved wording and ignores `style`, per published convention.
+  const pedalType = pedal.pedal ?? 'sustain';
+  if (pedalType !== 'sustain') {
+    const labels = PEDAL_TYPE_LABELS[pedalType];
+    if (!labels) {
+      console.warn(`musicPlugin: unknown pedal "${pedalType}" skipped`);
+      return;
+    }
+    const [pressLabel, releaseLabel] = labels;
+    pressText(pressLabel);
+    if (endX > startX && releaseLabel) {
+      // The sostenuto release is a lone "*", the una-corda release is the
+      // words "tre corde"; only the star gets the heavier glyph font.
+      releaseText(releaseLabel, releaseLabel === '*');
+    }
+    return;
+  }
+
+  const style = pedal.style ?? 'bracket';
+  if (style === 'text') {
+    // "Ped." at the press, "*" at the release -- the older piano notation.
+    pressText('Ped.');
+    if (endX > startX) releaseText('*', true);
+    return;
+  }
+
+  // Bracket / mixed style: a horizontal rail with short legs dropping at its
+  // ends.  For "mixed" the rail is preceded by a "Ped." word, so the rail
+  // starts after the text rather than at the press notehead; plain "bracket"
+  // opens the rail a touch left of the press notehead as before.
+  const legDepth = 8;
+  let x1 = startX - 4;
+  if (style === 'mixed') {
+    pressText('Ped.');
+    // Clear the ~24px "Ped." glyph so the rail begins after the word.
+    x1 = startX + 26;
+  }
+  const x2 = Math.max(x1 + 8, endX + 8);
+  svg.append('line')
+    .attr('x1', x1).attr('x2', x2)
+    .attr('y1', y).attr('y2', y)
+    .attr('stroke', textFill).attr('stroke-width', 1.5);
+  for (const lx of [x1, x2]) {
+    svg.append('line')
+      .attr('x1', lx).attr('x2', lx)
+      .attr('y1', y).attr('y2', y + legDepth)
+      .attr('stroke', textFill).attr('stroke-width', 1.5);
+  }
+}
+
+/**
+ * Multi-measure rest: the thick horizontal H-bar with a bar count above it,
+ * drawn centred in an otherwise-empty measure.
+ *
+ * VexFlow ships a `MultiMeasureRest`, but it is a stave-attached modifier that
+ * positions itself from the stave's own geometry -- it does not fit the
+ * System/voice pipeline this renderer formats through (the measure is a slice
+ * of one horizontal System stave, not a stave of its own), so it would draw
+ * across the whole line rather than over the one empty measure.  So -- exactly
+ * like the pedal, volta, dynamics and trill-glyph layers -- the symbol is
+ * hand-drawn with d3 in the post-format overlay pass, reading the measure's
+ * ghost-note spacer's resolved x so the bar sits over just that measure.
+ *
+ * The published symbol is a thick horizontal beam centred on the staff's
+ * middle line, capped by short thick verticals at each end (spanning roughly
+ * the 2nd-to-4th lines), with the number of consolidated bars printed in bold
+ * above the top line.  `centerX` is the spacer's resolved x; the bar is drawn
+ * symmetrically about it and clamped to the stave's note area so it never
+ * spills past the barlines.
+ */
+export function drawMultiMeasureRest(
+  d3: any,
+  svg: any,
+  stave: any,
+  centerX: number,
+  count: number,
+  isDarkMode: boolean,
+): void {
+  const textFill = musicInkColor(isDarkMode);
+  const lineY = (n: number): number =>
+    typeof stave.getYForLine === 'function' ? stave.getYForLine(n) : 20 + n * 10;
+  const topLineY = lineY(0);
+  const midLineY = lineY(2);
+  const spacing = (lineY(4) - topLineY) / 4 || 10;
+
+  // Horizontal extent: symmetric about the spacer x, ~half a measure wide, but
+  // clamped to the stave's note area so the bar cannot overrun the barlines on
+  // a narrow measure.
+  const staveStart = typeof stave.getNoteStartX === 'function'
+    ? stave.getNoteStartX()
+    : (typeof stave.getX === 'function' ? stave.getX() : centerX - 60);
+  const staveEnd = typeof stave.getNoteEndX === 'function'
+    ? stave.getNoteEndX()
+    : (typeof stave.getX === 'function' && typeof stave.getWidth === 'function'
+        ? stave.getX() + stave.getWidth()
+        : centerX + 60);
+  const halfWidth = 44;
+  const x1 = Math.max(staveStart + 4, centerX - halfWidth);
+  const x2 = Math.min(staveEnd - 4, centerX + halfWidth);
+
+  // Thick horizontal beam on the middle line, roughly one staff-space tall --
+  // the published H-bar body.
+  const barThickness = Math.max(4, spacing * 0.9);
+  svg.append('rect')
+    .attr('x', x1).attr('y', midLineY - barThickness / 2)
+    .attr('width', Math.max(0, x2 - x1)).attr('height', barThickness)
+    .attr('fill', textFill).attr('stroke', 'none');
+
+  // End caps: short thick verticals from the 2nd line to the 4th line.
+  const capTop = lineY(1);
+  const capBottom = lineY(3);
+  for (const cx of [x1, x2]) {
+    svg.append('line')
+      .attr('x1', cx).attr('x2', cx)
+      .attr('y1', capTop).attr('y2', capBottom)
+      .attr('stroke', textFill).attr('stroke-width', 3);
+  }
+
+  // Bar count, bold, centred above the top line -- the number the player counts.
+  svg.append('text')
+    .attr('x', (x1 + x2) / 2).attr('y', topLineY - 10)
+    .attr('text-anchor', 'middle')
+    .attr('fill', textFill)
+    .style('font', '700 15px "Times New Roman", Georgia, serif')
+    .text(String(count));
+}
+
+/**
  * Horizontal layout constants for system-break planning.
  *
  * These mirror the width estimate the canvas sizing has always used
@@ -1604,6 +3220,72 @@ const BARLINE_PX = 24;
 const DEFAULT_MAX_SYSTEM_WIDTH = 1200;
 /** Default vertical gap between stacked systems. */
 const DEFAULT_SYSTEM_SPACING = 36;
+
+/**
+ * Crash-guard bounds for the author-set canvas/layout dimensions
+ * (`width`, `height`, `maxSystemWidth`, `systemSpacing`).
+ *
+ * These four spec fields flow STRAIGHT into the layout math and the VexFlow
+ * `Factory` renderer -- `new Factory({renderer:{width, height}})`, the
+ * planSystemBreaks budget, and the per-system y-advance -- with no numeric
+ * guard, unlike every note duration (sanitizeDuration), meter (sanitizeMeter,
+ * D22), key signature (sanitizeKeySignature, D23), tempo (D25) and octave
+ * (clampKeyOctave, D26).  A degenerate value is therefore a render failure of
+ * the same class:
+ *   - NaN / non-finite -> the SVG gets width="NaN"/height="NaN"; VexFlow's
+ *     draw() produces nothing (blank canvas), matching the other unguarded
+ *     numeric failures' signature.
+ *   - 0 or negative -> an empty / invalid SVG viewport (0-height draws nothing;
+ *     a negative dimension is rejected by the SVG backend).
+ *   - astronomically large (e.g. width: 1e9) -> a multi-gigapixel SVG that
+ *     OOMs / hangs the headless renderer -- the render-timeout crash the
+ *     numeric sweep targets.
+ * MAX_CANVAS_DIM is far above any legitimate wrapped score (LEGIBILITY_WIDTH_
+ * LIMIT, the point notation stops being readable, is ~2200px) yet safely
+ * renderable, so a real layout is never clamped -- only a runaway one.
+ */
+const MAX_CANVAS_DIM = 16000;
+/** A single narrow measure still needs this much canvas to draw its clef. */
+const MIN_CANVAS_WIDTH = 120;
+/** One five-line stave plus its tail. */
+const MIN_CANVAS_HEIGHT = 60;
+
+/**
+ * Clamp an author-set layout dimension to a finite, sane range BEFORE it
+ * reaches the layout math or the Factory renderer.
+ *
+ * Returns `undefined` for an ABSENT (null/undefined) or NON-FINITE value, so
+ * the caller's own `?? default` / `== null` recovery runs -- a garbage `width`
+ * is thus treated as "no width given" (re-enabling automatic wrapping and
+ * content-sizing) rather than pinning a broken canvas.  A finite but
+ * out-of-range value is clamped into `[min, max]` and returned, with a console
+ * warning (matching the plugin's degenerate-value convention).  An absent
+ * value returns `undefined` silently and an in-range value is returned
+ * verbatim, so every valid or unset spec is byte-identical.
+ *
+ * Exported pure/DOM-free for regression testing.
+ */
+export function sanitizeLayoutDimension(
+  value: number | undefined | null,
+  min: number,
+  max: number,
+  name: string,
+): number | undefined {
+  if (value == null) return undefined;
+  const n = Number(value);
+  if (!Number.isFinite(n)) {
+    console.warn(`musicPlugin: non-finite ${name} "${value}" ignored`);
+    return undefined;
+  }
+  const clamped = Math.max(min, Math.min(max, n));
+  if (clamped !== n) {
+    console.warn(
+      `musicPlugin: ${name} ${n} is outside [${min}, ${max}]; clamped to `
+      + `${clamped} to avoid a degenerate canvas`,
+    );
+  }
+  return clamped;
+}
 
 /**
  * Width at which a single system stops being readable.
@@ -1663,6 +3345,51 @@ function estimateMeasureWidthFromNotes(notes: MusicNoteSpec[]): number {
   if (!notes || notes.length === 0) return MEASURE_NOTE_PX;
   const slots = notes.reduce((sum, n) => sum + noteWidthWeight(n.duration), 0);
   return Math.max(1, slots) * MEASURE_NOTE_PX;
+}
+
+/**
+ * Validate a `beamGroups` list, dropping degenerate pairs BEFORE they reach
+ * VexFlow's Fraction / Beam.generateBeams machinery.
+ *
+ * Each pair becomes `new Fraction(n, d)` handed to Beam.generateBeams as a
+ * beat-group size, and each is a user-supplied numeric input reaching the tick
+ * machinery -- the same un-guarded class as the tuplet num/inSpaceOf counts.
+ * Two degenerate values are unrenderable, both verified against the served
+ * bundle:
+ *   - a ZERO (or negative) NUMERATOR makes a 0-tick group.  generateBeams
+ *     accumulates note ticks until it reaches the group boundary, and a
+ *     boundary at 0 ticks it can never advance past makes that loop NEVER
+ *     RETURN -- an infinite loop that hangs the whole render (`[[0,2]]` ->
+ *     300s+ timeout, blank canvas, total data loss).
+ *   - a ZERO (or negative) DENOMINATOR makes Fraction(n,0) = Infinity ticks per
+ *     group, so every note falls into one group and the meter's beaming is lost
+ *     (`[[3,0]]` -> a single beam spanning the whole bar).
+ * Skip the bad pair with a console warning, matching the plugin's
+ * invalid-value convention (see the tuplet loop and sanitizeDuration).  When no
+ * valid pair remains, return `undefined` so the caller falls back to the
+ * meter's DEFAULT grouping rather than beaming the whole bar into one group.
+ *
+ * A list whose pairs are all valid is returned with identical contents, so the
+ * ordinary autoBeam path is byte-identical.  Exported pure/DOM-free for
+ * regression testing.
+ */
+export function sanitizeBeamGroups(
+  groups: Array<[number, number]> | undefined,
+): Array<[number, number]> | undefined {
+  if (!Array.isArray(groups) || groups.length === 0) return undefined;
+  const valid = groups.filter((g) => {
+    const ok = Array.isArray(g)
+      && Number.isInteger(g[0]) && g[0] > 0
+      && Number.isInteger(g[1]) && g[1] > 0;
+    if (!ok) {
+      console.warn(
+        `musicPlugin: ignoring invalid beamGroups entry ${JSON.stringify(g)}; `
+        + `each must be [numerator, denominator] of positive integers`,
+      );
+    }
+    return ok;
+  });
+  return valid.length > 0 ? valid : undefined;
 }
 
 /** Estimated width of a system holding the measures at `indices`. */
@@ -1747,6 +3474,42 @@ export function systemIndexForNote(
 }
 
 /**
+ * House-style cap on beam slant.
+ *
+ * VexFlow's slope optimiser is bounded by `renderOptions.maxSlope` /
+ * `minSlope`, which default to +/-0.25 (~14 degrees) in 5.0.0 -- steeper than
+ * the shallow slant modern engraving sets.  Behind Bars (Gould) keeps a beam
+ * close to horizontal, its rise growing gently with the interval but capped
+ * well under a quarter-slope; a run raked at the full default angle reads as
+ * mechanical rather than published.  0.2 (~11 degrees) is the tighter bound:
+ * shallow enough to look engraved, but still enough tilt to track an
+ * ascending or descending line rather than flattening every beam dead level
+ * (which is its own house-style error).
+ */
+const HOUSE_STYLE_MAX_BEAM_SLOPE = 0.2;
+
+/**
+ * Narrow a beam's slope bounds to the house-style cap, in place.
+ *
+ * Only tightens an EXISTING numeric bound the optimiser already reads during
+ * draw() -- it never widens one, adds a slope the optimiser would not have
+ * chosen, or touches grouping/stem side -- so a flat or already-shallow beam
+ * is unchanged and a note run carrying no beam is never reached.  Applied to
+ * every constructed beam (auto, secondary-voice and explicit) before any draw
+ * pass, since the slope is resolved from these bounds at draw time.
+ */
+function applyHouseBeamSlope(beam: any): void {
+  const ro = beam?.renderOptions;
+  if (!ro) return;
+  if (typeof ro.maxSlope === 'number') {
+    ro.maxSlope = Math.min(ro.maxSlope, HOUSE_STYLE_MAX_BEAM_SLOPE);
+  }
+  if (typeof ro.minSlope === 'number') {
+    ro.minSlope = Math.max(ro.minSlope, -HOUSE_STYLE_MAX_BEAM_SLOPE);
+  }
+}
+
+/**
  * Render a MusicSpec into an SVG-capable container using VexFlow.
  */
 export async function renderMusicSpec(
@@ -1758,9 +3521,9 @@ export async function renderMusicSpec(
   const Vex = await import('vexflow');
   const {
     Factory, Annotation, Renderer, Voice,
-    StaveHairpin, Articulation, Ornament, Modifier, GhostNote,
+    StaveHairpin, Articulation, Ornament, Modifier, Accidental,
     Barline, Repetition, ChordSymbol, StaveTempo, BarNote, Beam, Fraction,
-    GraceNote, GraceNoteGroup, TimeSigNote,
+    GraceNote, GraceNoteGroup, TimeSigNote, Tremolo, Stroke, GhostNote,
   } = Vex as any;
 
   container.innerHTML = '';
@@ -1769,7 +3532,7 @@ export async function renderMusicSpec(
 
   // A single-staff spec is treated as a one-element multi-staff spec, so the
   // grand staff is not a second code path that can drift from the first.
-  const staffSpecs: MusicStaff[] = (spec.staves?.length ?? 0) > 0
+  const staffSpecs: MusicStaff[] = ((spec.staves?.length ?? 0) > 0
     ? spec.staves!
     : [{
         clef: spec.clef, keySignature: spec.keySignature, notes: spec.notes,
@@ -1779,8 +3542,19 @@ export async function renderMusicSpec(
         slurs: spec.slurs, ties: spec.ties,
         glissandos: spec.glissandos, hairpins: spec.hairpins,
         brackets: spec.brackets, trillLines: spec.trillLines,
+        pedals: spec.pedals,
         beams: spec.beams, tuplets: spec.tuplets,
-      }];
+      }])
+    // Transpose a MEASURE-MAJOR multi-voice staff (`measures:[{voices:[...]}]`)
+    // into the VOICE-MAJOR shape the render core reads; a voice-major or plain
+    // measures-based staff is returned by reference (byte-identical).  Runs
+    // BEFORE the shape canonicaliser so its output voices are already an array
+    // of voice objects.
+    .map(normalizeMeasureMajorVoices)
+    // Canonicalise a keyed-object / bare-array `voices` spelling to the array
+    // shape measuresOf and the secondary-voice loop index; a staff already in
+    // that shape is returned by reference, leaving existing specs untouched.
+    .map(normalizeStaffVoiceShape);
 
   // Count across measures, and add room for each barline: a barline is a
   // tickable too, so without the allowance the notes are squeezed to make
@@ -1814,7 +3588,12 @@ export async function renderMusicSpec(
   const measureCounts: number[][] = staffSpecs.map((s) =>
     measuresOf(s).map((m) => (m.notes ?? []).length));
   const measureWidthsPerStaff: number[][] = staffSpecs.map((s) =>
-    measuresOf(s).map((m) => estimateMeasureWidthFromNotes(m.notes ?? [])));
+    // A multi-measure rest holds no notes, so estimateMeasureWidthFromNotes
+    // would floor it at one slot -- too cramped for the H-bar and its count.
+    // Give it a comfortable fixed span (two slots) so the symbol has room.
+    measuresOf(s).map((m) => ((multiRestOf(m) ?? 0) >= 1
+      ? 2 * MEASURE_NOTE_PX
+      : estimateMeasureWidthFromNotes(m.notes ?? []))));
   const measureCountAcrossStaves: number[] = [];
   const measureWidths: number[] = [];
   for (let i = 0; i < Math.max(0, ...measureCounts.map((c) => c.length)); i += 1) {
@@ -1831,12 +3610,24 @@ export async function renderMusicSpec(
     staffSpecs.some((s) => Boolean(measuresOf(s)[i]?.systemBreak)));
 
   // An explicit `width` is the author pinning the layout, so wrapping is off
-  // and the single-system behaviour is preserved byte-for-byte.
-  const wrapEnabled = spec.width == null;
+  // and the single-system behaviour is preserved byte-for-byte.  Both `width`
+  // and `maxSystemWidth` are crash-guarded first (see sanitizeLayoutDimension):
+  // a non-finite `width` becomes `undefined` here, which RE-ENABLES wrapping
+  // and content-sizing rather than pinning a NaN/gigapixel canvas, and a
+  // runaway finite value is clamped.  A valid or absent value is unchanged, so
+  // the pinned-width and wrapping paths are byte-identical for real specs.
+  const authorWidth = sanitizeLayoutDimension(
+    spec.width, MIN_CANVAS_WIDTH, MAX_CANVAS_DIM, 'width',
+  );
+  const authorMaxSystemWidth = sanitizeLayoutDimension(
+    spec.maxSystemWidth, MEASURE_NOTE_PX + SYSTEM_LEAD_IN_PX, MAX_CANVAS_DIM,
+    'maxSystemWidth',
+  );
+  const wrapEnabled = authorWidth == null;
   const systemPlan = wrapEnabled
     ? planSystemBreaks(
         measureWidths, explicitBreaks,
-        spec.maxSystemWidth ?? DEFAULT_MAX_SYSTEM_WIDTH,
+        authorMaxSystemWidth ?? DEFAULT_MAX_SYSTEM_WIDTH,
       )
     : [measureWidths.map((_, i) => i)];
   // Degenerate specs (no measures at all) still need one system to draw into.
@@ -1847,7 +3638,7 @@ export async function renderMusicSpec(
     // right-hand margins line up down the page as engraving requires.
     ? Math.max(340, ...systems.map((sys) => estimateSystemWidth(measureWidths, sys)))
     : Math.max(340, 110 + longestStaff * 78 + mostBarlines * 24);
-  const width = (spec.width ?? contentWidth) + labelGutter;
+  const width = (authorWidth ?? contentWidth) + labelGutter;
 
   // T1: an over-wide single system renders successfully but illegibly, and
   // silence makes that look intentional.  Only reachable when wrapping is off
@@ -1859,7 +3650,7 @@ export async function renderMusicSpec(
       `system is ~${Math.round(width)}px wide and will scale to about ${scale}% ` +
       `in a ${REFERENCE_COLUMN_PX}px column, which is below the ~` +
       `${Math.round(MIN_LEGIBLE_SCALE * 100)}% needed to read notation. ` +
-      (spec.width != null
+      (authorWidth != null
         ? 'Remove the explicit `width` to enable automatic system breaks, or '
         : 'Split the music across more measures, or ') +
       'set `maxSystemWidth`, or add `"systemBreak": true` to a measure',
@@ -1867,36 +3658,46 @@ export async function renderMusicSpec(
   }
   // Features that occupy the band BELOW the staff, so a fixed 160 clips them.
   //
-  // `n.dynamic` is deliberately NOT listed: measured on a real render, a
-  // dynamic draws ABOVE the stave, so a dynamic alone puts nothing below it.
-  // Including it made every dynamic-bearing score reserve 230px/stave for an
-  // empty band -- 60% of the canvas unused at one stave.  A dynamic still
-  // deepens the band when LYRICS are present (drawLyricLayer drops the verse
-  // baseline from +26 to +44 to clear it), and that is handled where the
-  // lyric depth is computed, not by this flag.
+  // `n.dynamic` IS listed: dynamics are engraved BELOW the staff (drawn as a
+  // d3 overlay below the bottom line -- see drawDynamicsLayer), so a dynamic
+  // occupies the same below-staff band a below-tuplet number does and needs
+  // BELOW_STAFF_MARK_DEPTH reserved or it clips off the canvas bottom.  A
+  // dynamic ALSO deepens the band when
+  // LYRICS are present (drawLyricLayer drops the verse baseline from +26 to
+  // +44 to clear it), which is handled where the lyric depth is computed.
   const needsRoomBelow = staffSpecs.some((s) =>
     notesOf(s).some((n) =>
       // A below-staff chord symbol (roman-numeral analysis) needs the same
       // room a lyric does.
       (typeof n.chordSymbol === 'object' && n.chordSymbol?.position === 'below')
       // Lyrics are underlaid beneath the staff and need the same headroom.
-      || n.lyric != null)
+      || n.lyric != null
+      // Dynamics are engraved BELOW the staff (see drawDynamicsLayer, the d3
+      // overlay drawn under the bottom stave line), so they occupy the same
+      // below-staff band and need room reserved for them.
+      || n.dynamic != null)
     || (s.hairpins?.length ?? 0) > 0
     || (s.brackets ?? []).some((b) => b.position === 'below')
     // A below-staff tuplet number sits where a dynamic would.
-    || (s.tuplets ?? []).some((t) => t.position === 'below'));
+    || (s.tuplets ?? []).some((t) => t.position === 'below')
+    // Pedal markings are drawn on their own band below the dynamics band.
+    || (s.pedals?.length ?? 0) > 0);
   // Tempo / marks / volta / measure number all render ABOVE the top staff and
   // are clipped without headroom.
   const needsRoomAbove = Boolean(
     spec.tempo || spec.mark || (spec.marks?.length ?? 0) > 0
     || spec.volta || (spec.voltas?.length ?? 0) > 0 ||
-    spec.measureNumber != null || spec.section
+    spec.measureNumber != null || spec.measureNumbers || spec.section
     // Brackets and trill lines also occupy the band above the staff.
     || staffSpecs.some((s) =>
       (s.brackets ?? []).some((b) => b.position !== 'below')
       || (s.trillLines?.length ?? 0) > 0
       // A tuplet number defaults above the staff.
-      || (s.tuplets ?? []).some((t) => t.position !== 'below')),
+      || (s.tuplets ?? []).some((t) => t.position !== 'below')
+      // Breath / caesura marks are drawn above the top stave line.
+      || notesOf(s).some((n) => n.breath != null && n.breath !== false)
+      // A multi-measure rest prints its bar count above the top stave line.
+      || measuresOf(s).some((m) => (multiRestOf(m) ?? 0) >= 1)),
   );
   // Both the tempo lift (TEMPO_SHIFT_Y) and the bracket lift
   // (BRACKET_LINE_WITH_TEMPO) push material further up than the previous flat
@@ -1917,7 +3718,12 @@ export async function renderMusicSpec(
   // canvas and the whole system is pushed down by the same amount -- see
   // titleY below.  Computed once so the reserve and the draw agree.
   const titleH = titleBlockHeight(spec);
-  const systemSpacing = spec.systemSpacing ?? DEFAULT_SYSTEM_SPACING;
+  // Crash-guarded like width/height: a non-finite systemSpacing falls back to
+  // the default, a negative one clamps to 0 (systems flush), a runaway one is
+  // capped so the stacked-system y-advance cannot blow the canvas height up.
+  const systemSpacing = sanitizeLayoutDimension(
+    spec.systemSpacing, 0, MAX_CANVAS_DIM, 'systemSpacing',
+  ) ?? DEFAULT_SYSTEM_SPACING;
   /**
    * Vertical geometry of a system, split into the two roles the previous single
    * `perSystemHeight` conflated.
@@ -1950,6 +3756,12 @@ export async function renderMusicSpec(
   const LYRIC_DESCENT = 12;
   /** Below-staff chord symbols / brackets / tuplet numbers. */
   const BELOW_STAFF_MARK_DEPTH = 34;
+  /**
+   * drawPedalLine sits at bottomLine + 40 with an 8px leg, so the pedal band
+   * reaches ~48px below the bottom line -- deeper than BELOW_STAFF_MARK_DEPTH,
+   * so a spec with pedals needs its own reserve or the rail clips off-canvas.
+   */
+  const PEDAL_DEPTH = 50;
   /**
    * Depth below the last stave's TOP line that must stay on canvas.
    *
@@ -1988,11 +3800,15 @@ export async function renderMusicSpec(
     ? (hasDynamic ? LYRIC_OFFSET_WITH_DYNAMIC : LYRIC_OFFSET_NO_DYNAMIC)
       + (maxVerse - 1) * LYRIC_VERSE_STEP + LYRIC_DESCENT
     : 0;
+  const hasPedal = staffSpecs.some((s) => (s.pedals?.length ?? 0) > 0);
   const systemTail = STAVE_SPAN + Math.max(
     // Stem/beam overshoot is always present, measured from the bottom line.
     PLAIN_TAIL - STAVE_SPAN,
     lyricDepth,
     needsRoomBelow ? BELOW_STAFF_MARK_DEPTH : 0,
+    // The pedal band is the deepest below-staff marking, so it drives the tail
+    // when present rather than sharing the shallower mark depth.
+    hasPedal ? PEDAL_DEPTH : 0,
   );
   /**
    * Advance between stacked systems: every stave of this system, plus the tail
@@ -2001,12 +3817,28 @@ export async function renderMusicSpec(
    * why wrapped layouts shift slightly (and stop risking collision).
    */
   const perSystemHeight = STAVE_ADVANCE * staffSpecs.length + systemTail;
-  const height = spec.height
-    // The tail belongs to the LAST stave of each system, and perSystemHeight
-    // already carries one; adding it per system would reintroduce the original
-    // over-allocation.  Count the staves, then the tail exactly once.
+  // Crash-guarded like width: a non-finite `height` (or a degenerate 0, which
+  // `spec.height ??` used to let through as a 0-height blank canvas) falls back
+  // to the computed formula below, and a runaway value is clamped.  A valid
+  // pinned height is returned verbatim, so real specs are byte-identical.
+  const authorHeight = sanitizeLayoutDimension(
+    spec.height, MIN_CANVAS_HEIGHT, MAX_CANVAS_DIM, 'height',
+  );
+  const height = authorHeight
+    // Each system is PLACED at `firstSystemY + i * (perSystemHeight +
+    // systemSpacing)`, and perSystemHeight = STAVE_ADVANCE*staves + systemTail
+    // -- so every system, not just the last, advances by a full tail.  The old
+    // formula added `systemTail` only ONCE, which under-budgeted a wrapped
+    // score by systemTail*(systems-1): the final system overflowed the SVG
+    // viewport and was CLIPPED off the bottom, silently losing whole measures
+    // (measured: a 3-system dense score clipped its last bar by ~22px, and its
+    // trailing hairpin with it).  Budget the tail per system so the canvas
+    // matches the placement.  systems.length == 1 leaves the height
+    // byte-for-byte unchanged (systemTail*1 == systemTail), so every
+    // single-system layout -- and the parity snapshots pinning them -- is
+    // untouched; only multi-system scores grow, by exactly the missing tails.
     ?? STAVE_ADVANCE * staffSpecs.length * systems.length
-       + systemTail
+       + systemTail * systems.length
        + systemSpacing * Math.max(0, systems.length - 1)
        + roomAbove + titleH;
 
@@ -2084,6 +3916,60 @@ export async function renderMusicSpec(
     `${Number.isFinite(numBeats) && numBeats > 0 ? numBeats : 4}/` +
     `${Number.isFinite(beatValue) && beatValue > 0 ? beatValue : 4}`;
 
+  // Meter-correct default beam grouping for `autoBeam` when the spec gives no
+  // explicit `beamGroups`.
+  //
+  // Beam.generateBeams does NOT read the meter: with no `groups` option it
+  // hardcodes `[new Fraction(2, 8)]` (verified in vexflow 5.0.0 beam.js:84-85),
+  // so a compound/triple meter auto-beamed in TWOS instead of by its true beat
+  // -- a 6/8 bar of six eighths drew as three groups of two rather than the
+  // published two dotted-quarter beats, and 3/4 / 2/2 were likewise mis-grouped.
+  // VexFlow ships the meter-aware table itself in Beam.getDefaultBeamGroups
+  // (6/8 -> [3/8], 3/4 -> [1/4], 2/2 -> [1/2], ...), so passing its result
+  // restores correct beat grouping.  Computed from the SPEC-level opening meter
+  // (the dominant single-meter case); a score that changes meter mid-piece AND
+  // relies on autoBeam AND sets no `beamGroups` still groups every bar by the
+  // opening meter -- rare, and no worse than the previous always-twos default,
+  // and such an author can set `beamGroups` per staff.  Wrapped defensively so
+  // an unusable meter falls back to generateBeams' own default rather than
+  // throwing.  Non-autoBeam and explicit-`beamGroups` paths never read this, so
+  // they are byte-identical.
+  let defaultBeamGroups: any[] | undefined;
+  try {
+    defaultBeamGroups = Beam.getDefaultBeamGroups(meter);
+  } catch {
+    defaultBeamGroups = undefined;
+  }
+
+  // Per-meter beam grouping for `autoBeam`, so a score that CHANGES meter
+  // mid-piece (per-measure `timeSignature`, e.g. 4/4 -> 6/8) beams each bar by
+  // ITS OWN meter rather than by the opening one.  D31 made autoBeam
+  // meter-aware but read the meter ONCE at the spec level (`defaultBeamGroups`
+  // above), so the 6/8 bars of a 4/4 -> 6/8 score still beamed in 4/4's
+  // quarter-note groups (two eighths) instead of 6/8's dotted-quarter beats
+  // (three eighths) -- the very mis-grouping D31 set out to fix, surviving on
+  // the mid-score-change case.  The renderer already resolves the meter in
+  // force at each bar (`effectiveMeterByMeasure`); this composes that with
+  // getDefaultBeamGroups, memoized per meter string so a long score does not
+  // re-derive the table for every bar.  An absent meter, or one
+  // getDefaultBeamGroups cannot parse, falls back to the opening meter's
+  // grouping -- never worse than before -- and a single-meter score resolves
+  // every bar to `defaultBeamGroups`, so its beaming is byte-identical.
+  const beamGroupsByMeterCache = new Map<string, any[] | undefined>();
+  const beamGroupsForMeter = (m: string | undefined): any[] | undefined => {
+    if (m == null) return defaultBeamGroups;
+    if (beamGroupsByMeterCache.has(m)) return beamGroupsByMeterCache.get(m);
+    let g: any[] | undefined;
+    try {
+      g = Beam.getDefaultBeamGroups(m);
+    } catch {
+      g = undefined;
+    }
+    const resolved = g ?? defaultBeamGroups;
+    beamGroupsByMeterCache.set(m, resolved);
+    return resolved;
+  };
+
   /**
    * Built staves, one entry per (staff x system).  A three-staff score wrapped
    * onto two systems therefore yields six entries.  Spans are attached per
@@ -2094,10 +3980,19 @@ export async function renderMusicSpec(
     specNotes: MusicNoteSpec[]; tickables: any[];
     /** Rendered notes grouped by measure, for per-measure auto-beaming. */
     byMeasure: any[][];
+    /**
+     * Meter-default beam groups per measure of `byMeasure` (aligned by index),
+     * so autoBeam follows a mid-score meter change.  Undefined per entry when
+     * the bar's meter has no known grouping; the whole field is only read on
+     * the autoBeam path with no explicit `beamGroups`.
+     */
+    beamGroupsByMeasure: Array<any[] | undefined>;
     /** Which planned system this stave belongs to. */
     systemIndex: number;
     /** Flat index, within the staff, of this entry's first note. */
     noteOffset: number;
+    /** Multi-measure-rest spacers on this stave, for the post-format overlay. */
+    multiRests: Array<{ ghost: any; count: number }>;
   }> = [];
   /**
    * Per-staff view across every system: the whole flat note list and the
@@ -2144,9 +4039,20 @@ export async function renderMusicSpec(
     // entry is the spec-level meter unless the first measure overrides it.
     const effectiveMeterByMeasure: Array<string | undefined> = [];
     {
-      let running: string | undefined = spec.timeSignature;
+      // Seed with the sanitized top-level meter and sanitize every per-measure
+      // change, so effectiveMeterByMeasure only ever holds a meter VexFlow can
+      // parse (or undefined).  Both consumers of this array draw the meter --
+      // stave.addTimeSignature at the system clef and new TimeSigNote at an
+      // interior change -- and VexFlow throws on a malformed spec, which would
+      // otherwise abort the whole render for one bad value (see sanitizeMeter).
+      // An invalid per-measure change is dropped with a warning, leaving the
+      // previous meter in force rather than destroying the score.
+      let running: string | undefined = sanitizeMeter(spec.timeSignature);
       allMeasures.forEach((measure, idx) => {
-        if (measure.timeSignature) running = measure.timeSignature;
+        if (measure.timeSignature) {
+          const m = sanitizeMeter(measure.timeSignature);
+          if (m) running = m;
+        }
         effectiveMeterByMeasure[idx] = running;
       });
     }
@@ -2171,6 +4077,9 @@ export async function renderMusicSpec(
     const easyNotes: any[] = [];
     const tickables: any[] = [];
     const byMeasure: any[][] = [];
+    // Multi-measure-rest spacers created in this system, drawn as an overlay
+    // after formatting (see drawMultiMeasureRest).
+    const multiRests: Array<{ ghost: any; count: number }> = [];
 
     measures.forEach((measure, measureIndex) => {
       if (measureIndex > 0) {
@@ -2197,6 +4106,36 @@ export async function renderMusicSpec(
         tickables.push(new TimeSigNote(meterHere));
       }
       const measureNotes = measure.notes ?? [];
+      // Multi-measure rest: consolidate `multiRest` empty bars into one H-bar +
+      // count.  The bar is silent by definition, so it holds no real notes --
+      // instead a 0-drawn GhostNote spacer claims the measure's layout width
+      // (like any other tickable) and the symbol is hand-drawn over it in the
+      // overlay pass (drawMultiMeasureRest), reading the spacer's resolved x.
+      // Kept OUT of easyNotes/byMeasure so it addresses no span/beam index and
+      // the no-MMR path is byte-identical.
+      const restCount = multiRestOf(measure) ?? 0;
+      if (restCount >= 1) {
+        if (!Number.isInteger(restCount)) {
+          problems.push(
+            `multiRest must be an integer >= 1 (got "${multiRestOf(measure)}"); skipped`,
+          );
+        } else {
+          if (measureNotes.length > 0) {
+            problems.push(
+              `measure with multiRest ${restCount} also has notes; the notes `
+              + `were ignored (a multi-measure rest is silent)`,
+            );
+          }
+          // A whole-bar GhostNote spacer -- 0 drawn ink, but real ticks so the
+          // SOFT voice reserves the measure's width.  SOFT mode tolerates any
+          // meter, so a whole spacer stands in for a bar of any signature.
+          const spacer = new GhostNote({ duration: 'w' });
+          tickables.push(spacer);
+          byMeasure.push([]);
+          multiRests.push({ ghost: spacer, count: restCount });
+        }
+        return;
+      }
       // Same precedence as the stave's own addKeySignature below, so the
       // notes are filtered against exactly the signature that is drawn.
       const noteStrings = buildNoteString(
@@ -2238,6 +4177,46 @@ export async function renderMusicSpec(
         const code = ORNAMENT_CODES[name];
         if (!code) { problems.push(`unknown ornament "${name}"`); continue; }
         note.addModifier(new Ornament(code), 0);
+      }
+      // Single-note tremolo: n slashes drawn through the stem, meaning the
+      // note is rapidly repeated.  VexFlow's Tremolo is a stem modifier taking
+      // a stroke COUNT (there is no glyph name to map -- one, two or three
+      // slashes IS the notation), so it is validated by range rather than a
+      // lookup table.  1..3 is the full published range (a whole-note repeat
+      // and buzz rolls aside); anything else is not real notation and is
+      // skipped with a warning, matching the unknown-name convention.  Only an
+      // integer is accepted -- Tremolo iterates the count to place each slash,
+      // so a fractional value would draw the wrong number or none.
+      if (specNote.tremolo != null) {
+        const strokes = Number(specNote.tremolo);
+        if (!Number.isInteger(strokes) || strokes < 1 || strokes > 3) {
+          problems.push(
+            `tremolo must be an integer 1..3 (got "${specNote.tremolo}"); skipped`,
+          );
+        } else {
+          note.addModifier(new Tremolo(strokes), 0);
+        }
+      }
+      // Arpeggio / chord roll: the vertical wavy line to the LEFT of a chord.
+      // VexFlow models it as a `Stroke` MODIFIER attached to the note via
+      // addStroke (NOT addModifier), so it rides the same pre-format path as
+      // the articulations/ornaments above and reserves its own space.  The
+      // friendly name maps to a Stroke.Type KEY (resolved to the numeric
+      // constant here, the BARLINE_TYPES indirection) so no raw VexFlow number
+      // reaches the spec; `true` is the "arpeggio" shorthand.  An unknown name
+      // is skipped with a warning, matching the plugin's unknown-name
+      // convention.  The stroke is attached at notehead index 0 -- VexFlow
+      // spans it across the whole chord from there -- so it is a no-op visual
+      // on a single-note "chord", which is why the contract asks for two or
+      // more `keys`; it is not rejected there, merely inconspicuous.
+      if (specNote.arpeggio != null && specNote.arpeggio !== false) {
+        const name = specNote.arpeggio === true ? 'arpeggio' : String(specNote.arpeggio);
+        const typeKey = ARPEGGIO_STROKE_TYPES[name];
+        if (!typeKey) {
+          problems.push(`unknown arpeggio "${name}"`);
+        } else if (typeof note.addStroke === 'function') {
+          note.addStroke(0, new Stroke(Stroke.Type[typeKey]));
+        }
       }
       // Grace notes: an appoggiatura/acciaccatura or ornamental run engraved
       // small BEFORE the main note.  VexFlow models them as a GraceNoteGroup
@@ -2299,20 +4278,32 @@ export async function renderMusicSpec(
         if (!['above', 'below', 'left', 'right'].includes(place)) {
           problems.push(`unknown fingering position "${place}"`);
         } else {
-          note.addModifier(
-            factory.Fingering({ number: String(fingering.number), position: place }), 0,
-          );
+          // Guard the digit BEFORE it reaches VexFlow: a non-finite number or
+          // the object form with no `number` would otherwise engrave the
+          // literal "NaN"/"undefined" beside the note (see
+          // sanitizeModifierNumber).  A dropped value simply prints no
+          // fingering, which is far better than junk text.
+          const num = sanitizeModifierNumber(fingering.number);
+          if (num !== undefined) {
+            note.addModifier(
+              factory.Fingering({ number: num, position: place }), 0,
+            );
+          }
         }
       }
       // StringNumber REQUIRES an explicit position -- omitting it throws
       // "InvalidPosition: The position undefined is invalid", unlike
       // Fingering which defaults happily.
       if (specNote.stringNumber != null) {
-        note.addModifier(
-          factory.StringNumber({
-            number: String(specNote.stringNumber), position: 'above',
-          }), 0,
-        );
+        // Same literal-text guard as fingering above.
+        const num = sanitizeModifierNumber(specNote.stringNumber);
+        if (num !== undefined) {
+          note.addModifier(
+            factory.StringNumber({
+              number: num, position: 'above',
+            }), 0,
+          );
+        }
       }
       // Chord symbol.  ChordSymbol (not Annotation) is used so the engraved
       // dim/half-dim/minor glyphs and true super/subscripts are reachable;
@@ -2372,50 +4363,14 @@ export async function renderMusicSpec(
       factory.Voice({ time: meter }).setMode(Voice.Mode.SOFT).addTickables(tickables),
     ];
 
-    // Dynamics live in their own voice.  Placing them in the melody voice
-    // makes them consume beat time and displace the notes (measured: note 2
-    // moved from x=145 to x=236); a parallel voice padded with GhostNotes
-    // keeps note spacing byte-identical to a melody-only render while
-    // aligning each mark under its own note.
-    if (specNotes.some((n) => n.dynamic)) {
-      const markFor = (specNote: MusicNoteSpec) => {
-        const mark = specNote.dynamic;
-        // "h." is legal in the EasyScore string grammar the melody voice uses,
-        // but noteStruct-based notes need the dots split out or the Note
-        // constructor rejects the object outright.
-        const { duration, dots } = toNoteStructDuration(specNote.duration);
-        if (mark && DYNAMIC_MARKS.has(mark)) {
-          return factory.TextDynamics({ text: mark, duration, dots });
-        }
-        if (mark) problems.push(`unknown dynamic "${mark}"`);
-        return new GhostNote({ duration, dots });
-      };
-      // The dynamics voice must carry a BarNote at every position the melody
-      // voice does, or the two desynchronise after the first barline: a mark
-      // in measure 2 landed at x=383 while its note sat at x=445, because the
-      // barline consumes a tick slot in one voice and not the other.
-      const marks: any[] = [];
-      measures.forEach((measure, measureIndex) => {
-        if (measureIndex > 0) {
-          marks.push(new BarNote(barlineBetween(measures[measureIndex - 1], measure)));
-        }
-        // Mirror the melody voice's mid-stave TimeSigNote (a 0-tick tickable),
-        // or the two voices desync at the meter change exactly as they do at a
-        // barline -- the dynamics voice must occupy the same positions.  Same
-        // `measureIndex > 0` gate: a first-bar change is printed at the clef,
-        // not inline, in EITHER voice.
-        const globalIdx = globalMeasureIndices[measureIndex];
-        const meterHere = effectiveMeterByMeasure[globalIdx];
-        const meterBefore = globalIdx > 0 ? effectiveMeterByMeasure[globalIdx - 1] : undefined;
-        if (measureIndex > 0 && meterHere && meterBefore && meterHere !== meterBefore) {
-          marks.push(new TimeSigNote(meterHere));
-        }
-        for (const specNote of measure.notes ?? []) marks.push(markFor(specNote));
-      });
-      voices.push(
-        factory.Voice({ time: meter }).setMode(Voice.Mode.SOFT).addTickables(marks),
-      );
-    }
+    // Dynamics are NOT built into a voice here.  They are drawn as a d3 overlay
+    // below the staff after formatting (see drawDynamicsLayer), because VexFlow
+    // 5.0's TextDynamics does not honour the `line` option that would place the
+    // mark below the staff -- verified on the built bundle, where `line: 9`
+    // (meant to resolve to two spaces under the bottom line) still rendered
+    // `p`/`f` ABOVE the top line, colliding with the tempo / chord-symbol band.
+    // An overlay takes no beat time, so unlike the old GhostNote-padded voice
+    // it cannot displace the notes and needs no barline/meter mirroring at all.
 
     // Secondary independent voices (voices[1..]) share this staff, formatted
     // alongside the primary voice.  Voice 0 was already consumed as the staff's
@@ -2481,20 +4436,59 @@ export async function renderMusicSpec(
       // beam sits on the correct side.  Collected for the post-draw pass with
       // the primary beams.
       if (spec.autoBeam) {
-        const groups = spec.beamGroups?.length
-          ? spec.beamGroups.map(([n, d]) => new Fraction(n, d))
+        // Same degenerate-pair guard as the primary path: a 0-tick group hangs
+        // generateBeams (see sanitizeBeamGroups).
+        const validGroups = sanitizeBeamGroups(spec.beamGroups);
+        // An explicit beamGroups overrides every bar; otherwise each bar uses
+        // ITS OWN meter's grouping so a mid-score meter change beams correctly
+        // (voiceByMeasure aligns with globalMeasureIndices) -- see
+        // beamGroupsForMeter.  Single-meter scores are byte-identical.
+        const explicitGroups = validGroups
+          ? validGroups.map(([n, d]) => new Fraction(n, d))
           : undefined;
-        for (const measureNotes of voiceByMeasure) {
-          if (measureNotes.length === 0) continue;
-          secondaryBeams.push(...Beam.generateBeams(measureNotes, {
+        voiceByMeasure.forEach((measureNotes, localMi) => {
+          if (measureNotes.length === 0) return;
+          const groups = explicitGroups
+            ?? beamGroupsForMeter(effectiveMeterByMeasure[globalMeasureIndices[localMi]]);
+          const generated = Beam.generateBeams(measureNotes, {
             ...(groups ? { groups } : {}),
             beamRests: false,
             // Keep the beam on the voice's stem side rather than letting
             // VexFlow re-choose it from staff position.
             ...(stemDir != null ? { stemDirection: stemDir, maintainStemDirections: true } : {}),
-          }));
-        }
+          });
+          generated.forEach(applyHouseBeamSlope);
+          secondaryBeams.push(...generated);
+        });
       }
+    }
+
+    // Courtesy (cautionary) accidentals: a parenthesised reminder on a note
+    // that would otherwise print BARE but whose pitch sounded differently in
+    // the immediately preceding bar (see planCautionaryAccidentals).  Added
+    // BEFORE format so the notehead spacing reserves room for the glyph, and
+    // as a real VexFlow Accidental modifier (not a baked pitch accidental, so
+    // it cannot double a printed sign -- we only touch bare notes).  The
+    // look-back reads the PREVIOUS bar from the whole-staff `allMeasures` via
+    // the global index, so a reminder still fires across a system break.
+    // Entirely gated on the flag; the no-flag path is byte-identical.
+    if (spec.cautionaryAccidentals) {
+      const keySig = staffSpec.keySignature ?? spec.keySignature;
+      byMeasure.forEach((renderedMeasureNotes, localMi) => {
+        if (!renderedMeasureNotes || renderedMeasureNotes.length === 0) return;
+        const globalMi = globalMeasureIndices[localMi];
+        const curSpec = allMeasures[globalMi]?.notes ?? [];
+        const prevSpec = globalMi > 0 ? (allMeasures[globalMi - 1]?.notes) : undefined;
+        for (const mark of planCautionaryAccidentals(curSpec, prevSpec, keySig)) {
+          const note = renderedMeasureNotes[mark.noteIndex];
+          if (!note || typeof note.addModifier !== 'function') continue;
+          try {
+            note.addModifier(new Accidental(mark.code).setAsCautionary(), mark.keyIndex);
+          } catch (e: any) {
+            problems.push(`cautionary accidental skipped: ${e?.message ?? e}`);
+          }
+        }
+      });
     }
 
     const stave = vexSystems[systemIndex].addStave({ voices });
@@ -2510,13 +4504,33 @@ export async function renderMusicSpec(
     // above; this only re-states the meter in force AT the line's start.
     const systemOpeningMeter = globalMeasureIndices.length > 0
       ? effectiveMeterByMeasure[globalMeasureIndices[0]]
-      : spec.timeSignature;
+      // The array branch is already sanitized; the empty-system fallback reads
+      // the raw top-level meter, so guard it too before it reaches VexFlow.
+      : sanitizeMeter(spec.timeSignature);
     if (systemOpeningMeter) stave.addTimeSignature(systemOpeningMeter);
-    const key = staffSpec.keySignature ?? spec.keySignature;
+    // Sanitize BEFORE the display API: VexFlow's addKeySignature/KeySignature
+    // THROWS Vex.RuntimeError('BadKeySignature') on any name outside its ~30
+    // recognised keys, and that throw escapes render() -> the SVG never mounts
+    // and the render hangs to the 30s cap with zero output (Issue 28).  This is
+    // the exact display-path sibling of the sanitizeMeter fix (D22): the
+    // top-level key already degrades harmlessly through keySignatureMap (null
+    // -> filter nothing), but the DRAWN signature reached VexFlow raw.
+    // sanitizeKeySignature returns a recognised key trimmed-unchanged (valid
+    // path byte-identical), null for absent/empty (skip drawing, as before),
+    // or "C" with a warning for a bad value -- the neutral no-accidental
+    // signature, so no pitch a reader sees is altered.
+    const key = sanitizeKeySignature(staffSpec.keySignature ?? spec.keySignature);
     if (key) stave.addKeySignature(key);
+    // Meter-default beam grouping per measure of this system's slice, aligned
+    // with byMeasure (both indexed by local measure position via
+    // globalMeasureIndices), so the autoBeam pass can group a bar by ITS meter
+    // rather than the opening one -- see beamGroupsForMeter.
+    const beamGroupsByMeasure = globalMeasureIndices.map(
+      (gi) => beamGroupsForMeter(effectiveMeterByMeasure[gi]),
+    );
     built.push({
       stave, notes: easyNotes, staffSpec, specNotes, tickables, byMeasure,
-      systemIndex, noteOffset,
+      systemIndex, noteOffset, multiRests, beamGroupsByMeasure,
     });
     for (const note of easyNotes) {
       staffNotes.push(note);
@@ -2546,8 +4560,43 @@ export async function renderMusicSpec(
     // without one -- "♩ = N" is the overwhelming metronome convention, so the
     // shorthand should render rather than vanish.  A tempo carrying neither a
     // name nor a bpm has nothing to show; warn rather than add an empty mark.
-    const hasBpm = spec.tempo.bpm != null;
-    const tempoDuration = spec.tempo.duration ?? (hasBpm ? 'q' : undefined);
+    // Sanitize the bpm BEFORE it reaches StaveTempo, which stringifies it raw
+    // (`'' + bpm`) -- a non-finite/negative/absurd value otherwise prints a
+    // dangling "♩ =", "♩ = Infinity", "♩ = -120" or "♩ = 1e+21" onto the score
+    // (WRONG-OUTPUT sibling of the D25 duration/dots fix).  hasBpm is derived
+    // from the SANITIZED value so a bad bpm is treated as absent: with no name
+    // the whole mark is skipped below, and the beat unit (which only pairs with
+    // a bpm) is not resolved, so no lone "♩ =" is ever drawn.
+    const bpm = sanitizeTempoBpm(spec.tempo.bpm);
+    const hasBpm = bpm != null;
+    const rawTempoDuration = spec.tempo.duration ?? (hasBpm ? 'q' : undefined);
+    // Sanitize the beat unit AND the augmentation-dot count before they reach
+    // StaveTempo, which -- unlike every note duration -- receives them raw.
+    // Two degenerate-input failures live in StaveTempo.draw (verified against
+    // vexflow 5.0.0 stavetempo.js):
+    //   1. the beat glyph is `this.durationToCode[duration]`, a plain object
+    //      lookup: an unknown code (e.g. "999", "x") yields `undefined`, which
+    //      is then setText/renderText'd -- the note glyph silently VANISHES and
+    //      the whole "♩ = N" metronome mark draws nothing/"undefined".
+    //   2. the dots are drawn by `for (let i = 0; i < dots; i++) renderText(...)`
+    //      with NO upper bound, so a large `dots` (e.g. 1e6) turns tempo
+    //      rendering into a render-hanging draw loop -- the same unbounded-loop
+    //      class as the beamGroups 0-tick hang.
+    // Route the beat unit through the same sanitizeDuration every note uses
+    // (unknown -> quarter + warn) and clamp dots to the MAX_DURATION_DOTS the
+    // rest of the plugin already honours.  A well-formed tempo is unchanged:
+    // sanitizeDuration returns a valid base verbatim and the clamp is a no-op
+    // for 0..4 dots, so the mark is byte-identical.
+    let tempoDuration: string | undefined;
+    let tempoDots = 0;
+    if (rawTempoDuration !== undefined) {
+      const sd = sanitizeDuration(rawTempoDuration);
+      tempoDuration = sd.base;
+      const rawDots = Number(spec.tempo.dots ?? sd.dots);
+      tempoDots = Number.isFinite(rawDots)
+        ? Math.max(0, Math.min(MAX_DURATION_DOTS, Math.floor(rawDots)))
+        : 0;
+    }
     if (!spec.tempo.name && !hasBpm) {
       problems.push('tempo has neither a name nor a bpm and was skipped');
     } else {
@@ -2567,8 +4616,8 @@ export async function renderMusicSpec(
         {
           name: spec.tempo.name,
           duration: tempoDuration,
-          dots: spec.tempo.dots ?? 0,
-          bpm: spec.tempo.bpm,
+          dots: tempoDots,
+          bpm,
         },
         topStave.x - tempoLeftShift(topStave),
         tempoShiftY,
@@ -2663,7 +4712,66 @@ export async function renderMusicSpec(
       }
     });
   }
-  if (spec.measureNumber != null) topStave.setMeasure(spec.measureNumber);
+  // Measure numbers.  `measureNumbers: true` labels the FIRST bar of every
+  // system, as published scores do (a reader can then find any bar at a
+  // glance); the running count begins at `measureNumber` (default 1) and
+  // advances by each system's opening-bar GLOBAL index, so a line beginning at
+  // the 4th bar reads "4".  Drawn on the top staff of each system only, never
+  // repeated down a grand staff's staves.  Without `measureNumbers`, a scalar
+  // `measureNumber` keeps its legacy behaviour: the opening bar labelled once,
+  // on the first system's top staff.
+  // Per-system measure numbers are COLLECTED here and DRAWN in the post-format
+  // overlay pass (drawMeasureNumbers), NOT via VexFlow's Stave.setMeasure:
+  // verified against the built bundle, setMeasure draws a number for a lone
+  // directly-placed stave (the legacy scalar branch below still uses it) but
+  // silently draws NOTHING for the staves of a wrapped factory.System layout,
+  // so `measureNumbers: true` produced zero numbers on every system.  The
+  // overlay uses the same getX()/getYForLine() path the volta and staff-label
+  // layers already prove works for wrapped systems.
+  const measureNumberPlans: Array<{ stave: any; number: number }> = [];
+  if (spec.measureNumbers) {
+    // Guard the seed: a degenerate measureNumber would otherwise stringify
+    // straight onto every system's first bar as "NaN"/"Infinity"/"1.5" (see
+    // sanitizeMeasureNumber).  A dropped value falls back to the default
+    // count start of 1, so the numbers still read 1, 2, 3, ...
+    const startNumber = sanitizeMeasureNumber(spec.measureNumber) ?? 1;
+    // A pickup (anacrusis) opening bar is not counted: published scores leave
+    // it unnumbered and call the first FULL bar "measure 1".  Detect it on the
+    // TOP staff, whose measures drive the numbering, and (1) never label the
+    // pickup bar itself and (2) pull the running count back by one so bar
+    // index 1 shows `startNumber` -- i.e. the numbers land on the complete
+    // bars, not on the upbeat.  With no pickup the offset is `startNumber`,
+    // byte-identical to the previous behaviour.
+    // Honour both spellings: the documented top-level `spec.pickup` shorthand
+    // and a precise `pickup: true` on the first measure of the top staff.
+    const hasPickup = Boolean(spec.pickup || measuresOf(staffSpecs[0])[0]?.pickup);
+    const numberOffset = hasPickup ? startNumber - 1 : startNumber;
+    for (let s = 0; s < systems.length; s += 1) {
+      const firstMeasure = systems[s]?.[0];
+      if (firstMeasure == null) continue;
+      // The anacrusis carries no number.
+      if (hasPickup && firstMeasure === 0) continue;
+      const topOfSystem = built.find(
+        (b) => b.staffSpec === staffSpecs[0] && b.systemIndex === s,
+      );
+      if (topOfSystem) {
+        measureNumberPlans.push({
+          stave: topOfSystem.stave,
+          number: numberOffset + firstMeasure,
+        });
+      }
+    }
+  } else if (spec.measureNumber != null) {
+    // A lone scalar measure number on the first bar: setMeasure works on this
+    // single directly-addressed top stave (verified), so keep the light path.
+    // Sanitize first, exactly as the running-count seed above does -- setMeasure
+    // stringifies its argument with no numeric guard, so an unsanitized bad
+    // value would draw "NaN"/"Infinity" as the opening bar label.  A dropped
+    // value simply prints no number, which is the honest reading of a
+    // meaningless request.
+    const scalar = sanitizeMeasureNumber(spec.measureNumber);
+    if (scalar != null) topStave.setMeasure(scalar);
+  }
   if (spec.section) topStave.setSection(spec.section, 0);
 
   // Barlines must be set on EVERY staff of the system they belong to, or a
@@ -2739,9 +4847,21 @@ export async function renderMusicSpec(
     return { from, to };
   };
 
+  // Leading "tr" glyphs for trill lines, drawn in the post-format overlay pass
+  // (see drawTrillGlyph): the pre-format Ornament approach was verified not to
+  // render, so the glyph is deferred here alongside the note that carries it
+  // and the stave it sits above.
+  const trillGlyphPlans: Array<{ stave: any; note: any }> = [];
+
+  // Sustain-pedal lines, drawn in the post-format overlay pass (drawPedalLine):
+  // like the volta/dynamics overlays they need the press/release notes'
+  // resolved x, so they are planned here (system-confined via spanEnds) and
+  // drawn after formatting.
+  const pedalPlans: Array<{ stave: any; pedal: MusicPedal; fromNote: any; toNote: any }> = [];
+
   // Spans are per-staff: their indices address that staff's own note list,
   // which runs across every system the staff occupies.
-  for (const [staffIndex, { notes, staffSpec, noteSystem }] of perStaff.entries()) {
+  for (const [staffIndex, { notes, staffSpec, noteSystem, specNotes }] of perStaff.entries()) {
     const staffView = { notes, noteSystem };
     for (const slur of staffSpec.slurs ?? []) {
       const ends = spanEnds(staffView, slur, 'slur');
@@ -2803,7 +4923,50 @@ export async function renderMusicSpec(
       const name = trillLine.wiggle ?? 'trill';
       const code = WIGGLE_CODES[name];
       if (!code) { problems.push(`unknown wiggle "${name}"`); continue; }
+      // A published trill is a "tr" glyph FOLLOWED by the wavy line, not the
+      // wavy line alone -- a bare squiggle reads as vibrato/tremolo, not a
+      // trill.  VexFlow's VibratoBracket draws only the wave, so the "tr" has
+      // to come from elsewhere.  Attaching a `tr` Ornament to the start note
+      // before format (iter3) was verified INEFFECTIVE -- it compiled and
+      // deployed but drew nothing -- so the glyph is DEFERRED to the
+      // post-format overlay pass (drawTrillGlyph), the mechanism the dynamics /
+      // measure-number / volta layers already use.  Only for the default
+      // `trill` wiggle: vibrato/sawtooth are NOT trills and get no "tr".
+      // Guarded against a double "tr" for authors who followed the previous
+      // docs and put a `trill` ornament on the first note themselves -- that
+      // ornament already draws its own "tr", so skip ours when it is present.
+      if (name === 'trill') {
+        const startNote = specNotes?.[trillLine.from];
+        const alreadyMarked = Array.isArray(startNote?.ornaments)
+          && startNote!.ornaments!.includes('trill');
+        if (!alreadyMarked) {
+          // The wave lives on the start note's system; find that system's stave
+          // for this staff so the "tr" is placed above the right line.
+          const sys = noteSystem[trillLine.from];
+          const entry = built.find(
+            (b) => b.staffSpec === staffSpec && b.systemIndex === sys,
+          );
+          if (entry) trillGlyphPlans.push({ stave: entry.stave, note: ends.from });
+        }
+      }
       factory.VibratoBracket({ from: ends.from, to: ends.to, options: { code } });
+    }
+    // Sustain-pedal markings.  Resolved here (system-confined via spanEnds so a
+    // pedal cannot stretch across a line break) and drawn in the post-format
+    // overlay pass, since drawPedalLine reads the press/release notes' resolved
+    // x.  Anchored to the stave of the system the press falls on for this staff.
+    for (const pedal of staffSpec.pedals ?? []) {
+      const ends = spanEnds(staffView, pedal, 'pedal');
+      if (!ends) continue;
+      const sys = noteSystem[pedal.from];
+      const entry = built.find(
+        (b) => b.staffSpec === staffSpec && b.systemIndex === sys,
+      );
+      if (entry) {
+        pedalPlans.push({
+          stave: entry.stave, pedal, fromNote: ends.from, toNote: ends.to,
+        });
+      }
     }
   }
 
@@ -2846,6 +5009,29 @@ export async function renderMusicSpec(
       const members = notes.slice(from, to + 1);
       const num = tuplet.num ?? members.length;
       const inSpaceOf = tuplet.inSpaceOf ?? 2;
+      // Guard the two user-supplied tuplet counts against degenerate values
+      // BEFORE they reach VexFlow.  Tuplet.attach() rescales every spanned
+      // note's tick value by Fraction(notesOccupied, numNotes); a `num` of 0
+      // makes that a division by zero (Fraction(inSpaceOf, 0)) and a `num`/
+      // `inSpaceOf` that is negative or non-integer yields a nonsensical
+      // multiplier -- either way the note gets a NaN/Infinity/negative tick and
+      // the Formatter's justification loop NEVER RETURNS, hanging the whole
+      // render for 30s with a blank canvas (verified: `num: 0` -> render
+      // timeout, total data loss).  This is the same non-converging-formatter
+      // hang sanitizeDuration and the grace-note key path already defend, and
+      // the tuplet counts were the one user-supplied numeric input reaching the
+      // tick machinery without a guard.  Skip with a problem note, matching the
+      // plugin's unknown/invalid-value convention.  The defaults (num =
+      // members.length >= 2, inSpaceOf = 2) always pass, so the ordinary path
+      // is byte-identical.
+      if (!Number.isInteger(num) || num < 1
+          || !Number.isInteger(inSpaceOf) || inSpaceOf < 1) {
+        problems.push(
+          `tuplet ${from}-${to} has invalid num/inSpaceOf `
+          + `(${num}/${inSpaceOf}); both must be integers >= 1`,
+        );
+        continue;
+      }
       const options: Record<string, unknown> = {
         numNotes: num,
         notesOccupied: inSpaceOf,
@@ -2874,25 +5060,40 @@ export async function renderMusicSpec(
   // Resolved PER STAFF so a `staves[]` entry can set its own flag: the entry's
   // value wins when present (including an explicit `false`, which opts one part
   // out of a spec-level `autoBeam`), otherwise the spec's applies.
-  for (const { byMeasure, staffSpec } of built) {
+  for (const { byMeasure, staffSpec, beamGroupsByMeasure } of built) {
     const autoBeam = staffSpec.autoBeam ?? spec.autoBeam;
     if (!autoBeam) continue;
     const groupSource = staffSpec.beamGroups?.length
       ? staffSpec.beamGroups
       : spec.beamGroups;
-    const groups = groupSource?.length
-      ? groupSource.map(([n, d]) => new Fraction(n, d))
+    // Drop degenerate [n,d] pairs before they reach VexFlow: a 0-tick group
+    // (numerator 0) hangs generateBeams in an infinite loop, a 0-denominator
+    // beams the whole bar into one group (see sanitizeBeamGroups).
+    const validGroups = sanitizeBeamGroups(groupSource);
+    // An explicit `beamGroups` is the author's deliberate override and applies
+    // to EVERY bar unchanged.  With none, each bar falls back to ITS OWN
+    // meter's grouping (beamGroupsByMeasure), so a mid-score meter change
+    // beams correctly instead of forcing the opening meter's beats on the
+    // changed bars -- see beamGroupsForMeter.  A single-meter score resolves
+    // every bar to the opening grouping, so its beaming is byte-identical.
+    const explicitGroups = validGroups
+      ? validGroups.map(([n, d]) => new Fraction(n, d))
       : undefined;
     // Beam per measure, never across a barline -- a beam spanning a bar is
     // wrong engraving, and the flat note list would happily produce one.
-    for (const measureNotes of byMeasure) {
-      beams.push(...Beam.generateBeams(measureNotes, {
+    byMeasure.forEach((measureNotes, localMi) => {
+      const groups = explicitGroups
+        ?? beamGroupsByMeasure?.[localMi]
+        ?? defaultBeamGroups;
+      const generated = Beam.generateBeams(measureNotes, {
         ...(groups ? { groups } : {}),
         // A rest breaks a beam group in ordinary engraving; beaming over one
         // is a deliberate stylistic choice, not a default.
         beamRests: false,
-      }));
-    }
+      });
+      generated.forEach(applyHouseBeamSlope);
+      beams.push(...generated);
+    });
   }
   // Explicit beams address the staff's FLAT note list, so they resolve against
   // perStaff -- and a beam, being drawn on one stave, cannot cross a break.
@@ -2914,6 +5115,113 @@ export async function renderMusicSpec(
       beams.push(factory.Beam({ notes: notes.slice(from, to + 1), options: {} }));
     }
   }
+  // Cross-staff beams: a keyboard run threaded from one staff into another
+  // under ONE beam.  A per-staff `beams`/`autoBeam` cannot join it (each
+  // addresses a single staff's own notes), so the members are named at the
+  // SPEC level as [staffIndex, noteIndex] pairs in PLAYING ORDER.  Resolved
+  // against perStaff (the flat, rendered StaveNotes of each staff) and built
+  // here -- BEFORE factory.draw(), like every other beam, because a beamed
+  // note suppresses its own flag during the draw pass -- then drawn in the
+  // post-format pass below where the notes' resolved x/y across both staves
+  // exist.  VexFlow draws the beam by reading each member's own stave Y, which
+  // is the standard cross-staff mechanism; the group is refused (not drawn
+  // wrongly) when a member is out of range or the run spans a system break.
+  const crossStaffBeamObjs: any[] = [];
+  for (const csb of spec.crossStaffBeams ?? []) {
+    if (staffSpecs.length < 2) {
+      problems.push('crossStaffBeams is only meaningful with two or more staves; skipped');
+      continue;
+    }
+    const pairs = csb.notes ?? [];
+    if (pairs.length < 2) {
+      problems.push('crossStaffBeams entry needs at least two notes; skipped');
+      continue;
+    }
+    const members: any[] = [];
+    let system = -1;
+    let ok = true;
+    for (const pair of pairs) {
+      const si = Array.isArray(pair) ? pair[0] : undefined;
+      const ni = Array.isArray(pair) ? pair[1] : undefined;
+      const staff = si != null ? perStaff[si] : undefined;
+      if (!staff || !Number.isInteger(ni) || (ni as number) < 0
+          || (ni as number) >= staff.notes.length) {
+        problems.push(
+          `crossStaffBeams member [${si}, ${ni}] is out of range and the group was skipped`,
+        );
+        ok = false;
+        break;
+      }
+      const sys = staff.noteSystem[ni as number];
+      if (system === -1) system = sys;
+      else if (sys !== system) {
+        problems.push('crossStaffBeams group crosses a system break and was skipped');
+        ok = false;
+        break;
+      }
+      members.push(staff.notes[ni as number]);
+    }
+    if (!ok) continue;
+    // A beam requires one shared stem side (Stem.UP = 1, Stem.DOWN = -1);
+    // "up" is the usual keyboard case, placing the beam between the staves.
+    const dir = csb.stemDirection === 'down' ? -1 : 1;
+    for (const m of members) {
+      if (typeof m.setStemDirection === 'function') m.setStemDirection(dir);
+    }
+    // autoStem = false so the beam keeps the stem side just forced rather than
+    // re-deriving one per note from staff position (which would split the run).
+    const beam = new Beam(members, false);
+    applyHouseBeamSlope(beam);
+    crossStaffBeamObjs.push(beam);
+  }
+
+  // Cross-staff slurs / ties: a phrase arc or a single held pitch passed from
+  // one staff into the other.  Like crossStaffBeams they are named at the SPEC
+  // level as [staffIndex, noteIndex] pairs and resolved against perStaff; but
+  // -- exactly like the per-staff slurs/ties above -- they are created through
+  // factory.Curve / factory.StaveTie, which are factory-owned and drawn in
+  // factory.draw()'s own pass (no separate draw loop, unlike the `new Beam`
+  // objects).  VexFlow positions each from each endpoint note's own resolved
+  // stave Y, the same cross-staff mechanism the beam uses, so the arc spans
+  // the two staves.  Refused (not drawn) when an endpoint is out of range or
+  // the two ends land on different systems, matching spanEnds' same-system
+  // rule that every other span obeys.
+  for (const css of spec.crossStaffSlurs ?? []) {
+    if (staffSpecs.length < 2) {
+      problems.push('crossStaffSlurs is only meaningful with two or more staves; skipped');
+      continue;
+    }
+    const resolveEnd = (pair: any): { note: any; system: number } | null => {
+      const si = Array.isArray(pair) ? pair[0] : undefined;
+      const ni = Array.isArray(pair) ? pair[1] : undefined;
+      const staff = si != null ? perStaff[si] : undefined;
+      if (!staff || !Number.isInteger(ni) || (ni as number) < 0
+          || (ni as number) >= staff.notes.length) {
+        problems.push(
+          `crossStaffSlurs endpoint [${si}, ${ni}] is out of range and the span was skipped`,
+        );
+        return null;
+      }
+      return { note: staff.notes[ni as number], system: staff.noteSystem[ni as number] };
+    };
+    const from = resolveEnd(css.from);
+    const to = resolveEnd(css.to);
+    if (!from || !to) continue;
+    if (from.system !== to.system) {
+      problems.push('crossStaffSlurs span crosses a system break and was skipped');
+      continue;
+    }
+    if (css.curve === 'tie') {
+      // A tie holds ONE pitch across the staff change; firstIndices/lastIndices
+      // [0] tie the primary (first) notehead, matching the per-staff tie path.
+      factory.StaveTie({
+        from: from.note, to: to.note, firstIndices: [0], lastIndices: [0],
+      });
+    } else {
+      // The default phrase arc between two different pitches.
+      factory.Curve({ from: from.note, to: to.note, options: {} });
+    }
+  }
 
   factory.draw();
 
@@ -2928,6 +5236,14 @@ export async function renderMusicSpec(
   // Secondary-voice auto-beams are Beam.generateBeams output too, so they need
   // the same explicit draw pass.
   for (const beam of secondaryBeams) {
+    if (typeof beam.getContext === 'function' && !beam.getContext()) {
+      beam.setContext(factory.getContext()).draw();
+    }
+  }
+  // Cross-staff beams are `new Beam` output (not factory-owned), so like the
+  // generateBeams beams they need an explicit context + draw pass now that the
+  // notes' resolved x/y across both staves exist.
+  for (const beam of crossStaffBeamObjs) {
     if (typeof beam.getContext === 'function' && !beam.getContext()) {
       beam.setContext(factory.getContext()).draw();
     }
@@ -2984,6 +5300,19 @@ export async function renderMusicSpec(
     // Instrument / part labels in the left gutter, one per named staff.  Drawn
     // here (post-format) so each staff's resolved x/y are available.
     drawStaffLabels(d3, svg, built, isDarkMode);
+    // Measure numbers above the first bar of each system.  Collected earlier
+    // (measureNumberPlans) and drawn here because VexFlow's setMeasure is
+    // ineffective for the wrapped factory.System staves -- see
+    // drawMeasureNumbers.  Empty for scores without `measureNumbers`, so this
+    // no-ops and the layout is unchanged for them.
+    drawMeasureNumbers(d3, svg, measureNumberPlans, isDarkMode);
+    // Leading "tr" glyphs for trill lines.  Deferred from the pre-format span
+    // pass (drawTrillGlyph) because attaching the glyph as a note Ornament
+    // before format was verified not to render; drawn here where the note's
+    // resolved x exists, immediately left of the wave the VibratoBracket drew.
+    for (const { stave, note } of trillGlyphPlans) {
+      drawTrillGlyph(d3, svg, stave, note, isDarkMode);
+    }
     // Volta brackets over their measure ranges -- one per ending (a "1." and a
     // "2." for the usual repeat scheme).  Each is anchored to the TOP staff of
     // the system its ending falls on (built entries are one per staff x
@@ -3001,6 +5330,49 @@ export async function renderMusicSpec(
         );
       }
     }
+    // Sustain-pedal lines below the staff, on their own band beneath the
+    // dynamics band.  Planned above (system-confined) and drawn here where the
+    // press/release notes' resolved x exist.
+    for (const plan of pedalPlans) {
+      drawPedalLine(
+        d3, svg, plan.stave, plan.pedal,
+        plan.fromNote, plan.toNote, isDarkMode,
+      );
+    }
+    // Multi-measure rests: the H-bar + bar count, centred over each empty
+    // measure's ghost-note spacer.  Drawn here (post-format) because the
+    // spacer's resolved x only exists after formatting -- like the pedal /
+    // volta layers.  Empty for scores without any `multiRest`, so this no-ops
+    // and their layout is unchanged.
+    for (const { stave, multiRests } of built) {
+      for (const mr of multiRests) {
+        const cx = mr.ghost && typeof mr.ghost.getAbsoluteX === 'function'
+          ? mr.ghost.getAbsoluteX() : null;
+        if (cx == null) continue;
+        drawMultiMeasureRest(d3, svg, stave, cx, mr.count, isDarkMode);
+      }
+    }
+    // Whole-bar centering: a lone whole note or whole rest is CENTERED in its
+    // measure in every published house style, but VexFlow leaves it jammed at
+    // the left start-x with the rest of the bar empty (verified).  Restricted
+    // to the unambiguous single-staff, single-system, single-measure,
+    // single-bare-tickable case so it cannot disturb vertical alignment across
+    // a grand staff, a second voice, a cross-staff span, or the spacing of a
+    // multi-note bar -- all of which keep their exact current layout.  See
+    // shouldCenterLoneWholeBar (which case) and centerLoneWholeBar (geometry).
+    if (built.length === 1
+        && !(spec.crossStaffBeams && spec.crossStaffBeams.length)
+        && !(spec.crossStaffSlurs && spec.crossStaffSlurs.length)) {
+      const only = built[0];
+      const vs = only.staffSpec.voices;
+      const singleVoice = !vs || vs.length <= 1;
+      if (singleVoice
+          && only.byMeasure.length === 1 && only.byMeasure[0].length === 1
+          && only.notes.length === 1
+          && shouldCenterLoneWholeBar(only.specNotes[0], numBeats, beatValue)) {
+        centerLoneWholeBar(svg, only.stave, only.notes[0]);
+      }
+    }
     // specNotes is the FLATTENED note list, parallel to `notes`; indexing
     // staffSpec.notes would find nothing on a measures-based staff.
     for (const { stave, notes, specNotes } of built) {
@@ -3016,6 +5388,26 @@ export async function renderMusicSpec(
       // x-positions and both pick theme-aware ink, so must run after the
       // dark-theme recolour rather than be remapped by it.
       drawLyricLayer(d3, svg, stave, notes, specNotes, isDarkMode);
+      // Dynamics (p/mf/f...) share the same overlay pass and, for the same
+      // reasons, are drawn below the staff here rather than via TextDynamics
+      // (whose `line` option VexFlow 5.0 ignores -- see drawDynamicsLayer).
+      drawDynamicsLayer(d3, svg, stave, notes, specNotes, isDarkMode);
+      // Breath / caesura marks above the staff, just after each marked note.
+      // drawBreathMarks (and drawCueNotes below) were implemented and their
+      // canvas headroom reserved (needsRoomAbove counts `breath`, the cue
+      // scale is size-only), and both fields are documented in the skill
+      // prompt -- but the invocation was omitted from this overlay pass, so
+      // `breath` and `cue` were silently DEAD: fully specced, documented and
+      // budgeted for, yet drawing nothing.  Wire them in alongside the other
+      // post-format overlays (same reason they belong here: they read each
+      // note's resolved x and pick their own theme-aware ink, so they must run
+      // after formatting and after the dark-theme recolour).  A note without
+      // `breath`/`cue` is untouched, so the no-mark path is unchanged.
+      drawBreathMarks(d3, svg, stave, notes, specNotes, isDarkMode);
+      // Cue notes: shrink notes flagged `cue` to ~2/3 size in place.  Takes no
+      // d3/ink (it transforms the already-rendered note group), so its
+      // signature differs from the layers above.
+      drawCueNotes(svg, notes, specNotes);
     }
   }
 }

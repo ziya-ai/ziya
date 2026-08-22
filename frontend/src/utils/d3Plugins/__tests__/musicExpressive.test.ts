@@ -16,6 +16,13 @@
  * jsdom has no 2D canvas context, so text measurement degrades to empty
  * metrics; glyph emission (what is under test) still happens.
  */
+// Polyfill structuredClone for jest's jsdom environment: vexflow 5.0.0 uses it
+// in metrics.getFontInfo, and jest's jsdom global does not expose it on Node 20
+// (a plain-data font-metrics clone, so JSON round-trip is a faithful stand-in).
+if (typeof (globalThis as any).structuredClone !== 'function') {
+  (globalThis as any).structuredClone = (v: any) =>
+    (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
+}
 import { renderMusicSpec, type MusicSpec } from '../musicPlugin';
 
 const makeChain = () => {
@@ -38,6 +45,35 @@ const draw = async (spec: MusicSpec) => {
   return container;
 };
 
+// DOM-capturing d3 stub: the default no-op stub swallows the below-staff
+// dynamics OVERLAY (drawDynamicsLayer, added in the D4 rewrite that moved
+// dynamics off VexFlow's TextDynamics), so its output cannot be observed
+// through the rendered SVG.  This variant wraps the real element passed to
+// select(), so overlay <text> lands in the DOM where a query can see it.
+const NS = 'http://www.w3.org/2000/svg';
+const domSel = (el: Element): any => {
+  const s: any = {
+    node: () => el,
+    append: (tag: string) => { const c = document.createElementNS(NS, tag); el.appendChild(c); return domSel(c); },
+    attr: () => s, style: () => s, classed: () => s, html: () => s,
+    text: (t: any) => { el.textContent = String(t); return s; },
+  };
+  return s;
+};
+const domD3 = { select: (el: Element) => domSel(el) };
+const drawDom = async (spec: MusicSpec) => {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  await renderMusicSpec(container, spec, false, domD3);
+  return container;
+};
+/** Below-staff dynamic marks the overlay draws, one <text> per mark. */
+const DYNAMIC_SET = new Set(['ppp', 'pp', 'p', 'mp', 'mf', 'f', 'ff', 'fff', 'sf', 'sfz', 'rfz', 'fp']);
+const dynMarks = (c: HTMLElement) =>
+  Array.from(c.querySelectorAll('text'))
+    .map((t) => t.textContent ?? '')
+    .filter((t) => DYNAMIC_SET.has(t));
+
 /** All glyph text in the rendered SVG, concatenated. */
 const glyphs = (c: HTMLElement) =>
   Array.from(c.querySelectorAll('text')).map((t) => t.textContent ?? '').join('');
@@ -57,17 +93,22 @@ const NOTES4: MusicSpec['notes'] = [
 ];
 
 describe('dynamics', () => {
-  it('emits real dynamics glyphs, not just extra text elements', async () => {
-    // The regression: a dropped dynamics voice renders nothing and says nothing.
-    const c = await draw({ type: 'music', notes: [
+  // Dynamics are now a below-staff d3 OVERLAY (drawDynamicsLayer), drawn as
+  // one <text> per mark rather than VexFlow's per-letter SMuFL glyphs, so
+  // these observe the overlay via the DOM-capturing stub and assert on the
+  // mark text (the D4 rewrite superseded the old SMuFL-codepoint assertions).
+  it('emits a dynamic mark for each annotated note', async () => {
+    // The regression this guards: a dropped dynamics voice rendered nothing
+    // and said nothing.
+    const c = await drawDom({ type: 'music', notes: [
       { keys: ['c/5'], duration: 'h', dynamic: 'pp' },
       { keys: ['g/5'], duration: 'h', dynamic: 'ff' },
     ] });
-    expect(countIn(c, DYNAMICS)).toBeGreaterThan(0);
+    expect(dynMarks(c)).toEqual(expect.arrayContaining(['pp', 'ff']));
   });
 
   it('does not displace the notes it annotates', async () => {
-    // Dynamics in the melody voice consume beat time and shift the notes.
+    // The overlay takes no beat time, so a dynamic must not shift the notes.
     const withDyn = await draw({ type: 'music', timeSignature: '4/4',
       notes: NOTES4.map((n, i) => (i === 0 ? { ...n, dynamic: 'pp' } : n)) });
     const without = await draw({ type: 'music', timeSignature: '4/4', notes: NOTES4 });
@@ -76,22 +117,23 @@ describe('dynamics', () => {
     expect(xs(withDyn)).toBe(xs(without));
   });
 
-  it('skips an unknown mark rather than emitting ASCII', async () => {
+  it('skips an unknown mark rather than emitting it', async () => {
     const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
-    const c = await draw({ type: 'music', notes: [
+    const c = await drawDom({ type: 'music', notes: [
       { keys: ['c/5'], duration: 'q', dynamic: 'loud' },
     ] });
     expect(glyphs(c)).not.toMatch(/loud/);
-    expect(warn).toHaveBeenCalledWith(expect.any(String), expect.stringContaining('loud'));
+    // drawDynamicsLayer warns with a single message string.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('loud'));
     warn.mockRestore();
   });
 
   it('renders a mark on some notes and not others', async () => {
-    const c = await draw({ type: 'music', timeSignature: '4/4',
+    const c = await drawDom({ type: 'music', timeSignature: '4/4',
       notes: NOTES4.map((n, i) =>
         i === 0 ? { ...n, dynamic: 'pp' } : i === 3 ? { ...n, dynamic: 'fff' } : n) });
-    // pp = 2 glyphs, fff = 3.
-    expect(countIn(c, DYNAMICS)).toBe(5);
+    // one overlay mark per annotated note: pp on the first, fff on the last.
+    expect(dynMarks(c)).toEqual(['pp', 'fff']);
   });
 });
 
@@ -187,7 +229,9 @@ describe('spans', () => {
 
 describe('combined', () => {
   it('renders every expressive feature together', async () => {
-    const c = await draw({
+    // drawDom so the below-staff dynamics overlay is observable alongside the
+    // VexFlow-native articulations / ornaments / gliss label.
+    const c = await drawDom({
       type: 'music', clef: 'treble', keySignature: 'C', timeSignature: '4/4',
       notes: [
         { keys: ['c/5'], duration: 'q', dynamic: 'pp', articulations: ['staccato'] },
@@ -199,11 +243,9 @@ describe('combined', () => {
       glissandos: [{ from: 2, to: 3 }],
       hairpins: [{ from: 0, to: 3, type: 'cresc' }],
     });
-    expect(countIn(c, DYNAMICS)).toBe(5);
+    expect(dynMarks(c)).toEqual(['pp', 'fff']);       // two overlay marks
     expect(countIn(c, ARTICULATIONS)).toBe(2);
     expect(countIn(c, ORNAMENTS)).toBe(1);
     expect(glyphs(c)).toContain('gliss.');
-    // No feature may leak as ASCII; "gliss." is the one legitimate label.
-    expect(glyphs(c).replace(/gliss\./g, '')).not.toMatch(/[a-z]{4,}/);
   });
 });

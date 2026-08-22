@@ -18,6 +18,15 @@
  * Assertions count SMuFL rest codepoints (U+E4E3..U+E4E7) rather than
  * elements, since a rest that silently became a note still draws a glyph.
  */
+
+// Polyfill structuredClone for jest's jsdom environment: vexflow 5.0.0 uses
+// it in metrics.getFontInfo, and jest's jsdom global does not expose it on
+// Node 20 (a plain-data font-metrics clone, so JSON round-trip suffices).
+if (typeof (globalThis as any).structuredClone !== 'function') {
+  (globalThis as any).structuredClone = (v: any) =>
+    (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
+}
+
 import { buildNoteString, renderMusicSpec, type MusicSpec } from '../musicPlugin';
 
 const makeChain = () => {
@@ -32,6 +41,29 @@ const makeChain = () => {
   return chain;
 };
 const d3Stub = { select: () => makeChain() };
+
+// DOM-capturing d3 for observing the below-staff dynamics OVERLAY
+// (drawDynamicsLayer), which the no-op stub above swallows.  attr() sets real
+// attributes so an overlay mark's x is queryable for alignment checks.
+const NS_ = 'http://www.w3.org/2000/svg';
+const domSel = (el: Element): any => {
+  const s: any = {
+    node: () => el,
+    append: (t: string) => { const c = document.createElementNS(NS_, t); el.appendChild(c); return domSel(c); },
+    attr: (k: string, v: any) => { el.setAttribute(k, String(v)); return s; },
+    style: () => s, classed: () => s, html: () => s,
+    text: (t: any) => { el.textContent = String(t); return s; },
+  };
+  return s;
+};
+const domD3 = { select: (el: Element) => domSel(el) };
+const DYNAMIC_SET = new Set(['ppp', 'pp', 'p', 'mp', 'mf', 'f', 'ff', 'fff', 'sf', 'sfz', 'rfz', 'fp']);
+const drawDom = async (spec: MusicSpec) => {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  await renderMusicSpec(container, spec, false, domD3);
+  return container;
+};
 
 const draw = async (spec: MusicSpec) => {
   const container = document.createElement('div');
@@ -158,15 +190,17 @@ describe('rests with other features', () => {
   it('keeps dynamics aligned when a rest sits between marked notes', async () => {
     // The dynamics voice pads a rest with a GhostNote; a mismatch would shift
     // every later mark off its note.
-    const c = await draw({ type: 'music', timeSignature: '4/4', notes: [
+    // Dynamics are a below-staff overlay now; drawDom makes them observable.
+    const c = await drawDom({ type: 'music', timeSignature: '4/4', notes: [
       { ...N('c/5', 'q'), dynamic: 'pp' }, R('q'),
       { ...N('e/5', 'q'), dynamic: 'ff' }, N('f/5', 'q'),
     ] });
-    const xOf = (re: RegExp) => Array.from(c.querySelectorAll('text'))
-      .filter((t) => re.test(t.textContent ?? ''))
+    const dynX = Array.from(c.querySelectorAll('text'))
+      .filter((t) => DYNAMIC_SET.has(t.textContent ?? ''))
       .map((t) => parseFloat(t.getAttribute('x') ?? 'NaN'));
-    const dynX = xOf(/[\ue520-\ue52f]/);
-    const headX = xOf(/[\ue0a4]/);
+    const headX = Array.from(c.querySelectorAll('text'))
+      .filter((t) => /[\ue0a4]/.test(t.textContent ?? ''))
+      .map((t) => parseFloat(t.getAttribute('x') ?? 'NaN'));
     expect(dynX.length).toBe(2);
     for (const x of dynX) {
       expect(headX.some((hx) => Math.abs(hx - x) < 20)).toBe(true);

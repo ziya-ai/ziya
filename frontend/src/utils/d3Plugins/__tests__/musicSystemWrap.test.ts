@@ -25,6 +25,15 @@
  * N clefs on a single-staff score == N systems.  Noteheads are counted to prove
  * wrapping never drops or duplicates music.
  */
+
+// Polyfill structuredClone for jest's jsdom environment: vexflow 5.0.0 uses
+// it in metrics.getFontInfo, and jest's jsdom global does not expose it on
+// Node 20 (a plain-data font-metrics clone, so JSON round-trip suffices).
+if (typeof (globalThis as any).structuredClone !== 'function') {
+  (globalThis as any).structuredClone = (v: any) =>
+    (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
+}
+
 import {
   renderMusicSpec, planSystemBreaks, systemIndexForNote,
   type MusicMeasure, type MusicSpec,

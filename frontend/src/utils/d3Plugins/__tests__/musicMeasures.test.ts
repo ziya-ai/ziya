@@ -14,6 +14,15 @@
  * <rect>s, so those are what the assertions count: a barline is invisible to
  * any text/glyph check.
  */
+
+// Polyfill structuredClone for jest's jsdom environment: vexflow 5.0.0 uses
+// it in metrics.getFontInfo, and jest's jsdom global does not expose it on
+// Node 20 (a plain-data font-metrics clone, so JSON round-trip suffices).
+if (typeof (globalThis as any).structuredClone !== 'function') {
+  (globalThis as any).structuredClone = (v: any) =>
+    (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
+}
+
 import { renderMusicSpec, type MusicMeasure, type MusicSpec } from '../musicPlugin';
 
 const makeChain = () => {
@@ -28,6 +37,29 @@ const makeChain = () => {
   return chain;
 };
 const d3Stub = { select: () => makeChain() };
+
+// DOM-capturing d3 for observing the below-staff dynamics OVERLAY
+// (drawDynamicsLayer), which the no-op stub above swallows.  attr() sets real
+// attributes so an overlay mark's x is queryable for alignment checks.
+const NS_ = 'http://www.w3.org/2000/svg';
+const domSel = (el: Element): any => {
+  const s: any = {
+    node: () => el,
+    append: (t: string) => { const c = document.createElementNS(NS_, t); el.appendChild(c); return domSel(c); },
+    attr: (k: string, v: any) => { el.setAttribute(k, String(v)); return s; },
+    style: () => s, classed: () => s, html: () => s,
+    text: (t: any) => { el.textContent = String(t); return s; },
+  };
+  return s;
+};
+const domD3 = { select: (el: Element) => domSel(el) };
+const DYNAMIC_SET = new Set(['ppp', 'pp', 'p', 'mp', 'mf', 'f', 'ff', 'fff', 'sf', 'sfz', 'rfz', 'fp']);
+const drawDom = async (spec: MusicSpec) => {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  await renderMusicSpec(container, spec, false, domD3);
+  return container;
+};
 
 const draw = async (spec: MusicSpec) => {
   const container = document.createElement('div');
@@ -183,12 +215,12 @@ describe('interaction with other features', () => {
   it('keeps dynamics aligned with their notes across a barline', async () => {
     // The dynamics voice needs its own BarNote or it desynchronises: a mark in
     // measure 2 rendered at x=383 while its note sat at x=445.
-    const c = await draw({ type: 'music', timeSignature: '4/4', measures: [
+    const c = await drawDom({ type: 'music', timeSignature: '4/4', measures: [
       { notes: M('c').notes.map((n, i) => (i === 0 ? { ...n, dynamic: 'pp' } : n)) },
       { notes: M('g').notes.map((n, i) => (i === 0 ? { ...n, dynamic: 'ff' } : n)) },
     ] });
     const dynX = Array.from(c.querySelectorAll('text'))
-      .filter((t) => /[\ue520-\ue52f]/.test(t.textContent ?? ''))
+      .filter((t) => DYNAMIC_SET.has(t.textContent ?? ''))
       .map((t) => parseFloat(t.getAttribute('x') ?? 'NaN'));
     const headX = Array.from(c.querySelectorAll('text'))
       .filter((t) => /[\ue0a4]/.test(t.textContent ?? ''))

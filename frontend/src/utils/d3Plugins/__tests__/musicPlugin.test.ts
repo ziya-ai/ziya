@@ -9,6 +9,15 @@
  * rather than raising, and the CANVAS/SVG backend constant was off by one with
  * a comment asserting the wrong value.
  */
+
+// Polyfill structuredClone for jest's jsdom environment: vexflow 5.0.0 uses
+// it in metrics.getFontInfo, and jest's jsdom global does not expose it on
+// Node 20 (a plain-data font-metrics clone, so JSON round-trip suffices).
+if (typeof (globalThis as any).structuredClone !== 'function') {
+  (globalThis as any).structuredClone = (v: any) =>
+    (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
+}
+
 import {
   buildNoteString,
   isMusicSpec,
