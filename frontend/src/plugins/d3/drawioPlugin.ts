@@ -307,6 +307,208 @@ export function breakDrawioParentCycles(xml: string): string {
     });
 }
 
+/**
+ * CRITICAL FIX (Issue 37): a maxGraph vertex whose style declares a `gradientColor`
+ * while its base `fillColor` is `none` (or absent/empty) crashes the renderer.
+ * maxGraph's `createGradientId(start, end, ...)` calls `start.charAt(...)` on the
+ * base fill color; when the base fill is `none`/undefined that call throws
+ * `Cannot read properties of undefined (reading 'charAt')`. The throw escapes
+ * `paintVertexShape` → `redrawShape` → `validateCellState` → `fitCenter`, aborting
+ * the whole validate/paint pass so cells that had not yet been drawn are silently
+ * DROPPED from the SVG (partial-to-total data loss). Under some cell combinations the
+ * abort also prevents the container from ever reaching a terminal state → 30s timeout.
+ *
+ * A gradient is meaningless without a base fill to gradate FROM, so the general,
+ * lossless fix is: whenever a style declares a gradient (`gradientColor`) but its
+ * base fill is `none`/missing/empty, STRIP the gradient keys (`gradientColor` and any
+ * `gradientDirection`). The shape then paints as an ordinary no-fill shape — exactly
+ * what the author asked for minus the impossible gradient. Styles with a real base
+ * fill are left byte-identical, so this is not a catch-all: it only touches the
+ * genuinely-degenerate gradient-without-fill combination.
+ *
+ * Exported as a pure string→string helper so it is unit-testable without a DOM.
+ */
+export function sanitizeDrawioGradients(xml: string): string {
+    if (!xml || xml.indexOf('gradientColor') === -1) return xml;
+
+    // Rewrite each style="..." attribute value independently.
+    return xml.replace(/\bstyle="([^"]*)"/g, (whole, style: string) => {
+        if (style.indexOf('gradientColor') === -1) return whole;
+
+        // Split the drawio style string into ;-separated key[=value] entries.
+        const entries = style.split(';');
+        let fillColor: string | null = null;
+        let hasFillKey = false;
+        for (const e of entries) {
+            const eq = e.indexOf('=');
+            if (eq === -1) continue;
+            const key = e.slice(0, eq).trim();
+            if (key === 'fillColor') {
+                hasFillKey = true;
+                fillColor = e.slice(eq + 1).trim();
+            }
+        }
+
+        // A usable base fill = a fillColor key present with a non-empty value that
+        // is not the literal "none". Anything else (fillColor=none, fillColor= ,
+        // or no fillColor key at all) is the crashing combination.
+        const hasUsableFill =
+            hasFillKey &&
+            fillColor !== null &&
+            fillColor.length > 0 &&
+            fillColor.toLowerCase() !== 'none';
+
+        if (hasUsableFill) return whole; // legitimate gradient — leave untouched
+
+        // Strip gradient keys only; preserve every other style entry and ordering.
+        const kept = entries.filter((e) => {
+            const eq = e.indexOf('=');
+            const key = (eq === -1 ? e : e.slice(0, eq)).trim();
+            return key !== 'gradientColor' && key !== 'gradientDirection';
+        });
+        return `style="${kept.join(';')}"`;
+    });
+}
+
+/**
+ * STRESS-GUARD (Issue 49): pull a child cell back within its container's bounds
+ * when its geometry places it GROSSLY outside that container.
+ *
+ * A drawio `<mxCell>` whose `parent` is another cell with its own `<mxGeometry>`
+ * (a group/container/vertex) uses PARENT-RELATIVE coordinates: the child's x/y are
+ * offsets from the parent's origin, and a well-formed child sits inside the parent's
+ * width×height box. An adversarial / LLM-hallucinated spec can place a child far
+ * outside — e.g. a 60×60 group whose sole child sits at local (500, 900), i.e. ~8×
+ * the container size beyond its edge (absolute ≈ (540, 1120)).
+ *
+ * On its own this renders. But maxGraph auto-sizes the container to enclose the
+ * overflowing child, so the container becomes a giant obstacle whose bounding box
+ * extends far past the rest of the diagram. When ANY real edge is present, the
+ * explicit-layout path routes it with maxGraph's Manhattan A* obstacle-aware router,
+ * which builds its search grid over the union of all obstacle boxes. The ballooned
+ * container box explodes that grid → the router does unbounded work → the render
+ * hangs to the 30s cap with ZERO output (svg:0/canvas:0/img:0). Same UNBOUNDED-WORK
+ * hang CLASS as Issue 5 (graphviz minlen=1e6) and Issue 22 (parent cycle).
+ *
+ * The median/MAD `sanitizeDrawioCoordinates` clamp does NOT catch this: (500, 900)
+ * is not a GLOBAL coordinate outlier (the diagram spans hundreds of px), it is
+ * extreme only RELATIVE to its parent's tiny bounds. That relative overflow is a
+ * distinct, uncovered class.
+ *
+ * Fix: for each cell whose parent is a declared cell WITH a finite, non-relative,
+ * positive-sized geometry, if the child's local origin lies grossly outside the
+ * parent box (more than OVERFLOW_FACTOR× the parent dimension beyond an edge),
+ * clamp the child's local x/y back into `[0, parentW] × [0, parentH]`. The child
+ * then sits at the container edge instead of light-years away, so the container's
+ * auto-expanded box stays bounded and the router grid stays sane. Only the child
+ * ORIGIN is moved (its own width/height are left alone), so no content is hidden.
+ *
+ * This is NOT a catch-all: it only fires on GROSS overflow (factor 3), so a child
+ * that sits inside its parent — or only slightly overflows (a label nudged a few px
+ * past an edge) — is left byte-identical. Children of layers / cell "1" (which have
+ * NO geometry, so their coords are canvas-absolute) are never touched here; those
+ * are handled by sanitizeDrawioCoordinates. Relative (edge-label) geometries are
+ * skipped. A container with a degenerate (≤0 or non-finite) size is skipped too.
+ *
+ * Exported as a pure string→string helper so it is unit-testable without a DOM.
+ */
+export function clampChildToContainerBounds(xml: string): string {
+    const OVERFLOW_FACTOR = 3; // child origin must be >3× the parent dim outside to fire
+
+    const NUM = /-?Infinity|NaN|-?\d+\.?\d*(?:[eE][+-]?\d+)?/;
+    const finite = (s: string | undefined | null): number | null => {
+        if (s == null) return null;
+        const v = parseFloat(s);
+        return Number.isFinite(v) ? v : null;
+    };
+
+    // Match a whole <mxCell> element: attrs + (self-closing | inner up to </mxCell>).
+    const cellRe = /<mxCell\b([^>]*?)(\/>|>([\s\S]*?)<\/mxCell>)/g;
+
+    type Geom = { x: number; y: number; w: number; h: number; relative: boolean } | null;
+    const readGeom = (inner: string | undefined): Geom => {
+        if (!inner) return null;
+        const gm = inner.match(/<mxGeometry\b[^>]*?>/);
+        if (!gm) return null;
+        const tag = gm[0];
+        const relative = /\brelative="1"/.test(tag);
+        const gx = tag.match(new RegExp(`\\bx="(${NUM.source})"`));
+        const gy = tag.match(new RegExp(`\\by="(${NUM.source})"`));
+        const gw = tag.match(new RegExp(`\\bwidth="(${NUM.source})"`));
+        const gh = tag.match(new RegExp(`\\bheight="(${NUM.source})"`));
+        return {
+            x: finite(gx?.[1]) ?? 0,
+            y: finite(gy?.[1]) ?? 0,
+            w: finite(gw?.[1]) ?? 0,
+            h: finite(gh?.[1]) ?? 0,
+            relative,
+        };
+    };
+
+    // Pass 1: id → parent, id → geometry.
+    const parentOf = new Map<string, string | null>();
+    const geomOf = new Map<string, Geom>();
+    let m: RegExpExecArray | null;
+    cellRe.lastIndex = 0;
+    while ((m = cellRe.exec(xml)) !== null) {
+        const attrs = m[1];
+        const inner = m[3];
+        const idM = attrs.match(/\bid="([^"]*)"/);
+        if (!idM) continue;
+        const id = idM[1];
+        if (parentOf.has(id)) continue; // first declaration wins (matches renderer dedup)
+        const parM = attrs.match(/\bparent="([^"]*)"/);
+        parentOf.set(id, parM ? parM[1] : null);
+        geomOf.set(id, readGeom(inner));
+    }
+    if (geomOf.size === 0) return xml;
+
+    // Pass 2: decide which child ids overflow their container, and to what clamp.
+    const clampTo = new Map<string, { x: number; y: number }>();
+    geomOf.forEach((g, id) => {
+        if (!g || g.relative) return;
+        const parent = parentOf.get(id);
+        if (parent == null || parent === '0' || parent === '1') return; // canvas-absolute
+        const pg = geomOf.get(parent);
+        if (!pg || pg.relative) return;             // parent is a layer / no geometry
+        if (!(pg.w > 0) || !(pg.h > 0)) return;      // degenerate container: skip
+        if (!Number.isFinite(pg.w) || !Number.isFinite(pg.h)) return;
+        const gross =
+            g.x > pg.w * OVERFLOW_FACTOR || g.x < -pg.w * OVERFLOW_FACTOR ||
+            g.y > pg.h * OVERFLOW_FACTOR || g.y < -pg.h * OVERFLOW_FACTOR;
+        if (!gross) return;
+        clampTo.set(id, {
+            x: Math.max(0, Math.min(pg.w, g.x)),
+            y: Math.max(0, Math.min(pg.h, g.y)),
+        });
+    });
+    if (clampTo.size === 0) return xml;
+
+    // Pass 3: rewrite the first <mxGeometry> x/y inside each offending child cell.
+    const done = new Set<string>();
+    return xml.replace(cellRe, (whole, attrs, tail, inner) => {
+        const idM = attrs.match(/\bid="([^"]*)"/);
+        if (!idM) return whole;
+        const id = idM[1];
+        const target = clampTo.get(id);
+        if (!target || done.has(id)) return whole;
+        done.add(id);
+        if (inner === undefined) return whole; // self-closing: no geometry to rewrite
+        let replaced = false;
+        const newInner = inner.replace(/<mxGeometry\b[^>]*?>/, (tag: string) => {
+            if (replaced) return tag;
+            replaced = true;
+            let t = tag;
+            if (/\bx="/.test(t)) t = t.replace(/\bx="[^"]*"/, `x="${target.x}"`);
+            else t = t.replace(/<mxGeometry\b/, `<mxGeometry x="${target.x}"`);
+            if (/\by="/.test(t)) t = t.replace(/\by="[^"]*"/, `y="${target.y}"`);
+            else t = t.replace(/<mxGeometry\b/, `<mxGeometry y="${target.y}"`);
+            return t;
+        });
+        return `<mxCell${attrs}>${newInner}</mxCell>`;
+    });
+}
+
 const normalizeDrawIOXml = (xml: string): string => {
     let normalized = xml.trim();
 
@@ -438,6 +640,28 @@ const normalizeDrawIOXml = (xml: string): string => {
     // spec — untouched. Same unbounded-loop CLASS as Issue 5 (graphviz minlen=1e6).
     normalized = breakDrawioParentCycles(normalized);
     console.log('📐 DrawIO: Broke any mxCell parent-hierarchy cycles');
+
+    // CRITICAL FIX (Issue 37): strip gradients that have no base fill to gradate
+    // from. A style declaring `gradientColor` while `fillColor=none`/missing makes
+    // maxGraph's createGradientId() call .charAt on an undefined base fill and throw,
+    // aborting the whole validate/paint pass → cells silently dropped from the SVG
+    // (and, in some combinations, a 30s no-output timeout). sanitizeDrawioGradients()
+    // removes only the impossible gradient keys, leaving real-fill gradients and every
+    // other style entry untouched.
+    normalized = sanitizeDrawioGradients(normalized);
+    console.log('📐 DrawIO: Stripped gradients lacking a base fill');
+
+    // CRITICAL FIX (Issue 49): pull grossly-overflowing children back inside their
+    // container's bounds. A child at a local offset many times its parent's size
+    // (e.g. (500,900) inside a 60×60 group) makes maxGraph auto-expand the container
+    // into a giant obstacle; the Manhattan A* edge router then builds a search grid
+    // over that ballooned box and hangs to the 30s cap with ZERO output whenever any
+    // edge is present. clampChildToContainerBounds() clamps only the child ORIGIN of
+    // GROSS overflowers back into the parent box, leaving in-bounds / slightly-over
+    // children and canvas-absolute (layer-parented) cells byte-identical. Same
+    // unbounded-work hang CLASS as Issue 5 / Issue 22.
+    normalized = clampChildToContainerBounds(normalized);
+    console.log('📐 DrawIO: Clamped children overflowing their containers');
 
     // Clean up any text content after closing tags (LLM sometimes adds descriptions)
     // Find the last proper closing tag (</mxfile>, </diagram>, or </mxGraphModel>)

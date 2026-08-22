@@ -167,6 +167,84 @@ export function sanitizeNetworkGraph(
     return { nodes, links };
 }
 
+/**
+ * Clamp every node's simulated position so its full circle stays inside the
+ * visible viewport `[0,width] x [0,height]`.
+ *
+ * WHY (Issue 31): the force layout uses `forceManyBody(-200)` repulsion with no
+ * bounding force. Nodes that end up with NO surviving link (their only edges
+ * were dangling ghost refs filtered by `sanitizeNetworkGraph`, or they were
+ * declared isolated) are pushed away from the charged cluster with nothing to
+ * pull them back, so they land far outside `[0,w]x[0,h]` and are silently
+ * CLIPPED by the SVG viewBox — total, invisible data loss (dropped
+ * isolated/leaf/tree_child_b nodes). Separately, a large-but-clamped hub whose
+ * centre sits at y < radius gets its top clipped off the canvas edge.
+ *
+ * A post-simulation position clamp fixes the WHOLE class: any node — connected,
+ * disconnected, or ejected to +/-Infinity/NaN by a degenerate force input — is
+ * pinned back so its entire radius is visible. `radiusOf` mirrors the render's
+ * radius default (`d.size || 10`). Mutates node x/y in place (they are the
+ * simulation's own working objects) and also returns the array for testing.
+ * A non-finite coordinate (NaN/Infinity from a poisoned tick) is recentered.
+ * Pure/DOM-free for unit testing.
+ *
+ * Exported for regression testing.
+ */
+export function clampNodePositionsToViewport(
+    nodes: any[],
+    width: number,
+    height: number,
+    defaultRadius: number = NETWORK_DEFAULT_NODE_SIZE
+): any[] {
+    if (!Array.isArray(nodes)) return [];
+    const w = Number.isFinite(width) && width > 0 ? width : 600;
+    const h = Number.isFinite(height) && height > 0 ? height : 400;
+    for (const n of nodes) {
+        if (!n || typeof n !== 'object') continue;
+        const r = Number.isFinite(Number(n.size)) && Number(n.size) > 0
+            ? Number(n.size)
+            : defaultRadius;
+        // A node larger than half the canvas cannot fully fit; still keep its
+        // centre inside so it is at least partially and centrally visible.
+        const rx = Math.min(r, w / 2);
+        const ry = Math.min(r, h / 2);
+        let x = Number(n.x);
+        let y = Number(n.y);
+        if (!Number.isFinite(x)) x = w / 2;
+        if (!Number.isFinite(y)) y = h / 2;
+        n.x = Math.max(rx, Math.min(w - rx, x));
+        n.y = Math.max(ry, Math.min(h - ry, y));
+    }
+    return nodes;
+}
+
+
+/**
+ * A network node `id` / link `source`/`target` endpoint is valid if it is a
+ * non-empty string OR a finite number. JSON permits numeric ids, d3-force
+ * resolves them, and `sanitizeNetworkGraph`'s `Set`-based dangling-link filter
+ * keeps `5 !== "5"` distinct (strict equality), so numeric endpoints are a
+ * legitimate, semantically-safe input shape.
+ *
+ * WHY (Issue 47): `isNetworkDiagramSpec` gated `canHandle` with
+ * `typeof id === 'string'`. A single numeric id (`5`, `1e15`) made `.every(...)`
+ * return false -> canHandle false -> registry finds no plugin -> D3Renderer
+ * retries to the 30s timeout with zero output (the same silent-hang signature
+ * as Issue 43). Widening to accept finite numbers fixes the whole class.
+ *
+ * The guard stays STRICT: NaN/Infinity, objects, arrays, null, undefined,
+ * booleans and empty strings are still rejected (so it is not a catch-all —
+ * a malformed graph is still declined at detection rather than crashing the
+ * force layout downstream).
+ *
+ * Pure/DOM-free. Exported for regression testing.
+ */
+export function isValidNetworkId(v: any): boolean {
+    if (typeof v === 'string') return v.length > 0;
+    if (typeof v === 'number') return Number.isFinite(v);
+    return false;
+}
+
 const isNetworkDiagramSpec = (spec: any): spec is NetworkDiagramSpec => {
     const resolved = resolveNetworkSpec(spec);
     const nodes = resolved?.nodes || resolved?.data?.nodes;
@@ -178,9 +256,9 @@ const isNetworkDiagramSpec = (spec: any): spec is NetworkDiagramSpec => {
         Array.isArray(nodes) &&
         Array.isArray(links) &&
         nodes.length >= 0 &&
-        nodes.every((n: any) => typeof n.id === 'string') &&
+        nodes.every((n: any) => n != null && isValidNetworkId(n.id)) &&
         links.length >= 0 &&
-        links.every((l: any) => typeof l.source === 'string' && typeof l.target === 'string')
+        links.every((l: any) => l != null && isValidNetworkId(l.source) && isValidNetworkId(l.target))
     );
 };
 
@@ -273,6 +351,12 @@ export const networkDiagramPlugin: D3RenderPlugin = {
                 const ticks = Math.min(300, Math.max(50, safeNodes.length * 4));
                 for (let i = 0; i < ticks; i++) sim.tick();
             }
+
+            // Clamp every node inside the viewport so disconnected/ejected nodes
+            // (repelled off-canvas with no link to pull them back) and a large
+            // hub whose radius overhangs the edge are never silently clipped by
+            // the SVG viewBox (Issue 31: catastrophic silent data loss).
+            clampNodePositionsToViewport(safeNodes, width, height);
 
             // Draw links
             svg.selectAll('.link')

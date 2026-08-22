@@ -4,6 +4,7 @@ import { applySizing, isCompositeSpec, resolveAutosize, resolveSpecWidth } from 
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 import { getZoomScript } from '../../utils/popupScriptUtils';
+import { collectDeclaredParamNames, dropDanglingParamConditions } from './vegaLiteParamGuard';
 
 // SSRF hardening (PenPal #83, CWE-918). A Vega-Lite spec's `data.url`
 // makes Vega's default loader issue an HTTP fetch. This plugin also drives
@@ -114,20 +115,61 @@ const hasVegaLiteDataAnywhere = (node: any): boolean => {
   return false;
 };
 
-function sanitizeSpec(obj: any): any {
-  if (obj === null || obj === undefined) {
+// Vega-Lite properties on which `null` is a MEANINGFUL value, not an absent
+// one. On these keys `null` means "explicitly disable this", and deleting it
+// is not a no-op — it re-enables the thing the author turned off, using
+// Vega-Lite's default. The visible symptom is a chart that grows labels the
+// author suppressed: `title: null` on an encoding falls back to the field
+// name, so an intentionally unlabelled axis reappears as "step" and an
+// unlabelled legend reappears as "k".
+//
+// Nulls on any OTHER key are treated as model noise and dropped, because a
+// stray `"field": null` or `"data": null` aborts the Vega view build with an
+// error far removed from its cause. That asymmetry is the whole point of
+// this function; it is not a blanket null filter.
+export const NULLABLE_VEGA_KEYS = new Set([
+  'title',    // hide axis / legend / header / view title
+  'axis',     // hide the axis entirely
+  'legend',   // hide the legend entirely
+  'scale',    // identity mapping (values used verbatim)
+  'stack',    // disable stacking
+  'sort',     // disable sorting
+  'tooltip',  // disable tooltips
+  'header',   // hide facet header
+  'value',    // e.g. fill: {value: null} for no fill
+  'labels',
+  'ticks',
+  'grid',
+]);
+
+/**
+ * Strip `undefined` (never valid in a serialized spec) and strip `null`
+ * EXCEPT on the keys listed in NULLABLE_VEGA_KEYS, where null carries
+ * semantics. `key` is the property name `obj` was reached under, which is
+ * how the exception is scoped; it is undefined at the root.
+ */
+export function sanitizeSpec(obj: any, key?: string): any {
+  if (obj === null) {
+    return typeof key === 'string' && NULLABLE_VEGA_KEYS.has(key)
+      ? null
+      : undefined;
+  }
+  if (obj === undefined) {
     return undefined;
   }
   if (Array.isArray(obj)) {
-    return obj.map(sanitizeSpec).filter(v => v !== undefined);
+    // Deliberately does not forward `key`: a null ELEMENT of an array is
+    // noise even under a nullable key, and passing sanitizeSpec directly to
+    // map would forward the array index as `key`.
+    return obj.map((v: any) => sanitizeSpec(v)).filter(v => v !== undefined);
   }
   if (typeof obj === 'object') {
     const newObj: any = {};
-    for (const key in obj) {
-      if (Object.prototype.hasOwnProperty.call(obj, key)) {
-        const value = sanitizeSpec(obj[key]);
+    for (const k in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, k)) {
+        const value = sanitizeSpec(obj[k], k);
         if (value !== undefined) {
-          newObj[key] = value;
+          newObj[k] = value;
         }
       }
     }
@@ -634,7 +676,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
           const prim = encoding[primary];
           const sec = encoding[secondary];
           if (prim && sec && 'datum' in prim && 'field' in sec) {
-            console.log(`🔧 DATUM-SWAP-FIX: Swapping __MATH_INLINE_42__{secondary}:{field} to satisfy Vega-Lite channel requirements`);
+            console.log(`🔧 DATUM-SWAP-FIX: Swapping ${primary} (datum) with ${secondary} (field) to satisfy Vega-Lite channel requirements`);
             encoding[primary] = sec;
             encoding[secondary] = prim;
           }
@@ -695,7 +737,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
               // Fall back to first valid color from stops
               const fallback = val.stops.find((s: any) => typeof s.color === 'string')?.color || '#888888';
               markObj[prop] = fallback;
-              console.log(`🔧 GRADIENT-FIX: Gradient in mark.__MATH_INLINE_56__{fallback}`);
+              console.log(`🔧 GRADIENT-FIX: Gradient in mark.${prop} not repairable; using flat ${fallback}`);
             }
           }
         }
@@ -1149,6 +1191,43 @@ export const vegaLitePlugin: D3RenderPlugin = {
       if (spec.vconcat) processNestedSpecs(spec.vconcat);
       if (spec.layer) processNestedSpecs(spec.layer);
 
+      // Fix 1.85: Keep scale domains consistent with the boolean->string data
+      // rewrite performed by Fixes 1.75/1.8 above.
+      //
+      // Those fixes convert boolean DATA values to 'Yes'/'No' but leave an
+      // authored scale.domain of [false, true] untouched. The domain then no
+      // longer matches any value in the data, every scale lookup returns
+      // undefined, and marks render with no fill at all — a blank chart with
+      // correct axes. This pass applies the same mapping to scale domains so
+      // the two halves agree.
+      //
+      // Applied to every channel, not just color: a boolean domain on x/y or
+      // any other channel has exactly the same failure mode.
+      const convertBooleanScaleDomains = (view: any): void => {
+        if (!view || typeof view !== 'object') return;
+
+        if (view.encoding) {
+          Object.keys(view.encoding).forEach(channel => {
+            const domain = view.encoding[channel]?.scale?.domain;
+            if (Array.isArray(domain) && domain.some((v: any) => typeof v === 'boolean')) {
+              view.encoding[channel].scale.domain = domain.map((v: any) =>
+                typeof v === 'boolean' ? (v ? 'Yes' : 'No') : v);
+              console.log(
+                `🔧 VEGA-PREPROCESS: Converted boolean ${channel} scale domain ` +
+                `to strings to match the converted data values`
+              );
+            }
+          });
+        }
+
+        ['layer', 'hconcat', 'vconcat', 'concat'].forEach(key => {
+          if (Array.isArray(view[key])) view[key].forEach(convertBooleanScaleDomains);
+        });
+        if (view.spec) convertBooleanScaleDomains(view.spec);
+      };
+
+      convertBooleanScaleDomains(spec);
+
       // Fix 1.9: Convert deprecated 'ordinal' type to 'nominal'
       const convertOrdinalToNominal = (encoding: any) => {
         if (!encoding) return;
@@ -1172,6 +1251,60 @@ export const vegaLitePlugin: D3RenderPlugin = {
       if (spec.hconcat) spec.hconcat.forEach((s: any) => convertOrdinalToNominal(s.encoding));
       if (spec.vconcat) spec.vconcat.forEach((s: any) => convertOrdinalToNominal(s.encoding));
       if (spec.layer) spec.layer.forEach((s: any) => convertOrdinalToNominal(s.encoding));
+
+      // Fix 1.92: Sort numeric-prefixed nominal categories by magnitude.
+      //
+      // A nominal scale sorts its domain lexically, so size/bucket labels like
+      // '150 B', '300 B', '1500 B' come out as 150, 1500, 300 — the largest
+      // value lands second and the chart reads as noise rather than a trend.
+      //
+      // Guards, so this never reorders a genuinely alphabetical axis:
+      //  - every category must begin with a number,
+      //  - lexical and numeric order must actually disagree,
+      //  - an authored \`sort\` is always left alone.
+      const NUMERIC_PREFIX_RE = /^\s*-?\d+(?:\.\d+)?/;
+
+      const fixNumericNominalSort = (view: any, inheritedData?: any[]): void => {
+        if (!view || typeof view !== 'object') return;
+        const values = view.data?.values || inheritedData;
+
+        if (view.encoding && Array.isArray(values)) {
+          ['x', 'y'].forEach(channel => {
+            const channelSpec = view.encoding[channel];
+            if (!channelSpec?.field ||
+                channelSpec.type !== 'nominal' ||
+                channelSpec.sort !== undefined) return;
+
+            const unique = [...new Set(
+              values.map((row: any) => row?.[channelSpec.field])
+                    .filter((v: any) => typeof v === 'string')
+            )];
+            if (unique.length < 2) return;
+            if (!unique.every((v: any) => NUMERIC_PREFIX_RE.test(v))) return;
+
+            const numeric = [...unique].sort((a: any, b: any) =>
+              parseFloat(a.match(NUMERIC_PREFIX_RE)![0]) -
+              parseFloat(b.match(NUMERIC_PREFIX_RE)![0]));
+
+            if (JSON.stringify([...unique].sort()) === JSON.stringify(numeric)) return;
+
+            channelSpec.sort = numeric;
+            console.log(
+              `🔧 VEGA-PREPROCESS: Sorted ${channel} nominal domain numerically ` +
+              `(lexical order put larger values out of sequence)`
+            );
+          });
+        }
+
+        ['layer', 'hconcat', 'vconcat', 'concat'].forEach(key => {
+          if (Array.isArray(view[key])) {
+            view[key].forEach((child: any) => fixNumericNominalSort(child, values));
+          }
+        });
+        if (view.spec) fixNumericNominalSort(view.spec, values);
+      };
+
+      fixNumericNominalSort(spec, spec.data?.values);
 
       // Fix 1.91: Fix color legends showing hex codes instead of meaningful labels
       const fixColorLegendLabels = (encoding: any, dataValues: any[]) => {
@@ -1717,6 +1850,98 @@ export const vegaLitePlugin: D3RenderPlugin = {
         const dataValues = s.data?.values || spec.data?.values;
         if (dataValues) fixLogScales(s.encoding, dataValues);
       });
+
+      // Fix 3.75: A bar/area on a log scale must not be auto-stacked.
+      //
+      // Vega-Lite implicitly stacks a quantitative bar/area position channel,
+      // which compiles to x/x2 driven by a stack transform whose lower bound
+      // ("<field>_start") is 0. On a log scale scale(0) is undefined, so x2
+      // resolves to null and the rect gets no extent — every bar silently
+      // disappears, leaving axes and labels on an empty plot.
+      //
+      // Setting stack:null makes Vega-Lite baseline the bar at domain('x')[0]
+      // instead, which is the only defined baseline for a log axis.
+      //
+      // Scope notes:
+      //  - 'log' only. symlog is defined at 0 and stacks correctly, so it is
+      //    deliberately excluded (Fix 3.7 above converts log→symlog when the
+      //    data contains zero/negatives, and those specs must keep stacking).
+      //  - An explicitly authored stack value is never overridden; only the
+      //    implicit default is filled in.
+      //  - A layered spec commonly carries one shared top-level encoding with
+      //    the bar mark in a child layer, so the mark check considers both.
+      const fixLogScaleBarStacking = (view: any): void => {
+        if (!view || typeof view !== 'object') return;
+
+        const markTypeOf = (m: any) => (typeof m === 'object' ? m?.type : m);
+        const isBarOrArea = (t: any) => t === 'bar' || t === 'area';
+        const layerMarks = Array.isArray(view.layer)
+          ? view.layer.map((l: any) => markTypeOf(l?.mark))
+          : [];
+
+        if (view.encoding &&
+            (isBarOrArea(markTypeOf(view.mark)) || layerMarks.some(isBarOrArea))) {
+          ['x', 'y'].forEach(channel => {
+            const channelSpec = view.encoding[channel];
+            if (channelSpec?.field &&
+                channelSpec.type === 'quantitative' &&
+                channelSpec.scale?.type === 'log' &&
+                channelSpec.stack === undefined) {
+              channelSpec.stack = null;
+              console.log(
+                `🔧 VEGA-PREPROCESS: Disabled implicit stacking on ${channel} ` +
+                `(log scale bars baseline at 0, which is undefined on a log axis)`
+              );
+            }
+          });
+        }
+
+        ['layer', 'hconcat', 'vconcat', 'concat'].forEach(key => {
+          if (Array.isArray(view[key])) view[key].forEach(fixLogScaleBarStacking);
+        });
+        if (view.spec) fixLogScaleBarStacking(view.spec);
+      };
+
+      fixLogScaleBarStacking(spec);
+
+      // Fix 3.8: Honour an explicitly authored numeric scale domain.
+      //
+      // Vega-Lite applies \`nice: true\` to quantitative scales by default,
+      // which rounds the domain outward — an authored [0, 430] becomes
+      // [0, 450]. That silently rescales the plot, so a reference rule or
+      // annotation placed at a specific value no longer sits where the author
+      // put it relative to the top of the chart.
+      //
+      // An explicit two-element numeric domain is a deliberate statement about
+      // the axis bounds, so nice-ing is disabled for it. An authored \`nice\`
+      // (either value) is always respected.
+      const respectExplicitNumericDomain = (view: any): void => {
+        if (!view || typeof view !== 'object') return;
+
+        if (view.encoding) {
+          ['x', 'y'].forEach(channel => {
+            const scale = view.encoding[channel]?.scale;
+            if (scale &&
+                Array.isArray(scale.domain) &&
+                scale.domain.length === 2 &&
+                scale.domain.every((v: any) => typeof v === 'number') &&
+                scale.nice === undefined) {
+              scale.nice = false;
+              console.log(
+                `🔧 VEGA-PREPROCESS: Disabled nice-ing on ${channel} to preserve ` +
+                `the authored domain ${JSON.stringify(scale.domain)}`
+              );
+            }
+          });
+        }
+
+        ['layer', 'hconcat', 'vconcat', 'concat'].forEach(key => {
+          if (Array.isArray(view[key])) view[key].forEach(respectExplicitNumericDomain);
+        });
+        if (view.spec) respectExplicitNumericDomain(view.spec);
+      };
+
+      respectExplicitNumericDomain(spec);
 
       // Fix 4: Ensure schema exists
       if (!spec.$schema) {
@@ -2483,7 +2708,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
       const upperBound = maxVal * 2;
 
       yEnc.scale.domain = [lowerBound, upperBound];
-      console.log(`🔧 AREA-LOG-FIX: Set log scale domain to [__MATH_INLINE_57__{upperBound}] for area/line mark (field: "${field}")`);
+      console.log(`🔧 AREA-LOG-FIX: Set log scale domain to [${lowerBound}, ${upperBound}] for area/line mark (field: "${field}")`);
 
       return s;
     };
@@ -2760,25 +2985,44 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // Additional post-preprocessing validations and fixes
       console.log('🔧 VEGA-POST-PROCESS: Starting additional fixes');
 
-      // Fix problematic axis labelLimit values that can cause rendering failures
-      if (vegaSpec.encoding?.x?.axis?.labelLimit !== undefined && vegaSpec.encoding.x.axis.labelLimit <= 0) {
-        console.log('🔧 VEGA-POST-PROCESS: Fixing problematic axis labelLimit');
-        delete vegaSpec.encoding.x.axis.labelLimit;
-      }
+      // Clamp unbounded axis labelLimit values.
+      //
+      // labelLimit:0 is not malformed — it is Vega's documented "do not
+      // truncate" sentinel (vega-scenegraph guards on \`limit > 0\`). Deleting
+      // it therefore restored default truncation and clipped exactly the long
+      // category labels the spec was asking to keep.
+      //
+      // Honouring 0 verbatim is not safe either: an unbounded label consumes
+      // the axis extent, and under a container width the plot area can be
+      // driven to 0px while the total layout overflows its container. So the
+      // value is clamped to a generous ceiling instead of dropped, which keeps
+      // realistic labels intact while bounding the pathological case.
+      const MAX_AXIS_LABEL_LIMIT = 320;
 
-      // Fix problematic axis properties in layered charts
-      if (vegaSpec.layer && Array.isArray(vegaSpec.layer)) {
-        vegaSpec.layer.forEach((layer, index) => {
-          if (layer.encoding) {
-            ['x', 'y'].forEach(axis => {
-              if (layer.encoding[axis]?.axis?.labelLimit !== undefined && layer.encoding[axis].axis.labelLimit <= 0) {
-                console.log(`🔧 VEGA-POST-PROCESS: Fixing problematic ${axis} axis labelLimit in layer ${index}`);
-                delete layer.encoding[axis].axis.labelLimit;
-              }
-            });
-          }
+      const clampAxisLabelLimits = (view: any): void => {
+        if (!view || typeof view !== 'object') return;
+
+        if (view.encoding) {
+          ['x', 'y'].forEach(channel => {
+            const axis = view.encoding[channel]?.axis;
+            if (axis && typeof axis.labelLimit === 'number' &&
+                (axis.labelLimit <= 0 || axis.labelLimit > MAX_AXIS_LABEL_LIMIT)) {
+              console.log(
+                `🔧 VEGA-POST-PROCESS: Clamped ${channel} axis labelLimit ` +
+                `${axis.labelLimit} to ${MAX_AXIS_LABEL_LIMIT}`
+              );
+              axis.labelLimit = MAX_AXIS_LABEL_LIMIT;
+            }
+          });
+        }
+
+        ['layer', 'hconcat', 'vconcat', 'concat'].forEach(key => {
+          if (Array.isArray(view[key])) view[key].forEach(clampAxisLabelLimits);
         });
-      }
+        if (view.spec) clampAxisLabelLimits(view.spec);
+      };
+
+      clampAxisLabelLimits(vegaSpec);
 
       // Fix layered charts with mismatched y-axis scales and missing legends
       if (vegaSpec.layer && Array.isArray(vegaSpec.layer) && vegaSpec.layer.length > 1) {
@@ -3087,9 +3331,10 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       // Width + autosize are resolved by the pure helpers in ./vegaSizing so
       // the decision is unit-testable without vegaEmbed/jsdom. See that module
-      // for why a fixed pixel width is never used for an inline chart, and why
-      // autosize must agree with the chosen width mode (Vega-Lite REJECTS
-      // autosize 'fit' together with width 'container').
+      // for why a fixed pixel width is never used for an inline chart, and for
+      // why width:'container' is paired with autosize 'fit-x' rather than
+      // 'pad' (pad adds axis/label extent outside a plot area already sized to
+      // the full container, so the assembled view overflows it).
       const _sizing = applySizing(vegaSpec, availableWidth);
       if (_sizing.replacedWidth !== null) {
         console.log(
@@ -3104,20 +3349,6 @@ export const vegaLitePlugin: D3RenderPlugin = {
         vegaSpec.height = Math.min(availableHeight * 0.8, 500);
       }
 
-      // autosize already set by applySizing() above, in lockstep with width.
-      // Autosize must agree with the width mode chosen above. Vega-Lite
-      // REJECTS \`autosize.type: 'fit'\` together with \`width: 'container'\`,
-      // and both of the previous branches set exactly that — so this is a
-      // correctness requirement of the container-width change, not a tidy-up.
-      // \`'container'\` requires \`type: 'pad'\` + \`contains: 'padding'\`.
-      if (vegaSpec.width === 'container') {
-        vegaSpec.autosize = { type: 'pad', contains: 'padding' };
-      } else if (!vegaSpec.autosize) {
-        vegaSpec.autosize = { type: 'fit', contains: 'content' };
-      } else if (typeof vegaSpec.autosize === 'object') {
-        vegaSpec.autosize = { ...vegaSpec.autosize };
-      }
-
       // Ensure axis labels are properly displayed without overriding user config
       if (vegaSpec.layer) {
         vegaSpec.layer.forEach(layer => {
@@ -3125,14 +3356,16 @@ export const vegaLitePlugin: D3RenderPlugin = {
             // Only add default axis config if none exists
             layer.encoding.x.axis = {
               labelAngle: 0,
-              labelLimit: 0, // No limit to prevent truncation
+              // Generous but bounded: 0 (no limit) lets a single long label
+              // consume the entire plot area and overflow the container.
+              labelLimit: MAX_AXIS_LABEL_LIMIT,
               labelFontSize: 11
             };
           }
           if (layer.encoding?.y && !layer.encoding.y.axis) {
             // Ensure y-axis labels are also properly displayed
             layer.encoding.y.axis = {
-              labelLimit: 0,
+              labelLimit: MAX_AXIS_LABEL_LIMIT,
               labelFontSize: 11
             };
           }
@@ -4718,6 +4951,21 @@ export const vegaLitePlugin: D3RenderPlugin = {
         }
       } catch (validationError) {
         console.warn('Spec validation warning:', validationError);
+      }
+
+      // Issue 32: strip encoding `condition` clauses that reference a param
+      // declared nowhere in the spec. An undeclared-param condition drives the
+      // Vega-Lite compiler into a synchronous non-terminating loop, so the
+      // render hangs to the harness timeout with zero DOM output (the plugin's
+      // own Promise.race timeout can't fire while the event loop is blocked).
+      // Dropping the dangling condition leaves the base encoding intact; a
+      // condition whose param IS declared is preserved unchanged.
+      {
+        const declaredParams = collectDeclaredParamNames(finalSpec);
+        const droppedConds = dropDanglingParamConditions(finalSpec, declaredParams);
+        if (droppedConds > 0) {
+          console.warn(`🔧 VEGA-PARAM-GUARD: Dropped ${droppedConds} encoding condition(s) referencing undeclared param(s) to avoid a compile hang`);
+        }
       }
 
       // WORKAROUND: Remove $schema as it can cause parser issues in some Vega versions

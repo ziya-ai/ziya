@@ -47,9 +47,21 @@ export function resolveSpecWidth(
 /**
  * Resolve autosize so it AGREES with the resolved width.
  *
- * This is a correctness constraint, not a preference: Vega-Lite rejects
- * autosize.type 'fit' in combination with width:'container'. The container
- * mode requires type 'pad' with contains 'padding'.
+ * This is a correctness constraint, not a preference, but in the opposite
+ * direction to what this function originally assumed. Vega-Lite does not
+ * reject 'fit' with width:'container' — it warns about the *inverse*
+ * pairing: "Width 'container' only works well with autosize 'fit' or
+ * 'fit-x'".
+ *
+ * 'pad' sizes the plot area to the full container and then adds axis,
+ * label and legend extent OUTSIDE it, so the assembled view is wider than
+ * the container it was measured against and overflows (clipped charts, cut
+ * axis titles). 'fit-x' instead subtracts that extent from the available
+ * width, keeping the total inside the container.
+ *
+ * fit-x rather than fit: the width is container-driven while height stays a
+ * concrete authored pixel value, so only the horizontal axis should be
+ * fitted. Plain 'fit' would additionally squeeze the authored height.
  *
  * Returns the value to assign to spec.autosize. Never mutates the input.
  */
@@ -58,7 +70,7 @@ export function resolveAutosize(
   resolvedWidth: number | 'container',
 ): { type: string; contains: string } {
   if (resolvedWidth === 'container') {
-    return { type: 'pad', contains: 'padding' };
+    return { type: 'fit-x', contains: 'padding' };
   }
   const authored = spec?.autosize;
   if (authored && typeof authored === 'object') {

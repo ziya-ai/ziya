@@ -43,6 +43,12 @@ const isMermaidSpec = (spec: any): spec is MermaidSpec => {
     );
 };
 
+/** Return true when the automatic post-render contrast pass should run. */
+export function shouldEnhanceMermaidVisibility(definition: string): boolean {
+    const explicitTextColor = /(?:^|\n)\s*(?:classDef\s+\S+|style\s+\S+)\s+[^\n]*\bcolor\s*:/i;
+    return !explicitTextColor.test(definition);
+}
+
 const SCALE_CONFIG = {
     TARGET_FONT_SIZE: 14,   // Target font size in pixels
     MIN_FONT_SIZE: 12,      // Minimum font size in pixels
@@ -606,14 +612,10 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
 
         if (!renderSuccessful) return;
 
-        // UNIVERSAL FIX: Apply centralized visibility enhancement with DELAYED execution
-        // SKIP for diagrams that use explicit style statements with color directives
-        // These diagrams have already set proper text colors; the post-processor
-        // should not override the author's explicit choices
-        const hasExplicitColors = rawDefinition.includes('style ') &&
-            rawDefinition.includes('color:');
-
-        if (!hasExplicitColors) {
+        // UNIVERSAL FIX: Apply centralized visibility enhancement with DELAYED execution.
+        // Preserve author-specified text colors from either classDef or per-node style
+        // declarations instead of overriding them with inferred contrast colors.
+        if (shouldEnhanceMermaidVisibility(rawDefinition)) {
             const runVisibilityFix = (phase: string) => {
                 console.log(`🎨 VISIBILITY-FIX (${phase}): Starting universal enhancement`);
                 const result = enhanceSVGVisibility(svgElement, isDarkMode, { debug: true });
@@ -880,13 +882,6 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                         }
                         
                         function applyMermaidTheme(svgEl, isDark) {
-                            // Override Mermaid's embedded <style> tag so CSS-based styles
-                            // don't fight with our attribute overrides
-                            var existingStyles = svgEl.querySelectorAll('style');
-                            existingStyles.forEach(function(s) {
-                                s.setAttribute('data-original', s.textContent);
-                                s.textContent = '';
-                            });
 
                             var darkTheme = {
                                 primaryColor: '#88c0d0',
@@ -993,8 +988,9 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                             });
                         }
                         
-                        // Apply theme on load to match parent window state
-                        if (isDarkMode) { applyMermaidTheme(svg, true); }
+                        // No re-theme on load: the serialized SVG was already rendered
+                        // with the parent window's theme. Re-theming here would discard
+                        // per-node style directives and mermaid's own layout CSS.
                     </script>
                 </body>
                 </html>
