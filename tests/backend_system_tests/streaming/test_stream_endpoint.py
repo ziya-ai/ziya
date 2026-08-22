@@ -12,10 +12,6 @@ import json
 from typing import Dict, Any, List, AsyncIterator, Optional
 from pydantic import BaseModel, Field
 
-# Mock the imports to avoid AWS credential issues
-import sys
-sys.modules['app.agents.models'] = MagicMock()
-
 # Create mock classes for RunLogPatch
 class MockRunLogPatch(BaseModel):
     ops: List[Dict[str, Any]]

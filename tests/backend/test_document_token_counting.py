@@ -19,13 +19,23 @@ class TestExternalPathResolution(unittest.TestCase):
     """Token counting must resolve [external] paths correctly."""
 
     def test_resolve_external_path_strips_prefix(self):
-        """[external]/abs/path should resolve to /abs/path."""
+        """An APPROVED [external]/abs/path resolves to /abs/path.
+
+        resolve_external_path honours an [external] path only when it (or an
+        ancestor) sits on the user-approved allowlist (the CWE-22 containment
+        gate), so the approval must be in place for the prefix-strip to be
+        observable.  The deny path is pinned in
+        tests/test_external_path_allowlist_regression.py.
+        """
         from app.utils.file_utils import resolve_external_path
-        result = resolve_external_path(
-            '[external]/Users/dcohn/work/report.docx',
-            '/some/project/root'
-        )
-        self.assertEqual(result, '/Users/dcohn/work/report.docx')
+        approved_dir = '/ziya-test-external/work'
+        with patch('app.services.folder_service._explicit_external_paths',
+                   {approved_dir}):
+            result = resolve_external_path(
+                f'[external]{approved_dir}/report.docx',
+                '/some/project/root'
+            )
+        self.assertEqual(result, f'{approved_dir}/report.docx')
 
     def test_resolve_normal_path_joins_with_base(self):
         """Normal relative paths should join with base_dir."""
@@ -37,10 +47,10 @@ class TestExternalPathResolution(unittest.TestCase):
 class TestAccurateTokenCountDocuments(unittest.TestCase):
     """get_accurate_token_count must extract text before counting tokens."""
 
-    @patch('app.utils.document_extractor.is_document_file', return_value=True)
+    @patch('app.utils.directory_util.is_document_file', return_value=True)
     @patch('app.utils.document_extractor.extract_document_text',
            return_value="Executive Summary\n\nShort document text.")
-    @patch('app.utils.document_extractor.is_tool_backed_file', return_value=False)
+    @patch('app.utils.directory_util.is_tool_backed_file', return_value=False)
     def test_docx_counts_extracted_text_not_raw_bytes(
         self, mock_tool, mock_extract, mock_is_doc
     ):
@@ -55,9 +65,9 @@ class TestAccurateTokenCountDocuments(unittest.TestCase):
         self.assertGreater(count, 0, "Should have some tokens")
         self.assertLess(count, 50, "Should not be counting raw ZIP bytes")
 
-    @patch('app.utils.document_extractor.is_document_file', return_value=True)
+    @patch('app.utils.directory_util.is_document_file', return_value=True)
     @patch('app.utils.document_extractor.extract_document_text', return_value=None)
-    @patch('app.utils.document_extractor.is_tool_backed_file', return_value=False)
+    @patch('app.utils.directory_util.is_tool_backed_file', return_value=False)
     def test_docx_extraction_failure_returns_zero(
         self, mock_tool, mock_extract, mock_is_doc
     ):

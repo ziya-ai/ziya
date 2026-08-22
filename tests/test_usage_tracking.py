@@ -11,6 +11,7 @@ import logging
 import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
 from app.streaming_tool_executor import StreamingToolExecutor, IterationUsage
+from app.utils.token_calibrator import TokenCalibrator
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +43,21 @@ def _make_executor():
     executor._estimate_content_tokens = StreamingToolExecutor._estimate_content_tokens
     executor._extract_file_contents_from_messages = MagicMock(return_value={})
     return executor
+
+
+def _make_calibrator():
+    """Mock calibrator honouring the numeric contract _record_calibration uses.
+
+    Besides record_actual_usage, the method subtracts get_baseline_overhead()
+    and screens the implied ratio against MIN/MAX_CHARS_PER_TOKEN.  A bare
+    MagicMock hands back MagicMocks there, so those comparisons raise.  0 is
+    what the real calibrator returns for an unmeasured model family.
+    """
+    cal = MagicMock()
+    cal.get_baseline_overhead.return_value = 0
+    cal.MIN_CHARS_PER_TOKEN = TokenCalibrator.MIN_CHARS_PER_TOKEN
+    cal.MAX_CHARS_PER_TOKEN = TokenCalibrator.MAX_CHARS_PER_TOKEN
+    return cal
 
 
 def _make_throttle_state():
@@ -297,7 +313,7 @@ class TestRecordCalibration:
             input_tokens=500, cache_read_tokens=0, cache_write_tokens=0,
         )
 
-        mock_cal = MagicMock()
+        mock_cal = _make_calibrator()
         mock_model_mgr = MagicMock()
         mock_model_mgr.get_model_id.return_value = "claude-sonnet"
         mock_model_mgr.get_model_config.return_value = {"family": "claude"}
@@ -367,7 +383,7 @@ class TestRecordCalibration:
             input_tokens=1414, cache_read_tokens=0, cache_write_tokens=8000,
         )
 
-        mock_cal = MagicMock()
+        mock_cal = _make_calibrator()
         mock_model_mgr = MagicMock()
         mock_model_mgr.get_model_id.return_value = "claude-sonnet"
         mock_model_mgr.get_model_config.return_value = {"family": "claude"}
@@ -400,7 +416,7 @@ class TestRecordCalibration:
             input_tokens=2000, cache_read_tokens=0, cache_write_tokens=0,
         )
 
-        mock_cal = MagicMock()
+        mock_cal = _make_calibrator()
         mock_model_mgr = MagicMock()
         mock_model_mgr.get_model_id.return_value = "claude-sonnet"
         mock_model_mgr.get_model_config.return_value = {"family": "claude"}
@@ -514,6 +530,13 @@ class TestEstimationAccuracyInstrumentation:
                 records.append(record.getMessage())
 
         target = logging.getLogger("app.streaming_tool_executor")
+        # Configure the ModeAwareLogger BEFORE attaching the collector.
+        # _ensure_configured() runs on every emit and clears the underlying
+        # logger's handlers the first time it runs in a process, which silently
+        # discarded the collector for whichever test in this class happened to
+        # emit first (passing only when an earlier test had warmed the logger).
+        from app.streaming_tool_executor import logger as _ste_logger
+        _ste_logger._ensure_configured()
         handler = _Collector(level=logging.INFO)
         prev_level = target.level
         target.addHandler(handler)

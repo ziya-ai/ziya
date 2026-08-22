@@ -240,8 +240,70 @@ def parts_files(parts_dir: str) -> Dict[str, Optional[Path]]:
         name: (d / fname if (d / fname).exists() else None)
         for name, fname in (("system", "system.txt"),
                             ("tools", "tools.json"),
-                            ("messages", "messages.json"))
+                            ("messages", "messages.json"),
+                            ("params", "params.json"))
     }
+
+
+THINKING_TYPES = ("thinking", "redacted_thinking")
+
+
+def has_thinking_blocks(msgs: List[ApiMessage]) -> bool:
+    """True if any captured message carries an echoed reasoning block."""
+    for m in msgs:
+        if isinstance(m.content, list):
+            for b in m.content:
+                if isinstance(b, dict) and b.get("type") in THINKING_TYPES:
+                    return True
+    return False
+
+
+def strip_thinking_blocks(msgs: List[ApiMessage]) -> List[ApiMessage]:
+    """Copy of ``msgs`` with thinking/redacted_thinking blocks removed.
+
+    This is the passback A/B lever: the live executor echoes signed
+    reasoning blocks into assistant turns during a tool chain
+    (thinking_passback), and this produces the otherwise-identical payload
+    WITHOUT them.  A message left with no blocks at all is dropped rather
+    than sent empty (the API rejects empty content arrays).
+    """
+    out: List[ApiMessage] = []
+    for m in msgs:
+        if not isinstance(m.content, list):
+            out.append(m)
+            continue
+        kept = [b for b in m.content
+                if not (isinstance(b, dict) and b.get("type") in THINKING_TYPES)]
+        if kept:
+            out.append(ApiMessage(role=m.role, content=kept, origin=list(m.origin)))
+    return out
+
+
+def resolve_thinking(args, parts: Dict[str, Optional[Path]]) -> Optional[dict]:
+    """Thinking config for the probe request body, or None for off.
+
+    ``auto`` replays whatever the captured request used (params.json from
+    --parts-dir); without a capture it falls back to off, preserving the
+    script's historical behaviour.  The live fable5/opus4.7+ path always
+    runs adaptive thinking, so probing a captured payload from those models
+    without this reproduces a request that was never sent.
+    """
+    if args.thinking == "off":
+        return None
+    if args.thinking == "adaptive":
+        return {"type": "adaptive", "display": "summarized"}
+    if args.thinking == "enabled":
+        return {"type": "enabled", "budget_tokens": args.thinking_budget}
+    # auto
+    params_file = parts.get("params")
+    if params_file:
+        try:
+            captured = json.loads(Path(params_file).read_text()).get("thinking")
+            if isinstance(captured, dict):
+                return captured
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"warning: could not read thinking config from {params_file}: {e}")
+    return None
 
 
 # ----------------------------------------------------------------- probing
@@ -292,6 +354,7 @@ class Prober:
         max_tokens: int,
         stream: bool,
         pause: float,
+        thinking: Optional[dict] = None,
     ):
         self.model_id = model_id
         self.system_text = system_text
@@ -299,6 +362,7 @@ class Prober:
         self.max_tokens = max_tokens
         self.stream = stream
         self.pause = pause
+        self.thinking = thinking
         self.probes = 0
         self.input_tokens = 0
         self.output_tokens = 0
@@ -312,11 +376,19 @@ class Prober:
         self.client = session.client("bedrock-runtime", region_name=region)
 
     def _body(self, msgs: List[ApiMessage]) -> Dict[str, Any]:
+        max_tokens = self.max_tokens
+        if self.thinking and self.thinking.get("type") == "enabled":
+            # The API requires max_tokens > budget_tokens; a refusal still
+            # arrives within a few output tokens, so the headroom is cheap.
+            max_tokens = max(max_tokens,
+                             int(self.thinking.get("budget_tokens", 0)) + 64)
         body: Dict[str, Any] = {
             "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": self.max_tokens,
+            "max_tokens": max_tokens,
             "messages": [{"role": m.role, "content": m.content} for m in msgs],
         }
+        if self.thinking:
+            body["thinking"] = self.thinking
         if self.system_text:
             body["system"] = [{"type": "text", "text": self.system_text}]
         if self.tools:
@@ -506,6 +578,79 @@ class MantleProber(Prober):
         return stop_reason, stop_details, in_tok, out_tok
 
 
+# --------------------------------------------------------- thinking A/B
+
+
+def ab_thinking(prober: "Prober", msgs: List[ApiMessage],
+                thinking_cfg: Optional[dict], blocks_present: bool,
+                args) -> int:
+    """Probe the full conversation across the thinking dimensions.
+
+    Isolates WHICH thinking-related aspect of the payload draws the
+    refusal, if any: the thinking request parameter itself, or the signed
+    reasoning blocks echoed back into assistant turns (thinking_passback).
+    Uses full-conversation probes only -- combine with the bisector
+    afterwards once the refusing dimension is known.
+
+    The off/kept combination is a request shape the live path never emits
+    and the API may reject outright; its row reports the error rather than
+    skipping it, since a 4xx there is itself evidence that the captured
+    payload depends on thinking being enabled.
+    """
+    on_cfg = thinking_cfg or {"type": "adaptive", "display": "summarized"}
+    stripped = strip_thinking_blocks(msgs) if blocks_present else msgs
+    combos: List[Tuple[str, Optional[dict], List[ApiMessage]]] = [
+        ("thinking=on  blocks=kept    ", on_cfg, msgs),
+    ]
+    if blocks_present:
+        combos.append(("thinking=on  blocks=stripped", on_cfg, stripped))
+    combos.append(("thinking=off blocks=stripped", None, stripped))
+    if blocks_present:
+        combos.append(("thinking=off blocks=kept    ", None, msgs))
+
+    print("thinking A/B (full conversation, one probe per combination):")
+    rows: List[Tuple[str, "ProbeResult"]] = []
+    for label, cfg, use_msgs in combos:
+        prober.thinking = cfg
+        res = prober.probe(use_msgs, label)
+        rows.append((label, res))
+    prober.thinking = thinking_cfg
+
+    print()
+    verdicts = {}
+    for label, res in rows:
+        outcome = (f"error: {res.error[:120]}" if res.error
+                   else res.stop_reason)
+        verdicts[label.strip()] = outcome
+        print(f"  {label}  ->  {outcome}")
+        if res.stop_details:
+            print(f"      stop_details: {res.stop_details}")
+
+    refusing = [l for l, r in rows if r.refused]
+    passing = [l for l, r in rows if not r.refused and not r.error]
+    print()
+    if not refusing:
+        print("No combination refused. The refusal is not reproducible on this "
+              "payload as captured -- it may depend on components this probe "
+              "omitted (system prompt, tools) or on the endpoint state.")
+    elif not passing:
+        print("Every combination refused. The trigger is not thinking-related; "
+              "bisect the messages instead (drop --ab-thinking).")
+    else:
+        print("Refusal depends on the thinking dimension:")
+        for l in refusing:
+            print(f"  refuses: {l.strip()}")
+        for l in passing:
+            print(f"  passes:  {l.strip()}")
+
+    if args.out:
+        Path(args.out).write_text(json.dumps(
+            {"mode": "ab_thinking", "verdicts": verdicts}, indent=2))
+    print(f"\ntokens: {prober.input_tokens} in / {prober.output_tokens} out "
+          f"across {prober.probes} probes")
+    return 0 if passing and refusing else 1
+
+
 # --------------------------------------------------------------- bisection
 
 
@@ -598,6 +743,23 @@ def main() -> int:
                          "tools and messages together")
     ap.add_argument("--keep-cache-control", action="store_true",
                     help="keep cache_control markers from a captured payload")
+    ap.add_argument("--thinking", default="auto",
+                    choices=["auto", "off", "adaptive", "enabled"],
+                    help="thinking config for probe requests. auto replays the "
+                         "captured config from --parts-dir params.json (off "
+                         "when absent); adaptive matches the live fable5/"
+                         "opus4.7+ path; enabled uses --thinking-budget")
+    ap.add_argument("--thinking-budget", type=int, default=4096,
+                    help="budget_tokens for --thinking enabled (default 4096)")
+    ap.add_argument("--strip-thinking", action="store_true",
+                    help="remove echoed thinking/redacted_thinking blocks from "
+                         "captured assistant turns before probing (the "
+                         "thinking-passback A/B lever)")
+    ap.add_argument("--ab-thinking", action="store_true",
+                    help="instead of bisecting, probe the full conversation "
+                         "across the thinking dimensions (config on/off x "
+                         "echoed blocks kept/stripped) and report which "
+                         "combination refuses")
     ap.add_argument("--mantle", action="store_true",
                     help="probe Bedrock Mantle instead of bedrock-runtime; "
                          "required to reproduce mantle-only refusals")
@@ -650,6 +812,26 @@ def main() -> int:
     system_text = Path(system_file).read_text() if system_file else None
     tools = json.loads(Path(tools_file).read_text()) if tools_file else None
 
+    thinking_cfg = resolve_thinking(args, parts)
+    # thinking "enabled" requires max_tokens > budget_tokens; the cheap
+    # probe default (16) would 400 on every probe and read as an error.
+    if thinking_cfg and thinking_cfg.get("type") == "enabled":
+        _budget = int(thinking_cfg.get("budget_tokens") or 0)
+        if args.max_tokens <= _budget:
+            args.max_tokens = _budget + 64
+            print(f"note: raised --max-tokens to {args.max_tokens} "
+                  f"(thinking budget_tokens={_budget} must be < max_tokens)")
+    blocks_present = has_thinking_blocks(msgs)
+    if blocks_present and not thinking_cfg and not args.strip_thinking:
+        # Thinking blocks in messages with thinking disabled is a request
+        # shape the live path never sends (and the API may reject) --
+        # warn rather than silently probe an unrepresentative payload.
+        print("warning: captured messages carry thinking blocks but the probe "
+              "request has thinking off; pass --thinking adaptive (or use "
+              "--parts-dir with params.json) or --strip-thinking")
+    if args.strip_thinking:
+        msgs = strip_thinking_blocks(msgs)
+
     print(f"source    {source}")
     if path is not None:
         print(f"project   {path.parent.parent.name}")
@@ -661,12 +843,18 @@ def main() -> int:
     print(f"payload   system={'yes' if system_text else 'no'} "
           f"tools={len(tools) if tools else 0} max_tokens={args.max_tokens} "
           f"stream={args.stream}")
+    print(f"thinking  config={json.dumps(thinking_cfg) if thinking_cfg else 'off'} "
+          f"echoed_blocks={'stripped' if args.strip_thinking else ('present' if blocks_present else 'none')}")
     print()
 
     prober_cls = MantleProber if args.mantle else Prober
     prober = prober_cls(model_id, region, args.profile, system_text, tools,
-                        args.max_tokens, args.stream, args.pause)
+                        args.max_tokens, args.stream, args.pause,
+                        thinking=thinking_cfg)
     trace: List[dict] = []
+
+    if args.ab_thinking:
+        return ab_thinking(prober, msgs, thinking_cfg, blocks_present, args)
 
     print("control probe (full conversation):")
     control = prober.probe(msgs, "full")
