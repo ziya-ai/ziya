@@ -4,6 +4,8 @@ import { D3RenderPlugin } from '../../types/d3';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 import { sanitizeJointGeometry } from './jointGeometrySanitizer';
+import { sanitizeRouter, sanitizeConnector } from './jointLinkRouting';
+import { normalizeJointCells } from './jointShapeResolver';
 
 export interface JointSpec {
     type: 'joint' | 'jointjs' | 'diagram';
@@ -1396,18 +1398,16 @@ const createEnhancedLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
         id: linkSpec.id,
         source: sourceConfig,
         target: targetConfig,
-        router: {
-            name: linkSpec.router || 'normal',
-            args: { padding: 20 }
-        },
+        // Normalize router/connector to a KNOWN JointJS name (graphics-stress Issue 29).
+        // An object-shaped `{name:"exotic-nonexistent-router"}` or any unrecognized name
+        // otherwise makes findRoute() throw `unknown router: "[object Object]"` during the
+        // shared link view-flush, poisoning EVERY link and the auto-layout -> blank canvas.
+        router: sanitizeRouter(linkSpec.router, 'normal', { padding: 20 }),
         connectionStrategy: (end, view, magnet, coords) => {
             // Use the center of the element as connection point
             return view.model.getBBox().center();
         },
-        connector: {
-            name: linkSpec.connector || 'rounded',
-            args: { radius: 15 }
-        },
+        connector: sanitizeConnector(linkSpec.connector, 'rounded', { radius: 15 }),
         vertices: linkSpec.vertices || [],
         defaultRouter: { name: 'normal' },
         attrs: {
@@ -1484,18 +1484,13 @@ const createLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
         id: linkSpec.id,
         source: sourceConfig,
         target: targetConfig,
-        router: {
-            name: linkSpec.router || 'normal',
-            args: { padding: 10 }
-        },
+        // Normalize router/connector to a KNOWN JointJS name (graphics-stress Issue 29).
+        router: sanitizeRouter(linkSpec.router, 'normal', { padding: 10 }),
         connectionStrategy: (end, view, magnet, coords) => {
             // Use the center of the element as connection point
             return view.model.getBBox().center();
         },
-        connector: {
-            name: linkSpec.connector || 'rounded',
-            args: { radius: 15 }
-        },
+        connector: sanitizeConnector(linkSpec.connector, 'rounded', { radius: 15 }),
         vertices: linkSpec.vertices || [],
         attrs: {
             line: {
@@ -1693,29 +1688,24 @@ export const jointPlugin: D3RenderPlugin = {
             // fall back to the line-DSL for genuinely non-JSON textual definitions.
             let elements: JointElement[], connections: JointLink[];
 
-            // Normalize `elements` (array OR id-keyed object) + `connections` into
-            // the array form the element/link creation loops expect.
+            // Normalize `elements`/`cells` (array OR id-keyed object) + `connections`
+            // into the array form the element/link creation loops expect.
+            //
+            // Delegates to normalizeJointCells (jointShapeResolver), which is the
+            // single place that (a) SPLITS a canonical JointJS `cells` array — where
+            // elements and `standard.Link` cells are interleaved — into elements vs
+            // links so links are never coerced into fallback rects (graphics-stress
+            // Issue 41), (b) resolves namespaced `standard.*`/`custom.*` shape types
+            // onto the registry vocabulary, and (c) lifts `attrs.label.text` /
+            // `labels[].attrs.text.text` into the plain `label` field the creators
+            // honour. Already-bare specs pass through unchanged.
             const normalizeStructured = (
                 rawElements: any,
                 rawConnections: any
             ): { elements: JointElement[]; connections: JointLink[] } => {
-                let els: JointElement[] = [];
-                if (Array.isArray(rawElements)) {
-                    els = rawElements.map((e: any) => ({ type: e?.type || e?.shape || 'rect', ...e }));
-                } else if (rawElements && typeof rawElements === 'object') {
-                    els = Object.keys(rawElements).map(id => ({
-                        type: 'rect',
-                        id,
-                        ...rawElements[id]
-                    }));
-                }
-                let conns: JointLink[] = [];
-                if (Array.isArray(rawConnections)) {
-                    conns = rawConnections as JointLink[];
-                } else if (rawConnections && typeof rawConnections === 'object') {
-                    conns = Object.keys(rawConnections).map(id => ({ id, ...rawConnections[id] }));
-                }
-                return { elements: els, connections: conns };
+                const { elements: els, connections: conns } =
+                    normalizeJointCells(rawElements, rawConnections);
+                return { elements: els as JointElement[], connections: conns as JointLink[] };
             };
 
             // Try to recover structured input from a JSON `definition` string.
@@ -1755,12 +1745,23 @@ export const jointPlugin: D3RenderPlugin = {
                 });
             } else if (spec.elements) {
                 // Structured object/array passed directly on the spec.
-                const norm = normalizeStructured(spec.elements, spec.connections);
+                const norm = normalizeStructured(spec.elements, (spec as any).connections);
                 elements = norm.elements;
                 connections = norm.connections;
                 console.log('Parsed from structured spec.elements:', {
                     elements: elements.length,
                     elementIds: elements.map(e => e.id),
+                    connections: connections.length
+                });
+            } else if ((spec as any).cells) {
+                // Canonical JointJS graph passed directly on the spec as `cells`
+                // (elements + standard.Link cells interleaved). Split them so links
+                // are not coerced into fallback rects (graphics-stress Issue 41).
+                const norm = normalizeStructured((spec as any).cells, (spec as any).links || (spec as any).connections);
+                elements = norm.elements;
+                connections = norm.connections;
+                console.log('Parsed from structured spec.cells:', {
+                    elements: elements.length,
                     connections: connections.length
                 });
             } else if (spec.definition) {

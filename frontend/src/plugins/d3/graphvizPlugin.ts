@@ -15,6 +15,71 @@ export interface GraphvizSpec {
     definition: string;
 }
 
+/**
+ * STRESS-GUARD (Issue 33): minimum drawing size, in INCHES, below which a DOT
+ * `size=` graph attribute is treated as degenerate and dropped.
+ *
+ * Graphviz honors `size` verbatim and only ever scales the whole drawing DOWN
+ * to fit it (never up, unless a trailing `!` is present). A tiny value such as
+ * `size="0.01,0.01"` (0.01in ≈ sub-pixel at any raster DPI) collapses the entire
+ * graph to a sub-pixel canvas: the render "succeeds" with HTTP 200 but produces
+ * a blank raster — catastrophic SILENT data loss. No legitimate diagram is
+ * authored below half an inch, so a value under this floor is unambiguously a
+ * footgun; dropping it lets the graph render at natural size.
+ */
+export const GRAPHVIZ_MIN_SIZE_INCHES = 0.5;
+
+/**
+ * Parse the numeric dimensions out of a DOT `size` value.
+ * Accepts "W,H", "W", optional trailing "!" (force flag) and surrounding spaces.
+ * Returns the finite, parseable dimensions (may be length 0/1/2).
+ */
+function parseGraphvizSizeDims(raw: string): number[] {
+    return String(raw)
+        .replace(/!/g, '')
+        .split(',')
+        .map((s) => parseFloat(s.trim()))
+        .filter((n) => Number.isFinite(n));
+}
+
+/**
+ * True when a DOT `size` value would collapse the drawing to a sub-threshold
+ * canvas — i.e. it has at least one positive dimension and every positive
+ * dimension is below `minInches`. An unparseable value, or one whose largest
+ * dimension is >= the floor, is left untouched (returns false) so legitimate
+ * small-but-sane specs pass through unchanged.
+ */
+export function isDegenerateGraphvizSize(raw: string, minInches: number = GRAPHVIZ_MIN_SIZE_INCHES): boolean {
+    const dims = parseGraphvizSizeDims(raw);
+    const positive = dims.filter((d) => d > 0);
+    if (positive.length === 0) return false; // no positive dim (e.g. "0,0" or unparseable) -> leave alone
+    // Degenerate only when EVERY positive dimension is below the floor; a spec
+    // that is small in one axis but reasonable in the other is preserved.
+    return positive.every((d) => d < minInches);
+}
+
+/**
+ * Remove any degenerate `size=` graph attribute from a DOT string so a
+ * sub-pixel `size` (with or without `ratio=fill`) can no longer produce a
+ * blank raster. Pure and idempotent; well-formed / reasonably-sized specs are
+ * returned byte-identical. Handles both quoted (`size="0.01,0.01"`) and
+ * unquoted (`size=0.01`) forms, and does NOT touch `fontsize`/`POINT-SIZE`
+ * (the negative lookbehind guards against the `-SIZE` HTML-label attribute).
+ */
+export function clampGraphvizSize(dot: string, minInches: number = GRAPHVIZ_MIN_SIZE_INCHES): string {
+    if (typeof dot !== 'string' || dot.length === 0) return dot;
+    let out = dot;
+    // Quoted form: size="0.01,0.01" / size="6,6!" / size="0.01"
+    out = out.replace(/(?<![-\w])size\s*=\s*"([^"]*)"/gi, (m, val) =>
+        isDegenerateGraphvizSize(val, minInches) ? '' : m
+    );
+    // Unquoted form: size=0.01 / size=0.01,0.01 / size=6,6!
+    out = out.replace(/(?<![-\w])size\s*=\s*([0-9]*\.?[0-9]+(?:\s*,\s*[0-9]*\.?[0-9]+)?!?)/gi, (m, val) =>
+        isDegenerateGraphvizSize(val, minInches) ? '' : m
+    );
+    return out;
+}
+
 const isGraphvizSpec = (spec: any): spec is GraphvizSpec => {
     // Handle JSON-wrapped graphviz specs
     if (typeof spec === 'object' && spec !== null && spec.type === 'graphviz' && spec.definition) {
@@ -270,6 +335,15 @@ export const graphvizPlugin: D3RenderPlugin = {
                 .replace(/(\bweight\s*=\s*)(\d+)/gi, (_m, p, n) => p + Math.min(parseInt(n, 10), 1000))
                 .replace(/(\bperipheries\s*=\s*)(\d+)/gi, (_m, p, n) => p + Math.min(parseInt(n, 10), 10))
                 .replace(/(\b(?:width|height)\s*=\s*)(\d+(?:\.\d+)?)/gi, (_m, p, n) => p + Math.min(parseFloat(n), 100));
+
+            // STRESS-GUARD (Issue 33): drop a degenerate `size=` graph attribute that
+            // would scale the whole drawing to a sub-pixel canvas. Graphviz honors DOT
+            // `size` verbatim and only scales DOWN to fit; `size="0.01,0.01"` (0.01in,
+            // sub-pixel) + `ratio=fill` collapses everything to nothing -> a "successful"
+            // render that produces a BLANK raster (silent data loss). Dropping the
+            // sub-threshold size lets the graph render at natural size. Reasonable sizes
+            // (>= GRAPHVIZ_MIN_SIZE_INCHES in either axis) pass through untouched.
+            processedDefinition = clampGraphvizSize(processedDefinition);
 
             // Fix invalid arrow syntax and edge label format
             processedDefinition = processedDefinition.replace(

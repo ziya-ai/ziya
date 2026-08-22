@@ -11,7 +11,9 @@ import {
   type LayoutConfig,
   computeDimensions, defaultLayout, resolveColor,
   assignBracketDepths, escapeXml, computeBracketGutters, fitFieldLabel,
-  normalizePacketSpec, sanitizeFieldBits, sanitizeBrackets,
+  bracketLabelLayout,
+  normalizePacketSpec, sanitizeFieldBits, sanitizeBrackets, sectionLabel,
+  normalizeSectionRows, sanitizePacketBitWidth,
 } from '../../utils/d3Plugins/packetPlugin';
 import { getOptimalTextColor } from '../../utils/colorUtils';
 import { getZoomScript, getDownloadSvgScript } from '../../utils/popupScriptUtils';
@@ -133,7 +135,11 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
     return { ...sec, brackets: sanitizeBrackets(sec.brackets, rowCount) };
   });
 
-  const bits = pkt.bitWidth ?? 8;
+  // Coerce to a positive integer (round fractional, floor >=1, default on
+  // NaN/Infinity) so the ruler tick loop below and the grid width match
+  // computeDimensions, which sanitizes identically. A fractional bitWidth
+  // (e.g. 31.5) otherwise leaks into the ruler producing "30.5 29.5 … -0.5".
+  const bits = sanitizePacketBitWidth(pkt.bitWidth);
   const { width, height, layout: L } = computeDimensions(pkt);
   const GRID_W = bits * L.BIT_W;
 
@@ -198,12 +204,19 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
   // ── Sections ───────────────────────────────────────────────────────────
   pkt.sections.forEach((sec: PacketSection, sectionIdx: number) => {
     const secY = y;
-    const secRows = sec.rows ?? [];
+    // Defense-in-depth: coerce object-shape rows ({fields:[...]}) to tuple
+    // arrays here too, so a row that reached the renderer un-normalized draws
+    // its fields instead of iterating object keys. Row COUNT is preserved, so
+    // this stays in agreement with computeDimensions' height math.
+    const secRows = normalizeSectionRows(sec.rows);
     const secH = secRows.length * L.ROW_H;
     const sectionColor = resolveColor(sec.color, isDarkMode, sectionIdx);
 
-    // Section label (left column, vertically centered)
-    const lines = sec.label.split('\n');
+    // Section label (left column, vertically centered).
+    // Defense-in-depth: resolve via sectionLabel() so a section that reached
+    // the renderer with `name`/`title` (not `label`) or a non-string label
+    // can never make `.split` throw and blank the whole canvas.
+    const lines = sectionLabel(sec).split('\n');
     const midY = secY + secH / 2;
     lines.forEach((ln, li) => {
       const isMain = li === 0;
@@ -228,23 +241,31 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
     const leftBrackets  = assignBracketDepths(allBrackets, 'left');
 
     const renderBrackets = (brs: PacketBracket[], side: 'left' | 'right') => {
-      // Monospace char width at 10px bold ≈ 6.5px
+      // Monospace char width at 10px bold ≈ 6.5px (rotated-label extent)
       const CHAR_W = 6.5;
-      const BASE_FONT_SIZE = 10;
-      const MIN_FONT_SIZE = 6;
       const LABEL_PAD = 4;
 
-      // Pre-compute label geometry for overlap detection
+      // Pre-compute label geometry for overlap detection. Orientation comes
+      // from the shared helper so the gutter computeBracketGutters reserved and
+      // the label actually drawn can never disagree. A rotated label's extent
+      // along the vertical axis is its text length; a horizontal one's is its
+      // line height.
       const labelInfos = brs.map(br => {
         const by1 = secY + br.start_row * L.ROW_H;
         const by2 = secY + (br.end_row + 1) * L.ROW_H;
         const labelY = (by1 + by2) / 2;
-        const halfTextW = (br.label.length * CHAR_W) / 2;
-        return { br, by1, by2, labelY, yMin: labelY - halfTextW, yMax: labelY + halfTextW };
+        const lay = bracketLabelLayout(br.label, by2 - by1 - 4);
+        const halfExtent = lay.horizontal
+          ? (lay.fontSize + 2) / 2
+          : (br.label.length * CHAR_W) / 2;
+        return { br, by1, by2, labelY, lay,
+                 yMin: labelY - halfExtent, yMax: labelY + halfExtent };
       });
 
       // Assign label offsets: shift labels outward when they would
       // overlap vertically with another label at the same bracket depth.
+      // Clearing a horizontal neighbour costs its full text width; clearing a
+      // rotated one costs only its line height.
       const labelOffsets = new Map<PacketBracket, number>();
       for (let i = 0; i < labelInfos.length; i++) {
         let extraShift = 0;
@@ -252,16 +273,16 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
         for (let j = 0; j < i; j++) {
           const b = labelInfos[j];
           if ((a.br.depth ?? 0) !== (b.br.depth ?? 0)) continue;
-          // Check vertical overlap of rotated text extents
           const prevShift = labelOffsets.get(b.br) ?? 0;
           if (a.yMin < b.yMax + LABEL_PAD && a.yMax > b.yMin - LABEL_PAD) {
-            extraShift = Math.max(extraShift, prevShift + 14);
+            const clear = b.lay.horizontal ? b.lay.width + 8 : 14;
+            extraShift = Math.max(extraShift, prevShift + clear);
           }
         }
         labelOffsets.set(a.br, extraShift);
       }
 
-      labelInfos.forEach(({ br, by1, by2, labelY }) => {
+      labelInfos.forEach(({ br, by1, by2, labelY, lay }) => {
         const depth = br.depth ?? 0;
         const offset = 4 + depth * 30;
 
@@ -286,25 +307,24 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
           .attr('fill', 'none').attr('stroke', bracketStroke)
           .attr('stroke-width', 1.2);
 
-        // Bracket label (rotated), shifted outward if overlapping
+        // Bracket label: horizontal (larger, more readable font) whenever it
+        // fits, rotated only when it is too long to sit horizontally without
+        // dominating the canvas. Shifted outward if it overlaps a neighbour.
         const extraShift = labelOffsets.get(br) ?? 0;
-        const labelX = bx + tickDir * (20 + extraShift);
+        const labelX = bx + tickDir * ((lay.horizontal ? 10 : 20) + extraShift);
 
-        // Scale font to fit within bracket span if label is too long
-        const spanH = by2 - by1 - 4;  // usable vertical space
-        const textAtBase = br.label.length * CHAR_W;
-        let fontSize = BASE_FONT_SIZE;
-        if (textAtBase > spanH && spanH > 0) {
-          fontSize = Math.max(MIN_FONT_SIZE, Math.floor(BASE_FONT_SIZE * spanH / textAtBase));
-        }
-
-        svg.append('text')
+        const label = svg.append('text')
           .attr('x', labelX).attr('y', labelY)
-          .attr('transform', `rotate(${side === 'right' ? 90 : -90}, ${labelX}, ${labelY})`)
-          .attr('text-anchor', 'middle').attr('dominant-baseline', 'central')
+          .attr('dominant-baseline', 'central')
           .attr('fill', textFill)
-          .style('font', `bold ${fontSize}px "Consolas", "Courier New", monospace`)
+          .style('font', `bold ${lay.fontSize}px "Consolas", "Courier New", monospace`)
           .text(br.label);
+        if (lay.horizontal) {
+          label.attr('text-anchor', side === 'right' ? 'start' : 'end');
+        } else {
+          label.attr('text-anchor', 'middle')
+            .attr('transform', `rotate(${side === 'right' ? 90 : -90}, ${labelX}, ${labelY})`);
+        }
       });
     };
 

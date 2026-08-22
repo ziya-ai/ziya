@@ -40,11 +40,22 @@ describe('hexToRgbSafe — shorthand/RGBA hex parsing (Issue 20 COLOR-PARSE-FAIL
         expect(hexToRgbSafe('AABBCC')).toEqual({ r: 0xaa, g: 0xbb, b: 0xcc });
     });
 
+    // ---- NAMED COLORS (Issue 44): the parser now ALSO resolves CSS named
+    //      colors as a fallback after hex parsing, so `black`/`white`/`lightgrey`
+    //      etc. resolve instead of returning null. This closed the
+    //      COLOR-PARSE-FAIL on extended named fills (graphviz/vega/mermaid).
+    it('resolves CSS named colors (Issue 44 — was null pre-fix)', () => {
+        expect(hexToRgbSafe('black')).toEqual({ r: 0, g: 0, b: 0 });
+        expect(hexToRgbSafe('white')).toEqual({ r: 255, g: 255, b: 255 });
+        expect(hexToRgbSafe('lightgrey')).toEqual({ r: 0xd3, g: 0xd3, b: 0xd3 });
+    });
+
     // ---- GUARD CASES: the widened parser must STILL reject everything that is
-    //      not well-formed hex, so callers keep falling back to named/rgb parse.
-    it('rejects named colors (returns null so caller can fall back)', () => {
-        expect(hexToRgbSafe('black')).toBeNull();
-        expect(hexToRgbSafe('white')).toBeNull();
+    //      neither well-formed hex NOR a genuine named color, so callers keep
+    //      falling back to their own rgb() parsing.
+    it('rejects unknown/non-named strings (returns null so caller can fall back)', () => {
+        expect(hexToRgbSafe('blackish')).toBeNull();
+        expect(hexToRgbSafe('not-a-color')).toBeNull();
     });
 
     it('rejects rgb() strings (returns null so caller can fall back)', () => {
