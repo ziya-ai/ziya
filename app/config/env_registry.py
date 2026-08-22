@@ -295,6 +295,12 @@ _VARS: List[EnvVar] = [
            "Log raw streaming chunk data for debugging."),
     EnvVar("ZIYA_DISABLE_PROMPT_CACHE", bool, False, EnvCategory.LOGGING,
            "Disable Bedrock prompt caching (for debugging/testing)."),
+    EnvVar("ZIYA_DISABLE_THINKING_PASSBACK", bool, False, EnvCategory.LOGGING,
+           "Stop echoing signed extended-thinking blocks back inside a tool "
+           "chain.  Passback keeps the model's reasoning across tool "
+           "round-trips instead of forcing it to re-derive the plan each "
+           "iteration; disable it to isolate a provider or gateway that "
+           "rejects round-tripped thinking blocks."),
     EnvVar("ZIYA_DUMP_REQUEST_PARTS", str, None, EnvCategory.LOGGING,
            "Directory to dump the assembled system prompt, tool schemas and "
            "request params on the first request, for offline reproduction."),

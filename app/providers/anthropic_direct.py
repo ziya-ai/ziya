@@ -20,6 +20,7 @@ from app.providers.base import (
     StreamEnd,
     StreamEvent,
     TextDelta,
+    ThinkingBlock,
     ThinkingDelta,
     ToolUseEnd,
     ToolUseInput,
@@ -135,8 +136,13 @@ class AnthropicDirectProvider(LLMProvider):
         self,
         text: str,
         tool_uses: List[Dict[str, Any]],
+        thinking_blocks: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         content_blocks: List[Dict[str, Any]] = []
+        # Thinking must lead the turn: the API requires signed reasoning blocks
+        # to precede text and tool_use, and rejects them out of order.
+        for tb in (thinking_blocks or []):
+            content_blocks.append(tb)
         if text.strip():
             content_blocks.append({"type": "text", "text": text.rstrip()})
         for tu in tool_uses:
@@ -206,9 +212,15 @@ class AnthropicDirectProvider(LLMProvider):
                 "cache_control": {"type": "ephemeral"},
             }]
         elif isinstance(bc, list) and bc:
-            last_block = bc[-1]
-            if isinstance(last_block, dict) and "cache_control" not in last_block:
-                last_block["cache_control"] = {"type": "ephemeral"}
+            # Never the raw [-1]: a thinking block there is immutable, and
+            # stamping it 400s the entire request rather than merely
+            # costing a cache hit.  See LLMProvider._stamp_cache_control.
+            if not self._stamp_cache_control(bc):
+                logger.debug(
+                    "🧠 PROMPT_CACHE: boundary message carries only "
+                    "reasoning blocks; skipping this breakpoint to keep "
+                    "the request legal"
+                )
 
         return messages
 
@@ -216,6 +228,13 @@ class AnthropicDirectProvider(LLMProvider):
         feature_map = {
             "thinking": self.model_config.get("supports_thinking", False),
             "adaptive_thinking": self.model_config.get("supports_adaptive_thinking", False),
+            # Signed thinking blocks may be echoed back inside a tool chain so
+            # reasoning survives the round-trip.  Inherited by
+            # BedrockMantleProvider, which reuses this request/stream path.
+            "thinking_passback": (
+                self.model_config.get("supports_thinking", False)
+                or self.model_config.get("supports_adaptive_thinking", False)
+            ),
             "extended_context": False,  # Anthropic direct has 200k natively
             "cache_control": True,
             "assistant_prefill": True,
@@ -365,6 +384,11 @@ class AnthropicDirectProvider(LLMProvider):
         """Run a single streaming request and yield normalized events."""
         active_tools: Dict[int, Dict[str, Any]] = {}  # index -> {id, name, partial_json}
 
+        # Completed thinking blocks for reasoning-continuity passback, keyed by
+        # content-block index.  Closed by signature_delta — a block without a
+        # signature cannot be echoed back and is dropped.
+        _thinking_blocks: Dict[int, Dict[str, Any]] = {}
+
         # The real stop reason arrives on the message_delta event, NOT on
         # message_stop. Emitting a hardcoded "end_turn" at message_stop
         # mislabels a max_tokens truncation as a clean turn-end, so the
@@ -401,6 +425,18 @@ class AnthropicDirectProvider(LLMProvider):
                             "partial_json": "",
                         }
                         yield ToolUseStart(id=cb.id, name=cb.name, index=idx)
+                    elif cb.type == "thinking":
+                        _thinking_blocks[idx] = {
+                            "type": "thinking", "thinking": "", "signature": None,
+                        }
+                    elif cb.type == "redacted_thinking":
+                        # Opaque encrypted reasoning; captured because passback
+                        # is all-or-nothing — dropping one reorders the turn
+                        # and the API rejects it.
+                        _thinking_blocks[idx] = {
+                            "type": "redacted_thinking",
+                            "data": getattr(cb, "data", ""),
+                        }
 
                 elif event.type == "content_block_delta":
                     idx = getattr(event, "index", 0)
@@ -410,7 +446,19 @@ class AnthropicDirectProvider(LLMProvider):
                         yield TextDelta(content=delta.text)
 
                     elif delta.type == "thinking_delta":
-                        yield ThinkingDelta(content=getattr(delta, "thinking", ""))
+                        _t = getattr(delta, "thinking", "")
+                        if idx in _thinking_blocks:
+                            _thinking_blocks[idx]["thinking"] += _t
+                        yield ThinkingDelta(content=_t)
+
+                    elif delta.type == "signature_delta":
+                        # Signature that lets the API verify a thinking block
+                        # echoed back inside a tool chain.  Never captured on
+                        # this path before, so reasoning could not survive a
+                        # round-trip and was re-derived every iteration.
+                        _sig = getattr(delta, "signature", "")
+                        if idx in _thinking_blocks and _sig:
+                            _thinking_blocks[idx]["signature"] = _sig
 
                     elif delta.type == "input_json_delta":
                         partial = delta.partial_json
@@ -420,6 +468,20 @@ class AnthropicDirectProvider(LLMProvider):
 
                 elif event.type == "content_block_stop":
                     idx = getattr(event, "index", 0)
+                    _tb = _thinking_blocks.pop(idx, None)
+                    if _tb is not None:
+                        if _tb["type"] == "redacted_thinking":
+                            yield ThinkingBlock(
+                                block_type="redacted_thinking",
+                                data=_tb.get("data", ""), index=idx,
+                            )
+                        elif _tb.get("signature"):
+                            # Unsigned blocks are dropped: the API rejects a
+                            # thinking block with a missing/mismatched sig.
+                            yield ThinkingBlock(
+                                content=_tb["thinking"],
+                                signature=_tb["signature"], index=idx,
+                            )
                     if idx in active_tools:
                         tdata = active_tools.pop(idx)
                         try:
