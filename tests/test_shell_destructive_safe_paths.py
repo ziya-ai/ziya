@@ -210,7 +210,8 @@ class TestEndToEndViaHandleRequest:
                 "id": 1,
                 "params": {
                     "name": "run_shell_command",
-                    "arguments": {"command": f"rm {target_path}"},
+                    "arguments": {"command": f"rm {target_path}",
+                                  "_project_root": os.getcwd()},
                 },
             })
 
@@ -231,7 +232,11 @@ class TestEndToEndViaHandleRequest:
             "id": 2,
             "params": {
                 "name": "run_shell_command",
-                "arguments": {"command": "rm src/important.py"},
+                # Without a root this test passes for the WRONG reason: it
+                # would match the NO PROJECT ROOT refusal instead of the
+                # write-policy denial it is asserting.
+                "arguments": {"command": "rm src/important.py",
+                              "_project_root": os.getcwd()},
             },
         })
 
@@ -254,7 +259,8 @@ class TestEndToEndViaHandleRequest:
                 "id": 3,
                 "params": {
                     "name": "run_shell_command",
-                    "arguments": {"command": f"mkdir {target_dir}"},
+                    "arguments": {"command": f"mkdir {target_dir}",
+                                  "_project_root": os.getcwd()},
                 },
             })
 

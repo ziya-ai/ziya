@@ -15,6 +15,7 @@ import fnmatch
 import json
 import logging
 import os
+import threading
 from app.config.env_registry import ziya_env
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -95,6 +96,11 @@ class WritePolicyManager:
         self._policy: Dict[str, Any] = copy.deepcopy(DEFAULT_WRITE_POLICY)
         self._project_id: Optional[str] = None
         self._project_root: Optional[str] = None
+        # Roots for which the projects/* scan found no matching project.
+        # Without this the scan (and a decrypt attempt per project file) is
+        # repeated on every policy check, since _project_root is only set on
+        # a successful match.
+        self._unresolved_roots: set = set()
 
     @property
     def policy(self) -> Dict[str, Any]:
@@ -119,6 +125,12 @@ class WritePolicyManager:
                 if wp:
                     self._merge(wp)
 
+    # Paths already reported as unreadable.  The read helper is a
+    # staticmethod invoked once per candidate project file on every policy
+    # check, so an undecryptable file would otherwise emit an identical
+    # warning on each call with no new information.
+    _warned_unreadable: set = set()
+
     @staticmethod
     def _read_json_ale_aware(filepath: Path) -> Optional[Dict[str, Any]]:
         """Read a JSON file, transparently decrypting ALE envelopes."""
@@ -136,10 +148,15 @@ class WritePolicyManager:
         except (ImportError, json.JSONDecodeError):
             return None  # Module missing or file not valid JSON — treat as absent
         except Exception as e:
-            logging.getLogger(__name__).warning(
-                "Failed to read policy file %s: %s — treating as absent",
-                filepath.name, e,
-            )
+            key = str(filepath)
+            if key not in WritePolicyManager._warned_unreadable:
+                WritePolicyManager._warned_unreadable.add(key)
+                # Log the full path, not just the basename: every candidate
+                # is named "project.json", so the basename alone makes the
+                # message unattributable to a specific project.
+                logging.getLogger(__name__).warning(
+                    "Failed to read policy file %s: %s — treating as absent", key, e,
+                )
             return None
 
     def _safe_merge_json(self, filepath: Path) -> None:
@@ -230,10 +247,12 @@ class WritePolicyManager:
         """
         if not project_root or self._project_root == project_root:
             return  # Already loaded for this root (or no root provided)
+        if project_root in self._unresolved_roots:
+            return  # Scanned before with no match — don't re-walk projects/
 
-        import json as _json
         projects_dir = Path.home() / ".ziya" / "projects"
         if not projects_dir.is_dir():
+            self._unresolved_roots.add(project_root)
             return
         for candidate in projects_dir.iterdir():
             pf = candidate / "project.json"
@@ -241,6 +260,9 @@ class WritePolicyManager:
             if data and data.get("path") == project_root:
                 self.load_for_project(data["id"], project_root)
                 return
+        # No project claims this root.  Remember that so subsequent checks
+        # skip the scan entirely.
+        self._unresolved_roots.add(project_root)
 
     def is_write_allowed(self, target_path: str, project_root: str = "") -> bool:
         root = project_root or self._project_root or ziya_env("ZIYA_USER_CODEBASE_DIR") or ""
@@ -299,7 +321,23 @@ class WritePolicyManager:
             + (f" | patterns: {', '.join(patterns)}" if patterns else "")
         )
 
-    def get_effective_policy(self) -> Dict[str, Any]:
+    def get_effective_policy(self, project_root: str = "") -> Dict[str, Any]:
+        """Return the merged policy, lazily loading the project's overrides.
+
+        The ``_ensure_loaded_for_root`` call is what keeps this method
+        consistent with the enforcement accessors (``is_write_allowed``,
+        ``is_direct_write_allowed``, ``check_write``), all of which already
+        make it.  Without it this method returned DEFAULT_WRITE_POLICY
+        whenever ``load_for_project`` had not run — which is the common case,
+        since the only caller is the ``GET /write-policy/{project_id}``
+        route.  Prompt builders read the policy through this method, so the
+        model was told ``.ziya/`` and ``/tmp/`` were the only writable paths
+        while ``file_write`` happily accepted the project's configured
+        patterns.  Whether the prompt was accurate depended on whether an
+        enforcement call had already populated ``_project_root``.
+        """
+        root = project_root or self._project_root or ziya_env("ZIYA_USER_CODEBASE_DIR") or ""
+        self._ensure_loaded_for_root(root)
         return copy.deepcopy(self._policy)
 
     def update_project_policy(self, project_id: str, overrides: Dict[str, Any]) -> None:
@@ -318,6 +356,11 @@ class WritePolicyManager:
             data["settings"]["writePolicy"] = {}
         data["settings"]["writePolicy"].update(overrides)
         self._write_json_ale_aware(pf, data)
+        # The prompt-facing per-root cache holds a snapshot of the merged
+        # policy, so an edit here would otherwise stay invisible to the
+        # Session Context block until the process restarted -- the same
+        # prompt/enforcement divergence that cache exists to fix.
+        invalidate_policy_cache()
         if self._project_id == project_id:
             self.load_for_project(project_id, self._project_root or "")
 
@@ -394,3 +437,79 @@ def get_write_policy_manager() -> WritePolicyManager:
     if _manager is None:
         _manager = WritePolicyManager()
     return _manager
+
+
+# -------------------------------------------------------------------------
+# Prompt-facing, root-addressed policy reads
+# -------------------------------------------------------------------------
+#
+# Enforcement is root-addressed: ``fileio.file_write`` passes the
+# request-scoped project root into ``is_direct_write_allowed``, so
+# ``_ensure_loaded_for_root`` reloads for whichever project is being
+# written to.  Every PROMPT reader instead called
+# ``get_effective_policy()`` with no root, which resolves to
+# ``self._project_root`` -- whatever project last touched the singleton --
+# and ``_ensure_loaded_for_root`` then early-returns because the roots
+# "match".  With two projects open, project B's prompt therefore rendered
+# project A's policy while B's writes were checked against B's: the model
+# was told a path needed a diff, tried file_write anyway, and found it
+# accepted.  Measured with A=``docs/*`` and B=``tests/``+``app/``: B's
+# prompt listed ``docs/*`` while enforcement allowed ``app/utils/x.py``.
+#
+# Deliberately does NOT reuse the shared singleton.  Passing the root to
+# it would fix the read but make every prompt render re-pin
+# ``_project_root``, so concurrent windows on different projects would
+# thrash the loaded policy -- the hazard
+# ``MCPManager._apply_project_write_paths`` already avoids with a
+# throwaway instance, for this same reason.
+#
+# Cached per root because the load walks
+# ``~/.ziya/projects/*/project.json`` and ALE-decrypts each candidate
+# until one claims the root; a user with dozens of registered projects
+# would otherwise pay that scan on every request.
+_root_policy_cache: Dict[str, Dict[str, Any]] = {}
+_root_policy_lock = threading.Lock()
+
+
+def effective_policy_for_root(project_root: str) -> Dict[str, Any]:
+    """Merged write policy for a SPECIFIC project root.
+
+    Use this for anything that DESCRIBES the policy (prompt blocks, UI
+    summaries).  Enforcement keeps using the singleton's
+    ``is_write_allowed`` / ``is_direct_write_allowed``, which take the
+    root as an argument and remain the authority.
+
+    Falls back to the singleton when no root is known -- the
+    single-project and CLI case, and the previous behaviour.
+    """
+    if not project_root:
+        return get_write_policy_manager().get_effective_policy()
+    with _root_policy_lock:
+        cached = _root_policy_cache.get(project_root)
+    if cached is not None:
+        return copy.deepcopy(cached)
+    pm = WritePolicyManager()
+    pm._ensure_loaded_for_root(project_root)
+    if pm._project_root != project_root:
+        # No registered project claims this root, so ``load_for_project``
+        # never ran and the global ~/.ziya/write_policy.json was never
+        # merged.  Merge it here rather than reporting bare defaults.
+        pm._safe_merge_json(Path.home() / ".ziya" / "write_policy.json")
+    policy = copy.deepcopy(pm.policy)
+    with _root_policy_lock:
+        _root_policy_cache[project_root] = policy
+    return copy.deepcopy(policy)
+
+
+def invalidate_policy_cache(project_root: Optional[str] = None) -> None:
+    """Drop cached per-root policies; all roots when none is given.
+
+    Clearing everything on an unscoped call is deliberate: the caller
+    (``update_project_policy``) knows a project id, not a root, and a
+    needless reload costs one directory scan.
+    """
+    with _root_policy_lock:
+        if project_root:
+            _root_policy_cache.pop(project_root, None)
+        else:
+            _root_policy_cache.clear()
