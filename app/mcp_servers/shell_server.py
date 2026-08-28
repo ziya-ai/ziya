@@ -438,7 +438,15 @@ class ShellServer:
         self.write_checker = ShellWriteChecker(self.wp_manager)
 
         # Get configuration from environment
-        self.git_operations_enabled = os.environ.get('GIT_OPERATIONS_ENABLED', 'true').lower() in ('true', '1', 'yes')
+        # Read via _scope_env, per the invariant stated above. This var is
+        # deliberately NOT in ESCALATION_ENV_KEYS (scope_canonical) and so is
+        # never rewritten by strip_escalations: like ALWAYS_BLOCKED_COMMANDS it
+        # cannot carry an escalation — the default is 'true', so setting it can
+        # only no-op or restrict. The escalation-bearing half of git is
+        # SAFE_GIT_OPERATIONS, which IS gated and IS read from _scope_env
+        # below. Routed through _scope_env anyway so this module has exactly
+        # one privilege-read path and its stated invariant is literally true.
+        self.git_operations_enabled = self._scope_env.get('GIT_OPERATIONS_ENABLED', 'true').lower() in ('true', '1', 'yes')
         self.command_timeout = int(os.environ.get('COMMAND_TIMEOUT', '30'))  # Increased from 10 to 30 seconds
         
         # Hard ceiling for model-requested timeouts (matches TOOL_EXEC_TIMEOUT in streaming_tool_executor)
