@@ -16,6 +16,7 @@ from app.mcp.registry.interface import (
     RegistryProvider, RegistryServiceInfo, RegistryTool, ToolSearchResult,
     InstallationResult, ServiceStatus, SupportLevel
 )
+from app.mcp.registry.command_policy import validate_run_command
 from app.utils.logging_utils import logger
 
 
@@ -243,7 +244,11 @@ class GitHubRegistryProvider(RegistryProvider):
             # Build configuration entries
             server_name = f"github_{service.service_id}"
             config_entries = {
-                "command": self._build_command_array(instructions, str(install_dir)),
+                "command": validate_run_command(
+                    self._build_command_array(instructions, str(install_dir)),
+                    source=f"github:{service_id}",
+                    install_dir=install_dir,
+                ),
                 "enabled": True,
                 "description": service.service_description,
                 "registry_provider": self.identifier,
