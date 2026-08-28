@@ -326,9 +326,7 @@ async def retry_throttled_request(request: Request):
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
                 "X-Accel-Buffering": "no",
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "POST, OPTIONS",
-                "Access-Control-Allow-Headers": "Content-Type"
+                # CORS owned by CORSMiddleware (loopback regex) — ASR DP-02.
             }
         )
     except Exception as e:
