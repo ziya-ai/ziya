@@ -8,7 +8,7 @@ import time
 
 from app.utils.logging_utils import logger
 
-from .base import BaseStorage
+from .base import BaseStorage, contained_path
 from ..models.chat import Chat, ChatCreate, ChatUpdate, ChatSummary, Message
 from .beads import count_open_beads_for_conversation
 from ..models.work_item import count_open_work_items
@@ -44,7 +44,7 @@ class ChatStorage(BaseStorage[Chat]):
         return self.enforcer.is_expired(last_active_epoch, "conversation_data")
     
     def _chat_file(self, chat_id: str) -> Path:
-        return self.chats_dir / f"{chat_id}.json"
+        return contained_path(self.chats_dir, f"{chat_id}.json")
     
     @staticmethod
     def strip_empty_assistant_messages(messages):

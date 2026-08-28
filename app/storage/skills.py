@@ -7,7 +7,7 @@ from typing import Optional, List
 import uuid
 import time
 
-from .base import BaseStorage
+from .base import BaseStorage, contained_path
 from ..models.skill import Skill, SkillCreate, SkillUpdate
 from ..services.token_service import TokenService
 from ..services.color_service import generate_color
@@ -30,7 +30,7 @@ class SkillStorage(BaseStorage[Skill]):
         self._ensure_built_in_skills()
     
     def _skill_file(self, skill_id: str) -> Path:
-        return self.skills_dir / f"{skill_id}.json"
+        return contained_path(self.skills_dir, f"{skill_id}.json")
     
     def _ensure_built_in_skills(self) -> None:
         """Ensure built-in skills exist and stay in sync for this project.

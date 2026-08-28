@@ -8,6 +8,7 @@ import json
 import fcntl
 from contextlib import contextmanager
 from app.utils.logging_utils import logger
+from app.utils.paths import validate_relative_path
 
 
 def _sanitize_surrogates(obj):
@@ -19,6 +20,29 @@ def _sanitize_surrogates(obj):
     if isinstance(obj, list):
         return [_sanitize_surrogates(i) for i in obj]
     return obj
+
+
+def contained_path(directory: Path, name: str) -> Path:
+    """Join *name* under *directory*, rejecting traversal (CWE-22).
+
+    Every storage class here keys files/directories off an id that arrives
+    verbatim from a URL path segment. Without this check an id such as
+    ``../../other_project/target`` resolves outside the intended directory,
+    which for ``ProjectStorage.delete()`` reached an unguarded
+    ``shutil.rmtree`` (ASR PT-03) and elsewhere an arbitrary JSON
+    read/write/delete.
+
+    Same containment primitive already used by
+    ``task_bindings.TaskBindingStorage._bindings_file`` [PenPal #105]; lifted
+    here so all sibling classes share one implementation.
+    """
+    if not name or not isinstance(name, str):
+        raise ValueError(f"Invalid storage id: {name!r}")
+    if not validate_relative_path(str(directory), name):
+        raise ValueError(
+            f"Invalid storage id: path traversal detected in {name!r}"
+        )
+    return directory / name
 
 
 T = TypeVar('T')

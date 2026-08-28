@@ -12,7 +12,7 @@ import logging
 from pathlib import Path
 from typing import Optional, List
 
-from .base import BaseStorage
+from .base import BaseStorage, contained_path
 from ..models.task_card import Block, TaskCard, TaskCardCreate, TaskCardUpdate
 
 logger = logging.getLogger(__name__)
@@ -47,7 +47,7 @@ class TaskCardStorage(BaseStorage[TaskCard]):
         super().__init__(self.cards_dir)
 
     def _card_file(self, card_id: str) -> Path:
-        return self.cards_dir / f"{card_id}.json"
+        return contained_path(self.cards_dir, f"{card_id}.json")
 
     def get(self, card_id: str) -> Optional[TaskCard]:
         data = self._read_json(self._card_file(card_id))
