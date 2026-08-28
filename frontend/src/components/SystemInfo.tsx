@@ -152,12 +152,8 @@ export const SystemInfo: React.FC = () => {
           <Descriptions column={1} bordered size="small">
             <Descriptions.Item label="Profile">{systemInfo.aws.profile}</Descriptions.Item>
             <Descriptions.Item label="Region">{systemInfo.aws.region}</Descriptions.Item>
-            <Descriptions.Item label="Account ID">{systemInfo.aws.account_id || 'N/A'}</Descriptions.Item>
             <Descriptions.Item label="Status">
               {getStatusBadge(systemInfo.aws.status)}
-            </Descriptions.Item>
-            <Descriptions.Item label="Access Key">
-              <Text code>{systemInfo.aws.access_key || 'N/A'}</Text>
             </Descriptions.Item>
           </Descriptions>
         </Card>
