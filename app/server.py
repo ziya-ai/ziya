@@ -1311,6 +1311,14 @@ async def chat_endpoint(request: Request):
                     "Transfer-Encoding": "chunked",
                     "X-Nginx-Buffering": "no",
                     "Proxy-Buffering": "off",
+                    # Authoritative per-response model report: the model that
+                    # actually streams this response, and whether it came from
+                    # a per-request pin or the server-global default.  The
+                    # frontend sync service uses a 'global'-sourced value to
+                    # detect drift caused by /api/set-model from another
+                    # session (modelSyncService.reportStreamModel).
+                    "X-Ziya-Model": str(current_model or ""),
+                    "X-Ziya-Model-Source": "pin" if pinned_model else "global",
                     # CORS is owned by CORSMiddleware's loopback
                     # allow_origin_regex; a wildcard here overrode it and made
                     # the AI response cross-origin readable (ASR DP-02).
