@@ -6,7 +6,7 @@ from typing import Optional, List
 import uuid
 import time
 
-from .base import BaseStorage
+from .base import BaseStorage, contained_path
 from ..models.context import Context, ContextCreate, ContextUpdate
 from ..services.token_service import TokenService
 from ..services.color_service import generate_color
@@ -25,7 +25,7 @@ class ContextStorage(BaseStorage[Context]):
         self.project_path = project_path
     
     def _context_file(self, context_id: str) -> Path:
-        return self.contexts_dir / f"{context_id}.json"
+        return contained_path(self.contexts_dir, f"{context_id}.json")
     
     def get(self, context_id: str) -> Optional[Context]:
         data = self._read_json(self._context_file(context_id))
