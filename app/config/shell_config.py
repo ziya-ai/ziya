@@ -46,8 +46,10 @@ DEFAULT_SHELL_CONFIG = {
     ],
     "gitOperationsEnabled": True,
     "safeGitOperations": [
-        "status", "log", "show", "diff", "branch", "remote", "config --get",
-        "ls-files", "ls-tree", "blame", "tag", "stash list", "reflog", 
+        "status", "log", "show", "diff", "grep", "branch", "remote",
+        "config --get", "ls-files", "ls-tree", "blame",
+        "cat-file", "check-ignore",
+        "tag", "stash list", "reflog",
         "rev-parse", "rev-list", "describe", "shortlog", "whatchanged"
     ],
     "timeout": 30
