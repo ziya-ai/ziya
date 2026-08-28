@@ -199,18 +199,26 @@ def fingerprint_tools(tools: List[Dict[str, Any]]) -> str:
 
     Use at connect time to establish a baseline, then re-check periodically
     to detect rug-pull changes (tool definitions mutating after install).
+
+    A tool whose name is absent/None/non-str is SKIPPED rather than
+    fingerprinted under a synthetic "" name: a server cannot dispatch such a
+    tool, and folding it in would let two structurally different tool sets
+    share a fingerprint (ASR VAL-04, stricter form of PenPal #118).
     """
+    usable = []
+    for t in tools:
+        name = t.get("name")
+        if not isinstance(name, str) or not name:
+            logger.warning(
+                f"fingerprint_tools: skipping tool with invalid name {name!r}"
+            )
+            continue
+        usable.append(t)
     canonical = json.dumps(
         sorted(
             [{"name": t.get("name"), "description": t.get("description"),
-              "inputSchema": t.get("inputSchema")} for t in tools],
-            # `.get("name", "")` only substitutes the default when the key
-            # is absent — a tool dict with an explicit {"name": None, ...}
-            # still yields None here, and sorting a mix of None/str keys
-            # raises TypeError, silently aborting fingerprinting and
-            # disabling rug-pull detection for that server [PenPal #118,
-            # CWE-476]. `or ""` normalizes both cases to a comparable str.
-            key=lambda x: x.get("name") or "",
+              "inputSchema": t.get("inputSchema")} for t in usable],
+            key=lambda x: x["name"],
         ),
         sort_keys=True,
     )
