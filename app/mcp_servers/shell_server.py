@@ -45,6 +45,15 @@ _BLOCKED_ENV_PREFIXES = frozenset({
 # the validation string and the tokenized argv.
 _ENV_ASSIGN_RE = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)=')
 
+# Keys in ``safe_command_patterns`` that label STRUCTURAL patterns rather
+# than invokable commands: "any allowed command piped into another", and
+# "find -exec running an allowed command".  Surfacing them in a permission
+# description invites the model to type ``find_exec`` as though it were a
+# program.  Defined once here because two call sites previously kept their
+# own copies, and a key added to one but not the other silently reappears
+# as a leak.
+META_PATTERN_KEYS = frozenset({'piped_commands', 'find_exec'})
+
 
 def _clean_child_env(extra: dict | None = None) -> dict:
     """Return a copy of os.environ safe to hand to child processes.
@@ -478,7 +487,7 @@ class ShellServer:
 
         # Add git operations if enabled
         if self.git_operations_enabled:
-            safe_git_ops = self._scope_env.get('SAFE_GIT_OPERATIONS', 'status,log,show,diff,branch,remote,ls-files,blame,cat-file,check-ignore').split(',')
+            safe_git_ops = self._scope_env.get('SAFE_GIT_OPERATIONS', 'status,log,show,diff,grep,branch,remote,ls-files,blame,cat-file,check-ignore').split(',')
             safe_git_ops = [op.strip() for op in safe_git_ops if op.strip()]
             
             self.git_patterns = {
@@ -486,6 +495,11 @@ class ShellServer:
                 'log': r'^git\s+log(\s+.*)?$',
                 'show': r'^git\s+show(\s+.*)?$',
                 'diff': r'^git\s+diff(\s+.*)?$',
+                # git grep is read-only EXCEPT for -O/--open-files-in-pager, which
+                # executes an arbitrary pager command on the matching files, so that
+                # form is refused. The short-option class is matched case-insensitively
+                # upstream, which also costs the short -o form; --only-matching works.
+                'grep': r'^git\s+grep(?=\s|$)(?!.*--open-files-in-pager)(?!.*\s-[A-Za-z]*O)(\s+.*)?$',
                 'branch': r'^git\s+branch(\s+(?!-[dD]|--delete).*)?$',  # Allow branch listing, not deletion
                 'remote': r'^git\s+remote(\s+(?!rm|remove).*)?$',  # Allow remote listing, not removal
                 'config --get': r'^git\s+config\s+--get(\s+.*)?$',  # Only allow getting config, not setting
@@ -1479,8 +1493,7 @@ class ShellServer:
                 # message — it's confusing and self-referential.  Meta-
                 # pattern names are the keys we exclude from
                 # ``get_allowed_commands_description()``.
-                _META_PATTERN_KEYS = {'piped_commands'}
-                if first_word in _META_PATTERN_KEYS:
+                if first_word in META_PATTERN_KEYS:
                     first_word = '<internal pattern label>'
                 # When the failing segment is part of a multi-segment
                 # pipeline, citing the offending segment is more
@@ -1711,8 +1724,15 @@ class ShellServer:
                 patterns[pattern_key] = r'^git\s+' + re.escape(git_subcmd) + r'(\s+.*)?$'
                 continue  # Don't also add the default pattern
             if cmd == 'git':
-                # Bare "git" — allow ALL git subcommands
+                # Bare "git" — allow ALL git subcommands, including the
+                # history-rewriting and working-tree-destroying ones.  Logged
+                # because a grant this broad is almost always an authoring
+                # slip: the author wanted read-only git and had no way to know
+                # the safe subset requires naming subcommands explicitly.
                 patterns['git_all'] = r'^git(\s+.*)?$'
+                print("⚠️  ALL git subcommands permitted (bare 'git' grant): "
+                      "reset/checkout/clean/stash/push are reachable",
+                      file=sys.stderr)
                 continue
             if cmd in self.command_pattern_overrides:
                 patterns[cmd] = self.command_pattern_overrides[cmd]
@@ -1729,24 +1749,66 @@ class ShellServer:
         return patterns
 
     def get_allowed_commands_description(self) -> str:
-        """Get a human-readable description of allowed commands."""
-        # Internal meta-pattern keys that aren't user-invokable command
-        # names — they label structural patterns (e.g. "any allowed
-        # command optionally piped to other allowed commands") and
-        # would mislead the model if surfaced as if they were commands.
-        _META_PATTERN_KEYS = {'piped_commands'}
+        """A human-readable description of the commands actually permitted.
+
+        This string is the ONLY channel through which an agent learns its own
+        shell privileges: it is interpolated into the ``run_shell_command``
+        tool description and into denial messages.  It may overstate
+        RESTRICTION harmlessly — the agent is merely too cautious — but must
+        never overstate SAFETY, because an agent that believes it holds
+        read-only git will reach for a destructive subcommand without pausing.
+
+        Derived from the patterns and grants themselves, never from pattern-key
+        name prefixes.  The prefix approach collapsed every ``git_*`` key —
+        including ``git_all``, which a bare ``git`` grant creates and which
+        matches ``reset --hard`` / ``checkout`` / ``clean`` / ``push`` — to the
+        literal string "git (safe operations)".
+        """
         base_commands = set()
         for pattern_name in self.safe_command_patterns.keys():
-            if pattern_name in _META_PATTERN_KEYS:
+            if pattern_name in META_PATTERN_KEYS:
                 continue
             if pattern_name.startswith('git_'):
-                base_commands.add('git (safe operations)')
-            elif pattern_name.startswith('env_'):
+                continue  # described below, from the grants themselves
+            if pattern_name.startswith('env_'):
                 base_commands.add(pattern_name[4:])  # Remove 'env_' prefix
             else:
                 base_commands.add(pattern_name)
-        
+
+        base_commands.update(self._describe_git_privileges())
+
         return ', '.join(sorted(base_commands))
+
+    def _describe_git_privileges(self) -> set:
+        """The git privileges in force, described without understating them."""
+        git_keys = {k for k in self.safe_command_patterns if k.startswith('git_')}
+        if not git_keys:
+            return set()
+
+        # A bare ``git`` grant builds git_all, which admits EVERY subcommand.
+        # Nothing else about the git configuration matters once it is present,
+        # so say so plainly and stop.
+        if 'git_all' in git_keys:
+            return {'git (ALL subcommands — includes destructive: '
+                    'reset/checkout/clean/stash/push)'}
+
+        described = set()
+        # Explicit grants are read back from allowed_commands rather than
+        # reconstructed from the pattern key: the key encoding folds spaces
+        # and hyphens to underscores, so "cherry-pick" and "cherry pick"
+        # are indistinguishable once encoded.
+        read_only_ops = set(getattr(self, 'git_patterns', {}))
+        for entry in sorted(self.allowed_commands):
+            if not entry.startswith('git '):
+                continue
+            subcommand = entry[4:].strip()
+            if not subcommand or subcommand in read_only_ops:
+                continue  # covered by the read-only summary below
+            described.add(f'git {subcommand} (WRITE)')
+
+        if any(not k.startswith('git_explicit_') for k in git_keys):
+            described.add('git (read-only operations)')
+        return described
         
     async def handle_request(self, request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Handle incoming MCP requests."""

@@ -46,7 +46,12 @@ class TestDefaultAllowedCommands:
 class TestDefaultGitOperations:
     """Verify safe git operations are present."""
 
-    EXPECTED_OPS = ["status", "log", "diff", "blame", "branch"]
+    EXPECTED_OPS = [
+        "status", "log", "diff", "blame", "branch",
+        # Read-only inspection ops that had patterns in shell_server but were
+        # absent from this default set, so they were unreachable in practice.
+        "grep", "cat-file", "check-ignore",
+    ]
 
     @pytest.mark.parametrize("op", EXPECTED_OPS)
     def test_git_op_in_default_config(self, op):
