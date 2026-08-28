@@ -1595,9 +1595,13 @@ class MCPClient:
                     tool_schema = tool.inputSchema
                     break
             
-            # Skip validation if we unwrapped tool_input — the inner content
-            # won't match the outer wrapper schema
-            if tool_schema and not unwrapped_tool_input:
+            # Validate AFTER unwrapping, not instead of it (ASR VAL-01). The
+            # previous skip rested on the inner payload not matching the outer
+            # wrapper schema — but the unwrap above already replaced
+            # `arguments` with the inner payload, so the schema is exactly the
+            # right one to check it against. Skipping let a model evade every
+            # parameter constraint by wrapping its args in {"tool_input": {…}}.
+            if tool_schema:
                 validated_args = self._validate_and_convert_arguments(arguments, tool_schema)
                 
                 # Check if validation returned an error
