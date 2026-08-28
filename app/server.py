@@ -1311,9 +1311,9 @@ async def chat_endpoint(request: Request):
                     "Transfer-Encoding": "chunked",
                     "X-Nginx-Buffering": "no",
                     "Proxy-Buffering": "off",
-                    "Access-Control-Allow-Origin": "*",
-                    "Access-Control-Allow-Methods": "POST, OPTIONS",
-                    "Access-Control-Allow-Headers": "Content-Type"
+                    # CORS is owned by CORSMiddleware's loopback
+                    # allow_origin_regex; a wildcard here overrode it and made
+                    # the AI response cross-origin readable (ASR DP-02).
                 }
             )
         else:

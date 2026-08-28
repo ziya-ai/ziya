@@ -81,12 +81,16 @@ class ErrorHandlingMiddleware(BaseHTTPMiddleware):
                     status_code=500
                 )
                 
-                # Add CORS headers
+                # Streaming headers only. No Access-Control-Allow-Origin here:
+                # ErrorHandlingMiddleware is registered OUTSIDE CORSMiddleware
+                # (server.py), so a wildcard set on this response is the header
+                # that actually ships — making the one path OriginGuard does not
+                # cover cross-origin readable (ASR DP-02). Any page could read
+                # sanitized exception text and internal paths. Let the loopback
+                # allow_origin_regex on CORSMiddleware be the single policy.
                 response.headers["Content-Type"] = "text/event-stream"
                 response.headers["Cache-Control"] = "no-cache"
                 response.headers["Connection"] = "keep-alive"
-                response.headers["Access-Control-Allow-Origin"] = "*"
-                response.headers["Access-Control-Allow-Headers"] = "*"
                 
                 return response
             else:
