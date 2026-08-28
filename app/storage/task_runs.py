@@ -13,7 +13,7 @@ import logging
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
-from .base import BaseStorage
+from .base import BaseStorage, contained_path
 from ..models.task_run import (
     TaskRun, TaskRunCreate, TaskRunBlockState, IterationSummary, ProgressNote,
 )
@@ -46,7 +46,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         self._last_activity_write: Dict[str, float] = {}
 
     def _run_file(self, run_id: str) -> Path:
-        return self.runs_dir / f"{run_id}.json"
+        return contained_path(self.runs_dir, f"{run_id}.json")
 
     def read_run_file(self, path: str) -> Optional[dict]:
         """Read ONE run file by absolute path, returning the raw dict.
@@ -72,7 +72,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
             return None
 
     def _iteration_dir(self, run_id: str) -> Path:
-        return self.runs_dir / run_id / "iterations"
+        return contained_path(self.runs_dir, run_id) / "iterations"
 
     def _iteration_file(self, run_id: str, block_id: str, index: int) -> Path:
         return self._iteration_dir(run_id) / f"{block_id}_{index}.json"

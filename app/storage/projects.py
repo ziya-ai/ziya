@@ -6,7 +6,7 @@ from typing import Optional, List
 import uuid
 import time
 
-from .base import BaseStorage
+from .base import BaseStorage, contained_path
 from ..models.project import Project, ProjectCreate, ProjectUpdate, ProjectSettings
 from ..utils.logging_utils import logger
 
@@ -79,7 +79,9 @@ class ProjectStorage(BaseStorage[Project]):
         self._save_index(index)
 
     def _project_dir(self, project_id: str) -> Path:
-        return self.projects_dir / project_id
+        # Containment lives here, not at the delete() call site, so
+        # get/update/delete/touch are all covered by one check (ASR PT-03).
+        return contained_path(self.projects_dir, project_id)
     
     def _project_file(self, project_id: str) -> Path:
         return self._project_dir(project_id) / "project.json"
