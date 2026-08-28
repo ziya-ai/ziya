@@ -161,6 +161,7 @@ The **LLM is the central novel actor**. It is neither a human user nor a passive
 |---|---|
 | High-level system architecture, component map, request flow | `Docs/ArchitectureOverview.md` |
 | MCP threat mitigations in depth (poisoning, overreach, shadowing, rug-pull, signing, timeouts) | `Docs/MCPSecurityControls.md` |
+| MCP registry shared-responsibility boundary (what a listing does and does not imply) | `Docs/MCPRegistryTrust.md` |
 | Public security policy / vulnerability reporting | `Docs/SECURITY.md` |
 | Plugin system, endpoint restriction, data retention, tool-result filters | `Docs/Enterprise.md` |
 | MCP execution timeout chain details | `Docs/MCPSecurityControls.md` §7 |

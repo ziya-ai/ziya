@@ -260,6 +260,69 @@ bytes `ziya-approve` signs and the subprocess re-verifies), never from a merged
 in-memory view, so the UI can never advertise an escalation the signer cannot see
 or the subprocess would clamp.
 
+### 10. Registry-Supplied Command Injection
+
+**Module:** `app/mcp/registry/command_policy.py`
+
+A registry API response is **not a trust boundary**. The registries Ziya ships
+with are community-published, so a listing can be authored by anyone. Three
+distinct sinks consume registry-supplied strings:
+
+| Sink | What the registry controls | Guard |
+|---|---|---|
+| Install argv | the whole `[executable] + args` (enterprise providers) | `validate_install_argv()` |
+| Package identifier | one value inside an argv Ziya builds — `['pip','install',<id>]`, `['npx','-y',<id>]` | `validate_package_identifier()` |
+| Run command | `config_entries['command']`, persisted to `mcp_config.json` and re-executed on every server start | `validate_run_command()` |
+
+The run sink is the most consequential: it is **persistent** code execution, not
+a one-time install.
+
+**`validate_run_command()`** — argv[0] must be a bare allowlisted launcher
+(`npx`, `node`, `python`, `python3`, `uv`, `uvx`, `docker`), an absolute path
+resolving inside the service's own installation directory, or a BuilderToolbox
+tool that really resolves to a file under `~/.toolbox/bin`. A relative path
+whose basename is allowlisted (`../../tmp/evil/npx`) is refused, because the
+manager hands the value to `subprocess` verbatim and resolves it against Ziya's
+cwd at every start. Registry-supplied run *args* are filtered against
+per-launcher code-execution flags (`python -c`, `node -e/--eval/-p`, and
+docker's `-v/--mount/--privileged/--network`): `python3` is a legitimate
+launcher, but a persisted `python3 -c <payload>` is durable RCE.
+
+**`validate_install_argv()`** — argv[0] must be a **bare-name** allowlisted
+package manager. A path-qualified `/tmp/evil/pip` is refused even though its
+basename is allowlisted, because `subprocess` executes the path, not the
+basename. Args are filtered for per-installer source-redirection flags
+(`-i`, `--index-url`, `--extra-index-url`, `--find-links`, `--trusted-host`
+for pip; `--registry`, `--userconfig` for npm; `--default-index` for uv), for
+URLs, and for absolute paths.
+
+**`validate_package_identifier()`** — a fixed argv[0] is not sufficient when
+the registry still supplies the package name, because both installers accept a
+*source* in the position Ziya treats as a name: pip honours a PEP 508 direct
+reference (`pkg @ https://host/x.tar.gz`) and npm accepts a bare URL or git
+spec. The identifier must not contain whitespace or `://`, must not begin with
+`-` (which would land in a flag position), `/`, `.` or `~`, and must not
+contain `..`. Legitimate shapes — `@scope/name`, `name==1.2.3`,
+`name[extra]`, `ghcr.io/org/img:tag` — all pass.
+
+`docker` is deliberately allowlisted for **run** but not for **install**: the
+run argv is built by `InstallationHelper.setup_docker_container()` as a fixed
+`['docker','run','-i','--rm',<image>]`, whereas no flag denylist meaningfully
+constrains a registry-supplied `docker run -v /:/host …`.
+
+Environment variables from a registry response are filtered before they are
+persisted: keys that would hijack a future subprocess start (`LD_PRELOAD`,
+`DYLD_INSERT_LIBRARIES`, `PYTHONPATH`, `PATH`, `NODE_OPTIONS`, `BASH_ENV`)
+are dropped, and the parent's own secret-bearing variables are never inherited
+by an MCP subprocess (`app/mcp/client.py`, `_MCP_ENV_DENY_PREFIXES`).
+
+Installs are recorded in the security audit trail as `mcp_server_installed`,
+since an install writes a command that runs on every subsequent start.
+
+See `Docs/MCPRegistryTrust.md` for the shared-responsibility boundary these
+controls sit inside — what Ziya constrains, and what remains the operator's
+decision.
+
 ## ATC Self-Scan
 
 The test suite `tests/test_atc_self_scan.py` performs an equivalent scan to the ATC CLI against all internal tools:
@@ -282,6 +345,10 @@ This produces a report covering all four ATC threat categories and can be submit
 | `tests/test_mcp_client_retry.py` | Retry logic: policy blocks not retried, transient errors retried |
 | `tests/test_mcp_client_timeout.py` | Timeout alignment: tool-requested timeouts honoured by MCP client |
 | `tests/test_mcp_tool_timeout.py` | Manager-level tool timeout: default, env override, tool-param extension, error format |
+| `tests/test_registry_command_policy.py` | Run/install executable allowlists, bare-name rule, run-arg code-exec flags, package-identifier shapes |
+| `tests/test_registry_provider_command_gate.py` | Every provider's `config_entries['command']` routes through the gate |
+| `tests/test_net_guard.py` | Outbound URL scheme + internal-range validation (shared by remote MCP and the fetched-PDF sink) |
+| `tests/test_mcp_remote_url_validation.py` | `_connect_remote` refuses non-http(s) and internal-literal URLs before building a transport |
 
 ## Tool Execution Timeout Chain
 

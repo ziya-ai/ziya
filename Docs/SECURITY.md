@@ -30,6 +30,7 @@ Ziya includes several security controls relevant to self-hosted deployments:
 - **Endpoint restriction** — enterprise plugins can restrict which model providers are available
 
 See [Docs/MCPSecurityControls.md](Docs/MCPSecurityControls.md) for details on MCP security (including §9, the shell privilege escalation gate).
+See [Docs/MCPRegistryTrust.md](Docs/MCPRegistryTrust.md) for what Ziya does and does not vouch for when you install an MCP server from a registry.
 See [Docs/ThreatModel.md](Docs/ThreatModel.md) for the public threat model and trust boundaries.
 See [Docs/AuthProviders.md](Docs/AuthProviders.md) for the pluggable consent-provider architecture.
 See [Docs/Enterprise.md](Docs/Enterprise.md) for the full plugin system documentation.
