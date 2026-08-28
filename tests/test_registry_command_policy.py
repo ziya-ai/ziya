@@ -28,6 +28,7 @@ from app.mcp.registry.command_policy import (
     DEFAULT_INSTALL_EXECUTABLES,
     RegistryCommandRejected,
     validate_install_argv,
+    validate_package_identifier,
     validate_run_command,
 )
 
@@ -451,3 +452,122 @@ class TestRejectionIsRecoverable:
         assert "official-mcp:acme/tool" in msg
         assert "/bin/sh" in msg
         assert "mcp_config.json" in msg
+
+
+class TestPackageIdentifier:
+    """``validate_package_identifier`` — the identifier sink (ASR SC-02).
+
+    ``validate_install_argv`` guards an argv the registry hands us whole. This
+    guards the other shape: an argv WE build, into which the registry supplies
+    one value — ``['pip','install',<id>]``, ``['npm','install',<id>]``,
+    ``['npx','-y',<id>]``, ``['docker','run','-i','--rm',<image>]``. A fixed
+    argv[0] is not sufficient there, because both installers accept a *source*
+    in the position we treat as a name.
+    """
+
+    @pytest.mark.parametrize("ident", [
+        "mcp-server-fetch",
+        "@modelcontextprotocol/server-filesystem",
+        "server-github",
+        "pkg==1.2.3",
+        "pkg>=1.0,<2.0",
+        "pkg[extra]",
+        "pkg[extra1,extra2]==3.4",
+        "ghcr.io/org/img:tag",
+        "mcp/everything",
+        "_private_pkg",
+        "pkg_with_underscores",
+        "Pkg.With.Dots",
+        "a",
+        "0pkg",
+    ])
+    def test_legitimate_identifiers_accepted(self, ident):
+        """Positive control. If these ever start failing the gate is too tight
+        and will be reverted wholesale the first time a real install breaks."""
+        assert validate_package_identifier(ident, source=SRC) == ident
+
+    def test_surrounding_whitespace_is_stripped(self):
+        assert validate_package_identifier("  pkg==1.0  ", source=SRC) == "pkg==1.0"
+
+    @pytest.mark.parametrize("ident", [
+        "pkg @ https://attacker.example/evil.tar.gz",
+        "pkg @https://attacker.example/evil.tar.gz",
+        "name @ file:///tmp/evil",
+        "pkg @ git+ssh://attacker.example/evil",
+    ])
+    def test_pep508_direct_reference_refused(self, ident):
+        """pip honours ``name @ <url>`` as a direct reference, so a value we
+        treat as a package NAME can point the install at any origin."""
+        with pytest.raises(RegistryCommandRejected):
+            validate_package_identifier(ident, source=SRC)
+
+    @pytest.mark.parametrize("ident", [
+        "https://attacker.example/evil.tgz",
+        "http://attacker.example/evil.tgz",
+        "git+https://attacker.example/evil",
+        "git+ssh://attacker.example/evil",
+        "file:///tmp/evil",
+        "pkg@https://attacker.example/evil.tgz",
+    ])
+    def test_url_or_git_spec_refused(self, ident):
+        """npm accepts a bare URL or git spec where a name belongs. On the
+        ``npx -y <id>`` path there is no install step at all: the value is
+        persisted as the run command and re-fetched on every server start."""
+        with pytest.raises(RegistryCommandRejected):
+            validate_package_identifier(ident, source=SRC)
+
+    @pytest.mark.parametrize("ident", ["-i", "--index-url", "-e", "--editable"])
+    def test_leading_dash_refused(self, ident):
+        """A leading '-' lands in a FLAG position of the argv we build, turning
+        one value into an installer option."""
+        with pytest.raises(RegistryCommandRejected):
+            validate_package_identifier(ident, source=SRC)
+
+    @pytest.mark.parametrize("ident", [
+        "/tmp/evil", "/etc/passwd", "./evil", ".hidden", "~/evil", "~root/evil",
+    ])
+    def test_path_shaped_identifier_refused(self, ident):
+        """'/', '.' and '~' make the value a filesystem path, and pip installs
+        a local path happily."""
+        with pytest.raises(RegistryCommandRejected):
+            validate_package_identifier(ident, source=SRC)
+
+    @pytest.mark.parametrize("ident", ["../evil", "pkg/../../evil", "a..b"])
+    def test_traversal_refused(self, ident):
+        with pytest.raises(RegistryCommandRejected):
+            validate_package_identifier(ident, source=SRC)
+
+    @pytest.mark.parametrize("ident", [None, "", "   ", 123, 1.5, True,
+                                       ["pkg"], {"name": "pkg"}, object()])
+    def test_non_string_or_empty_refused(self, ident):
+        """A dict or list here is type confusion into subprocess."""
+        with pytest.raises(RegistryCommandRejected):
+            validate_package_identifier(ident, source=SRC)
+
+    def test_absurdly_long_identifier_refused(self):
+        with pytest.raises(RegistryCommandRejected):
+            validate_package_identifier("a" * 215, source=SRC)
+
+    def test_at_the_length_limit_accepted(self):
+        """Boundary: npm's own published limit is 214, so 214 must pass or the
+        gate is refusing names the registry can legally contain."""
+        ident = "a" * 214
+        assert validate_package_identifier(ident, source=SRC) == ident
+
+    def test_rejection_names_the_source_and_the_value(self):
+        """The operator has to be able to tell which entry was refused and why
+        from the message alone."""
+        with pytest.raises(RegistryCommandRejected) as exc:
+            validate_package_identifier(
+                "https://attacker.example/x.tgz", source="official-mcp:acme/tool",
+            )
+        msg = str(exc.value)
+        assert "official-mcp:acme/tool" in msg
+        assert "attacker.example" in msg
+
+    def test_kind_appears_in_the_message(self):
+        """The docker sink passes kind='image'; the message must say so rather
+        than calling a container image a 'package'."""
+        with pytest.raises(RegistryCommandRejected) as exc:
+            validate_package_identifier("-v", source=SRC, kind="image")
+        assert "image" in str(exc.value)

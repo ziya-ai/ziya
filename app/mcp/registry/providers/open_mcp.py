@@ -17,7 +17,9 @@ from app.mcp.registry.interface import (
     RegistryProvider, RegistryServiceInfo, RegistryTool, ToolSearchResult,
     InstallationResult, ServiceStatus, SupportLevel, InstallationType
 )
-from app.mcp.registry.command_policy import validate_run_command
+from app.mcp.registry.command_policy import (
+    validate_package_identifier, validate_run_command,
+)
 from app.utils.logging_utils import logger
 
 
@@ -180,24 +182,38 @@ class OpenMCPProvider(RegistryProvider):
             
             # Install based on package type
             if package_info.get('type') == 'npm':
+                # SC-02 follow-on: the package NAME is registry-supplied and
+                # lands in a value position of the argv below. npm accepts a
+                # bare URL or git spec where a name belongs, so a fixed
+                # argv[0] does not make this sink safe.
+                package_name = validate_package_identifier(
+                    package_info.get('name', service_id),
+                    source=f"open-mcp:{service_id}",
+                )
                 # Install npm package
                 result = await asyncio.to_thread(
-                    subprocess.run, ['npm', 'install', '-g', package_info.get('name', service_id)],
+                    subprocess.run, ['npm', 'install', '-g', package_name],
                     capture_output=True, text=True, timeout=300)
                 if result.returncode != 0:
                     raise RuntimeError(f"NPM install failed: {result.stderr}")
                 
-                command = [package_info.get('name', service_id)]
+                command = [package_name]
                 
             elif package_info.get('type') == 'pypi':
+                # pip honours a PEP 508 direct reference ("name @ <url>"), so
+                # the same guard applies to this sink.
+                package_name = validate_package_identifier(
+                    package_info.get('name', service_id),
+                    source=f"open-mcp:{service_id}",
+                )
                 # Install pip package
                 result = await asyncio.to_thread(
-                    subprocess.run, ['pip', 'install', package_info.get('name', service_id)],
+                    subprocess.run, ['pip', 'install', package_name],
                     capture_output=True, text=True, timeout=300)
                 if result.returncode != 0:
                     raise RuntimeError(f"Pip install failed: {result.stderr}")
                 
-                command = [package_info.get('name', service_id)]
+                command = [package_name]
                 
             elif service.provider_metadata.get('repository'):
                 # Clone git repository

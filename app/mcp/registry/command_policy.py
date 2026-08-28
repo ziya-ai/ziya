@@ -343,3 +343,71 @@ def validate_install_argv(
     # previously reported ``pip`` while ``/tmp/evil/pip`` was what executed,
     # so the audit trail disagreed with what actually ran.
     return [head] + clean
+
+
+# npm's published name-length limit; PyPI project names are shorter still.
+_IDENTIFIER_MAX_LEN = 214
+
+
+def validate_package_identifier(
+    identifier: Any,
+    *,
+    source: str,
+    kind: str = "package",
+) -> str:
+    """Validate a registry-supplied package name or image reference.
+
+    validate_install_argv guards an argv the registry hands us whole. This
+    guards the other shape: an argv WE build, into which the registry
+    supplies a single value -- ['pip', 'install', <id>],
+    ['npm', 'install', <id>], ['npx', '-y', <id>],
+    ['docker', 'run', '-i', '--rm', <image>].
+
+    A fixed argv[0] is not sufficient there, because both installers accept
+    a *source* in the position we treat as a name: pip honours a PEP 508
+    direct reference ("pkg @ https://host/x.tar.gz") and npm accepts a bare
+    URL or git spec. The identifier alone can therefore redirect the install
+    to an attacker-chosen origin -- the same source-redirection failure
+    validate_install_argv closes for registry-supplied argv (ASR SC-02).
+    The "npx -y <id>" form has no install step at all: the value is
+    persisted as the run command and npx re-fetches it on every start.
+
+    Accepts the legitimate shapes -- mcp-server-fetch,
+    @modelcontextprotocol/server-filesystem, pkg==1.2.3, pkg[extra],
+    ghcr.io/org/img:tag -- and refuses anything that names a location
+    rather than a package.
+    """
+    if not isinstance(identifier, str) or not identifier.strip():
+        raise RegistryCommandRejected(
+            f"{source}: registry supplied no {kind} identifier"
+        )
+    ident = identifier.strip()
+
+    if len(ident) > _IDENTIFIER_MAX_LEN:
+        raise RegistryCommandRejected(
+            f"{source}: {kind} identifier is {len(ident)} chars "
+            f"(limit {_IDENTIFIER_MAX_LEN})"
+        )
+    if any(c.isspace() for c in ident):
+        raise RegistryCommandRejected(
+            f"{source}: refusing {kind} identifier {ident!r} -- whitespace "
+            f"means a PEP 508 direct reference, not a package name"
+        )
+    if "://" in ident:
+        raise RegistryCommandRejected(
+            f"{source}: refusing {kind} identifier {ident!r} -- a package "
+            f"name never contains a URL"
+        )
+    if ".." in ident:
+        raise RegistryCommandRejected(
+            f"{source}: refusing {kind} identifier {ident!r} (traversal)"
+        )
+    # The first character decides whether this names a package or a
+    # location: a leading '-' lands in a FLAG position of the argv we
+    # build, and '/', '.' or '~' make it a filesystem path.
+    if not (ident[0].isalnum() or ident[0] in "@_"):
+        raise RegistryCommandRejected(
+            f"{source}: refusing {kind} identifier {ident!r} -- must start "
+            f"with a letter, digit, '@' or '_'"
+        )
+    return ident
