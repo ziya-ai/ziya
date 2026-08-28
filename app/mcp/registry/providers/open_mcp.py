@@ -17,6 +17,7 @@ from app.mcp.registry.interface import (
     RegistryProvider, RegistryServiceInfo, RegistryTool, ToolSearchResult,
     InstallationResult, ServiceStatus, SupportLevel, InstallationType
 )
+from app.mcp.registry.command_policy import validate_run_command
 from app.utils.logging_utils import logger
 
 
@@ -224,7 +225,11 @@ class OpenMCPProvider(RegistryProvider):
             server_name = service_id.lower().replace('-', '_').replace('/', '_')
             config_entries = {
                 "enabled": True,
-                "command": command,
+                "command": validate_run_command(
+                    command,
+                    source=f"open-mcp:{service_id}",
+                    install_dir=install_dir,
+                ),
                 "description": service.service_description,
                 "registry_provider": self.identifier,
                 "service_id": service_id,

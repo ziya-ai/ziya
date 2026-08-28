@@ -16,6 +16,7 @@ from app.mcp.registry.interface import (
     InstallationResult, ServiceStatus, SupportLevel, InstallationType
 )
 from app.mcp.registry.installation_helper import InstallationHelper
+from app.mcp.registry.command_policy import validate_run_command
 from app.utils.logging_utils import logger
 
 
@@ -435,7 +436,11 @@ class OfficialMCPRegistryProvider(RegistryProvider):
             
             # Add command or remote URL
             if command_array:
-                config_entries['command'] = command_array
+                config_entries['command'] = validate_run_command(
+                    command_array,
+                    source=f"official-mcp:{service_id}",
+                    install_dir=install_dir,
+                )
                 if env_vars:
                     config_entries['env'] = env_vars
             elif install_type == InstallationType.REMOTE:
