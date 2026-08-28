@@ -16,7 +16,9 @@ from app.mcp.registry.interface import (
     InstallationResult, ServiceStatus, SupportLevel, InstallationType
 )
 from app.mcp.registry.installation_helper import InstallationHelper
-from app.mcp.registry.command_policy import validate_run_command
+from app.mcp.registry.command_policy import (
+    validate_package_identifier, validate_run_command,
+)
 from app.utils.logging_utils import logger
 
 
@@ -380,6 +382,14 @@ class OfficialMCPRegistryProvider(RegistryProvider):
             # Handle different installation types
             if install_type == InstallationType.NPM:
                 package = instructions.get('package')
+                # SC-02 follow-on: 'package' is registry-supplied and lands in
+                # a value position of an argv we build. npm accepts a URL or
+                # git spec as a package name, and on the npx path below there
+                # is no install step -- the value is persisted as the run
+                # command and re-fetched on every server start.
+                package = validate_package_identifier(
+                    package, source=f"official-mcp:{service_id}",
+                )
                 runtime_hint = instructions.get('runtime_hint', 'npx')
                 
                 if runtime_hint == 'npx':
@@ -398,6 +408,11 @@ class OfficialMCPRegistryProvider(RegistryProvider):
             
             elif install_type == InstallationType.PYPI:
                 package = instructions.get('package')
+                # pip honours a PEP 508 direct reference, so a bare name can
+                # point the install at an arbitrary tarball URL.
+                package = validate_package_identifier(
+                    package, source=f"official-mcp:{service_id}",
+                )
                 install_result = InstallationHelper.install_pypi_package(package)
                 if not install_result['success']:
                     raise RuntimeError(install_result['error'])
@@ -405,6 +420,9 @@ class OfficialMCPRegistryProvider(RegistryProvider):
                 
             elif install_type == InstallationType.DOCKER:
                 image = instructions.get('image')
+                image = validate_package_identifier(
+                    image, source=f"official-mcp:{service_id}", kind="image",
+                )
                 setup_result = InstallationHelper.setup_docker_container(image)
                 if not setup_result['success']:
                     raise RuntimeError(setup_result['error'])

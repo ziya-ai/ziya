@@ -375,3 +375,226 @@ class TestEveryProviderRoutesThroughTheGate:
             "    return instructions\n"
         )
         assert self._unvalidated_subscript_writes(inbound) == []
+
+
+@pytest.fixture
+def no_real_installs(monkeypatch):
+    """A validation failure must happen BEFORE any installer runs. Blow up
+    loudly if a test ever reaches a real subprocess, rather than silently
+    running pip/npm against an attacker-supplied URL."""
+    def _boom(*a, **k):
+        raise AssertionError("installer was invoked; validation did not gate it")
+
+    monkeypatch.setattr(InstallationHelper, "install_npm_package",
+                        staticmethod(_boom))
+    monkeypatch.setattr(InstallationHelper, "install_pypi_package",
+                        staticmethod(_boom))
+    monkeypatch.setattr(InstallationHelper, "setup_docker_container",
+                        staticmethod(_boom))
+
+
+class TestOfficialMcpIdentifierSink:
+    """The registry supplies one value into an argv this provider builds.
+
+    official-mcp is registered ``is_default=True`` at highest priority and is
+    community-published, so the precondition is a malicious publisher rather
+    than a MITM (ASR SC-02 follow-on).
+    """
+
+    def _provider(self, monkeypatch, service):
+        from app.mcp.registry.providers.official_mcp import (
+            OfficialMCPRegistryProvider,
+        )
+
+        provider = OfficialMCPRegistryProvider()
+
+        async def _detail(service_id):
+            return service
+
+        monkeypatch.setattr(provider, "get_service_detail", _detail)
+        return provider
+
+    async def test_url_as_npx_package_refused(self, monkeypatch, tmp_path, no_real_installs):
+        """The npx path has NO install step: the identifier is persisted as the
+        run command and re-fetched by npx on every server start. This is the
+        worst of the three sinks."""
+        provider = self._provider(monkeypatch, _service("acme/tool", {
+            "type": "npm",
+            "package": "https://attacker.example/evil.tgz",
+            "runtime_hint": "npx",
+        }))
+        _assert_refused(await provider.install_service("acme/tool", str(tmp_path)))
+
+    async def test_git_spec_as_npx_package_refused(self, monkeypatch, tmp_path, no_real_installs):
+        provider = self._provider(monkeypatch, _service("acme/tool", {
+            "type": "npm",
+            "package": "git+ssh://attacker.example/evil",
+            "runtime_hint": "npx",
+        }))
+        _assert_refused(await provider.install_service("acme/tool", str(tmp_path)))
+
+    async def test_pep508_direct_reference_pypi_refused(self, monkeypatch, tmp_path, no_real_installs):
+        """pip honours 'name @ <url>'. The no_real_installs fixture proves the
+        refusal happens before pip is invoked."""
+        provider = self._provider(monkeypatch, _service("acme/tool", {
+            "type": "pypi",
+            "package": "pkg @ https://attacker.example/evil.tar.gz",
+        }))
+        _assert_refused(await provider.install_service("acme/tool", str(tmp_path)))
+
+    async def test_flag_shaped_docker_image_refused(self, monkeypatch, tmp_path, no_real_installs):
+        provider = self._provider(monkeypatch, _service("acme/tool", {
+            "type": "docker",
+            "image": "-v",
+        }))
+        _assert_refused(await provider.install_service("acme/tool", str(tmp_path)))
+
+    async def test_legitimate_npx_package_still_succeeds(self, monkeypatch, tmp_path, no_real_installs):
+        """Positive control: the shape this registry really publishes must
+        survive, or the gate is reverted the first time an install breaks."""
+        provider = self._provider(monkeypatch, _service("acme/tool", {
+            "type": "npm",
+            "package": "@modelcontextprotocol/server-filesystem",
+            "runtime_hint": "npx",
+        }))
+        result = await provider.install_service("acme/tool", str(tmp_path))
+        assert result.success is True
+        assert result.config_entries["command"] == [
+            "npx", "-y", "@modelcontextprotocol/server-filesystem",
+        ]
+
+
+class TestGitHubIdentifierSink:
+    def _provider(self, monkeypatch, service):
+        from app.mcp.registry.providers.github import GitHubRegistryProvider
+
+        provider = GitHubRegistryProvider()
+
+        async def _detail(service_id):
+            return service
+
+        monkeypatch.setattr(provider, "get_service_detail", _detail)
+        return provider
+
+    async def test_url_as_npm_package_refused(self, monkeypatch, tmp_path, no_real_installs):
+        provider = self._provider(monkeypatch, _service(
+            "acme/tool", {"command": ["node", "server.js"]},
+            provider_metadata={"npm_package": "https://attacker.example/evil.tgz"},
+        ))
+        _assert_refused(await provider.install_service("acme/tool", str(tmp_path)))
+
+    async def test_pep508_direct_reference_pip_refused(self, monkeypatch, tmp_path, no_real_installs):
+        provider = self._provider(monkeypatch, _service(
+            "acme/tool", {"command": ["node", "server.js"]},
+            provider_metadata={
+                "pip_package": "pkg @ https://attacker.example/evil.tar.gz",
+            },
+        ))
+        _assert_refused(await provider.install_service("acme/tool", str(tmp_path)))
+
+
+class TestEveryIdentifierSinkIsGated:
+    """Seam guard: a NEW provider (or a new sink in an existing one) that reads
+    a registry-supplied package/image field must route it through
+    ``validate_package_identifier``.
+
+    The behavioural tests above catch removal of a call; this catches ADDITION
+    of an ungated sink, which is how the gap being fixed here arose in the
+    first place — the validator existed and simply was not wired.
+    """
+
+    PROVIDERS = (
+        Path(__file__).resolve().parents[1] / "app" / "mcp" / "registry" / "providers"
+    )
+    IDENT_FIELDS = ("package", "image", "npm_package", "pip_package")
+
+    @staticmethod
+    def _is_install_path(fn):
+        """Only functions that actually BUILD an installer argv are sinks.
+
+        Providers also read these same field names to populate metadata dicts
+        from an API response (``list_services``, ``_parse_server_data``,
+        ``_parse_markdown_list``); those are not sinks and must not be flagged,
+        or the guard is noise and gets deleted.
+        """
+        import ast
+
+        if fn.name == "install_service":
+            return True
+        return any(
+            isinstance(n, ast.Attribute) and n.attr == "run"
+            for n in ast.walk(fn)
+        )
+
+    def _reads(self, fn):
+        """Registry package/image field reads inside one function."""
+        import ast
+
+        found = []
+        for node in ast.walk(fn):
+            # instructions.get('package')
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "get"
+                    and node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and node.args[0].value in self.IDENT_FIELDS):
+                found.append(node.args[0].value)
+            # metadata['npm_package'] — LOAD only; a Store is us BUILDING the
+            # instructions dict, not consuming a registry value.
+            if (isinstance(node, ast.Subscript)
+                    and isinstance(node.slice, ast.Constant)
+                    and node.slice.value in self.IDENT_FIELDS
+                    and isinstance(node.ctx, ast.Load)):
+                found.append(node.slice.value)
+        return found
+
+    @staticmethod
+    def _validates(fn):
+        import ast
+
+        return any(
+            isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+            and n.func.id == "validate_package_identifier"
+            for n in ast.walk(fn)
+        )
+
+    def test_no_ungated_identifier_sinks(self):
+        import ast
+
+        providers = self.PROVIDERS
+        assert providers.is_dir(), f"provider package not found at {providers}"
+        offenders = []
+        for path in sorted(providers.glob("*.py")):
+            tree = ast.parse(path.read_text())
+            for fn in ast.walk(tree):
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if not self._is_install_path(fn):
+                    continue
+                reads = self._reads(fn)
+                if reads and not self._validates(fn):
+                    offenders.append(
+                        f"{path.name}:{fn.lineno} {fn.name}() reads "
+                        f"{sorted(set(reads))} without validate_package_identifier()"
+                    )
+        assert not offenders, (
+            "A registry-supplied package/image identifier reaches an argv "
+            "without validate_package_identifier(). pip accepts a PEP 508 "
+            "direct reference and npm accepts a URL or git spec in the "
+            "position treated as a name, so a fixed argv[0] does not make the "
+            "sink safe (ASR SC-02):\n  " + "\n  ".join(offenders)
+        )
+
+    def test_the_scan_detects_an_ungated_sink(self):
+        """Negative control: prove the scanner fails on a known-bad shape."""
+        import ast
+
+        bad = ast.parse(
+            "def install(self, instructions):\n"
+            "    pkg = instructions.get('package')\n"
+            "    subprocess.run(['pip', 'install', pkg])\n"
+        )
+        fn = bad.body[0]
+        assert self._reads(fn) == ["package"]
+        assert self._validates(fn) is False

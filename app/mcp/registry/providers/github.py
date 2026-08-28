@@ -16,7 +16,9 @@ from app.mcp.registry.interface import (
     RegistryProvider, RegistryServiceInfo, RegistryTool, ToolSearchResult,
     InstallationResult, ServiceStatus, SupportLevel
 )
-from app.mcp.registry.command_policy import validate_run_command
+from app.mcp.registry.command_policy import (
+    validate_package_identifier, validate_run_command,
+)
 from app.utils.logging_utils import logger
 
 
@@ -218,6 +220,9 @@ class GitHubRegistryProvider(RegistryProvider):
             # npm package installation
             if 'npm_package' in service.provider_metadata:
                 npm_package = service.provider_metadata['npm_package']
+                npm_package = validate_package_identifier(
+                    npm_package, source=f"github:{service_id}",
+                )
                 result = await asyncio.to_thread(
                     subprocess.run, ['npm', 'install', npm_package],
                     cwd=str(install_dir), capture_output=True, text=True)
@@ -227,6 +232,9 @@ class GitHubRegistryProvider(RegistryProvider):
             # pip package installation  
             elif 'pip_package' in service.provider_metadata:
                 pip_package = service.provider_metadata['pip_package']
+                pip_package = validate_package_identifier(
+                    pip_package, source=f"github:{service_id}",
+                )
                 result = await asyncio.to_thread(
                     subprocess.run, ['pip', 'install', pip_package],
                     capture_output=True, text=True)
