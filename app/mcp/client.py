@@ -776,7 +776,23 @@ class MCPClient:
     async def _connect_remote(self) -> bool:
         """Connect to a remote MCP server via SSE or StreamableHTTP."""
         import contextlib
-        url = self.server_config["url"]
+        # EGR-03: server_config["url"] can originate from a registry response
+        # or a hand-edited mcp_config.json, and was previously handed straight
+        # to the SDK transport. On a corp developer desktop internal hosts are
+        # reachable by default, so an unvalidated URL here is an internal-pivot
+        # /IMDS-credential-vending SSRF. Same policy object as the fetched-PDF
+        # sink (app.utils.net_guard) so the two cannot drift.
+        from app.utils.net_guard import validate_outbound_url
+        try:
+            url = validate_outbound_url(
+                self.server_config.get("url"),
+                source=f"mcp-remote:{self.server_config.get('name', 'unknown')}",
+            )
+        except ValueError as e:
+            logger.error(f"Refusing remote MCP connection: {e}")
+            self.logs.append(f"ERROR: {e}")
+            self.is_connected = False
+            return False
         server_name = self.server_config.get("name", url)
         transport_type = self.server_config.get("transport", "streamable-http")
         logger.info(f"Connecting to remote MCP server: {server_name} at {url} (transport={transport_type})")

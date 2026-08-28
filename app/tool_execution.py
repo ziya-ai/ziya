@@ -620,35 +620,15 @@ _URL_ARG_KEYS = ('url', 'uri', 'link', 'href', 'source_url')
 # heavy post-DNS-resolution allowlist is disproportionate here. What IS
 # incremental — and cheap to remove — is the silent redirect hop and a
 # direct literal-IP internal fetch; both are closed below.
-import ipaddress as _ipaddress
-from urllib.parse import urlparse as _urlparse
-
-_SSRF_BLOCKED_NETWORKS = [
-    _ipaddress.ip_network("127.0.0.0/8"),
-    _ipaddress.ip_network("::1/128"),
-    _ipaddress.ip_network("169.254.0.0/16"),   # link-local / EC2 IMDS
-    _ipaddress.ip_network("fe80::/10"),
-    _ipaddress.ip_network("10.0.0.0/8"),
-    _ipaddress.ip_network("172.16.0.0/12"),
-    _ipaddress.ip_network("192.168.0.0/16"),
-    _ipaddress.ip_network("fc00::/7"),          # ULA
-]
-
-
-def _url_host_is_blocked_literal_ip(url: str) -> bool:
-    """True if *url*'s host is a literal IP in a loopback/link-local/private
-    range. Literal-IP only (no DNS resolution) — a cheap guard against the
-    direct ``http://169.254.169.254/`` form; hostnames are intentionally not
-    resolved here (see the module note above on why full DNS-rebind defense
-    is out of scope for this blind, no-incremental-capability sink)."""
-    host = (_urlparse(url).hostname or "").strip()
-    if not host:
-        return False
-    try:
-        ip = _ipaddress.ip_address(host)
-    except ValueError:
-        return False  # not a literal IP — a hostname; not blocked here
-    return any(ip in net for net in _SSRF_BLOCKED_NETWORKS)
+#
+# The range list and host check moved to app.utils.net_guard so the remote-MCP
+# connect path (ASR EGR-03) enforces the same definition. Re-exported under the
+# original private names: they are the documented import surface for
+# tests/test_fetched_pdf_ssrf.py.
+from app.utils.net_guard import (  # noqa: F401  (re-export)
+    BLOCKED_NETWORKS as _SSRF_BLOCKED_NETWORKS,
+    host_is_blocked_literal_ip as _url_host_is_blocked_literal_ip,
+)
 
 
 def _extract_url_from_args(args: dict) -> Optional[str]:
