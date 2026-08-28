@@ -433,6 +433,53 @@ class TestReaderContract:
         storage = TaskRunStorage(proj)
         assert storage.read_run_file(str(proj / "task_runs" / "nope.json")) is None
 
+    def test_the_storage_reader_reads_through_a_symlinked_project(self, tmp_path):
+        """A project dir reached via a symlink must still index.
+
+        The reader containment-checks the path it is handed against its own
+        run directory.  If only ONE side of that comparison is resolved, a
+        symlinked project makes every scanned path look out-of-tree and every
+        read is refused -- so the index comes back EMPTY with nothing but a
+        log line, which is indistinguishable from the missing-reader bug this
+        method was added to fix.  Hence resolving both sides.
+        """
+        from app.storage.task_runs import TaskRunStorage
+        real = tmp_path / "real" / "proj"
+        (real / "task_runs").mkdir(parents=True)
+        _write(real / "task_runs", "r1", "held", conv="conv1")
+
+        link = tmp_path / "linked_proj"
+        link.symlink_to(real, target_is_directory=True)
+
+        storage = TaskRunStorage(link)
+        # The path the directory scan actually yields: built from the
+        # symlinked base, never resolved by the cache.
+        scanned = str(link / "task_runs" / "r1.json")
+        assert storage.read_run_file(scanned) is not None, (
+            "reader refused a file inside its own run directory reached "
+            "through a symlink; the status index would be silently empty"
+        )
+        cache = RunStatusIndexCache(str(storage.runs_dir))
+        assert cache.get(storage.read_run_file) == {"conv1": {"held": 1}}
+
+    def test_the_storage_reader_refuses_an_out_of_tree_path(self, tmp_path):
+        """The negative half of the pair above: resolving both sides must not
+        turn the containment check into a no-op."""
+        from app.storage.task_runs import TaskRunStorage
+        proj = tmp_path / "proj"
+        (proj / "task_runs").mkdir(parents=True)
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        _write(outside, "r1", "held", conv="conv1")
+
+        storage = TaskRunStorage(proj)
+        assert storage.read_run_file(str(outside / "r1.json")) is None
+        # ...and via a symlink planted inside the run dir, which is the only
+        # way a directory scan could hand it an escaping path at all.
+        planted = proj / "task_runs" / "sneak.json"
+        planted.symlink_to(outside / "r1.json")
+        assert storage.read_run_file(str(planted)) is None
+
 
 class TestSharedRegistry:
     """The memo only works if it outlives the storage object.

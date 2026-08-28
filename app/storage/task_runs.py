@@ -48,29 +48,6 @@ class TaskRunStorage(BaseStorage[TaskRun]):
     def _run_file(self, run_id: str) -> Path:
         return contained_path(self.runs_dir, f"{run_id}.json")
 
-    def read_run_file(self, path: str) -> Optional[dict]:
-        """Read ONE run file by absolute path, returning the raw dict.
-
-        Exists for the status-index cache, which is per-file by design: it
-        re-reads only the records whose own mtime moved, so it needs a
-        single-path reader rather than ``list()``.
-
-        Returns the raw dict rather than a ``TaskRun``: the index needs four
-        fields (status, source_conversation_id, root_run_id, attempt) and
-        Pydantic-validating a ~108 KB record with nested block states and
-        iteration summaries to read four of them is most of the cost this
-        cache exists to avoid.  Decryption still happens — ``_read_json``
-        owns that — so the saving is validation, not I/O.
-
-        None for an unreadable or undecryptable file, matching the cache's
-        contract: one bad record is skipped, not fatal to the index.
-        """
-        try:
-            return self._read_json(Path(path))
-        except Exception as e:  # noqa: BLE001 — one bad file is not fatal
-            logger.debug(f"status-index: unreadable run file {path}: {e}")
-            return None
-
     def _iteration_dir(self, run_id: str) -> Path:
         return contained_path(self.runs_dir, run_id) / "iterations"
 
@@ -82,6 +59,38 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         if data:
             return TaskRun(**data)
         return None
+
+    def read_run_file(self, path: str) -> Optional[Dict[str, Any]]:
+        """Read ONE run record by path, as a raw dict.
+
+        The per-file reader ``RunStatusIndexCache.get`` injects.  Returns the
+        decoded dict rather than a ``TaskRun`` on purpose: the cache needs
+        four scalar fields (``summarize_run`` accepts a dict), and building
+        the full model would pay validation over block states, iteration
+        summaries and artifacts for every changed run on every poll — the
+        cost the status index exists to avoid.
+
+        Both sides of the containment check are resolved, so a project
+        directory reached through a symlink still reads.  Comparing an
+        unresolved scanned path against a resolved base would refuse every
+        file in that case and hand back an empty index — the same
+        silent-empty failure this reader was added to fix.
+
+        Returns None for a missing, empty, corrupt or undecryptable file, so
+        one bad record cannot break the whole index.
+        """
+        try:
+            resolved = Path(path).resolve()
+            base = self.runs_dir.resolve()
+        except OSError as e:
+            logger.warning("read_run_file could not resolve %s: %s", path, e)
+            return None
+        try:
+            resolved.relative_to(base)
+        except ValueError:
+            logger.warning("read_run_file refused out-of-tree path: %s", path)
+            return None
+        return self._read_json(resolved)
 
     def list(self, card_id: Optional[str] = None) -> List[TaskRun]:
         runs: List[TaskRun] = []
@@ -295,6 +304,30 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         # otherwise left only status behind.
         if artifact is not None:
             state.artifact = artifact
+        run.block_states[block_id] = state
+        run.updated_at = int(time.time() * 1000)
+        self._write_json(self._run_file(run_id), run.model_dump())
+
+    def set_block_planned_iterations(
+        self, run_id: str, block_id: str, planned: int,
+    ) -> None:
+        """Record a loop's planned iteration total, in place.
+
+        Written by the executor when a Repeat(for_each) resolves its
+        roster, so the run map can render loop progress as "n/m".  The
+        roster exists only at run time — the card itself cannot answer
+        "m" — and without a persisted record the denominator would
+        vanish on reload and be unknowable for a partial run.  Silently
+        a no-op when the block was never seeded, matching
+        update_block_status.
+        """
+        run = self.get(run_id)
+        if not run:
+            return
+        state = run.block_states.get(block_id)
+        if state is None:
+            return
+        state.planned_iterations = planned
         run.block_states[block_id] = state
         run.updated_at = int(time.time() * 1000)
         self._write_json(self._run_file(run_id), run.model_dump())
