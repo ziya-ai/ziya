@@ -215,14 +215,19 @@ async def get_system_info(request: Request):
                 if credentials:
                     try:
                         sts = session.client('sts', region_name=info['aws']['region'])
-                        identity = sts.get_caller_identity()
-                        info['aws']['account_id'] = identity['Account']
-                        info['aws']['access_key'] = credentials.access_key[:8] + '...'
+                        # ASR INFO-01: /api/info is unauthenticated (it backs
+                        # the user-visible Info panel and the PDF export
+                        # header, so it is not debug-gated). It therefore must
+                        # not return account identifiers or key material.
+                        # get_caller_identity() is still called — its
+                        # success/failure IS the credential-validity signal
+                        # users need — but the Account and the key prefix are
+                        # not returned. `status` carries no secret.
+                        sts.get_caller_identity()
                         info['aws']['status'] = 'Valid'
                     except Exception as sts_error:
                         error_msg = str(sts_error)
                         if 'ExpiredToken' in error_msg:
-                            info['aws']['access_key'] = credentials.access_key[:8] + '...'
                             info['aws']['status'] = 'Expired'
                         elif 'InvalidClientTokenId' in error_msg:
                             info['aws']['status'] = 'Invalid credentials'
