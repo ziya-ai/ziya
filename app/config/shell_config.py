@@ -138,8 +138,26 @@ def set_persisted_allowed_commands(commands: list) -> None:
     """Write the allowed commands list to mcp_config.json."""
     cfg = _read_mcp_config()
     env = _ensure_shell_env(cfg)
+    previous = env.get("ALLOW_COMMANDS", "")
     env["ALLOW_COMMANDS"] = ",".join(commands)
     _write_mcp_config(cfg)
+    # ASR LOG-01: the persisted command allowlist is the shell server's
+    # privilege surface. A change to it survives restarts, so record it with
+    # the before/after delta rather than only the new value.
+    try:
+        from app.utils.tool_audit_log import log_security_event
+        before = {c.strip() for c in previous.split(",") if c.strip()}
+        after = set(commands)
+        log_security_event(
+            "shell_allowlist_changed",
+            source_tool="shell_config",
+            details={
+                "added": ",".join(sorted(after - before)),
+                "removed": ",".join(sorted(before - after)),
+            },
+        )
+    except Exception:
+        pass
 
 
 def is_yolo_mode() -> bool:
@@ -166,6 +184,17 @@ def set_yolo_mode(enabled: bool) -> None:
         return
     env["YOLO_MODE"] = "true" if enabled else "false"
     _write_mcp_config(cfg)
+    # ASR LOG-01: YOLO bypasses the command allowlist entirely. Enabling it is
+    # the single highest-signal shell-config event.
+    try:
+        from app.utils.tool_audit_log import log_security_event
+        log_security_event(
+            "shell_yolo_mode_changed",
+            source_tool="shell_config",
+            details={"enabled": "true" if enabled else "false", "persisted": "true"},
+        )
+    except Exception:
+        pass
 
 
 def reset_shell_config() -> None:

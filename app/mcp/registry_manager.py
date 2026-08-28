@@ -180,6 +180,26 @@ class RegistryIntegrationManager:
             config["mcpServers"] = {}
         config["mcpServers"][server_name] = config_entries
         self._save_config(config)
+        # ASR LOG-01: an MCP install writes a command that executes on every
+        # subsequent server start. That is a privilege-relevant, persistent
+        # change and belongs in the audit trail alongside the defensive-control
+        # events, so a later compromise can be traced to the install that
+        # introduced it.
+        try:
+            from app.utils.tool_audit_log import log_security_event
+            log_security_event(
+                "mcp_server_installed",
+                source_tool="registry_manager",
+                details={
+                    "server_name": server_name,
+                    "service_id": str(config_entries.get("service_id", "")),
+                    "provider": str(config_entries.get("registry_provider", "")),
+                    "command": str(config_entries.get("command", "")),
+                    "remote_url": str(config_entries.get("remote_url", "")),
+                },
+            )
+        except Exception:
+            pass  # audit logging must never break an install
     
     def _match_installed_with_registry(self, installed_services: List[Dict], registry_services: List[RegistryServiceInfo]) -> List[Dict]:
         """Match installed services with registry services for unified display."""
