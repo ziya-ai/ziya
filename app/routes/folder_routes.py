@@ -218,7 +218,27 @@ async def clear_external_paths():
 async def get_file(request: FileRequest):
     """Get the content of a file."""
     try:
-        with open(request.file_path, 'r') as f:
+        # ASR PT-02. /save was contained (realpath + write policy) because a
+        # prompt-injected agent inside the loopback boundary can reach it; the
+        # read verb has identical reachability and was left open, so the agent
+        # could read outside its tool sandbox (e.g. ~/.aws/credentials) and
+        # pair that with egress. Contain reads to the same boundary the user
+        # already controls in the file explorer: the project root plus paths
+        # explicitly registered via /api/add-explicit-paths. realpath first, so
+        # ".." and symlinks are resolved before the check.
+        resolved_path = os.path.realpath(os.path.abspath(request.file_path))
+        try:
+            project_root = get_project_root() or ""
+        except Exception:
+            project_root = ziya_env("ZIYA_USER_CODEBASE_DIR") or ""
+        project_root = os.path.realpath(os.path.abspath(project_root)) if project_root else ""
+        if not project_root or not is_path_explicitly_allowed(resolved_path, project_root):
+            logger.warning(f"/file blocked — outside project + external paths: {resolved_path}")
+            return JSONResponse(
+                status_code=403,
+                content={"error": "Read of this path is not permitted."},
+            )
+        with open(resolved_path, 'r') as f:
             content = f.read()
         return {"content": content}
     except (PermissionError, FileNotFoundError, IsADirectoryError, OSError) as e:
