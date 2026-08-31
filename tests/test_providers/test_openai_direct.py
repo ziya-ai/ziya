@@ -457,6 +457,9 @@ class TestStreamParsing:
 
     @pytest.mark.asyncio
     async def test_empty_stream(self, provider):
+        # An empty stream still terminates with StreamEnd: the parser DEFERS
+        # StreamEnd to after the drain loop (so a trailing usage chunk is
+        # never abandoned) and emits it unconditionally on drain.
         async def mock_create(**kwargs):
             return _AsyncIter([])
 
@@ -468,7 +471,9 @@ class TestStreamParsing:
         ):
             events.append(event)
 
-        assert events == []
+        from app.providers.base import StreamEnd
+        assert len(events) == 1
+        assert isinstance(events[0], StreamEnd)
 
 
 # ---------------------------------------------------------------------------
