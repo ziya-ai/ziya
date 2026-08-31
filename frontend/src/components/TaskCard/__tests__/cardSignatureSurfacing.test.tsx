@@ -1,4 +1,6 @@
 /**
+ * @jest-environment jsdom
+ *
  * Signature state must be visible on EVERY surface that shows a card.
  *
  * The defect: StagedCardTile checked scope-status and badged "Needs
