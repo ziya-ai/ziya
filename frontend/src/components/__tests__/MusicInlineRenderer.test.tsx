@@ -92,6 +92,39 @@ describe('inline music: codespan', () => {
         });
     });
 
+    // INLINE-OCTAVE-HANG regression.  The inline path hands its DSL straight to
+    // EasyScore, bypassing the fenced block's clampKeyOctave / sanitizePitch.
+    // A runaway octave ("C99") builds a StaveNote whose ledger-line loop spins
+    // ~30s and freezes the main thread; a mistyped accidental ("ef4") builds a
+    // NaN-position note that spins the Formatter the same way.  The pre-parse
+    // guard must fail fast into the text fallback for BOTH, exactly as the
+    // duration guard does -- never hang, never blank.
+    it('falls back on an out-of-range octave instead of hanging', async () => {
+        const { container } = renderInline('C99/q');
+        await waitFor(() => {
+            expect(container.querySelector('.music-inline-fallback')).not.toBeNull();
+        });
+        // The source text is shown verbatim rather than a frozen blank staff.
+        expect(screen.getByText(/C99\/q/)).toBeInTheDocument();
+    });
+
+    it('falls back on a mistyped accidental instead of hanging', async () => {
+        // "ef4" is 'f' where an octave digit is expected -- the intended "eb4".
+        const { container } = renderInline('ef4/q');
+        await waitFor(() => {
+            expect(container.querySelector('.music-inline-fallback')).not.toBeNull();
+        });
+        expect(screen.getByText(/ef4\/q/)).toBeInTheDocument();
+    });
+
+    it('still renders a valid in-range phrase (guard is not over-broad)', async () => {
+        // A high but legal octave and a real flat must still draw a staff.
+        const { container } = renderInline('eb5/q, C6/q');
+        await waitFor(() => {
+            expect(container.querySelector('.music-inline svg')).not.toBeNull();
+        });
+    });
+
     it('hides the empty container when falling back', async () => {
         const { container } = renderInline('not-a-pitch');
         await waitFor(() => {
