@@ -44,9 +44,19 @@ export interface TaskBinding {
 export interface TaskBindingCreateRequest {
   card_id: string;
   anchor_message_id?: string | null;
+  /**
+   * Copy the card into the conversation without running it.  The
+   * binding comes back with run_id null and the response's `run` is
+   * null; TaskCardInlineTile renders the staged tile (Run / Discard).
+   */
+  staged?: boolean;
 }
 
 export interface TaskBindingCreateResponse {
   binding: TaskBinding;
-  run: TaskRun;
+  /**
+   * Null for a staged create — nothing was launched, so there is
+   * nothing to poll.  Always narrow before reading `.id`.
+   */
+  run: TaskRun | null;
 }
