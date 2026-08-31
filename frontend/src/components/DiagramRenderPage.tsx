@@ -15,7 +15,7 @@
  *   - Frontend integration tests
  *   - Any automation that needs post-rendered diagram images
  */
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useTheme } from '../context/ThemeContext';
 import { lazyWithRetry } from '../utils/lazyWithRetry';
 
@@ -104,14 +104,20 @@ export const DiagramRenderPage: React.FC = () => {
         return () => { delete (window as any).__renderDiagram; };
     }, [applySpec]);
 
-    const d3Spec = spec ? {
+    // Memoized because this object is D3Renderer's `spec` prop and that
+    // component's main render effect lists `spec` in its dependency array.
+    // Rebuilt inline, it handed the renderer a fresh identity on every page
+    // re-render and re-triggered a render attempt -- the outer half of a
+    // feedback loop with the MutationObserver below that reached 232,449
+    // attempts in one 30s headless capture.
+    const d3Spec = useMemo(() => (spec ? {
         type: spec.type,
         definition: spec.definition,
         isStreaming: false,
         forceRender: true,
         isMarkdownBlockClosed: true,
         ...(spec.title ? { title: spec.title } : {}),
-    } : null;
+    } : null), [spec]);
 
     // Detect render completion via MutationObserver.
     // D3 plugins render asynchronously; we watch for SVG/canvas/img
@@ -129,6 +135,33 @@ export const DiagramRenderPage: React.FC = () => {
 
         const observer = new MutationObserver(() => {
             // (stored in observerRef below so unmount can disconnect it)
+            // A plugin that rejected its spec paints an error card instead of
+            // a drawing. The card holds no svg/canvas/img, so the completion
+            // poll below never fires for it: the render burned the full safety
+            // timeout and then reported a generic "svg:0" snapshot, discarding
+            // the specific message the plugin had already produced. Surface
+            // that message immediately instead.
+            const errorCard = node.querySelector('[data-diagram-error]');
+            if (errorCard) {
+                setErrorMessage(
+                    errorCard.getAttribute('data-diagram-error')
+                    || 'diagram plugin rejected the spec'
+                );
+                setDiag({
+                    elapsedMs: Date.now() - startedAt,
+                    lastEvent: 'plugin-error-card',
+                });
+                setStatus('error');
+                observer.disconnect();
+                // status='error' unmounts the container, but the useEffect
+                // cleanup has [] deps and only runs at component unmount, so
+                // this timeout would still fire and overwrite the message.
+                if (renderTimeoutRef.current) {
+                    clearTimeout(renderTimeoutRef.current);
+                }
+                return;
+            }
+
             const hasSvg = node.querySelector('svg');
             const hasCanvas = node.querySelector('canvas');
             const hasImage = node.querySelector('img');
@@ -150,10 +183,18 @@ export const DiagramRenderPage: React.FC = () => {
                     observer.disconnect();
                 }, 500);
             } else {
-                setDiag(prev => ({
-                    elapsedMs: Date.now() - startedAt,
-                    lastEvent: prev.lastEvent === 'observer-attached' ? 'mutation-no-output' : prev.lastEvent,
-                }));
+                // Return prev UNCHANGED when there is nothing new to report,
+                // so React bails out instead of re-rendering. The previous
+                // form always produced a new object (elapsedMs is
+                // Date.now()-derived), so every observed mutation forced a
+                // re-render, which rebuilt d3Spec, which re-triggered the
+                // renderer, which mutated the DOM again. elapsedMs is only
+                // read on the timeout path, where it is recomputed anyway.
+                setDiag(prev => (
+                    prev.lastEvent === 'observer-attached'
+                        ? { elapsedMs: Date.now() - startedAt, lastEvent: 'mutation-no-output' }
+                        : prev
+                ));
             }
         });
 
