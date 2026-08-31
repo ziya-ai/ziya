@@ -50,7 +50,11 @@ jest.mock('marked', () => {
 });
 jest.mock('uuid', () => ({ v4: () => 'test-uuid' }));
 
-import { isDiffComplete } from '../MarkdownRenderer';
+import { isApplyGated, isDiffComplete } from '../MarkdownRenderer';
+
+/** Wrap a diff body in a fenced block, closed or still arriving. */
+const fence = (body: string, closed: boolean): string =>
+    '```diff\n' + body + (closed ? '\n```' : '\n');
 
 /**
  * A diff whose SHAPE the streaming heuristic rejects (last line is a "+"
@@ -99,19 +103,29 @@ describe('fixture sanity', () => {
  * Post-fix predicate: the gate is the streaming state of the MESSAGE that
  * owns the diff. Nothing about the conversation or the global boolean enters.
  *
- * Mirrors DiffView -> ApplyChangesButton after the fix:
+ * Mirrors DiffView -> ApplyChangesButton:
  *   isStreaming={isMessageStreaming}          // per-message prop
- *   diffComplete = isDiffComplete(diff, isStreaming)
- *   disabled = isProcessing || (isStreaming && !diffComplete)
+ *   disabled = isProcessing || isStreaming
+ *
+ * where the per-diff flag is decided by the REAL exported derivation.  This
+ * used to be a local hand-copy of the predicate; the gate has regressed twice
+ * through changes that satisfied the copy while the shipped code diverged, so
+ * it now delegates.
  */
 function shouldDisableApplyButton(args: {
     diff: string;
     isProcessing?: boolean;
     /** From Conversation.tsx: false for history; true only for the live turn. */
     isMessageStreaming: boolean;
+    /** Verbatim fenced source, when the case cares about arrival. */
+    raw?: string;
 }): boolean {
-    const streaming = args.isMessageStreaming;
-    return Boolean(args.isProcessing) || (streaming && !isDiffComplete(args.diff, streaming));
+    return Boolean(args.isProcessing) || isApplyGated({
+        messageStreaming: args.isMessageStreaming,
+        superseded: false,
+        diff: args.diff,
+        raw: args.raw,
+    });
 }
 
 /**
@@ -190,19 +204,33 @@ describe('Apply button disable predicate (per-message gating)', () => {
         }
     });
 
-    it('a genuinely mid-stream, incomplete diff IS still disabled', () => {
+    it('a genuinely mid-stream, half-arrived diff IS still disabled', () => {
         // The gate must not be neutered: the live turn's half-arrived patch
-        // must stay unapplyable.
-        expect(
-            shouldDisableApplyButton({
-                diff: SETTLED_BUT_HEURISTIC_HOSTILE_DIFF,
-                isMessageStreaming: true,
-            }),
-        ).toBe(true);
+        // must stay unapplyable.  Arrival is now decided by the fence, so this
+        // holds for BOTH fixtures rather than only the heuristic-hostile one.
+        for (const diff of [SETTLED_BUT_HEURISTIC_HOSTILE_DIFF, TIDY_DIFF]) {
+            expect(
+                shouldDisableApplyButton({
+                    diff,
+                    isMessageStreaming: true,
+                    raw: fence(diff, false),
+                }),
+            ).toBe(true);
+        }
     });
 
-    it('a mid-stream diff that is already structurally complete enables early', () => {
-        expect(shouldDisableApplyButton({ diff: TIDY_DIFF, isMessageStreaming: true })).toBe(false);
+    it('a mid-stream diff whose own fence has closed enables early', () => {
+        // The point of the gate: a settled patch is applicable before the rest
+        // of the response arrives, and the body's SHAPE is irrelevant to that.
+        for (const diff of [SETTLED_BUT_HEURISTIC_HOSTILE_DIFF, TIDY_DIFF]) {
+            expect(
+                shouldDisableApplyButton({
+                    diff,
+                    isMessageStreaming: true,
+                    raw: fence(diff, true),
+                }),
+            ).toBe(false);
+        }
     });
 
     it('an in-flight application disables regardless of streaming state', () => {
