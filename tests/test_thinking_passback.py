@@ -17,7 +17,10 @@ These tests pin the parts that are cheap to get wrong and expensive to notice:
   1. Signature capture on both wire formats (raw Bedrock JSON, Anthropic SDK
      objects) -- the two are parsed by separate code paths.
   2. Block ORDER in the rebuilt turn (thinking must lead).
-  3. Unsigned readable blocks are dropped rather than sent.
+  3. Unsigned readable blocks are SURFACED with signature=None (not
+     silently dropped — a silent drop gaps the turn and shifts every later
+     block out of its signed position, the same "cannot be modified" 400);
+     the assembler then echoes NO thinking for the turn.
   4. ``redacted_thinking`` is captured, because passback is all-or-nothing:
      dropping one reorders the turn.
   5. The five non-Anthropic providers are untouched and stay concrete.
@@ -225,8 +228,16 @@ class TestBedrockSignatureCapture:
         assert block.content == "alpha beta gamma"
 
     @pytest.mark.asyncio
-    async def test_unsigned_thinking_block_is_dropped(self, bedrock_provider, basic_config):
-        """No signature => the API would reject the echo, so do not emit."""
+    async def test_unsigned_thinking_block_surfaced_not_silently_dropped(
+            self, bedrock_provider, basic_config):
+        """No signature => surfaced with signature=None, never sent to the API.
+
+        The parser used to drop the block silently, which GAPPED the turn:
+        every later block shifted out of its signed position — the same
+        "cannot be modified" 400 passback ordering exists to prevent.  It now
+        surfaces the block so the assembler (which sees the whole turn) can
+        skip ALL thinking passback for the turn instead.
+        """
         chunks = [
             _bedrock_chunk({"type": "content_block_start", "index": 0,
                             "content_block": {"type": "thinking"}}),
@@ -237,8 +248,18 @@ class TestBedrockSignatureCapture:
         ]
         events = await _drain_bedrock(bedrock_provider, chunks, basic_config)
 
-        assert not [e for e in events if isinstance(e, ThinkingBlock)]
-        # ...but it still reached the display channel.
+        blocks = [e for e in events if isinstance(e, ThinkingBlock)]
+        assert len(blocks) == 1
+        assert blocks[0].signature is None
+        # The live contract is enforced at the assembler: an unsigned block
+        # means NO thinking is echoed for the turn.
+        from app.providers.base import LLMProvider
+        content = LLMProvider._ordered_assistant_content(
+            "t", [], thinking_blocks=[{
+                "type": "thinking", "thinking": blocks[0].content,
+                "signature": blocks[0].signature, "_index": blocks[0].index}])
+        assert all(b["type"] != "thinking" for b in content)
+        # ...and it still reached the display channel.
         assert [e.content for e in events if isinstance(e, ThinkingDelta)] == ["unsigned"]
 
     @pytest.mark.asyncio
@@ -346,7 +367,9 @@ class TestAnthropicSignatureCapture:
         assert [e.content for e in events if isinstance(e, ThinkingDelta)] == ["visible"]
 
     @pytest.mark.asyncio
-    async def test_unsigned_thinking_block_is_dropped(self, anthropic_provider):
+    async def test_unsigned_thinking_block_surfaced_not_silently_dropped(
+            self, anthropic_provider):
+        """Surfaced with signature=None; the assembler skips the turn's passback."""
         sdk_events = [
             _SDKEvent("content_block_start", index=0, content_block=_SDKBlock("thinking")),
             _SDKEvent("content_block_delta", index=0,
@@ -355,7 +378,15 @@ class TestAnthropicSignatureCapture:
             _SDKEvent("message_stop"),
         ]
         events = await _drain_anthropic(anthropic_provider, sdk_events)
-        assert not [e for e in events if isinstance(e, ThinkingBlock)]
+        blocks = [e for e in events if isinstance(e, ThinkingBlock)]
+        assert len(blocks) == 1
+        assert blocks[0].signature is None
+        from app.providers.base import LLMProvider
+        content = LLMProvider._ordered_assistant_content(
+            "t", [], thinking_blocks=[{
+                "type": "thinking", "thinking": blocks[0].content,
+                "signature": blocks[0].signature, "_index": blocks[0].index}])
+        assert all(b["type"] != "thinking" for b in content)
 
     @pytest.mark.asyncio
     async def test_redacted_thinking_captured_with_payload(self, anthropic_provider):
@@ -656,9 +687,11 @@ class _RecordingProvider:
     def supports_feature(self, name):
         return self._supports if name == "thinking_passback" else False
 
-    def build_assistant_message(self, text, tool_uses, thinking_blocks=None):
+    def build_assistant_message(self, text, tool_uses, thinking_blocks=None,
+                                text_index=None):
         self.calls.append({"text": text, "tool_uses": tool_uses,
-                           "thinking_blocks": thinking_blocks})
+                           "thinking_blocks": thinking_blocks,
+                           "text_index": text_index})
         content = list(thinking_blocks or [])
         if text.strip():
             content.append({"type": "text", "text": text})
@@ -710,8 +743,11 @@ class TestOrchestratorPassbackWiring:
 
         assert provider.calls, "build_assistant_message was never called"
         passed = provider.calls[-1]["thinking_blocks"]
+        # '_index' is ordering metadata attached by the orchestrator so the
+        # provider can rebuild the turn in original block order (interleaved
+        # thinking); the provider strips it before the block goes to the API.
         assert passed == [{"type": "thinking", "thinking": "the plan",
-                           "signature": "SIG"}]
+                           "signature": "SIG", "_index": 0}]
 
     @pytest.mark.asyncio
     async def test_redacted_block_shape_is_preserved(self):
@@ -723,7 +759,8 @@ class TestOrchestratorPassbackWiring:
         await _run_once(_make_executor(provider), "tp-redacted")
 
         passed = provider.calls[-1]["thinking_blocks"]
-        assert passed == [{"type": "redacted_thinking", "data": "OPAQUE"}]
+        assert passed == [{"type": "redacted_thinking", "data": "OPAQUE",
+                           "_index": 0}]
 
     @pytest.mark.asyncio
     async def test_arrival_order_preserved(self):
@@ -804,6 +841,17 @@ class TestOrchestratorPassbackWiring:
         text = "".join(e.get("content", "") for e in collected
                        if e.get("type") == "text")
         assert "visible reasoning" not in text
-        thinking_events = [e for e in collected if e.get("type") == "thinking"]
-        assert len(thinking_events) == 1, (
+        # Count only CONTENT-BEARING thinking events: the stream legitimately
+        # also carries a {'type': 'thinking', 'done': True} close marker when
+        # the model transitions to answer text (the frontend's collapse
+        # signal).  The double-display this test guards against is the
+        # completed ThinkingBlock re-emitting its content, so the marker —
+        # which carries none — must not be counted.  (The original == 1
+        # assertion counted it and failed even at the commit that added it.)
+        thinking_content_events = [
+            e for e in collected
+            if e.get("type") == "thinking" and e.get("content")
+        ]
+        assert len(thinking_content_events) == 1, (
             "the completed block must not produce a second thinking event")
+        assert thinking_content_events[0]["content"] == "visible reasoning"

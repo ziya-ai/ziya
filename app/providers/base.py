@@ -37,6 +37,10 @@ class StreamEvent:
 class TextDelta(StreamEvent):
     """A chunk of assistant text output."""
     content: str
+    # Content-block index from the original response.  Set by providers
+    # that support thinking passback so the assistant turn can be rebuilt
+    # in original block order; other providers may leave the default.
+    index: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,6 +314,159 @@ class LLMProvider(ABC):
                 block["cache_control"] = {"type": "ephemeral"}
             return True
         return False
+
+    @staticmethod
+    def _ordered_assistant_content(
+        text: str,
+        tool_uses: List[Dict[str, Any]],
+        thinking_blocks: Optional[List[Dict[str, Any]]] = None,
+        text_index: Optional[int] = None,
+        text_segments: Optional[List[Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Assemble assistant content blocks, preserving original order.
+
+        The API requires thinking/redacted_thinking blocks in the latest
+        assistant message to remain EXACTLY as they were in the original
+        response — including their position relative to text and tool_use
+        blocks.  With adaptive/interleaved thinking the model emits
+        thinking blocks BETWEEN tool_use blocks, so coalescing them to the
+        front is itself a modification and 400s the request:
+          "thinking or redacted_thinking blocks in the latest assistant
+           message cannot be modified. These blocks must remain as they
+           were in the original response."
+
+        Ordering metadata (all optional, supplied by the orchestrator):
+          - each thinking block may carry ``_index`` — its content-block
+            index in the original response, stripped before send
+          - each tool_use dict may carry ``index`` (same index space)
+          - ``text_index`` is the index of the first text block
+          - ``text_segments`` — optional list of ``(index, text)`` pairs,
+            one per ORIGINAL text content block.  Supplied when the model
+            emitted multiple text blocks (adaptive thinking interleaves
+            reasoning between prose segments): merging multi-block text
+            into one block shifts every later thinking block out of its
+            original position, which the API rejects as a modification.
+            When present these replace the single merged ``text`` block.
+
+        Blocks are emitted in original index order when every thinking
+        block carries an index.  Without that metadata (legacy callers,
+        synthetic turns) the historical order is kept — thinking, text,
+        tool_use — which is also correct for classic non-interleaved
+        thinking, where the single thinking block leads the turn.
+        """
+        # All-or-nothing signature guard: the API rejects a readable
+        # ``thinking`` block whose signature is missing or empty — and
+        # sending a PARTIAL set (just omitting the unsigned block) leaves
+        # a gap that shifts every later block out of its original
+        # position, which is the same "cannot be modified" 400 this
+        # assembler exists to prevent.  Echoing NO thinking blocks is the
+        # known-good shape (identical to ZIYA_DISABLE_THINKING_PASSBACK),
+        # so degrade to that, loudly.
+        if thinking_blocks:
+            _unsigned = [
+                tb for tb in thinking_blocks
+                if tb.get("type") == "thinking" and not tb.get("signature")
+            ]
+            if _unsigned:
+                from app.utils.logging_utils import logger
+                logger.warning(
+                    "🧠 THINKING_PASSBACK: %d of %d thinking block(s) "
+                    "unsigned — echoing none for this turn (a partial "
+                    "set shifts later blocks out of their original "
+                    "positions and the API rejects the request)",
+                    len(_unsigned), len(thinking_blocks),
+                )
+                thinking_blocks = None
+        thinking_items: List[Any] = []
+        for tb in (thinking_blocks or []):
+            tb = dict(tb)
+            idx = tb.pop("_index", None)
+            thinking_items.append((idx, tb))
+
+        tool_items: List[Any] = []
+        for tu in tool_uses:
+            # Keep the mcp_ prefix on names: history tool_use names must
+            # match the prefixed names advertised to the model, or it
+            # loops "correcting" them.
+            tool_items.append((tu.get("index"), {
+                "type": "tool_use",
+                "id": tu["id"],
+                "name": tu["name"],
+                "input": tu.get("input", {}),
+            }))
+
+        text_block = (
+            {"type": "text", "text": text.rstrip()} if text.strip() else None
+        )
+
+        have_order = bool(thinking_items) and all(
+            i is not None for i, _ in thinking_items
+        )
+        if not have_order:
+            content = [b for _, b in thinking_items]
+            if text_block is not None:
+                content.append(text_block)
+            content.extend(b for _, b in tool_items)
+            return content
+
+        known = [float(i) for i, _ in thinking_items]
+        known += [float(i) for i, _ in tool_items if i is not None]
+
+        # Per-block text segments: emit each text block at ITS OWN original
+        # index.  A segment emptied by sanitization (e.g. a text block that
+        # contained only a fabricated tool-call fence) still has to occupy
+        # its slot when a later thinking block exists, otherwise that
+        # thinking block shifts left out of its original position — the
+        # exact modification the API rejects.
+        seg_items: List[Any] = []
+        if text_segments:
+            max_think = max(float(i) for i, _ in thinking_items)
+            for s_idx, s_text in text_segments:
+                if s_idx is None:
+                    continue
+                if s_text and s_text.strip():
+                    seg_items.append(
+                        (float(s_idx), {"type": "text", "text": s_text.rstrip()}))
+                elif float(s_idx) < max_think:
+                    seg_items.append((float(s_idx), {
+                        "type": "text",
+                        "text": "[a fabricated tool-call block was removed "
+                                "here; the command was executed via the real "
+                                "tool API — see the tool results below]",
+                    }))
+            known += [i for i, _ in seg_items]
+        elif text_block is not None and text_index is not None:
+            # The merged text occupies a real content-block slot: synthetic
+            # tool_use blocks must land strictly AFTER it, or the stable
+            # sort slots a fabricated call between thinking and text on the
+            # tied key — displacing real blocks from their positions.
+            known.append(float(text_index))
+        next_synthetic = max(known) + 1.0
+
+        items: List[Any] = [(float(i), b) for i, b in thinking_items]
+        for i, b in tool_items:
+            if i is None:
+                # A synthesized tool_use (e.g. a hallucination-correction
+                # fake call) never appeared in the model output — placing
+                # it after every real block keeps the real blocks in their
+                # original positions.
+                items.append((next_synthetic, b))
+                next_synthetic += 1.0
+            else:
+                items.append((float(i), b))
+        if seg_items:
+            items.extend(seg_items)
+        elif text_block is not None:
+            if text_index is not None:
+                t_idx = float(text_index)
+            else:
+                real_tools = [float(i) for i, _ in tool_items if i is not None]
+                # Best guess without metadata: after the leading thinking
+                # run, before the first tool_use — the classic shape.
+                t_idx = (min(real_tools) - 0.5) if real_tools else (max(known) + 0.5)
+            items.append((t_idx, text_block))
+        items.sort(key=lambda pair: pair[0])
+        return [b for _, b in items]
 
     def supports_feature(self, feature_name: str) -> bool:
         """Query whether this provider supports a named capability.

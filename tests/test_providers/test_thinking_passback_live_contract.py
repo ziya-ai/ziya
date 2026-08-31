@@ -282,10 +282,14 @@ class TestAnthropicDirectSdkCapture:
         assert blocks[0].block_type == "redacted_thinking"
         assert blocks[0].data == "SERVER_ISSUED"
 
-    def test_unsigned_block_is_not_emitted(self, anthropic_provider):
+    def test_unsigned_block_never_reaches_the_api(self, anthropic_provider):
         # A thinking block whose signature never arrived cannot be echoed: the
         # live API answers a bad/missing signature with
-        # 'Invalid `signature` in `thinking` block'.
+        # 'Invalid `signature` in `thinking` block'.  The parser SURFACES the
+        # block with signature=None (silently dropping it gapped the turn and
+        # shifted every later block out of its signed position — the same
+        # "cannot be modified" 400); the assembler enforces the live contract
+        # by echoing NO thinking for the turn.
         from types import SimpleNamespace as NS
 
         blocks = self._run(
@@ -297,7 +301,15 @@ class TestAnthropicDirectSdkCapture:
             NS(type="content_block_stop", index=0),
             NS(type="message_stop"),
         )
-        assert blocks == [], "unsigned thinking must never be echoed back"
+        assert len(blocks) == 1
+        assert blocks[0].signature is None
+        from app.providers.base import LLMProvider
+        content = LLMProvider._ordered_assistant_content(
+            "t", [], thinking_blocks=[{
+                "type": "thinking", "thinking": blocks[0].content,
+                "signature": blocks[0].signature, "_index": blocks[0].index}])
+        assert all(b["type"] != "thinking" for b in content), \
+            "unsigned thinking must never be echoed back"
 
 
 class TestKillSwitchIsUsableUnderTheAcceptedContract:
