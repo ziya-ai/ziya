@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Modal, Switch, Input, Button, List, Tag, Space, message, Divider, Checkbox, Collapse, Alert, Slider } from 'antd';
-import { PlusOutlined, DeleteOutlined, WarningOutlined, CopyOutlined } from '@ant-design/icons';
+import { PlusOutlined, DeleteOutlined, WarningOutlined } from '@ant-design/icons';
+import { CommandBlock } from './CommandBlock';
 
 interface ShellConfigModalProps {
     visible: boolean;
@@ -42,33 +43,6 @@ interface ShellConfig {
 }
 
 const { Panel } = Collapse;
-
-// A terminal command the user must run, rendered as a distinct copyable
-// block. Previously these (`sudo ziya-approve` ...) were inline <code>
-// fragments buried in prose — easy to skim past, painful to retranscribe.
-// rgba grays render legibly on both light and dark themes.
-const CmdBlock: React.FC<{ cmd: string }> = ({ cmd }) => (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0' }}>
-        <code style={{
-            flex: 1, display: 'block', padding: '6px 10px', fontSize: 13,
-            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-            borderRadius: 6, background: 'rgba(128, 128, 128, 0.15)',
-            border: '1px solid rgba(128, 128, 128, 0.35)',
-            userSelect: 'all', whiteSpace: 'nowrap', overflowX: 'auto',
-        }}>
-            {cmd}
-        </code>
-        <Button
-            size="small"
-            icon={<CopyOutlined />}
-            title="Copy command"
-            onClick={() => navigator.clipboard?.writeText(cmd).then(
-                () => message.success('Copied'),
-                () => message.error('Copy failed')
-            )}
-        />
-    </div>
-);
 
 const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose }) => {
     const [config, setConfig] = useState<ShellConfig | null>(null);
@@ -418,7 +392,7 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
     };
 
     const dangerousCommands = ['rm', 'rmdir', 'mv', 'cp', 'chmod', 'chown', 'sudo', 'su'];
-    const allGitOperations = ['status', 'log', 'show', 'diff', 'branch', 'remote', 'config --get', 'ls-files', 'ls-tree', 'blame', 'tag', 'stash list', 'reflog', 'rev-parse', 'describe', 'shortlog', 'whatchanged'];
+    const allGitOperations = ['status', 'log', 'show', 'diff', 'grep', 'branch', 'remote', 'config --get', 'ls-files', 'ls-tree', 'blame', 'cat-file', 'check-ignore', 'tag', 'stash list', 'reflog', 'rev-parse', 'describe', 'shortlog', 'whatchanged'];
 
     const isDangerous = (command: string) =>
         dangerousCommands.some(dangerous =>
@@ -521,7 +495,7 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                                     <b>To activate</b> (persists across restarts): run this
                                     in a terminal…
                                 </div>
-                                <CmdBlock cmd="sudo ziya-approve" />
+                                <CommandBlock cmd="sudo ziya-approve" />
                                 <Button
                                     size="small"
                                     type="primary"
@@ -549,7 +523,7 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                                 the persistent config, and once active it is voided the
                                 next time the Ziya server restarts. To activate it, run
                                 this in a terminal…
-                                <CmdBlock cmd="sudo ziya-approve --session" />
+                                <CommandBlock cmd="sudo ziya-approve --session" />
                                 <Button
                                     size="small"
                                     type="primary"
