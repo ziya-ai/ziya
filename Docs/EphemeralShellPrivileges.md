@@ -57,6 +57,63 @@ The provider name for these grants is `cli-ephemeral`. See
 analysis (ASR F-004/F-007). This path is **CLI-only** — the web UI still
 requires `sudo ziya-approve` as described above.
 
+## Naming a command vs. naming a subcommand
+
+An allowlist entry is matched as a **prefix**, so how specifically you name a
+command decides how much you granted:
+
+| Entry | Permits |
+|---|---|
+| `git status` | only `git status ...` |
+| `git` | **every** git subcommand — including `reset --hard`, `checkout`, `clean`, `stash`, `push` |
+| `npx craco` | only `npx craco ...` |
+| `npx` | any package the registry can fetch |
+
+The floor ships the scoped forms (`npx jest`, `npx craco`, and a read-only git
+subset) for this reason. Prefer the scoped form: grant `npm run`, not `npm`.
+
+This matters most for unattended task-card runs, where a stray bare `git` grant
+puts `git checkout --` and `git clean -fdx` within reach of an agent that only
+needed to read `git log`. The shell server logs a warning to stderr when a bare
+`git` grant is in force, and its permission description names the destructive
+capability explicitly rather than calling it "safe operations" — an agent
+auditing its own privileges should be able to see what it actually holds.
+
+## The git write tier
+
+Git is split into two named sets rather than one allowlist:
+
+| Set | Env var | Floor | Contents |
+|---|---|---|---|
+| read-only | `SAFE_GIT_OPERATIONS` | ships populated | `status`, `log`, `show`, `diff`, `grep`, `blame`, `cat-file`, `check-ignore`, … |
+| **write** | `WRITE_GIT_OPERATIONS` | **empty** | `add`, `commit`, `stash push`, `push` — none active by default |
+
+The empty floor is the point: every entry in the write set is an escalation
+delta, so granting even `git add` requires a signed approval. There is no
+value of `WRITE_GIT_OPERATIONS` that takes effect unsigned — an unsigned edit
+to `.ziya/mcp_config.json` is clamped to empty at startup.
+
+Each write op refuses the destructive flags of its own subcommand, so the grant
+is narrower than the subcommand name suggests:
+
+| Granted | Also permits | Still refused |
+|---|---|---|
+| `add` | `-A`, `.`, pathspecs | `-p`, `-i`, `-e` (interactive — hangs a non-interactive shell) |
+| `commit` | `-m`, `-am` | `--amend`, `--no-verify` |
+| `stash push` | `stash push`, `stash save` | `stash pop`, `drop`, `clear` |
+| `push` | `--force-with-lease`, `--dry-run`, `-u` | `--force`/`-f`, `--delete`/`-d`, `--mirror`, `--prune` |
+
+Deliberately **not** offered at all: `reset`, `checkout`, `restore`, `clean`,
+`rm`, `mv`, `rebase`, `merge`, `cherry-pick`, `filter-branch`. These destroy
+uncommitted work or rewrite history, and no flag guard makes them recoverable.
+They remain reachable only through a bare `git` grant, which announces itself.
+
+One precedence rule to know: an explicit `git <sub>` entry in the **command**
+allowlist (`/shell git push`, `ALLOW_COMMANDS`) builds an unguarded pattern and
+**outranks** the write tier — `git push` granted that way also permits
+`git push --force`. Both routes are signed, so this is an escape hatch rather
+than a hole, but prefer the write tier when you want the flag guards.
+
 ## Why you have to sign at all
 
 Privilege widening is gated so that *nothing* — not the model, not a background

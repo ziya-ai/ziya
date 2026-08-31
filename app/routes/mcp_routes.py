@@ -2060,6 +2060,15 @@ async def get_service_preview(service_id: str, provider_id: Optional[str] = None
             'installationType': service.installation_type.value,
             'repositoryUrl': service.repository_url,
             'tags': service.tags,
+            # Provenance the browse list does not carry; a reviewer needs the
+            # CTI/bindle to know who owns what they are about to run.
+            'status': service.status.value,
+            'version': service.version,
+            'createdAt': service.created_at.isoformat(),
+            'lastUpdatedAt': service.last_updated_at.isoformat(),
+            'cti': (service.provider_metadata or {}).get('cti'),
+            'bindleId': (service.provider_metadata or {}).get('bindleId'),
+            'providerId': provider.identifier,
             'installationInstructions': service.installation_instructions,
             'preview': preview,
             'requiredEnvVars': service.installation_instructions.get('env_vars', []),
