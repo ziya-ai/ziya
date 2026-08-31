@@ -58,24 +58,20 @@ interface Props {
    * run is actively changing.
    */
   counts?: Record<string, number> | null;
-  /**
-   * Suppress the live (animating) clusters.  Set when the row is already
-   * showing the chat-streaming spinner: two animations in one narrow row
-   * compete for the same attention and neither wins.  Terminal clusters
-   * still render — they are the ones with no other surface.
-   */
-  suppressLive?: boolean;
 }
 
-export const RunStatusGears: React.FC<Props> = ({
-  bindings, counts, suppressLive = false,
-}) => {
-  const clusters = bindings && bindings.length > 0
+export const RunStatusGears: React.FC<Props> = ({ bindings, counts }) => {
+  // Live clusters are never suppressed.  A task run drives the chat, so
+  // the conversation is streaming for almost the whole time a run is
+  // live; filtering animated clusters while streaming hid the gear in
+  // precisely the case it exists for, leaving the chat spinner as the
+  // only motion and no way to tell agent work from a plain reply.  The
+  // two indicators encode different work, sit on separate rows, and
+  // differ in colour and rotation period, so both in motion at once is
+  // the intended reading.
+  const visible = bindings && bindings.length > 0
     ? statusClusters(bindings)
     : clustersFromCounts(counts);
-  const visible = suppressLive
-    ? clusters.filter(c => !c.animate)
-    : clusters;
   if (visible.length === 0) return null;
 
   return (
