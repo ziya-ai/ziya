@@ -38,6 +38,7 @@ from ..context import (
     reset_task_iteration_context,
 )
 from ..storage.task_runs import TaskRunStorage
+from ..utils.roster_keys import derive_item_key, roster_key_problems
 from . import task_templating
 from .task_executor import TaskExecutorError, execute_task_block
 from . import task_run_stream_relay as _relay
@@ -90,6 +91,11 @@ class ExecutionContext:
     storage: Optional[TaskRunStorage] = None
     # Per-block pass-retention counters.  Keyed by block.id.
     pass_counts: Dict[str, int] = field(default_factory=dict)
+    # Run-wide count of self-improvement card edits applied, across every
+    # improving level this run.  The per-block ``improve_max`` bounds each
+    # level; this bounds the PRODUCT of nested levels (see
+    # app.utils.self_improve.run_improve_ceiling).
+    improve_edits_used: int = 0
     # Stack of active iteration bindings.  The innermost Repeat block
     # pushes its per-iteration bindings before dispatching the body;
     # nested Repeats stack so an inner iteration can still see the
@@ -116,13 +122,26 @@ class ExecutionContext:
     context_notes: Dict[str, str] = field(default_factory=dict)
 
     # Roster truncations, keyed by the repeat block's id:
-    # {"roster": N, "dispatched": M} whenever ``repeat_max`` clipped a
-    # for_each source.  Recorded at planning time and read back when the
-    # loop returns, so the block's artifact can state its own reduced
-    # scope.  Without it a clipped fan-out is indistinguishable from a
-    # complete one after the fact — measured as a 112-item queue reported
-    # as a finished pass having dispatched 60, nothing naming the other 52.
-    roster_truncations: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    # {"roster": N, "dispatched": M, "dropped": [ids]} whenever
+    # ``repeat_max`` clipped a for_each source.  Recorded at planning time
+    # and read back when the loop returns, so the block's artifact can
+    # state its own reduced scope.  Without it a clipped fan-out is
+    # indistinguishable from a complete one after the fact — measured as a
+    # 112-item queue reported as a finished pass having dispatched 60,
+    # nothing naming the other 52.  ``dropped`` carries the IDENTITIES,
+    # not just the count: a count tells you scope was lost, whereas the
+    # identities let a follow-up pass run precisely the items that were
+    # missed instead of re-running the whole roster.
+    roster_truncations: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
+    # Roster shortfalls, keyed by the repeat block's id:
+    # {"roster": N, "produced": M, "missing": [keys]} when a for_each
+    # loop with repeat_require_complete exited with members lacking a
+    # passed iteration.  The structured counterpart of the block's
+    # failed artifact, mirroring roster_truncations: the artifact names
+    # a bounded sample, this carries the full list a gap-fill would
+    # re-dispatch from.
+    roster_shortfalls: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     # Sibling-result stack, one slot per active sequence depth.  Each
     # _execute_sequence pushes a slot on entry and writes the most-recent
@@ -656,12 +675,19 @@ async def execute_block(block: Block, ctx: ExecutionContext) -> Artifact:
         if block.id and block.id == ctx.resume_from_block_id:
             # Target reached — everything from here on executes for real.
             ctx.resume_skipping = False
-        elif block.block_type == "state":
+        elif block.block_type in ("state", "ask"):
             # Deliberately re-executed while skipping: _execute_state only
             # writes authored literals into ctx.variables/context_notes,
             # and those two stores are the run-scoped state that is not
             # persisted anywhere.  Re-running them is how {{var.NAME}} is
             # rebuilt without a variables snapshot on disk.
+            #
+            # An Ask re-executes for the same reason, and is safe to because
+            # its ANSWER is persisted: re-running it re-applies the recorded
+            # answer and returns without asking again.  Replaying its
+            # artifact instead would leave {{var.NAME}} and its standing
+            # context note unset for every block after it — exactly the
+            # failure the state branch exists to prevent.
             pass
         elif block.block_type == "call" and block.id in ctx.resume_call_chain:
             # A Call on the path to the target.  Descend: _execute_call
@@ -697,22 +723,21 @@ async def execute_block(block: Block, ctx: ExecutionContext) -> Artifact:
                 run_id=ctx.run_id,
             )
         elif block.block_type == "repeat":
-            artifact = await _execute_repeat(block, ctx)
+            artifact = await _maybe_self_improve(block, ctx, _execute_repeat)
         elif block.block_type == "parallel":
-            artifact = await _execute_parallel(block, ctx)
+            artifact = await _maybe_self_improve(block, ctx, _execute_parallel)
         elif block.block_type == "until":
-            artifact = await _execute_until(block, ctx)
+            artifact = await _maybe_self_improve(block, ctx, _execute_until)
         elif block.block_type == "schedule":
             artifact = await _execute_schedule_passthrough(block, ctx)
         elif block.block_type == "state":
             artifact = await _execute_state(block, ctx)
+        elif block.block_type == "ask":
+            artifact = await _execute_ask(block, ctx)
         elif block.block_type == "call":
             artifact = await _execute_call(block, ctx)
         elif block.block_type == "group":
-            artifact = await _execute_sequence(
-                block.body, ctx,
-                on_failure=(block.on_failure or "continue"),
-            )
+            artifact = await _maybe_self_improve(block, ctx, _execute_group)
         else:
             raise TaskExecutorError(f"Unknown block_type: {block.block_type!r}")
     except BlockExecutionCancelled:
@@ -1500,6 +1525,23 @@ async def _execute_repeat(
             failed=True,
             created_at=time.time(),
         )
+    except RosterAssertionError as e:
+        # The roster cannot satisfy its own completeness assertion — a
+        # finite cap contradicting repeat_require_complete, or members
+        # that cannot be uniquely keyed.  Refused before ANY spend, as a
+        # failed block rather than a crash, for the same reason as
+        # ForEachSourceError above.
+        summary = f"for_each roster refused - 0 iterations run. {e}"
+        logger.warning("🔁 REPEAT: %s", summary)
+        return Artifact(
+            summary=summary,
+            decisions=[
+                f"repeat_require_complete refused the roster for "
+                f"block {block.id!r}"
+            ],
+            failed=True,
+            created_at=time.time(),
+        )
     if not iterations:
         # An EMPTY resolved list is legitimate (a planner that found
         # nothing to do), unlike an unresolvable source above.
@@ -1510,6 +1552,32 @@ async def _execute_repeat(
     prior_summaries: List[str] = []
     last_artifact: Optional[Artifact] = None
     outputs: List[ArtifactPart] = []
+    # Terminal outcome per iteration index ("passed" / "failed" /
+    # "cancelled"), fed by every path that concludes an iteration —
+    # executed, replayed, and synthesized-failure alike.  The roster
+    # completeness assertion at loop exit diffs the planned keys against
+    # this rather than re-reading storage.
+    iter_outcomes: Dict[int, str] = {}
+
+    # Persist the roster size for for_each loops before announcing the
+    # block: the run map renders loop progress as "n/m", and for_each is
+    # the one mode whose denominator exists only at run time (count is
+    # readable from the card; until's max is a ceiling, not a target, so
+    # "3/10" there would misread a legitimate early stop as incomplete).
+    # Written before the block_started emit so the refetch that event
+    # triggers on the frontend already sees the value.
+    if (
+        ctx.storage is not None and block.id
+        and (block.repeat_mode or "count") == "for_each"
+    ):
+        try:
+            ctx.storage.set_block_planned_iterations(
+                ctx.run_id, block.id, len(iterations),
+            )
+        except Exception as exc:
+            logger.debug(
+                f"set_block_planned_iterations failed (non-fatal): {exc}"
+            )
 
     await _emit(ctx, {
         "type": "block_started",
@@ -1550,7 +1618,8 @@ async def _execute_repeat(
 
     async def _run_one(index: int, item: Any = None,
                         previous: Optional[Artifact] = None,
-                        all_prior: Optional[List[str]] = None) -> Artifact:
+                        all_prior: Optional[List[str]] = None,
+                        item_key: Optional[str] = None) -> Artifact:
         await _emit(ctx, {
             "type": "iteration_started",
             "block_id": block.id, "index": index,
@@ -1608,7 +1677,8 @@ async def _execute_repeat(
         # Seal timing if the body didn't.
         if not artifact.duration_ms:
             artifact.duration_ms = int((time.time() - iter_start) * 1000)
-        await _record_iteration(block, ctx, index, artifact)
+        await _record_iteration(block, ctx, index, artifact, item_key=item_key)
+        iter_outcomes[index] = "failed" if artifact.failed else "passed"
         await _emit(ctx, {
             "type": "iteration_completed",
             "block_id": block.id, "index": index,
@@ -1643,6 +1713,7 @@ async def _execute_repeat(
         _todo = [i for i in range(len(iterations)) if i not in _banked]
         for _i in sorted(_banked):
             _art = _banked[_i]
+            iter_outcomes[_i] = "passed"
             last_artifact = _art
             outputs.extend(_art.outputs)
             await _emit(ctx, {
@@ -1695,6 +1766,7 @@ async def _execute_repeat(
                 return await _run_one(
                     i,
                     item=iterations[i].get("item"),
+                    item_key=iterations[i].get("item_key"),
                     previous=None,
                     all_prior=None,
                 )
@@ -1785,6 +1857,7 @@ async def _execute_repeat(
                 # and blaming the card for the environment's fault.
                 _cancelled = isinstance(r, asyncio.CancelledError)
                 _iter_status = "cancelled" if _cancelled else "failed"
+                iter_outcomes[idx] = _iter_status
                 synth = Artifact(
                     summary=(
                         f"Iteration {idx} cancelled — a sibling hit an "
@@ -1798,7 +1871,10 @@ async def _execute_repeat(
                     failed=not _cancelled,
                 )
                 synth.signature = _derive_signature(synth)
-                await _record_iteration(block, ctx, idx, synth)
+                await _record_iteration(
+                    block, ctx, idx, synth,
+                    item_key=iterations[idx].get("item_key"),
+                )
                 await _emit(ctx, {
                     "type": "iteration_completed",
                     "block_id": block.id, "index": idx,
@@ -1831,6 +1907,7 @@ async def _execute_repeat(
             # ``continue`` before the pause gate is deliberate: replaying a
             # record is not work, so it must not consume a step credit.
             if i < resume_at:
+                iter_outcomes[i] = "passed"
                 replayed = _replay_iteration(i)
                 if replayed is not None:
                     last_artifact = replayed
@@ -1869,6 +1946,7 @@ async def _execute_repeat(
             artifact = await _run_one(
                 i,
                 item=iterations[i].get("item"),
+                item_key=iterations[i].get("item_key"),
                 previous=prev_for_binding,
                 all_prior=prior_for_binding,
             )
@@ -1885,6 +1963,58 @@ async def _execute_repeat(
         "block_id": block.id,
         "at": time.time(),
     })
+    # Roster completeness assertion.  Diff the planned member keys
+    # against iterations whose terminal outcome is "passed"; on
+    # shortfall the block FAILS naming the missing members, so the
+    # enclosing container's on_failure governs.  Deliberately a failure
+    # rather than a decision line — unlike a repeat_max clip below, the
+    # author has declared that partial is not success.  Coverage is
+    # status-shaped, not output-shaped: an iteration that passed while
+    # writing nothing still counts as covered (see
+    # design/task-card-roster-assertion.md §4).
+    if (
+        (block.repeat_mode or "count") == "for_each"
+        and getattr(block, "repeat_require_complete", False)
+    ):
+        missing = [
+            str(iterations[i].get("item_key") or f"#{i}")
+            for i in range(len(iterations))
+            if iter_outcomes.get(i) != "passed"
+        ]
+        if missing:
+            produced = len(iterations) - len(missing)
+            ctx.roster_shortfalls[block.id or ""] = {
+                "roster": len(iterations),
+                "produced": produced,
+                "missing": list(missing),
+            }
+            await _emit(ctx, {
+                "type": "roster_shortfall",
+                "block_id": block.id,
+                "roster": len(iterations),
+                "produced": produced,
+                "missing": missing[:50],
+                "at": time.time(),
+            })
+            shown = ", ".join(missing[:10])
+            more = f" (+{len(missing) - 10} more)" if len(missing) > 10 else ""
+            return Artifact(
+                summary=(
+                    f"roster incomplete: {produced}/{len(iterations)} "
+                    f"members passed - missing: {shown}{more}"
+                ),
+                decisions=[
+                    f"repeat_require_complete: {len(missing)} roster "
+                    f"member(s) with no passed iteration: "
+                    + ", ".join(missing[:50])
+                    + (f" (+{len(missing) - 50} more)"
+                       if len(missing) > 50 else "")
+                ],
+                outputs=outputs,
+                duration_ms=elapsed_ms,
+                created_at=time.time(),
+                failed=True,
+            )
     # Scope reduction, surfaced on the block's own artifact.  The loop
     # completed every iteration it PLANNED, so this is not a failure —
     # but "ran 60 of 60 planned" and "ran 60 of the 112 asked for" are
@@ -1901,6 +2031,18 @@ async def _execute_repeat(
             f"never run — this block's result covers "
             f"{_trunc['dispatched']}/{_trunc['roster']} of its roster"
         )
+        # Name the missed items, not just how many.  A count tells a
+        # reader that coverage is short; the identities are what let them
+        # re-run exactly the remainder.  Sampled in the decision line to
+        # keep it readable — the full list stays in roster_truncations.
+        _dropped = _trunc.get("dropped") or []
+        if _dropped:
+            _shown = ", ".join(str(d) for d in _dropped[:10])
+            _more = (
+                f" (+{len(_dropped) - 10} more)"
+                if len(_dropped) > 10 else ""
+            )
+            _decisions.append(f"never run: {_shown}{_more}")
     return Artifact(
         summary=(last_artifact.summary if last_artifact else "(no iterations completed)"),
         decisions=_decisions,
@@ -1921,6 +2063,18 @@ class ForEachSourceError(Exception):
     empty string — hours of spend producing a run record that looks
     populated.  "I cannot determine the item list" is never legitimately
     "iterate blindly", so this surfaces as a failed block instead.
+    """
+
+
+class RosterAssertionError(Exception):
+    """A for_each roster cannot satisfy ``repeat_require_complete``.
+
+    Raised at plan time, before any spend.  Two causes: a finite
+    ``repeat_max`` (a cost ceiling and a completeness requirement
+    cannot both hold), or roster members that cannot be uniquely keyed
+    (see app.utils.roster_keys) — an ambiguous roster can never be
+    diffed against what was produced.  Surfaces as a failed block, so
+    the enclosing container's on_failure policy governs.
     """
 
 
@@ -2061,6 +2215,25 @@ def _plan_iterations(
     if mode == "for_each":
         items = _resolve_for_each_items(block, ctx)
         if items is not None:
+            require = bool(getattr(block, "repeat_require_complete", False))
+            key_path = getattr(block, "repeat_item_key", None)
+            if require:
+                # Refused, never guessed — the plan-time contradictions
+                # the assertion cannot survive (see
+                # design/task-card-roster-assertion.md §3.1-3.2).  Also
+                # refused at validation time; repeated here because
+                # validation is advisory for programmatic launches and a
+                # TEMPLATED roster only exists at this point.
+                if block.repeat_max and block.repeat_max > 0:
+                    raise RosterAssertionError(
+                        "repeat_require_complete and a finite repeat_max "
+                        "contradict - a completeness requirement and a "
+                        "cost ceiling cannot both hold. Remove one; "
+                        "bound cost with repeat_max_concurrency instead"
+                    )
+                problems = roster_key_problems(items, key_path)
+                if problems:
+                    raise RosterAssertionError("; ".join(problems))
             # Respect repeat_max as an upper bound when provided.
             if block.repeat_max and block.repeat_max > 0:
                 if len(items) > block.repeat_max:
@@ -2081,10 +2254,37 @@ def _plan_iterations(
                         ctx.roster_truncations[block.id or ""] = {
                             "roster": len(items),
                             "dispatched": block.repeat_max,
+                            # The identities, so the loss is recoverable.
+                            # No size guard: ``items`` is already fully
+                            # materialized above, so retaining the tail's
+                            # labels costs nothing a large roster has not
+                            # already spent.
+                            "dropped": [
+                                str(it) for it in items[block.repeat_max:]
+                            ],
                         }
                 items = items[: block.repeat_max]
-            return [{"index": i, "item": it} for i, it in enumerate(items)]
+            # item_key is recorded UNCONDITIONALLY, not only under the
+            # assertion: it is what makes an iteration nameable after
+            # the fact — run-map dots, shortfall diffs, and any future
+            # member-level re-dispatch all key on it.  None when not
+            # derivable (a non-scalar with no key path) and the
+            # assertion is off.
+            return [
+                {"index": i, "item": it,
+                 "item_key": derive_item_key(it, key_path)}
+                for i, it in enumerate(items)
+            ]
         # Fallback: no parseable source → treat like count.
+        if getattr(block, "repeat_require_complete", False):
+            # No roster resolved, so there is nothing to assert over —
+            # falling through to anonymous count iterations would make
+            # the assertion silently vacuous.
+            raise RosterAssertionError(
+                "repeat_require_complete is set but the for_each source "
+                "did not resolve to an item list - there is no roster "
+                "to assert completeness over"
+            )
         n = int(block.repeat_max or block.repeat_count or 1)
         return [{"index": i, "item": None} for i in range(max(0, n))]
     return []
@@ -2092,6 +2292,7 @@ def _plan_iterations(
 
 async def _record_iteration(
     block: Block, ctx: ExecutionContext, index: int, artifact: Artifact,
+    item_key: Optional[str] = None,
 ) -> None:
     """Persist summary + (optionally) full artifact for one iteration."""
     if ctx.storage is None or not block.id:
@@ -2113,6 +2314,7 @@ async def _record_iteration(
         duration_ms=artifact.duration_ms,
         tokens=artifact.tokens,
         has_artifact=keep_full,
+        item_key=item_key,
     )
     ctx.storage.append_iteration_summary(ctx.run_id, block.id, summary)
 
@@ -2132,6 +2334,14 @@ def _iteration_signature(a: Artifact) -> str:
     """
     body = " ".join((a.summary or "").lower().split())
     return hashlib.sha256(body.encode()).hexdigest()[:16]
+
+
+# Consecutive non-progressing iterations that trip an Until loop's stall
+# breaker.  Three rather than two: layer 2's convergence check runs only when
+# there is no explicit condition, so it can afford to be eager.  The stall
+# breaker overrides an explicit condition, so it must be certain the loop is
+# stuck rather than merely slow.
+_UNTIL_STALL_LIMIT = 3
 
 
 async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
@@ -2154,6 +2364,11 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
     outputs: List[ArtifactPart] = []
     decisions: List[str] = []
     signatures: List[str] = []  # for convergence backstop
+    # Stall-breaker state.  Unlike ``signatures`` these are maintained even
+    # when an explicit condition is set, which is the case the breaker exists
+    # for.
+    stall_streak = 0
+    prev_sig: Optional[str] = None
 
     await _emit(ctx, {
         "type": "block_started",
@@ -2284,6 +2499,53 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
                 )
                 break
 
+        # ---------- Exit-condition layer 2b: stall breaker ----------------
+        # Active even when an explicit condition IS set — the case where
+        # layers 1 and 2 are both disabled and until_max becomes the only
+        # terminator.  Run 2e1fbe76 burned 35 consecutive iterations that
+        # way: its condition demanded visual verification, the deploy step
+        # that made verification possible was broken, so the condition was
+        # unsatisfiable by construction while each iteration still reported
+        # new work.
+        #
+        # Non-progress needs UNAMBIGUOUS evidence, because each signal on
+        # its own has a legitimate reading.  A failed iteration is the
+        # NORMAL intermediate state of a fix-until-green loop — the
+        # canonical Until use case — so counting bare failure made
+        # until_max > 3 unreachable for it.  A repeated summary is a terse
+        # agent as often as a stuck one, and when an explicit condition is
+        # set the layer-3 contract is that only the evaluator decides.  So
+        # require either the agent's own explicit obstacle report, or
+        # failure TOGETHER WITH no new information:
+        #   - objective_met="partial" — the agent reporting a real obstacle
+        #     rather than a verdict on the goal; deliberate, and the honest
+        #     form of the run-2e1fbe76 failure this breaker exists for; or
+        #   - the iteration failed AND its summary is unchanged, i.e. it
+        #     went wrong and told us nothing we did not already know.
+        # THREE in a row are still required, so a loop that is genuinely
+        # advancing is untouched — the breaker must not degenerate into a
+        # lower until_max.
+        raw_sa = getattr(artifact, "self_assessment", None) or {}
+        sig_now = _iteration_signature(artifact)
+        repeated = prev_sig is not None and sig_now == prev_sig
+        stalled = (
+            (raw_sa.get("objective_met") or "").strip().lower() == "partial"
+            or (bool(artifact.failed) and repeated)
+        )
+        prev_sig = sig_now
+        stall_streak = stall_streak + 1 if stalled else 0
+        if stall_streak >= _UNTIL_STALL_LIMIT:
+            # Checked before layer 3 so a condition that never evaluates
+            # true cannot starve the breaker.  If the condition would have
+            # been satisfied on this same iteration the loop exits either
+            # way; only the recorded reason differs.
+            decisions.append(
+                f"stall breaker: {stall_streak} consecutive non-progressing "
+                f"iterations (failed / objective_met=partial / repeated "
+                f"summary); stopped at iter {i} of max {n_max}"
+            )
+            break
+
         # ---------- Exit-condition layer 3: model-evaluated condition ----
         if not condition:
             # No condition → rely on layer 1 (self_assessment) and layer 2
@@ -2385,3 +2647,244 @@ async def _execute_state(block: Block, ctx: ExecutionContext) -> Artifact:
         summary=f"Initialized state: {names}",
         created_at=time.time(),
     )
+
+# How often the wait-loop re-reads the record.  Coarser than the pause
+# loop's 0.4s on purpose: a human answer arrives on a scale of minutes, so
+# polling faster only rewrites nothing more often.
+_ASK_POLL_SECONDS = 0.5
+
+
+def _recorded_ask_answer(
+    ctx: "ExecutionContext", block_id: str,
+) -> Optional[Dict[str, Any]]:
+    """The human answer already on record for this Ask block, if any."""
+    if ctx.storage is None or not block_id:
+        return None
+    run = ctx.storage.get(ctx.run_id)
+    if run is None:
+        return None
+    return (getattr(run, "ask_answers", None) or {}).get(block_id)
+
+
+async def _execute_ask(block: Block, ctx: ExecutionContext) -> Artifact:
+    """Hold the run at this boundary until a human answers.
+
+    The whole block is "answer already on record? apply it; else ask", and
+    that ordering is what makes an Ask idempotent in the two places it has
+    to be: a resume walk re-executes it (see the resume-skip gate, which
+    treats ask like state), and a run reconciled to "held" by a server
+    restart can be answered and then resumed.  In both cases the settled
+    answer is re-applied without the operator being asked twice.
+
+    Introduces no new hold point: an Ask sits at an ordinary block boundary,
+    which a sequence has already passed _wait_if_paused to reach.
+    """
+    recorded = _recorded_ask_answer(ctx, block.id)
+    if recorded is None:
+        if ctx.storage is None:
+            raise TaskExecutorError(
+                f"ask block {block.id!r} cannot hold for a human: this run "
+                f"has no storage, so the question could not be persisted "
+                f"and an answer could never be recorded"
+            )
+        question = (block.ask_question or "").strip()
+        choices = [str(c) for c in (block.ask_choices or [])]
+        ctx.storage.open_ask(ctx.run_id, block.id, question, choices)
+        await _emit(ctx, {
+            "type": "ask_opened", "block_id": block.id,
+            "question": question, "choices": choices, "at": time.time(),
+        })
+        try:
+            while recorded is None:
+                if ctx.cancel_requested():
+                    raise BlockExecutionCancelled()
+                await asyncio.sleep(_ASK_POLL_SECONDS)
+                recorded = _recorded_ask_answer(ctx, block.id)
+        finally:
+            # Clears the open question either way.  close_ask deliberately
+            # does not walk the status back to running unless it is still
+            # awaiting_input, so a cancelled run is never briefly reported
+            # as live on its way out.
+            ctx.storage.close_ask(ctx.run_id)
+        await _emit(ctx, {
+            "type": "ask_answered", "block_id": block.id,
+            "decision": recorded.get("decision"), "at": time.time(),
+        })
+
+    decision = str(recorded.get("decision") or "approve").strip().lower()
+    answer = str(recorded.get("answer") or "").strip()
+    who = str(recorded.get("answered_by") or "").strip() or "the operator"
+    label = block.name or block.id or "ask"
+
+    if decision == "reject":
+        # A failed artifact rather than a branch.  The block grammar has no
+        # conditional, and the enclosing container's on_failure already
+        # expresses both readings — "stop" halts the sequence, "continue"
+        # carries on with the rejection recorded — so inventing a branch for
+        # this one case would be a second control-flow mechanism to keep in
+        # agreement with the first.
+        return Artifact(
+            summary=f"{label}: rejected by {who}"
+                    + (f" - {answer}" if answer else ""),
+            decisions=[
+                f"human rejected at {label}: {answer or 'no reason given'}"
+            ],
+            failed=True,
+            created_at=time.time(),
+        )
+
+    if block.ask_variable:
+        ctx.variables[block.ask_variable] = answer
+    if block.id:
+        note = f"Human checkpoint '{label}' was approved by {who}."
+        if answer:
+            note += f" They said: {answer}"
+        ctx.context_notes[block.id] = note
+    return Artifact(
+        summary=f"{label}: approved by {who}"
+                + (f" - {answer}" if answer else ""),
+        decisions=[f"human approved at {label}"],
+        created_at=time.time(),
+    )
+
+
+async def _execute_group(block: Block, ctx: ExecutionContext) -> Artifact:
+    """Group dispatch as a named coroutine so the self-improvement
+    wrapper can re-invoke it uniformly with the loop executors."""
+    return await _execute_sequence(
+        block.body, ctx, on_failure=(block.on_failure or "continue"),
+    )
+
+
+async def _maybe_self_improve(block: Block, ctx: ExecutionContext,
+                              inner) -> Artifact:
+    """Execute a container block; when it carries ``self_improve``,
+    judge the outcome and — only when a tangible, outcome-affecting
+    text improvement exists — patch the card's TEXT (never privilege)
+    and restart this level with the revised text.
+
+    Every guard lives in app/utils/self_improve.py: the field
+    whitelist (instructions/state_context only), existing-id keying
+    (so signed scope approvals are never orphaned), the structure
+    fingerprint (text changed and ONLY text), the cross-run
+    oscillation guard, and the per-block + run-wide budgets.  The
+    verdict call is app/agents/improve_evaluator.py, which resolves
+    every failure to "accept" so a flaky judge cannot spin edits.
+
+    Durability: an applied patch is persisted to the LIVE card
+    (best-effort — ids that drifted since launch simply don't apply)
+    and a lesson record is appended to the project's ledger either
+    way, so run N+1's judge refines rather than re-derives.
+    """
+    if not getattr(block, "self_improve", False):
+        return await inner(block, ctx)
+
+    from app.utils import self_improve as si
+    from .improve_evaluator import evaluate_improvement
+
+    improve_max = si.resolve_improve_max(getattr(block, "improve_max", None))
+    drift = getattr(block, "improve_drift", None) or "conservative"
+    criterion = (getattr(block, "improve_criterion", None) or "").strip()
+
+    card_id = None
+    if ctx.storage is not None:
+        run = ctx.storage.get(ctx.run_id)
+        card_id = getattr(run, "card_id", None) if run else None
+    ledger = None
+    if ctx.project_id:
+        try:
+            from app.utils.paths import get_project_dir
+            ledger = si.LessonLedger(get_project_dir(ctx.project_id))
+        except Exception as e:  # noqa: BLE001 — ledger is best-effort
+            logger.debug(f"self_improve: ledger unavailable: {e}")
+
+    current = block
+    artifact: Optional[Artifact] = None
+    # Revision breadcrumbs carried ACROSS restarts.  Each restart gets a
+    # fresh artifact from ``inner``, so a note appended to the discarded
+    # pass's artifact dies with it — the FINAL artifact must carry the
+    # full trail or a mid-run revision is invisible in the durable
+    # record (improve_revision events are transient by design).
+    trail: List[str] = []
+    for revision in range(improve_max + 1):
+        artifact = await inner(current, ctx)
+        if trail:
+            artifact.decisions = list(trail) + list(artifact.decisions)
+        if ctx.cancel_requested():
+            return artifact
+        lessons = (
+            ledger.for_block(card_id, block.id)
+            if (ledger and card_id) else []
+        )
+        verdict = await evaluate_improvement(
+            current, artifact, criterion=criterion, drift=drift,
+            lessons=lessons, revision=revision,
+        )
+        v = verdict.get("verdict") or "accept"
+        patch = verdict.get("patch") or {}
+        rec: Dict[str, Any] = {
+            "run_id": ctx.run_id, "card_id": card_id,
+            "block_id": block.id, "revision": revision, "verdict": v,
+            "rationale": verdict.get("rationale", ""),
+            "lesson": verdict.get("lesson", ""),
+            "drift": drift, "applied": False, "persisted": False,
+        }
+        stop_reason: Optional[str] = None
+        if v != "revise" or not patch:
+            stop_reason = v if v in ("accept", "stop") else "accept"
+        elif revision >= improve_max:
+            stop_reason = "budget_exhausted"
+        elif ctx.improve_edits_used >= si.run_improve_ceiling():
+            stop_reason = "run_ceiling"
+        else:
+            subtree = current.model_dump()
+            errors = si.validate_improve_patch(patch, subtree)
+            if errors:
+                stop_reason = "invalid_patch"
+                rec["errors"] = errors[:5]
+            else:
+                p_hash = si.patch_hash(patch)
+                if ledger and card_id and ledger.seen_patch_hash(
+                        card_id, block.id, p_hash):
+                    stop_reason = "oscillation"
+                else:
+                    before = si.structure_fingerprint(subtree)
+                    # Pre-image MUST be extracted before application —
+                    # it is what makes the revision revertable (the
+                    # revert endpoint replays it through the same
+                    # guarded patch path).  See si.extract_pre_image.
+                    pre_image = si.extract_pre_image(patch, subtree)
+                    si.apply_improve_patch(subtree, patch)
+                    if si.structure_fingerprint(subtree) != before:
+                        # Impossible by construction; belt-and-braces.
+                        stop_reason = "structure_changed"
+                    else:
+                        rec.update({
+                            "patch": patch, "patch_hash": p_hash,
+                            "pre_image": pre_image,
+                            "applied": True,
+                            "persisted": si.persist_patch_to_card(
+                                ctx.project_id, card_id, patch),
+                        })
+                        ctx.improve_edits_used += 1
+                        current = Block(**subtree)
+        if ledger:
+            ledger.record(rec)
+        await _emit(ctx, {
+            "type": "improve_revision",
+            "block_id": block.id, "revision": revision, "verdict": v,
+            "rationale": (verdict.get("rationale") or "")[:500],
+            "applied": rec["applied"], "persisted": rec["persisted"],
+            "stop": stop_reason, "at": time.time(),
+        })
+        if stop_reason:
+            if stop_reason != "accept":
+                artifact.decisions = list(artifact.decisions) + [
+                    f"self-improve: {stop_reason}",
+                ]
+            return artifact
+        trail.append(
+            f"self-improve: revision {revision + 1} applied — "
+            f"restarting this level"
+        )
+    return artifact
