@@ -15,7 +15,10 @@ Covers the contract at three levels:
      token estimators must count it.
 
 The negative cases carry the weight here: an UNSIGNED thinking block must be
-dropped (the API rejects a block whose signature is missing), and providers
+surfaced with ``signature=None`` — NOT silently dropped at the stream layer,
+which left a gap that shifted every later block out of its original position
+(the assembler, ``LLMProvider._ordered_assistant_content``, then skips the
+whole turn's passback: all-or-nothing) — and providers
 that do not advertise ``thinking_passback`` must never be handed the kwarg.
 """
 
@@ -182,8 +185,14 @@ class TestBedrockThinkingCapture:
         assert [d.content for d in deltas] == ["visible"]
 
     @pytest.mark.asyncio
-    async def test_unsigned_thinking_block_dropped(self, bedrock_provider, basic_config):
-        """No signature_delta means the block cannot be echoed back."""
+    async def test_unsigned_thinking_block_surfaced_with_none_signature(self, bedrock_provider, basic_config):
+        """No signature_delta: the block is YIELDED with signature=None.
+
+        Silently dropping it at the stream layer left a gap that shifted
+        every later block out of its original position — the assembler now
+        makes the all-or-nothing call with full-turn information instead
+        (see test_unsigned_thinking_all_or_nothing.py).
+        """
         chunks = [
             _bedrock_chunk({"type": "content_block_start", "index": 0,
                             "content_block": {"type": "thinking"}}),
@@ -194,7 +203,10 @@ class TestBedrockThinkingCapture:
         ]
         events = [e async for e in bedrock_provider._parse_stream({"body": iter(chunks)}, basic_config)]
 
-        assert [e for e in events if isinstance(e, ThinkingBlock)] == []
+        blocks = [e for e in events if isinstance(e, ThinkingBlock)]
+        assert len(blocks) == 1
+        assert blocks[0].signature is None
+        assert blocks[0].content == "unsigned"
         # ...but the text still reached the UI.
         assert any(isinstance(e, ThinkingDelta) for e in events)
 
@@ -301,7 +313,13 @@ class TestAnthropicThinkingCapture:
         assert [e.content for e in events if isinstance(e, ThinkingDelta)] == ["shown"]
 
     @pytest.mark.asyncio
-    async def test_unsigned_thinking_block_dropped(self, anthropic_provider):
+    async def test_unsigned_thinking_block_surfaced_with_none_signature(self, anthropic_provider):
+        """No signature_delta: the block is YIELDED with signature=None.
+
+        Mirrors the Bedrock case — the all-or-nothing decision belongs to
+        the assembler, not the stream parser (a silent drop here gapped
+        the turn and shifted later blocks out of position).
+        """
         _attach_stream(anthropic_provider, [
             _a_cb_start(0, SimpleNamespace(type="thinking")),
             _a_delta(0, SimpleNamespace(type="thinking_delta", thinking="unsigned")),
@@ -310,7 +328,10 @@ class TestAnthropicThinkingCapture:
         ])
         events = [e async for e in anthropic_provider._do_stream({})]
 
-        assert [e for e in events if isinstance(e, ThinkingBlock)] == []
+        blocks = [e for e in events if isinstance(e, ThinkingBlock)]
+        assert len(blocks) == 1
+        assert blocks[0].signature is None
+        assert blocks[0].content == "unsigned"
 
     @pytest.mark.asyncio
     async def test_redacted_thinking_captured(self, anthropic_provider):

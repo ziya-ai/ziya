@@ -162,7 +162,11 @@ class TestBuildProviderConfig:
         assert config.suppress_tools is False
         assert config.iteration == 0
 
-    def test_adaptive_thinking(self):
+    def test_adaptive_thinking(self, monkeypatch):
+        # Self-isolate: a ZIYA_THINKING_EFFORT in the runner's environment
+        # legitimately overrides the model default, which is exactly what
+        # this test must not depend on.
+        monkeypatch.delenv("ZIYA_THINKING_EFFORT", raising=False)
         executor = self._make_executor({
             "max_output_tokens": 16384,
             "supports_adaptive_thinking": True,
@@ -278,7 +282,11 @@ class TestMessageBuildersIntegration:
         orphaned = self._validate_conversation([assistant_msg, tool_result_msg])
         assert orphaned == [], f"Orphaned tool_use IDs: {orphaned}"
 
-    def test_bedrock_strips_mcp_prefix(self):
+    def test_bedrock_keeps_mcp_prefix(self):
+        # History tool_use names must MATCH the prefixed names advertised to
+        # the model; stripping the prefix made the model loop "correcting"
+        # its own prior calls.  (Behavior reversed with the shared
+        # _ordered_assistant_content assembler.)
         from app.providers.bedrock import BedrockProvider
         provider = BedrockProvider.__new__(BedrockProvider)
         provider.model_config = {}
@@ -287,9 +295,8 @@ class TestMessageBuildersIntegration:
             text="",
             tool_uses=[{"id": "t1", "name": "mcp_run_shell_command", "input": {}}],
         )
-        # Bedrock should strip mcp_ prefix
         tool_block = msg['content'][0]
-        assert tool_block['name'] == 'run_shell_command'
+        assert tool_block['name'] == 'mcp_run_shell_command'
 
     def test_anthropic_preserves_name(self):
         from app.providers.anthropic_direct import AnthropicDirectProvider
