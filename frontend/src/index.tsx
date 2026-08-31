@@ -14,13 +14,10 @@ import { App } from "./components/App";
 import { RootErrorBoundary } from "./components/RootErrorBoundary";
 import { Debug } from "./components/Debug";
 import { SystemInfo } from "./components/SystemInfo";
-import { ChatProvider } from "./context/ChatContext";
-import { FolderProvider } from "./context/FolderContext";
 import { ThemeProvider } from "./context/ThemeContext";
 import { ConfigProvider } from './context/ConfigContext';
-import { QuestionProvider } from "./context/QuestionContext";
 import { ServerStatusProvider } from './context/ServerStatusContext';
-import { ProjectProvider } from './context/ProjectContext';
+import { AppProviders } from './components/AppProviders';
 
 import { lazyWithRetry } from './utils/lazyWithRetry';
 // Lazy-load the render harness — only needed for headless diagram export
@@ -190,10 +187,7 @@ root.render(
         <ThemeProvider>
             <ServerStatusProvider>
                 <RootErrorBoundary>
-                    <ProjectProvider>
-                        <ChatProvider>
-                            <FolderProvider>
-                                <QuestionProvider>
+                    <AppProviders>
                                     <BrowserRouter>
                                         <Routes>
                                             <Route path="/" element={<App />} />
@@ -231,10 +225,7 @@ root.render(
                                             />
                                         </Routes>
                                     </BrowserRouter>
-                                </QuestionProvider>
-                            </FolderProvider>
-                        </ChatProvider>
-                    </ProjectProvider>
+                    </AppProviders>
                 </RootErrorBoundary>
             </ServerStatusProvider>
         </ThemeProvider>
