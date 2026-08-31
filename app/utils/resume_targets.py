@@ -32,7 +32,7 @@ validation during what is only an id lookup.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Blocks that push a binding frame, and therefore whose bodies have no
 # durable per-block state.  Must stay in step with the containers that
@@ -347,6 +347,76 @@ def parallel_replay_indices(
         if isinstance(idx, int) and idx >= 0:
             out.append(idx)
     return sorted(set(out))
+
+
+def serial_replay_prefix(
+    root: Dict[str, Any],
+    block_id: str,
+    summaries: Optional[List[Dict[str, Any]]],
+    call_snapshots: Optional[Dict[str, Any]] = None,
+    inherited: Optional[Set[int]] = None,
+) -> Optional[int]:
+    """Leading iterations of a SERIAL loop that a resume can replay.
+
+    Returns the index the loop should START at, or None when ``block_id``
+    is not a serial loop — so the caller can tell "no prefix to bank"
+    (0) apart from "not applicable".
+
+    The serial counterpart to ``parallel_replay_indices``, and the reason
+    a block-level retry of a serial loop no longer discards its banked
+    iterations.  Until this existed only the parallel shape consulted its
+    record: a serial campaign held on iteration 22 re-planned from zero
+    and re-paid for all 22, while the tile's own recovery banner promised
+    they would be "replayed from record".
+
+    A PREFIX rather than an index set, because a serial loop's iterations
+    are dependent: ``{{previous}}`` binds the immediately preceding
+    iteration, so a gap cannot be tolerated the way it can in a fan-out.
+    That is also why the walk STOPS at the first index that is not a
+    retained pass rather than skipping it:
+
+    * a ``failed`` iteration is where the work actually stopped, so it is
+      the first thing the resume must re-run;
+    * an iteration past PASS_ARTIFACT_RETENTION_CAP holds only a summary,
+      so replaying it would feed the next iteration an empty
+      ``{{previous}}``.  Stopping there still banks everything before it,
+      which is strictly better than the whole-loop re-run that was the
+      only prior option.
+
+    ``inherited`` is the set of indices the run carried from an earlier
+    attempt (``run.resume_iteration_artifacts``).  Consulted alongside
+    ``summaries`` for the same reason ``resolve_iteration_resume`` does
+    it: a run that is itself a resume records summaries only for the
+    iterations it EXECUTED, so a chain of resumes would otherwise shed
+    its banked prefix one attempt at a time.
+
+    Presence here is a claim about the RECORD, not about the disk.  The
+    caller must read the artifacts in index order and truncate at the
+    first one missing, since a hole would break the dependency chain
+    this prefix exists to preserve.
+    """
+    tree, _chain = locate_block(root, call_snapshots, block_id)
+    if tree is None:
+        return None
+    node = find_block(tree, block_id)
+    if not is_loop_node(node) or (node or {}).get("repeat_parallel"):
+        return None
+    recorded: Dict[int, Dict[str, Any]] = {}
+    for s in (summaries or []):
+        idx = s.get("index")
+        if isinstance(idx, int) and idx >= 0:
+            recorded[idx] = s
+    carried = set(inherited or ())
+    start = 0
+    while True:
+        s = recorded.get(start)
+        if s is None:
+            if start not in carried:
+                break
+        elif s.get("status") != "passed" or not s.get("has_artifact", True):
+            break
+        start += 1
+    return start
 
 
 def find_resume_target(
