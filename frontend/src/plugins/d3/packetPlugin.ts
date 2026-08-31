@@ -17,6 +17,58 @@ import {
 } from '../../utils/d3Plugins/packetPlugin';
 import { getOptimalTextColor } from '../../utils/colorUtils';
 import { getZoomScript, getDownloadSvgScript } from '../../utils/popupScriptUtils';
+import JSON5 from 'json5';
+import { extractDefinition } from '../../utils/d3Plugins/specEnvelope';
+
+/**
+ * Strip a markdown code fence from a definition string (D-215). Model output
+ * frequently wraps a valid packet spec (JSON or `packet-beta` DSL) in a
+ * ```json / ```mermaid fence; the raw JSON.parse choked on the leading
+ * backticks (w4-04) and parsePacketBetaDsl's `/^packet/` sniff never fired on
+ * the fenced DSL (w4-05). Handles a matched fence, an unmatched leading/trailing
+ * fence, and a bare language tag. Pure / DOM-free / testable.
+ */
+export function stripPacketFence(raw: string): string {
+  let t = String(raw).trim();
+  const matched = /^```[a-zA-Z0-9_-]*\s*\n?([\s\S]*?)\n?```$/.exec(t);
+  if (matched) return matched[1].trim();
+  t = t.replace(/^```[a-zA-Z0-9_-]*\s*/, '').replace(/```\s*$/, '');
+  return t.trim();
+}
+
+/**
+ * Normalise smart / curly quotes to ASCII so a copy-pasted payload parses
+ * (D-214 w4-12). json5 does NOT accept U+201C/U+201D/U+2018/U+2019, so this
+ * must run before the json5 fallback. Pure / testable.
+ */
+export function normalizePacketSmartQuotes(raw: string): string {
+  return String(raw)
+    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+    .replace(/[\u2018\u2019\u201A\u201B]/g, "'");
+}
+
+/**
+ * Lenient parse of a JSON-ish packet definition (D-214). Tries strict
+ * JSON.parse first (fast path, byte-identical to the old behaviour for valid
+ * input), then a json5 fallback after stripping a markdown fence, normalising
+ * smart quotes, and slicing to the outermost {...} (drops leading prose /
+ * trailing `;`). json5 recovers trailing commas (w4-01), unquoted keys (w4-02),
+ * single quotes (w4-03), // comments + trailing `;` (w4-14); smart quotes
+ * (w4-12) are handled by the pre-normalisation. Returns the parsed object, or
+ * `undefined` when unrecoverable. Pure / DOM-free / testable.
+ */
+export function lenientParsePacketJson(raw: string): any {
+  if (typeof raw !== 'string') return undefined;
+  const cleaned = normalizePacketSmartQuotes(stripPacketFence(raw)).trim();
+  if (!cleaned) return undefined;
+  try { return JSON.parse(cleaned); } catch (_e) { /* fall through */ }
+  const first = cleaned.indexOf('{');
+  const last = cleaned.lastIndexOf('}');
+  if (first === -1 || last === -1 || last < first) return undefined;
+  const body = cleaned.slice(first, last + 1);
+  try { return JSON.parse(body); } catch (_e2) { /* fall through to json5 */ }
+  try { return JSON5.parse(body); } catch (_e3) { return undefined; }
+}
 
 function renderError(container: HTMLElement, message: string, rawSpec: any, isDarkMode: boolean): void {
   const specStr = typeof rawSpec === 'string' ? rawSpec
@@ -53,6 +105,13 @@ function renderError(container: HTMLElement, message: string, rawSpec: any, isDa
       </details>
     </div>
   `;
+
+  // Tag the card so the headless harness (DiagramRenderPage) fails fast with
+  // this message instead of polling for an svg/canvas/img the card never
+  // contains and reporting a generic "svg:0" timeout. setAttribute, not
+  // template interpolation: the message can contain quotes.
+  const card = container.firstElementChild;
+  if (card) card.setAttribute('data-diagram-error', message);
 }
 
 /**
@@ -71,46 +130,106 @@ function renderError(container: HTMLElement, message: string, rawSpec: any, isDa
  * to a width in [1, 512] so a bad range can never produce a 0/negative or
  * multi-million-pixel cell.
  */
-function parsePacketBetaDsl(text: string): { type: 'packet'; title: string; bitWidth: number; fields: Array<{ name: string; bits: number }> } | null {
-  const trimmed = text.trim();
+export function parsePacketBetaDsl(text: string): { type: 'packet'; title: string; bitWidth: number; fields: Array<{ name: string; bits: number }> } | null {
+  // De-fence defensively (D-215): callers pass de-fenced text, but a direct
+  // caller (or a test) may hand a fenced DSL. Stripping here means the
+  // `/^packet/` sniff below sees the real first token, not backticks.
+  const trimmed = stripPacketFence(text);
   if (!/^packet(-beta)?/.test(trimmed)) return null;
   const lines = trimmed.split('\n');
   const titleLine = lines.find(l => l.trim().startsWith('title'));
   const title = titleLine
     ? titleLine.trim().replace(/^title\s+/, '').replace(/^"([\s\S]*)"$/, '$1')
     : 'Packet';
+  const clampWidth = (w: number): number => {
+    if (!Number.isFinite(w) || w < 1) return 1;
+    return w > 512 ? 512 : w;
+  };
+  const unquote = (s: string): string => s.trim().replace(/^"([\s\S]*)"$/, '$1');
   const fields: Array<{ name: string; bits: number }> = [];
   for (const line of lines) {
-    const m = line.trim().match(/^(-?\d+)\s*-\s*(-?\d+)\s*:\s*([\s\S]*)$/);
+    const t = line.trim();
+    // Mermaid v11 RELATIVE width: `+N: label` — N bits appended after the
+    // previous field (D-216). Checked first: a `+`-prefixed line can never
+    // match the absolute START-END pattern below.
+    let rel = t.match(/^\+\s*(\d+)\s*:\s*([\s\S]*)$/);
+    if (rel) {
+      fields.push({ name: unquote(rel[2]), bits: clampWidth(parseInt(rel[1], 10)) });
+      continue;
+    }
+    // Absolute START-END range: width END-START+1. Inverted / zero-width /
+    // non-finite / absurd ranges are clamped to [1, 512].
+    const m = t.match(/^(-?\d+)\s*-\s*(-?\d+)\s*:\s*([\s\S]*)$/);
     if (!m) continue;
     let a = parseInt(m[1], 10);
     let b = parseInt(m[2], 10);
-    const label = m[3].trim().replace(/^"([\s\S]*)"$/, '$1');
+    const label = unquote(m[3]);
     if (!Number.isFinite(a)) a = 0;
     if (!Number.isFinite(b)) b = a;
-    let w = b - a + 1;
-    if (!Number.isFinite(w) || w < 1) w = 1;
-    if (w > 512) w = 512;
-    fields.push({ name: label, bits: w });
+    fields.push({ name: label, bits: clampWidth(b - a + 1) });
   }
   return fields.length > 0 ? { type: 'packet', title, bitWidth: 32, fields } : null;
 }
 
+/**
+ * Resolve the backdrop a field label actually reads against (D-227).
+ *
+ * A field/section fill of `transparent`/`none` (or a zero-alpha rgba/hsla)
+ * does NOT paint a surface — the themed canvas shows THROUGH it. The shared
+ * colour helpers are theme-blind: `namedColorToHex` maps `transparent`→`#ffffff`
+ * on the written assumption of a white page, so `getOptimalTextColor` commits
+ * to black. That is correct on the light canvas (#ffffff) but wrong on the dark
+ * canvas (#1e1e1e), where black label text lands on the dark surface at 1.26:1.
+ *
+ * The plugin is the only place that knows BOTH that the fill is transparent AND
+ * which themed canvas is behind it, so the theme-correct fix lives here, not in
+ * the theme-blind colour table: when the fill is see-through, resolve the label
+ * against the real canvas background (`canvasBg`, itself derived from the active
+ * theme) instead of the white-assuming constant. Any opaque fill is returned
+ * unchanged, so non-transparent output is byte-identical to before.
+ *
+ * Pure / DOM-free / testable.
+ */
+export function effectiveCellBackdrop(fillBg: string | undefined, canvasBg: string): string {
+  if (fillBg == null) return canvasBg;
+  const norm = String(fillBg).trim().toLowerCase();
+  if (norm === 'transparent' || norm === 'none' || norm === '') return canvasBg;
+  // Zero-alpha rgba()/hsla() also paints nothing — the canvas shows through.
+  const alpha = norm.match(/^(?:rgba|hsla)\([^)]*[,/]\s*(0|0?\.0+|0%)\s*\)$/);
+  if (alpha) return canvasBg;
+  return fillBg;
+}
+
 function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boolean): void {
-  // Accept either a direct PacketSpec or { definition: jsonString }
+  // Accept either a direct PacketSpec or { definition: string }. The string
+  // may be: packet-beta DSL text (bridged), fenced content (D-215), or
+  // JSON with the common LLM slips — trailing commas, unquoted keys, single
+  // quotes, smart quotes, comments (D-214). rawSpec is left UNCHANGED so the
+  // Source toggle still shows the author's original definition.
+  // extractDefinition also covers the envelope whose definition is ALREADY an
+  // object (a 
   let pkt: PacketSpec;
-  // If the definition is packet-beta DSL text, bridge it to a loose PacketSpec
-  // JSON string before the JSON.parse path below (normalizePacketSpec then
-  // wraps the flat fields into rows). Both representations now render.
   if (typeof rawSpec?.definition === 'string') {
-    const dsl = parsePacketBetaDsl(rawSpec.definition);
-    if (dsl) rawSpec = { ...rawSpec, definition: JSON.stringify(dsl) };
-  }
-  if (typeof rawSpec.definition === 'string') {
-    try { pkt = JSON.parse(rawSpec.definition); }
-    catch { renderError(container, 'Invalid JSON in definition', rawSpec, isDarkMode); return; }
+    // De-fence + smart-quote normalise once, then try the DSL bridge (its
+    // `/^packet/` sniff needs the fence gone). parsePacketBetaDsl handles both
+    // absolute ranges and v11 `+N:` relative widths.
+    const cleaned = normalizePacketSmartQuotes(stripPacketFence(rawSpec.definition));
+    const dsl = parsePacketBetaDsl(cleaned);
+    if (dsl) {
+      pkt = dsl as unknown as PacketSpec;
+    } else {
+      // Not DSL — lenient JSON parse (strict first, json5 fallback). Only when
+      // even that fails do we surface the error card (no more silent 30s hang
+      // on a recoverable slip).
+      const parsed = lenientParsePacketJson(def);
+      if (parsed === undefined) {
+        renderError(container, 'Invalid JSON in definition', rawSpec, isDarkMode);
+        return;
+      }
+      pkt = parsed as PacketSpec;
+    }
   } else {
-    pkt = rawSpec as PacketSpec;
+    pkt = def as PacketSpec;
   }
 
   // Normalize common alternate formats (flat fields, array wrapper, name/width aliases)
@@ -366,8 +485,11 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
 
         // Field label — only if cell is wide enough
         if (fw >= 20 && name) {
-          // Use getOptimalTextColor against actual bg for accessibility
-          const labelColor = getOptimalTextColor(c.bg);
+          // Use getOptimalTextColor against the backdrop the label actually
+          // reads against (D-227): a transparent/none fill lets the themed
+          // canvas show through, so resolve against bgColor, not the
+          // white-assuming resolved fill.
+          const labelColor = getOptimalTextColor(effectiveCellBackdrop(c.bg, bgColor));
           // Scale the font to fit the cell (mirrors bracket-label scaling);
           // truncate with an ellipsis only when even the minimum size cannot
           // fit. The tooltip below always carries the full name.
