@@ -272,3 +272,79 @@ class TestToolFilter:
             block = _task()  # no scope
             await task_executor.execute_task_block(block)
         assert fake_executor.captured_tools == [fake_tool]
+
+
+# ── Conversation isolation ───────────────────────────────────────────
+
+class TestConversationIsolation:
+    """A task-card run must start from a FRESH context, never the parent
+    conversation's transcript.
+
+    The isolation guarantee lives entirely in execute_task_block's
+    message construction: it builds exactly [SystemMessage, HumanMessage]
+    from the block's own scope, and stream_with_tools uses its
+    ``conversation_id`` argument only for usage tracking / tool context,
+    never to load stored history.  These tests pin that seam: if anyone
+    ever prepends parent-chat messages (or threads a chat id through as
+    the conversation), the structure assertions here break.
+    """
+
+    @pytest.mark.asyncio
+    async def test_messages_are_exactly_system_plus_instructions(
+        self, fake_executor,
+    ):
+        from langchain_core.messages import SystemMessage, HumanMessage
+        block = _task("summarize the design doc")
+        await task_executor.execute_task_block(block)
+        msgs = fake_executor.captured_messages
+        assert msgs is not None, "executor not called"
+        # Exactly two messages: no parent transcript, no prior AI turns.
+        assert len(msgs) == 2, (
+            f"expected a fresh 2-message context, got {len(msgs)}: "
+            f"{[type(m).__name__ for m in msgs]}"
+        )
+        assert isinstance(msgs[0], SystemMessage)
+        assert isinstance(msgs[1], HumanMessage)
+        # The human turn is the block's instructions verbatim — not a
+        # chat message inherited from the launching conversation.
+        assert msgs[1].content == "summarize the design doc"
+
+    @pytest.mark.asyncio
+    async def test_system_prompt_declares_sandbox(self, fake_executor):
+        block = _task("do it")
+        await task_executor.execute_task_block(block)
+        sys_text = _system_text(fake_executor)
+        assert "isolated task" in sys_text
+        assert "sandbox" in sys_text
+
+    @pytest.mark.asyncio
+    async def test_conversation_id_is_run_id_not_a_chat_id(
+        self, fake_executor,
+    ):
+        # The run's conversation identity is the (fresh, unique) run_id.
+        # Even though bindings record a source_conversation_id on the
+        # TaskRun for tile linkage, that id must never become the
+        # conversation the model streams under — a fresh run_id means
+        # there is no stored history for stream_with_tools' consumers
+        # to associate with this stream.
+        block = _task("do it")
+        await task_executor.execute_task_block(block, run_id="run-fresh-1")
+        assert fake_executor.captured_kwargs.get("conversation_id") == "run-fresh-1"
+
+    @pytest.mark.asyncio
+    async def test_launch_signature_has_no_history_channel(self):
+        # Negative structural check: execute_task_block accepts no
+        # parameter through which a parent transcript could arrive.
+        # If someone adds one (e.g. ``history=`` / ``messages=`` /
+        # ``parent_conversation=``), this test forces them to revisit
+        # the isolation contract deliberately.
+        import inspect
+        params = set(
+            inspect.signature(task_executor.execute_task_block).parameters
+        )
+        forbidden = {"history", "messages", "conversation",
+                     "parent_conversation", "chat_messages"}
+        assert not (params & forbidden), (
+            f"execute_task_block grew a history-bearing parameter: "
+            f"{params & forbidden}"
+        )
