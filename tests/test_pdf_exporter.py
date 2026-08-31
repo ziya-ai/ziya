@@ -190,20 +190,25 @@ class TestExportConversationPdfOrchestration:
         assert "footerHtml" not in payload
 
     @pytest.mark.asyncio
-    async def test_footer_passed_through_when_enabled(self):
+    async def test_footer_is_per_page_template_not_body_block(self):
+        """includeFooter selects the PER-PAGE footer template (logo + tagline
+        + metadata drawn in the bottom margin of every page) — the old
+        end-of-document footerHtml block, which cost a mostly-empty final
+        page, must NOT enter the /print payload on the PDF path."""
         fake_session = MagicMock()
         fake_session.capture_pdf = AsyncMock(return_value=b"%PDF")
         with patch.object(pdf_exporter, "get_render_session",
-                          AsyncMock(return_value=fake_session)), \
-             patch("app.utils.conversation_exporter._create_footer",
-                   return_value="<div class='footer'>Ziya vX</div>"):
+                          AsyncMock(return_value=fake_session)):
             await pdf_exporter.export_conversation_pdf(
                 messages=[{"role": "human", "content": "hi"}],
                 options={"includeFooter": True},
                 version="9.9", model="claude", provider="bedrock",
             )
         payload = fake_session.capture_pdf.call_args[0][0]
-        assert payload["footerHtml"] == "<div class='footer'>Ziya vX</div>"
+        kwargs = fake_session.capture_pdf.call_args.kwargs
+        ft = kwargs.get("footer_template")
+        assert ft and "claude (Bedrock)" in ft and "v9.9" in ft
+        assert "footerHtml" not in payload
 
     @pytest.mark.asyncio
     async def test_loads_by_id_when_no_messages(self):
