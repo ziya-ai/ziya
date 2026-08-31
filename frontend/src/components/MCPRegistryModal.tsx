@@ -624,7 +624,16 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                 const data = await response.json();
                 setPreviewService(data);
             } else {
-                message.error('Failed to load service preview');
+                // A bare "Failed to load" discarded the server's detail (here,
+                // a registry authorization failure), leaving nothing actionable.
+                let detail = `HTTP ${response.status}`;
+                try {
+                    const body = await response.json();
+                    if (body?.detail) detail = String(body.detail);
+                } catch {
+                    // Non-JSON error body; the status code is all there is.
+                }
+                message.error(`Failed to load service preview: ${detail}`);
                 setShowPreview(false);
             }
         } catch (error) {
@@ -1721,20 +1730,129 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                             </Card>
                         )}
 
-                        {/* Installation Preview */}
-                        {previewService.preview && (
-                            <Card size="small" title="What Will Be Installed">
-                                <Alert
-                                    message={
-                                        <div>
-                                            <Text>This service will be installed as: </Text>
-                                            <Text code>{previewService.preview.service_name}</Text>
-                                        </div>
-                                    }
-                                    description={previewService.preview.description}
-                                    type="info"
-                                    showIcon
-                                />
+                        {/* The verbatim strings the registry publishes; the
+                            browse list shows none of these. */}
+                        {previewService.preview?.instructions && (
+                            <Card size="small" title="Registry Instructions">
+                                <Descriptions column={1} size="small">
+                                    {previewService.preview.instructions.install && (
+                                        <Descriptions.Item label="Install">
+                                            <code>{previewService.preview.instructions.install}</code>
+                                        </Descriptions.Item>
+                                    )}
+                                    {previewService.preview.instructions.command && (
+                                        <Descriptions.Item label="Command">
+                                            <code>
+                                                {[previewService.preview.instructions.command,
+                                                  ...(previewService.preview.instructions.args || [])].join(' ')}
+                                            </code>
+                                        </Descriptions.Item>
+                                    )}
+                                </Descriptions>
+                                {previewService.preview.detailSource !== 'registry' && (
+                                    <Alert
+                                        type="warning"
+                                        showIcon
+                                        style={{ marginTop: 8 }}
+                                        message="Limited detail"
+                                        description="This record came from the mcp-registry CLI fallback, which carries no install bundle."
+                                    />
+                                )}
+                            </Card>
+                        )}
+
+                        {/* The install stanza itself, with the policy verdict
+                            each step will get at install time. */}
+                        {previewService.preview?.bundleKind && (
+                            <Card size="small" title={`Install Stanza (${previewService.preview.bundleKind})`}>
+                                <Descriptions column={1} size="small">
+                                    {Object.entries(previewService.preview.bundleDetails || {}).map(([k, v]) => (
+                                        <Descriptions.Item key={k} label={k}>
+                                            <code>{Array.isArray(v) ? (v.join(', ') || '—') : String(v ?? '—')}</code>
+                                        </Descriptions.Item>
+                                    ))}
+                                </Descriptions>
+                                {(previewService.preview.installSteps || []).length > 0 && (
+                                    <div style={{ marginTop: 8 }}>
+                                        <Text strong>Install steps (run in order):</Text>
+                                        <List
+                                            size="small"
+                                            dataSource={previewService.preview.installSteps}
+                                            renderItem={(step: any, i: number) => (
+                                                <List.Item>
+                                                    <Space align="start">
+                                                        <Text type="secondary">{i + 1}.</Text>
+                                                        <code>{step.display}</code>
+                                                        {step.allowed
+                                                            ? <Tag color="green">allowed</Tag>
+                                                            : <Tooltip title={step.rejection}><Tag color="red">blocked</Tag></Tooltip>}
+                                                    </Space>
+                                                </List.Item>
+                                            )}
+                                        />
+                                    </div>
+                                )}
+                                {previewService.preview.run && (
+                                    <div style={{ marginTop: 8 }}>
+                                        <Text strong>Run on every server start: </Text>
+                                        <code>{previewService.preview.run.display}</code>
+                                        {/* pendingInstall: the entrypoint does not exist
+                                            on disk until the install steps run, so this
+                                            is not a policy refusal yet. */}
+                                        {!previewService.preview.run.allowed && (
+                                            <Alert
+                                                type={previewService.preview.run.pendingInstall ? 'info' : 'error'}
+                                                showIcon
+                                                style={{ marginTop: 8 }}
+                                                message={previewService.preview.run.pendingInstall
+                                                    ? 'Run command is re-checked after install'
+                                                    : 'Run command rejected by policy'}
+                                                description={previewService.preview.run.pendingInstall
+                                                    ? 'This entrypoint is created by the install steps above, so it cannot be verified yet. The install re-validates it and fails if it is still refused.'
+                                                    : previewService.preview.run.rejection}
+                                            />
+                                        )}
+                                        {(previewService.preview.run.droppedEnv || []).length > 0 && (
+                                            <Alert
+                                                type="warning"
+                                                showIcon
+                                                style={{ marginTop: 8 }}
+                                                message="Unsafe env vars dropped"
+                                                description={previewService.preview.run.droppedEnv.join(', ')}
+                                            />
+                                        )}
+                                    </div>
+                                )}
+                            </Card>
+                        )}
+
+                        {/* Local footprint: directory, config file, and the
+                            exact stanza that will be persisted. */}
+                        {previewService.preview?.writes && (
+                            <Card size="small" title="What Gets Written Locally">
+                                <Descriptions column={1} size="small">
+                                    <Descriptions.Item label="Install directory">
+                                        <code>{previewService.preview.writes.installDir}</code>
+                                    </Descriptions.Item>
+                                    <Descriptions.Item label="Config file">
+                                        <code>{previewService.preview.writes.configPath}</code>
+                                    </Descriptions.Item>
+                                    <Descriptions.Item label="Server name">
+                                        <code>{previewService.preview.writes.serverName}</code>
+                                    </Descriptions.Item>
+                                </Descriptions>
+                                <Text strong>mcpServers entry to be added:</Text>
+                                <pre style={{ marginTop: 8, maxHeight: 220, overflow: 'auto', fontSize: 12, whiteSpace: 'pre-wrap' }}>
+                                    {JSON.stringify(previewService.preview.writes.configEntry, null, 2)}
+                                </pre>
+                                {previewService.preview.prerequisites && !previewService.preview.prerequisites.ok && (
+                                    <Alert
+                                        type="warning"
+                                        showIcon
+                                        message="Prerequisite missing"
+                                        description={previewService.preview.prerequisites.message}
+                                    />
+                                )}
                             </Card>
                         )}
                     </Space>
