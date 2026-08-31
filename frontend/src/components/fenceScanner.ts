@@ -185,6 +185,28 @@ export function isInsideFence(classes: LineClass[], index: number): boolean {
 }
 
 /**
+ * Is the fenced block whose complete verbatim source is `raw` CLOSED?
+ *
+ * A marked code token's `raw` holds the opening fence, the body, and -- only
+ * once it has actually arrived -- the closing fence. marked emits a code token
+ * for an unterminated fence too, so this is the one deterministic signal for
+ * "this block has finished arriving", as opposed to guessing from the shape of
+ * the body.
+ *
+ * Returns false for anything that is not a fenced block (an indented code
+ * block, a paragraph) and for absent input, so a caller falls back to its
+ * previous behaviour rather than treating unknown input as settled.
+ */
+export function isFenceClosed(raw: string | null | undefined): boolean {
+    if (!raw) return false;
+    const trimmed = raw.replace(/\s+$/, '');
+    if (!trimmed) return false;
+    const classes = classifyFenceLines(trimmed);
+    const last = classes[classes.length - 1];
+    return last !== undefined && last.kind === 'close';
+}
+
+/**
  * Escape leading backtick-runs (>=3) on lines that are verbatim CONTENT
  * inside a *backtick* fenced block, so a downstream lexer (marked) cannot
  * misread them as a premature closing fence. Lines inside a tilde fence

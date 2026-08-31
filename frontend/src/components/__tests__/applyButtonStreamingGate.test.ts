@@ -48,7 +48,11 @@ jest.mock('marked', () => {
 // FolderContext → ProjectContext → db.ts chain MarkdownRenderer imports.
 jest.mock('uuid', () => ({ v4: () => 'test-uuid' }));
 
-import { isDiffComplete } from '../MarkdownRenderer';
+import { isApplyGated, isDiffComplete } from '../MarkdownRenderer';
+
+/** Wrap a diff body in a fenced block, closed or still arriving. */
+const fence = (body: string, closed: boolean): string =>
+    '```diff\n' + body + (closed ? '\n```' : '\n');
 
 const COMPLETE_DIFF = [
     'diff --git a/foo.ts b/foo.ts',
@@ -178,24 +182,31 @@ describe('isDiffComplete', () => {
  * Pure model of the ApplyChangesButton disable predicate.
  *
  * Mirrors:
- *   const diffComplete = isDiffComplete(diff, isStreaming);
- *   const shouldDisableButton = isProcessing || (isStreaming && !diffComplete);
+ *   disabled = isProcessing || isStreaming
  *
- * where — post-fix — `isStreaming` is
+ * where the per-diff flag comes from the REAL exported derivation, and
+ * — post-fix — the streaming input is
  * `streamingConversations.has(currentConversationId)`, NOT the global
- * isStreaming boolean.
+ * isStreaming boolean.  Previously a local hand-copy of the predicate; it
+ * delegates now so a divergence in the shipped code cannot leave this green.
  */
 function shouldDisableApplyButton(args: {
     diff: string;
     isProcessing: boolean;
     streamingConversations: Set<string>;
     currentConversationId: string;
+    /** Verbatim fenced source, when the case cares about arrival. */
+    raw?: string;
 }): boolean {
     const perConversationStreaming = args.streamingConversations.has(
         args.currentConversationId,
     );
-    const diffComplete = isDiffComplete(args.diff, perConversationStreaming);
-    return args.isProcessing || (perConversationStreaming && !diffComplete);
+    return args.isProcessing || isApplyGated({
+        messageStreaming: perConversationStreaming,
+        superseded: false,
+        diff: args.diff,
+        raw: args.raw,
+    });
 }
 
 describe('Apply button disable predicate (per-conversation gating)', () => {
@@ -245,13 +256,14 @@ describe('Apply button disable predicate (per-conversation gating)', () => {
         ).toBe(true);
     });
 
-    it('enables once the current conversation\'s diff is structurally complete, even mid-stream', () => {
+    it('enables once the current conversation\'s diff has CLOSED its fence, even mid-stream', () => {
         expect(
             shouldDisableApplyButton({
                 diff: COMPLETE_DIFF,
                 isProcessing: false,
                 streamingConversations: new Set<string>([CONV]),
                 currentConversationId: CONV,
+                raw: fence(COMPLETE_DIFF, true),
             }),
         ).toBe(false);
     });

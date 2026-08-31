@@ -36,7 +36,7 @@ import { useProject } from '../context/ProjectContext';
 import { useSendPayload } from '../hooks/useSendPayload';
 import { useStreamingContext } from '../context/StreamingContext';
 import { parseD3Spec } from '../utils/d3SpecParser';
-import { escapeNestedBacktickFences, stripBareProseFences, matchFenceOpen, applyOutsideFences, applyOutsideCodeSpans, splitJsonSpecTrailingContent, upgradeNestedFences, repairAtomicFenceRuns, repairGluedFenceOpeners, isPreformattedTextToken } from './fenceScanner';
+import { escapeNestedBacktickFences, stripBareProseFences, matchFenceOpen, applyOutsideFences, applyOutsideCodeSpans, splitJsonSpecTrailingContent, upgradeNestedFences, repairAtomicFenceRuns, repairGluedFenceOpeners, isPreformattedTextToken, isFenceClosed } from './fenceScanner';
 import {
     processInlineMath,
     createMathPlaceholderStore,
@@ -45,7 +45,7 @@ import {
     MATH_INLINE_MARKER_PREFIX,
     MATH_INLINE_MARKER_SPLIT_RE,
 } from '../utils/inlineMathClassifier';
-import { applyMusicDarkTheme, VALID_DURATION_BASES } from '../utils/d3Plugins/musicPlugin';
+import { applyMusicDarkTheme, VALID_DURATION_BASES, MIN_OCTAVE, MAX_OCTAVE } from '../utils/d3Plugins/musicPlugin';
 
 /**
  * Split a text run into literal text and rendered inline-math, decoding each
@@ -2850,6 +2850,63 @@ export const isDiffComplete = (diffContent: string, isStreaming: boolean): boole
     return isStructurallyComplete;
 };
 
+/**
+ * Decide whether a diff's Apply button must stay gated.
+ *
+ * Single source of truth for the gate, pure and exported so the test files
+ * assert the REAL predicate.  Three of them used to carry hand-copies, and this
+ * gate has regressed twice through changes that satisfied every copy while the
+ * shipped code diverged (a stale global boolean, then Set membership).
+ *
+ * The deciding signal is `raw` — a marked code token's verbatim source, which
+ * contains the CLOSING fence only once it has actually arrived.  That is
+ * deterministic: after the fence closes the block cannot change, whatever else
+ * the response goes on to emit.
+ *
+ * isDiffComplete's streaming heuristic is deliberately NOT part of that
+ * decision and must not be composed back into it.  It guesses from the shape of
+ * the body and reads a settled patch whose last line is a +/- line as "ends
+ * abruptly"; most patches end that way, so in a multi-patch answer an
+ * arbitrary-looking subset stayed gated until the whole response finished.
+ * Composing it also silently defeats any other term ORed in here — that is how
+ * the superseded exception below came to hold for one body shape and not the
+ * other.  It survives only as the fallback for a token with no `raw`, and for
+ * the two content-validity checks, which do not depend on streaming at all.
+ */
+export const isApplyGated = (args: {
+    /** Streaming state of the MESSAGE owning this diff, not the conversation. */
+    messageStreaming: boolean;
+    /** Corrected by a later diff in the same message (see NEW-2a). */
+    superseded: boolean;
+    /** Cleaned diff body. */
+    diff: string;
+    /** Verbatim fenced source of the block, when available. */
+    raw?: string | null;
+    /**
+     * Overrides the raw-derived arrival test.  Required for a multi-file diff's
+     * per-file sections: renderMultiFileDiff re-wraps each section in a
+     * SYNTHETIC closed fence, so a section's own `raw` always reads closed and
+     * only the parent block's fence state is truthful.
+     */
+    arrived?: boolean;
+}): boolean => {
+    // A committed message never gates.  Keeps history buttons live, and makes a
+    // superseded diff applicable again (faded, not forbidden) once settled.
+    if (!args.messageStreaming) return false;
+    // A retraction is expressed by a LATER diff in the same message, so it is
+    // not knowable until the message ends.  This is the one term that
+    // legitimately still waits for the whole response.
+    if (args.superseded) return true;
+    // Content validity, independent of streaming: empty, or truncated by the
+    // continuation splitter.
+    if (!isDiffComplete(args.diff, false)) return true;
+    if (args.arrived !== undefined) return !args.arrived;
+    const rawKnown = typeof args.raw === 'string' && args.raw !== '';
+    return rawKnown
+        ? !isFenceClosed(args.raw as string)
+        : !isDiffComplete(args.diff, true);
+};
+
 const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath, fileIndex, diffElementId, enabled, isStreaming = false, setHunkStatuses }) => {
     // Restore applied state from global registry (survives remounts)
     const [isApplied, setIsApplied] = useState(() => window.appliedDiffsRegistry?.has(diffElementId) ?? false);
@@ -2876,13 +2933,11 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
     // Track processed request IDs to prevent infinite update loops
     const processedRequestIds = useRef(new Set<string>());
 
-    // Check if the diff is complete and ready for application
-    const diffComplete = useMemo(() => {
-        return isDiffComplete(diff, isStreaming);
-    }, [diff, isStreaming]);
-
-    // Allow shift+click to force re-apply even when already applied
-    const shouldDisableButton = isProcessing || (isStreaming && !diffComplete);
+    // `isStreaming` is the AUTHORITATIVE gate here: it is decided per-diff by
+    // isApplyGated at render time (see disabledReason below).  It is NOT
+    // re-derived through isDiffComplete's shape heuristic, which is what
+    // silently defeated the superseded term.
+    // Shift+click still force-re-applies an already-applied diff.
     const buttonId = useId();
     // Define a function to trigger diff updates
     const triggerDiffUpdate = (hunkStatuses: Record<string, any> | null = null, requestId: string | null = null, diffElementId: string | null = null) => {
@@ -3242,8 +3297,8 @@ const ApplyChangesButton: React.FC<ApplyChangesButtonProps> = ({ diff, filePath,
 
     const disabledReason = isProcessing
         ? 'Currently applying changes\u2026'
-        : (isStreaming && !diffComplete)
-            ? 'Waiting for the diff to finish streaming before it can be applied'
+        : isStreaming
+            ? 'Not applicable yet \u2014 this diff is still arriving, or has been superseded later in this response'
             : null;
 
     return enabled ? (
@@ -4226,7 +4281,7 @@ type DeterminedTokenType = 'diff' | 'graphviz' | 'vega-lite' |
     'd3' | 'mermaid' | 'plotly' | 'file-operation' | 'tool' |
     'joint' | 'jointjs' | 'code' | 'html' | 'text' | 'list' | 'table' | 'escape' | 'math' |
     'paragraph' | 'heading' | 'hr' | 'blockquote' | 'space' | 'packet' | 'drawio' | 'music' |
-    'circuitikz' | 'html-mockup' | 'delegate-tasks' | 'task-card' | 'slidecast' |
+    'railroad' | 'wavedrom' | 'flamegraph' | 'circuitikz' | 'html-mockup' | 'delegate-tasks' | 'task-card' | 'slidecast' |
     'codespan' | 'strong' | 'em' | 'del' | 'link' | 'image' |
     'br' | 'list_item' |
     'unknown';
@@ -4370,6 +4425,18 @@ function determineTokenType(token: Tokens.Generic | TokenWithText): DeterminedTo
 
         if (lang === 'music' || lang === 'sheet-music' || lang === 'vexflow') {
             return 'music';
+        }
+
+        if (lang === 'railroad' || lang === 'railroad-diagram' || lang === 'syntax-diagram') {
+            return 'railroad';
+        }
+
+        if (lang === 'wavedrom' || lang === 'wavejson' || lang === 'timing' || lang === 'timing-diagram') {
+            return 'wavedrom';
+        }
+
+        if (lang === 'flamegraph' || lang === 'flame-graph' || lang === 'collapsed-stacks') {
+            return 'flamegraph';
         }
 
         // Only log when debug logging is enabled and only for debugging specific issues
@@ -4771,6 +4838,25 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
 
                     const supersededFileIndices = supersededParts.get(index);
                     const singleFileSuperseded = forcedSuperseded || supersededFileIndices?.has(0) === true;
+                    // Gate the Apply button on THIS block's fence being closed
+                    // rather than on the whole response having finished.  The
+                    // decision lives in isApplyGated (see there for why the
+                    // shape heuristic is not part of it).
+                    //
+                    // A sub-render receives an ALREADY-DECIDED flag and must not
+                    // re-derive one: renderMultiFileDiff re-wraps each section in
+                    // a synthetic CLOSED fence, so a nested derivation would
+                    // always read "closed" and would release a half-arrived
+                    // section mid-stream.
+                    const fenceClosed = isFenceClosed(tokenWithText.raw);
+                    const diffStreaming = isSubRender
+                        ? isStreaming
+                        : isApplyGated({
+                            messageStreaming: isStreaming,
+                            superseded: singleFileSuperseded,
+                            diff: cleanedDiff,
+                            raw: tokenWithText.raw,
+                        });
                     // NEW-2a: in an EXPORT (/print → PDF/HTML), a superseded diff is
                     // omitted entirely rather than faded.  In the live session the UI
                     // greys it (opacity 0.45) so the reader still sees the correction
@@ -4786,7 +4872,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         const fileDiffs = splitMultiFileDiffs(cleanedDiff);
                         if (fileDiffs.length > 1) {
                             console.log('🎨 MarkdownRenderer - Rendering multi-file diff');
-                            return renderMultiFileDiff(diffToken, index, enableCodeApply, isDarkMode, onOpenShellConfig, supersededFileIndices, isStreaming);
+                            return renderMultiFileDiff(diffToken, index, enableCodeApply, isDarkMode, onOpenShellConfig, supersededFileIndices, isStreaming, fenceClosed);
                         }
                     }
 
@@ -4794,7 +4880,7 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     if (isDebugLoggingEnabled() && false) {
                         debugLog('Rendering single DiffToken component');
                     }
-                    return <DiffToken key={sk} token={diffToken} index={index} enableCodeApply={enableCodeApply} isDarkMode={isDarkMode} superseded={singleFileSuperseded} isStreaming={isStreaming} />;
+                    return <DiffToken key={sk} token={diffToken} index={index} enableCodeApply={enableCodeApply} isDarkMode={isDarkMode} superseded={singleFileSuperseded} isStreaming={diffStreaming} />;
 
                 case 'html-mockup':
                     if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
@@ -4900,6 +4986,54 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             key={sk}
                             spec={{
                                 type: 'music',
+                                definition: tokenWithText.text,
+                                isStreaming: isStreaming,
+                                forceRender: true,
+                            }}
+                            type="d3"
+                            isStreaming={isStreaming}
+                        />
+                    );
+
+                case 'railroad':
+                    if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
+                    return (
+                        <LazyD3Renderer
+                            key={sk}
+                            spec={{
+                                type: 'railroad',
+                                definition: tokenWithText.text,
+                                isStreaming: isStreaming,
+                                forceRender: true,
+                            }}
+                            type="d3"
+                            isStreaming={isStreaming}
+                        />
+                    );
+
+                case 'wavedrom':
+                    if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
+                    return (
+                        <LazyD3Renderer
+                            key={sk}
+                            spec={{
+                                type: 'wavedrom',
+                                definition: tokenWithText.text,
+                                isStreaming: isStreaming,
+                                forceRender: true,
+                            }}
+                            type="d3"
+                            isStreaming={isStreaming}
+                        />
+                    );
+
+                case 'flamegraph':
+                    if (!hasText(tokenWithText) || !tokenWithText.text?.trim()) return null;
+                    return (
+                        <LazyD3Renderer
+                            key={sk}
+                            spec={{
+                                type: 'flamegraph',
                                 definition: tokenWithText.text,
                                 isStreaming: isStreaming,
                                 forceRender: true,
@@ -5752,7 +5886,7 @@ const splitMultiFileDiffs = (diffText: string): string[] => {
 };
 
 // Function to handle multi-file diffs with proper recursive rendering
-const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeApply: boolean, isDarkMode: boolean, onOpenShellConfig?: () => void, supersededFileIndices: Set<number> = new Set(), isStreaming: boolean = false): JSX.Element => {
+const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeApply: boolean, isDarkMode: boolean, onOpenShellConfig?: () => void, supersededFileIndices: Set<number> = new Set(), isStreaming: boolean = false, fenceClosed: boolean = false): JSX.Element => {
     // Split the diff into separate file diffs
     const fileDiffs = splitMultiFileDiffs(token.text);
 
@@ -5787,6 +5921,19 @@ const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeAppl
                 // Wrap each diff in markdown code block syntax for proper rendering
                 const wrappedDiff = `\`\`\`diff\n${diffContent}\n\`\`\``;
 
+                // Per-section gate.  supersededFileIndices is per-file, so the
+                // superseded exception cannot be folded into the single flag the
+                // caller passes: a retracted section stays gated on the whole
+                // response while its siblings release at fence close.  `arrived`
+                // carries the PARENT block's fence state -- wrappedDiff above is
+                // a synthetic closed fence and would always read as arrived.
+                const fileStreaming = isApplyGated({
+                    messageStreaming: isStreaming,
+                    superseded: supersededFileIndices.has(fileIndex),
+                    diff: diffContent,
+                    arrived: fenceClosed,
+                });
+
                 return (
                     <div key={stableKey} className="multi-file-diff-container" style={{ marginBottom: '20px' }}>
                         {/* Use a separate MarkdownRenderer instance for each file diff */}
@@ -5799,7 +5946,7 @@ const renderMultiFileDiff = (token: TokenWithText, index: number, enableCodeAppl
                             // Without this the nested renderer defaults to false and a
                             // genuinely mid-stream multi-file diff would offer an Apply
                             // button for a half-arrived patch.
-                            isStreaming={isStreaming}
+                            isStreaming={fileStreaming}
                             // isMarkdownBlockClosed will be true by default for sub-renders if they get a complete diff
                             isSubRender={true}
                         />
@@ -5909,6 +6056,44 @@ function _installMathCopyListener() {
     });
 }
 
+/**
+ * Alias unsupported-but-standard amsmath environments to their closest
+ * KaTeX-supported equivalent.
+ *
+ * The bundled KaTeX implements gather/gathered/align/aligned/split/cases/
+ * array/matrix... but NOT the amsmath `multline`/`multlined` environments.
+ * A legitimate $$\begin{multline}...\end{multline}$$ therefore surfaces a red
+ * KaTeX error (throwOnError:false paints the source in red — a defect). This
+ * rewrites the environment NAME (a fixed capability gap in the bundled KaTeX),
+ * never prose or any spec's literal text, and returns natively-supported
+ * environments (gather/aligned/split/...) byte-unchanged.
+ *
+ * multline's only distinguishing feature — the last line flush-right — cannot
+ * be expressed in KaTeX; `gathered` centers every line, the closest typeset
+ * form and strictly better than a red error. The multline-only alignment
+ * hints \shoveright{...}/\shoveleft{...} would still error under `gathered`,
+ * so the command token is dropped while its braced argument survives as a
+ * plain group (brace nesting is irrelevant — only the command name is
+ * removed).
+ */
+const UNSUPPORTED_MATH_ENV_ALIASES: Record<string, string> = {
+    'multline': 'gathered',
+    'multline*': 'gathered',
+    'multlined': 'gathered',
+};
+
+export function normalizeUnsupportedMathEnvironments(math: string): string {
+    let out = math.replace(
+        /\\(begin|end)\{([^}]+)\}/g,
+        (whole, beginEnd, envName) => {
+            const alias = UNSUPPORTED_MATH_ENV_ALIASES[envName];
+            return alias ? `\\${beginEnd}{${alias}}` : whole;
+        },
+    );
+    out = out.replace(/\\shove(?:right|left)\s*(?=\{)/g, '');
+    return out;
+}
+
 // Math rendering component
 const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, displayMode }) => {
     const [katex, setKatex] = useState<any>(null);
@@ -5970,6 +6155,11 @@ const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, 
         // instead of '\; \command' (LaTeX thick space).  Correct bare semicolons
         // that immediately precede a backslash command.
         sanitized = sanitized.replace(/(?<!\\);\s*(\\[a-zA-Z])/g, (_m, cmd) => `\\; ${cmd}`);
+
+        // Alias amsmath environments the bundled KaTeX cannot parse
+        // (multline/multlined) to their closest supported form; see the
+        // helper's doc comment.  Pinned by unsupportedMathEnvAlias.test.ts.
+        sanitized = normalizeUnsupportedMathEnvironments(sanitized);
 
         const html = katex.renderToString(sanitized, {
             displayMode,
@@ -6070,6 +6260,43 @@ export const MusicInlineRenderer: React.FC<{ dsl: string; isDarkMode: boolean }>
                         throw new Error(
                             `unknown duration "${seg}" in inline music (use w h q 8 16 32 64 128, optionally dotted)`,
                         );
+                    }
+                    // Reject an out-of-range or malformed PITCH before EasyScore,
+                    // for the SAME reason as the duration guard above: a runaway
+                    // octave such as "C99" builds a StaveNote whose ledger-line
+                    // draw loop iterates one stave-line at a time from the staff
+                    // out to the notehead (hundreds of thousands of times for a
+                    // 99th-octave pitch), FREEZING the browser main thread for
+                    // ~30s on a blank staff -- and a mistyped accidental ("ef4",
+                    // 'f' where a digit is expected) builds a NaN-position note
+                    // that spins VexFlow's Formatter the same way.  The fenced
+                    // block neutralises both via clampKeyOctave / sanitizePitch,
+                    // but this inline path hands the DSL straight to EasyScore
+                    // and so bypasses them; guard here and fail fast into the
+                    // text fallback (exactly as the duration guard does).  The
+                    // pitch is the FIRST "/"-segment; a chord token "(c4 e4)"
+                    // carries several, so strip the parens and check each.
+                    const pitchSeg = token.trim().split('/')[0];
+                    for (const p of pitchSeg.replace(/[()]/g, ' ').trim().split(/\s+/)) {
+                        if (!p) continue;
+                        // EasyScore pitch grammar: letter + optional accidental
+                        // (n, #, ##, b, bb) + signed octave, no slash.  Anything
+                        // else is unrenderable and would hang, not error.
+                        const pm = /^[a-gA-G](?:n|#{1,2}|b{1,2})?(-?\d+)$/.exec(p);
+                        if (!pm) {
+                            throw new Error(
+                                `unrenderable pitch "${p}" in inline music `
+                                + '(spell accidentals as # ## b bb n -- e.g. "eb4")',
+                            );
+                        }
+                        const oct = Number(pm[1]);
+                        if (!Number.isFinite(oct) || oct < MIN_OCTAVE || oct > MAX_OCTAVE) {
+                            throw new Error(
+                                `octave ${oct} in "${p}" is outside `
+                                + `[${MIN_OCTAVE}, ${MAX_OCTAVE}] (inline music) `
+                                + '-- would hang the render on ledger lines',
+                            );
+                        }
                     }
                 }
                 // Reject EasyScore annotation/modifier syntax (^"text" / _"text")
@@ -6574,41 +6801,39 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
             }
         );
 
-        // Now split remaining content by code fences for standalone $$ replacement
-        const mathFenceParts = processedMarkdown.split(/(```[^\n]*\n[\s\S]*?```)/g);
-        processedMarkdown = mathFenceParts.map((part, idx) => {
-            if (idx % 2 === 1 && part.startsWith('```')) {
-                return part; // code fence — leave untouched
-            }
-            // Inline code spans are NOT fences, so the split above does not
+        // Replace standalone $$...$$ OUTSIDE fenced code blocks. Routed through
+        // the CommonMark-aware fenceScanner (applyOutsideFences) rather than a
+        // backtick-only split, so a TILDE (~~~) fenced block is protected
+        // exactly as a backtick fence is. With the old split a ~~~ fence was
+        // not recognised as code, so $$...$$ in its body was encoded into a
+        // math-display-encoded div and the literal expression was dropped from
+        // the rendered code block.
+        processedMarkdown = applyOutsideFences(processedMarkdown, part =>
+            // Inline code spans are NOT fences, so applyOutsideFences does not
             // protect them. A display-math delimiter written inside backticks
             // would otherwise have an encoded div substituted into the code
-            // span, showing renderer internals instead of the literal text
-            // the user typed.
-            return applyOutsideCodeSpans(part, segment =>
+            // span, showing renderer internals instead of the literal text.
+            applyOutsideCodeSpans(part, segment =>
                 segment.replace(/\$\$([\s\S]*?)\$\$/g, (_match, innerContent) => {
                     const encoded = btoa(unescape(encodeURIComponent(innerContent.trim())));
                     return `\n\n<div class="math-display-encoded" data-math="${encoded}"></div>\n\n`;
-                }));
-        }).join('');
+                })));
     }
 
     // Extract inline math ($...$) before fence processing
     // Use negative lookbehind/lookahead to avoid matching $$ delimiters
     // Split by code fences so we don't extract $...$ from inside them.
     {
-        const inlineFenceParts = processedMarkdown.split(/(```[^\n]*\n[\s\S]*?```)/g);
-        processedMarkdown = inlineFenceParts.map((part, idx) => {
-            if (idx % 2 === 1 && part.startsWith('```')) {
-                return part; // code fence — leave untouched
-            }
-            // Skip code spans for the same reason as the $$ pass above. This
-            // round-trip is lossless on its own, but it must agree with the
-            // marker pass further down about which spans are math: otherwise a
-            // code span's $...$ is lifted out here and restored into text that
-            // the later pass treats as eligible.
-            return applyOutsideCodeSpans(part, segment => mathStore.protect(segment));
-        }).join('');
+        // Route through the CommonMark-aware fenceScanner so a TILDE (~~~)
+        // fence protects its body from the inline-$ protect pass, matching the
+        // backtick-fence behavior. protect/restore round-trips losslessly, so
+        // the practical effect is agreement with the tilde-aware marker pass
+        // below about which spans are eligible.
+        processedMarkdown = applyOutsideFences(processedMarkdown, part =>
+            // Skip code spans for the same reason as the $$ pass above: a code
+            // span's $...$ must not be lifted out here and restored into text
+            // the later pass would treat as eligible.
+            applyOutsideCodeSpans(part, segment => mathStore.protect(segment)));
     }
 
     // Now run fence escaping (won't affect math since it's been extracted)
@@ -6641,22 +6866,15 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     // Only process math expressions if this doesn't look like a diff
     if (!isDiff && !hasTemplateVars) {
         try {
-            // Split the markdown into code blocks and non-code blocks
-            const segments = processedMarkdown.split(/(```[^\n]*\n[\s\S]*?```)/g);
-
-            // Process each segment separately
-            processedMarkdown = segments.map((segment, index) => {
-                // Skip math processing for code blocks (odd indices in the split)
-                if (index % 2 === 1 && segment.startsWith('```')) {
-                    return segment;
-                }
-
-                // Process math only in non-code segments
-                let processed = segment;
-
+            // Process math OUTSIDE fenced code blocks via the CommonMark-aware
+            // fenceScanner (applyOutsideFences) rather than a backtick-only
+            // split. This protects TILDE (~~~) fenced blocks exactly as backtick
+            // fences are: with the old split, $$/$ inside a ~~~ block was
+            // extracted into a marker div and the literal expression was dropped.
+            processedMarkdown = applyOutsideFences(processedMarkdown, segment => {
                 try {
                     // Handle display math $$...$$
-                    processed = processed.replace(
+                    let processed = segment.replace(
                         /\$\$([\s\S]+?)\$\$/g,
                         (match, captured) => {
                             return '\n<div class="math-display-block">MATH_DISPLAY:' + captured + '</div>\n';
@@ -6671,14 +6889,13 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
                     // became a marker and the code span rendered that marker
                     // verbatim instead of the user's literal text.
                     processed = applyOutsideCodeSpans(processed, processInlineMath);
+                    return processed;
                 } catch (mathError) {
                     console.debug('Math processing error (handled):', mathError);
                     // Return original segment if math processing fails
                     return segment;
                 }
-
-                return processed;
-            }).join('');
+            });
         } catch (mathProcessingError) {
             console.debug('Math segment processing error (handled):', mathProcessingError);
             // Continue without math processing if there's an error
@@ -6923,7 +7140,12 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     // Lex AFTER both guards. Previously this call sat above them, so the
     // sanitized string was computed and thrown away -- the guards were dead
     // code and the hang they exist to prevent still occurred.
-    const lexedTokens = marked.lexer(processedMarkdown, { ...markedOptions, breaks });
+    // Spread marked.defaults FIRST: unlike marked.parse(), marked.lexer(src,
+    // opts) REPLACES the instance defaults with `opts` instead of merging, so
+    // a bare options object silently DROPS every marked.use() override --
+    // including the double-tilde-only `del` tokenizer -- reviving single-tilde
+    // strikethrough ("(~56%) ... (~79%)" struck through end to end).
+    const lexedTokens = marked.lexer(processedMarkdown, { ...marked.defaults, ...markedOptions, breaks });
     return lexedTokens as (Tokens.Generic | TokenWithText)[] || [];
 } catch (error) {
     // Don't create fallback code blocks for empty content
