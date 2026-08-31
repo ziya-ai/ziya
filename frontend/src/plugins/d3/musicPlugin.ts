@@ -44,6 +44,13 @@ function renderError(container: HTMLElement, message: string, rawSpec: any, isDa
       </details>
     </div>
   `;
+
+  // Tag the card so the headless harness (DiagramRenderPage) fails fast with
+  // this message instead of polling for an svg/canvas/img the card never
+  // contains and reporting a generic "svg:0" timeout. setAttribute, not
+  // template interpolation: the message can contain quotes.
+  const card = container.firstElementChild;
+  if (card) card.setAttribute('data-diagram-error', message);
 }
 
 async function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boolean): Promise<void> {

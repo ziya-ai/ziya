@@ -6,8 +6,253 @@ import '@maxgraph/core/css/common.css';
 import { loadStencilsForShapes } from './drawioStencilLoader';
 import { iconRegistry } from './iconRegistry';
 import { enhanceSVGVisibility, isLightBackground, getOptimalTextColor, hexToRgb, calculateContrastRatio } from '../../utils/colorUtils';
+import { compositeOver, CHART_DARK_BG, CHART_LIGHT_BG } from './chartTheme';
 import { DrawIOEnhancer } from './drawioEnhancer';
 import { runLayout, applyLayoutToMaxGraph, LayoutNode, LayoutEdge, LayoutContainer } from './layoutEngine';
+import { registerDrawioExtraShapes } from './drawioShapes';
+
+/**
+ * maxGraph's built-in default vertex fill. A styled vertex that specifies no
+ * fillColor is still painted with this light-blue fill regardless of theme —
+ * the plugin's defaultVertexStyle overrides only fontColor/fontSize, not the
+ * fill (see stylesheet.getDefaultVertexStyle() setup). (D-111)
+ */
+export const MAXGRAPH_DEFAULT_VERTEX_FILL = '#C3D9FF';
+
+/**
+ * Default node stroke used when an author stroke colour is unparseable (D-119).
+ * Pairs with the light-blue default fill so a recovered node keeps a visible
+ * boundary on both the light and dark canvas.
+ */
+export const DRAWIO_DEFAULT_NODE_STROKE = '#6C8EBF';
+
+/**
+ * Resolve the label colour for a cell that reached the "no explicit fillColor"
+ * branch. (D-111)
+ *
+ * A styled VERTEX with no fillColor is painted with maxGraph's default vertex
+ * fill (#C3D9FF, a light blue) in BOTH themes, so its label must contrast that
+ * ACTUAL fill — not the themed canvas. The old code unconditionally chose a
+ * light `#e0e0e0` in dark mode, which vanished on the light-blue default fill
+ * (1.08:1); light already used `#000000` (dark text) so light is unchanged.
+ *
+ * A fill-less edge label, or a cell with `fillColor: none` (fill explicitly
+ * cleared, so maxGraph paints nothing), sits on the themed canvas and keeps the
+ * theme-appropriate colour.
+ *
+ * @param isVertex     cell is a vertex (vertex="1")
+ * @param hasFillColor a fillColor string is present in the style (incl. 'none')
+ * @param isDarkMode   active theme
+ */
+export function resolveFilllessFontColor(
+    isVertex: boolean,
+    hasFillColor: boolean,
+    isDarkMode: boolean
+): string {
+    if (isVertex && !hasFillColor) {
+        // Reconcile against the fill maxGraph will actually paint (theme-independent).
+        return getOptimalTextColor(MAXGRAPH_DEFAULT_VERTEX_FILL);
+    }
+    // Label sits on the themed canvas.
+    return isDarkMode ? '#e0e0e0' : '#000000';
+}
+
+/**
+ * Reconcile a label whose cell has NO opaque author fillColor against its
+ * ACTUAL backdrop (D-113). A styled vertex with no fillColor is painted with
+ * maxGraph's default fill (#C3D9FF); an edge label or a fillColor:none cell
+ * sits on the themed canvas. An author-supplied fontColor is preserved when it
+ * clears the 3:1 graphical floor on that backdrop and replaced by the
+ * theme-appropriate colour otherwise — so a light-tuned #102040 (1.03:1 on the
+ * dark canvas) is fixed in dark while its 16:1 on the light canvas is untouched.
+ */
+export function reconcileCanvasLabelColor(
+    authorFont: string | undefined,
+    isVertex: boolean,
+    hasFillColor: boolean,       // includes the literal 'none'
+    isDarkMode: boolean
+): string {
+    const themeFont = resolveFilllessFontColor(isVertex, hasFillColor, isDarkMode);
+    if (!authorFont) return themeFont;
+    const backdrop = (isVertex && !hasFillColor)
+        ? MAXGRAPH_DEFAULT_VERTEX_FILL
+        : (isDarkMode ? CHART_DARK_BG : CHART_LIGHT_BG);
+    return calculateContrastRatio(authorFont, backdrop) < 3.0 ? themeFont : authorFont;
+}
+
+/**
+ * Reconcile a swimlane lane-title colour against the fill AS ACTUALLY PAINTED
+ * (D-112). The swimlane branch crushes the author fill to 20% opacity, so the
+ * label sits on that fill composited over the themed canvas — not the opaque
+ * fill the generic contrast pass reconciled against. In dark a light author
+ * fill (#dae8fc) composites to #44464a and a dark label falls to 2.22:1; this
+ * recomputes the label against the composite (→ #ffffff, 9.46:1) while light is
+ * unchanged (composite stays near-white → black, 20:1). Resolved per-theme via
+ * the actual canvas, not a constant swap.
+ */
+export function reconcileSwimlaneLabelColor(
+    authorFont: string | undefined,
+    fillColor: string,
+    isDarkMode: boolean
+): string {
+    const canvasBg = isDarkMode ? CHART_DARK_BG : CHART_LIGHT_BG;
+    const effectiveBg = compositeOver(fillColor, canvasBg, 0.20);
+    if (authorFont && calculateContrastRatio(authorFont, effectiveBg) >= 3.0) return authorFont;
+    return getOptimalTextColor(effectiveBg);
+}
+
+/**
+ * G-36 / D-109 — label-not-clipped-to-box (long-label-overflow).
+ *
+ * maxGraph never constrains a cell's label to its box by default, so a 406-char label
+ * overflows ±190px and an 84-char nowrap token overflows ~1140px, printing through
+ * neighbours; in dark the text outside the fill sits on the dark canvas (~1.02:1).
+ * The standard maxGraph remedy is style-level: `whiteSpace=wrap` wraps the label to the
+ * cell width and `overflow=hidden` clips the overflow to the box. We apply them as
+ * DEFAULTS only (an author value always wins), and skip `overflow=hidden` for text-only
+ * labels (shape=text/label or the `text` flag) whose geometry is sized to the text and
+ * which are meant to render in full. Edges get wrap but not clip (an edge label has no
+ * box to clip to). Mutates and returns the style object.
+ *
+ * Residual (not addressed here, needs render-stage tuning): the edge-label OCCLUSION half
+ * of D-109 (labels chopped by an adjacent vertex when the node gap < label width). Adding
+ * a label background conflicts with the intentional edge `labelBackgroundColor` deletion
+ * above it, so it is left for a render-verified follow-up.
+ */
+export function applyLabelFittingDefaults(
+    styleObj: Record<string, any>,
+    opts: { isEdge?: boolean } = {}
+): Record<string, any> {
+    if (!styleObj || typeof styleObj !== 'object') return styleObj;
+    if (styleObj['whiteSpace'] == null) styleObj['whiteSpace'] = 'wrap';
+    if (opts.isEdge) return styleObj;
+    const shape = styleObj['shape'];
+    const isTextOnly = shape === 'text' || shape === 'label' || styleObj['text'] != null;
+    if (styleObj['overflow'] == null && !isTextOnly) styleObj['overflow'] = 'hidden';
+    return styleObj;
+}
+
+/**
+ * G-60 / D-114 — named-color (and mid-luminance opaque fill) bypasses the
+ * contrast autofix.
+ *
+ * The contrast pass trusted `getOptimalTextColor(fill)`, but that helper picks a
+ * text colour from a luminance THRESHOLD, not from measured contrast, so on a
+ * mid-luminance opaque fill it can choose the WORSE of black/white. For
+ * `cornflowerblue` (#6495ed, now resolvable via the shared named-colour table)
+ * it returns white — white-on-cornflowerblue is 2.97:1, below both the autofix's
+ * own 3:1 gate and the 4.5 text floor, while black-on-cornflowerblue is 7.06:1.
+ * The old code then "fixed" white with white and left the label unreadable.
+ *
+ * This picks whichever of black/white MAXIMISES WCAG contrast against the fill,
+ * but ONLY when `getOptimalTextColor`'s own choice fails the 4.5 floor — so a
+ * fill it already handles well is untouched (no regression to existing output).
+ * A genuinely unparseable fill (both ratios collapse to 1) keeps the default and
+ * is handled by the D-119 fill recovery below. Theme-independent: the fill is
+ * opaque, so the same value is correct in light and dark.
+ */
+export function pickReadableFontColor(fillColor: string): string {
+    const optimal = getOptimalTextColor(fillColor);
+    if (calculateContrastRatio(optimal, fillColor) >= 4.5) return optimal;
+    const cBlack = calculateContrastRatio('#000000', fillColor);
+    const cWhite = calculateContrastRatio('#ffffff', fillColor);
+    if (cBlack === 1 && cWhite === 1) return optimal; // unparseable → leave default
+    return cBlack >= cWhite ? '#000000' : '#ffffff';
+}
+
+/** Color keywords that are VALID (not a parse failure) but carry no RGB. */
+const DRAWIO_COLOR_KEYWORDS = new Set(['none', 'transparent', 'inherit', 'default']);
+
+/**
+ * G-60 / D-119 — decide whether a style colour token is resolvable to RGB.
+ *
+ * Resolvable: hex (incl. 3/4/8-digit and CSS named, via the shared
+ * `hexToRgb`→`hexToRgbSafe` parser), `rgb()/rgba()`, `hsl()/hsla()`, and the
+ * literal keywords `none`/`transparent`/`inherit`/`default`. Everything else —
+ * `var(--x)`, `$primary`, `theme.surface`, a bare word that is not a CSS name —
+ * is NOT resolvable and, if handed to maxGraph verbatim, is painted solid black.
+ */
+export function isResolvableColor(c?: string | null): boolean {
+    if (!c || typeof c !== 'string') return false;
+    const v = c.trim().toLowerCase();
+    if (v === '') return false;
+    if (DRAWIO_COLOR_KEYWORDS.has(v)) return true;
+    if (/^rgba?\(/.test(v)) return true;
+    if (/^hsla?\(/.test(v)) return true;
+    return hexToRgb(c) !== null; // hex + CSS named colours
+}
+
+/**
+ * G-60 / D-119 — recover a cell whose fill/stroke is an unparseable colour token.
+ *
+ * `var(--x)`, `$primary`, `theme.surface` are DETECTED as parse failures upstream
+ * (rgb1/rgb2 null → COLOR-PARSE-FAIL) yet were left verbatim on the style, so
+ * maxGraph painted them solid #000000 with no stroke: three distinct nodes
+ * collapse into identical black slabs in light, and on the dark canvas
+ * (#000000 on #212121 = 1.30) the node boundaries vanish. Replace a detected-
+ * unparseable fill with the default node fill (opaque light-blue, readable on
+ * BOTH canvases) and give it a default stroke so the box stays bounded; an
+ * unparseable stroke alone is also repaired. Parseable colours and the literal
+ * keywords are left untouched. Mutates and returns styleObj.
+ */
+export function resolveUnparseableCellColors(styleObj: Record<string, any>): Record<string, any> {
+    if (!styleObj || typeof styleObj !== 'object') return styleObj;
+    const fill = styleObj['fillColor'];
+    if (fill != null && fill !== '' && !isResolvableColor(fill)) {
+        console.warn(`📐 DrawIO: unparseable fillColor "${fill}" → default node fill (D-119)`);
+        styleObj['fillColor'] = MAXGRAPH_DEFAULT_VERTEX_FILL;
+        if (styleObj['strokeColor'] == null || !isResolvableColor(styleObj['strokeColor'])) {
+            styleObj['strokeColor'] = DRAWIO_DEFAULT_NODE_STROKE;
+        }
+    }
+    const stroke = styleObj['strokeColor'];
+    if (stroke != null && stroke !== '' && !isResolvableColor(stroke)) {
+        console.warn(`📐 DrawIO: unparseable strokeColor "${stroke}" → default node stroke (D-119)`);
+        styleObj['strokeColor'] = DRAWIO_DEFAULT_NODE_STROKE;
+    }
+    return styleObj;
+}
+
+/**
+ * G-60 / D-118 — repair space-separated style keys.
+ *
+ * A style string that uses a SPACE instead of ';' between declarations
+ * (`fillColor=#dae8fc fontColor=#000000`) parses as a single key whose value
+ * swallows the remaining declarations, so the intended fill/font is silently
+ * discarded and maxGraph substitutes its default #C3D9FF — a plausible but wrong
+ * image. Re-insert the missing ';' before any ` <identifier>=` run so each
+ * declaration is parsed. Only whitespace that directly precedes an identifier '='
+ * is touched; ordinary values are left intact. Warns when it changed anything.
+ */
+export function normalizeStyleKeySeparators(style: string): string {
+    if (!style || typeof style !== 'string') return style;
+    const fixed = style.replace(/\s+(?=[A-Za-z_][\w.\-]*\s*=)/g, ';');
+    if (fixed !== style) {
+        console.warn(`📐 DrawIO: space-separated style keys normalized to ';' (D-118): "${style}" → "${fixed}"`);
+    }
+    return fixed;
+}
+
+/**
+ * G-60 / D-118 — infer that a cell is a vertex when its `vertex="1"` flag is
+ * missing but it clearly is one: it carries an mxGeometry with positive width &
+ * height, is not an edge, and is not a connector (no source/target). Without
+ * this the cell is silently dropped along with every edge that targets it (and
+ * the dark canvas strands the now-boxless label at ~1:1). Pure decision helper
+ * so the DOM read stays inline at the call site.
+ */
+export function shouldInferVertex(opts: {
+    hasVertexFlag: boolean;
+    isEdge: boolean;
+    hasSource: boolean;
+    hasTarget: boolean;
+    width: number;
+    height: number;
+}): boolean {
+    if (opts.hasVertexFlag || opts.isEdge) return false;
+    if (opts.hasSource || opts.hasTarget) return false;
+    return opts.width > 0 && opts.height > 0;
+}
 
 // Export architecture shapes renderers
 export { generateDrawIOFromCatalog } from './renderers/drawioRenderer';
@@ -509,8 +754,68 @@ export function clampChildToContainerBounds(xml: string): string {
     });
 }
 
-const normalizeDrawIOXml = (xml: string): string => {
+/**
+ * D-117 (single-quoted-attrs-bypass-geometry): every geometry / de-quote regex in the
+ * drawio preprocessor below (sanitizeDrawioCoordinates, the relative-geometry clamp,
+ * the over-quoted-colour de-quote, the numG helper, the clampChildToContainerBounds
+ * reader) is DOUBLE-QUOTE-ONLY. Single-quoted attributes (`x='100'`, `style='...'`)
+ * are XML-legal, so maxGraph parses them, but every one of those passes skips them —
+ * dropping the spec onto the auto-layout path and re-introducing label detachment.
+ * Rather than sprinkle a `["']` alternation across a dozen regexes (each an
+ * opportunity to drift), we normalise single-quoted attribute VALUES to double-quoted
+ * once, up front, so every downstream double-quote-only pass applies uniformly.
+ *
+ * Safety: work per-tag and MASK already-double-quoted attributes first, so a single
+ * quote that legitimately appears inside a double-quoted value (e.g. `value="a='b'"`,
+ * or `style="...fontFamily='Arial'..."`) is never touched. A literal `"` inside the
+ * single-quoted value is escaped to `&quot;` so the rewritten attribute stays
+ * well-formed XML.
+ */
+export function normalizeSingleQuotedAttributes(xml: string): string {
+    return xml.replace(/<[a-zA-Z!?/][^>]*>/g, (tag) => {
+        const masked: string[] = [];
+        // 1) Hide well-formed double-quoted attrs (their inner single quotes are content).
+        let t = tag.replace(/[\w.:-]+\s*=\s*"[^"]*"/g, (m) => {
+            masked.push(m);
+            return `__DQMASK${masked.length - 1}__`;
+        });
+        // 2) Convert the remaining single-quoted attributes to double-quoted.
+        t = t.replace(/([\w.:-]+)\s*=\s*'([^']*)'/g, (_m, name, val: string) =>
+            `${name}="${val.replace(/"/g, '&quot;')}"`);
+        // 3) Restore the masked double-quoted attrs.
+        t = t.replace(/__DQMASK(\d+)__/g, (_m, i) => masked[parseInt(i, 10)]);
+        return t;
+    });
+}
+
+/**
+ * D-117 (entity-escaped-style-not-dequoted): the over-quoted-colour de-quote passes in
+ * normalizeDrawIOXml match a LITERAL double quote (`fillColor="#fff9c4"` → `fillColor=#fff9c4`)
+ * and never see the entity-escaped mirror form `fillColor=&quot;#fff9c4&quot;`. When a model
+ * over-quotes a style value with entities, the `&quot;` survives into the style STRING and,
+ * after XML unescaping, becomes an invalid `key="value"` style token — maxGraph drops the
+ * cell and fitCenter throws 'Invalid x supplied'. Strip the entity-escaped over-quoting the
+ * same way the literal form is stripped. Scoped to colour / numeric style keys, mirroring the
+ * literal passes exactly, so no unrelated content is altered.
+ */
+export function dequoteEntityEscapedStyleValues(xml: string): string {
+    return xml
+        .replace(/(\w*[Cc]olor\w*)=&quot;(#[0-9a-fA-F]{3,8})&quot;/g, '$1=$2')
+        .replace(/(fontSize|strokeWidth|opacity|spacing\w*)=&quot;(\d+)&quot;/g, '$1=$2');
+}
+
+export const normalizeDrawIOXml = (xml: string): string => {
     let normalized = xml.trim();
+
+    // CRITICAL FIX (D-115): strip a leading/trailing markdown code fence. LLMs
+    // routinely wrap the XML in ```xml ... ``` (or ```drawio / bare ```); the
+    // opening fence line is not XML, so the parser never reaches <mxfile> and
+    // the render hangs to the 30s cap with no output. Remove an opening fence
+    // line and a trailing fence, leaving the XML body untouched when absent.
+    normalized = normalized
+        .replace(/^\uFEFF?\s*```[^\n]*\r?\n/, '')  // opening ``` / ```xml / ```drawio line
+        .replace(/\r?\n?```\s*$/, '')              // trailing fence
+        .trim();
 
     // CRITICAL FIX: Clean quote characters FIRST - before any other processing
     // LLMs sometimes generate Unicode quote characters which break XML parsing
@@ -522,6 +827,12 @@ const normalizeDrawIOXml = (xml: string): string => {
         .replace(/[\u2039\u203A]/g, "'"); // Replace ‹ and › with '
 
     console.log('📐 DrawIO: Normalized Unicode quotes to ASCII');
+
+    // D-117: normalise single-quoted attributes to double-quoted BEFORE the geometry
+    // sanitizers / de-quote passes below, all of which are double-quote-only. Without
+    // this, a single-quoted spec parses but bypasses coordinate clamping and lands on
+    // the auto-layout path (label detachment).
+    normalized = normalizeSingleQuotedAttributes(normalized);
 
     // CRITICAL FIX: Remove over-quoted color values in style attributes
     // This handles the malformed pattern: style="...fillColor="#fff9c4";..." 
@@ -543,6 +854,10 @@ const normalizeDrawIOXml = (xml: string): string => {
         /(fontSize|strokeWidth|opacity|spacing\w*)="(\d+)"/g,
         '$1=$2'
     );
+
+    // D-117: mirror the two literal over-quote passes above for the ENTITY-escaped form
+    // (fillColor=&quot;#fff9c4&quot;), which those double-quote-only passes never see.
+    normalized = dequoteEntityEscapedStyleValues(normalized);
 
     console.log('📐 DrawIO: Removed over-quoted values in style attributes');
 
@@ -577,16 +892,25 @@ const normalizeDrawIOXml = (xml: string): string => {
     // CRITICAL FIX: Clean ampersands BEFORE any XML parsing
     // Fix bare ampersands in attribute values (e.g., "Security & Monitoring")
     // This MUST happen before any DOMParser attempts to parse the XML
+    // Escape bare & AND bare </> inside attribute values (D-116). A raw '<' in
+    // a label ('R&D < Ops > Net') terminates the attribute and opens a phantom
+    // tag, so the document never parses and the render hangs to the 30s cap.
+    // Properly-encoded HTML labels already use &lt;/&gt; entities and are left
+    // untouched (the & pass preserves entities; the </> pass only touches
+    // literal angle brackets). A raw '<' is always invalid XML in an attribute
+    // value regardless of intent, so escaping it is the correct recovery.
+    const escapeAttrValue = (attrValue: string): string =>
+        attrValue
+            .replace(/&(?!(amp|lt|gt|quot|apos|#x?[0-9a-fA-F]+);)/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;');
     normalized = normalized.replace(/(\w+)="([^"]*)"/g, (match, attrName, attrValue) => {
-        // Replace bare ampersands but preserve valid entities
-        const fixed = attrValue.replace(/&(?!(amp|lt|gt|quot|apos|#x?[0-9a-fA-F]+);)/g, '&amp;');
-        return `${attrName}="${fixed}"`;
+        return `${attrName}="${escapeAttrValue(attrValue)}"`;
     });
 
     // Also handle single-quoted attributes
     normalized = normalized.replace(/(\w+)='([^']*)'/g, (match, attrName, attrValue) => {
-        const fixed = attrValue.replace(/&(?!(amp|lt|gt|quot|apos|#x?[0-9a-fA-F]+);)/g, '&amp;');
-        return `${attrName}='${fixed}'`;
+        return `${attrName}='${escapeAttrValue(attrValue)}'`;
     });
 
     // Fix accidentally double-escaped entities (e.g., &amp;#xa; should be &#xa;)
@@ -663,11 +987,36 @@ const normalizeDrawIOXml = (xml: string): string => {
     normalized = clampChildToContainerBounds(normalized);
     console.log('📐 DrawIO: Clamped children overflowing their containers');
 
+    // CRITICAL FIX (D-115): synthesise a missing <root> wrapper. A model that
+    // emits <mxGraphModel><mxCell .../>...</mxGraphModel> WITHOUT the mandatory
+    // <root> (and its base cells 0/1) produces a model maxGraph cannot decode →
+    // 30s empty-DOM hang. Insert the standard root + base cells only when
+    // absent, leaving well-formed models byte-identical.
+    if (normalized.includes('<mxGraphModel') && !/<root\b/.test(normalized)) {
+        console.log('📐 DrawIO: Synthesising missing <root> wrapper');
+        normalized = normalized
+            .replace(/(<mxGraphModel\b[^>]*>)/, '$1<root><mxCell id="0"/><mxCell id="1" parent="0"/>')
+            .replace(/(<\/mxGraphModel>)/, '</root>$1');
+    }
+
     // Clean up any text content after closing tags (LLM sometimes adds descriptions)
     // Find the last proper closing tag (</mxfile>, </diagram>, or </mxGraphModel>)
     const lastMxfileClose = normalized.lastIndexOf('</mxfile>');
     const lastDiagramClose = normalized.lastIndexOf('</diagram>');
     const lastGraphModelClose = normalized.lastIndexOf('</mxGraphModel>');
+
+    // CRITICAL FIX (D-115): truncate prose that follows </mxfile>. The
+    // </diagram> truncation below deliberately skips content beginning with
+    // </mxfile>, so a trailing explanatory sentence AFTER the closing </mxfile>
+    // (the commonest wave-4 shape) survived and made the parser hang. Cut
+    // everything past the final </mxfile>.
+    if (lastMxfileClose !== -1) {
+        const afterMxfile = normalized.substring(lastMxfileClose + '</mxfile>'.length).trim();
+        if (afterMxfile) {
+            console.log('📐 DrawIO: Removing extra content after </mxfile>:', afterMxfile.substring(0, 100));
+            normalized = normalized.substring(0, lastMxfileClose + '</mxfile>'.length);
+        }
+    }
 
     // If we have a closing diagram tag but content after it, truncate
     if (lastDiagramClose !== -1) {
@@ -724,6 +1073,15 @@ async function loadMaxGraph(): Promise<any> {
             // Since 0.6.0, codecs must be registered before encode/decode
             if (maxGraphModule.registerCoreCodecs) {
                 maxGraphModule.registerCoreCodecs();
+            }
+            // D-106: register the drawio-specific shapes maxGraph core omits
+            // (parallelogram/process/step/note/cylinder3) so they no longer degrade to a
+            // plain rectangle. Additive + guarded; a failure leaves the rectangle fallback.
+            try {
+                const registered = registerDrawioExtraShapes(maxGraphModule);
+                console.log('📐 DrawIO: Registered extra shapes:', registered.join(', ') || '(none)');
+            } catch (shapeErr) {
+                console.warn('📐 DrawIO: extra-shape registration skipped:', shapeErr);
             }
             window.__maxGraphLoaded = true;
             console.log('✅ @maxgraph/core loaded successfully');
@@ -1500,11 +1858,32 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                         // Get cell attributes from XML
                         const value = cellElement.getAttribute('value') || '';
                         let style = cellElement.getAttribute('style') || '';
-                        const vertex = cellElement.getAttribute('vertex') === '1';
+                        let vertex = cellElement.getAttribute('vertex') === '1';
                         const edge = cellElement.getAttribute('edge') === '1';
                         const parent = cellElement.getAttribute('parent');
                         const source = cellElement.getAttribute('source');
                         const target = cellElement.getAttribute('target');
+
+                        // D-118: infer vertex-ness when the vertex="1" flag is
+                        // missing but the cell clearly is one (sized geometry, not
+                        // an edge, no source/target). Otherwise it is silently
+                        // dropped along with every edge that targets it.
+                        if (!vertex) {
+                            const geoEl = cellElement.querySelector('mxGeometry');
+                            const gW = geoEl ? parseFloat(geoEl.getAttribute('width') || '0') : 0;
+                            const gH = geoEl ? parseFloat(geoEl.getAttribute('height') || '0') : 0;
+                            if (shouldInferVertex({
+                                hasVertexFlag: false,
+                                isEdge: edge,
+                                hasSource: !!source,
+                                hasTarget: !!target,
+                                width: gW,
+                                height: gH,
+                            })) {
+                                vertex = true;
+                                console.warn(`📐 DrawIO: cell ${cellId} has ${gW}x${gH} geometry but no vertex="1" — inferring vertex (D-118)`);
+                            }
+                        }
 
                         console.log('📐 DEBUG: Cell', cellId, 'style string:', style);
 
@@ -1516,6 +1895,10 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
 
                         // Parse and modify style string
                         if (style) {
+                            // D-118: repair space-separated style keys BEFORE any
+                            // includes()/split() parsing, so a `k=v k2=v2` run does
+                            // not collapse into one key (dropping the intended fill).
+                            style = normalizeStyleKeySeparators(style);
                             // CRITICAL: maxGraph 0.11+ requires style OBJECTS, not strings
                             // Detect special styles that need preprocessing
                             const isSwimlane = style.includes('swimlane');
@@ -1548,6 +1931,14 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                                     }
                                 }
                             });
+
+                            // D-119: an unparseable colour token (var(--x),
+                            // $primary, theme.surface, …) is otherwise handed to
+                            // maxGraph verbatim and painted solid #000000 with no
+                            // stroke — identical black slabs in light, invisible
+                            // borders on the dark canvas. Recover to the default
+                            // node palette (readable + bounded in both themes).
+                            resolveUnparseableCellColors(styleObj);
 
                             // Fix arrow sizes for edges
                             if (edge) {
@@ -1585,8 +1976,12 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                                 const fillColor = styleObj['fillColor'];
                                 const fontColor = styleObj['fontColor'];
 
-                                // Calculate optimal text color for this background
-                                const optimalColor = getOptimalTextColor(fillColor);
+                                // Calculate optimal text color for this background.
+                                // D-114: pick by MEASURED contrast (black/white),
+                                // not getOptimalTextColor's luminance threshold,
+                                // which mis-picks white on mid-luminance named
+                                // fills (e.g. white on cornflowerblue = 2.97:1).
+                                const optimalColor = pickReadableFontColor(fillColor);
 
                                 // ALWAYS verify contrast ratio - don't trust LLM-provided fontColor
                                 const contrast = fontColor ? calculateContrastRatio(fontColor, fillColor) : 0;
@@ -1595,9 +1990,21 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                                     styleObj['fontColor'] = optimalColor;
                                     console.log(`📐 CONTRAST-FIX: Cell ${cellId} - ${fillColor} bg, contrast ${contrast.toFixed(1)} < 3.0, ${fontColor || 'unset'} → ${optimalColor}`);
                                 }
-                            } else if (!styleObj['fontColor']) {
-                                // No fill color - use theme-based default
-                                styleObj['fontColor'] = isDarkMode ? '#e0e0e0' : '#000000';
+                            } else {
+                                // No opaque author fillColor. Reconcile the label
+                                // against its ACTUAL backdrop — maxGraph's default
+                                // vertex fill (styled vertex, no fill → #C3D9FF,
+                                // D-111) or the themed canvas (edge label /
+                                // fillColor:none, D-113). A readable author colour
+                                // is preserved (no light regression); a light-tuned
+                                // author colour invisible on the dark canvas is
+                                // replaced.
+                                styleObj['fontColor'] = reconcileCanvasLabelColor(
+                                    styleObj['fontColor'],
+                                    vertex,
+                                    !!styleObj['fillColor'], // includes 'none'
+                                    isDarkMode
+                                );
                             }
 
                             // Special handling for swimlanes (only for actual vertex cells)
@@ -1621,10 +2028,29 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                                         const color = styleObj['fillColor'];
                                         if (color.startsWith('#')) {
                                             styleObj['fillOpacity'] = 20; // 20% opacity
+                                            // D-112: the fill is now composited at
+                                            // 20% over the themed canvas, so the
+                                            // lane title sits on THAT composite —
+                                            // not the opaque author fill the generic
+                                            // contrast pass reconciled against. In
+                                            // dark a light author fill crushes to a
+                                            // dark grey and a dark label falls below
+                                            // the floor; recompute against the
+                                            // composite (per-theme, not a swap).
+                                            styleObj['fontColor'] = reconcileSwimlaneLabelColor(
+                                                styleObj['fontColor'],
+                                                color,
+                                                isDarkMode
+                                            );
                                         }
                                     }
                                 }
                             }
+
+                            // D-109: default label fitting (wrap + clip-to-box) so an
+                            // over-long label no longer overflows its box into neighbours
+                            // (and onto the dark canvas). Author whiteSpace/overflow win.
+                            applyLabelFittingDefaults(styleObj, { isEdge: edge });
 
                             // Set style as OBJECT, not string (maxGraph 0.11+ requirement)
                             cell.setStyle(styleObj);

@@ -219,6 +219,65 @@ def build_dom_probe(locators: list[str], role: str) -> str:
     }}"""
 
 
+#: Ceilings on the viewport we will grow to when fitting a tall/wide message
+#: for capture.  A pathological document must not drive an unbounded off-screen
+#: surface; ``clamp_png_dimensions`` still bounds the emitted PNG independently
+#: of these.
+MAX_CAPTURE_WIDTH = 4000
+MAX_CAPTURE_HEIGHT = 24000
+
+
+def build_capture_prep_js(locators: list[str], role: str) -> str:
+    """JS that unclips the message so a full-element screenshot is possible.
+
+    The element-screenshot in Stage 5 is the SOLE capture path, and Playwright
+    captures *painted* pixels.  When our ``.message`` lives inside a
+    fixed-height ``overflow`` scroll container (the chat message list), only the
+    container's visible band is painted -- so a message taller than the band is
+    truncated to it (the ~1500px vertical ceiling) and the remainder of the
+    canvas is padded blank, while a horizontally offset one is shaved on its
+    leading edge.  Both are silent data loss with no overflow affordance in the
+    picture.  The theme-dependence of the left-edge loss is just a per-theme
+    layout-width difference deciding whether the clipping container scrolls
+    horizontally for identical input.
+
+    The fix is to make the whole element paint: walk the ancestor chain up to
+    the document element and drop any overflow clipping and any height cap
+    (``max-height``/fixed ``height``), then scroll the element to the origin and
+    report its full unclipped size (plus its far edges from the page origin) so
+    the caller can grow the viewport to contain it.  This does not touch the
+    ``.message`` element itself or any colour/layout of the content -- it only
+    removes the clip that hides pixels that were already rendered.  Returns
+    ``null`` when the element is gone.
+    """
+    return f"""() => {{
+        const el = {build_locator_js(locators, role)};
+        if (!el) return null;
+        let n = el.parentElement;
+        while (n && n !== document.documentElement) {{
+            const cs = getComputedStyle(n);
+            if (cs.overflow !== 'visible' || cs.overflowX !== 'visible'
+                    || cs.overflowY !== 'visible') {{
+                n.style.setProperty('overflow', 'visible', 'important');
+            }}
+            if (cs.maxHeight && cs.maxHeight !== 'none') {{
+                n.style.setProperty('max-height', 'none', 'important');
+            }}
+            n = n.parentElement;
+        }}
+        el.scrollIntoView({{block: 'start', inline: 'start'}});
+        const r = el.getBoundingClientRect();
+        return {{
+            width: Math.ceil(r.width),
+            height: Math.ceil(r.height),
+            right: Math.ceil(r.right + window.scrollX),
+            bottom: Math.ceil(r.bottom + window.scrollY),
+            left: Math.floor(r.left + window.scrollX),
+            top: Math.floor(r.top + window.scrollY),
+        }};
+    }}"""
+
+
 # -- server-side seeding (sync; call via run_in_threadpool) ----------------
 
 def resolve_project_id(workspace_path: Optional[str] = None) -> str:
@@ -459,6 +518,37 @@ async def render_chat_message(
             )
 
         await page.wait_for_timeout(SETTLE_MS)
+
+        # Stage 5a: unclip the message so the element screenshot captures the
+        # WHOLE thing.  Playwright captures painted pixels, and a message inside
+        # a fixed-height overflow scroll container is painted only for the
+        # visible band -- truncating a tall render to the ~1500px ceiling and
+        # shaving a horizontally offset one on the left, with the rest padded
+        # blank.  Drop ancestor clipping/height caps and grow the viewport to
+        # contain the full element, then re-anchor it at the origin.  Non-fatal:
+        # a failure here degrades to the old (possibly clipped) capture rather
+        # than losing the image entirely.
+        try:
+            metrics = await page.evaluate(build_capture_prep_js(locators, role))
+            if metrics and metrics.get("width") and metrics.get("height"):
+                fit_w = min(MAX_CAPTURE_WIDTH,
+                            max(viewport_width, int(metrics["right"]) + 8))
+                fit_h = min(MAX_CAPTURE_HEIGHT,
+                            max(viewport_height, int(metrics["bottom"]) + 8))
+                await page.set_viewport_size({"width": fit_w, "height": fit_h})
+                # The resize reflows layout; re-anchor the message at the
+                # top-left so element.screenshot's own scroll-into-view cannot
+                # push it partly off the (now larger) viewport.
+                await page.evaluate(f"""() => {{
+                    const el = {build_locator_js(locators, role)};
+                    if (el) el.scrollIntoView({{block: 'start', inline: 'start'}});
+                }}""")
+                await page.wait_for_timeout(150)
+                diag["capture_fit"] = {"viewport_width": fit_w,
+                                       "viewport_height": fit_h,
+                                       "element": metrics}
+        except Exception as exc:  # pragma: no cover - defensive
+            diag["capture_prep_error"] = repr(exc)
 
         # Stage 5: element screenshot of the real message node.
         handle = await page.evaluate_handle(f"() => {build_locator_js(locators, role)}")

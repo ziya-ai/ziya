@@ -58,17 +58,32 @@ describe('forceDirectedPlugin.canHandle — d3 renderer-family specs', () => {
         })).toBe(true);
     });
 
-    // Guard: the widening must not make this plugin a catch-all for the
-    // whole d3 family, or it would steal chord/network/basic-chart specs.
-    it('rejects {type:"d3"} with no layout discriminator', () => {
+    // D-015: a bare {type:"d3", nodes, links} — no layout hint — is the shape a
+    // user naively writes for a network. It previously matched NO plugin, so
+    // findPluginForSpec returned undefined and the D3Renderer orchestrator busy-
+    // retried to a ~30s empty-DOM timeout (silent data loss). The presence of a
+    // flat links (edge) array already disambiguates it from chord (matrix) /
+    // tree (children), so force layout is inferred. This assertion FAILS against
+    // the pre-fix predicate (which required an explicit force* layout).
+    it('accepts {type:"d3", nodes, links} with no layout (inferred force) — D-015', () => {
         expect(forceDirectedPlugin.canHandle({
             type: 'd3', nodes: NODES, links: LINKS,
-        })).toBe(false);
+        })).toBe(true);
     });
 
+    // Guard: the inference is NOT a blanket d3 catch-all. A COMPETING explicit
+    // layout is still rejected so a chord/tree/etc spec is never hijacked.
     it('rejects {type:"d3"} with an unrelated layout', () => {
         expect(forceDirectedPlugin.canHandle({
             type: 'd3', layout: 'chord', nodes: NODES, links: LINKS,
+        })).toBe(false);
+    });
+
+    // Guard: the inference requires an actual edge array. A nodes-only d3 spec
+    // (no links) stays rejected, so this cannot steal scatter/pack-style specs.
+    it('rejects {type:"d3"} with nodes but no links array', () => {
+        expect(forceDirectedPlugin.canHandle({
+            type: 'd3', nodes: NODES,
         })).toBe(false);
     });
 

@@ -1,4 +1,7 @@
 /**
+ * @jest-environment jsdom
+ */
+/**
  * Tests for basicChartPlugin — canHandle and bubble chart rendering.
  */
 
