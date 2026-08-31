@@ -236,10 +236,13 @@ describe('preprocessPlotlySpec', () => {
   });
 
   it('passes well-formed specs through unchanged', () => {
+    // Uses the OBJECT title form — a well-formed plotly v2 spec. (A bare string
+    // title is the D-231a bug and is now coerced to {text}, so it is no longer
+    // "well-formed" for this passthrough guard.)
     const spec = {
       data: [{ type: 'scatter3d', x: [1], y: [1], z: [1] }],
       layout: {
-        title: 'Simple',
+        title: { text: 'Simple' },
         scene: { domain: { x: [0, 1], y: [0, 0.88] } },
       },
     };

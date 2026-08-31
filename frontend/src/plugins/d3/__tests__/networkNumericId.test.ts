@@ -97,25 +97,38 @@ describe('Issue 47 — networkDiagramPlugin.canHandle detection', () => {
         expect(networkDiagramPlugin.canHandle(spec)).toBe(true);
     });
 
-    // GUARD: malformed ids must STILL be declined at detection (not a catch-all).
-    it('REJECTS a node whose id is an object', () => {
+    // CONTRACT CHANGE (D-210, group G-28): detection is now TOLERANT. A single
+    // malformed row must NOT reject the whole graph — the row-dropper
+    // (sanitizeNetworkGraph) discards unusable nodes/links at render, so a
+    // `type:'network'` spec with at least one renderable node is CLAIMED. The
+    // assertions below therefore now expect `true` where the old all-or-nothing
+    // `.every(...)` detector returned `false`. The genuine guards (all-invalid
+    // graph, wrong type, non-array) are asserted separately and still hold.
+    it('ACCEPTS a graph with one object-id node plus a valid node (bad row dropped at render)', () => {
         const spec = netSpec(
             [{ id: { nested: 1 } }, { id: 'b' }],
             [{ source: 'b', target: 'b' }]
         );
-        expect(networkDiagramPlugin.canHandle(spec)).toBe(false);
+        expect(networkDiagramPlugin.canHandle(spec)).toBe(true);
     });
 
-    it('REJECTS a node whose id is NaN', () => {
+    it('ACCEPTS a graph with one NaN-id node plus a valid node', () => {
         const spec = netSpec([{ id: NaN }, { id: 'b' }], []);
-        expect(networkDiagramPlugin.canHandle(spec)).toBe(false);
+        expect(networkDiagramPlugin.canHandle(spec)).toBe(true);
     });
 
-    it('REJECTS a link whose endpoint is null / an array', () => {
+    it('ACCEPTS a graph with a malformed link endpoint plus valid nodes (bad link dropped at render)', () => {
         const spec1 = netSpec([{ id: 'a' }, { id: 'b' }], [{ source: null, target: 'b' }]);
         const spec2 = netSpec([{ id: 'a' }, { id: 'b' }], [{ source: 'a', target: [1] }]);
-        expect(networkDiagramPlugin.canHandle(spec1)).toBe(false);
-        expect(networkDiagramPlugin.canHandle(spec2)).toBe(false);
+        expect(networkDiagramPlugin.canHandle(spec1)).toBe(true);
+        expect(networkDiagramPlugin.canHandle(spec2)).toBe(true);
+    });
+
+    // GUARD: a graph with NO renderable node is still declined at detection
+    // (tolerance is "drop bad rows", not "accept anything").
+    it('REJECTS a graph whose every node id is invalid', () => {
+        const spec = netSpec([{ id: { nested: 1 } }, { id: NaN }, { id: '' }], []);
+        expect(networkDiagramPlugin.canHandle(spec)).toBe(false);
     });
 
     it('REJECTS non-network specs (type gate preserved)', () => {

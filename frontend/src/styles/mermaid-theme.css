@@ -55,12 +55,16 @@
 }
 
 /* Node styling */
+/* The node fill is deliberately not set here. A stylesheet fill is invisible to
+   the runtime contrast pass in mermaidPlugin.ts, which reads the background via
+   element.style / getAttribute and cannot observe it. Setting it here left node
+   labels at 3.50:1. Leaving it unset lets mermaid's own mainBkg (#3b4252)
+   stand, against which the fallback label colour resolves to 8.73:1. */
 .dark .mermaid-container .node rect:not([style*="fill:"]),
 .dark .mermaid-container .node circle:not([style*="fill:"]),
 .dark .mermaid-container .node polygon:not([style*="fill:"]),
 .dark .mermaid-container .node path:not([style*="fill:"]) {
     stroke: #81a1c1 !important;
-    fill: #5e81ac !important;
 }
 
 /* Ensure node labels are visible */

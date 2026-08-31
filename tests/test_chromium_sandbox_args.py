@@ -35,6 +35,17 @@ class TestChromiumLaunchArgs(unittest.TestCase):
         self.assertIn("ZIYA_CHROMIUM_NO_SANDBOX", REGISTRY)
         self.assertFalse(REGISTRY["ZIYA_CHROMIUM_NO_SANDBOX"].default)
 
+    def test_software_webgl_flags_present(self):
+        # D-237: WebGL-only plotly trace families (surface / scatter3d /
+        # parcoords) need a software WebGL context or they render only a grey
+        # "WebGL is not supported" panel -> total data loss. ANGLE+SwiftShader
+        # supplies one. These flags must be present in BOTH sandbox modes.
+        for kwargs in ({}, {"no_sandbox": True}):
+            args = build_chromium_launch_args(**kwargs)
+            self.assertIn("--use-gl=angle", args)
+            self.assertIn("--use-angle=swiftshader", args)
+            self.assertIn("--enable-unsafe-swiftshader", args)
+
 
 if __name__ == "__main__":
     unittest.main()

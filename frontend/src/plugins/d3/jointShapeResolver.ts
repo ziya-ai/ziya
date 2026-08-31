@@ -68,16 +68,40 @@ const hasEndpoint = (e: any): boolean =>
         ? e.length > 0
         : typeof e === 'object' && ('id' in e || 'port' in e || 'selector' in e));
 
+// D-142 (G-78): models routinely emit an edge's endpoints under `from`/`to`
+// (also `src`/`dst`, `start`/`end`) instead of the canonical JointJS
+// `source`/`target`. Left unmapped, isJointLinkCell fails to classify such a
+// cell as a link (so it degrades into a stray box) and createEnhancedLink
+// dereferences an undefined endpoint (`linkSpec.source.id`) and drops the edge.
+// These alias lists let both the classifier and the normalizer read the
+// endpoint regardless of which synonym the author used. Canonical name first
+// so an explicit source/target always wins over an alias.
+const SOURCE_ENDPOINT_KEYS = ['source', 'from', 'src', 'start'];
+const TARGET_ENDPOINT_KEYS = ['target', 'to', 'dst', 'dest', 'end'];
+
+/** First present (non-null) endpoint value among the given synonym keys. */
+const resolveEndpoint = (cell: any, keys: string[]): any => {
+    if (!cell || typeof cell !== 'object') return undefined;
+    for (const k of keys) {
+        if (cell[k] != null) return cell[k];
+    }
+    return undefined;
+};
+
 /**
  * A JointJS cell is a LINK if its type is (namespaced) `Link`/`DoubleLink`/
  * `ShadowLink`, OR it carries both a `source` and a `target` endpoint
- * referencing another cell. Elements never have both endpoints.
+ * referencing another cell. Elements never have both endpoints. Endpoint
+ * synonyms (`from`/`to`, `src`/`dst`, `start`/`end`) are recognised too, so an
+ * aliased edge is not misclassified as an element (D-142).
  */
 export function isJointLinkCell(cell: any): boolean {
     if (!cell || typeof cell !== 'object') return false;
     const t = typeof cell.type === 'string' ? cell.type : '';
     if (/(^|\.)(link|doublelink|shadowlink)$/i.test(t)) return true;
-    if (hasEndpoint(cell.source) && hasEndpoint(cell.target)) return true;
+    const src = resolveEndpoint(cell, SOURCE_ENDPOINT_KEYS);
+    const tgt = resolveEndpoint(cell, TARGET_ENDPOINT_KEYS);
+    if (hasEndpoint(src) && hasEndpoint(tgt)) return true;
     return false;
 }
 
@@ -124,6 +148,18 @@ export function normalizeJointElement(cell: any): any {
 export function normalizeJointLink(cell: any): any {
     if (!cell || typeof cell !== 'object') return cell;
     const out: any = { ...cell };
+    // D-142: alias endpoint synonyms (from/to, src/dst, start/end) onto the
+    // canonical source/target the link creator dereferences, so an aliased edge
+    // is not silently dropped. Endpoint values (bare id string or {id,...})
+    // are copied verbatim — both forms are already honoured downstream.
+    if (out.source == null) {
+        const s = resolveEndpoint(cell, SOURCE_ENDPOINT_KEYS);
+        if (s != null) out.source = s;
+    }
+    if (out.target == null) {
+        const t = resolveEndpoint(cell, TARGET_ENDPOINT_KEYS);
+        if (t != null) out.target = t;
+    }
     if (out.label == null && Array.isArray(out.labels)) {
         for (const l of out.labels) {
             const t = coerceLabel(l?.attrs?.text?.text) ?? coerceLabel(l?.attrs?.label?.text);

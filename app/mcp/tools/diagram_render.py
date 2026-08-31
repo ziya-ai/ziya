@@ -19,8 +19,9 @@ Use this tool ONLY when:
 from __future__ import annotations
 
 import base64
+import json
 import logging
-from typing import Any, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -52,6 +53,9 @@ SUPPORTED_DIAGRAM_TYPES: frozenset = frozenset({
     "plotly",
     "drawio", "designinspector",
     "packet",
+    "railroad",
+    "wavedrom",
+    "flamegraph",
     "joint", "jointjs", "diagram",
     "d2",
     "chord",
@@ -78,16 +82,23 @@ class RenderDiagramInput(BaseModel):
         ...,
         description=(
             "Diagram type: mermaid, graphviz, vega-lite, vega, plotly, "
-            "drawio, packet, joint, d2, chord, force-directed, network, d3. "
+            "drawio, packet, railroad, wavedrom, flamegraph, joint, d2, chord, "
+            "force-directed, network, d3. "
             "Also 'chat-message', which is not a diagram at all: it renders "
             "MARKDOWN (KaTeX math, fences, tables) through the real chat UI "
             "and screenshots it, so you can see how a message will actually "
             "look to the user."
         ),
     )
-    definition: str = Field(
+    definition: Union[str, Dict[str, Any], List[Any]] = Field(
         ...,
-        description="Diagram source text or JSON specification.",
+        description=(
+            "Diagram source text, or the JSON specification itself. "
+            "Structured types (vega-lite, vega, plotly, packet, railroad, wavedrom, "
+            "flamegraph, music, "
+            "joint, chord, network, d3) accept either a JSON object/array "
+            "or its serialized string — both are handled."
+        ),
     )
     theme: Literal["dark", "light"] = Field(
         default="light",
@@ -190,6 +201,15 @@ class RenderDiagramTool(BaseMCPTool):
             return _error("'type' is required (e.g. mermaid, graphviz, vega-lite)")
         if not definition:
             return _error("'definition' is required")
+        # Structured types have JSON-object specs, and a caller holding one
+        # passes the object as readily as its serialized string.  Normalize
+        # once here so the LaTeX path, the char counts in the result text,
+        # and the browser (whose plugins JSON.parse this field) all agree.
+        if isinstance(definition, (dict, list)):
+            try:
+                definition = json.dumps(definition)
+            except (TypeError, ValueError) as exc:
+                return _error(f"'definition' is not JSON-serializable: {exc}")
 
         # Fail fast on unsupported types.  Without this, an unknown/typo'd/
         # unsupported type (e.g. "circuitikz", "latex", "uml") is forwarded to
@@ -205,7 +225,7 @@ class RenderDiagramTool(BaseMCPTool):
         # support gate below so these types are never reported unsupported.
         if normalized_type in LATEX_DIAGRAM_TYPES:
             return await self._render_latex_direct(
-                normalized_type, definition, fmt, theme,
+                normalized_type, definition, fmt, theme, width, height,
             )
 
         # A chat-message render is neither a plugin diagram nor LaTeX: it
@@ -224,7 +244,8 @@ class RenderDiagramTool(BaseMCPTool):
         if normalized_type not in SUPPORTED_DIAGRAM_TYPES:
             supported = ", ".join(sorted({
                 "mermaid", "graphviz", "vega-lite", "vega", "plotly",
-                "drawio", "packet", "joint", "d2", "chord",
+                "drawio", "packet", "railroad", "wavedrom", "flamegraph",
+                "joint", "d2", "chord",
                 "force-directed", "network", "music", "d3",
             }))
             return _error(
@@ -423,6 +444,7 @@ class RenderDiagramTool(BaseMCPTool):
 
     async def _render_latex_direct(
         self, diagram_type: str, definition: str, fmt: str, theme: str,
+        width: Optional[int] = None, height: Optional[int] = None,
     ) -> Any:
         """Compile a LaTeX diagram server-side, with no browser involved.
 
@@ -430,6 +452,12 @@ class RenderDiagramTool(BaseMCPTool):
         frontend plugins, so the only way to rasterize them headlessly is to
         run those plugins in a real browser.  LaTeX is the opposite case: the
         entire renderer is a local binary, and the browser adds nothing.
+
+        ``width``/``height`` (the caller's requested pixel bounds) were
+        previously dropped here -- only type/definition/fmt/theme were
+        forwarded -- so a dense or extreme-aspect LaTeX diagram had no size
+        escape hatch at all (D-006).  They are now threaded to the renderer,
+        which scales the pdf->png resolution to fit them.
         """
         from starlette.concurrency import run_in_threadpool
 
@@ -437,7 +465,7 @@ class RenderDiagramTool(BaseMCPTool):
 
         result = await run_in_threadpool(
             latex_renderer.render, diagram_type, definition,
-            "svg" if fmt == "svg" else "png",
+            "svg" if fmt == "svg" else "png", True, theme, width, height,
         )
         # The advisory is deliberately NOT computed here: every failure path
         # below returns early, and _latex_advisory describes a render that
@@ -483,11 +511,11 @@ class RenderDiagramTool(BaseMCPTool):
         )
         desc += self._latex_advisory(result)
         if theme == "dark":
-            # TeX draws black-on-transparent; there is no dark variant, so say
-            # so rather than letting the model assume the theme was applied.
+            # The renderer now bakes a themed surface into the PNG (dark page,
+            # light default ink), so the dark theme IS applied -- say so.
             desc += (
-                " Note: LaTeX output is theme-independent (black on "
-                "transparent); the 'dark' theme was not applied."
+                " The 'dark' theme was applied: rendered as light default ink "
+                "on a dark background."
             )
 
         logger.info(

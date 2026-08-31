@@ -73,9 +73,12 @@ _CHARGE_RE = re.compile(r"\\(charge|Charge)\s*\{")
 _NEEDS_MATH_RE = re.compile(r"\\[a-zA-Z@]+|[\^_]")
 
 #: A charge item that is ONLY an angle ("90", "-45", "12.5") -- an angle with
-#: the mandatory symbol missing.  chemfig still cannot render it, but inventing
-#: a charge SYMBOL would be guessing at chemical intent, so such an item is left
-#: untouched (see _repair_item, and test_bare_angle_with_no_separator...).
+#: the mandatory charge symbol missing.  chemfig aborts fatally on it
+#: ("Argument of \charge_g has an extra }"), so it cannot be passed through
+#: untouched.  Inventing a charge SYMBOL would guess at chemical intent, so the
+#: repair instead supplies the mandatory '=' with an EMPTY symbol ("90" ->
+#: "90="): syntax fixed, no glyph fabricated, angle preserved (see _repair_item
+#: and test_bare_angle_with_no_symbol_gets_an_empty_symbol).
 _BARE_ANGLE_RE = re.compile(r"\s*[-+]?\d+(?:\.\d+)?\s*\Z")
 
 #: Angle supplied when a charge gives a SYMBOL but NO angle
@@ -260,7 +263,24 @@ def _repair_item(item: str) -> tuple[str, list[str]]:
             #     with "Argument of \charge_g has an extra }" exactly as the
             #     separator-mistake case does.  Supply the default angle.
             if _BARE_ANGLE_RE.match(item):
-                return item, notes
+                # A bare ANGLE with no symbol ("90").  chemfig aborts fatally
+                # on this ("Argument of \charge_g has an extra }") -- the SAME
+                # error the separator/bare-symbol cases hit -- so passing it
+                # through untouched guarantees the render dies.  We must NOT
+                # invent a charge symbol (that would guess chemical intent),
+                # but we CAN supply the mandatory '=' with an EMPTY symbol: the
+                # angle is preserved, no glyph is fabricated, and the molecule
+                # renders (the meaningless charge simply draws nothing).  The
+                # form is already invalid, so the rewrite cannot turn a working
+                # body into a broken one.
+                stripped = item.strip()
+                notes.append(
+                    f"{stripped!r}: angle given with no charge symbol; "
+                    f"inserted '=' with an empty symbol (chemfig requires "
+                    f"angle=symbol; a bare angle aborts with 'Argument of "
+                    f"\\charge_g has an extra }}')"
+                )
+                return f"{stripped}=", notes
             symbol = item
             notes.append(
                 f"{item.strip()!r}: no angle given; inserted default "

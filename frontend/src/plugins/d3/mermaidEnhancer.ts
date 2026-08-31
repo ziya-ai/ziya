@@ -8,6 +8,7 @@
  */
 
 import { hexToRgb } from '../../utils/colorUtils';
+import { contrastRatio, ensureReadableFill, CHART_DARK_BG } from './chartTheme';
 import { escapeSequenceMessageSemicolons } from './mermaidSequenceSemicolons';
 import { flattenNestedClassGenerics } from './mermaidClassGenerics';
 import { escapeClassDiagramLabelSemicolons } from './mermaidClassSemicolons';
@@ -609,11 +610,558 @@ export function handleRenderError(error: Error, context: ErrorContext): boolean 
   return handled;
 }
 
+/**
+ * G-09 / D-037 helper: repair near-miss JSON so mermaid's strict `%%{init}%%`
+ * directive parser accepts it. Handles the classic model slips:
+ *   - a trailing comma before `}` / `]`
+ *   - bare (unquoted) object keys        -> `theme:`      => `"theme":`
+ *   - single-quoted strings              -> `'base'`      => `"base"`
+ * Returns compact strict JSON, or `null` when the body still cannot be parsed
+ * after the lenient rewrites (callers must then leave the directive untouched
+ * rather than emit something worse).
+ */
+export function normalizeInitDirectiveJson(text: string): string | null {
+  let t = text;
+  // single-quoted strings -> double-quoted (escape any inner double quote)
+  t = t.replace(/'([^'\\]*(?:\\.[^'\\]*)*)'/g, (_m, inner: string) =>
+    '"' + inner.replace(/"/g, '\\"') + '"');
+  // quote bare identifier keys that follow `{` or `,`
+  t = t.replace(/([{,]\s*)([A-Za-z_$][\w$]*)(\s*:)/g, '$1"$2"$3');
+  // drop trailing commas before a closing brace/bracket
+  t = t.replace(/,(\s*[}\]])/g, '$1');
+  try {
+    return JSON.stringify(JSON.parse(t));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * G-09 / D-037: rewrite every `%%{init: {...}}%%` directive whose JSON is a
+ * near-miss into strict JSON. A directive that cannot be repaired is left
+ * byte-for-byte unchanged (degrade, never corrupt).
+ */
+export function repairInitDirectives(definition: string): string {
+  return definition.replace(
+    /%%\{\s*init\s*:\s*([\s\S]*?)\}%%/gi,
+    (whole: string, body: string) => {
+      const normalized = normalizeInitDirectiveJson(body);
+      return normalized == null ? whole : `%%{init: ${normalized}}%%`;
+    },
+  );
+}
+
+/**
+ * G-09 / D-038: convert an `rgb()`/`rgba()` colour FUNCTION to `#rrggbb`.
+ * Alpha is dropped (mermaid style fills are solid and xcolor/CSS style values
+ * have no reliable per-property alpha channel). Returns `null` for forms we
+ * should not guess at (percentage components, or fewer than three numeric
+ * components) so the caller leaves them untouched.
+ */
+function rgbFunctionToHex(fn: string): string | null {
+  if (fn.includes('%')) return null; // don't mis-scale percentage components
+  const nums = fn.match(/[\d.]+/g);
+  if (!nums || nums.length < 3) return null;
+  const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
+  const hx = (v: number) => clamp(v).toString(16).padStart(2, '0');
+  const [r, g, b] = nums.slice(0, 3).map((n) => parseFloat(n));
+  return `#${hx(r)}${hx(g)}${hx(b)}`;
+}
+
+/**
+ * G-24 / D-173 (w4-06): convert an `hsl()`/`hsla()` colour FUNCTION to
+ * `#rrggbb`. Like `rgb()/rgba()`, an `hsl(h, s%, l%)` value carries commas that
+ * fracture mermaid's comma-split style grammar; unlike rgb() its saturation and
+ * lightness are percentages, so it needs its own parse. Alpha is dropped (solid
+ * fill). Returns `null` for anything that does not parse, so the caller leaves
+ * it untouched.
+ */
+function hslFunctionToHex(fn: string): string | null {
+  const m = fn.match(/^hsla?\(([^)]+)\)$/i);
+  if (!m) return null;
+  const parts = m[1].split(',').map((s) => s.trim());
+  if (parts.length < 3) return null;
+  const h = parseFloat(parts[0]);
+  const s = parseFloat(parts[1]) / 100;
+  const l = parseFloat(parts[2]) / 100;
+  if ([h, s, l].some((n) => Number.isNaN(n))) return null;
+  const hue = ((h % 360) + 360) % 360;
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((hue / 60) % 2) - 1));
+  const mm = l - c / 2;
+  let r = 0, g = 0, b = 0;
+  if (hue < 60) [r, g, b] = [c, x, 0];
+  else if (hue < 120) [r, g, b] = [x, c, 0];
+  else if (hue < 180) [r, g, b] = [0, c, x];
+  else if (hue < 240) [r, g, b] = [0, x, c];
+  else if (hue < 300) [r, g, b] = [x, 0, c];
+  else [r, g, b] = [c, 0, x];
+  const hx = (v: number) => Math.round((v + mm) * 255).toString(16).padStart(2, '0');
+  return `#${hx(r)}${hx(g)}${hx(b)}`;
+}
+
+/**
+ * G-09 / D-038: on `style` / `linkStyle` / `classDef` directive lines, rewrite
+ * `rgb()`/`rgba()`/`hsl()`/`hsla()` color FUNCTIONS to `#hex`. Mermaid's
+ * style-property grammar splits properties on commas, so the commas INSIDE
+ * `rgba(r,g,b,a)` / `hsl(h,s%,l%)` fracture the directive ("Parse error");
+ * converting to a comma-free `#hex` value is the minimal repair. Named CSS
+ * colors (darkorange, rebeccapurple) parse fine in mermaid and are deliberately
+ * left alone, and non-directive lines (node labels, prose) are never touched.
+ */
+export function convertStyleColorFunctionsToHex(definition: string): string {
+  return definition
+    .split('\n')
+    .map((line) => {
+      if (!/^\s*(style|linkStyle|classDef)\b/.test(line)) return line;
+      return line
+        .replace(/rgba?\(\s*[0-9.\s,%]+?\s*\)/gi, (m) => rgbFunctionToHex(m) ?? m)
+        // G-24 / D-173: hsl()/hsla() carry commas too — convert to comma-free #hex.
+        .replace(/hsla?\(\s*[0-9.\s,%]+?\s*\)/gi, (m) => hslFunctionToHex(m) ?? m);
+    })
+    .join('\n');
+}
+
+/**
+ * G-09 / D-158: CSS3 named colours resolved to `#rrggbb`. Full CSS named-colour
+ * table (case-insensitive), so ANY named colour a model emits is resolvable —
+ * not a spec-specific whitelist.
+ */
+const CSS_NAMED_COLORS: Record<string, string> = {
+  aliceblue: '#f0f8ff', antiquewhite: '#faebd7', aqua: '#00ffff', aquamarine: '#7fffd4',
+  azure: '#f0ffff', beige: '#f5f5dc', bisque: '#ffe4c4', black: '#000000',
+  blanchedalmond: '#ffebcd', blue: '#0000ff', blueviolet: '#8a2be2', brown: '#a52a2a',
+  burlywood: '#deb887', cadetblue: '#5f9ea0', chartreuse: '#7fff00', chocolate: '#d2691e',
+  coral: '#ff7f50', cornflowerblue: '#6495ed', cornsilk: '#fff8dc', crimson: '#dc143c',
+  cyan: '#00ffff', darkblue: '#00008b', darkcyan: '#008b8b', darkgoldenrod: '#b8860b',
+  darkgray: '#a9a9a9', darkgrey: '#a9a9a9', darkgreen: '#006400', darkkhaki: '#bdb76b',
+  darkmagenta: '#8b008b', darkolivegreen: '#556b2f', darkorange: '#ff8c00', darkorchid: '#9932cc',
+  darkred: '#8b0000', darksalmon: '#e9967a', darkseagreen: '#8fbc8f', darkslateblue: '#483d8b',
+  darkslategray: '#2f4f4f', darkslategrey: '#2f4f4f', darkturquoise: '#00ced1', darkviolet: '#9400d3',
+  deeppink: '#ff1493', deepskyblue: '#00bfff', dimgray: '#696969', dimgrey: '#696969',
+  dodgerblue: '#1e90ff', firebrick: '#b22222', floralwhite: '#fffaf0', forestgreen: '#228b22',
+  fuchsia: '#ff00ff', gainsboro: '#dcdcdc', ghostwhite: '#f8f8ff', gold: '#ffd700',
+  goldenrod: '#daa520', gray: '#808080', grey: '#808080', green: '#008000',
+  greenyellow: '#adff2f', honeydew: '#f0fff0', hotpink: '#ff69b4', indianred: '#cd5c5c',
+  indigo: '#4b0082', ivory: '#fffff0', khaki: '#f0e68c', lavender: '#e6e6fa',
+  lavenderblush: '#fff0f5', lawngreen: '#7cfc00', lemonchiffon: '#fffacd', lightblue: '#add8e6',
+  lightcoral: '#f08080', lightcyan: '#e0ffff', lightgoldenrodyellow: '#fafad2', lightgray: '#d3d3d3',
+  lightgrey: '#d3d3d3', lightgreen: '#90ee90', lightpink: '#ffb6c1', lightsalmon: '#ffa07a',
+  lightseagreen: '#20b2aa', lightskyblue: '#87cefa', lightslategray: '#778899', lightslategrey: '#778899',
+  lightsteelblue: '#b0c4de', lightyellow: '#ffffe0', lime: '#00ff00', limegreen: '#32cd32',
+  linen: '#faf0e6', magenta: '#ff00ff', maroon: '#800000', mediumaquamarine: '#66cdaa',
+  mediumblue: '#0000cd', mediumorchid: '#ba55d3', mediumpurple: '#9370db', mediumseagreen: '#3cb371',
+  mediumslateblue: '#7b68ee', mediumspringgreen: '#00fa9a', mediumturquoise: '#48d1cc',
+  mediumvioletred: '#c71585', midnightblue: '#191970', mintcream: '#f5fffa', mistyrose: '#ffe4e1',
+  moccasin: '#ffe4b5', navajowhite: '#ffdead', navy: '#000080', oldlace: '#fdf5e6',
+  olive: '#808000', olivedrab: '#6b8e23', orange: '#ffa500', orangered: '#ff4500',
+  orchid: '#da70d6', palegoldenrod: '#eee8aa', palegreen: '#98fb98', paleturquoise: '#afeeee',
+  palevioletred: '#db7093', papayawhip: '#ffefd5', peachpuff: '#ffdab9', peru: '#cd853f',
+  pink: '#ffc0cb', plum: '#dda0dd', powderblue: '#b0e0e6', purple: '#800080',
+  rebeccapurple: '#663399', red: '#ff0000', rosybrown: '#bc8f8f', royalblue: '#4169e1',
+  saddlebrown: '#8b4513', salmon: '#fa8072', sandybrown: '#f4a460', seagreen: '#2e8b57',
+  seashell: '#fff5ee', sienna: '#a0522d', silver: '#c0c0c0', skyblue: '#87ceeb',
+  slateblue: '#6a5acd', slategray: '#708090', slategrey: '#708090', snow: '#fffafa',
+  springgreen: '#00ff7f', steelblue: '#4682b4', tan: '#d2b48c', teal: '#008080',
+  thistle: '#d8bfd8', tomato: '#ff6347', turquoise: '#40e0d0', violet: '#ee82ee',
+  wheat: '#f5deb3', white: '#ffffff', whitesmoke: '#f5f5f5', yellow: '#ffff00',
+  yellowgreen: '#9acd32',
+};
+
+/**
+ * G-09 / D-158: resolve a mermaid style colour token — `#rgb`, `#rrggbb`,
+ * `rgb()`/`rgba()`, or a CSS named colour — to `{r,g,b}`. Returns `null` for
+ * anything we cannot resolve exactly (theme tokens, `transparent`, percentage
+ * rgb()), so the caller declines rather than guesses.
+ */
+export function resolveStyleColorToRgb(
+  token: string,
+): { r: number; g: number; b: number } | null {
+  if (!token) return null;
+  let t = token.trim().toLowerCase();
+  if (t === 'transparent' || t === 'none' || t === 'inherit' || t === 'currentcolor') return null;
+  if (CSS_NAMED_COLORS[t]) t = CSS_NAMED_COLORS[t];
+  const hexM = t.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if (hexM) {
+    let h = hexM[1];
+    if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+    return { r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16) };
+  }
+  const rgbM = t.match(/^rgba?\(([^)]+)\)$/i);
+  if (rgbM) {
+    if (rgbM[1].includes('%')) return null; // don't mis-scale percentage components
+    const nums = rgbM[1].match(/[\d.]+/g);
+    if (!nums || nums.length < 3) return null;
+    const c = (v: string) => Math.max(0, Math.min(255, Math.round(parseFloat(v))));
+    return { r: c(nums[0]), g: c(nums[1]), b: c(nums[2]) };
+  }
+  return null;
+}
+
+/** WCAG relative luminance of an RGB triple. */
+function relLuminance(rgb: { r: number; g: number; b: number }): number {
+  const ch = (v: number) => {
+    const s = v / 255;
+    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * ch(rgb.r) + 0.7152 * ch(rgb.g) + 0.0722 * ch(rgb.b);
+}
+
+/** WCAG contrast ratio (1..21) between two RGB triples. */
+export function contrastRatioRgb(
+  a: { r: number; g: number; b: number },
+  b: { r: number; g: number; b: number },
+): number {
+  const la = relLuminance(a);
+  const lb = relLuminance(b);
+  const hi = Math.max(la, lb);
+  const lo = Math.min(la, lb);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+/** Best-legible text colour (black or white) for a given fill, by contrast. */
+function readableTextForFill(fill: { r: number; g: number; b: number }): string {
+  const black = { r: 0, g: 0, b: 0 };
+  const white = { r: 255, g: 255, b: 255 };
+  return contrastRatioRgb(fill, black) >= contrastRatioRgb(fill, white) ? '#000000' : '#ffffff';
+}
+
+/**
+ * G-09 / D-158: guard against a `style` / `classDef` directive whose text
+ * `color:` lands on its OWN `fill:` with too little contrast (e.g.
+ * `fill:whitesmoke,color:snow` = 1.05:1, `fill:#ffffff,color:#ffffff` = 1.0:1),
+ * which paints an invisible label on a visible card. When BOTH the fill and the
+ * text colour resolve to RGB AND their contrast is below `floor`, the text
+ * colour is overridden to the black/white that reads best on the fill.
+ * Theme-INDEPENDENT (the fill is author-fixed) and deliberately narrow.
+ */
+export function remediateStyleFillTextContrast(definition: string, floor = 2.0): string {
+  return definition
+    .split('\n')
+    .map((line) => {
+      if (!/^\s*(style|classDef)\b/.test(line)) return line;
+      const fillM = line.match(/(^|[,\s])fill:\s*([^,;\s]+)/i);
+      const colorM = line.match(/(^|[,\s])color:\s*([^,;\s]+)/i);
+      if (!fillM || !colorM) return line;
+      const fillRgb = resolveStyleColorToRgb(fillM[2]);
+      const textRgb = resolveStyleColorToRgb(colorM[2]);
+      if (!fillRgb || !textRgb) return line;
+      if (contrastRatioRgb(fillRgb, textRgb) >= floor) return line;
+      const fixed = readableTextForFill(fillRgb);
+      return line.replace(/((?:^|[,\s])color:\s*)[^,;\s]+/i, `$1${fixed}`);
+    })
+    .join('\n');
+}
+
+/**
+ * G-24 / D-172: strip a leading/trailing markdown code fence around a mermaid
+ * definition. A model constantly emits its diagram wrapped in
+ * ```` ```mermaid … ``` ```` (or a bare ```` ``` ````); the fence lines are not
+ * valid mermaid, so the diagram-type sniffer reads the fence as the type and
+ * the fence bytes reach the parser, which aborts and burns the full 30s render
+ * timeout with an empty DOM. Removing the outermost fence recovers the diagram.
+ */
+export function stripMermaidCodeFence(definition: string): string {
+  if (!definition) return definition;
+  const leading = definition.match(/^\s*/)?.[0] ?? '';
+  let text = definition.slice(leading.length);
+  const open = text.match(/^(?:`{3,}|~{3,})[ \t]*[A-Za-z0-9_+-]*[ \t]*\r?\n/);
+  if (!open) return definition;
+  text = text.slice(open[0].length);
+  text = text.replace(/\r?\n[ \t]*(?:`{3,}|~{3,})[ \t]*\s*$/, '');
+  return text;
+}
+
+/**
+ * G-24 / D-173 (w4-04): quote a flowchart rectangle label `id[…]` whose text
+ * contains an unescaped parenthesis (the classic mermaid parse-killer that
+ * hangs the render because `(` opens a node-shape token). Deliberately narrow:
+ * only `<id>[ … ]` rectangles are matched; the `(?!\[|\()` guard skips
+ * subroutine `[[ ]]` and cylinder `[( )]` shapes; only labels that actually
+ * contain a paren are rewritten; an already-quoted label is left unchanged.
+ */
+export function quoteBracketLabelsWithParens(definition: string): string {
+  return definition
+    .split('\n')
+    .map((line) => {
+      if (/^\s*(style|classDef|linkStyle|class|click|subgraph)\b/.test(line)) return line;
+      return line.replace(
+        /([A-Za-z0-9_]+)\[(?!\[|\()([^\]\n]*)\]/g,
+        (match, id: string, content: string) => {
+          if (!/[()]/.test(content)) return match;          // no parens: leave alone
+          if (/^\s*".*"\s*$/.test(content)) return match;   // already quoted: idempotent
+          const escaped = content.replace(/"/g, '#quot;');
+          return `${id}["${escaped}"]`;
+        },
+      );
+    })
+    .join('\n');
+}
+
+/**
+ * G-24 / D-040 (chat-message w4-10): drop a `primaryColor: transparent`/`none`
+ * from a `%%{init}%%` themeVariables block. Otherwise mermaid's base theme
+ * derives a near-white node label over a see-through fill (ghost text ~1.1:1 on
+ * the light surface). Dropping it restores mermaid's default contrast-matched
+ * fill (#ECECFF) + derived dark text (~#333333 = 10.8:1 on the node), legible on
+ * BOTH themes because the label then sits on a real fill, not the page surface.
+ * Unknown tokens (e.g. `nodeBackground`) are left for mermaid to ignore.
+ */
+export function sanitizeInitTransparentPrimaryColor(definition: string): string {
+  return definition.replace(
+    /(%%\{\s*init\s*:\s*)([\s\S]*?)(\}%%)/gi,
+    (whole: string, head: string, body: string, tail: string) => {
+      const normalized = normalizeInitDirectiveJson(body);
+      if (normalized == null) return whole;
+      let obj: any;
+      try {
+        obj = JSON.parse(normalized);
+      } catch {
+        return whole;
+      }
+      const tv = obj?.themeVariables;
+      if (!tv || typeof tv !== 'object') return whole;
+      const pc = typeof tv.primaryColor === 'string' ? tv.primaryColor.trim().toLowerCase() : '';
+      if (pc !== 'transparent' && pc !== 'none' && pc !== '') return whole;
+      delete tv.primaryColor;
+      return `${head}${JSON.stringify(obj)}${tail}`;
+    },
+  );
+}
+
+/**
+ * G-76 / D-032 (chat-message w3-15): guard an author `%%{init}%%` themeVariables
+ * palette whose `primaryTextColor` lands on its own `primaryColor` node fill
+ * with too little contrast (the custom pale ramp `#9fc7e0` text on `#eef6fb`
+ * fill = 1.64:1 — invisible on the node in BOTH themes because the node fill is
+ * author-fixed regardless of the page surface). When BOTH `primaryColor` and
+ * `primaryTextColor` resolve to RGB AND their contrast is below `floor`, the
+ * text colour is overridden to the black/white that reads best on the fill.
+ *
+ * Theme-INDEPENDENT (the fill is author-supplied, not derived from the page) and
+ * deliberately narrow: a per-page palette whose text already reads on its fill —
+ * a light-tuned `#333333` on `#fafafa` (12.1:1) or a dark-tuned `#eeeeee` on
+ * `#1a1a1a` (15.0:1) — is returned byte-for-byte unchanged, so a legible
+ * author choice is never overridden; only a genuinely illegible node label is
+ * repaired. Mirrors `remediateStyleFillTextContrast` for the init-directive path.
+ * Runs after the init JSON normalizer so the directive body is already strict.
+ */
+export function remediateInitThemeVariableContrast(
+  definition: string,
+  floor = 2.0,
+): string {
+  return definition.replace(
+    /(%%\{\s*init\s*:\s*)([\s\S]*?)(\}%%)/gi,
+    (whole: string, head: string, body: string, tail: string) => {
+      const normalized = normalizeInitDirectiveJson(body);
+      if (normalized == null) return whole;
+      let obj: any;
+      try {
+        obj = JSON.parse(normalized);
+      } catch {
+        return whole;
+      }
+      const tv = obj?.themeVariables;
+      if (!tv || typeof tv !== 'object') return whole;
+      const fillRgb = resolveStyleColorToRgb(
+        typeof tv.primaryColor === 'string' ? tv.primaryColor : '',
+      );
+      const textRgb = resolveStyleColorToRgb(
+        typeof tv.primaryTextColor === 'string' ? tv.primaryTextColor : '',
+      );
+      if (!fillRgb || !textRgb) return whole;
+      if (contrastRatioRgb(fillRgb, textRgb) >= floor) return whole;
+      tv.primaryTextColor = readableTextForFill(fillRgb);
+      return `${head}${JSON.stringify(obj)}${tail}`;
+    },
+  );
+}
+
+/**
+ * G-59 / D-174 (w4-11): balance unclosed `subgraph … end` pairs in a flowchart.
+ * A model frequently drops one trailing `end` for a nested subgraph
+ * (`subgraph Outer` / `subgraph Inner` / `end` — one `end` short), and mermaid
+ * then hangs the render for the full 30s timeout with zero SVG rather than
+ * reporting the imbalance. Closing the gap is pure counting: `end` is a keyword
+ * that must sit on its own line, so we count `^subgraph` opens vs `^end$`
+ * closes and append the missing `end`s at the tail (which closes the OUTER
+ * subgraph last, preserving the intended nesting). Only ever ADDS `end`s when
+ * opens > closes; a balanced or over-closed definition is returned unchanged so
+ * a correct diagram is never touched.
+ */
+export function balanceSubgraphEnds(definition: string): string {
+  if (!definition) return definition;
+  let opens = 0;
+  let closes = 0;
+  for (const raw of definition.split('\n')) {
+    const t = raw.trim();
+    if (/^subgraph\b/i.test(t)) opens++;
+    else if (/^end$/i.test(t)) closes++;
+  }
+  if (opens <= closes) return definition;
+  const missing = opens - closes;
+  const trimmedTail = definition.replace(/\s+$/, '');
+  return trimmedTail + '\n' + Array(missing).fill('end').join('\n');
+}
+
+/**
+ * G-59 / D-174 (w4-12): coerce a pie-slice VALUE to a bare number. A model
+ * emits pie data as `"Label" : "42"` / `'18'` (a quoted numeric string) or with
+ * a comma decimal separator (`"Archive" : 8,5`); mermaid's pie grammar wants a
+ * bare number after the colon, so a quoted/comma-decimal value aborts the parse
+ * and hangs the render. This strips one layer of surrounding quotes and maps a
+ * `<digits>,<digits>` comma-decimal to a dot, but ONLY when the result is a
+ * pure number — any non-numeric value (a title, prose, a colon in a label) is
+ * left byte-for-byte unchanged, so a valid pie or a non-data line is untouched.
+ */
+function coercePieValue(value: string): string | null {
+  let s = value.trim();
+  const quoted = s.match(/^(['"])([\s\S]*)\1$/);
+  if (quoted) s = quoted[2].trim();
+  const commaDecimal = s.match(/^(\d+),(\d+)$/);
+  if (commaDecimal) s = `${commaDecimal[1]}.${commaDecimal[2]}`;
+  return /^\d+(\.\d+)?$/.test(s) ? s : null;
+}
+
+export function coercePieDataValues(definition: string): string {
+  if (!definition) return definition;
+  return definition
+    .split('\n')
+    .map((line) => {
+      const m = line.match(/^(\s*)(.+?)(\s*:\s*)(.+?)\s*$/);
+      if (!m) return line;
+      const [, indent, label, sep, value] = m;
+      const coerced = coercePieValue(value);
+      if (coerced == null || coerced === value.trim()) return line;
+      return `${indent}${label}${sep}${coerced}`;
+    })
+    .join('\n');
+}
+
+/**
+ * G-59 / D-175 (w4-14): degrade a cross-dialect (sequenceDiagram) arrow that
+ * leaked into a flowchart to a plain flowchart edge. A single out-of-dialect
+ * token such as `-->>` (sequence async arrow) aborts mermaid's flowchart parse
+ * and takes every legal edge on other lines down with it — a 30s hang with no
+ * partial render. The legal flowchart arrows (`-.->`, `==>`, `--x`, `--o`,
+ * `-- label -->`, `-->|retry|`) are untouched; only the double-`>>` arrowhead
+ * (and the single-dash `->>`) — which flowchart has no notion of — is rewritten
+ * to the single-head flowchart equivalent so the whole diagram renders.
+ */
+export function normalizeCrossDialectArrows(definition: string): string {
+  if (!definition) return definition;
+  return definition
+    .split('\n')
+    .map((line) => {
+      if (/^\s*(subgraph|style|classDef|linkStyle|class|click|%%)/.test(line)) return line;
+      let out = line;
+      // Single-dash solid sequence arrow `->>` (not a flowchart arrow) -> plain
+      // edge `-->`. Guarded so it never matches inside a `-->>`/`==>>` body
+      // (the char immediately before `->>` must not be part of an arrow).
+      out = out.replace(/(^|[^-<.=|])->>/g, '$1-->');
+      // Double `>>` arrowhead on a dotted / solid / thick body -> single head.
+      out = out.replace(/(-\.-|--|==)>>/g, '$1>');
+      return out;
+    })
+    .join('\n');
+}
+
 /*
  * Initialize the Mermaid enhancer with default preprocessors and error handlers
  */
 export function initMermaidEnhancer(): void {
   // Register default preprocessors
+
+  // G-24 / D-172: strip an outer markdown code fence (```` ```mermaid … ``` ````)
+  // BEFORE any type-specific pass. Highest priority so the fence never reaches
+  // the diagram-type sniffer or the parser (a leaked fence hangs the render for
+  // the full 30s timeout). Universal ('*') — a fence can wrap any diagram type.
+  registerPreprocessor(
+    (definition: string): string => stripMermaidCodeFence(definition),
+    { name: 'markdown-code-fence-strip', priority: 900, diagramTypes: ['*'] },
+  );
+
+  // G-09 / D-037: repair near-miss %%{init}%% directive JSON BEFORE anything
+  // else runs, so mermaid's strict directive parser applies the requested
+  // palette instead of silently dropping the whole directive. Universal ('*').
+  registerPreprocessor(
+    (definition: string): string => repairInitDirectives(definition),
+    { name: 'init-directive-json-normalizer', priority: 820, diagramTypes: ['*'] },
+  );
+
+  // G-24 / D-040: drop a `primaryColor: transparent` (or `none`) from a
+  // %%{init}%% themeVariables block so mermaid's default node fill + derived
+  // text apply instead of a near-white label on a see-through fill (ghost text
+  // ~1.1:1 on the light surface). Runs after the JSON normalizer (820) so a
+  // near-miss init body is already strict. Universal ('*').
+  registerPreprocessor(
+    (definition: string): string => sanitizeInitTransparentPrimaryColor(definition),
+    { name: 'init-transparent-primary-color-fix', priority: 815, diagramTypes: ['*'] },
+  );
+
+  // G-76 / D-032 (chat-message w3-15): clamp an author %%{init}%% themeVariables
+  // `primaryTextColor` that lands illegibly on its own `primaryColor` node fill
+  // (pale-on-pale ramp #9fc7e0 on #eef6fb = 1.64:1, invisible in BOTH themes
+  // because the node fill is author-fixed regardless of page). Runs after the
+  // init JSON normalizer (820) and the transparent-primaryColor drop (815) so the
+  // directive body is already strict JSON. Only fires below 2.0:1, so a deliberate
+  // per-page palette that already reads on its fill (light #333/#fafafa=12:1,
+  // dark #eee/#1a1a1a=15:1) is untouched. Theme-independent. Universal ('*').
+  registerPreprocessor(
+    (definition: string): string => remediateInitThemeVariableContrast(definition),
+    { name: 'init-theme-variable-contrast-guard', priority: 812, diagramTypes: ['*'] },
+  );
+
+  // G-09 / D-038: convert rgb()/rgba()/hsl() color functions in style/linkStyle/
+  // classDef directives to #hex so their internal commas no longer break
+  // mermaid's comma-split style grammar. Runs early, above the quote-consolidator.
+  registerPreprocessor(
+    (definition: string): string => convertStyleColorFunctionsToHex(definition),
+    { name: 'style-directive-color-function-fix', priority: 780, diagramTypes: ['flowchart', 'graph'] },
+  );
+
+  // G-09 / D-158: override a style/classDef text `color:` that lands illegibly
+  // on its own `fill:`. Runs after rgb()->hex (780). Only fires when both
+  // colours resolve AND their measured contrast is below 2.0. Theme-independent.
+  registerPreprocessor(
+    (definition: string): string => remediateStyleFillTextContrast(definition),
+    { name: 'style-fill-text-contrast-guard', priority: 770, diagramTypes: ['flowchart', 'graph'] },
+  );
+
+  // G-59 / D-174 (w4-11): balance unclosed `subgraph … end` pairs before the
+  // flowchart reaches mermaid (a missing `end` hangs the render 30s). Deterministic
+  // counting fix; only adds the missing `end`s, never removes.
+  registerPreprocessor(
+    (definition: string): string => balanceSubgraphEnds(definition),
+    { name: 'flowchart-subgraph-end-balance', priority: 757, diagramTypes: ['flowchart', 'graph'] },
+  );
+
+  // G-59 / D-175 (w4-14): degrade a leaked sequence-diagram arrow (`-->>`) in a
+  // flowchart to a plain flowchart edge so one out-of-dialect token no longer
+  // hangs the whole render. Legal flowchart arrows are untouched. Runs before
+  // the label/pipe passes (720/730) so those see a normalized arrow token.
+  registerPreprocessor(
+    (definition: string): string => normalizeCrossDialectArrows(definition),
+    { name: 'flowchart-cross-dialect-arrow-normalize', priority: 758, diagramTypes: ['flowchart', 'graph'] },
+  );
+
+  // G-59 / D-174 (w4-12): coerce quoted / comma-decimal pie-slice VALUES
+  // (`"42"`, `'18'`, `8,5`) to bare numbers so mermaid's pie grammar accepts
+  // them instead of hanging. Only rewrites when the value resolves to a pure
+  // number; a non-data line (title/prose) is left unchanged.
+  registerPreprocessor(
+    (definition: string): string => coercePieDataValues(definition),
+    { name: 'pie-numeric-value-coerce', priority: 756, diagramTypes: ['pie'] },
+  );
+
+  // G-24 / D-173 (w4-04): quote a flowchart rectangle label `id[…]` that
+  // contains a bare parenthesis (the classic mermaid parse-killer that hangs
+  // the render). Runs above the quote-consolidator (650) / special-char-guard
+  // (135) so those passes see an already-quoted label and leave it alone.
+  registerPreprocessor(
+    (definition: string): string => quoteBracketLabelsWithParens(definition),
+    { name: 'flowchart-bracket-label-paren-quote', priority: 660, diagramTypes: ['flowchart', 'graph'] },
+  );
 
   // Issue 42 defect 1: flatten NESTED / unbalanced generic tildes in
   // classDiagram class-name & type tokens (`Repo~Comparable~K~~`) that
@@ -2167,9 +2715,25 @@ export function initMermaidEnhancer(): void {
       return match;
     });
 
-    // Ensure subgraph declarations are properly formatted
-    // Make sure there's a space between subgraph and the ID
-    finalDef = finalDef.replace(/subgraph(\w+)/g, 'subgraph $1');
+    // Ensure subgraph declarations are properly formatted:
+    // insert the missing space in a genuinely glued keyword
+    // ("subgraphCore" -> "subgraph Core"). This MUST be scoped tightly: the old
+    // unanchored /subgraph(\w+)/g matched the letters "subgraph" anywhere,
+    // including inside a legitimate node identifier such as `subgraph_entry`,
+    // rewriting it to `subgraph _entry`. That stray `subgraph` token opened a
+    // phantom nested cluster and hung dagre with zero SVG (D-167). Constrain to:
+    //  - the start of a declaration line (mid-line edge endpoints untouched),
+    //  - a name beginning with a LETTER (a leading `_`/digit is a snake_case id
+    //    signal, never the keyword),
+    //  - a line carrying no edge connector (an edge line is a node usage, not a
+    //    subgraph declaration).
+    finalDef = finalDef.replace(
+      /^([ \t]*)subgraph([A-Za-z][\w-]*)(.*)$/gm,
+      (match: string, indent: string, gluedName: string, rest: string) => {
+        if (/(--|==|-\.|~~~|<--|-->|===)/.test(rest)) return match;
+        return `${indent}subgraph ${gluedName}${rest}`;
+      }
+    );
 
     return finalDef;
   }, {
@@ -2723,7 +3287,15 @@ export function initMermaidEnhancer(): void {
         }
 
         if (taskDefParts.length >= 3) {
-          // ... rest of the existing logic
+          // G-24 / D-176: a task with 3+ comma-fields that was not caught by
+          // the 4-field `properTaskMatch` above (e.g. the valid 3-field forms
+          // `id, 2024-03-01, 5d` or `id, after x, 3d`, or a `milestone, after
+          // x, 0d`) is ALREADY valid mermaid. Preserve it verbatim. The prior
+          // stub left this branch empty, which silently DROPPED every such task
+          // — a gantt with no dateFormat (default injected above) then rendered
+          // title + sections with ZERO bars. Keeping the line is the fix.
+          fixedLines.push(line);
+          continue;
         } else {
           // Handle incomplete tasks
           console.log(`🔍 GANTT-FIX: Adding default format for incomplete task: ${taskName}`);
@@ -4020,7 +4592,11 @@ export function enhanceMermaid(mermaid: any): void {
 
       // Determine diagram type  
       // The definition parameter should already be the raw mermaid definition at this point
-      let actualDefinition = definition;
+      // G-24 / D-172: strip an outer markdown code fence up front so the
+      // diagram-type sniffer below reads `flowchart`/`gantt`/… and not the
+      // ```` ```mermaid ```` fence line (which otherwise leaks to the parser and
+      // hangs the render). preprocessDefinition also strips it defensively.
+      let actualDefinition = stripMermaidCodeFence(definition);
 
       let diagramType: string;
       const lines = actualDefinition.trim().split('\n');
@@ -4063,7 +4639,7 @@ export function enhanceMermaid(mermaid: any): void {
       });
 
       // Preprocess the definition with type normalization
-      const processedDef = preprocessDefinition(definition, diagramType, mermaid);
+      const processedDef = preprocessDefinition(actualDefinition, diagramType, mermaid);
 
       console.log('After preprocessing:', {
         originalType: diagramType,
@@ -4507,4 +5083,168 @@ export default function initMermaidSupport(mermaidInstance?: any): void {
     priority: 285,
     diagramTypes: ['sequencediagram']
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// G-40: mermaid dark-theme + gantt structural fixes
+//   D-160 timeline dark palette (light-fill/light-text inconsistency)
+//   D-161 linkStyle stroke override dropped under the dark visibility pass
+//   D-170 gantt date gridlines painted OVER the task bars (z-order)
+// These are pure/DOM helpers, unit-tested; the render-time wiring lives in
+// mermaidPlugin.ts (theme variables + post-render passes).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * D-160: explicit, internally-consistent timeline section palette for DARK.
+ *
+ * Mermaid v11's built-in `dark` theme derives `cScaleLabelN` self-referentially
+ * (`cScaleLabel0 = this.cScaleLabel0 || this.cScale1`), so a section can end up
+ * with a LIGHT `cScale` fill AND a LIGHT derived label (~1.6:1), while a
+ * neighbour goes near-black and its grouping vanishes — the exact both-directions
+ * mismatch in mermaid-w1-12 dark. We instead pair a light section FILL with a
+ * DARK label per index (mirroring the working light theme), so every band is a
+ * light plate with legible dark text regardless of the dark page behind it.
+ *
+ * Contrast (WCAG 2.x), verified in the G-40 test and with python3:
+ *   label #1a1a1a on every fill  >= 8.44:1  (text floor 4.5 cleared)
+ *   every fill on the dark page #2e3440 >= 6.06:1  (grouping boundary >= 3)
+ * Only applied for dark + timeline, so pie/journey (which also read cScale*)
+ * are untouched.
+ */
+export const TIMELINE_DARK_SECTION_FILLS = [
+  '#a6cee3', '#b2df8a', '#fdbf6f', '#fb9a99',
+  '#cab2d6', '#ffff99', '#c6dba0', '#f5cba0',
+];
+export const TIMELINE_DARK_SECTION_LABEL = '#1a1a1a';
+
+export function buildTimelineDarkThemeVariables(): Record<string, string> {
+  const vars: Record<string, string> = {};
+  // Cover every index mermaid may reference (cScale0..12) by cycling the palette
+  // so a timeline with >8 sections never falls back to the inconsistent default.
+  for (let i = 0; i <= 12; i++) {
+    const fill = TIMELINE_DARK_SECTION_FILLS[i % TIMELINE_DARK_SECTION_FILLS.length];
+    vars[`cScale${i}`] = fill;
+    vars[`cScaleLabel${i}`] = TIMELINE_DARK_SECTION_LABEL;
+  }
+  return vars;
+}
+
+/** A parsed `linkStyle` stroke override. */
+export interface LinkStyleStroke {
+  /** Explicit edge indices, or 'default' for the catch-all linkStyle. */
+  indices: number[] | 'default';
+  /** The raw stroke colour the author asked for. */
+  stroke: string;
+}
+
+/**
+ * D-161: extract `linkStyle <idx|default> ... stroke:<colour>` directives from a
+ * mermaid definition, in document order. Only the stroke colour is captured
+ * (stroke-width and other props are left to mermaid).
+ */
+export function parseLinkStyleStrokes(definition: string): LinkStyleStroke[] {
+  const out: LinkStyleStroke[] = [];
+  for (const raw of definition.split('\n')) {
+    const line = raw.trim();
+    const m = line.match(/^linkStyle\s+(default|\d+(?:\s*,\s*\d+)*)\s+(.+)$/i);
+    if (!m) continue;
+    const strokeMatch = m[2].match(/(?:^|[;,\s])stroke\s*:\s*([^;,\s]+)/i);
+    if (!strokeMatch) continue;
+    const stroke = strokeMatch[1].trim();
+    if (m[1].toLowerCase() === 'default') {
+      out.push({ indices: 'default', stroke });
+    } else {
+      const idx = m[1].split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n));
+      if (idx.length) out.push({ indices: idx, stroke });
+    }
+  }
+  return out;
+}
+
+/**
+ * D-161: re-apply explicit `linkStyle` edge strokes that the dark-theme
+ * visibility pass (enhanceSVGVisibility) repaints with the theme lineColor,
+ * silently discarding deliberately colour-coded edges.
+ *
+ * Only runs in DARK — in light the strokes are already honoured, so this leaves
+ * the light render byte-identical (returns 0). The honoured colour is passed
+ * through `ensureReadableFill` against the dark canvas so a dark-unfriendly
+ * author stroke (e.g. #aa0000 = 2.15:1 on #1e1e1e) is HONOURED-THEN-LIGHTENED
+ * to clear the 3:1 floor (#aa0000 -> #cc6666 = 4.49:1) rather than either being
+ * dropped or left invisible.
+ *
+ * Returns the number of edges whose stroke was (re)applied.
+ */
+export function reapplyLinkStyleStrokes(svg: Element, definition: string, isDarkMode: boolean): number {
+  if (!isDarkMode) return 0;
+  const styles = parseLinkStyleStrokes(definition);
+  if (styles.length === 0) return 0;
+
+  let edges: Element[] = Array.from(svg.querySelectorAll('.edgePaths > path'));
+  if (edges.length === 0) edges = Array.from(svg.querySelectorAll('path.flowchart-link'));
+  if (edges.length === 0) edges = Array.from(svg.querySelectorAll('.edgePath path.path'));
+  if (edges.length === 0) edges = Array.from(svg.querySelectorAll('.edgePath path'));
+  if (edges.length === 0) return 0;
+
+  let applied = 0;
+  const apply = (el: Element, stroke: string) => {
+    const safe = ensureReadableFill(stroke, CHART_DARK_BG, '#88c0d0', 3);
+    (el as unknown as SVGElement).style.setProperty('stroke', safe, 'important');
+    applied++;
+  };
+  for (const s of styles) {
+    if (s.indices === 'default') {
+      edges.forEach(e => apply(e, s.stroke));
+    } else {
+      s.indices.forEach(i => { if (edges[i]) apply(edges[i], s.stroke); });
+    }
+  }
+  return applied;
+}
+
+/**
+ * D-170: move the gantt date-gridline group so it paints BEHIND the task bars.
+ * Mermaid can emit `<g class="grid">` after the bars, so heavy vertical rules
+ * slice through the bars (SVG paint order = document order). We relocate the
+ * grid group to just before the first task bar's top-level sibling (keeping it
+ * above section bands but below bars). No-op if the grid is already earlier than
+ * the bars. Theme-independent. Returns true if it moved the grid.
+ */
+export function moveGanttGridBehind(svg: Element): boolean {
+  const grid = svg.querySelector('g.grid') as Element | null;
+  if (!grid || !grid.parentNode) return false;
+  const parent = grid.parentNode as Element;
+
+  const firstTask = parent.querySelector('rect.task, .task');
+  let ref: ChildNode | null = null;
+  if (firstTask) {
+    let n: Node | null = firstTask;
+    while (n && n.parentNode !== parent) n = n.parentNode;
+    ref = (n as ChildNode) || null;
+  }
+  if (!ref) ref = parent.firstChild;
+  if (!ref || ref === grid) return false;
+
+  const kids = Array.from(parent.childNodes);
+  if (kids.indexOf(grid) > kids.indexOf(ref as ChildNode)) {
+    parent.insertBefore(grid, ref);
+    return true;
+  }
+  return false;
+}
+
+/**
+ * D-170 (secondary): a crit-task white label on the pure-red (#ff0000) crit fill
+ * is 4.00:1 — just under the 4.5 text floor. Black on that same red is 5.25:1 in
+ * BOTH themes (the crit fill is theme-independent), so recolour crit task text to
+ * black. Guarded: only touches `.crit`-classed text, no-op otherwise.
+ * Returns the number of text nodes recoloured.
+ */
+export function recolorGanttCritLabels(svg: Element): number {
+  const texts = svg.querySelectorAll(
+    'text.taskText.crit, text.taskTextOutsideRight.crit, text.taskTextOutsideLeft.crit, .crit > text, text.crit'
+  );
+  let n = 0;
+  texts.forEach(t => { (t as unknown as SVGElement).style.setProperty('fill', '#000000', 'important'); n++; });
+  return n;
 }

@@ -75,30 +75,47 @@ def test_a_colon_inside_a_tikz_option_block_is_not_the_separator():
     assert notes == ()
 
 
-def test_bare_angle_with_no_separator_is_left_alone():
-    """``\\charge{90}`` is already invalid, but inventing a symbol would be
-    guessing at intent rather than repairing syntax."""
+def test_bare_angle_with_no_symbol_gets_an_empty_symbol():
+    r"""``\charge{90}`` -- an angle with the mandatory charge symbol missing.
+
+    chemfig aborts fatally on the bare-angle form ("Argument of \charge_g has
+    an extra }"), the SAME misleading message the colon/bare-symbol cases hit,
+    so leaving it untouched guarantees the render dies (D-049 / chemfig-w4-13).
+    The repair must NOT invent a charge symbol (that would guess chemical
+    intent), so it supplies the mandatory ``=`` with an EMPTY symbol: the angle
+    is preserved, no glyph is fabricated, and the molecule renders.
+
+    Direction: the pre-fix code returned the body byte-identical, so the
+    ``!=`` and non-empty-notes assertions below FAIL against unpatched code.
+    """
     body = r"\chemfig{\charge{90}{O}}"
     fixed, notes = repair(body)
-    assert fixed == body
-    assert notes == ()
+    assert fixed == r"\chemfig{\charge{90=}{O}}"
+    assert fixed != body, "the fatal bare-angle form must not survive"
+    assert notes, "a silent rewrite would hide the correction from the caller"
+    # No phantom symbol invented: the '=' is present with nothing after it.
+    assert "90=}" in fixed
+    # And the known-fatal bare ``{90}`` argument is gone.
+    assert "{90}" not in fixed
 
 
-@pytest.mark.parametrize("body", [
-    r"\chemfig{\charge{90}{O}}",
-    r"\chemfig{\charge{-45}{O}}",
-    r"\chemfig{\charge{12.5}{O}}",
-    r"\chemfig{\charge{+90}{O}}",
+@pytest.mark.parametrize("body,expected", [
+    (r"\chemfig{\charge{90}{O}}", r"\chemfig{\charge{90=}{O}}"),
+    (r"\chemfig{\charge{-45}{O}}", r"\chemfig{\charge{-45=}{O}}"),
+    (r"\chemfig{\charge{12.5}{O}}", r"\chemfig{\charge{12.5=}{O}}"),
+    (r"\chemfig{\charge{+90}{O}}", r"\chemfig{\charge{+90=}{O}}"),
 ])
-def test_a_bare_angle_of_any_numeric_shape_is_left_alone(body):
-    """The default-angle repair must fire on a bare SYMBOL, not a bare ANGLE.
+def test_a_bare_angle_of_any_numeric_shape_gets_an_empty_symbol(body, expected):
+    """Every numeric angle shape (signed, decimal) gets the ``=`` with an
+    empty symbol -- the angle is kept verbatim and no charge glyph is
+    attached, so a pure angle never gains a phantom symbol.
 
-    A signed/decimal angle still names no charge symbol, so it stays untouched
-    -- otherwise the repair would attach a phantom symbol to a pure angle.
+    Direction: unpatched code left each body byte-identical, so the equality
+    to the ``=``-appended ``expected`` fails against it.
     """
     fixed, notes = repair(body)
-    assert fixed == body
-    assert notes == ()
+    assert fixed == expected
+    assert notes
 
 
 def test_a_symbol_with_no_angle_gets_the_default_angle():
@@ -458,6 +475,7 @@ def test_charge_repair_does_not_disturb_ring_bond_counting():
     r"\chemfig{\charge{270=^-}{Cl}}",
     r"\chemfig{\charge{\ominus}{O}}",
     r"\chemfig{\charge{\oplus,\ominus}{N}}",
+    r"\chemfig{\charge{90}{N}-H}",
 ])
 def test_broken_charge_renders_after_repair(renderer, body):
     """Asserts the render succeeds, not merely that the text changed.
