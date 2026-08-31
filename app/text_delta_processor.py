@@ -405,6 +405,16 @@ class TextDeltaState:
     # Layer C-pre: set once we have logged and aborted on an <invoke> XML block.
     invoke_xml_logged: bool = False
 
+    # Content-block index of the CURRENT text delta (set by the caller from
+    # the provider stream event) and the offsets in ``assistant_text`` where
+    # each block's text began.  Used to rebuild per-block text segments for
+    # thinking passback: adaptive thinking can emit several text blocks with
+    # thinking between them, and the echoed turn must keep each one at its
+    # original content-block index.  Offsets stay valid because every later
+    # mutation of ``assistant_text`` is a tail truncation.
+    current_block_index: Optional[int] = None
+    text_block_marks: List[Any] = field(default_factory=list)
+
 
 def process_text_delta(
     executor: Any,
@@ -556,6 +566,14 @@ def process_text_delta(
     text = _resolve_nested_viz_fence(text, state.code_block_tracker)
 
     # --- Accumulate ---
+    # Record where a NEW content block's text begins so the executor can
+    # rebuild per-block segments for thinking passback.  One mark per block,
+    # laid down on the first delta that carries text for that index.
+    if text and state.current_block_index is not None and (
+            not state.text_block_marks
+            or state.text_block_marks[-1][1] != state.current_block_index):
+        state.text_block_marks.append(
+            (len(state.assistant_text), state.current_block_index))
     state.assistant_text += text
 
     # --- Hallucination detection ---

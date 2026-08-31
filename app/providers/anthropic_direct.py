@@ -137,22 +137,22 @@ class AnthropicDirectProvider(LLMProvider):
         text: str,
         tool_uses: List[Dict[str, Any]],
         thinking_blocks: Optional[List[Dict[str, Any]]] = None,
+        text_index: Optional[int] = None,
+        text_segments: Optional[List[Any]] = None,
     ) -> Dict[str, Any]:
-        content_blocks: List[Dict[str, Any]] = []
-        # Thinking must lead the turn: the API requires signed reasoning blocks
-        # to precede text and tool_use, and rejects them out of order.
-        for tb in (thinking_blocks or []):
-            content_blocks.append(tb)
-        if text.strip():
-            content_blocks.append({"type": "text", "text": text.rstrip()})
-        for tu in tool_uses:
-            content_blocks.append({
-                "type": "tool_use",
-                "id": tu["id"],
-                "name": tu["name"],
-                "input": tu.get("input", {}),
-            })
-        return {"role": "assistant", "content": content_blocks}
+        # Blocks are emitted in their ORIGINAL response order when ordering
+        # metadata is present (thinking '_index', tool_use 'index',
+        # text_index).  With adaptive/interleaved thinking the model emits
+        # thinking blocks BETWEEN tool_use blocks, and the API rejects any
+        # reordering of them in the latest assistant message ("thinking or
+        # redacted_thinking blocks ... cannot be modified").  Without the
+        # metadata the classic thinking-first order is kept.
+        return {
+            "role": "assistant",
+            "content": self._ordered_assistant_content(
+                text, tool_uses, thinking_blocks, text_index,
+                text_segments=text_segments),
+        }
 
     def build_tool_result_message(
         self,
@@ -443,7 +443,7 @@ class AnthropicDirectProvider(LLMProvider):
                     delta = event.delta
 
                     if delta.type == "text_delta":
-                        yield TextDelta(content=delta.text)
+                        yield TextDelta(content=delta.text, index=idx)
 
                     elif delta.type == "thinking_delta":
                         _t = getattr(delta, "thinking", "")
@@ -476,11 +476,28 @@ class AnthropicDirectProvider(LLMProvider):
                                 data=_tb.get("data", ""), index=idx,
                             )
                         elif _tb.get("signature"):
-                            # Unsigned blocks are dropped: the API rejects a
-                            # thinking block with a missing/mismatched sig.
                             yield ThinkingBlock(
                                 content=_tb["thinking"],
                                 signature=_tb["signature"], index=idx,
+                            )
+                        else:
+                            # Unsigned readable block: surfaced with
+                            # signature=None instead of silently
+                            # dropped — a silent drop here gapped the
+                            # turn and shifted every later block out of
+                            # its original position, the same "cannot
+                            # be modified" 400.  The assembler skips
+                            # ALL thinking passback for the turn.
+                            logger.warning(
+                                "🧠 THINKING_PASSBACK: thinking block "
+                                "index=%s closed without a signature "
+                                "(len=%d) — thinking passback will be "
+                                "skipped for this turn",
+                                idx, len(_tb.get("thinking", "")),
+                            )
+                            yield ThinkingBlock(
+                                content=_tb.get("thinking", ""),
+                                signature=None, index=idx,
                             )
                     if idx in active_tools:
                         tdata = active_tools.pop(idx)
