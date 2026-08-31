@@ -291,7 +291,25 @@ export function mergeServerChat(
                     lastAccessedAt: sc.lastActiveAt || 0,
                     isActive: true,
                     isGlobal: sc.isGlobal ?? false,
-                    _version: serverVersion,
+                    // Mirror of the summary branch's contentBehind guard: this
+                    // record carries NO messages while the server reports some,
+                    // so serverVersion would mark empty content as current.
+                    //
+                    // The load-bearing consumer is ChatContext's preservation
+                    // loop, which restores a fuller in-memory body only when
+                    // `inMemory._version > mc._version` — a STRICT compare, so
+                    // an equal version starves it: _isShell is never cleared,
+                    // the record is dropped by every nonShells IDB write, the
+                    // next poll therefore finds no local row, and
+                    // shouldFetchFull's `!local` branch (gated solely on
+                    // recentlyFetchedFullIds) never pulls again — the observed
+                    // wedge.  At 0 the loop fires, the markers clear, the
+                    // record persists, and the following poll sees count
+                    // divergence and self-heals.  Sidebar metadata does not
+                    // depend on _version.
+                    _version: (typeof sc.messageCount === 'number' && sc.messageCount > 0)
+                        ? 0
+                        : serverVersion,
                     openBeadCount: sc.openBeadCount ?? 0,
                     openWorkItemCount: sc.openWorkItemCount ?? 0,
                 },
@@ -469,6 +487,51 @@ export function canReusePrevConversation(mc: any, existing: any): boolean {
         && (mc.openBeadCount || 0) === (existing.openBeadCount || 0)
         && (mc.openWorkItemCount || 0) === (existing.openWorkItemCount || 0);
 }
+
+// ---------------------------------------------------------------------------
+// Eager-hydration target selection
+// ---------------------------------------------------------------------------
+
+export interface HydrationSelection {
+    /** Ids whose bodies to fetch now. */
+    targets: string[];
+    /** Ids left for on-open hydration; the caller marks these as fetched. */
+    deferred: string[];
+}
+
+/**
+ * Choose which eligible shell ids to hydrate eagerly.
+ *
+ * Over the cap, ids are ranked by recency and the remainder is deferred — the
+ * caller marks deferred ids as fetched-this-session so they are not re-queued
+ * every 30s, on the rationale that they hydrate when opened.
+ *
+ * That rationale is false for exactly one id: the conversation that is ALREADY
+ * open never re-opens, so "on open" never comes.  Combined with an absent local
+ * IDB record (shells are excluded from the IDB write), shouldFetchFull's
+ * `!local` branch is then gated solely on that mark and the fetch never fires
+ * again this session — pinning the visible conversation to a stale message list
+ * while the server holds newer turns.  The active id is therefore exempt from
+ * the cap and never deferred.
+ */
+export function selectHydrationTargets(
+    eligible: string[],
+    cap: number,
+    activeId: string | null | undefined,
+    recencyOf: (id: string) => number,
+): HydrationSelection {
+    if (eligible.length <= cap) return { targets: eligible.slice(), deferred: [] };
+    const targets = eligible
+        .slice()
+        .sort((a, b) => recencyOf(b) - recencyOf(a))
+        .slice(0, cap);
+    if (activeId && eligible.includes(activeId) && !targets.includes(activeId)) {
+        targets.unshift(activeId);
+    }
+    const chosen = new Set(targets);
+    return { targets, deferred: eligible.filter(id => !chosen.has(id)) };
+}
+
 export interface CrossTabMergeCtx {
     /**
      * True when THIS tab is actively streaming into the conversation.
