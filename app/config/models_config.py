@@ -197,6 +197,27 @@ SERVICE_MODEL_OVERRIDES: dict[str, dict[str, str]] = {
     },
 }
 
+# Tier-declared service categories.  Where SERVICE_MODEL_OVERRIDES above
+# pins literal model ids — which rot as models are retired — these
+# declare a portable rung, resolved per-endpoint through the same
+# per-model ``tier`` tags that TaskScope.model_tier uses
+# (resolve_tier_model).  The mapping therefore maintains itself as
+# models are added and retired, and a rung name means the same thing
+# here as it does on a task's scope.
+#
+# The self-improvement judge (app/agents/improve_evaluator.py) runs at
+# ``medium``: unlike the yes/no judges above, it WRITES — a "revise"
+# verdict authors the full replacement instruction text that becomes
+# the card's durable definition, so generation quality is the product.
+# A lite-tier model that rewrites instructions slightly worse each time
+# is a card that degrades instead of converging, and the oscillation
+# guard cannot catch monotonic mediocrity (each rewrite is textually
+# novel).  Volume is low: one call per improving level per run, and
+# most verdicts are "accept".  Override via ZIYA_IMPROVE_JUDGE_MODEL.
+SERVICE_MODEL_TIERS: dict[str, str] = {
+    "improve_judge": "medium",
+}
+
 # Default regions for specific models
 MODEL_DEFAULT_REGIONS = {
     # Add more model-specific defaults as needed

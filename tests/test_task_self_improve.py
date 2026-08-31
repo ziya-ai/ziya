@@ -379,6 +379,69 @@ class TestJudgeParsing:
         assert ids == {"s", "t"}
 
 
+# ── Judge service-category wiring ───────────────────────────────
+
+class TestJudgeCategory:
+    """The evaluator names a service category, and the category must
+    exist in the model registry — two files that can drift apart with
+    no error anywhere: an unknown category silently resolves to the
+    endpoint default (lite tier), quietly undoing the tier decision.
+    """
+
+    def test_evaluator_calls_the_improve_judge_category(self, monkeypatch):
+        import asyncio
+        from app.agents import improve_evaluator as ev
+        seen = {}
+
+        async def fake_call(category, **kw):
+            seen["category"] = category
+            return '{"verdict": "accept", "rationale": "", "lesson": "", "patch": {}}'
+
+        import app.services.model_resolver as mr
+        monkeypatch.setattr(mr, "call_service_model", fake_call)
+        block = Block(block_type="group", id="g", name="", body=[
+            Block(block_type="task", id="t", name="", instructions="x"),
+        ])
+        asyncio.run(ev.evaluate_improvement(block, Artifact(summary="ran")))
+        assert seen["category"] == "improve_judge"
+
+    def test_improve_judge_is_declared_as_a_tier(self):
+        # Guards the registry half of the seam: the category the
+        # evaluator names must be declared — as a PORTABLE tier rung
+        # (SERVICE_MODEL_TIERS), not a hardcoded model id.  Tier tags
+        # live on MODEL_CONFIGS entries and are maintained as models
+        # are added/retired, so the judge follows the endpoint's
+        # "medium" automatically instead of pinning an id that rots.
+        from app.config.models_config import (
+            MODEL_TIER_NAMES, SERVICE_MODEL_TIERS,
+        )
+        assert SERVICE_MODEL_TIERS.get("improve_judge") in MODEL_TIER_NAMES
+
+    def test_category_resolves_to_the_tier_model_not_the_lite_default(
+            self, monkeypatch):
+        # The bridge in resolve_service_model is what this pins: an
+        # unbridged category doesn't error, it silently falls through
+        # to the endpoint's lite service default — quietly undoing the
+        # tier decision with no failure anywhere.
+        monkeypatch.delenv("ZIYA_IMPROVE_JUDGE_MODEL", raising=False)
+        monkeypatch.delenv("ZIYA_IMPROVE_JUDGE_ENDPOINT", raising=False)
+        from app.config.models_config import (
+            DEFAULT_SERVICE_MODELS, MODEL_CONFIGS, SERVICE_MODEL_TIERS,
+            resolve_tier_model,
+        )
+        from app.services.model_resolver import resolve_service_model
+        cfg = resolve_service_model("improve_judge")
+        ep = cfg["endpoint"]
+        assert cfg["model_id"] != DEFAULT_SERVICE_MODELS.get(ep), (
+            "improve_judge fell through to the lite service default")
+        # And it is specifically the tier-resolved model's id.
+        name = resolve_tier_model(ep, SERVICE_MODEL_TIERS["improve_judge"])
+        mid = (MODEL_CONFIGS.get(ep, {}).get(name) or {}).get("model_id")
+        if isinstance(mid, dict):
+            assert cfg["model_id"] in mid.values()
+        else:
+            assert cfg["model_id"] == mid
+
 # ── Persistence seam ────────────────────────────────────────────
 
 class TestPersistPatchToCard:
