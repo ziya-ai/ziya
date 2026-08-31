@@ -64,6 +64,46 @@ def _build_endpoint_defaults() -> Dict[str, Dict[str, Dict[str, Any]]]:
 _ENDPOINT_DEFAULTS = _build_endpoint_defaults()
 
 
+def _tier_category_config(
+    category: str, endpoint: str, region: str,
+) -> Optional[Dict[str, Any]]:
+    """Resolve a tier-declared service category (SERVICE_MODEL_TIERS)
+    to a concrete model_id on *endpoint*, or None when the category is
+    not tier-declared or nothing resolves.
+
+    Bridges the two model namespaces: resolve_tier_model returns a
+    model NAME from MODEL_CONFIGS (the interactive registry), while
+    the bare service clients here need the raw model_id.  An endpoint
+    with no MODEL_CONFIGS table falls back to bedrock — and reports
+    bedrock — for the same model-id/client pairing reason documented
+    on the endpoint-default fallback in resolve_service_model.
+    """
+    try:
+        from app.config.models_config import (
+            MODEL_CONFIGS, SERVICE_MODEL_TIERS, resolve_tier_model,
+        )
+    except ImportError:
+        return None
+    tier = SERVICE_MODEL_TIERS.get(category)
+    if not tier:
+        return None
+    resolved_endpoint = endpoint if endpoint in MODEL_CONFIGS else "bedrock"
+    name = resolve_tier_model(resolved_endpoint, tier)
+    entry = MODEL_CONFIGS.get(resolved_endpoint, {}).get(name) or {}
+    model_id = entry.get("model_id")
+    if isinstance(model_id, dict):
+        # Regionalized id ({us, global, ...}): prefer the us profile,
+        # else any — same handling shape as _unsupported_params walk.
+        model_id = model_id.get("us") or next(iter(model_id.values()), "")
+    if not model_id:
+        return None
+    return {
+        "endpoint": resolved_endpoint,
+        "model_id": model_id,
+        "region": region,
+    }
+
+
 def resolve_service_model(
     category: str = "default",
 ) -> Dict[str, Any]:
@@ -108,6 +148,16 @@ def resolve_service_model(
                 }
     except Exception:
         pass  # No plugin system or no providers
+
+    # 2.5 Tier-declared category (SERVICE_MODEL_TIERS): resolve the
+    # portable rung through the same per-model tier tags that
+    # TaskScope.model_tier uses, so the category follows the endpoint's
+    # tier assignments as models are added/retired instead of pinning a
+    # literal id that rots.  Sits BELOW env and plugin deliberately —
+    # those are user/org intervention points and must keep winning.
+    tier_cfg = _tier_category_config(category, endpoint, env_region)
+    if tier_cfg is not None:
+        return tier_cfg
 
     # 3. Endpoint-aware default
     # An endpoint with no service-model table of its own falls back to
