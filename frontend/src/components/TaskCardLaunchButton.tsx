@@ -44,6 +44,8 @@ import { useChatContext } from '../context/ChatContext';
 import { TaskCardEditor } from './TaskCard/TaskCardEditor';
 import { useMessageId } from '../context/MessageIdContext';
 import { taskCardApi, type CardScopeStatus } from '../services/taskCardApi';
+import { CommandBlock } from './CommandBlock';
+import { CARD_SCOPE_REFRESH_EVENT } from './TaskCard/useCardSignatureStatus';
 import { createBinding } from '../services/taskBindingApi';
 import type { TaskCard, TaskCardCreate } from '../types/task_card';
 import { normalizeBlockTree, normalizeTaskScope } from '../utils/taskCardBlocks';
@@ -160,23 +162,58 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
   // modal.  Tracked separately so edits made in there (adding or removing
   // a grant) move the outer badge without clobbering the pristine reading.
   const [editedScope, setEditedScope] = useState<CardScopeStatus | null>(null);
+  // Escalation as reported for the card once PERSISTED.  Distinct from the
+  // two readings above because only this one carries runnable signCommands:
+  // approvals key on persisted block ids, and the preview endpoint returns
+  // signCommand: "" by contract.  Fetching it also has a required side
+  // effect — the by-id endpoint stages the decrypted scope that the
+  // out-of-process signer needs to recompute the hash.
+  const [savedScope, setSavedScope] = useState<CardScopeStatus | null>(null);
+  // Manual re-check in flight.  Signing happens out of band (`sudo
+  // ziya-approve` in a terminal), so the panel needs an explicit way to
+  // learn that the record now exists.
+  const [recheckPending, setRecheckPending] = useState(false);
 
   const spec = useMemo(() => parseTaskCardSpec(messageContent), [messageContent]);
 
   const openPreview = useCallback(() => {
     if (!spec) return;
-    setPreviewCard(makeDraftCard(spec));
+    // Once saved, the draft carries the persisted id so the modal's editor
+    // reads real by-id signature status (with its re-check button) instead
+    // of the preview reading, which reports "unsigned" by contract.
+    setPreviewCard({ ...makeDraftCard(spec), id: savedCardId ?? 'draft' });
     setShowPreview(true);
-  }, [spec]);
+  }, [spec, savedCardId]);
 
-  // Whichever reading reflects what Start would actually launch: the
-  // edited card if the user has opened the preview, else the raw spec.
-  const activeScope = editedScope ?? specScope;
+  // Whichever reading reflects what Start would actually launch.  Once the
+  // card is PERSISTED, the by-id reading is authoritative: it is the only
+  // reading that can ever report "signed" — the preview endpoint returns
+  // needsSignature: true by contract, so gating on it after save meant the
+  // panel said "unsigned" forever, however many times the user signed.
+  const activeScope = savedScope ?? editedScope ?? specScope;
   const unsignedCount = useMemo(
     () => (activeScope?.blocks ?? [])
       .filter(b => b.needsSignature ?? !b.authorized).length,
     [activeScope]);
   const needsSigning = unsignedCount > 0;
+
+  // Where runnable commands come from.  Kept separate from activeScope so a
+  // preview edit still moves the badge (what WOULD launch) without blanking
+  // the commands (what CAN be signed right now).
+  const commandScope = savedScope ?? (activeScope?.preview ? null : activeScope);
+  const unsignedBlocks = useMemo(
+    () => (activeScope?.blocks ?? []).filter(b => b.needsSignature ?? !b.authorized),
+    [activeScope]);
+  const commandBlocks = useMemo(
+    () => (commandScope?.blocks ?? [])
+      // signCommand first: the preview endpoint's "" must never render as
+      // a blank command box.
+      .filter(b => b.signCommand && (b.needsSignature ?? !b.authorized)),
+    [commandScope]);
+  // One label, two render sites.  Written twice, these diverged: the notice
+  // kept saying "Save to deck" after the button had relabelled to "Update
+  // in deck", naming a control that was no longer on screen.
+  const saveLabel = savedCardId ? 'Update in deck' : 'Save to deck';
 
   // Ask the server whether this spec escalates.  Server-side because the
   // floor subtraction (a write inside `.ziya/` is NOT an escalation; the
@@ -198,6 +235,51 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
       .catch(() => { if (!cancelled) setSpecScope(null); });
     return () => { cancelled = true; };
   }, [spec, currentProject?.id]);
+
+  // Fresh by-id status for the persisted card.  Returns the reading so the
+  // Start gate can decide on it directly rather than racing setState.
+  const refreshSavedScope = useCallback(async (): Promise<CardScopeStatus | null> => {
+    if (!savedCardId || !currentProject?.id) return null;
+    try {
+      const st = await taskCardApi.scopeStatus(currentProject.id, savedCardId);
+      setSavedScope(st);
+      return st;
+    } catch {
+      return null;  // advisory — keep the last reading rather than blanking
+    }
+  }, [savedCardId, currentProject?.id]);
+
+  // Signing happens in a terminal, so no in-app action marks the moment it
+  // lands.  Two triggers stand in for that: returning focus to this window
+  // (the user just came back from the terminal), and the cross-surface
+  // refresh event the deck editor broadcasts after its own re-check.
+  useEffect(() => {
+    if (!savedCardId) return;
+    const onFocus = () => { void refreshSavedScope(); };
+    const onRefresh = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { cardId?: string } | undefined;
+      if (!detail?.cardId || detail.cardId === savedCardId) void refreshSavedScope();
+    };
+    window.addEventListener('focus', onFocus);
+    window.addEventListener(CARD_SCOPE_REFRESH_EVENT, onRefresh);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener(CARD_SCOPE_REFRESH_EVENT, onRefresh);
+    };
+  }, [savedCardId, refreshSavedScope]);
+
+  // Explicit re-check button in the signing notice.  Broadcasts on success
+  // so any open inline tile or deck badge for this card updates in step.
+  const handleRecheck = useCallback(async () => {
+    setRecheckPending(true);
+    const st = await refreshSavedScope();
+    setRecheckPending(false);
+    if (st && savedCardId) {
+      window.dispatchEvent(new CustomEvent(CARD_SCOPE_REFRESH_EVENT, {
+        detail: { cardId: savedCardId },
+      }));
+    }
+  }, [refreshSavedScope, savedCardId]);
 
   // The spec as the user would launch it — preview edits win.  Shared by
   // Save to deck and the launch path so the two cannot diverge.
@@ -226,6 +308,7 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
       const tags = toSave.tags?.includes(PROPOSED_TAG)
         ? toSave.tags
         : [...(toSave.tags ?? []), PROPOSED_TAG];
+      let cardId = savedCardId;
       if (savedCardId) {
         await taskCardApi.update(currentProject.id, savedCardId, {
           name: toSave.name, description: toSave.description,
@@ -234,8 +317,23 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
         message.success('Card updated in deck');
       } else {
         const card = await taskCardApi.create(currentProject.id, { ...toSave, tags });
+        cardId = card.id;
         setSavedCardId(card.id);
-        message.success('Saved to deck — open Task Cards to sign or run it');
+        // If the preview modal is open its draft now has a real id — switch
+        // it over so the editor reads by-id signature status from here on.
+        setPreviewCard(pc => (pc ? { ...pc, id: card.id } : pc));
+        message.success('Saved to deck');
+      }
+      // Now that block ids exist, get the real per-block status: this both
+      // yields the runnable sign commands shown below the panel and stages
+      // the scope the signer reads.  Advisory — a failure here must not
+      // present the save as failed, it only means no command is displayed.
+      if (cardId) {
+        try {
+          setSavedScope(await taskCardApi.scopeStatus(currentProject.id, cardId));
+        } catch {
+          setSavedScope(null);
+        }
       }
     } catch (e) {
       message.error(`Save failed: ${String(e)}`);
@@ -278,7 +376,9 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
       // the run reaches a terminal state (or on next navigation).
       addRunningTaskConversation(currentConversationId);
       window.dispatchEvent(new CustomEvent('task-binding-created', {
-        detail: { bindingId: resp.binding.id, runId: resp.run.id },
+        // See TaskCardInlineTile: `run` is Optional for staged bindings, this
+        // path never stages, and no listener reads `detail`.
+        detail: { bindingId: resp.binding.id, runId: resp.run?.id ?? null },
       }));
       message.success('Task launched');
     } catch (e) {
@@ -294,8 +394,34 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
   // means the clamp surfaces LATER as an opaque mid-run permission
   // failure, several minutes into work the user thought was authorized.
   // Naming the cost up front is the whole point of this gate.
-  const handleStart = useCallback(() => {
-    if (!needsSigning) { void handleLaunch(); return; }
+  const handleStart = useCallback(async () => {
+    // The badge can be stale — signing happens out of band, so re-read the
+    // persisted status at the moment of truth rather than scolding the
+    // user from a reading taken before they signed.
+    let gate = activeScope;
+    if (savedCardId && currentProject?.id) {
+      // Persist preview-modal edits BEFORE the status read: the check
+      // grades the STORED card, so reading first grades the OLD scope —
+      // an edit that added escalation after save+sign would pass the
+      // gate here, then the launch path's own update would change the
+      // scope hash and the run would clamp with no warning.  Launch
+      // writes this same content anyway; this only moves the write
+      // ahead of the check.
+      const toPersist = currentSpec();
+      if (toPersist) {
+        try {
+          await taskCardApi.update(currentProject.id, savedCardId, {
+            name: toPersist.name, description: toPersist.description,
+            root: toPersist.root, scope: toPersist.scope, tags: toPersist.tags,
+          });
+        } catch { /* advisory — the launch path's update reports real failures */ }
+      }
+      const fresh = await refreshSavedScope();
+      if (fresh) gate = fresh;
+    }
+    const gateUnsigned = (gate?.blocks ?? [])
+      .filter(b => b.needsSignature ?? !b.authorized).length;
+    if (gateUnsigned === 0) { void handleLaunch(); return; }
     Modal.confirm({
       title: 'Run without signed permissions?',
       okText: 'Run anyway',
@@ -304,24 +430,25 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
       content: (
         <div style={{ fontSize: 13 }}>
           <p style={{ marginTop: 0 }}>
-            {unsignedCount === 1
+            {gateUnsigned === 1
               ? '1 task in this card requests'
-              : `${unsignedCount} tasks in this card request`}
+              : `${gateUnsigned} tasks in this card request`}
             {' '}shell or write permissions beyond the default safe set, and
             that escalation is <strong>not signed</strong>.
           </p>
           <p style={{ marginBottom: 0 }}>
             The run will start, but those tasks are clamped to the default
             floor — so anything depending on the extra permissions fails
-            partway through instead of up front. To sign first, use{' '}
-            <strong>Save to deck</strong>, then open Task Cards and run the{' '}
-            <code>ziya-approve</code> command shown for each block.
+            partway through instead of up front. To sign first, cancel and
+            use <strong>{saveLabel}</strong> — the exact{' '}
+            <code>ziya-approve</code> command then appears in this panel.
           </p>
         </div>
       ),
       onOk: () => { void handleLaunch(); },
     });
-  }, [needsSigning, unsignedCount, handleLaunch]);
+  }, [activeScope, savedCardId, currentProject?.id, currentSpec,
+      refreshSavedScope, handleLaunch, saveLabel]);
 
   if (!spec) return null;
 
@@ -359,7 +486,7 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
           <Button size="small" icon={<SaveOutlined />} loading={saving}
             onClick={handleSaveToDeck}
             disabled={saving || launching || !currentProject?.id}>
-            {savedCardId ? 'Update in deck' : 'Save to deck'}
+            {saveLabel}
           </Button>
         </Tooltip>
         <Button
@@ -385,21 +512,85 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
               ? 'One task requests'
               : `${unsignedCount} tasks request`} shell/write permissions
             beyond the default safe set. It will run either way, but those
-            tasks are clamped to the default floor until signed. Use{' '}
-            <strong>Save to deck</strong> to get the{' '}
-            <code>ziya-approve</code> command for each.
-            {activeScope?.blocks
-              .filter(b => b.needsSignature ?? !b.authorized)
-              .map(b => (
-                <div key={b.blockId} style={{ marginTop: 4, opacity: 0.85 }}>
-                  ⚠ {b.name || b.blockId}
-                  {Object.entries(b.escalation).map(([field, vals]) => (
-                    <span key={field} style={{ marginLeft: 6, fontFamily: 'ui-monospace, monospace' }}>
-                      {field}: {vals.join(', ')}
+            tasks are clamped to the default floor until signed.
+
+            {/* One field per line with the name set apart. The previous
+                inline-span run produced an unbroken monospace wall of
+                paths that users skipped rather than read. */}
+            {unsignedBlocks.map(b => (
+              <div key={b.blockId} style={{ marginTop: 6, opacity: 0.9 }}>
+                <div>⚠ {b.name || b.blockId}</div>
+                {Object.entries(b.escalation).map(([field, vals]) => (
+                  <div key={field} style={{ marginLeft: 14, marginTop: 2, lineHeight: 1.5 }}>
+                    <span style={{ opacity: 0.7 }}>{field}: </span>
+                    <span style={{ fontFamily: 'ui-monospace, monospace', wordBreak: 'break-word' }}>
+                      {vals.join(', ')}
                     </span>
-                  ))}
+                  </div>
+                ))}
+              </div>
+            ))}
+
+            {/* The command, in place. Before this the panel pointed at a
+                button label that had already changed and at a second
+                surface it did not link to, so the instruction dead-ended. */}
+            {commandScope?.signAllCommand ? (
+              <>
+                <div style={{ marginTop: 8 }}>
+                  <strong>To sign all {unsignedCount}</strong>, run this in a terminal:
                 </div>
-              ))}
+                <CommandBlock cmd={commandScope.signAllCommand} />
+                {/* The deck editor lists per-block commands; hiding them
+                    here made the two surfaces disagree about how to sign
+                    the same card. */}
+                {commandBlocks.length > 0 && (
+                  <details style={{ marginTop: 2 }}>
+                    <summary style={{ cursor: 'pointer', opacity: 0.75 }}>
+                      …or sign blocks individually
+                    </summary>
+                    {commandBlocks.map(b => (
+                      <CommandBlock key={b.blockId} cmd={b.signCommand}
+                        label={b.name || b.blockId} />
+                    ))}
+                  </details>
+                )}
+              </>
+            ) : commandBlocks.length > 0 ? (
+              <>
+                <div style={{ marginTop: 8 }}>
+                  <strong>To sign</strong>, run this in a terminal:
+                </div>
+                {commandBlocks.map(b => (
+                  <CommandBlock
+                    key={b.blockId}
+                    cmd={b.signCommand}
+                    label={commandBlocks.length > 1 ? (b.name || b.blockId) : undefined}
+                  />
+                ))}
+              </>
+            ) : (
+              <div style={{ marginTop: 8 }}>
+                Use <strong>{saveLabel}</strong> to save it to the deck — the
+                exact <code>ziya-approve</code> command appears here once the
+                card has ids to sign against.
+              </div>
+            )}
+
+            {/* Signing is out of band, so the panel cannot see it happen.
+                It re-checks on window focus; this is the explicit handle
+                for when that is not enough. */}
+            {savedCardId && (
+              <div style={{ marginTop: 8, display: 'flex', alignItems: 'center',
+                gap: 8, flexWrap: 'wrap' }}>
+                <Button size="small" loading={recheckPending}
+                  onClick={() => void handleRecheck()}>
+                  ↻ Re-check (after signing)
+                </Button>
+                <span style={{ opacity: 0.65 }}>
+                  Re-checks automatically when you return to this window.
+                </span>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -429,10 +620,11 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
               onChange={setPreviewCard}
               projectId={currentProject?.id}
               // Unsaved spec: route escalation through the stateless
-              // preview endpoint.  Without this the editor asked for
-              // /task-cards/draft/scope-status and swallowed the 404, so
-              // the live preview showed no signing warning at all.
-              previewMode
+              // preview endpoint (the by-id endpoint 404s on the synthetic
+              // 'draft' id).  Once saved, the real id exists — switch to
+              // by-id status so the editor can report "signed" and offer
+              // its re-check button.
+              previewMode={!savedCardId}
               // Keeps the outer block's badge in step with edits made in
               // here — removing a grant must clear the warning, and
               // adding one must raise it.
