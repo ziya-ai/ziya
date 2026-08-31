@@ -257,3 +257,204 @@ describe('useTaskRunStream WS reconnect (B2)', () => {
     expect(FakeWebSocket.instances.length).toBe(3);
   });
 });
+
+/**
+ * A 'held' run must tear down its transport.
+ *
+ * ``held`` means an infrastructure fault unwound the executor coroutine, so
+ * nothing can still be produced for this run: the server writes the status
+ * only after ``execute_block`` has raised and the fan-out has been
+ * gathered, the WS endpoint (app/server.py) never closes from its own side,
+ * and a resume mints a NEW run id rather than reviving this one.  Yet the
+ * socket gate and the reconcile effect both asked ``TERMINAL``, which
+ * deliberately excludes 'held' for an unrelated reason (the recency
+ * exemption in shouldAcceptFetchedRun).  Three leaks followed, and they are
+ * not the same leak seen from three angles — each has its own trigger:
+ *
+ *   A. Held learned from the safety-net POLL (terminal frame dropped, or a
+ *      dead-but-open socket): socket stayed open AND the poll kept running.
+ *   B. Held ALREADY set when the tile mounted — reopening a chat that holds
+ *      a held run, or the launch preflight minting one outright.  No
+ *      ``run_completed`` can ever arrive because the run ended before the
+ *      client connected, so nothing was ever going to close it.  This is
+ *      the dominant case in practice: one idle socket plus one 15 s poll
+ *      per mounted tile, for as long as the chat stays open.
+ *   C. Held learned from the ``run_completed`` EVENT: ``onmessage`` closes
+ *      the socket itself, but only the reconcile effect clears the poll —
+ *      so the socket closed and the 15 s poll ran forever.
+ *
+ * 'paused' is the boundary these tests also pin: it resumes IN PLACE
+ * (block_executor._wait_if_paused writes 'running' back onto the same run),
+ * so widening teardown to cover it would silence a stream that is genuinely
+ * coming back.
+ */
+describe('useTaskRunStream held-run teardown', () => {
+  // Positive control for the whole describe block.  Every assertion below
+  // is of the form "no socket" / "no further fetches", which a harness that
+  // silently stopped constructing sockets would satisfy vacuously.  This
+  // proves the harness observes a socket when one is genuinely opened.
+  it('opens a socket and polls for a running run (control)', async () => {
+    mockedGetTaskRun.mockResolvedValue(makeRun('running'));
+
+    renderHook(() => useTaskRunStream('proj-1', 'run-1'));
+    await flush();
+
+    expect(FakeWebSocket.instances.length).toBe(1);
+    const calls = mockedGetTaskRun.mock.calls.length;
+    await act(async () => { jest.advanceTimersByTime(15000); });
+    await flush();
+    expect(mockedGetTaskRun.mock.calls.length).toBeGreaterThan(calls);
+  });
+
+  // Leak B — the dominant case.
+  it('does not open a socket when the run is already held on load', async () => {
+    mockedGetTaskRun.mockResolvedValue(makeRun('held'));
+
+    renderHook(() => useTaskRunStream('proj-1', 'run-1'));
+    await flush();
+
+    expect(FakeWebSocket.instances.length).toBe(0);
+  });
+
+  it('does not arm the safety-net poll for a run already held on load', async () => {
+    mockedGetTaskRun.mockResolvedValue(makeRun('held'));
+
+    renderHook(() => useTaskRunStream('proj-1', 'run-1'));
+    await flush();
+    const afterMount = mockedGetTaskRun.mock.calls.length;
+
+    // Four poll intervals.  A held run's record can only change when a
+    // human fixes the environment, and that mints a new run id — so every
+    // one of these reads is guaranteed to return the same bytes.
+    await act(async () => { jest.advanceTimersByTime(60000); });
+    await flush();
+    expect(mockedGetTaskRun.mock.calls.length).toBe(afterMount);
+  });
+
+  // Leak A — held observed through the poll rather than the event.
+  it('closes the socket when a watched run becomes held', async () => {
+    mockedGetTaskRun
+      .mockResolvedValueOnce(makeRun('running'))
+      .mockResolvedValue(makeRun('held'));
+
+    renderHook(() => useTaskRunStream('proj-1', 'run-1'));
+    await flush();
+    expect(FakeWebSocket.instances.length).toBe(1);
+    const ws = FakeWebSocket.instances[0];
+
+    await act(async () => { jest.advanceTimersByTime(15000); });
+    await flush();
+
+    await waitFor(() => expect(ws.closed).toBe(true));
+  });
+
+  it('stops polling when a watched run becomes held', async () => {
+    mockedGetTaskRun
+      .mockResolvedValueOnce(makeRun('running'))
+      .mockResolvedValue(makeRun('held'));
+
+    renderHook(() => useTaskRunStream('proj-1', 'run-1'));
+    await flush();
+
+    // One interval to observe 'held'.
+    await act(async () => { jest.advanceTimersByTime(15000); });
+    await flush();
+    const atHold = mockedGetTaskRun.mock.calls.length;
+
+    await act(async () => { jest.advanceTimersByTime(60000); });
+    await flush();
+    expect(mockedGetTaskRun.mock.calls.length).toBe(atHold);
+  });
+
+  /**
+   * The trap in this fix.
+   *
+   * ``ws.onclose`` schedules a reconnect unless ``terminalFetchedRef`` is
+   * set, and that ref was previously only set on ``TERMINAL``.  A fix that
+   * closes the socket on held WITHOUT also setting it converts one idle
+   * socket into an endless reconnect loop (1 s, 2 s, … capped at 10 s) —
+   * strictly worse than the leak being removed, and invisible to a test
+   * that only asserts the first socket closed.
+   */
+  it('does not reconnect after tearing down a held run', async () => {
+    mockedGetTaskRun
+      .mockResolvedValueOnce(makeRun('running'))
+      .mockResolvedValue(makeRun('held'));
+
+    renderHook(() => useTaskRunStream('proj-1', 'run-1'));
+    await flush();
+    expect(FakeWebSocket.instances.length).toBe(1);
+
+    await act(async () => { jest.advanceTimersByTime(15000); });
+    await flush();
+    await waitFor(() => expect(FakeWebSocket.instances[0].closed).toBe(true));
+
+    // Well past the 10 s backoff ceiling, so a loop would have produced
+    // several sockets by now rather than merely one more.
+    await act(async () => { jest.advanceTimersByTime(60000); });
+    await flush();
+    expect(FakeWebSocket.instances.length).toBe(1);
+  });
+
+  // Leak C — the event path closed the socket but never the poll.
+  it('stops polling when held arrives via the run_completed event', async () => {
+    mockedGetTaskRun
+      .mockResolvedValueOnce(makeRun('running'))
+      .mockResolvedValue(makeRun('held'));
+
+    renderHook(() => useTaskRunStream('proj-1', 'run-1'));
+    await flush();
+    expect(FakeWebSocket.instances.length).toBe(1);
+    const ws = FakeWebSocket.instances[0];
+
+    await act(async () => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: 'run_completed', run_id: 'run-1', status: 'held',
+        }),
+      });
+    });
+    await flush();
+
+    // onmessage closes the socket itself, so this half was never broken —
+    // asserted to keep the two halves distinguishable if one regresses.
+    expect(ws.closed).toBe(true);
+
+    const atHold = mockedGetTaskRun.mock.calls.length;
+    await act(async () => { jest.advanceTimersByTime(60000); });
+    await flush();
+    expect(mockedGetTaskRun.mock.calls.length).toBe(atHold);
+  });
+
+  /**
+   * Boundary guard: 'paused' must NOT be torn down.
+   *
+   * Passes before the fix as well as after — it exists to catch a fix that
+   * reaches for "not running" instead of "executor unwound".  A paused run
+   * resumes onto the SAME run id, so closing its socket would leave the
+   * tile blind for the rest of the run with nothing on screen saying so.
+   */
+  it('keeps the socket and poll alive for a paused run', async () => {
+    mockedGetTaskRun
+      .mockResolvedValueOnce(makeRun('running'))
+      .mockResolvedValue(makeRun('paused'));
+
+    renderHook(() => useTaskRunStream('proj-1', 'run-1'));
+    await flush();
+    expect(FakeWebSocket.instances.length).toBe(1);
+    const ws = FakeWebSocket.instances[0];
+
+    await act(async () => { jest.advanceTimersByTime(15000); });
+    await flush();
+    const atPause = mockedGetTaskRun.mock.calls.length;
+
+    expect(ws.closed).toBe(false);
+
+    // Still polling: a pause is released by a user action that writes
+    // 'running' back onto this same record, so this is the only surface
+    // that will ever learn the run came back.
+    await act(async () => { jest.advanceTimersByTime(30000); });
+    await flush();
+    expect(mockedGetTaskRun.mock.calls.length).toBeGreaterThan(atPause);
+  });
+});
