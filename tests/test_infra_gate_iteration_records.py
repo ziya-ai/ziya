@@ -50,11 +50,17 @@ def recorder(monkeypatch):
     """Capture every _record_iteration call."""
     seen = []
 
-    async def _rec(block, ctx, index, artifact):
+    async def _rec(block, ctx, index, artifact, item_key=None):
         seen.append({
             "index": index,
             "failed": artifact.failed,
             "summary": artifact.summary,
+            # Roster identity, threaded since the completeness assertion
+            # landed.  Captured rather than merely tolerated: the
+            # gate-cancelled path synthesizes its own artifact, so it is
+            # a place the key could be dropped while every for_each test
+            # that exercises the ordinary path still passed.
+            "item_key": item_key,
         })
 
     monkeypatch.setattr(be, "_record_iteration", _rec)

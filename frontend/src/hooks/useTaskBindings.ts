@@ -8,11 +8,12 @@
  *   refresh: () => void  (force re-fetch)
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useProject } from '../context/ProjectContext';
 import type { TaskBinding } from '../types/task_binding';
 import { listBindings } from '../services/taskBindingApi';
 import { collapseLineages } from '../components/TaskCard/lineageCollapse';
+import { TASK_RUN_STATUS_EVENT } from './taskRunEvents';
 
 /**
  * Window event dispatched by any component that creates or modifies a
@@ -63,6 +64,34 @@ export function useTaskBindings(chatId: string | undefined) {
     const handler = () => setVersion(v => v + 1);
     window.addEventListener(TASK_BINDING_EVENT, handler);
     return () => window.removeEventListener(TASK_BINDING_EVENT, handler);
+  }, []);
+
+  /**
+   * A bound run's status moved (running -> held on an infrastructure
+   * fault, -> done, -> failed).  ``run_status`` is server-enriched onto the
+   * binding records and nothing else re-reads it, so without this the
+   * conversation list's gear keeps the status the run had when the chat was
+   * opened — the blue spinning gear on a held run.
+   *
+   * Coalesced: a chat holding several tiles announces once per run on
+   * mount, and a fetch per announcement would be a burst for one visible
+   * change.  The trailing delay is short enough to be invisible against a
+   * status the user is watching change.
+   */
+  const coalesceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const handler = () => {
+      if (coalesceRef.current) clearTimeout(coalesceRef.current);
+      coalesceRef.current = setTimeout(() => {
+        coalesceRef.current = null;
+        setVersion(v => v + 1);
+      }, 250);
+    };
+    window.addEventListener(TASK_RUN_STATUS_EVENT, handler);
+    return () => {
+      window.removeEventListener(TASK_RUN_STATUS_EVENT, handler);
+      if (coalesceRef.current) clearTimeout(coalesceRef.current);
+    };
   }, []);
 
   const refresh = useCallback(() => setVersion(v => v + 1), []);

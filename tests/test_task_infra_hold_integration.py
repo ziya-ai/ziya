@@ -24,9 +24,14 @@ connection_error, authentication_error} with the message in
 
 from __future__ import annotations
 
+import json
+import os
+import time
 from unittest.mock import patch
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from app.agents import task_executor
 from app.models.task_card import Block, TaskScope
@@ -166,68 +171,222 @@ class TestInfraChunkRaisesInfraError:
 
 # ── the run loop's branch: held vs failed ────────────────────────────
 
-class TestRunLoopRouting:
-    """Reproduces the ``except TaskExecutorError`` branch in
-    app/api/task_cards.py::_run without standing up the HTTP layer, so the
-    routing decision is asserted directly on a real storage object."""
+# ── real launch harness ──────────────────────────────────────────────
+#
+# The classes below drive the ACTUAL launch endpoint rather than a copy of
+# its logic.  An earlier version of this file transcribed the
+# ``except TaskExecutorError`` branch from app/api/task_cards.py::_run and
+# asserted against the transcription, on the reasoning that standing up a
+# project + card + spawned coroutine was heavy scaffolding around six
+# lines of dispatch.
+#
+# That reasoning was wrong, and the same pattern proved it wrong elsewhere
+# in this suite: test_card_scope_status_endpoint.py had a local copy of an
+# endpoint body, the endpoint was corrected, and the stale copy produced
+# three FALSE failures against a correct fix — while it would have kept
+# passing against a broken one.  A test that re-implements its subject
+# verifies only its own copy.
+#
+# Everything here is real except the model stream: the FastAPI router,
+# _launch_run_for_card, the spawned _run coroutine, execute_block,
+# execute_task_block, and TaskRunStorage reading and writing real files.
 
-    @pytest.fixture()
-    def storage(self, tmp_path):
-        from app.storage.task_runs import TaskRunStorage
-        return TaskRunStorage(tmp_path)
 
-    def _route(self, storage, run_id, exc):
-        """The production branch, transcribed."""
-        kind = getattr(exc, "infra_kind", "")
-        if kind:
-            blk = getattr(exc, "block_id", "") or ""
-            storage.mark_held(run_id, reason=kind, block_id=blk,
-                              error=str(exc))
-        else:
-            from app.utils.run_outcome import classify_terminal_status
-            fresh = storage.get(run_id)
-            st = classify_terminal_status(
-                "failed", fresh.block_states if fresh else None)
-            storage.update_status(run_id, st, error=str(exc))
+@pytest.fixture
+def ziya_home(tmp_path):
+    home = tmp_path / ".ziya"
+    home.mkdir()
+    return home
 
-    def test_infra_error_produces_a_held_run(self, storage):
-        run = storage.create(TaskRunCreate(card_id="c1"))
-        storage.update_status(run.id, "running")
-        exc = task_executor.TaskInfraError(
-            "Task execution failed (connection_error): endpoint gone",
-            infra_kind="connection_error", block_id="b-loop",
+
+@pytest.fixture
+def project_dir(ziya_home):
+    project_id = "test-project-hold"
+    proj = ziya_home / "projects" / project_id
+    proj.mkdir(parents=True)
+    (proj / "project.json").write_text(json.dumps({
+        "id": project_id,
+        "name": "Test",
+        "path": "/tmp/x",
+        "settings": {"defaultContextIds": [], "defaultSkillIds": []},
+        "createdAt": int(time.time() * 1000),
+        "lastAccessedAt": int(time.time() * 1000),
+    }))
+    return project_id
+
+
+@pytest.fixture
+def launch_client(ziya_home, project_dir):
+    """Real task-cards router over a temp ZIYA_HOME.
+
+    Mirrors the fixture shape in test_api_task_cards.py so the two files
+    stand up the launch path the same way.
+    """
+    with patch.dict(os.environ, {"ZIYA_HOME": str(ziya_home)}), \
+         patch("app.api.task_cards.get_ziya_home", return_value=ziya_home), \
+         patch("app.api.task_cards.get_project_dir",
+               return_value=ziya_home / "projects" / project_dir):
+        from app.api.task_cards import router
+
+        app = FastAPI()
+        app.include_router(router)
+        yield TestClient(app), project_dir
+
+
+def _wait_until_settled(project_id, run_id, timeout=5.0):
+    """Poll on-disk run state until the executor is done with the run.
+
+    Tests the COMPLEMENT of the live set (``queued``/``running``) rather
+    than enumerating terminal statuses.  A hardcoded terminal list is
+    precisely what went stale when ``partial`` and ``held`` were added —
+    four guards in app/api/task_runs.py still list only
+    ``done/failed/cancelled`` — so this helper refuses to keep its own
+    copy of that set.
+    """
+    from app.storage.task_runs import TaskRunStorage
+    from app.utils.paths import get_project_dir
+    storage = TaskRunStorage(get_project_dir(project_id))
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        run = storage.get(run_id)
+        if run and run.status not in ("queued", "running"):
+            return run
+        time.sleep(0.02)
+    return storage.get(run_id)
+
+
+def _model_layer_patches(executor_cls):
+    """Patches that keep the run off the network, as a reusable tuple."""
+    return (
+        patch("app.streaming_tool_executor.StreamingToolExecutor",
+              executor_cls),
+        patch("app.agents.models.ModelManager.get_state",
+              return_value={"aws_region": "us-east-1", "aws_profile": "x",
+                            "current_model": "fake",
+                            "endpoint": "fake-not-bedrock"}),
+        patch("app.mcp.enhanced_tools.create_secure_mcp_tools",
+              return_value=[]),
+    )
+
+
+def _launch(tc, pid, executor_cls, card_name="T"):
+    """Create a card, launch it, and wait for the run to settle.
+
+    Returns ``(run, card)``.  The model-layer patches stay active across
+    the poll because the run executes in a background task spawned by the
+    endpoint — releasing them at the end of the POST would let the real
+    executor be imported mid-run.
+    """
+    card = tc.post(
+        f"/api/v1/projects/{pid}/task-cards",
+        json={"name": card_name, "root": {
+            "block_type": "task", "name": "Stage 1",
+            "instructions": "do it",
+        }},
+    ).json()
+    p1, p2, p3 = _model_layer_patches(executor_cls)
+    with p1, p2, p3:
+        resp = tc.post(
+            f"/api/v1/projects/{pid}/task-cards/{card['id']}/launch",
+            json={},
         )
-        self._route(storage, run.id, exc)
-        got = storage.get(run.id)
-        assert got.status == "held"
-        assert got.held_reason == "connection_error"
-        assert got.held_at_block_id == "b-loop"
-        assert "endpoint gone" in got.error
+        assert resp.status_code == 200, resp.text
+        run_id = resp.json()["id"]
+        run = _wait_until_settled(pid, run_id)
+    assert run is not None, "run record disappeared"
+    return run, card
 
-    def test_plain_error_still_produces_failed(self, storage):
-        run = storage.create(TaskRunCreate(card_id="c1"))
-        storage.update_status(run.id, "running")
-        self._route(storage, run.id,
-                    task_executor.TaskExecutorError("bad instructions"))
-        got = storage.get(run.id)
-        assert got.status == "failed"
-        assert got.held_reason is None
 
-    def test_held_is_not_downgraded_to_partial(self, storage):
-        # The regression this guards: 'partial' answers "how much got
-        # done", 'held' answers "why it stopped".  Running the
-        # reclassification pass over a held run would erase the only
-        # actionable half — that the INFRASTRUCTURE needs attention.
-        from app.models.task_run import TaskRunBlockState
-        run = storage.create(TaskRunCreate(card_id="c1"))
-        storage.set_block_state(run.id, TaskRunBlockState(
-            block_id="a", block_type="task", status="done"))
-        storage.set_block_state(run.id, TaskRunBlockState(
-            block_id="b", block_type="task", status="queued"))
-        exc = task_executor.TaskInfraError(
-            "x", infra_kind="throttling_error", block_id="b")
-        self._route(storage, run.id, exc)
-        assert storage.get(run.id).status == "held"
+class TestRunLoopRoutingEndToEnd:
+    """The join: a terminal infra chunk from the stream must come out the
+    far end as a ``held`` run carrying its resume coordinates.
+
+    This is the assertion the ten failed campaign runs could not satisfy.
+    Each of them stopped on expired credentials, a lost endpoint, or
+    exhausted throttling retries, and each was recorded as ``failed`` with
+    the loop position discarded — so the next attempt re-paid every stage
+    it had already completed.
+    """
+
+    def test_infra_fault_yields_a_held_run(self, launch_client):
+        tc, pid = launch_client
+        _FaultExecutor.chunk_type = "connection_error"
+        _FaultExecutor.detail_key = "detail"
+        _FaultExecutor.detail = 'Could not connect to the endpoint URL'
+        run, card = _launch(tc, pid, _FaultExecutor)
+        assert run.status == "held", (
+            f"infra fault produced {run.status!r}; a run stopped by "
+            f"infrastructure must be held, not failed"
+        )
+        assert run.held_reason == "connection_error"
+        assert "Could not connect" in (run.error or "")
+
+    def test_held_run_records_where_to_resume(self, launch_client):
+        # Without a block id the operator has to infer the resume point by
+        # eye from the run map, which for a multi-stage card with a loop is
+        # the friction that made restarting from scratch feel easier.
+        tc, pid = launch_client
+        _FaultExecutor.chunk_type = "authentication_error"
+        _FaultExecutor.detail_key = "detail"
+        _FaultExecutor.detail = "creds expired, run mwinit"
+        run, card = _launch(tc, pid, _FaultExecutor)
+        assert run.status == "held"
+        assert run.held_at_block_id, "held run names no resume target"
+        # The id must be one the run's own block_states are keyed by —
+        # a resume target the run map cannot locate is no better than none.
+        assert run.held_at_block_id in run.block_states, (
+            f"held_at_block_id {run.held_at_block_id!r} is not a block of "
+            f"this run: {sorted(run.block_states)}"
+        )
+        assert run.held_at_block_id == card["root"]["id"]
+
+    @pytest.mark.parametrize("kind", [
+        "transient_service_error", "throttling_error",
+        "connection_error", "authentication_error",
+    ])
+    def test_every_infra_kind_holds(self, kind, launch_client):
+        tc, pid = launch_client
+        _FaultExecutor.chunk_type = kind
+        _FaultExecutor.detail_key = "detail"
+        _FaultExecutor.detail = f"simulated {kind}"
+        run, _ = _launch(tc, pid, _FaultExecutor)
+        assert run.status == "held"
+        assert run.held_reason == kind
+
+    def test_clean_run_still_completes(self, launch_client):
+        # The hold path must be fault-specific.  A preflight or a guard
+        # that held healthy runs would be worse than not checking at all —
+        # which is exactly what the launch preflight did before it gained
+        # an opt-out.
+        tc, pid = launch_client
+        run, _ = _launch(tc, pid, _CleanExecutor)
+        assert run.status == "done", f"clean run reported {run.status!r}"
+        assert run.held_reason is None
+        assert run.held_at_block_id is None
+
+    def test_held_is_not_reclassified_as_partial(self, launch_client):
+        # 'partial' answers "how much got done"; 'held' answers "why it
+        # stopped".  Collapsing the two loses the only actionable half —
+        # that the infrastructure needs attention, not the card.
+        tc, pid = launch_client
+        _FaultExecutor.chunk_type = "throttling_error"
+        _FaultExecutor.detail_key = "detail"
+        _FaultExecutor.detail = "rate limited"
+        run, _ = _launch(tc, pid, _FaultExecutor)
+        assert run.status == "held"
+        assert run.status != "partial"
+
+    def test_held_run_is_terminal_on_disk(self, launch_client):
+        # completed_at drives the tile's runtime display and stops
+        # record_activity from letting heartbeats through, so a held run
+        # that never stamps it looks alive forever.
+        tc, pid = launch_client
+        _FaultExecutor.chunk_type = "connection_error"
+        _FaultExecutor.detail_key = "detail"
+        _FaultExecutor.detail = "gone"
+        run, _ = _launch(tc, pid, _FaultExecutor)
+        assert run.completed_at is not None
+        assert run.status == "held"
 
 
 # ── the payoff: a held run is resumable ──────────────────────────────
