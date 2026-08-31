@@ -76,6 +76,13 @@ def _check_libraries():
     try:
         import pdfplumber
         _AVAILABLE_LIBRARIES['pdfplumber'] = True
+        # pdfminer (pdfplumber's engine) warns once per font when a PDF's
+        # font descriptor lacks FontBBox — which every Skia/Chromium PDF
+        # does, including Ziya's own exports — flooding the console with
+        # a non-actionable, gracefully-handled condition.  Install the
+        # message-targeted filter (other pdfminer warnings stay visible).
+        from app.utils.pdf_noise import install_pdfminer_noise_filter
+        install_pdfminer_noise_filter()
     except ImportError:
         pass
     

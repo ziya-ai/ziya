@@ -36,6 +36,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.utils.logging_utils import logger
 from app.config.env_registry import ziya_env
+# Quiet the per-font pdfminer FontBBox warning (fires for every
+# Skia/Chromium-produced PDF, incl. Ziya's own exports) before any
+# pdfplumber extraction in this module runs.  Message-targeted; other
+# pdfminer warnings remain visible.  See app/utils/pdf_noise.py.
+from app.utils.pdf_noise import install_pdfminer_noise_filter
+
+install_pdfminer_noise_filter()
 
 # --------------------------------------------------------------------------- #
 # Configuration
