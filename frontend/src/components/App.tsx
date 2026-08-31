@@ -31,6 +31,7 @@ import { ServerStatusBanner } from './ServerStatusBanner';
 import { useScrollManager } from '../hooks/useScrollManager';
 import { TASK_CARD_OPEN_EVENT } from '../hooks/useTaskBindings';
 import { ScrollIndicator } from './ScrollIndicator';
+import { FeedbackRecoveryWatcher } from './FeedbackRecoveryWatcher';
 import { lazyWithRetry } from '../utils/lazyWithRetry';
 import Conversation from "./Conversation";
 const ShellConfigModal = lazyWithRetry(() => import("./ShellConfigModal"));
@@ -389,6 +390,7 @@ export const App: React.FC = () => {
             <ProfilerWrapper id="App">
                 <ServerStatusBanner />
                 <SafariWarning />
+                <FeedbackRecoveryWatcher />
                 <ConfigProvider
                     theme={{
                         algorithm: themeAlgorithm,

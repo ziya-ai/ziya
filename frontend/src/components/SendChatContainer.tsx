@@ -9,7 +9,7 @@ import { useFolderContext } from '../context/FolderContext';
 import { useSendPayload } from '../hooks/useSendPayload';
 import { Button, message, Tooltip } from 'antd';
 import { AudioOutlined, SendOutlined, PictureOutlined, PaperClipOutlined } from '@ant-design/icons';
-import { ImageAttachment, DocumentAttachment, Message } from '../utils/types';
+import { ImageAttachment, DocumentAttachment } from '../utils/types';
 import { DocumentChip } from './FileChip';
 import { useTheme } from '../context/ThemeContext';
 import StopStreamButton from './StopStreamButton';
@@ -21,6 +21,12 @@ import { useServerStatus } from '../context/ServerStatusContext';
 import { v4 as uuidv4 } from 'uuid';
 import { COMPOSER_INJECT_EVENT, ComposerInjectDetail } from '../utils/composerInject';
 import { captureEditorRange, chooseRecordingMimeType, insertTranscript } from '../utils/voiceInput';
+import {
+  recordSentFeedback,
+  retireDeliveredFeedback,
+  hasRetainedFeedback,
+  FEEDBACK_RESUBMITTED_EVENT,
+} from '../utils/feedbackRetention';
 
 interface SendChatContainerProps {
   fixed?: boolean;
@@ -54,17 +60,16 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   // pickup message targeting a conversation we haven't finished switching
   // to is stashed here and applied after the switch (post draft-restore).
   const pendingInjectRef = useRef<Map<string, string>>(new Map());
+  // Conversation the current editor text was composed against. Set on the
+  // first keystroke of a draft, re-pointed when the draft-swap effect loads
+  // another conversation's draft, cleared when the editor empties. handleSend
+  // refuses to submit text whose anchor doesn't match the live conversation.
+  const composeAnchorRef = useRef<string | null>(null);
   // Initialize with undefined to avoid circular dependency during initial render
   const prevConversationIdRef = useRef<string | undefined>(undefined);
-  // Feedback text sent during the current turn that has not been confirmed
-  // delivered, bound to the conversation it was typed into. Pruned by the
-  // feedbackDelivered ack; anything still here when the turn ends is
-  // auto-submitted as an ordinary message rather than stranded.
-  const pendingFeedbackRef = useRef<{ conversationId: string; texts: string[] } | null>(null);
-  // Latest committed messages / auto-submit entry point, read from effects
-  // that must not close over a stale render.
-  const currentMessagesRef = useRef<Message[]>([]);
-  const submitRecoveredFeedbackRef = useRef<((text: string) => void) | null>(null);
+  // Conversation the status chip below the composer currently describes. The
+  // chip is one shared slot, so a conversation switch must re-derive it.
+  const feedbackChipConvRef = useRef<string | null>(null);
 
   const {
     currentConversationId,
@@ -92,7 +97,6 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   // A send running for a different conversation (user switched tabs) must not block.
   const isSubmitting = submittingConversationId === currentConversationId;
   const shouldSendAsFeedback = isCurrentlyStreaming && inputValue.trim().length > 0;
-  currentMessagesRef.current = currentMessages;
 
   // Disabled when: no content, OR this conversation is streaming, OR server is unreachable
   const isDisabled = useMemo(() =>
@@ -166,18 +170,22 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   // Listen for feedback delivery confirmation (SSE event from backend)
   useEffect(() => {
     const handleDelivered = (event: CustomEvent) => {
-      if (event.detail?.conversationId === currentConversationId) {
-        console.log('📝 FEEDBACK: Delivery confirmed via SSE:', event.detail.message);
-        // The backend joins the whole drained batch into one injection, so an
-        // untruncated ack retires exactly the texts it names; a truncated one
-        // (>= 80 chars, the executor's cap) cannot be matched, so clear all —
-        // over-clearing loses a recovery, under-clearing duplicates a send.
-        const ack: string = event.detail.message || '';
-        const pf = pendingFeedbackRef.current;
-        if (pf) {
-          pf.texts = ack.length >= 80 ? [] : pf.texts.filter(t => !ack.includes(t));
-          if (pf.texts.length === 0) pendingFeedbackRef.current = null;
-        }
+      const ackConvId: string | undefined = event.detail?.conversationId;
+      if (!ackConvId) return;
+      console.log('📝 FEEDBACK: Delivery confirmed via SSE:', event.detail.message);
+      // Retire the retained copy whenever the ack belongs to the conversation
+      // holding it — NOT only when that conversation is the one on screen.
+      // Gating the prune on the viewed conversation meant an ack arriving
+      // while the user was looking elsewhere pruned nothing, so the turn-end
+      // recovery re-sent feedback the model had already been given.
+      // The backend joins the whole drained batch into one injection, so an
+      // untruncated ack retires exactly the texts it names; a truncated one
+      // (>= 80 chars, the executor's cap) cannot be matched, so clear all —
+      // over-clearing loses a recovery, under-clearing duplicates a send.
+      const ack: string = event.detail.message || '';
+      retireDeliveredFeedback(ackConvId, ack);
+      // The chip is a single shared slot — only the viewed conversation lights it.
+      if (ackConvId === currentConversationId) {
         setFeedbackStatus('delivered');
         // Auto-clear after 4s
         setTimeout(() => setFeedbackStatus('idle'), 4000);
@@ -197,6 +205,10 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
         const data = JSON.parse(event.data);
         if (data.type === 'feedback_status') {
           console.log('📝 FEEDBACK: WebSocket ack received:', data.status, data.message);
+          // The singleton socket follows whichever conversation streamed most
+          // recently, so an ack can arrive for a conversation the user has
+          // already left; the shared chip must not light for that one.
+          if (data.conversation_id && data.conversation_id !== currentConversationId) return;
           if (data.status === 'queued') {
             // Monitor picked it up from the queue — awaiting model injection
             setFeedbackStatus('queued');
@@ -212,25 +224,36 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     return () => ws.removeEventListener('message', wsHandler);
   }, [isCurrentlyStreaming, currentConversationId]);
 
-  // Turn ended: reset the status chip, and auto-submit any feedback the turn
-  // never consumed. The backend used to re-enqueue stranded feedback "for the
-  // next turn", but nothing drains that queue until another turn starts, so the
-  // text sat there indefinitely while the chip claimed it was deferred. The
-  // turn it was aimed at is over, so a new turn is the only place it can land.
-  // Held (not dropped) while the user is looking at a different conversation,
-  // since the send needs this conversation's history.
+  // The watcher resubmitted feedback a turn never consumed. Presentation only:
+  // FeedbackRecoveryWatcher owns the recovery and fires for conversations the
+  // user is not looking at too, so the chip must ignore those.
   useEffect(() => {
-    const stranded = pendingFeedbackRef.current;
-    if (stranded
-        && stranded.conversationId === currentConversationId
-        && !isCurrentlyStreaming) {
-      pendingFeedbackRef.current = null;
-      console.warn('📝 FEEDBACK: turn ended without consuming feedback — auto-submitting:', stranded.texts);
+    const handleResubmitted = (event: CustomEvent) => {
+      if (event.detail?.conversationId !== currentConversationId) return;
       setFeedbackStatus('resubmitting');
-      submitRecoveredFeedbackRef.current?.(stranded.texts.join('\n\n'));
-      return;
+    };
+    document.addEventListener(FEEDBACK_RESUBMITTED_EVENT, handleResubmitted as unknown as EventListener);
+    return () => document.removeEventListener(FEEDBACK_RESUBMITTED_EVENT, handleResubmitted as unknown as EventListener);
+  }, [currentConversationId]);
+
+  // Re-derive the status chip. PRESENTATION ONLY — recovery of feedback a turn
+  // never consumed lives in FeedbackRecoveryWatcher, which watches every
+  // conversation rather than the viewed one. A recovery here could only ever
+  // fire for whatever is on screen, so a turn that stranded feedback while the
+  // user was elsewhere was recovered on navigating BACK, firing an unexpected
+  // turn on arrival.
+  useEffect(() => {
+    // Retention is per conversation, so this asks only about the one on screen.
+    const retainedHere = hasRetainedFeedback(currentConversationId);
+    const switched = feedbackChipConvRef.current !== currentConversationId;
+    feedbackChipConvRef.current = currentConversationId;
+    // A switch ALWAYS re-derives the chip. Previously the only reset required
+    // !isCurrentlyStreaming, so switching into a streaming conversation left
+    // the previous one's 'queued'/'resubmitting' text on screen with no path
+    // back to idle for the rest of the session.
+    if (switched || (!isCurrentlyStreaming && !retainedHere)) {
+      setFeedbackStatus(retainedHere ? 'queued' : 'idle');
     }
-    if (!isCurrentlyStreaming && !stranded) setFeedbackStatus('idle');
   }, [isCurrentlyStreaming, currentConversationId]);
 
   // Listen for throttling errors from chatApi
@@ -307,6 +330,11 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
         setInputValue(text);
       }
     }
+
+    // The editor now holds the new conversation's draft (or nothing) —
+    // re-point the compose anchor accordingly.
+    composeAnchorRef.current =
+      (editorRef.current?.textContent || '').trim() ? currentConversationId : null;
 
     prevConversationIdRef.current = currentConversationId;
   }, [currentConversationId]);
@@ -763,7 +791,16 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   const handleInput = useCallback(() => {
     const { text } = serializeEditorContent();
     setInputValue(text);
-  }, [serializeEditorContent]);
+    // Anchor the composition to the conversation it started in. If a
+    // non-interactive switch (recovery fallback, project-switch restore)
+    // moves currentConversationId before the user submits, handleSend
+    // detects the mismatch and refuses to post into the wrong conversation.
+    if (text.trim()) {
+      if (!composeAnchorRef.current) composeAnchorRef.current = currentConversationId;
+    } else {
+      composeAnchorRef.current = null;
+    }
+  }, [serializeEditorContent, currentConversationId]);
 
   const transcribeRecording = useCallback(async (
     blob: Blob,
@@ -993,15 +1030,11 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       }
 
       if (sent) {
-        // Retained so a turn that ends without consuming this text can
-        // auto-submit it instead of stranding it.
-        const prevPending = pendingFeedbackRef.current;
-        pendingFeedbackRef.current = {
-          conversationId: currentConversationId,
-          texts: prevPending && prevPending.conversationId === currentConversationId
-            ? [...prevPending.texts, feedbackText]
-            : [feedbackText],
-        };
+        // Retained under this conversation's key so a turn that ends without
+        // consuming the text can resubmit it. Keyed rather than a single slot:
+        // the slot this replaces was overwritten whenever feedback was sent in
+        // a different conversation, discarding the first one's only copy.
+        recordSentFeedback(currentConversationId, feedbackText);
         setFeedbackStatus('queued');
         console.log('🔄 FEEDBACK:', feedbackText);
 
@@ -1009,6 +1042,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
         if (editorRef.current) editorRef.current.innerHTML = '';
         setInputValue('');
         draftsRef.current.delete(currentConversationId);
+        composeAnchorRef.current = null;
 
         message.info({
           content: (
@@ -1034,6 +1068,29 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   }, [inputValue, isSendingFeedback, currentConversationId, currentToolId]);
 
   const handleSend = useCallback(async () => {
+    // COMPOSE-ANCHOR GUARD: the editor text was typed against the
+    // conversation recorded in composeAnchorRef. If currentConversationId
+    // has moved since — a recovery fallback, a project-switch restore, or
+    // any other non-interactive switch racing ahead of the draft-swap
+    // effect — submitting now would post the question (and stream its
+    // answer) into whichever conversation the switch landed on. Park the
+    // text as a draft of the conversation it was composed in instead.
+    const composedFor = composeAnchorRef.current;
+    if (composedFor && composedFor !== currentConversationId) {
+      console.error('🛑 COMPOSE_GUARD: editor text was composed for conversation',
+        composedFor, 'but the active conversation is now', currentConversationId,
+        '— send blocked, text parked as draft of the source conversation');
+      if (editorRef.current) {
+        const html = editorRef.current.innerHTML;
+        if (html && html.trim()) draftsRef.current.set(composedFor, html);
+        editorRef.current.innerHTML = '';
+      }
+      setInputValue('');
+      composeAnchorRef.current = null;
+      message.warning('The active conversation changed while you were typing. Your message was saved as a draft of the conversation you wrote it in — switch back to it to send.', 6);
+      return;
+    }
+
     // If streaming, send as feedback instead
     if (shouldSendAsFeedback) {
       await sendToolFeedback();
@@ -1064,6 +1121,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       // Clear editor after capturing the message
       if (editorRef.current) editorRef.current.innerHTML = '';
       setInputValue('');
+      composeAnchorRef.current = null;
 
       try {
         const result = await dispatchCommand({
@@ -1125,6 +1183,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       // Clear editor
       if (editorRef.current) editorRef.current.innerHTML = '';
       setInputValue('');
+      composeAnchorRef.current = null;
       setAttachedImages([]);
       setAttachedDocuments([]);
       draftsRef.current.delete(targetConversationId);
@@ -1155,41 +1214,6 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
     isCurrentlyStreaming, currentConversationId, setUserHasScrolled, addMessageToConversation,
     addStreamingConversation, removeStreamingConversation, currentMessages, send, attachedDocuments
   ]);
-
-  // Auto-submit feedback the turn ended without consuming. The turn it was
-  // aimed at is over, so it becomes an ordinary message — a new turn — rather
-  // than being deferred to a turn that may never start. Deliberately does not
-  // touch the editor: the user may have typed something new in the meantime.
-  const submitRecoveredFeedback = useCallback(async (text: string) => {
-    const targetConversationId = currentConversationId;
-    setSubmittingConversationId(targetConversationId);
-    try {
-      const userMessage = {
-        role: 'human' as const,
-        content: text,
-        _timestamp: Date.now(),
-      };
-      addMessageToConversation(userMessage, targetConversationId);
-      addStreamingConversation(targetConversationId);
-      const messagesToSend = [
-        ...currentMessagesRef.current.filter(m => !m.muted),
-        userMessage,
-      ];
-      await send({
-        messages: messagesToSend,
-        question: text,
-        conversationId: targetConversationId,
-        includeReasoning: true,
-      });
-    } catch (error) {
-      console.error('📝 FEEDBACK: auto-submit of stranded feedback failed:', error);
-      removeStreamingConversation(targetConversationId);
-    } finally {
-      setSubmittingConversationId(null);
-    }
-  }, [currentConversationId, addMessageToConversation, addStreamingConversation,
-      removeStreamingConversation, send]);
-  submitRecoveredFeedbackRef.current = submitRecoveredFeedback;
 
   // Handle keyboard events - must be after sendToolFeedback and handleSend
   const handleKeyDown = useCallback((e: KeyboardEvent<HTMLDivElement>) => {
