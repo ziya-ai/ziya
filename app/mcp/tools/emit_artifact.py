@@ -21,6 +21,7 @@ the output worth keeping.
 """
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Dict, Optional
 
@@ -66,14 +67,40 @@ class EmitArtifactInput(BaseModel):
     )
     group: Optional[str] = Field(
         default=None,
-        description="Group id linking related parts (e.g. 'issue-3').",
+        description=(
+            "The SUBJECT these parts are about; parts sharing a group "
+            "are shown together. Reuse the same id across iterations and "
+            "later tasks to accumulate one subject's evidence. May be a "
+            "path, 'section/subject' (e.g. 'd2/D-020'), to gather "
+            "subjects under a heading."
+        ),
     )
     label: Optional[str] = Field(
         default=None,
-        description="Display label within the group (e.g. 'before', 'attempt 2').",
+        description=(
+            "What this part IS within its subject ('before', 'after', "
+            "'baseline', 'us-east'). Two differently-labeled parts in a "
+            "group read as a comparison and are shown side-by-side. Put "
+            "any extra axis in the group id, not the label."
+        ),
     )
     seq: Optional[int] = Field(
-        default=None, description="Ordering within the group (0-based).",
+        default=None,
+        description=(
+            "Position when the group is a progression rather than a "
+            "comparison (0-based)."
+        ),
+    )
+    from_run: Optional[str] = Field(
+        default=None,
+        description=(
+            "Include a blob captured elsewhere, with 'file_path' set to "
+            "its BARE FILENAME. Accepts 'self' for evidence emitted "
+            "earlier in THIS run (including by a card this run called), a "
+            "card name or card id for that card's most recent finished "
+            "run, or an explicit run id. Foreign blobs are copied in so "
+            "this run's report stays self-contained."
+        ),
     )
 
 
@@ -87,9 +114,15 @@ class EmitArtifactTool(BaseMCPTool):
         "Kinds: text (conclusions/rationale), file (an existing file by "
         "path), data (a JSON object), or diagram={type, definition} which is "
         "rendered NOW and frozen as a PNG (a failed render preserves the "
-        "error evidence instead). Use the same `group` with distinct "
-        "`label`s to relate parts (e.g. before/after); use `seq` for "
-        "ordered sequences. Only available inside Task Card runs."
+        "error evidence instead). Structure with `group` (the subject; "
+        "reusable across iterations and tasks, and may be a "
+        "'section/subject' path), `label` (what this part is within the "
+        "subject — two labels read as a comparison), and `seq` (ordering "
+        "for a progression). `from_run` includes a blob captured "
+        "elsewhere: 'self' for this run's own earlier output (including "
+        "cards it called), or a card name for an earlier launch — use "
+        "`list_run_artifacts` to enumerate what exists. Only available "
+        "inside Task Card runs."
     )
 
     InputSchema = EmitArtifactInput
@@ -110,9 +143,27 @@ class EmitArtifactTool(BaseMCPTool):
         group = kwargs.get("group")
         label = kwargs.get("label")
         seq = kwargs.get("seq")
+        from_run = kwargs.get("from_run")
         diagram = kwargs.get("diagram")
 
         if diagram is not None:
+            # 'diagram' renders NEW content at emit time; 'from_run'
+            # names content captured ELSEWHERE.  One part cannot be
+            # both, and the render path takes no from_run — so honouring
+            # the combination silently dropped it, which is the worst
+            # available failure for the case that motivates passing both:
+            # a before/after that renders, reports success, and is
+            # missing the half that made it a comparison.  Refuse, and
+            # name the shape that does work rather than guessing.
+            if from_run:
+                return _text(
+                    "Error: 'diagram' and 'from_run' cannot be combined on "
+                    "one part — 'diagram' renders new content now, while "
+                    "'from_run' includes a blob captured elsewhere. For a "
+                    "before/after, emit TWO parts sharing one 'group' with "
+                    "different 'label's: the prior evidence with 'from_run', "
+                    "the new render with 'diagram'."
+                )
             return await self._emit_diagram(name, diagram, group, label, seq)
 
         part, err = build_part(
@@ -122,6 +173,7 @@ class EmitArtifactTool(BaseMCPTool):
             file_path=kwargs.get("file_path"),
             data=kwargs.get("data"),
             group=group, label=label, seq=seq,
+            from_run=from_run,
         )
         if err:
             return _text(f"Error: {err}")
@@ -139,6 +191,20 @@ class EmitArtifactTool(BaseMCPTool):
         theme = (diagram or {}).get("theme", "light")
         if not dtype or not definition:
             return _text("Error: 'diagram' requires both 'type' and 'definition'.")
+        # Structured specs (vega-lite, plotly, packet, ...) are natively JSON
+        # objects and arrive as such.  Slicing the object raised
+        # ``KeyError: slice(None, 50000, None)`` here -- above the try below,
+        # so the evidence-preserving handler never fired and the emit
+        # produced nothing at all rather than a recoverable error artifact.
+        if isinstance(definition, (dict, list)):
+            try:
+                definition = json.dumps(definition)
+            except (TypeError, ValueError) as exc:
+                return _text(
+                    f"Error: 'diagram.definition' is not JSON-serializable: {exc}"
+                )
+        elif not isinstance(definition, str):
+            definition = str(definition)
         def_record = definition[:MAX_DIAGRAM_DEF_CHARS]
 
         try:

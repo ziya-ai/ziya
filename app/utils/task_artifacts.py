@@ -39,9 +39,20 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.utils.logging_utils import logger
 
-# Caps — generous for real use, tight enough that a runaway loop can't
-# turn the run file into a context bomb.
-MAX_PARTS_PER_TASK = 50
+# Caps.  Two separate budgets, because the two kinds of part have
+# different costs.
+#
+# Inline parts (text/data) carry their payload in the run JSON and can
+# reach a model context when a downstream task templates them by name,
+# so the cap that stops a runaway loop becoming a context bomb applies
+# to them.  File parts carry only a path plus metadata (~200 bytes in
+# the run record) and are fetched lazily by the browser through the
+# blob route — they never enter a context unless templated explicitly.
+# A large evidence gallery is therefore cheap, and holding it to the
+# inline budget was an artificial ceiling on exactly the use case the
+# artifact system exists for.
+MAX_PARTS_PER_TASK = 50          # inline (text/data) parts per task
+MAX_FILE_PARTS_PER_TASK = 400    # file parts per task (blob references)
 MAX_TEXT_CHARS = 100_000
 MAX_DATA_CHARS = 100_000
 MAX_DIAGRAM_DEF_CHARS = 50_000
@@ -50,17 +61,60 @@ MAX_NAME_CHARS = 120
 # System-prompt instruction the task executor appends so agents know the
 # tool exists and how the grouping vocabulary works.  Phrased conditionally
 # because tool exposure is subject to the task scope's tools allowlist.
+#
+# The vocabulary stays STRUCTURAL: the emitter says what relates to what,
+# never how it should look.  Presentation is derived downstream from the
+# shape those relations imply (frontend/src/utils/artifactGroups.ts), so a
+# combination nobody anticipated still renders as something sensible.
 EMIT_ARTIFACT_INSTRUCTION = (
     "ARTIFACT EMISSION: If an `emit_artifact` tool is available, use it to "
     "declare the durable outputs of this task — files you produced, key "
     "data values, short text conclusions, and any diagram whose rendered "
     "form should be preserved exactly (pass `diagram={type, definition}` "
     "and it is rendered and frozen at emit time; if the render fails, the "
-    "error evidence is preserved as the artifact instead).  Give related "
-    "parts the same `group` and distinct `label`s (e.g. group=\"issue-3\", "
-    "label=\"before\"/\"after\"); use `seq` for ordered sequences.  Only "
-    "emitted artifacts and your final summary flow back to the caller — "
-    "work products you do not emit are not preserved."
+    "error evidence is preserved as the artifact instead).  Only emitted "
+    "artifacts and your final summary flow back to the caller — work "
+    "products you do not emit are not preserved.\n"
+    "How to structure them (three fields, all optional):\n"
+    "- `group` — the SUBJECT these parts are about.  Parts sharing a group "
+    "are shown together.  Reuse the SAME group id whenever you are talking "
+    "about the same subject, including across loop iterations and across "
+    "later tasks in the run: that is what accumulates a subject's evidence "
+    "into one entry instead of scattering it.  A group id may be a path, "
+    "`section/subject` (e.g. \"d2/D-020\"), to gather many subjects under "
+    "one heading; nest further if you need to.\n"
+    "- `label` — what this part IS within its subject (\"before\", "
+    "\"after\", \"baseline\", \"candidate\", \"us-east\").  Two parts in a "
+    "group with different labels read as a comparison and are shown "
+    "side-by-side.  Put any extra axis in the group id rather than the "
+    "label — \"D-020/dark\" + before/after keeps the pair intact, whereas "
+    "four labels in one group loses which pairs with which.\n"
+    "- `seq` — position when the parts are a progression rather than a "
+    "comparison (0-based).\n"
+    "You do not need to declare where you are or whether an output is "
+    "periodic or final: the harness stamps each part with the emitting "
+    "block and loop iteration.  Emitting the same group+label once per "
+    "iteration is what produces a progression over time; emitting a "
+    "labeled pair is what produces a comparison.  Both are visible while "
+    "the run is still going and are collected into the end-of-run report.\n"
+    "To include a blob that was captured elsewhere, pass `from_run` "
+    "together with `file_path` set to that artifact's BARE FILENAME "
+    "(no directories).  `from_run` accepts:\n"
+    "- \"self\" — evidence emitted earlier in THIS run, including by an "
+    "earlier block or a card this run called.  A stack of cards joined by "
+    "Call blocks is a single run, so this is how an aggregating block at "
+    "the end reaches what the blocks before it produced.\n"
+    "- a card name or card id — resolves to that card's most recent "
+    "finished run.  Use this to compare against a separately launched "
+    "earlier card (a prior sweep, a baseline capture) without knowing its "
+    "run id, which you cannot know when authoring.\n"
+    "- an explicit run id, when you have one.\n"
+    "Foreign blobs are copied in, so the report stays self-contained and "
+    "still renders if the source run is later deleted; the resolved source "
+    "run is recorded on the part as provenance.  If a `list_run_artifacts` "
+    "tool is available, call it first to see what a run actually emitted "
+    "(names, groups, labels, filenames — no payloads) rather than guessing "
+    "filenames."
 )
 
 
@@ -114,14 +168,29 @@ def emit_part(part: dict) -> Tuple[bool, str]:
             "emit_artifact is only available inside a Task Card run "
             "(no active artifact collection)."
         )
-    if len(state["parts"]) >= MAX_PARTS_PER_TASK:
+    # Separate budgets: file parts are blob references and stay out of
+    # any model context, so an evidence gallery is not charged against
+    # the inline text/data allowance (see the cap definitions above).
+    parts = state["parts"]
+    if part.get("part_type") == "file":
+        used = sum(1 for p in parts if p.get("part_type") == "file")
+        cap = MAX_FILE_PARTS_PER_TASK
+        kind = "file"
+    else:
+        used = sum(1 for p in parts if p.get("part_type") != "file")
+        cap = MAX_PARTS_PER_TASK
+        kind = "inline (text/data)"
+    if used >= cap:
         return False, (
-            f"Artifact limit reached ({MAX_PARTS_PER_TASK} parts per task); "
-            f"part not recorded. Consolidate outputs into fewer parts."
+            f"Artifact limit reached ({cap} {kind} parts per task); part not "
+            f"recorded. Split the work across loop iterations or separate "
+            f"tasks — each task has its own budget."
         )
-    state["parts"].append(part)
-    n = len(state["parts"])
-    return True, f"Artifact '{part.get('name', '?')}' recorded ({n}/{MAX_PARTS_PER_TASK})."
+    parts.append(part)
+    return True, (
+        f"Artifact '{part.get('name', '?')}' recorded "
+        f"({used + 1}/{cap} {kind})."
+    )
 
 
 # ── Part construction / validation ──────────────────────────────────
@@ -173,6 +242,321 @@ def _validate_file_path(file_path: str) -> Tuple[Optional[str], Optional[str], O
     return str(rp), media_type, None
 
 
+# Aliases meaning "this run" in a ``from_run`` reference.  A stack that
+# accumulates evidence across its own blocks should not have to know its
+# own run id to refer back to what it already emitted.
+_SELF_RUN_ALIASES = frozenset({"self", "current", "this", "this-run"})
+
+
+def _task_runs_dir() -> Optional[Path]:
+    """``<project>/task_runs``, derived from the active artifacts dir."""
+    state = _collector.get()
+    artifacts_dir = (state or {}).get("artifacts_dir")
+    if not artifacts_dir:
+        return None
+    # <project>/task_runs/<run_id>/artifacts -> <project>/task_runs
+    return Path(artifacts_dir).parent.parent
+
+
+def _resolve_run_reference(from_run: str) -> Tuple[Optional[str], Optional[str]]:
+    """Resolve a ``from_run`` reference to a concrete run id.
+
+    Returns ``(run_id, error)``.  Accepted forms, tried in this order —
+    the order is the specification, because a run id is unambiguous and
+    a card reference is not:
+
+      1. this run — its own id, or one of ``self``/``current``/``this``.
+         Needed because a multi-card stack built from Call blocks is ONE
+         run: a later aggregation block referring to evidence an earlier
+         block emitted is referring to *this* run's artifacts dir, and
+         no other affordance reaches it (``file_path`` resolves against
+         the project root, which the artifacts dir is not under).
+      2. a run id whose artifacts dir exists as a sibling.  Cheap: one
+         ``is_dir`` check, no run records read.
+      3. a card id, or a card NAME — resolved to that card's most recent
+         finished run that actually has artifacts.  This is the form a
+         card author can realistically write, since the run id of some
+         earlier launch is not knowable when the card is authored.
+
+    Name matching consults each run's ``card_snapshot`` first, so a name
+    resolves as of the run that used it rather than as of the card's
+    present name; the live card list is only a fallback for runs that
+    predate snapshots.
+
+    Resolution is memoized per collector, and deliberately so: a report
+    emitting hundreds of parts against "the Stage 1 sweep" must compare
+    against ONE baseline throughout.  Re-resolving per part would let
+    the baseline shift mid-task if another run of that card finished
+    while this one was still emitting, and would re-read every run
+    record each time (~100 KB each, encrypted at rest).
+    """
+    state = _collector.get()
+    if state is None:
+        return None, "no active artifact collection"
+    runs_dir = _task_runs_dir()
+    if runs_dir is None:
+        return None, (
+            "this run has no artifacts directory, so no run reference can "
+            "be resolved against it"
+        )
+
+    ref = (from_run or "").strip()
+    if not ref:
+        return None, "'from_run' must not be blank"
+    current = state.get("run_id")
+
+    # (1) This run.
+    if ref.lower() in _SELF_RUN_ALIASES or (current and ref == current):
+        if not current:
+            return None, "cannot refer to the current run: no run id is known"
+        return current, None
+
+    memo = state.setdefault("_run_ref_memo", {})
+    if ref in memo:
+        return memo[ref]
+
+    resolved = _resolve_run_reference_uncached(ref, runs_dir)
+    memo[ref] = resolved
+    return resolved
+
+
+def _resolve_run_reference_uncached(
+    ref: str, runs_dir: Path,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Uncached body of :func:`_resolve_run_reference` (forms 2 and 3)."""
+    # (2) A literal run id, identified by its directory existing.  The
+    # path components are guarded first: ``ref`` is model-supplied.
+    if not any(c in ref for c in ("/", "\\", "\x00")) and ".." not in ref:
+        if (runs_dir / ref / "artifacts").is_dir():
+            return ref, None
+
+    # (3) A card reference.  Run records are encrypted at rest, so this
+    # goes through the storage layer rather than reading JSON directly.
+    project_dir = runs_dir.parent
+    try:
+        from app.storage.task_runs import TaskRunStorage
+        runs = TaskRunStorage(project_dir).list()
+    except Exception as e:  # noqa: BLE001 — report, never raise into the emit
+        logger.warning(f"from_run: could not list runs for resolution: {e}")
+        return None, f"could not resolve {ref!r}: run history unavailable ({e})"
+
+    needle = ref.casefold()
+    by_id, by_name = [], []
+    cards_for_name: set = set()
+    for r in runs:
+        card_id = getattr(r, "card_id", "") or ""
+        if card_id == ref:
+            by_id.append(r)
+            continue
+        snap = getattr(r, "card_snapshot", None) or {}
+        snap_name = str(snap.get("name") or "").strip()
+        if snap_name and snap_name.casefold() == needle:
+            by_name.append(r)
+            cards_for_name.add(card_id)
+
+    candidates = by_id or by_name
+
+    # A name that resolved to runs of two different cards is ambiguous;
+    # picking one silently would attribute a baseline to the wrong card.
+    if not by_id and len(cards_for_name) > 1:
+        return None, (
+            f"{ref!r} matches runs from {len(cards_for_name)} different "
+            f"cards; use a run id or card id instead"
+        )
+
+    if not candidates:
+        # Fallback for runs written before card snapshots existed: map the
+        # name through the live card list, then match runs by card id.
+        try:
+            from app.storage.task_cards import TaskCardStorage
+            matched = {
+                c.id for c in TaskCardStorage(project_dir).list()
+                if str(getattr(c, "name", "") or "").strip().casefold() == needle
+            }
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"from_run: card-name fallback unavailable: {e}")
+            matched = set()
+        if len(matched) > 1:
+            return None, (
+                f"{ref!r} matches {len(matched)} different cards; use a run "
+                f"id or card id instead"
+            )
+        if matched:
+            candidates = [
+                r for r in runs if (getattr(r, "card_id", "") in matched)
+            ]
+
+    if not candidates:
+        return None, (
+            f"{ref!r} is not a run id in this project, nor a card id or card "
+            f"name with any recorded run"
+        )
+
+    usable = [
+        r for r in candidates
+        if (runs_dir / (getattr(r, "id", "") or "_") / "artifacts").is_dir()
+    ]
+    if not usable:
+        return None, (
+            f"{ref!r} resolved to {len(candidates)} run(s), none of which has "
+            f"an artifacts directory"
+        )
+
+    # Most recent FINISHED run wins; an in-flight run's evidence is
+    # incomplete, so it is used only when nothing has finished.
+    def _when(r):
+        return (
+            getattr(r, "completed_at", None)
+            or getattr(r, "started_at", None)
+            or 0.0
+        )
+
+    finished = [r for r in usable if getattr(r, "completed_at", None)]
+    chosen = max(finished or usable, key=_when)
+    return getattr(chosen, "id", None), None
+
+
+def list_run_artifacts(
+    from_run: str = "self", limit: int = 500,
+) -> Tuple[Optional[List[dict]], Optional[str]]:
+    """Index a run's emitted artifacts, without their payloads.
+
+    Returns ``(entries, error)``.  Each entry carries only what is
+    needed to decide whether to pull a blob — ``name``, ``group``,
+    ``label``, ``seq``, ``filename``, ``media_type``, ``status``,
+    ``block_id``, ``iteration`` — and never the bytes or inline text.
+
+    This is the read side of ``from_run``, and without it cross-run
+    aggregation is unauthorable: copying evidence by filename presumes
+    the aggregating card already knows the filenames, which for a sweep
+    that produced hundreds of them it does not.  Excluding payloads is
+    what keeps the index affordable to place in a model's context — the
+    blobs stay on disk and reach the browser through the blob route.
+    """
+    run_id, err = _resolve_run_reference(from_run)
+    if err:
+        return None, err
+
+    runs_dir = _task_runs_dir()
+    try:
+        from app.storage.task_runs import TaskRunStorage
+        run = TaskRunStorage(runs_dir.parent).get(run_id)
+    except Exception as e:  # noqa: BLE001
+        return None, f"could not read run {run_id}: {e}"
+    if run is None:
+        return None, f"run {run_id} not found"
+
+    artifact = getattr(run, "artifact", None)
+    raw = list(getattr(artifact, "outputs", None) or []) if artifact else []
+
+    entries: List[dict] = []
+    for p in raw:
+        d = p if isinstance(p, dict) else (getattr(p, "__dict__", None) or {})
+        entry = {
+            "name": d.get("name"),
+            "part_type": d.get("part_type"),
+            "group": d.get("group"),
+            "label": d.get("label"),
+            "seq": d.get("seq"),
+            "status": d.get("status"),
+            "block_id": d.get("block_id"),
+            "iteration": d.get("iteration"),
+        }
+        uri = d.get("file_uri") or ""
+        if uri:
+            # The bare filename is the only form usable with from_run.
+            entry["filename"] = Path(uri).name
+            entry["media_type"] = d.get("media_type")
+        entries.append(entry)
+        if len(entries) >= limit:
+            break
+    return entries, None
+
+
+def _copy_from_sibling_run(
+    from_run: str, filename: Optional[str],
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Make one blob from ``from_run`` usable as this run's own artifact.
+
+    Returns ``(file_uri, media_type, error)``.  ``from_run`` is resolved
+    by :func:`_resolve_run_reference`, so it may be a run id, a card id,
+    a card name, or ``self``.
+
+    Why copy rather than reference, for a FOREIGN run: a run's artifact
+    record must stay self-contained.  A reference into a sibling run
+    would silently rot when that run is pruned, and would break the
+    audit-trail property that a run can be reconstructed from its own
+    directory.  Blobs are small relative to the value of the comparison.
+
+    A reference to this run's OWN artifacts is not copied — the blob is
+    already in the destination directory.
+
+    Confinement is structural rather than checked: the destination
+    artifacts dir is ``<project>/task_runs/<run>/artifacts``, so the
+    source is resolved as a SIBLING of the current run's directory.
+    Nothing outside this project's ``task_runs`` is addressable even in
+    principle, and ``resolve_artifact_blob_path`` then applies the same
+    traversal guards the HTTP blob route uses — necessary because both
+    the run id and the filename originate in model output.
+    """
+    if not filename or not isinstance(filename, str):
+        return None, None, (
+            "'from_run' requires 'file_path' to be that artifact's bare "
+            "filename within the source run (no directory components)"
+        )
+    if not isinstance(from_run, str) or not from_run.strip():
+        return None, None, (
+            "'from_run' must be a run id, a card id, a card name, or 'self'"
+        )
+    from_run = from_run.strip()
+    if any(c in from_run for c in ("/", "\\", "\x00")) or ".." in from_run:
+        return None, None, f"invalid run reference {from_run!r}"
+
+    state = _collector.get()
+    artifacts_dir = (state or {}).get("artifacts_dir")
+    if not artifacts_dir:
+        return None, None, (
+            "this run has no artifacts directory, so content cannot be "
+            "copied into it from another run"
+        )
+
+    run_id, resolve_err = _resolve_run_reference(from_run)
+    if resolve_err:
+        return None, None, resolve_err
+
+    source_dir = _task_runs_dir() / run_id / "artifacts"
+    if not source_dir.is_dir():
+        return None, None, (
+            f"run {run_id!r} has no artifacts directory in this project"
+        )
+
+    # Passed through UNNORMALIZED on purpose: taking ``Path(filename).name``
+    # here would silently accept "sub/dir/x.png" as "x.png" from the
+    # artifacts root, handing back a same-named but different file than the
+    # author asked for.  ``resolve_artifact_blob_path`` refuses separators
+    # outright, which is the honest answer for an evidence reference.
+    src, err = resolve_artifact_blob_path(str(source_dir), filename)
+    if err:
+        label = run_id if run_id == from_run.strip() else f"{from_run} -> {run_id}"
+        return None, None, f"{err} (looking in run {label})"
+
+    # This run's own artifacts: reference the blob in place.  Copying it
+    # would give one piece of evidence two names in the same report.
+    if run_id == (state or {}).get("run_id"):
+        return str(src), media_type_for_filename(src.name), None
+
+    blob = read_artifact_blob(str(src))
+    if blob is None:
+        return None, None, (
+            f"artifact {src.name!r} in run {run_id} could not be read "
+            f"or decrypted"
+        )
+    copied_uri, copy_err = save_artifact_blob(src.name, blob)
+    if copy_err:
+        return None, None, copy_err
+    return copied_uri, media_type_for_filename(src.name), None
+
+
 def build_part(
     name: str,
     part_type: str = "text",
@@ -185,6 +569,7 @@ def build_part(
     file_uri: Optional[str] = None,
     media_type: Optional[str] = None,
     status: str = "ok",
+    from_run: Optional[str] = None,
     extra: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Optional[dict], Optional[str]]:
     """Validate and normalize one artifact declaration into a part dict.
@@ -240,6 +625,29 @@ def build_part(
             part["file_uri"] = file_uri
             if media_type:
                 part["media_type"] = media_type
+        elif from_run:
+            # Evidence captured by an earlier run of this project, copied
+            # in so this run's report stands on its own.
+            copied_uri, guessed, err = _copy_from_sibling_run(
+                from_run, file_path,
+            )
+            if err:
+                return None, err
+            part["file_uri"] = copied_uri
+            part["media_type"] = media_type or guessed
+            # Provenance: a comparison against an older baseline is only
+            # honest if the report can say which run the baseline is from.
+            # The RESOLVED id is recorded, not the reference the model
+            # wrote — "the Stage 1 sweep" is not a durable identifier, and
+            # re-resolving it later could name a different run.  Omitted
+            # for this run's own artifacts, where it would be noise.
+            resolved_id, _ = _resolve_run_reference(from_run)
+            if resolved_id and resolved_id != (_collector.get() or {}).get("run_id"):
+                part["source_run_id"] = resolved_id
+            # No size_bytes here on purpose: the on-disk size of the copy
+            # is the ENCRYPTED size when at-rest encryption is enabled,
+            # and reporting that as the artifact's size would be wrong.
+            # An absent field is honest; a misleading number is not.
         else:
             if not file_path or not isinstance(file_path, str):
                 return None, "part_type 'file' requires a 'file_path' value"
