@@ -169,3 +169,45 @@ is the wrong tool for action-phrased objectives.
 ## Code changes
 
 See `design/goal-patches-bundle.md` Part 2 for the concrete diffs.
+
+## Addendum: the stall breaker (added after run 2e1fbe76)
+
+The layering above has a hole that only shows up on hand-authored cards.
+Layers A (self_assessment) and B (convergence) are both **disabled when an
+explicit `until_condition` is set**, for good reasons documented inline: an
+inner task's `objective_met` describes its own atomic success, not the loop's
+exit, and summary similarity should not second-guess an evaluator the author
+asked for. The consequence is that an explicit condition leaves `until_max` as
+the *only* terminator.
+
+That is fine when the condition is merely hard to satisfy. It is not fine when
+the condition is **unsatisfiable by construction** — when the loop's exit test
+depends on machinery that is broken. Run 2e1fbe76 (music-notation campaign)
+required each fix to be "visually verified in a fresh render" while its deploy
+step was broken, so verification could never happen. 35 consecutive iterations
+did real work, each judge correctly refused to rule on a stale bundle, and the
+loop ran to `until_max: 40` over nine hours.
+
+**Stall breaker** (`_UNTIL_STALL_LIMIT`, default 3): active regardless of
+`condition`, evaluated *before* the condition evaluator so an unsatisfiable
+condition cannot starve it. An iteration counts as non-progressing when any of
+these hold:
+
+- `artifact.failed`
+- `self_assessment.objective_met == "partial"` — the agent's designed channel
+  for "I hit a real obstacle", distinct from a verdict on the goal
+- its summary signature equals the previous iteration's
+
+Three consecutive non-progressing iterations stop the loop with a decision
+naming the reason. Three rather than layer B's two: layer B only runs when
+there is no explicit condition and can afford to be eager, whereas this one
+overrides an author's explicit instruction and must be certain the loop is
+stuck rather than slow. The paired negative test matters as much as the
+positive: a progressing loop with an unsatisfiable condition must still run
+the full `until_max`, or the breaker has just become a lower cap.
+
+**Known limit.** An iteration that reports distinct prose and claims success
+while actually being blocked is invisible to all three signals. Closing that
+would need the task executor to surface a first-class "blocked" verdict
+separate from success/failure, which is a larger change than this addendum.
+
