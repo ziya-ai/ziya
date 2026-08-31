@@ -2300,6 +2300,7 @@ class StreamingToolExecutor:
                                         await ws.send_json({
                                             'type': 'feedback_status',
                                             'status': 'queued',
+                                            'conversation_id': conv_id,
                                             'feedback_id': data.get('feedback_id', ''),
                                             'message': msg[:80],
                                         })
@@ -2926,6 +2927,11 @@ class StreamingToolExecutor:
             # Per-iteration by design: only the turn whose tool_use the pending
             # tool_result answers needs them, and nothing is persisted.
             completed_thinking_blocks: List[Dict[str, Any]] = []
+            # Content-block index of the FIRST text block in this response —
+            # ordering metadata for thinking passback.  The echoed assistant
+            # turn must keep blocks in original order (interleaved thinking
+            # sits BETWEEN tool_use blocks and may not be moved).
+            first_text_block_index = None
             deferred_feedback_messages: List[str] = []  # Feedback caught during tool exec, injected after conversation is built
             continuation_happened = False  # Track if code block continuation occurred
 
@@ -3102,7 +3108,14 @@ class StreamingToolExecutor:
                     if isinstance(stream_event, TextDelta):
                         from app.mcp.response_validator import sanitize_text as _sanitize
                         _clean = _sanitize(stream_event.content) if stream_event.content else ''
+                        if first_text_block_index is None and stream_event.content:
+                            # Where the merged text belongs when the assistant
+                            # turn is rebuilt in original block order.
+                            first_text_block_index = stream_event.index
                         chunk = {'type': 'content_block_delta',
+                                 # Block index for per-segment text tracking
+                                 # (thinking passback with multi-text turns).
+                                 'index': stream_event.index,
                                  'delta': {'type': 'text_delta', 'text': _clean}}
                     elif isinstance(stream_event, ToolUseStart):
                         chunk = {'type': 'content_block_start',
@@ -3128,13 +3141,19 @@ class StreamingToolExecutor:
                         # already streamed the visible text).  Kept in arrival
                         # order so the echoed turn matches the block order the
                         # model actually produced.
+                        # '_index' records the block's position in the original
+                        # response so the echoed turn can interleave thinking
+                        # with tool_use exactly as the model emitted it; the
+                        # provider strips it before the block goes to the API.
                         completed_thinking_blocks.append(
                             {'type': 'redacted_thinking',
-                             'data': stream_event.data or ''}
+                             'data': stream_event.data or '',
+                             '_index': stream_event.index}
                             if stream_event.block_type == 'redacted_thinking'
                             else {'type': 'thinking',
                                   'thinking': stream_event.content,
-                                  'signature': stream_event.signature}
+                                  'signature': stream_event.signature,
+                                  '_index': stream_event.index}
                         )
                         continue
                     elif isinstance(stream_event, ErrorEvent):
@@ -3225,7 +3244,10 @@ class StreamingToolExecutor:
                                 all_tool_calls.append({
                                     'id': tool_id,
                                     'name': tool_name,
-                                    'args': {}
+                                    'args': {},
+                                    # Original content-block index — ordering
+                                    # metadata for thinking passback.
+                                    'index': chunk.get('index'),
                                 })
                                 logger.debug(f"🔍 COLLECTED_TOOL: {tool_name} (id: {tool_id})")
                                 
@@ -3268,6 +3290,12 @@ class StreamingToolExecutor:
                                 })
                             text = delta.get('text', '')
                             _td_state.assistant_text = assistant_text
+                            # Which content block this text belongs to —
+                            # recorded so per-block text segments can be
+                            # rebuilt for thinking passback (multi-text
+                            # adaptive-thinking turns).
+                            if chunk.get('index') is not None:
+                                _td_state.current_block_index = chunk.get('index')
                             _td_events = process_text_delta(self, text, _td_state)
                             for _td_evt in _td_events:
                                 # Fake tool-call dispatch: the text-delta
@@ -3954,14 +3982,20 @@ Please retry the tool call with valid JSON. Ensure:
                     tool_uses = []
                     for tool_result in tool_results:
                         tool_args = {}
+                        tool_index = None
                         for tool_call in all_tool_calls:
                             if tool_call['id'] == tool_result['tool_id']:
                                 tool_args = tool_call.get('args', {})
+                                tool_index = tool_call.get('index')
                                 break
                         tool_uses.append({
                             "id": tool_result['tool_id'],
                             "name": tool_result['tool_name'],
-                            "input": tool_args
+                            "input": tool_args,
+                            # Original content-block index — ordering metadata
+                            # for thinking passback.  Providers that never
+                            # receive thinking_blocks ignore this key.
+                            "index": tool_index,
                         })
                     
                     # Sanitize assistant_text before it enters conversation history
@@ -3980,14 +4014,62 @@ Please retry the tool call with valid JSON. Ensure:
                             and not ziya_env("ZIYA_DISABLE_THINKING_PASSBACK"))
                         else None
                     )
+                    # Per-content-block text segments: when the model emitted
+                    # MULTIPLE text blocks (adaptive thinking interleaves
+                    # reasoning between prose segments), merging them into a
+                    # single block shifts every later thinking block out of
+                    # its original position — a modification the API rejects
+                    # ("thinking or redacted_thinking blocks in the latest
+                    # assistant message cannot be modified").  Rebuild the
+                    # per-block segments from the offsets recorded at append
+                    # time; every later mutation of assistant_text is a tail
+                    # truncation, so a monotonic clamp keeps slices valid.
+                    _text_segments = None
+                    _tb_marks = list(getattr(_td_state, 'text_block_marks', None) or [])
+                    if _tb_pass and len({_m[1] for _m in _tb_marks}) > 1:
+                        _text_segments = []
+                        _starts = []
+                        _floor = 0
+                        for _off, _bidx in _tb_marks:
+                            _floor = max(_floor, min(_off, len(assistant_text)))
+                            _starts.append((_floor, _bidx))
+                        for _mi, (_off, _bidx) in enumerate(_starts):
+                            _end = (_starts[_mi + 1][0] if _mi + 1 < len(_starts)
+                                    else len(assistant_text))
+                            _seg = assistant_text[_off:_end]
+                            if _text_segments and _text_segments[-1][0] == _bidx:
+                                _text_segments[-1] = (
+                                    _bidx, _text_segments[-1][1] + _seg)
+                            else:
+                                _text_segments.append((_bidx, _seg))
                     if _tb_pass:
                         logger.debug(
                             "🧠 THINKING_PASSBACK: echoing %d block(s) in the "
                             "assistant turn (iteration %s)",
                             len(_tb_pass), iteration,
                         )
-                        conversation.append(self.provider.build_assistant_message(
-                            assistant_text, tool_uses, thinking_blocks=_tb_pass))
+                        # Kwarg passed only when there is something to say:
+                        # providers outside the anthropic-event bridge never
+                        # produce multi-index text deltas and keep their
+                        # existing build_assistant_message signature.
+                        _seg_kw = (
+                            {'text_segments': _text_segments}
+                            if _text_segments else {}
+                        )
+                        _assist_msg = self.provider.build_assistant_message(
+                            assistant_text, tool_uses, thinking_blocks=_tb_pass,
+                            text_index=first_text_block_index, **_seg_kw)
+                        # Attribution breadcrumb for any future "...cannot be
+                        # modified" 400: the exact block layout that was sent.
+                        logger.info(
+                            "🧠 THINKING_PASSBACK layout: [%s]%s",
+                            ",".join(
+                                str(_b.get('type'))
+                                for _b in _assist_msg.get('content', [])
+                                if isinstance(_b, dict)),
+                            " (multi-text segments)" if _text_segments else "",
+                        )
+                        conversation.append(_assist_msg)
                     else:
                         conversation.append(self.provider.build_assistant_message(assistant_text, tool_uses))
             
