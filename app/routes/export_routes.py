@@ -306,6 +306,11 @@ class PdfExportRequest(BaseModel):
     include_human: bool = Field(default=True, alias="includeHuman")
     include_collapsed: bool = Field(default=True, alias="includeCollapsed")
     include_footer: bool = Field(default=True, alias="includeFooter")
+    # Conversation-pinned model, resolved client-side (conversation → folder
+    # → project precedence).  When it names a model this install may use, it
+    # overrides the global default in the exported footer/metadata so the
+    # export names the model that actually answered.
+    model: Optional[str] = None
 
     # Accept BOTH the camelCase aliases (what the frontend sends) and the
     # snake_case field names when constructed in Python/tests.
@@ -332,6 +337,23 @@ async def export_pdf(request: PdfExportRequest):
 
     model_alias = ModelManager.get_model_alias()
     endpoint = ziya_env("ZIYA_ENDPOINT")
+    # Honor a conversation-pinned model: validated against the same gates as
+    # a chat-time pin (allowlist / known model), so the export field can
+    # never become an allowlist bypass.  An invalid pin falls back to the
+    # global default rather than failing the export.
+    if request.model:
+        from app.utils.model_override import (
+            resolve_override_endpoint, validate_model_override,
+        )
+        pin_err = validate_model_override(request.model, endpoint)
+        if pin_err is None:
+            model_alias = request.model
+            endpoint = resolve_override_endpoint(request.model) or endpoint
+        else:
+            logger.warning(
+                "PDF export: ignoring invalid model pin %r: %s",
+                request.model, pin_err,
+            )
     version = get_current_version()
     port = ziya_env("ZIYA_PORT")
     try:
@@ -402,5 +424,103 @@ async def export_pdf(request: PdfExportRequest):
             "Content-Disposition": f'attachment; filename="{filename}"',
             "Content-Length": str(len(pdf_bytes)),
             "X-Ziya-Message-Count": str(meta.get("message_count", 0)),
+        },
+    )
+
+
+class DocumentExportRequest(BaseModel):
+    """Request body for POST /api/export/document.
+
+    The source is either ``name`` (a store-relative file under
+    ``<project>/.ziya/documents/``) or inline ``markdown`` (front-matter +
+    body).  Front-matter drives layout/margins/metadata; see
+    ``app/utils/document_ir.py`` for the IR contract.
+    """
+
+    name: Optional[str] = None
+    markdown: Optional[str] = None
+    title: Optional[str] = None
+    include_footer: bool = Field(default=False, alias="includeFooter")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+@router.post("/document")
+async def export_document(request: DocumentExportRequest):
+    """Export an authored IR document to a high-fidelity PDF.
+
+    Renders the document body through the real MarkdownRenderer pipeline on
+    the shared /print route (document mode: no message chrome, pagebreak
+    sections, heading-tree PDF outline).  501 when Playwright is absent,
+    404 for an unknown document name, 400 for a bad request.
+    """
+    from fastapi import Response
+    from app.agents.models import ModelManager
+    from app.utils.version_util import get_current_version
+
+    if not request.name and request.markdown is None:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Provide either 'name' or 'markdown'", "success": False},
+        )
+
+    model_alias = ModelManager.get_model_alias()
+    endpoint = ziya_env("ZIYA_ENDPOINT")
+    version = get_current_version()
+    port = ziya_env("ZIYA_PORT")
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        port = 6969
+
+    # Lazy import so the module's other endpoints work without Playwright.
+    try:
+        from app.services.pdf_exporter import export_document_pdf
+    except ImportError as exc:  # pragma: no cover - defensive
+        return JSONResponse(
+            status_code=501, content={"error": str(exc), "success": False},
+        )
+
+    try:
+        pdf_bytes, meta = await export_document_pdf(
+            markdown=request.markdown,
+            name=request.name,
+            title=request.title,
+            version=version,
+            model=model_alias,
+            provider=endpoint,
+            include_footer=request.include_footer,
+            server_port=port,
+        )
+    except FileNotFoundError as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc), "success": False})
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc), "success": False})
+    except ImportError as exc:
+        logger.error("Document PDF export requires Playwright: %s", exc)
+        return JSONResponse(status_code=501, content={"error": str(exc), "success": False})
+    except Exception as exc:
+        logger.error("Document PDF export failed: %s", exc, exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Document export failed: {exc}", "success": False},
+        )
+
+    doc_title = meta.get("title") or "ziya_document"
+    safe_title = "".join(
+        c if c.isalnum() or c in (" ", "-", "_") else "_" for c in doc_title
+    ).strip().replace(" ", "_") or "ziya_document"
+
+    logger.info(
+        "Document PDF export succeeded: %d bytes, %d section(s)",
+        meta.get("size", len(pdf_bytes)), meta.get("section_count", 0),
+    )
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_title}.pdf"',
+            "Content-Length": str(len(pdf_bytes)),
+            "X-Ziya-Section-Count": str(meta.get("section_count", 0)),
         },
     )
