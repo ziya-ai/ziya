@@ -151,6 +151,9 @@ Provider credentials are read directly from the environment (not the `ZIYA_*` na
 | `ZIYA_SCAN_TIMEOUT` | int | `45` | — | Maximum seconds for folder scanning |
 | `ZIYA_MAX_DEPTH` | int | `15` | `--max-depth` | Maximum depth for folder tree traversal |
 | `ZIYA_DISABLE_AUTO_UPDATE` | bool | `false` | — | Disable automatic pip/pipx upgrade check |
+| `ZIYA_TASK_IMPROVE_RUN_MAX` | int | `10` | — | Run-wide ceiling on self-improvement card edits across every improving level of one task run (bounds the multiplicative cost of nested self-improving blocks) |
+| `ZIYA_IMPROVE_JUDGE_MODEL` | str | (endpoint's `medium` tier) | — | Model override for the Task Card self-improvement judge (the `improve_judge` service category; defaults to the endpoint's `medium` tier via the same tags `model_tier` uses) |
+
 
 ## Internal (not user-facing)
 
