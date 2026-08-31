@@ -232,6 +232,71 @@ async def resume_task_run(project_id: str, run_id: str):
     return storage.request_resume(run_id)
 
 
+class AskAnswer(BaseModel):
+    """A human's answer to an open Ask checkpoint."""
+    decision: str = "approve"          # "approve" | "reject"
+    answer: str = ""
+    answered_by: str = ""
+
+
+@router.post("/{run_id}/ask/{block_id}", response_model=TaskRun)
+async def answer_task_run_ask(
+    project_id: str, run_id: str, block_id: str, body: AskAnswer,
+):
+    """Answer the Ask block a run is holding at.
+
+    Accepted while the run is awaiting_input (the live case — the executor's
+    wait-loop picks the answer up at its next poll) and also while it is
+    held, which is where a server restart leaves a run that was waiting.
+    The held case is what makes "answer, then resume" work: the resumed run
+    replays to the Ask block, finds the answer already on record, and
+    applies it instead of asking again.
+
+    Deliberately refuses to PRE-answer a checkpoint the run has not reached.
+    A checkpoint answered before the work arrived at it is not oversight,
+    and a card whose asks could all be answered up front would provide the
+    appearance of review without the substance.
+    """
+    if body.decision not in ("approve", "reject"):
+        raise HTTPException(
+            status_code=422,
+            detail="decision must be 'approve' or 'reject'",
+        )
+    storage = _get_storage(project_id)
+    run = storage.get(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Task run not found")
+
+    settled = (run.ask_answers or {}).get(block_id)
+    if settled:
+        # First answer wins.  Reported rather than errored: the common cause
+        # is a double submit, and the caller's intent is already satisfied
+        # by the answer that landed first.
+        return run
+
+    pending = run.pending_ask or {}
+    if pending.get("block_id") != block_id:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"run {run_id} has no open question for block "
+                f"{block_id!r} (status {run.status}); a checkpoint cannot "
+                f"be answered before the run reaches it"
+            ),
+        )
+    if run.status not in ("awaiting_input", "held"):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"run {run_id} is {run.status}; nothing is waiting on an "
+                f"answer"
+            ),
+        )
+    return storage.record_ask_answer(
+        run_id, block_id, body.decision, body.answer, body.answered_by,
+    )
+
+
 @router.post("/{run_id}/step", response_model=TaskRun)
 async def step_task_run(project_id: str, run_id: str, count: int = 1):
     """Advance a held run by ``count`` boundaries, then hold again.
@@ -496,6 +561,7 @@ async def resume_run_from_block(
 
     from ..utils.resume_targets import (
         parallel_replay_indices, resolve_resume_point, resume_call_chain,
+        serial_replay_prefix,
     )
     # ``call_snapshots`` is required, not enrichment: a Call runs its target
     # inline, so a run held inside a called card records a
@@ -540,64 +606,82 @@ async def resume_run_from_block(
         if st.artifact is not None
     }
 
-    # Banked iterations of a PARALLEL fan-out at the resume point.  This is
-    # what makes resuming a wide fan-out worth doing at all: a 20-agent
-    # audit that lost one subagent to an expired credential re-runs one, not
-    # twenty.  Read here, at launch, rather than during execution — the
-    # source run may be deleted while the new one is still going.
+    # Banked iterations of the loop at the resume point.  This is what
+    # makes resuming a long loop worth doing at all: a 20-agent audit
+    # that lost one subagent to an expired credential re-runs one, not
+    # twenty, and a 25-iteration serial campaign held at 22 re-runs three.
+    # Read here, at launch, rather than during execution — the source run
+    # may be deleted while the new one is still going.
     #
     # Retry only: a ``continue`` resumes AFTER the loop, so the loop replays
     # as a block and its iterations are never re-planned.
     fanout_artifacts: Dict[int, Any] = {}
     fanout_summaries: List[IterationSummary] = []
+    # Mid-loop start index, for a SERIAL loop only.  A parallel fan-out
+    # banks an index SET and leaves this None, because ``previous=None``
+    # there means an index carries no ordering to resume into.
+    serial_start: Optional[int] = None
     _st = (run.block_states or {}).get(resume_point)
     if mode == "retry" and _st is not None:
-        _idxs = parallel_replay_indices(
-            root, resume_point,
-            [s.model_dump() for s in (_st.iteration_summaries or [])],
-            _calls,
-        )
-        for _i in (_idxs or []):
-            _got = storage.read_iteration_artifact(run_id, resume_point, _i)
-            if _got is not None:
-                fanout_artifacts[_i] = _got
-        # Iterations this run INHERITED rather than executed.  Their
+        _sums = [s.model_dump() for s in (_st.iteration_summaries or [])]
+        # Indices this run INHERITED rather than executed.  Their
         # summaries are absent whenever the resume point sits inside a
         # Call: launch-time seeding walks only the CALLER's tree, so
         # ``seed_replayed_iterations`` finds no block state to write into
         # and drops the whole prefix, while the artifact copies — which
-        # need no state — still land.  Selection above reads summaries,
+        # need no state — still land.  Selection below reads summaries,
         # so without this a chain of resumes re-runs banked work whose
         # artifacts it is already holding: measured on run 9099930d as
         # 52 of 60 iterations re-run in order to redo 2.
-        #
-        # Excluding executed indices is what stops this undoing the
-        # resume: an index this attempt actually ran must be judged on
-        # that record, not on the one it inherited.
-        if _idxs is not None and run.resumed_from_block_id == resume_point:
+        _carried = (
+            {int(_k) for _k in (run.resume_iteration_artifacts or {})}
+            if run.resumed_from_block_id == resume_point else set()
+        )
+        _idxs = parallel_replay_indices(root, resume_point, _sums, _calls)
+        if _idxs is None:
+            # Serial loop (or not a loop at all — then the prefix is 0 and
+            # this is inert).  Artifacts are read in index ORDER and the
+            # prefix truncates at the first one missing from disk: a hole
+            # would leave the iteration after it binding an empty
+            # ``{{previous}}``, which is the failure mode the retention
+            # check in serial_replay_prefix exists to avoid.
+            for _i in range(serial_replay_prefix(
+                root, resume_point, _sums, _calls, inherited=_carried,
+            ) or 0):
+                _got = storage.read_iteration_artifact(
+                    run_id, resume_point, _i)
+                if _got is None:
+                    break
+                fanout_artifacts[_i] = _got
+            if fanout_artifacts:
+                # Contiguous from 0 by construction, so the count IS the
+                # index the loop restarts at.
+                serial_start = len(fanout_artifacts)
+        else:
+            for _i in _idxs:
+                _got = storage.read_iteration_artifact(
+                    run_id, resume_point, _i)
+                if _got is not None:
+                    fanout_artifacts[_i] = _got
+            # Excluding executed indices is what stops the carried set
+            # undoing the resume: an index this attempt actually ran must
+            # be judged on that record, not on the one it inherited.
             _executed = {
                 _s.index for _s in (_st.iteration_summaries or [])
                 if not _s.replayed
             }
-            for _k in (run.resume_iteration_artifacts or {}):
-                _i = int(_k)
+            for _i in _carried:
                 if _i in fanout_artifacts or _i in _executed:
                     continue
                 _got = storage.read_iteration_artifact(
                     run_id, resume_point, _i)
-                if _got is None:
-                    continue
-                fanout_artifacts[_i] = _got
-                # Only passes are ever banked, so a carried artifact is
-                # by construction a retained pass.
-                fanout_summaries.append(IterationSummary(
-                    index=_i, status="passed", has_artifact=True,
-                    replayed=True,
-                ))
+                if _got is not None:
+                    fanout_artifacts[_i] = _got
         # Display record for the replayed set, carried verbatim so a
         # preserved iteration keeps its own status and timings rather than
         # reading as though this attempt produced it.  ``replayed=True`` is
         # what keeps them out of every progress aggregate.
+        _recorded = {_s.index for _s in (_st.iteration_summaries or [])}
         for _s in (_st.iteration_summaries or []):
             if _s.index in fanout_artifacts:
                 fanout_summaries.append(IterationSummary(
@@ -605,11 +689,22 @@ async def resume_run_from_block(
                     signature=_s.signature, duration_ms=_s.duration_ms,
                     tokens=_s.tokens, has_artifact=True, replayed=True,
                 ))
+        for _i in sorted(set(fanout_artifacts) - _recorded):
+            # Inherited from an attempt further back: this run holds the
+            # artifact but never held a summary for it.  Only passes are
+            # ever banked, so a carried artifact is by construction a
+            # retained pass.
+            fanout_summaries.append(IterationSummary(
+                index=_i, status="passed", has_artifact=True, replayed=True,
+            ))
         if fanout_artifacts:
             logger.info(
                 f"resume-from: banking {len(fanout_artifacts)} passed "
-                f"iteration(s) of parallel loop {resume_point} "
-                f"(run {run_id[:8]})"
+                f"iteration(s) of "
+                f"{'serial' if _idxs is None else 'parallel'} loop "
+                f"{resume_point}"
+                + (f", restarting at {serial_start}" if serial_start else "")
+                + f" (run {run_id[:8]})"
             )
 
     from .task_cards import _launch_run_for_card
@@ -625,6 +720,9 @@ async def resume_run_from_block(
         resume_call_chain=resume_call_chain(root, _calls, resume_point),
         resume_iteration_artifacts=fanout_artifacts,
         resume_iteration_summaries=fanout_summaries,
+        # Mid-loop restart position for a serial loop; None for a parallel
+        # fan-out (which resumes by index SET) and for a non-loop target.
+        resume_from_iteration=serial_start,
         # Lineage: this attempt continues the source run's chain.
         parent_run_id=run.id,
         root_run_id=run.root_run_id or run.id,

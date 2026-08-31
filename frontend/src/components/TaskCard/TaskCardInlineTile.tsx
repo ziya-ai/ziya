@@ -9,7 +9,7 @@
  * Polls run status while active; stops on terminal state.
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';import { Button, Spin, Tag, Tooltip } from 'antd';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';import { Button, Modal, Spin, Tag, Tooltip } from 'antd';
 import {
   CaretRightOutlined, CaretDownOutlined, StopOutlined,
   CheckCircleOutlined, CloseCircleOutlined, ExclamationCircleOutlined,
@@ -26,7 +26,8 @@ import { cancelTaskRun, pauseTaskRun, resumeTaskRun, stepTaskRun, resumeRunFromB
 import type { IterationResumeMode, ResumeMode } from '../../services/taskRunApi';import { createBinding, deleteBinding, launchStagedBinding } from '../../services/taskBindingApi';
 import { TASK_BINDING_EVENT, TASK_CARD_OPEN_EVENT } from '../../hooks/useTaskBindings';
 import { useTaskRunStream } from '../../hooks/useTaskRunStream';
-import { taskCardApi } from '../../services/taskCardApi';
+import { taskCardApi, type CardScopeStatus } from '../../services/taskCardApi';
+import { CommandBlock } from '../CommandBlock';
 import { TaskRunInspector } from './TaskRunInspector';
 import { TaskRunMap } from './TaskRunMap';
 import { BlockDetailPanel } from './BlockDetailPanel';
@@ -41,13 +42,13 @@ import {
   attemptSummary, firstFailedBlock, isPartial, progressCounts, progressPhrase,
   provenance, resumeKindLabel, sideEffectSummary,
 } from './partialOutcome';
-import { recoveryTarget } from './recoveryTarget';
+import { bankedIterationPrefix, recoveryTarget } from './recoveryTarget';
 import FailureClusters from './FailureClusters';
 import { analyzeFailures } from '../../utils/iterationClusters';
 import { formatLastActivity } from './liveActivity';
 import { awaitsUser, decideAutoCollapse } from './autoCollapse';
 import { TaskMarkdown } from './TaskMarkdown';
-import { useCardSignatureStatus } from './useCardSignatureStatus';
+import { countUnsigned, useCardSignatureStatus } from './useCardSignatureStatus';
 import './task-card-inline-tile.css';
 
 interface Props {
@@ -84,6 +85,10 @@ const STATUS_ICONS: Record<RunStatus, React.ReactNode> = {
   // A plug, not a warning triangle: the fault is in the connection to
   // the outside world, not in the run.
   held: <ApiOutlined />,
+  // A question mark rather than a pause glyph: the run is not merely
+  // stopped, it is asking.  Text rather than an Ant icon for the same
+  // reason as partial — no icon in the set carries "awaiting an answer".
+  awaiting_input: <span aria-hidden>?</span>,
 };
 
 function formatDuration(ms: number): string {
@@ -431,6 +436,47 @@ export function resolveDisplayCard(
   return liveCard;
 }
 
+/**
+ * The `ziya-approve` command(s) for a card's unsigned blocks, rendered in
+ * place.  Shared by both tiles so their signing notices cannot drift —
+ * before this, both said "open Task Cards for the command" while already
+ * holding signCommand/signAllCommand unrendered in scopeStatus.
+ */
+const SignCommands: React.FC<{
+  status: CardScopeStatus | null;
+  unsignedCount: number;
+}> = ({ status, unsignedCount }) => {
+  // signCommand first: an older server's or a preview response's ""
+  // must never render as a blank command box.
+  const blocks = (status?.blocks ?? [])
+    .filter(b => b.signCommand && (b.needsSignature ?? !b.authorized));
+  if (status?.signAllCommand) {
+    return (
+      <>
+        <div style={{ marginTop: 8 }}>
+          <strong>To sign all {unsignedCount}</strong>, run this in a terminal:
+        </div>
+        <CommandBlock cmd={status.signAllCommand} />
+      </>
+    );
+  }
+  if (blocks.length === 0) return null;
+  return (
+    <>
+      <div style={{ marginTop: 8 }}>
+        <strong>To sign</strong>, run this in a terminal:
+      </div>
+      {blocks.map(b => (
+        <CommandBlock
+          key={b.blockId}
+          cmd={b.signCommand}
+          label={blocks.length > 1 ? (b.name || b.blockId) : undefined}
+        />
+      ))}
+    </>
+  );
+};
+
 export const TaskCardInlineTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }) => {
   // Dispatch on staged vs launched.  React's rules-of-hooks forbid an
   // early return between hook calls, so we split into two sibling
@@ -765,6 +811,44 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
    blockId: string, mode: ResumeMode = 'retry',
   ) => {
     if (!projectId || !run || resumingBlockId) return;
+    // A 'retry' RE-EXECUTES blockId.  The run record replays earlier
+    // blocks from their artifacts, but that guarantee stops at the run
+    // record: whatever the target block wrote OUTSIDE it — files under
+    // .ziya/, deck state — is produced again from scratch, overwriting
+    // what is there now.  A card whose first block consolidates a
+    // backlog file loses every disposition later blocks recorded into
+    // it, including those written by a DIFFERENT lineage of the same
+    // card.  That is not recoverable from the run records, so confirm
+    // before launching.  'continue' needs no gate: it accepts the
+    // block's recorded outcome and re-executes nothing.
+    if (mode === 'retry' && run.block_states?.[blockId]?.artifact) {
+      const proceed = await new Promise<boolean>((resolve) => {
+        Modal.confirm({
+          title: 'Re-run this block?',
+          okText: 'Re-run',
+          okButtonProps: { danger: true },
+          cancelText: 'Cancel',
+          width: 520,
+          onOk: () => resolve(true),
+          onCancel: () => resolve(false),
+          content: (
+            <div style={{ fontSize: 13 }}>
+              <p style={{ marginTop: 0 }}>
+                This block already produced a result. Re-running
+                {' '}<strong>executes it again</strong> and discards that
+                result — including any files it wrote outside the run
+                record.
+              </p>
+              <p style={{ marginBottom: 0 }}>
+                To keep it and carry on from the next block, cancel and
+                use <strong>▶ past here</strong> instead.
+              </p>
+            </div>
+          ),
+        });
+      });
+      if (!proceed) return;
+    }
     setResumingBlockId(blockId);
     setCancelError(null);
     try {
@@ -852,7 +936,11 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
         anchor_message_id: binding.anchor_message_id ?? null,
       });
       window.dispatchEvent(new CustomEvent(TASK_BINDING_EVENT, {
-        detail: { bindingId: resp.binding.id, runId: resp.run.id },
+        // `run` is Optional since staged bindings landed (a staged copy has no
+        // run).  This path never stages, so it is non-null in practice, but the
+        // type must be narrowed.  Every listener for this event ignores
+        // `detail` entirely, so a null runId is inert.
+        detail: { bindingId: resp.binding.id, runId: resp.run?.id ?? null },
       }));
     } catch (err) {
       // Surface as a soft error — keep the existing tile intact.
@@ -1174,8 +1262,7 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
             {unsignedCount === 1 ? 'One block requests' : `${unsignedCount} blocks request`}{' '}
             shell/write permissions beyond the default safe set without a
             signature, so {unsignedCount === 1 ? 'it runs' : 'they run'} clamped
-            to the default floor. Open the card in Task Cards for the{' '}
-            <code>ziya-approve</code> command.
+            to the default floor.
             {(scopeStatus?.blocks ?? [])
               .filter(b => b.needsSignature ?? !b.authorized)
               .map(b => (
@@ -1190,6 +1277,7 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
                   ))}
                 </div>
               ))}
+            <SignCommands status={scopeStatus} unsignedCount={unsignedCount} />
           </div>
         )}
 
@@ -1225,11 +1313,17 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
             ? findBlockInRun(
                 displayCard.root, run.call_snapshots, target.blockId)
             : null;
+          // Where a mid-loop resume will land, when the target is a serial
+          // loop.  Computed here rather than in the banner because it needs
+          // the RESOLVED block — the target may live in a callee tree — and
+          // ``b`` is already that lookup.
+          const resumeAt = bankedIterationPrefix(run, b);
           return (
             <RunRecoveryBanner
               run={run}
               target={target}
               targetLabel={b ? blockLabel(b) : target.blockId}
+              resumeAtIteration={resumeAt}
               onRetry={(id) => handleResumeFrom(id, 'retry')}
               onContinue={
                 controls.canContinueFromBlock
@@ -1513,13 +1607,15 @@ const StagedCardTile: React.FC<{ binding: TaskBinding }> = ({ binding }) => {
   const [card, setCard] = useState<TaskCard | null>(null);
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // A staged card IS persisted (the /goal flow creates it before staging),
-  // so the by-id status endpoint applies here — unlike the chat proposal
-  // block, which has no card yet and uses the preview endpoint.
+  // A staged card IS persisted — /goal creates it before staging, and a
+  // deck copy was persisted long before — so the by-id status endpoint
+  // applies here, unlike the chat proposal block, which has no card yet
+  // and uses the preview endpoint.
   //
   // Shared with LaunchedCardTile via the hook: a per-tile copy of this
   // logic is exactly how the launched tile ended up never checking.
-  const { unsignedCount } = useCardSignatureStatus(projectId, binding.card_id);
+  const { unsignedCount, status: scopeStatus, fetchFresh } =
+    useCardSignatureStatus(projectId, binding.card_id);
 
   useEffect(() => {
     if (!projectId) return;
@@ -1532,23 +1628,51 @@ const StagedCardTile: React.FC<{ binding: TaskBinding }> = ({ binding }) => {
 
   const handleRun = async () => {
     if (!projectId) return;
-    if (unsignedCount > 0) {
-      const ok = window.confirm(
-        `${unsignedCount} task(s) in this goal request shell/write permissions ` +
-        `beyond the default safe set, and that escalation is not signed.\n\n` +
-        `The run will start, but those tasks are clamped to the default floor. ` +
-        `Open Task Cards to sign them first.\n\nRun anyway?`);
-      if (!ok) return;
-    }
-    setLaunching(true);
-    setError(null);
-    try {
-      await launchStagedBinding(projectId, binding.chat_id, binding.id);
-      window.dispatchEvent(new CustomEvent(TASK_BINDING_EVENT));
-    } catch (e: any) {
-      setError(String(e));
-      setLaunching(false);
-    }
+    const doLaunch = async () => {
+      setLaunching(true);
+      setError(null);
+      try {
+        await launchStagedBinding(projectId, binding.chat_id, binding.id);
+        window.dispatchEvent(new CustomEvent(TASK_BINDING_EVENT));
+      } catch (e: any) {
+        setError(String(e));
+        setLaunching(false);
+      }
+    };
+    // Signing happens out of band, so the hook's reading can predate a
+    // signature minted seconds ago.  Re-read at the moment of truth —
+    // the same guarantee the proposal panel's Start gives.  A failed
+    // read falls back to the last reading rather than blocking the run.
+    const fresh = await fetchFresh();
+    const gateUnsigned = fresh ? countUnsigned(fresh) : unsignedCount;
+    if (gateUnsigned === 0) { void doLaunch(); return; }
+    // Modal.confirm, not window.confirm: this was the one browser-native
+    // dialog in the signing flow, unable to carry the formatting or
+    // vocabulary the other two gates share.
+    Modal.confirm({
+      title: 'Run without signed permissions?',
+      okText: 'Run anyway',
+      cancelText: 'Cancel',
+      width: 520,
+      content: (
+        <div style={{ fontSize: 13 }}>
+          <p style={{ marginTop: 0 }}>
+            {gateUnsigned === 1
+              ? '1 task in this card requests'
+              : `${gateUnsigned} tasks in this card request`}
+            {' '}shell or write permissions beyond the default safe set, and
+            that escalation is <strong>not signed</strong>.
+          </p>
+          <p style={{ marginBottom: 0 }}>
+            The run will start, but those tasks are clamped to the default
+            floor — so anything depending on the extra permissions fails
+            partway through instead of up front. The{' '}
+            <code>ziya-approve</code> command is in the notice above.
+          </p>
+        </div>
+      ),
+      onOk: () => { void doLaunch(); },
+    });
   };
 
   const handleDiscard = async () => {
@@ -1571,7 +1695,9 @@ const StagedCardTile: React.FC<{ binding: TaskBinding }> = ({ binding }) => {
     <div className="task-card-inline-tile staged">
       <div className="header">
         <span>🎯</span>
-        <strong>{card?.name ?? 'Goal'}</strong>
+        {/* Fallback is generic: a staged binding is now either a /goal
+            synthesis or a card copied in from the deck. */}
+        <strong>{card?.name ?? 'Task card'}</strong>
         <Tag color="default">staged</Tag>
         {unsignedCount > 0 && (
           <Tag color="warning">Needs signing · {unsignedCount}</Tag>
@@ -1582,8 +1708,8 @@ const StagedCardTile: React.FC<{ binding: TaskBinding }> = ({ binding }) => {
           🔒 <strong>Requires signing.</strong>{' '}
           {unsignedCount === 1 ? 'One task requests' : `${unsignedCount} tasks request`}{' '}
           shell/write permissions beyond the default safe set. Run works either
-          way, but those tasks are clamped to the default floor until signed —
-          open Task Cards for the <code>ziya-approve</code> command.
+          way, but those tasks are clamped to the default floor until signed.
+          <SignCommands status={scopeStatus} unsignedCount={unsignedCount} />
         </div>
       )}
       {instructions && (

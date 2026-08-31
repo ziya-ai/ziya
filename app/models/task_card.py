@@ -290,8 +290,16 @@ class Block(BaseModel):
     #              becomes this block's artifact.  Permissions do NOT flow
     #              across the boundary in either direction — see
     #              app/agents/block_executor.py::_execute_call.
+    #   ask      — human-in-the-loop checkpoint.  A leaf like state: it holds
+    #              the run at a block boundary with status "awaiting_input"
+    #              until a human answers, then binds the answer into the run
+    #              exactly as state binds its literals.  Named "ask" and not
+    #              "gate" because "gate" already means the infra fan-out gate
+    #              in this system (TaskRun.held_gate_reason) and the
+    #              resume-from-block walk; a third meaning in the same models
+    #              would be a reader's problem forever.
     block_type: Literal["task", "repeat", "parallel", "until", "schedule",
-                        "state", "group", "call"]
+                        "state", "group", "call", "ask"]
     id: str = ""
     name: str = ""
 
@@ -331,6 +339,25 @@ class Block(BaseModel):
     repeat_until: Optional[str] = None
     repeat_for_each_source: Optional[str] = None
     repeat_item_template: Optional[str] = None
+    # for_each-only: dotted path into each roster item yielding its
+    # stable string identity (e.g. "id" for [{"id": "aider", ...}]).
+    # Unset means items are expected to be scalars, keyed as str(item).
+    # A non-scalar item with no declared path is refused at plan time
+    # when repeat_require_complete is set — never guessed.  See
+    # app/utils/roster_keys.py.
+    repeat_item_key: Optional[str] = None
+    # for_each-only: the roster completeness assertion
+    # (design/task-card-roster-assertion.md).  When True the loop FAILS
+    # at exit unless every roster member has a passed iteration, naming
+    # the missing keys, so the enclosing container's on_failure governs.
+    # Opt-in; False preserves prior behaviour exactly.  Contradicts a
+    # finite repeat_max — a completeness requirement and a cost ceiling
+    # cannot both hold — refused at both validation and plan time.
+    # NOTE the limit of what this asserts: coverage is status-shaped,
+    # not output-shaped.  An iteration that reports success while
+    # producing no output still counts as covered; only an output
+    # contract (a separate primitive) could catch that.
+    repeat_require_complete: bool = False
 
     # Until-only fields.  A separate block from Repeat-with-until
     # because the evaluation surface is different: Repeat's
@@ -374,6 +401,18 @@ class Block(BaseModel):
     # baseline most cards use.  Same placement-is-reset-policy as vars.
     state_context: Optional[str] = None
 
+    # ---- Ask-only fields (human-in-the-loop checkpoint) ----
+    # The question put to the operator.  Required for an ask block: without
+    # it the run holds indefinitely on a blank prompt.
+    ask_question: Optional[str] = None
+    # Optional name to bind the operator's free-text answer under, readable
+    # downstream as {{var.NAME}}.  Unset means the answer reaches later
+    # blocks only as standing prose context, which is the common case —
+    # most checkpoints are "should I go on", not "what value should I use".
+    ask_variable: Optional[str] = None
+    # Optional fixed choices.  Unset means free text.
+    ask_choices: Optional[List[str]] = None
+
     # Container failure policy — governs the implicit sequence formed by
     # this block's body (group / repeat / until / schedule bodies).
     #   "continue" (default, legacy): a child completing with a failed
@@ -383,6 +422,33 @@ class Block(BaseModel):
     #     and remaining siblings are skipped.
     # Parallel is unaffected (children are concurrent).  None == continue.
     on_failure: Optional[Literal["stop", "continue"]] = None
+
+    # Self-improvement fields — meaningful on container blocks (group /
+    # repeat / until / parallel).  When ``self_improve`` is set, the
+    # executor runs the block, asks a judge whether a TANGIBLE,
+    # outcome-affecting text improvement exists, and if so patches the
+    # card's text (never privilege: patches are whitelisted to
+    # instructions/state_context and keyed by existing block ids, so
+    # scope bytes and signed approvals are untouched) and restarts this
+    # level.  Lessons persist across runs in the project's lesson
+    # ledger.  See design/task-cards.md §Self-improvement and
+    # app/utils/self_improve.py.
+    self_improve: bool = False
+    # Explicit acceptance criterion the judge measures the outcome
+    # against ("all tests pass and no file outside app/ was touched").
+    # None → the judge infers the objective from the block's own text.
+    # Authored criteria converge far better than inferred ones.
+    improve_criterion: Optional[str] = None
+    # Max card edits this block may apply per run.  None → default (2,
+    # see app.utils.self_improve.DEFAULT_IMPROVE_MAX); 0 = observe-only
+    # (judge and record lessons, never edit).  A run-wide ceiling
+    # additionally bounds the PRODUCT of nested improving levels.
+    improve_max: Optional[int] = None
+    # Drift policy for revisions.  "conservative" (default): correct
+    # toward the stated objective only — never expand scope or ambition
+    # beyond the ask.  "expansive": may strengthen beyond the ask where
+    # it serves the criterion.  Opt-in by design.
+    improve_drift: Optional[Literal["conservative", "expansive"]] = None
 
     # Body — used by repeat / parallel / until / schedule (Task ignores)
     body: List["Block"] = []
