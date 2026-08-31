@@ -131,6 +131,155 @@ def clamp_png_dimensions(
         Image.MAX_IMAGE_PIXELS = prev_max_pixels
 
 
+# Maximum pixel extent (in EITHER dimension) of the surface we ask Chromium
+# to rasterise for a single element screenshot. This is deliberately BELOW the
+# 8000px downstream vision cap (IMAGE_MAX_DIMENSION_PX): a diagram whose natural
+# layout is enormous is scaled-to-fit within this ceiling BEFORE capture so the
+# rasterised surface stays well inside Chromium's own capture limits. Past a few
+# thousand pixels a full-natural-size element screenshot of a big mermaid state
+# graph fails outright with "Unable to capture screenshot" (Page.captureScreenshot
+# protocol error) — capping the pre-capture surface is what keeps the capture
+# succeeding at all. 6000 leaves headroom under both the Chromium ceiling and the
+# 8000 cap, so the returned raster needs no second downscale in the common case.
+CAPTURE_MAX_DIMENSION_PX = 6000
+
+# Slack (px) before natural content is judged to overflow the rendered/captured
+# box. Sub-pixel rounding and border/scrollbar chrome routinely differ by 1-2px
+# on a diagram that is NOT actually clipped; this tolerance keeps the fit path
+# from firing on those, so a diagram that already fits is captured byte-for-byte
+# as it was before this change.
+CAPTURE_OVERFLOW_TOL_PX = 4
+
+
+def compute_capture_fit(
+    natural_width: float,
+    natural_height: float,
+    rendered_width: float,
+    rendered_height: float,
+    max_dim: int = CAPTURE_MAX_DIMENSION_PX,
+    tol: int = CAPTURE_OVERFLOW_TOL_PX,
+) -> tuple[bool, float, int, int]:
+    """Decide how to capture a rendered diagram whose natural layout may exceed
+    the bounded, overflow-clipped capture window.
+
+    The headless harness screenshots ``#diagram-render-container`` — a bounded
+    box. When a diagram's natural layout is larger than that box, an as-is
+    element screenshot captures only the visible window: the content is clipped
+    (D-164 mermaid sliver, D-219 packet vertical crop) and, once the natural
+    surface passes Chromium's rasterisation ceiling, the capture fails to
+    produce bytes at all (D-165). This helper drives the fit-to-viewport
+    remedy that resolves all three: scale the oversized surface DOWN so the
+    whole diagram fits, rather than clipping most of it away.
+
+    Returns ``(needs_fit, scale, target_width, target_height)``:
+
+    * ``needs_fit`` — True when the natural content is larger than what the
+      container actually shows (by more than ``tol``) on either axis, OR when
+      the natural content exceeds ``max_dim`` (would overrun the capture
+      ceiling). Only then does the caller mutate the DOM; a diagram that
+      already fits takes the unchanged capture path.
+    * ``scale`` — factor in ``(0, 1]`` (NEVER upscales) that shrinks the
+      natural surface so neither axis exceeds ``max_dim``.
+    * ``target_width`` / ``target_height`` — the integer scaled dimensions
+      (>= 1px), aspect ratio preserved.
+
+    Pure and side-effect-free (same inputs -> same output) so it is
+    unit-testable without a browser, mirroring ``clamp_png_dimensions``.
+    """
+    # Defensive: unusable measurements mean "do nothing / capture as-is".
+    try:
+        nw = float(natural_width)
+        nh = float(natural_height)
+        rw = float(rendered_width)
+        rh = float(rendered_height)
+    except (TypeError, ValueError):
+        return (False, 1.0, 0, 0)
+    if nw <= 0 or nh <= 0:
+        return (False, 1.0, 0, 0)
+    if not isinstance(max_dim, int) or max_dim < 1:
+        return (False, 1.0, int(nw), int(nh))
+
+    clipped = (nw > rw + tol) or (nh > rh + tol)
+    over_cap = (nw > max_dim) or (nh > max_dim)
+    needs_fit = bool(clipped or over_cap)
+
+    scale = min(1.0, max_dim / float(max(nw, nh)))
+    target_w = max(1, min(max_dim, int(nw * scale)))
+    target_h = max(1, min(max_dim, int(nh * scale)))
+    return (needs_fit, scale, target_w, target_h)
+
+
+# JS run on the render page to MEASURE the diagram's natural layout size versus
+# the size the bounded container actually shows. Read-only: it mutates nothing,
+# so measuring can never alter a render that turns out not to need fitting.
+_CAPTURE_MEASURE_JS = """
+() => {
+  const c = document.getElementById('diagram-render-container');
+  if (!c) return null;
+  const svg = c.querySelector('svg');
+  let natW = c.scrollWidth || 0, natH = c.scrollHeight || 0;
+  if (svg) {
+    const vb = (svg.viewBox && svg.viewBox.baseVal) || null;
+    if (vb && vb.width && vb.height) {
+      natW = Math.max(natW, Math.ceil(vb.width));
+      natH = Math.max(natH, Math.ceil(vb.height));
+    } else {
+      try {
+        const bb = svg.getBBox();
+        natW = Math.max(natW, Math.ceil(bb.width));
+        natH = Math.max(natH, Math.ceil(bb.height));
+      } catch (e) {}
+    }
+  }
+  const rect = c.getBoundingClientRect();
+  return {
+    naturalWidth: natW, naturalHeight: natH,
+    renderedWidth: Math.ceil(rect.width), renderedHeight: Math.ceil(rect.height)
+  };
+}
+"""
+
+# JS run ONLY when compute_capture_fit reports needs_fit. It (a) removes the
+# overflow clip and any max-size cap from the container and its ancestors so the
+# whole diagram is inside the box, (b) forces an SVG to its natural viewBox size
+# (defeating the plugins' max-width:100%/height:auto shrink-to-container), (c)
+# lets the container shrink-wrap that content, and (d) if scale<1 applies a
+# top-left CSS scale so the element Playwright screenshots is within the capture
+# ceiling. Net effect: scaled-to-fit (small but complete) instead of clipped.
+_CAPTURE_FIT_JS = """
+(scale) => {
+  const c = document.getElementById('diagram-render-container');
+  if (!c) return;
+  let el = c;
+  while (el && el !== document.body) {
+    el.style.overflow = 'visible';
+    el.style.maxHeight = 'none';
+    el.style.maxWidth = 'none';
+    el = el.parentElement;
+  }
+  if (document.body) { document.body.style.overflow = 'visible'; }
+  const svg = c.querySelector('svg');
+  if (svg) {
+    const vb = (svg.viewBox && svg.viewBox.baseVal) || null;
+    let w = 0, h = 0;
+    if (vb && vb.width && vb.height) { w = Math.ceil(vb.width); h = Math.ceil(vb.height); }
+    if (!w || !h) {
+      try { const bb = svg.getBBox(); w = w || Math.ceil(bb.width); h = h || Math.ceil(bb.height); } catch (e) {}
+    }
+    if (w && h) { svg.style.maxWidth = 'none'; svg.style.width = w + 'px'; svg.style.height = h + 'px'; }
+  }
+  c.style.display = 'inline-block';
+  c.style.width = 'auto';
+  c.style.height = 'auto';
+  if (scale && scale < 1) {
+    c.style.transformOrigin = 'top left';
+    c.style.transform = 'scale(' + scale + ')';
+  }
+  void c.offsetWidth;
+}
+"""
+
+
 def build_chromium_launch_args(no_sandbox: bool = False) -> list:
     """Build the Chromium launch args for the headless renderer.
 
@@ -142,9 +291,49 @@ def build_chromium_launch_args(no_sandbox: bool = False) -> list:
     running as root in a container). The caller logs a warning when it's on.
     """
     args = ["--disable-gpu", "--disable-dev-shm-usage"]
+    # D-237: WebGL-only trace families (plotly surface / scatter3d / parcoords,
+    # and the *gl trace types) render to a <canvas> via a WebGL context. With no
+    # GPU in the headless container the browser otherwise shows only a grey
+    # "WebGL is not supported by your browser" panel -- TOTAL DATA LOSS for the
+    # whole 3D feature set. ANGLE's SwiftShader backend gives a software WebGL
+    # context that renders those traces correctly (slower, but this is a one-shot
+    # server-side PNG so throughput is irrelevant). SwiftShader ships inside the
+    # Playwright Chromium build, so no extra install is required; the flags are a
+    # no-op for non-WebGL renders. Newer Chromium gates software WebGL behind
+    # --enable-unsafe-swiftshader, hence all three.
+    args += [
+        "--use-gl=angle",
+        "--use-angle=swiftshader",
+        "--enable-unsafe-swiftshader",
+    ]
     if no_sandbox:
         args.append("--no-sandbox")
     return args
+
+
+def normalize_spec_definition(spec: dict[str, Any]) -> dict[str, Any]:
+    """Ensure ``spec['definition']`` crosses the boundary as a string.
+
+    Every frontend plugin reads this field via ``JSON.parse(spec.definition)``
+    (see frontend/src/plugins/d3/), so it must arrive as text.  But the
+    structured diagram types -- vega-lite, vega, plotly, packet, music,
+    joint, chord, network, d3 -- have specs that are natively JSON objects,
+    and a caller holding one passes the object as readily as its serialized
+    form.  That used to fail differently at each call site: emit_artifact
+    raised ``KeyError: slice(...)`` truncating the object for its record,
+    and anything that reached the browser handed ``JSON.parse`` the string
+    "[object Object]".
+
+    Serializing at the one chokepoint all render call sites funnel through
+    makes object and string definitions interchangeable everywhere, rather
+    than leaving each caller to decide.
+    """
+    if not isinstance(spec, dict):
+        return spec
+    definition = spec.get("definition")
+    if isinstance(definition, (dict, list)):
+        return {**spec, "definition": json.dumps(definition)}
+    return spec
 
 
 class DiagramRenderer:
@@ -349,6 +538,12 @@ class DiagramRenderer:
         timeout_ms : int
             Maximum time to wait for the render to complete.
         """
+        # Object/array definitions (the structured diagram types) are
+        # serialized here so every caller -- the two builtin tools, the HTTP
+        # route, the conversation exporter -- gets identical treatment and
+        # the browser always receives the string its plugins JSON.parse.
+        spec = normalize_spec_definition(spec)
+
         async with self._lock:
             await self._ensure_browser()
 
@@ -533,6 +728,51 @@ class DiagramRenderer:
             # downstream 8000px vision-pipeline cap. Clamp before returning so a
             # pathologically large-but-otherwise-valid render is downscaled
             # instead of rejected. See clamp_png_dimensions / Issue 42 defect 3.
+            # Fit an oversized natural layout into a capture-safe surface
+            # BEFORE the screenshot. The container is a bounded, overflow-
+            # clipped window; without this, a diagram larger than the window is
+            # captured as a clipped sliver (D-164 mermaid, D-219 packet) or, past
+            # Chromium's rasterisation ceiling, fails to capture at all (D-165).
+            # compute_capture_fit only reports needs_fit when the natural content
+            # actually exceeds what the container shows, so a diagram that already
+            # fits keeps the byte-identical as-is capture path below.
+            try:
+                measure = await container.evaluate(_CAPTURE_MEASURE_JS)
+            except Exception as measure_err:  # pragma: no cover - defensive
+                logger.warning(
+                    "capture measure step failed (%s); capturing as-is",
+                    measure_err,
+                )
+                measure = None
+            if isinstance(measure, dict) and measure.get("naturalWidth") \
+                    and measure.get("naturalHeight"):
+                needs_fit, scale, _tw, _th = compute_capture_fit(
+                    measure.get("naturalWidth"),
+                    measure.get("naturalHeight"),
+                    measure.get("renderedWidth") or 0,
+                    measure.get("renderedHeight") or 0,
+                )
+                if needs_fit:
+                    logger.info(
+                        "Oversized render (%sx%s natural vs %sx%s shown); "
+                        "scaling to fit (scale=%.4f) before capture so the "
+                        "whole diagram is captured instead of clipped.",
+                        measure.get("naturalWidth"),
+                        measure.get("naturalHeight"),
+                        measure.get("renderedWidth"),
+                        measure.get("renderedHeight"),
+                        scale,
+                    )
+                    try:
+                        await container.evaluate(_CAPTURE_FIT_JS, scale)
+                        # Let layout settle after unclipping/scaling.
+                        await page.wait_for_timeout(50)
+                    except Exception as fit_err:  # pragma: no cover - defensive
+                        logger.warning(
+                            "capture fit step failed (%s); capturing as-is",
+                            fit_err,
+                        )
+
             png_bytes = await container.screenshot(type="png")
             return clamp_png_dimensions(png_bytes), diagnostics
 
