@@ -683,3 +683,102 @@ body:not(.dark) .tc-block-unknown { color: #cf222e; }
  * the chips had no ground of their own to sit on, only borrowed
  * contrast from the block tint behind them. */
 body:not(.dark) .tc-chip { background: rgba(0,0,0,0.05); }
+
+/* ── Self-improvement section (🌱) ─────────────────────────────
+ * Mounted beside the scope button on container blocks and on the
+ * card header for the group root.  Teal accent to read as "growth",
+ * distinct from the scope-approval amber and the failure red. */
+.tc-improve-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.tc-improve-toggle { white-space: nowrap; }
+.tc-improve-emoji { margin: 0 2px; }
+.tc-improve-section--on {
+  border-left: 2px solid rgba(45, 212, 191, 0.55);
+  padding-left: 8px;
+  border-radius: 2px;
+}
+.tc-improve-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.tc-improve-criterion { width: 100%; }
+.tc-improve-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.tc-improve-hint {
+  font-size: 11px;
+  opacity: 0.75;
+}
+/* Revision rows in the run inspector's Events tab. */
+.tc-tile__inspector-event--improve {
+  border-left: 2px solid rgba(45, 212, 191, 0.7);
+  background: rgba(45, 212, 191, 0.07);
+}
+
+/* ── Lessons panel (🌱 card learning history) ─────────────────── */
+.tc-lessons-panel {
+  border: 1px solid rgba(45, 212, 191, 0.35);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.tc-lessons-summary {
+  cursor: pointer;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.tc-lessons-edits-note {
+  font-size: 11px;
+  opacity: 0.65;
+  margin-inline-start: 8px;
+}
+.tc-lessons-body {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.tc-lessons-loading { opacity: 0.6; padding: 4px; }
+.tc-lesson-row {
+  border-left: 2px solid rgba(45, 212, 191, 0.45);
+  padding: 2px 0 2px 8px;
+}
+.tc-lesson-head { display: flex; align-items: center; gap: 6px; }
+.tc-lesson-when { font-size: 10px; opacity: 0.55; }
+.tc-lesson-text { margin-top: 2px; opacity: 0.85; }
+.tc-lesson-diff { margin-top: 4px; }
+.tc-lesson-diff-label {
+  font-size: 10px;
+  opacity: 0.6;
+  margin-bottom: 2px;
+}
+.tc-lesson-diff-before,
+.tc-lesson-diff-after {
+  margin: 0 0 2px;
+  padding: 4px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.tc-lesson-diff-before {
+  background: rgba(248, 81, 73, 0.10);
+  text-decoration: line-through;
+  text-decoration-color: rgba(248, 81, 73, 0.5);
+  opacity: 0.75;
+}
+.tc-lesson-diff-after { background: rgba(46, 160, 67, 0.12); }
+.tc-lesson-diff-empty { font-size: 11px; opacity: 0.5; font-style: italic; }
