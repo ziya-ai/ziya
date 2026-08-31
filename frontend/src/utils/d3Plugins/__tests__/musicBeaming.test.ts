@@ -45,6 +45,29 @@ const draw = async (spec: MusicSpec) => {
   return container;
 };
 
+// DOM-capturing d3 for observing the below-staff dynamics OVERLAY: dynamics are
+// drawn by drawDynamicsLayer via d3 <text> (plain "pp"/"ff"), NOT as VexFlow
+// SMuFL glyphs, so the no-op stub above swallows them.  This appends real nodes
+// so the overlay mark's text is queryable.
+const NS_ = 'http://www.w3.org/2000/svg';
+const domSel = (el: Element): any => {
+  const s: any = {
+    node: () => el,
+    append: (t: string) => { const c = document.createElementNS(NS_, t); el.appendChild(c); return domSel(c); },
+    attr: (k: string, v: any) => { el.setAttribute(k, String(v)); return s; },
+    style: () => s, classed: () => s, html: () => s,
+    text: (t: any) => { el.textContent = String(t); return s; },
+  };
+  return s;
+};
+const domD3 = { select: (el: Element) => domSel(el) };
+const drawDom = async (spec: MusicSpec) => {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  await renderMusicSpec(container, spec, false, domD3);
+  return container;
+};
+
 const glyphs = (c: HTMLElement) =>
   Array.from(c.querySelectorAll('text')).map((t) => t.textContent ?? '').join('');
 
@@ -147,11 +170,16 @@ describe('autoBeam', () => {
   });
 
   it('coexists with slurs and dynamics', async () => {
-    const c = await draw({ type: 'music', timeSignature: '4/4', autoBeam: true,
+    // Dynamics are a below-staff d3 overlay (drawDynamicsLayer draws plain
+    // "pp" text, NOT a VexFlow SMuFL glyph), so observe them with the
+    // DOM-capturing stub.  The point of the test is that adding slurs +
+    // dynamics does not disturb the beaming: no flags remain.
+    const c = await drawDom({ type: 'music', timeSignature: '4/4', autoBeam: true,
       notes: EIGHTHS.map((n, i) => (i === 0 ? { ...n, dynamic: 'pp' } : n)),
       slurs: [{ from: 0, to: 3 }], hairpins: [{ from: 0, to: 7, type: 'cresc' }] });
     expect(flags(c)).toBe(0);
-    expect((glyphs(c).match(/[\ue520-\ue52f]/g) ?? []).length).toBeGreaterThan(0);
+    // The dynamic mark was drawn (overlay text), not lost.
+    expect(glyphs(c)).toContain('pp');
   });
 });
 

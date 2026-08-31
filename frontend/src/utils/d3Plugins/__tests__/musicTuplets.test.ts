@@ -83,3 +83,68 @@ describe('tuplets', () => {
     expect(c.querySelector('svg')).not.toBeNull();
   });
 });
+
+/**
+ * Render-level guard for the out-of-range tuplet count fix (sanitizeTupletCounts,
+ * MAX_TUPLET_COUNT = 99).  The pure helper is unit-tested in musicNumericGuards;
+ * these prove its INTEGRATION into renderMusicSpec -- an absurd count is SKIPPED
+ * rather than reaching VexFlow's Tuplet.attach(), where it either printed a
+ * runaway "3:1000" ratio that ran off the system (inSpaceOf huge) or rescaled a
+ * note's tick toward zero and re-triggered the non-converging Formatter hang
+ * (num huge).  The notes must still all render at face value; the render must
+ * not hang or throw.
+ */
+describe('tuplets: out-of-range count is skipped, not drawn (crash/hang guard)', () => {
+  it('skips an inSpaceOf beyond the cap and still renders every note', async () => {
+    const c = await draw({
+      type: 'music',
+      clef: 'treble',
+      notes: [
+        { keys: ['c/5'], duration: '8' },
+        { keys: ['d/5'], duration: '8' },
+        { keys: ['e/5'], duration: '8' },
+        { keys: ['f/5'], duration: 'q' },
+      ],
+      // The served-bundle repro: inSpaceOf 1000 drew a literal "3:1000" bracket.
+      tuplets: [{ from: 0, to: 2, inSpaceOf: 1000, ratioed: true }],
+    });
+    expect(c.querySelector('svg')).not.toBeNull();
+    expect(noteHeads(c)).toBe(4);
+  });
+
+  it('skips a num beyond the cap (near-zero-tick formatter-hang path)', async () => {
+    const c = await draw({
+      type: 'music',
+      notes: [
+        { keys: ['c/5'], duration: '8' },
+        { keys: ['d/5'], duration: '8' },
+        { keys: ['e/5'], duration: '8' },
+      ],
+      tuplets: [{ from: 0, to: 2, num: 1000, inSpaceOf: 2 }],
+    });
+    expect(c.querySelector('svg')).not.toBeNull();
+    expect(noteHeads(c)).toBe(3);
+  });
+
+  it('still renders an ordinary triplet alongside a rejected one', async () => {
+    // A valid triplet and an out-of-range one in the same spec: the valid one
+    // draws, the invalid one is dropped, and all six notes survive.
+    const c = await draw({
+      type: 'music',
+      notes: [
+        { keys: ['c/5'], duration: '8' },
+        { keys: ['d/5'], duration: '8' },
+        { keys: ['e/5'], duration: '8' },
+        { keys: ['f/5'], duration: '8' },
+        { keys: ['g/5'], duration: '8' },
+        { keys: ['a/5'], duration: '8' },
+      ],
+      tuplets: [
+        { from: 0, to: 2 },                         // ordinary triplet -> drawn
+        { from: 3, to: 5, num: 500, inSpaceOf: 2 }, // out of range -> skipped
+      ],
+    });
+    expect(c.querySelector('svg')).not.toBeNull();
+    expect(noteHeads(c)).toBe(6);
+  });
+});

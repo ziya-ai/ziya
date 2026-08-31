@@ -77,6 +77,32 @@ const draw = async (spec: MusicSpec) => {
   return container;
 };
 
+// Install a VexFlow text-measurement canvas.  Bare `npx jest` does not load
+// CRA's setupTests.ts, so VexFlow's measurement canvas resolves to jsdom's
+// unimplemented getContext and logs "No context for txtCanvas" for every glyph
+// -- which floods console.warn and breaks the "scopes span indices" test's
+// assertion that NO warning is emitted.  Provide the measurement canvas
+// through VexFlow's own API so metrics are faithful and no warning fires.
+beforeAll(() => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { Element } = require('vexflow');
+  const CH = 8;
+  Element.setTextMeasurementCanvas({
+    getContext: () => ({
+      font: '',
+      measureText: (t: string) => ({
+        width: (t ?? '').length * CH,
+        actualBoundingBoxAscent: CH,
+        actualBoundingBoxDescent: 2,
+        actualBoundingBoxLeft: 0,
+        actualBoundingBoxRight: (t ?? '').length * CH,
+        fontBoundingBoxAscent: CH,
+        fontBoundingBoxDescent: 2,
+      }),
+    }),
+  });
+});
+
 const glyphs = (c: HTMLElement) =>
   Array.from(c.querySelectorAll('text')).map((t) => t.textContent ?? '').join('');
 
@@ -120,6 +146,31 @@ describe('tempo', () => {
   it('renders a name-only marking', async () => {
     const c = await draw({ type: 'music', notes: NOTES4, tempo: { name: 'Allegro' } });
     expect(plainText(c)).toContain('Allegro');
+  });
+
+  it('renders the name alone (no dangling "=") when a duration is given without a bpm', async () => {
+    // R04: StaveTempo.draw gates the ENTIRE "(beat = N)" scaffolding on
+    // `duration` -- the "(", the note glyph and the "=" all draw under
+    // `if (duration)`, while the number is a nested `else if (bpm)` that is
+    // skipped when bpm is absent.  So a name + explicit beat unit but no bpm
+    // drew "Allegro (glyph = )" -- a dangling equals with nothing after it.
+    // The mark must degrade to the name alone: no "=", no metronome glyph.
+    const c = await draw({ type: 'music', notes: NOTES4,
+      tempo: { name: 'Allegro', duration: 'q' } });
+    expect(plainText(c)).toContain('Allegro');
+    expect(plainText(c)).not.toContain('=');
+    expect(glyphs(c)).not.toMatch(TEMPO_NOTE);
+  });
+
+  it('drops the metronome when the bpm is invalid, leaving the name alone', async () => {
+    // The "sanitized-away bpm" case: an invalid bpm is treated as absent by
+    // sanitizeTempoBpm, and the beat unit (now gated on hasBpm) is likewise
+    // not resolved, so no "beat = " fragment is drawn -- only "Andante".
+    const c = await draw({ type: 'music', notes: NOTES4,
+      tempo: { name: 'Andante', duration: 'q', bpm: -5 } });
+    expect(plainText(c)).toContain('Andante');
+    expect(plainText(c)).not.toContain('=');
+    expect(glyphs(c)).not.toMatch(TEMPO_NOTE);
   });
 
   it('renders name and metronome mark together', async () => {
@@ -201,6 +252,28 @@ describe('navigation marks', () => {
     expect(c.querySelector('svg')).not.toBeNull();
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
+  });
+
+  // R03: VexFlow's Repetition glyph is immovable (draw() ignores xShift/yShift),
+  // so two marks anchored to the same side of the measure landed on the same x
+  // AND y and printed on top of each other.  The renderer now lets VexFlow draw
+  // the first mark on each side and stacks the rest on their own rows via the
+  // overlay, so both stay legible.  'fine' and 'da-capo' both anchor right;
+  // before the fix their 'Fine' and 'D.C.' text shared one y.
+  it('stacks a second same-side navigation mark on its own row (no overprint)', async () => {
+    const c = await draw({ type: 'music', notes: NOTES4, marks: ['fine', 'da-capo'] });
+    expect(c.querySelector('svg')).not.toBeNull();
+    const texts = Array.from(c.querySelectorAll('text'));
+    const fine = texts.find((t) => (t.textContent ?? '') === 'Fine');
+    const dc = texts.find((t) => (t.textContent ?? '').includes('D.C.'));
+    expect(fine).toBeDefined();
+    expect(dc).toBeDefined();
+    expect(fine!.getAttribute('y')).not.toEqual(dc!.getAttribute('y'));
+  });
+
+  it('leaves a single navigation mark on the VexFlow path unchanged', async () => {
+    const c = await draw({ type: 'music', notes: NOTES4, marks: ['fine'] });
+    expect(plainText(c)).toContain('Fine');
   });
 });
 
@@ -304,7 +377,11 @@ describe('grand staff', () => {
         { keys: ['c/3'], duration: 'h', dynamic: 'pp' },
         { keys: ['g/2'], duration: 'h', dynamic: 'ff' }] },
     ] });
-    expect((glyphs(c).match(/[\ue520-\ue52f]/g) ?? []).length).toBeGreaterThan(0);
+    // Dynamics are a below-staff d3 overlay (plain "pp"/"ff" text), not VexFlow
+    // SMuFL glyphs, and this suite's stub captures overlay text -- so assert the
+    // literal marks are present rather than the retired glyph codepoints.
+    expect(plainText(c)).toContain('pp');
+    expect(plainText(c)).toContain('ff');
   });
 });
 
@@ -333,6 +410,9 @@ describe('combined', () => {
     expect(text).toContain('12');
     expect(text).toContain('gliss.');
     expect(glyphs(c)).toContain(CODA);
-    expect((glyphs(c).match(/[\ue520-\ue52f]/g) ?? []).length).toBe(5);
+    // Dynamics moved to the below-staff d3 overlay (plain text), so the two
+    // marks appear as their literal strings rather than 5 SMuFL letter-glyphs.
+    expect(text).toContain('pp');
+    expect(text).toContain('fff');
   });
 });

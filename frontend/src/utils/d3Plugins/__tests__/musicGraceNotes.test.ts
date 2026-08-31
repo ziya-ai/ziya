@@ -91,3 +91,61 @@ describe('grace-note render smoke', () => {
     expect(c.querySelector('svg')).not.toBeNull();
   });
 });
+
+/**
+ * GRACENOTE-BAD-ACCIDENTAL-HANG regression.
+ *
+ * A grace note is hand-built through `new GraceNote({keys})`, bypassing the
+ * EasyScore path that `buildNoteString` guards with `sanitizePitch`.  Before
+ * the fix, a mistyped accidental such as "ef/5" (an intended "eb/5") went only
+ * through `toStaveNoteKey`, which clamps the OCTAVE but does NOT validate the
+ * accidental letter -- so the bogus pitch reached StaveNote's constructor,
+ * built a NaN y-position, and GraceNoteGroup's pre-format loop never converged:
+ * a ~30s render hang on a blank canvas, losing the whole score for one typo.
+ *
+ * The fix sanitizes each grace key via `sanitizePitch` (dropping the null/
+ * unrenderable ones) and drops a grace whose keys are ALL unrenderable, with a
+ * console warning -- mirroring `buildNoteString`'s chord handling.  These pin
+ * that a bad grace no longer hangs and that a VALID grace beside it still
+ * renders (so the guard is not over-broad).
+ */
+describe('grace note with an unrenderable accidental (no-hang guard)', () => {
+  let warn: jest.SpyInstance;
+  beforeEach(() => { warn = jest.spyOn(console, 'warn').mockImplementation(() => {}); });
+  afterEach(() => warn.mockRestore());
+
+  it('drops a mistyped grace accidental instead of hanging, and warns', async () => {
+    const c = await draw({
+      type: 'music',
+      notes: [
+        // "ef/5" is not a real accidental (an intended "eb/5"); the grace must
+        // be dropped, not fed to StaveNote where it would hang the formatter.
+        { keys: ['c/5'], duration: 'q', graceNotes: [{ keys: ['ef/5'], duration: '8' }] },
+        // A VALID grace beside it must still render.
+        { keys: ['e/5'], duration: 'q', graceNotes: [{ keys: ['d/5'], duration: '8' }] },
+        { keys: ['g/5'], duration: 'h' },
+      ],
+    });
+    // Did not hang / throw: an SVG was produced.
+    expect(c.querySelector('svg')).not.toBeNull();
+    // The dropped grace logged the documented warning.
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('grace note with no renderable keys skipped'),
+    );
+    // The three main notes still rendered.
+    expect(c.querySelectorAll('g.vf-stavenote').length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('keeps a chord grace\'s valid members when one is mistyped', async () => {
+    // A single bad member (" ef/5") must not discard the whole chord grace: the
+    // valid "g/5" survives (mirrors buildNoteString's per-key chord handling).
+    const c = await draw({
+      type: 'music',
+      notes: [
+        { keys: ['c/5'], duration: 'q', graceNotes: [{ keys: ['ef/5', 'g/5'], duration: '8' }] },
+        { keys: ['d/5'], duration: 'q' },
+      ],
+    });
+    expect(c.querySelector('svg')).not.toBeNull();
+  });
+});

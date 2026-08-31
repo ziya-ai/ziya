@@ -31,18 +31,36 @@ if (typeof (globalThis as any).structuredClone !== 'function') {
 
 import { renderMusicSpec, type MusicSpec } from '../musicPlugin';
 
-const makeChain = () => {
-  const chain: any = {};
-  // Every d3 selection method used by the overlay layers returns the chain, so
-  // a call sequence of any depth resolves.  A two-level stub previously broke
-  // the volta bracket's six chained .attr() calls and surfaced as a plugin
-  // TypeError rather than as the test limitation it was.
-  for (const m of ['attr', 'style', 'text', 'append', 'classed', 'html']) {
-    chain[m] = () => chain;
-  }
-  return chain;
+// A d3 shim that actually materialises the overlay layers into the DOM, so
+// hand-drawn marks (the tempo name, dynamics, lyrics, measure numbers, ...) are
+// observable by the geometry assertions below.  The earlier no-op chain
+// discarded every overlay <text>, which meant a split-out mark like the tempo
+// NAME (drawn as an overlay while VexFlow draws only the metronome) was
+// invisible to `matching()` and the mark's true leftmost element could not be
+// measured.  append(tag) creates a real SVG element under the current node and
+// returns a selection bound to it; attr/text set the observed attributes; the
+// rest are chainable no-ops.
+const makeSel = (node: any): any => {
+  const sel: any = {};
+  sel.append = (tag: string) => {
+    const child = document.createElementNS('http://www.w3.org/2000/svg', tag);
+    if (node && typeof node.appendChild === 'function') node.appendChild(child);
+    return makeSel(child);
+  };
+  sel.attr = (k: string, v: any) => {
+    if (node && typeof node.setAttribute === 'function') node.setAttribute(k, String(v));
+    return sel;
+  };
+  sel.text = (t: any) => {
+    if (node) node.textContent = String(t);
+    return sel;
+  };
+  sel.style = () => sel;
+  sel.classed = () => sel;
+  sel.html = () => sel;
+  return sel;
 };
-const d3Stub = { select: () => makeChain() };
+const d3Stub = { select: (el: any) => makeSel(el) };
 
 const draw = async (spec: MusicSpec) => {
   const container = document.createElement('div');
@@ -50,6 +68,33 @@ const draw = async (spec: MusicSpec) => {
   await renderMusicSpec(container, spec, false, d3Stub);
   return container;
 };
+
+// Install a VexFlow text-measurement canvas.  Bare `npx jest` does not load
+// CRA's setupTests.ts, so glyph widths resolve to 0 and horizontal positions
+// (notehead x, clef width) degenerate -- which breaks the tempo-placement
+// assertion comparing the tempo mark's x to the first notehead's x.  Provide
+// the measurement canvas through VexFlow's own API so those x positions are
+// meaningful; metrics are approximate, which is enough for relative-position
+// (left-of / right-of) collision checks.
+beforeAll(() => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { Element } = require('vexflow');
+  const CH = 8;
+  Element.setTextMeasurementCanvas({
+    getContext: () => ({
+      font: '',
+      measureText: (t: string) => ({
+        width: (t ?? '').length * CH,
+        actualBoundingBoxAscent: CH,
+        actualBoundingBoxDescent: 2,
+        actualBoundingBoxLeft: 0,
+        actualBoundingBoxRight: (t ?? '').length * CH,
+        fontBoundingBoxAscent: CH,
+        fontBoundingBoxDescent: 2,
+      }),
+    }),
+  });
+});
 
 interface Placed { x: number; y: number; text: string }
 
@@ -220,5 +265,89 @@ describe('bracket lift', () => {
     });
     expect(c.querySelector('svg')).not.toBeNull();
     expect(matching(c, BRACKET).length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * Regression for the tempo name/bpm overlap (drawTempoName + measureTempoNameWidth).
+ *
+ * A tempo carrying BOTH a name and a bpm rendered garbled: VexFlow's StaveTempo
+ * chains the "(quarter = N)" metronome group off getWidth() of the name,
+ * measured on a detached canvas whose font diverges from the SVG render font in
+ * the headless env.  When it under-measured, the metronome overprinted the end
+ * of the name and the leading "(" was lost -- "Andante con moto" + 92 came out
+ * as "Andanteconmoto(quarter =92)".  The fix hand-draws the NAME as a d3 overlay
+ * and hands ONLY the parenthesised metronome to VexFlow, positioned just right
+ * of the measured name.  Name-only and bpm-only keep the single VexFlow path.
+ *
+ * These live here (not in a snapshot suite) because the DOM-materialising d3
+ * stub + real measurement canvas above make the overlay text and its x
+ * observable, which is exactly what an overlap check needs.
+ */
+describe('tempo name + metronome split (name/bpm overlap regression)', () => {
+  const CH = 8; // matches the beforeAll measurement canvas + the overlay's fallback width
+
+  const nameNode = (c: HTMLElement, name: string) =>
+    placed(c).find((p) => p.text === name);
+  const bpmNode = (c: HTMLElement, bpm: string, name: string) =>
+    placed(c).find((p) => p.text !== name && p.text.includes(bpm));
+
+  it('draws the name as its own clean text node, not fused with the metronome', async () => {
+    const c = await draw({
+      type: 'music', clef: 'treble', timeSignature: '4/4',
+      notes: NOTES4,
+      tempo: { name: 'Andante con moto', duration: 'q', bpm: 92 },
+    });
+    const name = nameNode(c, 'Andante con moto');
+    const bpm = bpmNode(c, '92', 'Andante con moto');
+    // The name survives verbatim (before the fix it was fused into
+    // "Andanteconmoto(...)"), and the metronome is a distinct node.
+    expect(name).toBeDefined();
+    expect(bpm).toBeDefined();
+  });
+
+  it('places the metronome clear to the right of the name (no overprint)', async () => {
+    const c = await draw({
+      type: 'music', clef: 'treble', timeSignature: '4/4',
+      notes: NOTES4,
+      tempo: { name: 'Andante con moto', duration: 'q', bpm: 92 },
+    });
+    const name = nameNode(c, 'Andante con moto')!;
+    const bpm = bpmNode(c, '92', 'Andante con moto')!;
+    expect(bpm.x).toBeGreaterThan(name.x);
+    // Well past the name's midpoint -- the bug put the metronome at (or before)
+    // the name's own x, overprinting it.
+    expect(bpm.x).toBeGreaterThanOrEqual(name.x + 'Andante con moto'.length * CH * 0.5);
+  });
+
+  it('splits a short name + bpm the same way', async () => {
+    const c = await draw({
+      type: 'music', clef: 'treble', timeSignature: '4/4',
+      notes: NOTES4,
+      tempo: { name: 'Allegro', duration: 'q', bpm: 120 },
+    });
+    const name = nameNode(c, 'Allegro')!;
+    const bpm = bpmNode(c, '120', 'Allegro')!;
+    expect(name).toBeDefined();
+    expect(bpm).toBeDefined();
+    expect(bpm.x).toBeGreaterThan(name.x);
+  });
+
+  it('renders a name-only tempo (no metronome digits)', async () => {
+    const c = await draw({
+      type: 'music', clef: 'treble', timeSignature: '4/4',
+      notes: NOTES4,
+      tempo: { name: 'Adagio' },
+    });
+    expect(nameNode(c, 'Adagio')).toBeDefined();
+  });
+
+  it('renders a bpm-only tempo (metronome present, no name)', async () => {
+    const c = await draw({
+      type: 'music', clef: 'treble', timeSignature: '4/4',
+      notes: NOTES4,
+      tempo: { duration: 'q', bpm: 120 },
+    });
+    expect(placed(c).some((p) => p.text.includes('120'))).toBe(true);
   });
 });

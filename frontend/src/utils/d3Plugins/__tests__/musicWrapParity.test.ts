@@ -59,6 +59,33 @@ const makeD3 = () => {
 const stripVolatileIds = (markup: string): string =>
   markup.replace(/vf-auto\d+/g, 'vf-auto');
 
+// Install a VexFlow text-measurement canvas.  Bare `npx jest` does not load
+// CRA's setupTests.ts, so VexFlow's measurement canvas resolves to jsdom's
+// unimplemented getContext and every glyph width is 0 -- which shifts every
+// coordinate in the serialized SVG and so breaks these byte-exact layout
+// snapshots (and throws in a trill's Vibrato constructor).  Provide the
+// measurement canvas through VexFlow's own API so the geometry these snapshots
+// pin is the faithful one, matching how the committed baseline was recorded.
+beforeAll(() => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { Element } = require('vexflow');
+  const CH = 8;
+  Element.setTextMeasurementCanvas({
+    getContext: () => ({
+      font: '',
+      measureText: (t: string) => ({
+        width: (t ?? '').length * CH,
+        actualBoundingBoxAscent: CH,
+        actualBoundingBoxDescent: 2,
+        actualBoundingBoxLeft: 0,
+        actualBoundingBoxRight: (t ?? '').length * CH,
+        fontBoundingBoxAscent: CH,
+        fontBoundingBoxDescent: 2,
+      }),
+    }),
+  });
+});
+
 const renderWith = async (fn: any, spec: MusicSpec, dark = false) => {
   const container = document.createElement('div');
   document.body.appendChild(container);

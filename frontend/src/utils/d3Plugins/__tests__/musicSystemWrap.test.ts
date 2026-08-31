@@ -39,17 +39,31 @@ import {
   type MusicMeasure, type MusicSpec,
 } from '../musicPlugin';
 
-const d3Stub = {
-  select: () => ({
-    append: () => {
-      const chain: any = {};
-      chain.attr = () => chain;
-      chain.style = () => chain;
-      chain.text = () => chain;
-      return chain;
-    },
-  }),
+// Materialise overlay layers into the DOM so hand-drawn marks (tempo name,
+// staff labels, measure numbers, ...) are observable by glyphs()/count helpers.
+// The earlier no-op chain discarded every overlay <text>, which meant a mark
+// drawn as an overlay -- such as the split-out tempo NAME -- could not be
+// counted.  Overlay text carries no notehead/clef codepoints, so the note and
+// system counts (which match PUA glyphs) are unaffected.
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const makeSel = (node: any): any => {
+  const sel: any = {};
+  sel.append = (tag: string) => {
+    const child = document.createElementNS(SVG_NS, tag);
+    if (node && typeof node.appendChild === 'function') node.appendChild(child);
+    return makeSel(child);
+  };
+  sel.attr = (k: string, v: any) => {
+    if (node && typeof node.setAttribute === 'function') node.setAttribute(k, String(v));
+    return sel;
+  };
+  sel.text = (t: any) => { if (node) node.textContent = String(t); return sel; };
+  sel.style = () => sel;
+  sel.classed = () => sel;
+  sel.html = () => sel;
+  return sel;
 };
+const d3Stub = { select: (el: any) => makeSel(el) };
 
 let warnSpy: jest.SpyInstance;
 beforeEach(() => { warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {}); });
@@ -61,6 +75,33 @@ const draw = async (spec: MusicSpec) => {
   await renderMusicSpec(container, spec, false, d3Stub);
   return container;
 };
+
+// Install a VexFlow text-measurement canvas.  Bare `npx jest` does not load
+// CRA's setupTests.ts, so VexFlow's measurement canvas resolves to jsdom's
+// unimplemented getContext: glyph widths are 0 (fatal for a trill's Vibrato,
+// whose constructor divides by the glyph width) and positions degenerate.
+// Provide the measurement canvas through VexFlow's own API so trills render
+// and metrics are faithful; values are approximate, which suffices for the
+// wrap/relative-position assertions here.
+beforeAll(() => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { Element } = require('vexflow');
+  const CH = 8;
+  Element.setTextMeasurementCanvas({
+    getContext: () => ({
+      font: '',
+      measureText: (t: string) => ({
+        width: (t ?? '').length * CH,
+        actualBoundingBoxAscent: CH,
+        actualBoundingBoxDescent: 2,
+        actualBoundingBoxLeft: 0,
+        actualBoundingBoxRight: (t ?? '').length * CH,
+        fontBoundingBoxAscent: CH,
+        fontBoundingBoxDescent: 2,
+      }),
+    }),
+  });
+});
 
 const glyphs = (c: HTMLElement) =>
   Array.from(c.querySelectorAll('text')).map((t) => t.textContent ?? '').join('');
@@ -458,9 +499,15 @@ describe('wrapped-score engraving', () => {
     measures[0].notes[0] = { ...measures[0].notes[0], dynamic: 'pp' };
     measures[2].notes[0] = { ...measures[2].notes[0], dynamic: 'ff' };
     const c = await draw({ type: 'music', timeSignature: '4/4', measures });
-    const text = glyphs(c);
-    expect((text.match(/\ue520/g) ?? []).length).toBe(2);   // pp
-    expect((text.match(/\ue522/g) ?? []).length).toBe(2);   // ff
+    // Dynamics are now a below-staff d3 overlay drawn as PLAIN text ("pp"/"ff"),
+    // not VexFlow per-letter SMuFL glyphs (U+E520/E522).  The DOM-capturing stub
+    // materialises the overlay, so assert the two marks survive the wrap as
+    // their literal strings -- one "pp" (bar 1) and one "ff" (bar 3).
+    const dynTexts = Array.from(c.querySelectorAll('text'))
+      .map((t) => t.textContent ?? '')
+      .filter((t) => t === 'pp' || t === 'ff');
+    expect(dynTexts.filter((t) => t === 'pp').length).toBe(1);
+    expect(dynTexts.filter((t) => t === 'ff').length).toBe(1);
     expect(noteheads(c)).toBe(24);
   });
 
@@ -474,8 +521,13 @@ describe('wrapped-score engraving', () => {
     const flat = await draw({
       type: 'music', timeSignature: '4/4', measures, maxSystemWidth: 99999,
     });
+    // Dynamics are overlay text now; collect the literal marks (not SMuFL
+    // letter-glyphs) and assert wrapping does not change WHICH marks appear.
     const dynGlyphs = (c: HTMLElement) =>
-      (glyphs(c).match(/[\ue520\ue522]/g) ?? []).sort().join('');
+      Array.from(c.querySelectorAll('text'))
+        .map((t) => t.textContent ?? '')
+        .filter((t) => t === 'pp' || t === 'ff')
+        .sort().join(',');
     expect(dynGlyphs(wrapped)).toBe(dynGlyphs(flat));
     expect(dynGlyphs(wrapped)).not.toBe('');
   });
