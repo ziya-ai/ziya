@@ -9,7 +9,11 @@ import { v4 as uuidv4 } from "uuid";
 import { db } from '../utils/db';
 import * as syncMerge from '../utils/syncMerge';
 import { detectIncompleteResponse } from '../utils/responseUtils';
-import { message } from 'antd';
+// `uiMessage` alias for scopes where a local `message` parameter shadows the
+// antd export (addMessageToConversation takes a Message argument named
+// `message`).  One import statement, to satisfy no-duplicate-imports.
+import { message, message as uiMessage } from 'antd';
+import { recoverShellMessages, isKnownCompleteShell } from '../utils/shellRecovery';
 import { useTheme } from './ThemeContext';
 import { useConfig } from './ConfigContext';
 import { useProject } from './ProjectContext';
@@ -23,12 +27,8 @@ import { gcEmptyConversations, purgeExpiredConversations } from '../utils/retent
 import { useDelegateStreaming } from '../hooks/useDelegateStreaming';
 import { folderIsEffectivelyGlobal, conversationIsEffectivelyGlobal } from '../utils/folderUtil';
 import type { ThinkingBlockData } from '../utils/thinkingBlocks';
+import { PLACEHOLDER_TITLES, shouldDeriveTitleFromMessage, deriveTitleFromContent } from '../utils/conversationTitle';
 const TERMINAL_PLAN_STATUSES = new Set(['completed', 'completed_partial', 'cancelled']);
-
-// Titles that are placeholders rather than meaningful (auto- or user-set)
-// names.  Used by the sync/save merge guards to avoid downgrading a resolved
-// title back to a placeholder when in-memory _version is newer.
-const PLACEHOLDER_TITLES = new Set(['New Conversation', 'New Ephemeral Chat', 'Loading...', 'Untitled', '']);
 
 /** Return true when the server folder should replace the local copy. */
 function serverFolderWins(local: ConversationFolder | undefined, server: ConversationFolder): boolean {
@@ -204,6 +204,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const [userHasScrolled, setUserHasScrolled] = useState(false);
     const [currentConversationId, setCurrentConversationId] = useState<string>('');
     const currentMessagesRef = useRef<Message[]>([]);
+    // Which conversation currentMessagesRef's contents belong to.  The
+    // stale-ref stability branches in the currentMessages memo may only
+    // return the ref while it still describes the conversation named by
+    // currentConversationId — presenting another conversation's messages
+    // under a new id is how a send packages one conversation's context
+    // under another conversation's target (the cross-project content leak).
+    const currentMessagesOwnerRef = useRef<string>('');
     const currentConversationRef = useRef<string>('');
     const conversationIdRestored = useRef(false);
 
@@ -1071,6 +1078,11 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     // Buffer messages that arrive while a shell conversation is loading its full history.
     const pendingShellMessages = useRef<Map<string, Message[]>>(new Map());
+    // Conversations with a shell recovery in flight.  Tracked separately from
+    // pendingShellMessages because a failed recovery now HOLDS its queued
+    // messages: deriving "already loading" from a non-empty queue would let
+    // held messages permanently block the retry that would deliver them.
+    const shellRecoveryInFlight = useRef<Set<string>>(new Set());
 
     const addMessageToConversation = useCallback((message: Message, targetConversationId: string, isNonCurrentConversation?: boolean) => {
         // CRITICAL: Always use targetConversationId - never fall back to currentConversationId
@@ -1116,42 +1128,85 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             // SHELL_GUARD: If the conversation is still a shell (only first+last
             // messages loaded), appending a new message would destroy all
-            // intermediate history.  Attempt a synchronous recovery from IDB.
-            if (existingConversation && (existingConversation as any)._isShell) {
-                const fullCount = (existingConversation as any)._fullMessageCount || 0;
-                if (fullCount > existingConversation.messages.length) {
-                    console.error(
-                        `🚨 SHELL_GUARD: addMessage called on shell conversation ${conversationId.substring(0, 8)} ` +
-                        `(has ${existingConversation.messages.length} messages, full count ${fullCount}). ` +
-                        `Queueing lazy-load before message append.`
-                    );
-                    // Queue this message so it isn't lost during the async load.
-                    const queue = pendingShellMessages.current;
-                    const pending = queue.get(conversationId) ?? [];
-                    const alreadyLoading = pending.length > 0;
-                    queue.set(conversationId, [...pending, message]);
+            // intermediate history.  Recover the full body before appending.
+            //
+            // Arms unless the record carries POSITIVE proof of completeness.
+            // The old condition (`_fullMessageCount || 0` > length) read both
+            // "count unknown" and "count 0" as complete, so a truncated shell
+            // fell through to a blind append AND kept its shell markers — and a
+            // marker-bearing record is dropped by every nonShells IDB write
+            // filter, so it never persisted.  The next sync then found no local
+            // record, took shouldFetchFull's `!local` branch, saw the id in
+            // recentlyFetchedFullIds, and never pulled again: the open
+            // conversation stayed pinned to a stale message list all session.
+            if (existingConversation && (existingConversation as any)._isShell
+                && !isKnownCompleteShell(existingConversation as any)) {
+                const fullCount = (existingConversation as any)._fullMessageCount;
+                console.error(
+                    `🚨 SHELL_GUARD: addMessage called on shell conversation ${conversationId.substring(0, 8)} ` +
+                    `(has ${existingConversation.messages.length} messages, full count ${fullCount ?? 'unknown'}). ` +
+                    `Queueing recovery before message append.`
+                );
+                // Queue this message so it isn't lost during the async recovery.
+                const queue = pendingShellMessages.current;
+                const pending = queue.get(conversationId) ?? [];
+                queue.set(conversationId, [...pending, message]);
 
-                    // Only kick off one IDB load per conversation — subsequent
-                    // messages while the load is in-flight just join the queue.
-                    if (!alreadyLoading) {
-                    (db.getConversation(conversationId)).then(full => {
+                // One recovery per conversation at a time.
+                const inFlight = shellRecoveryInFlight.current;
+                if (!inFlight.has(conversationId)) {
+                    inFlight.add(conversationId);
+                    const localCount = existingConversation.messages.length;
+                    const pid = (existingConversation as any).projectId || currentProject?.id;
+                    recoverShellMessages(conversationId, pid, localCount, {
+                        getIdbRecord: (id) => db.getConversation(id),
+                        getServerChat: (p, id) => syncApi.getChat(p, id),
+                    }).then(outcome => {
+                        if (outcome.action === 'hold') {
+                            // These messages exist NOWHERE else — not in IDB,
+                            // not on the server.  Appending them onto a
+                            // possibly-truncated array is not a safe fallback:
+                            // the push filter treats a fresher local _version as
+                            // authoritative, so a 3-message local record would
+                            // overwrite a 37-message server record.  Hold them
+                            // and say so; a later send retries the recovery.
+                            console.error(
+                                `🚨 SHELL_GUARD: recovery unavailable for ${conversationId.substring(0, 8)} ` +
+                                `(${outcome.reason}) — ${(queue.get(conversationId) ?? []).length} message(s) held`
+                            );
+                            uiMessage.error('Could not load the full conversation history — this message was not saved. Reopen the conversation and try again.');
+                            return;
+                        }
                         const toApply = queue.get(conversationId) ?? [];
                         queue.delete(conversationId);
-                        if (full && full.messages && full.messages.length > existingConversation.messages.length) {
-                            setConversations(prev => prev.map(c =>
-                                c.id === conversationId
-                                    ? { ...c, messages: [...full.messages, ...toApply], _isShell: false, _fullMessageCount: undefined, _version: Date.now() }
-                                    : c
-                            ));
-                        }
-                    }).catch(e => console.error('Shell recovery failed:', e));
-                    }
-                    // Return unchanged — the async recovery will apply all queued messages
-                    return prevConversations;
+                        setConversations(prev => prev.map(c => {
+                            if (c.id !== conversationId) return c;
+                            const base = outcome.action === 'adopt' ? outcome.messages : c.messages;
+                            // The recovered body can already contain a queued
+                            // message (another window pushed it), so dedupe on
+                            // role+content exactly as DUPLICATE_GUARD does.
+                            const fresh = toApply.filter(m => !base.some(
+                                b => b.role === m.role && b.content === m.content));
+                            return {
+                                ...c, messages: [...base, ...fresh],
+                                _isShell: false, _fullMessageCount: undefined,
+                                _version: Date.now(),
+                            };
+                        }));
+                    }).catch(e => console.error('Shell recovery failed:', e))
+                      .finally(() => { inFlight.delete(conversationId); });
                 }
+                // Return unchanged — the recovery applies all queued messages.
+                return prevConversations;
             }
 
-            const isFirstMessage = existingConversation?.messages.length === 0;
+            // Derive the title from the first *human* message.  Utility
+            // actions (e.g. a model change) can insert system messages into a
+            // fresh conversation before the user's first query, so an
+            // empty-messages check would leave the title stuck at
+            // "New Conversation".
+            const deriveTitle = shouldDeriveTitleFromMessage(
+                message, existingConversation?.messages, existingConversation?.title);
 
             // DUPLICATE GUARD: If a message with the same role + content already
             // exists in the conversation, skip it.  This breaks feedback loops
@@ -1195,9 +1250,18 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             hasUnreadResponse: shouldMarkUnread,
                             lastAccessedAt: Date.now(),
                             _version: Date.now(),
+                            // Reaching here means the SHELL_GUARD above did not
+                            // arm: this record is either not a shell, or is a
+                            // shell with positive proof of completeness.  Its
+                            // messages are therefore full, and keeping the shell
+                            // markers would exclude it from every nonShells IDB
+                            // write — never persisting, and leaving the next sync
+                            // with no local record to compare the server against.
+                            _isShell: false,
+                            _fullMessageCount: undefined,
                             // Preserve existing folderId — never overwrite on message add.
                             // (Fixes bug where viewing a swarm delegate re-rooted new conversations.)
-                            title: isFirstMessage && message.role === 'human' ? message.content.slice(0, dynamicTitleLength) + (message.content.length > dynamicTitleLength ? '...' : '') : conv.title
+                            title: deriveTitle ? deriveTitleFromContent(message.content, dynamicTitleLength) : conv.title
                         };
                     }
                     // BUGFIX: Return same reference for unchanged conversations to prevent unnecessary re-renders
@@ -1206,7 +1270,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 : [...prevConversations, {
                     id: conversationId,
                     title: message.role === 'human'
-                        ? message.content.slice(0, dynamicTitleLength) + (message.content.length > dynamicTitleLength ? '...' : '')
+                        ? deriveTitleFromContent(message.content, dynamicTitleLength)
                         : 'New Conversation',
                     projectId: currentProject?.id,
                     messages: [message],
@@ -2176,7 +2240,23 @@ export function ChatProvider({ children }: ChatProviderProps) {
     // which scheduled a new React commit even when returning prev,
     // creating a 33 commits/sec render loop.
     const currentMessages = useMemo(() => {
-        if (!currentConversationId || conversations.length === 0) return currentMessagesRef.current;
+        // The stale ref may be returned for stability ONLY while it still
+        // belongs to the conversation being asked about.  During a project
+        // switch, PROJECT_CLEAR empties `conversations` while the preload
+        // re-points currentConversationId; returning the old ref in that
+        // window keeps the PREVIOUS conversation's transcript on screen
+        // under the NEW id, and a send fired there packages the previous
+        // conversation's messages under the new target — the cross-project
+        // conversation leak.
+        const refIsForeign = currentMessagesOwnerRef.current !== '' &&
+            currentMessagesOwnerRef.current !== currentConversationId;
+        if (!currentConversationId || conversations.length === 0) {
+            if (refIsForeign) {
+                currentMessagesRef.current = [];
+                currentMessagesOwnerRef.current = '';
+            }
+            return currentMessagesRef.current;
+        }
         const conv = conversations.find(c => c.id === currentConversationId);
         if (!conv) {
             // Conversation is not present in state — filtered/purged by sync,
@@ -2185,9 +2265,17 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // conversation's messages, and a subsequent send would package them
             // under the orphaned conversation id (wrong context, wrong target).
             if (currentMessagesRef.current.length !== 0) currentMessagesRef.current = [];
+            currentMessagesOwnerRef.current = '';
             return currentMessagesRef.current;
         }
-        if (!conv.messages) return currentMessagesRef.current;
+        if (!conv.messages) {
+            if (refIsForeign) {
+                currentMessagesRef.current = [];
+                currentMessagesOwnerRef.current = '';
+            }
+            return currentMessagesRef.current;
+        }
+        currentMessagesOwnerRef.current = currentConversationId;
         const messages = conv.messages;
         const prev = currentMessagesRef.current;
         // Fast path: identical array reference
@@ -3509,13 +3597,16 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     // here (the sidebar renders shells, and search is server-side
                     // via /chats/search); anything left a shell hydrates on open.
                     const EAGER_HYDRATION_CAP = 25;
-                    let hydrationTargets = eligibleHydration;
-                    if (eligibleHydration.length > EAGER_HYDRATION_CAP) {
-                        hydrationTargets = eligibleHydration
-                            .slice()
-                            .sort((a, b) => ((mergedMap.get(b) as any)?.lastAccessedAt || 0)
-                                          - ((mergedMap.get(a) as any)?.lastAccessedAt || 0))
-                            .slice(0, EAGER_HYDRATION_CAP);
+                    // Cap/ordering/active-exemption rules extracted to
+                    // syncMerge.selectHydrationTargets so they are unit-testable.
+                    const hydrationSelection = syncMerge.selectHydrationTargets(
+                        eligibleHydration,
+                        EAGER_HYDRATION_CAP,
+                        currentConversationRef.current,
+                        (id) => (mergedMap.get(id) as any)?.lastAccessedAt || 0,
+                    );
+                    const hydrationTargets = hydrationSelection.targets;
+                    if (hydrationSelection.deferred.length > 0) {
                         // Mark the deferred IDs as fetched-this-session.  Shells are
                         // filtered out of the IDB write (see the !_isShell filters), so
                         // on the next poll localMap has no entry and shouldFetchFull's
@@ -3523,11 +3614,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         // because the ordering key (lastAccessedAt) doesn't change, it
                         // would re-request the same 25 forever while the rest never
                         // hydrate.  Marking them keeps the deferral stable; they
-                        // hydrate on open (the _isShell paths in selectConversation).
-                        const deferredIds = eligibleHydration.slice(EAGER_HYDRATION_CAP);
-                        const hydratingNow = new Set(hydrationTargets);
-                        for (const id of deferredIds) {
-                            if (!hydratingNow.has(id)) recentlyFetchedFullIds.current.add(id);
+                        // hydrate on open (the _isShell paths in selectConversation)
+                        // -- except the ACTIVE conversation, force-included above
+                        // precisely because "on open" never comes for the chat that
+                        // is already open.
+                        for (const id of hydrationSelection.deferred) {
+                            recentlyFetchedFullIds.current.add(id);
                         }
                         console.log(`⏱️ SYNC[${projectId.substring(0, 8)}]: deferring ${eligibleHydration.length - hydrationTargets.length} of ${eligibleHydration.length} shells to on-open hydration`);
                     }
@@ -3770,8 +3862,16 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                 ? await db.getConversation(activeId)
                                 : null;
                             const fcMsgs = fullConv?.messages ?? [];
-                            if (fullConv && fcMsgs.length > (activeConv.messages?.length || 0)) {
-                                if (isStale()) return;
+                            // No `return` anywhere in this `finally`.  A return here
+                            // skips the statements below it in the same block —
+                            // including the cleanup at the bottom, and specifically
+                            // `periodicSyncInFlightRef.current = false`, which is
+                            // armed before the `try` and cleared ONLY there.  Left
+                            // armed, every later 30s tick bails at the in-flight
+                            // guard and cross-instance sync silently stops for the
+                            // life of the page.  Fold the check into the condition.
+                            if (fullConv && fcMsgs.length > (activeConv.messages?.length || 0)
+                                && !isStale()) {
                                 React.startTransition(() => {
                                     setConversations(prev => prev.map(c =>
                                         c.id === activeId
@@ -3780,6 +3880,36 @@ export function ChatProvider({ children }: ChatProviderProps) {
                                     ));
                                 });
                                 console.log(`✅ POST_SYNC: Re-hydrated active conversation with ${fcMsgs.length} messages`);
+                            }
+                            // IDB had nothing usable.  "No local record" is merely
+                            // slow for an arbitrary shell but fatal for the active
+                            // one: it is the record on screen, and (unlike every
+                            // other shell) it is never re-opened, so the on-open
+                            // hydration path never runs.  A missing or silently
+                            // failed IDB write would otherwise pin the view to a
+                            // stale message list for the life of the session.
+                            const localMsgCount = activeConv.messages?.length || 0;
+                            const idbUnusable = !fullConv || fcMsgs.length <= localMsgCount;
+                            const activePid = (activeConv as any).projectId || projectId;
+                            if (idbUnusable && activePid && !isStale()) {
+                                const srv = await syncApi.getChat(activePid, activeId);
+                                const srvMsgs = srv?.messages ?? [];
+                                if (srvMsgs.length > localMsgCount && !isStale()) {
+                                    React.startTransition(() => {
+                                        setConversations(prev => prev.map(c =>
+                                            c.id === activeId
+                                                ? {
+                                                    ...c, messages: srvMsgs,
+                                                    _isShell: false,
+                                                    _fullMessageCount: undefined,
+                                                    _version: (srv as any)?._version || Date.now(),
+                                                }
+                                                : c
+                                        ));
+                                    });
+                                    console.warn('⚠️ POST_SYNC: active conversation had no usable IDB record — '
+                                        + 'rehydrated ' + srvMsgs.length + ' messages from server');
+                                }
                             }
                         } catch (e) {
                             console.warn('⚠️ POST_SYNC: Active conversation re-hydration failed:', e);
