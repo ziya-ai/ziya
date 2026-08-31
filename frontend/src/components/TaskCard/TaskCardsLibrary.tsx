@@ -12,7 +12,7 @@ import {
 } from 'antd';
 import {
   PlusOutlined, DeleteOutlined, CopyOutlined, SearchOutlined,
-  PlayCircleOutlined, StopOutlined, ReloadOutlined,
+  PlayCircleOutlined, StopOutlined, ReloadOutlined, InboxOutlined,
   MoreOutlined, PushpinOutlined, FolderOutlined, FolderAddOutlined,
 } from '@ant-design/icons';
 import { useProject } from '../../context/ProjectContext';
@@ -24,6 +24,8 @@ import { taskCardApi, type CardScopeStatus } from '../../services/taskCardApi';
 import { cancelTaskRun, listTaskRuns } from '../../services/taskRunApi';
 import { createBinding } from '../../services/taskBindingApi';
 import { TaskCardEditor } from './TaskCardEditor';
+import { LessonsPanel } from './LessonsPanel';
+import type { LessonCardSummary } from '../../services/taskCardApi';
 import { BlockScopeButton } from './BlockScopeButton';
 import { DeckRunList } from './DeckRunList';
 import {
@@ -168,6 +170,12 @@ export const TaskCardsLibrary: React.FC<Props> = ({
 
   // cardId -> escalation/signature status, for the deck-list badge.
   const [scopeMap, setScopeMap] = useState<Record<string, CardScopeStatus>>({});
+
+  // cardId -> self-improvement aggregates (🌱 badge + lessons panel
+  // gate).  ONE request for the whole deck (see the run-index comment
+  // below for why per-card fetching is the wrong shape here).
+  const [lessonsMap, setLessonsMap] =
+    useState<Record<string, LessonCardSummary>>({});
 
   // cardId -> that card's runs, newest first.  One project-wide request
   // rather than a fetch per card: the deck opens with every card visible,
@@ -327,6 +335,15 @@ export const TaskCardsLibrary: React.FC<Props> = ({
     } catch (e) {
       console.debug('TaskCardsLibrary: run list fetch failed', e);
       setRunIndex(new Map());
+    }
+    // Lesson aggregates are supplementary the same way runs are: a
+    // deck without 🌱 badges is degraded, not broken, so a failure
+    // here must not take the card list down with it.
+    try {
+      setLessonsMap((await taskCardApi.lessonsSummary(projectId)).cards);
+    } catch (e) {
+      console.debug('TaskCardsLibrary: lessons summary fetch failed', e);
+      setLessonsMap({});
     }
     try {
       const list = await taskCardApi.list(projectId);
@@ -501,13 +518,17 @@ export const TaskCardsLibrary: React.FC<Props> = ({
     setNewFolderName('');
   }, [newFolderName, newFolderModalCardId, setCardFolder]);
 
-  // Shared launch path: persist the draft (the binding endpoint needs a
+  // Shared bind path: persist the draft (the binding endpoint needs a
   // durable card to reference), bind the card to targetChatId, surface the
-  // inline tile, flag the conversation as running, and close the deck so the
-  // user lands on the conversation watching the tile.  Both launch buttons
-  // funnel through here — every launch now targets a conversation (the old
-  // unbound launchTaskCard path was removed).
-  const launchToChat = useCallback(async (targetChatId: string, anchor: string | null) => {
+  // inline tile, and close the deck so the user lands on the conversation.
+  // All four buttons funnel through here — every bind targets a
+  // conversation (the old unbound launchTaskCard path was removed).
+  //
+  // `staged` copies the card in WITHOUT running it: no run exists, so
+  // there is no run to track and no running-task gear to raise.
+  const launchToChat = useCallback(async (
+    targetChatId: string, anchor: string | null, staged = false,
+  ) => {
     if (!draft) return;
     await taskCardApi.update(projectId, draft.id, {
       name: draft.name, description: draft.description,
@@ -516,15 +537,18 @@ export const TaskCardsLibrary: React.FC<Props> = ({
     const resp = await createBinding(projectId, targetChatId, {
       card_id: draft.id,
       anchor_message_id: anchor,
+      staged,
     });
-    setActiveRunId(resp.run.id);
+    if (resp.run) setActiveRunId(resp.run.id);
     // Notify the chat's useTaskBindings hook so the inline tile renders
     // immediately — same event TaskCardLaunchButton dispatches.
     window.dispatchEvent(new CustomEvent('task-binding-created', {
-      detail: { bindingId: resp.binding.id, runId: resp.run.id },
+      detail: { bindingId: resp.binding.id, runId: resp.run?.id ?? null },
     }));
     // Gear affordance in the conversation list without waiting for the run.
-    addRunningTaskConversation(targetChatId);
+    // Skipped when staged: claiming a running task with no run behind it
+    // leaves a gear the reconciler has no terminal state to clear.
+    if (!staged) addRunningTaskConversation(targetChatId);
     onClose();
   }, [projectId, draft, addRunningTaskConversation, onClose]);
 
@@ -581,6 +605,32 @@ export const TaskCardsLibrary: React.FC<Props> = ({
       }
     });
   }, [projectId, draft, chatId, anchorMessageId, launchToChat, confirmIfUnsigned]);
+
+  // Copy without running.  Deliberately NOT gated by confirmIfUnsigned:
+  // nothing executes, so there is no clamp to warn about — and staging is
+  // the recommended route for an unsigned card, since the staged tile
+  // carries the ziya-approve command and its own Run gate.
+  const handleStageCurrent = useCallback(async () => {
+    if (!projectId || !draft || !chatId) return;
+    try {
+      await launchToChat(chatId, anchorMessageId ?? null, true);
+      message.success('Task card copied into current conversation (not started)');
+    } catch (e) {
+      message.error(`Copy failed: ${String(e)}`);
+    }
+  }, [projectId, draft, chatId, anchorMessageId, launchToChat]);
+
+  const handleStageNew = useCallback(async () => {
+    if (!projectId || !draft) return;
+    try {
+      const newId = await startNewChat(null, draft.name);
+      if (!newId) { message.error('Could not create a new conversation'); return; }
+      await launchToChat(newId, null, true);
+      message.success('Task card copied into new conversation (not started)');
+    } catch (e) {
+      message.error(`Copy failed: ${String(e)}`);
+    }
+  }, [projectId, draft, startNewChat, launchToChat]);
 
   const handleLaunchNew = useCallback(async () => {
     if (!projectId || !draft) return;
@@ -772,6 +822,23 @@ export const TaskCardsLibrary: React.FC<Props> = ({
             );
           })()}
           {(() => {
+            // 🌱 learning badge: cards with self-improvement history.
+            // Edits-applied is the number that matters (the card's text
+            // has durably changed); verdict-only history still badges,
+            // dimmer, so an observe-only trial is visible too.
+            const ls = lessonsMap[c.id];
+            if (!ls || ls.count === 0) return null;
+            return (
+              <Tooltip title={ls.edits_applied > 0
+                ? `${ls.edits_applied} self-revision(s) applied · ${ls.count} judge verdict(s) — click the card, then open “Lessons learned”`
+                : `${ls.count} judge verdict(s), no edits applied yet`}>
+                <Tag color="cyan" style={{ marginInlineEnd: 0, fontSize: 10, lineHeight: '16px', padding: '0 5px', opacity: ls.edits_applied > 0 ? 1 : 0.7 }}>
+                  🌱 {ls.edits_applied > 0 ? ls.edits_applied : ls.count}
+                </Tag>
+              </Tooltip>
+            );
+          })()}
+          {(() => {
             // Live / needs-attention badges.  Both can be present at
             // once — a retry running while the failed attempt it came
             // from is still on record — so they are separate badges
@@ -944,6 +1011,21 @@ export const TaskCardsLibrary: React.FC<Props> = ({
                     Launch in new conversation
                   </Button>
                 </Tooltip>
+                <Tooltip title={chatId
+                  ? 'Copy this card into the current conversation without running it — the tile\u2019s Run button starts it later'
+                  : 'No current conversation — use "Copy to new conversation"'}>
+                  <span>
+                    <Button icon={<InboxOutlined />} onClick={handleStageCurrent}
+                      disabled={!chatId}>
+                      Copy to conversation
+                    </Button>
+                  </span>
+                </Tooltip>
+                <Tooltip title="Create a new conversation named after this card and copy the card in without running it">
+                  <Button icon={<InboxOutlined />} onClick={handleStageNew}>
+                    Copy to new conversation
+                  </Button>
+                </Tooltip>
                 {activeRun?.status === 'running' && (
                   <Button danger icon={<StopOutlined />} onClick={handleCancel}>Cancel</Button>
                 )}
@@ -965,6 +1047,22 @@ export const TaskCardsLibrary: React.FC<Props> = ({
                 projectId={projectId}
                 cardId={selectedId}
                 root={draft?.root}
+              />
+              {/* The card's learning history.  Sits with CalleeHoldPanel
+                  above the editor for the same reason: it is a fact about
+                  the card's current state, not its definition — the text
+                  in the editor below may exist BECAUSE of a revision
+                  listed here.  onReverted reloads the card so the editor
+                  shows the restored text, and refreshes the ledger
+                  aggregates so the badge count stays honest. */}
+              <LessonsPanel
+                projectId={projectId}
+                cardId={selectedId}
+                lessonCount={selectedId ? (lessonsMap[selectedId]?.count ?? 0) : 0}
+                onReverted={() => {
+                  if (selectedId) void loadCard(selectedId);
+                  void reload();
+                }}
               />
               <div style={{ flex: 1, overflow: 'auto', border: '1px solid rgba(128,128,128,0.2)', borderRadius: 4, padding: 8 }}>
                 <TaskCardEditor

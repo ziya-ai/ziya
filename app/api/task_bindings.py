@@ -6,8 +6,9 @@ design/task-cards.md §UX shape.
 
 Routes:
   - GET    /chats/{chat_id}/task-bindings
-  - POST   /chats/{chat_id}/task-bindings       (launches + binds atomically)
+  - POST   /chats/{chat_id}/task-bindings       (binds; launches unless staged)
   - DELETE /chats/{chat_id}/task-bindings/{binding_id}
+  - POST   /chats/{chat_id}/task-bindings/{binding_id}/launch
 """
 
 from fastapi import APIRouter, HTTPException
@@ -52,14 +53,27 @@ class TaskBindingCreateRequest(BaseModel):
     """
     card_id: str
     anchor_message_id: Optional[str] = None
+    # Copy the card into the conversation WITHOUT running it.  The
+    # binding is minted with run_id=None, which the inline tile already
+    # renders as a staged tile with Run/Discard — the same shape /goal
+    # produces.  Staging first is the only way to sign a card's
+    # escalated permissions and then run it from the conversation,
+    # rather than launching clamped to the floor and finding out
+    # mid-run.
+    staged: bool = False
 
 
 class TaskBindingCreateResponse(BaseModel):
-    """Atomic create returns both the binding and the freshly-created
+    """Create returns the binding and, for a launching create, the
     run so the client can start polling immediately without a second
-    round trip."""
+    round trip.
+
+    ``run`` is None for a staged create: nothing has been launched, so
+    there is nothing to poll.  Clients must treat it as optional —
+    reading ``run.id`` unconditionally is the bug this default invites.
+    """
     binding: TaskBinding
-    run: TaskRun
+    run: Optional[TaskRun] = None
 
 
 @router.get("", response_model=List[TaskBinding])
@@ -139,7 +153,10 @@ async def list_task_bindings(project_id: str, chat_id: str) -> List[TaskBinding]
 async def create_task_binding(
     project_id: str, chat_id: str, body: TaskBindingCreateRequest,
 ) -> TaskBindingCreateResponse:
-    """Launch a card and bind it to a chat in one transaction.
+    """Bind a card to a chat, launching it unless ``staged`` is set.
+
+    With ``staged: true`` the card is copied into the conversation and
+    left unlaunched; the tile's Run button (or POST .../launch) starts it.
 
     The chat_id is treated as opaque: the frontend may create a
     conversation locally and launch a task against it before the
@@ -160,17 +177,23 @@ async def create_task_binding(
     if not card_storage.get(body.card_id):
         raise HTTPException(status_code=404, detail="Task card not found")
 
-    run = await _launch_run_for_card(
-        project_id=project_id, card_id=body.card_id,
-        source_conversation_id=chat_id,
-    )
+    run = None
+    if not body.staged:
+        run = await _launch_run_for_card(
+            project_id=project_id, card_id=body.card_id,
+            source_conversation_id=chat_id,
+        )
 
     bindings = TaskBindingStorage(get_project_dir(project_id))
     binding = bindings.create(
-        chat_id=chat_id, card_id=body.card_id, run_id=run.id,
+        chat_id=chat_id, card_id=body.card_id,
+        run_id=run.id if run else None,
         anchor_message_id=body.anchor_message_id,
     )
-    logger.info(f"🔗 Binding {binding.id[:8]} attached card {body.card_id[:8]} → chat {chat_id[:8]}")
+    logger.info(
+        f"🔗 Binding {binding.id[:8]} attached card {body.card_id[:8]} → "
+        f"chat {chat_id[:8]}" + (" (staged, not launched)" if run is None else "")
+    )
     return TaskBindingCreateResponse(binding=binding, run=run)
 
 
