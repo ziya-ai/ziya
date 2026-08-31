@@ -69,9 +69,19 @@ describe('dispatchTaskRunEvent', () => {
       .toEqual({ kind: 'refetch-and-close' });
   });
 
-  it('ignores block_started (no persisted state change)', () => {
+  it('ignores block_started without a planned total', () => {
     expect(dispatchTaskRunEvent({ type: 'block_started', block_id: 'b1' }))
       .toEqual({ kind: 'ignore' });
+  });
+
+  it('refetches on block_started carrying a planned total', () => {
+    // A Repeat(for_each) persists planned_iterations just before this
+    // event, so the snapshot already carries the "m" of the run map's
+    // "n/m" — refetching here shows "0/m" before any iteration lands.
+    expect(dispatchTaskRunEvent({
+      type: 'block_started', block_id: 'b1', block_type: 'repeat',
+      planned: 12,
+    })).toEqual({ kind: 'refetch' });
   });
 
   it('ignores iteration_started', () => {

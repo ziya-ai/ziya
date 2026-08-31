@@ -782,6 +782,17 @@ async def execute_task_block(
     delta_block_id = (
         iter_ctx["block_id"] if iter_ctx and iter_ctx.get("block_id") else block.id
     )
+    # Iteration ordinal for those same deltas.  A parallel Repeat runs N
+    # iterations concurrently under ONE loop block_id, so block_id alone
+    # cannot say which iteration produced a delta — every consumer that
+    # keys on it (the relay's adjacent-delta folding, the frontend's
+    # per-iteration buckets) attributed all N iterations' output to
+    # whichever bucket it matched last, which is why a parallel fan-out
+    # rendered as one active block.  The pair (block_id, index) is the
+    # identity.  None outside a loop iteration.
+    delta_index = (
+        iter_ctx.get("index") if iter_ctx and iter_ctx.get("block_id") else None
+    )
 
     await _emit({
         "type": "task_started",
@@ -823,6 +834,7 @@ async def execute_task_block(
                         "type": "task_text_delta",
                         "run_id": run_id,
                         "block_id": delta_block_id,
+                        "index": delta_index,
                         "content": content,
                         # Server clock, matching every other timestamped
                         # event (task_tool_call, task_progress, run
@@ -840,6 +852,7 @@ async def execute_task_block(
                                 "type": "task_progress",
                                 "run_id": run_id,
                                 "block_id": delta_block_id,
+                                "index": delta_index,
                                 "note": _pnote,
                                 "source": "model",
                                 "ts": time.time(),
@@ -888,6 +901,7 @@ async def execute_task_block(
                     "type": "task_tool_call",
                     "run_id": run_id,
                     "block_id": delta_block_id,
+                    "index": delta_index,
                     "tool_name": chunk.get("tool_name"),
                     "tool_id": chunk.get("tool_id"),
                     "result_preview": (_result or "")[:500] if isinstance(_result, str) else "",
@@ -897,6 +911,7 @@ async def execute_task_block(
                     "type": "task_progress",
                     "run_id": run_id,
                     "block_id": delta_block_id,
+                    "index": delta_index,
                     "note": _note,
                     "ts": time.time(),
                 })
@@ -920,6 +935,7 @@ async def execute_task_block(
                             "type": "task_progress",
                             "run_id": run_id,
                             "block_id": delta_block_id,
+                            "index": delta_index,
                             "note": _abort_note,
                             "level": "error",
                             "ts": time.time(),

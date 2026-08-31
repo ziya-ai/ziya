@@ -71,10 +71,18 @@ def _record(run_id: str, event: Dict[str, Any]) -> None:
 
     if event.get("type") == "task_text_delta":
         block_id = event.get("block_id")
+        index = event.get("index")
         content = event.get("content", "")
-        # Fold into the previous entry if it's a run for the same block.
+        # Fold into the previous entry only when it is a run for the same
+        # block AND the same iteration.  A parallel Repeat interleaves
+        # deltas from several concurrent iterations under one loop
+        # block_id; folding on block_id alone welded them into a single
+        # entry, discarding on replay a distinction the live events
+        # carried.  ``index`` is None outside a loop, so the serial case
+        # folds exactly as before.
         if buf and buf[-1].get("type") == "task_text_delta_run" \
-                and buf[-1].get("block_id") == block_id:
+                and buf[-1].get("block_id") == block_id \
+                and buf[-1].get("index") == index:
             last = buf[-1]
             last["count"] += 1
             last["content"] = last.get("content", "") + content
@@ -83,6 +91,7 @@ def _record(run_id: str, event: Dict[str, Any]) -> None:
         buf.append({
             "type": "task_text_delta_run",
             "block_id": block_id,
+            "index": index,
             "count": 1,
             "content": content,
         })

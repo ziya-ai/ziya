@@ -501,6 +501,28 @@ const EventsTab: React.FC<{
           );
         }
         const ev = evt as RawEvent;
+        if (ev.type === 'improve_revision') {
+          // A self-improvement verdict is the one event a reader must
+          // not scroll past: it explains why the level restarted (or
+          // why it stopped), and 'applied' means the card's text was
+          // durably changed by this run.
+          const verdict = typeof ev.verdict === 'string' ? ev.verdict : '?';
+          const applied = !!ev.applied;
+          const stop = typeof ev.stop === 'string' ? ev.stop : '';
+          const rationale = typeof ev.rationale === 'string' ? ev.rationale : '';
+          return (
+            <li key={idx} className="tc-tile__inspector-event tc-tile__inspector-event--improve">
+              <span className="tc-tile__inspector-event-ts">{formatTs(ev.ts as number | undefined)}</span>
+              <span className="tc-tile__inspector-event-type">🌱 self-improve</span>
+              <code className="tc-tile__inspector-event-payload">
+                {verdict}
+                {applied ? ' · revision applied — level restarted' : ''}
+                {stop && stop !== 'accept' ? ` · stopped: ${stop}` : ''}
+                {rationale ? ` — ${rationale}` : ''}
+              </code>
+            </li>
+          );
+        }
         return (
           <li key={idx} className="tc-tile__inspector-event">
             <span className="tc-tile__inspector-event-ts">{formatTs(ev.ts as number | undefined)}</span>
