@@ -32,6 +32,13 @@ RunStatus = Literal[
     # resume-from-block endpoint, which replays completed blocks'
     # artifacts rather than re-running them.
     "held",
+    # Holding at an Ask block: waiting on a HUMAN, not on the infrastructure
+    # and not on itself.  Distinct from "paused" because a pause is a
+    # user-initiated stop the user is expected to end within a session,
+    # whereas an ask may sit open for hours or days — which is precisely why
+    # it needs its own restart handling in
+    # TaskRunStorage.reconcile_stale_runs, where "paused" becomes "failed".
+    "awaiting_input",
     "done",        # finished successfully with an artifact
     # Stopped after real progress: at least one block completed AND
     # work was left unfinished.  DERIVED at the terminal write by
@@ -76,6 +83,7 @@ ResumeKind = Literal[
 # the card, "held" means fix the environment and resume.
 BlockStatus = Literal[
     "queued", "running", "done", "failed", "cancelled", "skipped", "held",
+    "awaiting_input",
 ]
 
 
@@ -116,6 +124,14 @@ class IterationSummary(BaseModel):
     signature: Optional[str] = None
     duration_ms: int = 0
     tokens: int = 0
+    # Stable identity of the roster member this iteration ran, for
+    # for_each loops (design/task-card-roster-assertion.md §3.1).  An
+    # iteration's identity was previously its ordinal position only, so
+    # a coverage shortfall could be counted but never NAMED.  None for
+    # count/until iterations and for records written before this field
+    # existed — readers must treat a missing key as unknown coverage,
+    # not as absence.
+    item_key: Optional[str] = None
     # True if the full Artifact was persisted alongside this summary.
     # False when the iteration was a passing run beyond the retention
     # cap (50 passes per Repeat block).
@@ -232,6 +248,13 @@ class TaskRunBlockState(BaseModel):
     # For Repeat blocks: one summary per iteration.  Empty for Task
     # and Parallel blocks.
     iteration_summaries: List[IterationSummary] = Field(default_factory=list)
+    # For Repeat(for_each) blocks: the resolved roster size, recorded at
+    # plan time.  The roster exists only at run time (unlike count mode,
+    # whose total is readable from the card), so without this record the
+    # run map has no denominator for its "n/m" progress figure after a
+    # reload or on a partial run.  None for other block shapes and for
+    # runs written before the field existed.
+    planned_iterations: Optional[int] = None
     # Outcomes displaced by a later attempt re-running this block,
     # oldest first.  Empty on the common path.  Populated only by
     # ``TaskRunStorage.update_block_status``, which pushes the current
@@ -310,6 +333,24 @@ class TaskRun(BaseModel):
     # complex card can be walked one block at a time while it is being
     # built, instead of being launched and left to run until it dies.
     step_budget: int = 0
+
+    # ---- Human-in-the-loop (Ask) ----
+    # The question currently open, if any: {block_id, question, choices,
+    # opened_at}.  Cleared when answered.  Persisted rather than kept in the
+    # executor frame because a server restart must not lose what was being
+    # asked — an ask can legitimately be open for days, so the restart is
+    # expected to outlive it.
+    pending_ask: Optional[Dict[str, Any]] = None
+    # Answers, keyed by the Ask block's id:
+    # {decision, answer, answered_by, answered_at}.
+    #
+    # Living on the RECORD rather than in the frame is what makes an Ask
+    # idempotent in the two places it must be: the block's whole execution is
+    # "answer already recorded? apply it; else ask", so a resume walk that
+    # replays past a settled Ask re-applies the same answer instead of asking
+    # again, and a run reconciled to "held" by a restart can be answered and
+    # then resumed.  First answer wins (see record_ask_answer).
+    ask_answers: Dict[str, Any] = Field(default_factory=dict)
 
     # Top-level artifact produced by the root block
     artifact: Optional[Artifact] = None

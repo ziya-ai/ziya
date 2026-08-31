@@ -550,6 +550,91 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         self._write_json(self._run_file(run_id), run.model_dump())
         return True
 
+    # ---- human-in-the-loop (Ask) -----------------------------------
+
+    def _invalidate_status_index(self) -> None:
+        """Nudge the sidebar's cached status projection.
+
+        Same reason mark_held does it: an Ask transition is one a reader must
+        see promptly, because it is the one status that is waiting on THEM.
+        Rewrites a file in place rather than adding one, which the index's
+        mtime scan would otherwise miss.
+        """
+        try:
+            from ..utils.run_status_index import invalidate_for
+            invalidate_for(str(self.runs_dir))
+        except Exception:  # noqa: BLE001
+            pass
+
+    def open_ask(
+        self, run_id: str, block_id: str, question: str = "",
+        choices: Optional[List[str]] = None,
+    ) -> Optional[TaskRun]:
+        """Record an open question and flip the run to awaiting_input."""
+        run = self.get(run_id)
+        if not run:
+            return None
+        run.pending_ask = {
+            "block_id": block_id,
+            "question": question,
+            "choices": list(choices or []),
+            "opened_at": time.time(),
+        }
+        run.status = "awaiting_input"  # type: ignore[assignment]
+        run.updated_at = int(time.time() * 1000)
+        self._write_json(self._run_file(run_id), run.model_dump())
+        self._invalidate_status_index()
+        return run
+
+    def close_ask(self, run_id: str) -> Optional[TaskRun]:
+        """Clear the open question and return the run to running.
+
+        The status write is conditional on the run still being
+        awaiting_input, because this is also called on the cancel path, where
+        the run is on its way to cancelled and must not be walked back to
+        running on the way out.
+        """
+        run = self.get(run_id)
+        if not run:
+            return None
+        run.pending_ask = None
+        if run.status == "awaiting_input":
+            run.status = "running"  # type: ignore[assignment]
+        run.updated_at = int(time.time() * 1000)
+        self._write_json(self._run_file(run_id), run.model_dump())
+        self._invalidate_status_index()
+        return run
+
+    def record_ask_answer(
+        self, run_id: str, block_id: str, decision: str = "approve",
+        answer: str = "", answered_by: str = "",
+    ) -> Optional[TaskRun]:
+        """Record a human answer against an Ask block.  First answer wins.
+
+        First-answer-wins is load-bearing rather than defensive.  A double
+        click, a retried request, or a resume of a run that already acted on
+        an answer must not be able to change what the run was told: a second
+        answer would either be silently discarded, or silently override a
+        decision already acted upon, which is worse.
+        """
+        run = self.get(run_id)
+        if not run:
+            return None
+        answers = dict(run.ask_answers or {})
+        if block_id in answers:
+            return run
+        answers[block_id] = {
+            "decision": decision,
+            "answer": answer,
+            "answered_by": answered_by,
+            "answered_at": time.time(),
+        }
+        run.ask_answers = answers
+        run.updated_at = int(time.time() * 1000)
+        self._write_json(self._run_file(run_id), run.model_dump())
+        self._invalidate_status_index()
+        return run
+
     # ---- live-run registry (process-local, not persisted) ----------
 
     def mark_active(self, run_id: str) -> None:
@@ -571,26 +656,51 @@ class TaskRunStorage(BaseStorage[TaskRun]):
     # ---- startup reconciliation -----------------------------------
 
     def reconcile_stale_runs(self) -> int:
-        """Sweep on-disk runs and mark any ``running`` / ``queued`` /
-        ``paused``
-        rows as ``failed`` — they were owned by a prior server lifetime
-        and have no live executor.  Idempotent.  Safe to call at
-        startup before any new runs are launched.
+        """Sweep on-disk runs and reconcile any row left live by a prior
+        server lifetime, which by definition has no executor behind it.
+        "running" / "queued" / "paused" become "failed"; a run holding at an
+        Ask becomes "held" instead, for the reason given below.  Idempotent.
+        Safe to call at startup before any new runs are launched.
 
         Returns the count of runs reconciled.
         """
         reconciled = 0
         now_ms = int(time.time() * 1000)
         for run in self.list():
-            if run.status not in ("running", "queued", "paused"):
+            if run.status not in ("running", "queued", "paused",
+                                  "awaiting_input"):
                 continue
-            run.status = "failed"  # type: ignore[assignment]
+            if run.status == "awaiting_input":
+                # A run waiting on a human is not a crashed run.  An Ask can
+                # legitimately be open for days, so the restart that ends a
+                # server lifetime is expected to outlive it, and reconciling
+                # it to "failed" would discard a run that had done all of its
+                # work and was one answer from finishing.  For a release
+                # sweep that means the commits are made and the tag is not.
+                #
+                # "held" keeps it resumable AND keeps the question on the
+                # record, and the answer endpoint still accepts on a held
+                # run, so "answer, then resume" replays to the Ask block and
+                # finds it settled rather than asking twice.
+                run.status = "held"  # type: ignore[assignment]
+                pending = run.pending_ask or {}
+                run.held_at_block_id = (
+                    pending.get("block_id") or run.held_at_block_id
+                )
+                run.held_reason = "awaiting_human_input"
+                run.error = (
+                    "The server restarted while this run was waiting for "
+                    "a human answer.  Answer the open question, then "
+                    "resume from the block it names."
+                )
+            else:
+                run.status = "failed"  # type: ignore[assignment]
+                run.error = (
+                    "Run did not survive a server restart.  The executor "
+                    "was terminated mid-flight; this record was "
+                    "reconciled at the next server start."
+                )
             run.cancel_requested = False
-            run.error = (
-                "Run did not survive a server restart.  The executor "
-                "was terminated mid-flight; this record was reconciled "
-                "at the next server start."
-            )
             if run.completed_at is None:
                 run.completed_at = time.time()
             run.updated_at = now_ms

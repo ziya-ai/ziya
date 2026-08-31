@@ -25,7 +25,14 @@ export type RunStatus =
   // resume-from-block replays completed blocks rather than re-running
   // them.  Kept distinct from 'failed' because the two ask for
   // different responses — fix the infrastructure, not the card.
-  | 'done' | 'partial' | 'failed' | 'cancelled' | 'held';
+  // 'awaiting_input' — holding at an Ask block for a human answer.  Live,
+  // not terminal: the executor frame is alive and the socket must stay
+  // open, which is why it joins neither TERMINAL nor EXECUTOR_STOPPED in
+  // useTaskRunStream.  Distinct from 'paused' because a pause is expected
+  // to end within a session while an ask may sit open for days, which is
+  // what earns it separate restart handling on the server.
+  | 'done' | 'partial' | 'failed' | 'cancelled' | 'held'
+  | 'awaiting_input';
 
 /** How a run came to exist; drives the attempt-rail badges. */
 export type ResumeKind = 'initial' | 'retry_from' | 'continue_from' | 'rerun';
@@ -155,6 +162,12 @@ export interface TaskRunBlockState {
   artifact?: Artifact | null;
   error?: string | null;
   iteration_summaries: IterationSummary[];
+  /**
+   * For Repeat(for_each) blocks: the resolved roster size, recorded at
+   * plan time.  Drives the "n/m" figure after the run map's iteration
+   * dot strip.  Absent for other block shapes and for older runs.
+   */
+  planned_iterations?: number | null;
 }
 
 /**
