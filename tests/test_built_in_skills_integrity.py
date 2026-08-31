@@ -139,6 +139,62 @@ class TestCircuitDiagramsSkill:
         assert "documentclass" in prompt
 
 
+class TestPgfplotsSkill:
+    """The pgfplots skill records facts about the SERVER-SIDE PREAMBLE, which
+    a model authoring a plot cannot see and cannot infer.
+
+    Every pin below corresponds to a real fatal-abort or silent-wrong-output
+    that was hit while probing the renderer.  Without the skill the next author
+    rediscovers them the same way: by having a diagram fail to render at all.
+    """
+
+    @pytest.fixture
+    def prompt(self):
+        from app.data.built_in_skills import get_skill_by_id
+        skill = get_skill_by_id("pgfplots")
+        assert skill, "pgfplots skill is missing from the registry"
+        return skill["prompt"]
+
+    def test_documents_the_degrees_trap_for_trig(self, prompt):
+        """pgfmath's sin/cos take DEGREES.  `sin(x)` over a 0..2pi domain
+        compiles cleanly and draws a nearly-straight line -- wrong output with
+        no error, which is worse than a crash."""
+        assert "deg(" in prompt, "the deg() conversion idiom is undocumented"
+        assert "degree" in prompt.lower()
+
+    def test_documents_which_math_packages_are_preloaded(self, prompt):
+        """The gap that motivated the skill: \\dfrac in a legend entry aborted
+        fatally because no profile loaded amsmath.  Now that it IS loaded, the
+        skill must say so -- otherwise an author avoids it defensively."""
+        assert "amsmath" in prompt
+        assert "\\dfrac" in prompt, "no concrete amsmath command named"
+
+    def test_flags_siunitx_as_present_but_not_guaranteed(self, prompt):
+        """siunitx is loaded with \\IfFileExists, so on a TeX install lacking
+        it \\si{} degrades silently rather than aborting.  An author who does
+        not know that cannot interpret a missing unit."""
+        assert "siunitx" in prompt
+        assert "\\si" in prompt
+
+    def test_names_the_preloaded_pgfplots_libraries(self, prompt):
+        """A library that is NOT preloaded needs an explicit
+        \\usepgfplotslibrary line, so the preloaded set is load-bearing."""
+        for lib in ("fillbetween", "statistics", "polar", "dateplot",
+                    "groupplots"):
+            assert lib in prompt, f"preloaded library {lib} undocumented"
+
+    def test_documents_data_space_annotation_anchoring(self, prompt):
+        """`at (2,3)` inside an axis is canvas space, not data space; the
+        annotation lands in the wrong place and still renders."""
+        assert "axis cs:" in prompt
+
+    def test_forbids_document_preamble(self, prompt):
+        """The backend wraps the body in tikzpicture and REJECTS a full
+        document, so an author who adds one gets a hard rejection."""
+        assert "documentclass" in prompt
+        assert "tikzpicture" in prompt
+
+
 class TestPromptsAreLoadedOnDemand:
     def test_bodies_are_substantial_enough_to_warrant_lazy_loading(self):
         """If a body were tiny, the on-demand indirection would cost more than

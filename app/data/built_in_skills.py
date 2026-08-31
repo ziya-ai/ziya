@@ -31,6 +31,62 @@ def get_skill_by_id(skill_id: str) -> Dict[str, Any] | None:
 
 BUILT_IN_SKILLS: List[Dict[str, Any]] = [
     {
+        'id': 'document_authoring',
+        'name': 'Document Authoring',
+        'description': 'Author and revise polished work-product documents with PDF export',
+        'visibility': MODEL_DISCOVERABLE,
+        'catalog_description': 'Author work-product documents (reports, memos, specs) as markdown IR in .ziya/documents/ and export high-fidelity PDFs',
+        'keywords': ['document', 'report', 'pdf', 'export', 'memo', 'spec', 'work-product'],
+        'prompt': '''You author DOCUMENTS (reports, memos, specs) as markdown IR files in
+`.ziya/documents/` — a writable path. The IR file is the single editing
+surface: create it with file_write, revise it with TARGETED edits, and never
+regenerate the whole file for a small change. Render to PDF only when the
+user wants the artifact.
+
+## IR format — plain markdown + YAML front-matter (portable everywhere)
+
+```
+---
+ziya-doc: 1
+title: "Queue Depth Analysis"
+author: "..."             # optional; becomes the PDF /Author
+layout: report            # report = title block page header; plain = no chrome
+page:
+  margin: 18mm            # optional; one value or {top, bottom, left, right}
+---
+
+# First Section
+Body is ordinary Ziya markdown: KaTeX math ($...$), mermaid / graphviz /
+vega-lite / packet / chemfig / tikz fences, tables, code, diffs — all render
+at full fidelity in the PDF.
+
+<!-- ziya:pagebreak -->
+
+# Next Section (starts on a new page)
+```
+
+## Rules
+1. Keep SEMANTIC sources: math stays LaTeX, diagrams stay mermaid/graphviz
+   source. Never paste pre-rendered images into the IR.
+2. The PDF outline (bookmarks) is generated from the heading tree — use a
+   clean h1/h2/h3 hierarchy.
+3. Documents are work products, not transcripts: no conversational voice, no
+   role labels, no tool chatter. When asked to turn an analysis into a
+   document, EXTRACT and RESTRUCTURE the content into authored prose — do
+   not paste the conversation.
+4. `<!-- ziya:pagebreak -->` on its own line forces a page break; it is an
+   invisible HTML comment in every other markdown viewer.
+5. To render a PDF, POST to the local server (default port 6969):
+   curl -s -X POST localhost:6969/api/export/document \\
+     -H 'Content-Type: application/json' \\
+     -d '{"name": "report.md"}' -o /tmp/report.pdf
+   (or pass {"markdown": "..."} inline). Save output to /tmp or .ziya/ and
+   tell the user where the file is. HTTP 501 means the server has no
+   Playwright/Chromium — tell the user to run:
+   pip install playwright && playwright install chromium''',
+        'color': '#8b5cf6',
+    },
+    {
         'id': 'code_review',
         'name': 'Code Review',
         'description': 'Detailed analysis with security and best practices focus',
@@ -951,6 +1007,432 @@ Example:
         'color': '#0ea5e9',
     },
     {
+        'id': 'railroad_diagrams',
+        'visibility': MODEL_DISCOVERABLE,
+        'catalog_description': 'Render railroad (syntax) diagrams for grammars, regexes, and text formats',
+        'name': 'Railroad Diagrams',
+        'description': 'Generate railroad syntax diagrams from a JSON spec',
+        'keywords': ['railroad', 'syntax', 'grammar', 'bnf', 'ebnf', 'regex',
+                     'production', 'syntax-diagram', 'format'],
+        'prompt': '''Render railroad (syntax) diagrams with a fenced ```railroad code block
+containing a JSON spec. Use them wherever "what strings does this accept" is
+the question: grammars, regex structure, URL/config/file formats, CLI syntax.
+
+Top level — one production or a grammar of named productions:
+  {"title": "...", "diagram": <node>}
+  {"title": "...", "rules": [{"name": "expr", "diagram": <node>}, ...]}
+
+Node vocabulary (each node is exactly ONE of):
+- "literal"                          bare string = terminal (rounded box)
+- {"terminal": "if"}                 literal token text
+- {"nonterminal": "expression"}      reference to another production (square box)
+- {"comment": "note"}                italic annotation on the line
+- {"skip": true}                     empty path (rarely needed directly)
+- {"sequence": [n1, n2, ...]}        items in order (a bare array also works)
+- {"choice": [n1, n2, ...]}          alternatives; FIRST gets the straight line,
+                                     so put the most common case first
+- {"optional": n}                    bypass line above the item
+- {"oneOrMore": n}                   loop back under the item (1+)
+- {"oneOrMore": n, "separator": {"terminal": ","}}
+                                     the return path shows the separator
+- {"zeroOrMore": n}                  optional loop (accepts "separator" too)
+- {"group": n, "label": "..."}       dashed box around a sub-expression
+
+Example — a JSON-style number:
+```railroad
+{
+  "title": "number",
+  "diagram": {"sequence": [
+    {"optional": {"terminal": "-"}},
+    {"oneOrMore": {"nonterminal": "digit"}},
+    {"optional": {"sequence": [
+      {"terminal": "."},
+      {"oneOrMore": {"nonterminal": "digit"}}
+    ]}}
+  ]}
+}
+```
+
+Rules of thumb:
+- Terminals are literal characters/tokens; nonterminals name other rules.
+- Prefer several small named rules over one deeply nested diagram.
+- JSON only — no functions or bare identifiers. Trailing commas and
+  // comments are tolerated, but do not rely on that.''',
+        'color': '#a855f7',
+    },
+    {
+        'id': 'timing_diagrams',
+        'visibility': MODEL_DISCOVERABLE,
+        'catalog_description': 'Render digital timing diagrams (WaveDrom): clocks, buses, handshakes',
+        'name': 'Timing Diagrams',
+        'description': 'Generate WaveDrom digital timing diagrams from WaveJSON',
+        'keywords': ['wavedrom', 'timing', 'waveform', 'clock', 'bus', 'signal',
+                     'setup', 'hold', 'handshake', 'strobe', 'spi', 'i2c', 'uart'],
+        'prompt': '''Render digital timing diagrams with a fenced ```wavedrom code block
+containing WaveJSON. Use them for clock/data relationships, bus transactions,
+handshakes, and setup/hold or latency questions.
+
+Top level: { signal: [ <lane> | <group> | {} ], edge: [...], config: {...} }
+
+A lane: { name: 'clk', wave: 'p......' } — one wave character per cycle:
+- p / P   positive clock (capital = arrow on the edge); n / N negative clock
+- 0 / 1   low / high level
+- x       don't-care / undefined (hatched)
+- z       high impedance
+- = 2-9   data cycles (distinct fills); label them with data: ['A', 'B']
+- .       extend the previous cycle
+- |       gap marker (elided time)
+
+Extras:
+- Groups: ['bus', {name:'addr',...}, {name:'data',...}]; a bare {} is a spacer
+- Timing arrows: mark lanes with node: '.a....b.' then edge: ['a~>b tRC']
+  (~ curved, - straight; <, > arrowheads; trailing text is the label)
+- period and phase per lane; config: { hscale: 2 } widens every cycle
+- Title: { head: { text: 'SPI write', tick: 0 } }
+
+Example — req/ack handshake with a latency annotation:
+```wavedrom
+{ signal: [
+  { name: 'clk',  wave: 'p......' },
+  { name: 'req',  wave: '01..0..', node: '.a.....' },
+  { name: 'ack',  wave: '0..1.0.', node: '...b...' },
+  { name: 'data', wave: 'x..=.x.', data: ['D0'] }
+], edge: ['a~>b t_ack'] }
+```
+
+Rules of thumb:
+- Every lane's wave string should be the SAME length — cycles align by index.
+- Unquoted keys and single quotes are fine (WaveJSON is JSON5).
+- A register bit-field layout ({reg: [...]}) renders too, but prefer the
+  ```packet renderer for protocol frame layouts.''',
+        'color': '#f59e0b',
+    },
+    {
+        'id': 'flame_graphs',
+        'visibility': MODEL_DISCOVERABLE,
+        'catalog_description': 'Render interactive flame graphs from profiler output or a nested call tree',
+        'name': 'Flame Graphs',
+        'description': 'Visualize performance profiles as click-to-zoom flame graphs',
+        'keywords': ['flamegraph', 'flame', 'profile', 'profiling', 'performance',
+                     'py-spy', 'perf', 'cprofile', 'pprof', 'hotspot', 'slow',
+                     'collapsed', 'stacks', 'latency'],
+        # The fence marker is assembled from chr(96) rather than typed as a
+        # literal triple backtick, matching the pgfplots skill below: a literal
+        # one in this source terminates the enclosing markdown fence whenever
+        # the file is quoted by tooling.
+        'prompt': (
+            'Render performance profiles with a ' + chr(96) * 3 + 'flamegraph\n'
+            'fenced block. Frame width is time (or samples); clicking a frame\n'
+            'zooms to it. Reach for this whenever the question is "why is this\n'
+            'slow" or "where does the time go".\n'
+            '\n'
+            'TWO input forms -- prefer collapsed stacks when you have real\n'
+            'profiler output.\n'
+            '\n'
+            '1. COLLAPSED STACKS, one line per unique call path:\n'
+            '    main;handle_request;parse_json 120\n'
+            '    main;handle_request;db_query 480\n'
+            '    main;handle_request;db_query;tcp_wait 300\n'
+            '    main;render 45\n'
+            '   This is what py-spy record --format collapsed, perf script |\n'
+            '   stackcollapse-perf.pl, and flamegraph.pl emit, so real\n'
+            '   profiler output pastes in unchanged. Frame names may contain\n'
+            '   spaces (parse (app.py:42)); only the trailing number is the\n'
+            '   count. Lines starting with # are ignored.\n'
+            '\n'
+            '2. NESTED JSON, when you already hold a tree:\n'
+            '    {"name": "main", "value": 645, "children": [\n'
+            '      {"name": "handle_request", "value": 600, "children": [\n'
+            '        {"name": "parse_json", "value": 120},\n'
+            '        {"name": "db_query", "value": 480}\n'
+            '      ]},\n'
+            '      {"name": "render", "value": 45}\n'
+            '    ]}\n'
+            '   value is the INCLUSIVE total for that frame and everything\n'
+            '   under it, so a parent is never smaller than the sum of its\n'
+            '   children. The terse {n, v, c} spelling is also accepted.\n'
+            '\n'
+            'RULES OF THUMB\n'
+            '- Prefer form 1. Emitting stack lines is more reliable than\n'
+            '  summing a tree by hand, and a wrong parent total renders a\n'
+            '  visibly broken chart.\n'
+            '- Deepest frame last: outer;middle;inner count reads bottom-up\n'
+            '  on screen.\n'
+            '- Give real frame names from the profile. Invented names make the\n'
+            '  chart a fiction, which is worse than a table of the numbers you\n'
+            '  actually have.\n'
+            '- Use a flame graph for a PROFILE (self/total time by call path).\n'
+            '  For a request walkthrough use a sequence diagram; for latency\n'
+            '  over time use a chart.'
+        ),
+        'color': '#ef4444',
+    },
+    {
+        'id': 'pgfplots',
+        'visibility': MODEL_DISCOVERABLE,
+        'catalog_description': 'Render typeset function/data plots with pgfplots: math axes, log scales, 3D surfaces',
+        'name': 'Typeset Plots (pgfplots)',
+        'description': 'Generate publication-quality function and data plots with pgfplots',
+        'keywords': ['pgfplots', 'plot', 'chart', 'axis', 'graph', 'function', 'curve',
+                     'log', 'semilog', 'loglog', 'surface', '3d', 'colorbar',
+                     'contour', 'errorbar', 'error bars', 'boxplot', 'histogram',
+                     'queueing', 'latency', 'throughput', 'fit', 'regression'],
+        # The fence marker is assembled from chr(96) rather than typed as a
+        # literal triple backtick: a literal one in this source terminates the
+        # enclosing markdown fence whenever the file is quoted by tooling.
+        'prompt': (
+            'Render typeset plots with a ' + chr(96) * 3 + 'pgfplots fenced\n'
+            'block. Compiled by a local TeX install; the body is auto-wrapped\n'
+            'in tikzpicture, so do NOT add \\documentclass, \\usepackage or\n'
+            '\\begin{document} -- those are rejected.\n'
+            '\n'
+            'Prefer this over vega-lite/plotly when the LABELS are\n'
+            'mathematical, when a fitted analytic curve sits alongside\n'
+            'measured points, or when the plot should read continuously with\n'
+            'KaTeX derivations elsewhere in the answer. Prefer vega-lite for\n'
+            'interactive or faceted data exploration.\n'
+            '\n'
+            'Usually you write just the axis:\n'
+            '    \\begin{axis}[xlabel={$t$}, ylabel={$v(t)$}, domain=0:10,\n'
+            '                 samples=200]\n'
+            '    \\addplot[thick, blue] {exp(-x)*sin(deg(x))};\n'
+            '    \\addlegendentry{$e^{-t}\\sin t$}\n'
+            '    \\end{axis}\n'
+            '\n'
+            'THE TRAP THAT PRODUCES WRONG OUTPUT SILENTLY\n'
+            'pgfmath trig takes DEGREES, not radians. {sin(x)} over\n'
+            'domain=0:6.28 compiles cleanly and draws an almost-straight\n'
+            'line -- a plausible-looking, factually wrong plot, which is\n'
+            'worse than an error. Convert with deg():\n'
+            '    \\addplot[domain=0:6.28, samples=200] {sin(deg(x))};\n'
+            '\n'
+            'ALREADY IN THE PREAMBLE (do not re-declare)\n'
+            '  compat    \\pgfplotsset{compat=newest} is already set\n'
+            '  amsmath   \\dfrac \\text \\boldsymbol \\substack \\big* --\n'
+            '            safe anywhere, including a legend entry (the\n'
+            '            server reserves the row height; see LEGEND\n'
+            '            ENTRIES below).\n'
+            '  amssymb   \\mathbb \\mathfrak \\leqslant \\nleq\n'
+            '  xcolor    svgnames + dvipsnames, so Crimson/Navy/Teal\n'
+            '            resolve; blue!15 fractions work as usual\n'
+            '  libraries fillbetween, statistics, polar, dateplot,\n'
+            '            groupplots\n'
+            '  siunitx   \\si \\SI \\qty -- loaded ONLY IF INSTALLED. If a\n'
+            '            unit vanishes from a label, siunitx is absent on\n'
+            '            this machine (tlmgr install siunitx); everything\n'
+            '            above it is guaranteed.\n'
+            '\n'
+            'Any OTHER pgfplots library needs its own\n'
+            '\\usepgfplotslibrary{...} as the first line of the body.\n'
+            'mathtools is NOT loaded: \\coloneqq and\n'
+            '\\DeclarePairedDelimiter are unavailable.\n'
+            '\n'
+            'LEGEND ENTRIES -- two traps that apply ONLY to legend text\n'
+            '1. \\to is pgfplots OWN argument delimiter, so a \\to inside\n'
+            '   \\addlegendentry{...} or legend entries={...} aborts the\n'
+            '   compile with a misleading "\\def cs{...}" error naming\n'
+            '   neither the legend nor \\to. The server rewrites it to\n'
+            '   \\rightarrow and reports the fix -- the glyph is identical\n'
+            '   (\\to is \\let to \\rightarrow) -- so either spelling works,\n'
+            '   but \\rightarrow avoids the round trip.\n'
+            '2. \\dfrac in a legend overflows its row: the default row\n'
+            '   separation does not grow to fit a display-size fraction,\n'
+            '   so it collides with the neighbouring entry. The server\n'
+            '   adds legend style={row sep=6pt} and reports it, keeping\n'
+            '   the fraction at the size you wrote -- so \\dfrac is fine\n'
+            '   in a legend. If you set row sep YOURSELF it is respected\n'
+            '   untouched: 2pt still overlaps, 4pt clears a simple\n'
+            '   \\dfrac, 6pt clears a nested one.\n'
+            'Both are fine in xlabel/ylabel/ticks/nodes.\n'
+            '\n'
+            'AXES\n'
+            '  axis, semilogxaxis, semilogyaxis, loglogaxis, polaraxis\n'
+            '  keys       width=, height=, xmin/xmax/ymin/ymax,\n'
+            '             grid=both, legend pos=north west,\n'
+            '             legend cell align={left}\n'
+            '  categories symbolic x coords={alpha,beta} with xtick=data\n'
+            '  dates      date coordinates in=x, xticklabel style={\n'
+            '             rotate=45, anchor=east}\n'
+            '\n'
+            'PLOTS\n'
+            '  function   \\addplot[domain=0:10, samples=200] {expr};\n'
+            '  points     \\addplot coordinates {(0,1) (1,4) (2,9)};\n'
+            '  table      \\pgfplotstableread{...}\\mytable then\n'
+            '             \\addplot table[x=t, y=v] {\\mytable};\n'
+            '  bars       ybar, or ybar stacked on the axis; bar width=\n'
+            '  boxplot    \\addplot+[boxplot prepared={median=3,\n'
+            '             upper quartile=4, ...}] coordinates {};\n'
+            '  3D         \\addplot3[surf, shader=interp] {expr}; with\n'
+            '             view={35}{30} and colorbar on the axis\n'
+            '  error bars \\addplot[error bars/.cd, y dir=both, y explicit]\n'
+            '               coordinates {(1,2) +- (0,0.3)};\n'
+            '  band       name two bounding plots name path=hi and\n'
+            '             name path=lo, then\n'
+            '             \\addplot[blue!15] fill between[of=hi and lo];\n'
+            '\n'
+            'ANNOTATION -- anchor to DATA space, not the canvas\n'
+            '  \\node[anchor=west] at (axis cs:0.8,16) {$\\rho=0.8$};\n'
+            '  \\draw[gray, dashed] (axis cs:0.8,0) -- (axis cs:0.8,20);\n'
+            'A bare at (0.8,16) is canvas coordinates: it renders happily,\n'
+            'in the wrong place, and rescaling the axis moves it further\n'
+            'off.\n'
+            '\n'
+            'RULES OF THUMB\n'
+            '- Every \\addplot ends with a semicolon; omitting it gives a\n'
+            '  confusing error pointing at a later line.\n'
+            '- \\addlegendentry goes immediately AFTER its own \\addplot, or\n'
+            '  set legend entries={a,b} once on the axis.\n'
+            '- Helper/bounding plots you do not want in the legend need\n'
+            '  forget plot.\n'
+            '- For small multiples use the groupplots library, not several\n'
+            '  fences.\n'
+            '- Micro/degree/plus-minus signs typed literally in labels are\n'
+            '  transliterated automatically and reported as an autofix, so\n'
+            '  you may write them directly.'
+        ),
+        'color': '#0ea5e9',
+    },
+    {
+        'id': 'structure_trees',
+        'visibility': MODEL_DISCOVERABLE,
+        'catalog_description': 'Render labelled trees (forest) and proof trees (bussproofs) in field-standard notation',
+        'name': 'Trees & Proof Trees',
+        'description': 'Generate labelled trees and inference-rule proof trees in the notation their fields actually use',
+        'keywords': ['forest', 'tree', 'syntax-tree', 'syntax tree', 'parse tree',
+                     'constituency', 'taxonomy', 'phylogeny', 'decision tree',
+                     'game tree', 'bussproofs', 'prooftree', 'proof', 'proof-tree',
+                     'derivation', 'natural-deduction', 'sequent', 'typing rule',
+                     'inference'],
+        # Fence markers are assembled from chr(96) rather than typed as literal
+        # backticks: a literal triple backtick in this source terminates the
+        # enclosing markdown fence whenever the file is quoted by tooling.
+        #
+        # Every construct below was verified by COMPILING it through the real
+        # renderer.  The first draft of this prompt documented four things that
+        # do not work (`roof` without its library, a phantom node as an arrow
+        # target, \def to set \fCenter, and no warning about \DisplayProof);
+        # tests/test_latex_tree_profiles.py now compiles each claim.
+        'prompt': (
+            'Render labelled trees with a ' + chr(96) * 3 + 'forest fence and\n'
+            'proof trees with a ' + chr(96) * 3 + 'bussproofs fence. Both\n'
+            'compile through a local TeX install, and the body is auto-wrapped\n'
+            '(forest -> \\begin{forest}, bussproofs -> \\begin{prooftree}), so\n'
+            'do NOT add \\documentclass, \\usepackage or \\begin{document} --\n'
+            'those are rejected.\n'
+            '\n'
+            'YOU CANNOT DEFINE MACROS. \\def, \\newcommand, \\renewcommand,\n'
+            '\\let, \\edef and \\gdef are all rejected before compiling (they\n'
+            'can build unbounded expansions). Write the notation out longhand\n'
+            'instead of abbreviating it.\n'
+            '\n'
+            'WHICH ONE\n'
+            '  forest      any tree whose NOTATION matters: constituency and\n'
+            '              syntax trees, taxonomies, decision and game trees,\n'
+            '              phylogenies, parse trees.\n'
+            '  bussproofs  derivations read as premises-over-conclusion:\n'
+            '              natural deduction, sequent calculus, typing rules.\n'
+            'Prefer graphviz or mermaid when the shape is a generic hierarchy\n'
+            'and the field has no notational conventions. forest earns its\n'
+            'place through roofs, forked edges and movement arrows -- not\n'
+            'through drawing a tree at all.\n'
+            '\n'
+            '=== forest ===\n'
+            'Bracket syntax; a node label runs to the first comma, [ or ]:\n'
+            '    [S\n'
+            '      [NP [D [the]] [N [dog]]]\n'
+            '      [VP [V [barks]]]\n'
+            '    ]\n'
+            'Node options follow a comma:  [S, draw, red [NP]]\n'
+            'Whole-tree styling goes BEFORE the bracket:\n'
+            '    for tree={s sep=12pt, l sep=18pt, align=center}\n'
+            '    [S [NP] [VP]]\n'
+            '\n'
+            'THE PARSER TRAP\n'
+            '[ ] and , are STRUCTURE, not text. A label containing any of them\n'
+            'must be braced, or the tree reshapes silently or aborts:\n'
+            '    [{NP, coordinated}]   not   [NP, coordinated]\n'
+            '    [{a[i]}]              not   [a[i]]\n'
+            '\n'
+            'OPTIONS WORTH KNOWING\n'
+            '  roof          triangle over an elided constituent:\n'
+            '                [NP, roof [the big dog]]\n'
+            '  forked edges  before the bracket, for the forked style used in\n'
+            '                syntax and phylogeny trees\n'
+            '  name=x        handle for drawing arrows later\n'
+            '  tier=t        force nodes onto the same vertical level\n'
+            '  align=center  multi-line labels, broken with \\\\\n'
+            '  s sep=/l sep= sibling / level separation\n'
+            '\n'
+            'MOVEMENT AND CO-INDEX ARROWS -- plain TikZ after the tree, still\n'
+            'inside the fence. The tree\'s named nodes are in scope:\n'
+            '    [CP\n'
+            '      [DP, name=wh [what]]\n'
+            '      [C [VP [V [saw]] [DP, name=gap [$t$]]]]\n'
+            '    ]\n'
+            '    \\draw[-Stealth, dashed] (gap) to[out=south west, in=south] (wh);\n'
+            'The arrow target must be a REAL node. A ``phantom`` node occupies\n'
+            'space without producing a shape, so aiming an arrow at one fails\n'
+            'with "No shape named ... is known" -- give the trace an explicit\n'
+            'label such as [$t$] and name that.\n'
+            '\n'
+            '=== bussproofs ===\n'
+            'A STACK MACHINE, which is the one thing to get right. \\AxiomC\n'
+            'pushes a pending subproof; every inference command CONSUMES\n'
+            'pending subproofs and pushes its conclusion:\n'
+            '    \\AxiomC      consumes 0, pushes 1\n'
+            '    \\UnaryInfC   consumes 1\n'
+            '    \\BinaryInfC  consumes 2\n'
+            '    \\TrinaryInfC consumes 3\n'
+            'Emitting \\BinaryInfC with only one pending subproof is a hard\n'
+            'abort with no image, and so is leaving more than one pending at\n'
+            'the end. Write the premises left to right, then the inference\n'
+            'that joins them:\n'
+            '\n'
+            '    \\AxiomC{$\\Gamma \\vdash A \\to B$}\n'
+            '    \\AxiomC{$\\Gamma \\vdash A$}\n'
+            '    \\RightLabel{\\scriptsize $\\to$E}\n'
+            '    \\BinaryInfC{$\\Gamma \\vdash B$}\n'
+            '\n'
+            'DO NOT WRITE \\DisplayProof. The wrapper emits it for you; a\n'
+            'second one finds the stack empty and aborts with "Proof tree\n'
+            'badly specified".\n'
+            '\n'
+            'RULES\n'
+            '- Node text is TEXT mode: wrap math in $...$.\n'
+            '- \\RightLabel and \\LeftLabel go BEFORE the inference command\n'
+            '  they annotate, never after.\n'
+            '- Line-style modifiers apply to the NEXT line drawn: \\noLine,\n'
+            '  \\doubleLine, \\dashedLine, \\solidLine.\n'
+            '- \\insertBetweenHyps{\\hskip 1cm} widens the gap between\n'
+            '  premises.\n'
+            '- \\EnableBpAbbreviations turns on \\AXC \\UIC \\BIC \\RL \\LL,\n'
+            '  worth it for a long derivation.\n'
+            '\n'
+            'SEQUENT STYLE -- the no-C commands align on \\fCenter, which is\n'
+            'ALREADY SET to a turnstile for you (you could not define it\n'
+            'yourself; see above). Use it as the separator and omit \\vdash:\n'
+            '    \\Axiom$\\Gamma \\fCenter A$\n'
+            '    \\UnaryInf$\\Gamma \\fCenter A \\vee B$\n'
+            'For a different separator (a sequent arrow, say), use the C-form\n'
+            'commands and write it inside the math yourself.\n'
+            '\n'
+            'ALREADY IN THE PREAMBLE (do not re-declare)\n'
+            '  amsmath, amssymb  \\dfrac \\text \\mathbb \\vdash \\Gamma\n'
+            '  xcolor            svgnames + dvipsnames, so Crimson, Navy and\n'
+            '                    Teal resolve; red!60 fractions work as usual\n'
+            '  forest libraries  linguistics (roof) and edges (forked edges)\n'
+            '  tikz libraries    arrows.meta (-Stealth and friends),\n'
+            '                    positioning, calc\n'
+            '  siunitx           \\si \\SI \\qty, loaded ONLY IF INSTALLED\n'
+            '\n'
+            'If a fence comes back as an install notice rather than a diagram,\n'
+            'the package is simply absent on this machine\n'
+            '(tlmgr install forest bussproofs) -- nothing about the body is\n'
+            'wrong, so do not rewrite it.'
+        ),
+        'color': '#7c3aed',
+    },
+    {
         'id': 'music_notation',
         'visibility': MODEL_DISCOVERABLE,
         'catalog_description': 'Render annotated music notation: inline snippets or complete staves/scores',
@@ -978,6 +1460,12 @@ The duration MUST be one of those codes -- any OTHER value (a code that is not a
 duration like `4x`, an out-of-range code like `999`, or a huge integer) is
 treated as an error: the fenced block falls back to a quarter note with a console
 warning, and the inline form declines to render, rather than freezing the staff.
+
+The PITCH is guarded the same way.  A malformed pitch -- a mistyped accidental
+(`ef4` for `Eb4`) or an octave outside the playable range (`C99`) -- makes the
+inline form decline to render and fall back to showing the raw text, and the
+fenced block drops the bad note with a warning, rather than freezing the staff.
+Spell accidentals as `#`, `##`, `b`, `bb` or `n` -- e.g. `Eb4`, `F#5`.
 
 The inline form supports notes only -- there is no annotation syntax. Text
 above or below a note requires the fenced block below, whose `annotations`
@@ -1066,6 +1554,39 @@ count) and NO notes:
 console warning.  The bar is silent, so any `notes` given alongside `multiRest`
 are ignored.  This is a per-measure field (it lives on a `measures[]` entry),
 so it works on any staff of a grand staff as well.
+
+### Key change (modulation)
+
+A piece can change key mid-score.  On a `measures`-based staff give the bar
+where the new key begins a `keySignature` (any name the top-level
+`keySignature` accepts, e.g. `"G"`, `"Bb"`, `"F#"`); it stays in force until
+the next change, exactly as an engraved modulation reads.  The renderer prints
+the new signature at that bar -- with the naturals that cancel the old
+sharps/flats -- and, from that bar on, filters accidentals against the NEW key
+(so, as always, spell every note as its true sounding pitch and let the
+renderer decide which accidentals print):
+
+```
+{
+  "type": "music",
+  "clef": "treble",
+  "keySignature": "C",
+  "timeSignature": "4/4",
+  "measures": [
+    {"notes": [{"keys": ["e/4"], "duration": "q"}, {"keys": ["g/4"], "duration": "q"},
+               {"keys": ["c/5"], "duration": "h"}]},
+    {"keySignature": "G",
+     "notes": [{"keys": ["d/5"], "duration": "q"}, {"keys": ["b/4"], "duration": "q"},
+               {"keys": ["g/4"], "duration": "h"}]}
+  ]
+}
+```
+
+Omit `keySignature` on the first measure (the opening key is set by the
+top-level `keySignature`) and on any bar whose key is unchanged.  Like
+`timeSignature`, it is a per-measure field, so it works on any staff of a grand
+staff.  An unrecognised key name is ignored (the previous key stays in force)
+rather than blanking the modulation.
 
 Do not put `articulations`, `dynamic`, `fingering` or `chordSymbol` on a rest;
 those belong on sounding notes.
@@ -1249,10 +1770,10 @@ rescales the notes so the group occupies the right amount of time.
 
 `from`/`to` are 0-based indices into the note list (counting rests), inclusive,
 same as `slurs` and `beams`.  A bare span is a triplet: `num` defaults to the
-number of notes and `inSpaceOf` to 2.  Both must be whole numbers of at least
-1 (they set how the notes' beat time is rescaled); a `num` or `inSpaceOf` of 0
-or a negative/fractional value is rejected and the tuplet is skipped.  For
-other tuplets give both:
+number of notes and `inSpaceOf` to 2.  Both must be whole numbers from 1 to 99
+(they set how the notes' beat time is rescaled); a `num` or `inSpaceOf` of 0, a
+negative/fractional value, or an out-of-range count above 99 (no real tuplet is
+that dense) is rejected and the tuplet is skipped.  For other tuplets give both:
 
 ```
 "tuplets": [{"from": 0, "to": 4, "num": 5, "inSpaceOf": 4}]   // quintuplet
@@ -1272,7 +1793,11 @@ Attach `graceNotes` to any note for small notes played BEFORE it.  They carry
 no beat time, so adding them never shifts where the main notes fall.  Each
 grace note gives `keys` and `duration` just like a normal note; set
 `slash: true` for the acciaccatura (the "crushed" grace, drawn with a slash
-through its stem), and leave it off for the appoggiatura.
+through its stem), and leave it off for the appoggiatura.  Spell any
+accidental right in the key, exactly like a main note -- `c#/5`, `bb/4`,
+`cn/5` -- and the sharp/flat/natural sign is engraved on the grace notehead
+(grace notes are not affected by the key signature, so write the sign you
+want to see).
 
 ```music
 {
@@ -1288,7 +1813,9 @@ through its stem), and leave it off for the appoggiatura.
 
 Give two or more grace notes to write an ornamental run; they are beamed
 together automatically.  A grace chord uses several `keys` in one grace note,
-exactly like a normal chord.
+exactly like a normal chord.  A grace note whose pitch is unspellable (a
+mistyped accidental) is dropped with a console warning rather than freezing the
+render; a grace chord keeps its other, valid notes.
 
 ## Cue notes (small editorial / ossia notes)
 
@@ -1737,6 +2264,10 @@ at the source, and a `coda` at the destination), e.g.
 singular `mark` remains as a shorthand for a single symbol; when both are given,
 `marks` wins.  A `tempo` and any navigation mark may be given together: the
 tempo is lifted onto its own row above the marks so the two never overprint.
+Several marks that anchor to the SAME side of the measure (e.g. a `to-coda`,
+a `fine` and a `coda-right`, which all sit at the right) are stacked on
+separate rows rather than printed on top of one another, so a full jump scheme
+stays legible.
 
 Fermata is an ARTICULATION, not a structural mark: put `fermata-above` in a
 note's `articulations`.
@@ -1880,6 +2411,12 @@ Put `voices` on a `staves[]` entry for a multi-voice staff inside a grand staff
 voices is not something the engine can draw.  `autoBeam` beams every voice,
 each on its own stem side.  Set forced stem directions on a two-voice staff:
 without them the lines overlap ambiguously.
+
+Rests in a multi-voice staff are positioned automatically: the first (upper)
+voice's rests are raised off the centre line and the lower voice's are lowered,
+so two rests on the same beat sit on their own lines instead of overprinting
+into one -- write rests in each voice as usual (`{"rest": true, ...}`) and the
+engine offsets them for you.  A single-voice staff keeps its rests centred.
 
 Two spellings express the same multi-voice, multi-measure music, and you may
 use whichever nests more naturally:
