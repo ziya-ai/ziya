@@ -52,6 +52,7 @@ import ArrowRightIcon from '@mui/icons-material/ArrowRight';
 import SyncIcon from '@mui/icons-material/Sync';
 import SettingsIcon from '@mui/icons-material/Settings';
 import SearchIcon from '@mui/icons-material/Search';
+import SortIcon from '@mui/icons-material/Sort';
 import CloseIcon from '@mui/icons-material/Close';
 import AddCommentIcon from '@mui/icons-material/AddComment';
 import RunStatusGears from './TaskCard/RunStatusGears';
@@ -522,20 +523,17 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                 gap where the server has no run record yet — but only when
                 the cluster has nothing to say, so the two cannot overlap. */}
             {taskBindings && taskBindings.length > 0 ? (
-              <RunStatusGears
-                bindings={taskBindings}
-                suppressLive={isStreaming}
-              />
+              <RunStatusGears bindings={taskBindings} />
             ) : taskStatusCounts && Object.keys(taskStatusCounts).length > 0 ? (
               /* Not the open chat: statuses come from the project-wide
                  index.  This branch is the whole point of that index — a
                  run that held or failed in a conversation the user has not
                  visited this session previously rendered nothing at all. */
-              <RunStatusGears
-                counts={taskStatusCounts}
-                suppressLive={isStreaming}
-              />
-            ) : isRunningTask && !isStreaming ? (
+              <RunStatusGears counts={taskStatusCounts} />
+            ) : /* Not gated on !isStreaming: a launch starts the stream, so
+                   that guard blanked the launch indicator for the whole
+                   window it covers. */
+              isRunningTask ? (
               <Box sx={{
                 display: 'flex',
                 alignItems: 'center',
@@ -1083,6 +1081,17 @@ const MUIChatHistory = () => {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [searchAllProjects, setSearchAllProjects] = useState(false);
+  // Result ordering. 'relevance' is a weighted score computed server-side
+  // (see app/storage/chat_search._relevance_score), not a raw occurrence
+  // count; 'newest'/'oldest' order by the conversation's last activity.
+  const [searchSort, setSearchSort] =
+    useState<'relevance' | 'newest' | 'oldest'>('relevance');
+  const [sortMenuAnchor, setSortMenuAnchor] = useState<null | HTMLElement>(null);
+  const SEARCH_SORT_LABELS: Record<'relevance' | 'newest' | 'oldest', string> = {
+    relevance: 'Best match',
+    newest: 'Newest activity',
+    oldest: 'Oldest activity',
+  };
 
   // Drop context survives even if the insertion-line DOM element is torn
   // down between the last mousemove and mouseup (pointer briefly leaves
@@ -1128,6 +1137,7 @@ const MUIChatHistory = () => {
       const results = await db.searchConversations(query, {
         caseSensitive: false,
         maxSnippetLength: 150,
+        sort: searchSort,
         projectId: searchAllProjects ? undefined : currentProject?.id
       });
       // Enrich results with project names for display
@@ -1144,7 +1154,7 @@ const MUIChatHistory = () => {
     } finally {
       setIsSearching(false);
     }
-  }, [searchAllProjects, currentProject?.id, projects]);
+  }, [searchAllProjects, searchSort, currentProject?.id, projects]);
 
   // Handle search input with debouncing
   const handleSearchChange = useCallback((value: string) => {
@@ -1177,13 +1187,13 @@ const MUIChatHistory = () => {
     // the current session.
   }, []);
 
-  // Re-run search when scope changes
+  // Re-run search when scope or sort order changes
   useEffect(() => {
     if (searchQuery.trim()) {
       performSearch(searchQuery);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchAllProjects]);
+  }, [searchAllProjects, searchSort]);
 
   // Initialize expanded nodes with folder IDs on first render
   useEffect(() => {
@@ -2224,10 +2234,7 @@ const MUIChatHistory = () => {
 
       // This is a delete action (called from handleDelete)
       if (event === null) {
-        Modal.confirm({
-          title: 'Delete Conversation',
-          content: 'Are you sure you want to delete this conversation?',
-          onOk: async () => {
+        const performDelete = async () => {
             try {
               console.debug('Deleting conversation:', {
                 folderId: conversations.find(c => c.id === conversationId)?.folderId,
@@ -2286,8 +2293,23 @@ const MUIChatHistory = () => {
               console.error('Error deleting conversation:', error);
               message.error('Failed to delete conversation');
             }
-          }
-        });
+        };
+
+        // An empty conversation (no messages yet) has nothing to lose —
+        // delete it immediately without asking for confirmation, mirroring
+        // the empty-folder fast path below.
+        const targetConversation = conversations.find(c => c.id === conversationId);
+        const isEmptyConversation = !targetConversation?.messages || targetConversation.messages.length === 0;
+
+        if (isEmptyConversation) {
+          performDelete();
+        } else {
+          Modal.confirm({
+            title: 'Delete Conversation',
+            content: 'Are you sure you want to delete this conversation?',
+            onOk: performDelete
+          });
+        }
       }
     } else if (nodeId && event !== null) {
       // This is a folder selection (not a delete action)
@@ -3753,6 +3775,41 @@ const MUIChatHistory = () => {
               </IconButton>
             </Tooltip>
           )}
+          {/* Sort order — only visible when search is active */}
+          {searchQuery && (
+            <>
+              <Tooltip title={`Sort: ${SEARCH_SORT_LABELS[searchSort]}`}>
+                <IconButton
+                  size="small"
+                  onClick={(e) => setSortMenuAnchor(e.currentTarget)}
+                  sx={{
+                    color: searchSort !== 'relevance' ? '#1890ff' : (isDarkMode ? '#888' : '#999'),
+                    border: `1px solid ${searchSort !== 'relevance' ? '#1890ff' : (isDarkMode ? '#555' : '#ccc')}`,
+                    width: 32,
+                    height: 32,
+                    flexShrink: 0
+                  }}
+                >
+                  <SortIcon sx={{ fontSize: 18 }} />
+                </IconButton>
+              </Tooltip>
+              <Menu
+                anchorEl={sortMenuAnchor}
+                open={Boolean(sortMenuAnchor)}
+                onClose={() => setSortMenuAnchor(null)}
+              >
+                {(['relevance', 'newest', 'oldest'] as const).map((mode) => (
+                  <MenuItem
+                    key={mode}
+                    selected={searchSort === mode}
+                    onClick={() => { setSearchSort(mode); setSortMenuAnchor(null); }}
+                  >
+                    {SEARCH_SORT_LABELS[mode]}
+                  </MenuItem>
+                ))}
+              </Menu>
+            </>
+          )}
           <Tooltip title="New folder">
             <IconButton
               size="small"
@@ -3799,6 +3856,7 @@ const MUIChatHistory = () => {
                 {searchAllProjects
                   ? ' across all projects'
                   : ` in ${currentProject?.name || 'this project'}`}
+                {` · sorted by ${SEARCH_SORT_LABELS[searchSort].toLowerCase()}`}
               </Typography>
             </Box>
             {searchResults.map((result) => (

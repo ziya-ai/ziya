@@ -6,6 +6,16 @@
  * This module syncs between the two.
  */
 
+import {
+  timedFetchJson,
+  timedFetchOk,
+  SyncHttpError,
+  LIST_TIMEOUT_MS,
+  SINGLE_TIMEOUT_MS,
+  BULK_TIMEOUT_MS,
+  MUTATE_TIMEOUT_MS,
+} from './timedFetch';
+
 export interface ServerChat {
   id: string;
   title: string;
@@ -52,6 +62,7 @@ export interface SearchChatsOpts {
   allProjects?: boolean;
   caseSensitive?: boolean;
   maxSnippetLength?: number;
+  sort?: 'relevance' | 'newest' | 'oldest';
 }
 
 /**
@@ -59,6 +70,7 @@ export interface SearchChatsOpts {
  * time and returns SearchResult-shaped objects, avoiding loading every
  * conversation's full message bodies into the browser just to substring-scan.
  * allProjects=false searches strictly the given project.
+ * sort selects ordering: weighted relevance score, or last activity asc/desc.
  * Returns null on transport failure so callers can fall back to a local scan.
  */
 export async function searchChats(
@@ -71,38 +83,58 @@ export async function searchChats(
     all_projects: String(!!opts.allProjects),
     case_sensitive: String(!!opts.caseSensitive),
     max_snippet_length: String(opts.maxSnippetLength ?? 150),
+    sort: opts.sort ?? 'relevance',
   });
   try {
     const url = `${BASE}/${projectId}/chats/search?${params.toString()}`;
-    const res = await fetch(url, { headers: projectHeaders() });
-    if (!res.ok) {
-      console.debug('Server search failed, will fall back to local:', res.status);
-      return null;
-    }
-    return res.json();
+    return await timedFetchJson<any[]>(url, { headers: projectHeaders() },
+      LIST_TIMEOUT_MS, 'searchChats');
   } catch (e) {
-    console.debug('Server search threw, will fall back to local:', e);
+    // Unchanged contract: every failure (status, transport, deadline)
+    // degrades to the local scan.
+    console.debug('Server search failed, will fall back to local:', e);
     return null;
   }
 }
 
 export async function listChats(projectId: string, includeMessages = false): Promise<ServerChat[]> {
-  const res = await fetch(`${BASE}/${projectId}/chats?include_messages=${includeMessages}`, {
-    headers: projectHeaders(),
-  });
-  if (!res.ok) {
-    console.debug('Failed to list chats from server:', res.status);
-    return [];
+  try {
+    return await timedFetchJson<ServerChat[]>(
+      `${BASE}/${projectId}/chats?include_messages=${includeMessages}`,
+      { headers: projectHeaders() },
+      LIST_TIMEOUT_MS,
+      'listChats',
+    );
+  } catch (e) {
+    if (e instanceof SyncHttpError) {
+      console.debug('Failed to list chats from server:', e.status);
+      return [];
+    }
+    // Transport failure or our own deadline: THROW rather than return [].
+    // An empty array is not a safe stand-in for "we could not ask" — the
+    // caller's deletion pass treats any previously-seen conversation absent
+    // from this list as deleted elsewhere, so a silent [] would stage the
+    // whole project for local removal.  Throwing routes to syncWithServer's
+    // catch, which abandons the cycle and still runs its finally.
+    throw e;
   }
-  return res.json();
 }
 
 export async function getChat(projectId: string, chatId: string): Promise<ServerChat | null> {
-  const res = await fetch(`${BASE}/${projectId}/chats/${chatId}`, {
-    headers: projectHeaders(),
-  });
-  if (!res.ok) return null;
-  return res.json();
+  try {
+    return await timedFetchJson<ServerChat>(
+      `${BASE}/${projectId}/chats/${chatId}`,
+      { headers: projectHeaders() },
+      SINGLE_TIMEOUT_MS,
+      'getChat',
+    );
+  } catch (e) {
+    // null means "the server has no such chat".  A deadline breach is not
+    // that: the post-sync rehydrate would read it as authoritative absence
+    // for a conversation the user is currently looking at.
+    if (e instanceof SyncHttpError) return null;
+    throw e;
+  }
 }
 
 export async function bulkSync(projectId: string, chats: ServerChat[]): Promise<BulkSyncResult> {
@@ -146,16 +178,24 @@ export async function bulkSync(projectId: string, chats: ServerChat[]): Promise<
     return aggregate;
   }
 
-  const res = await fetch(`${BASE}/${projectId}/chats/bulk-sync`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...projectHeaders() },
-    body: JSON.stringify({ chats }),
-  });
-  if (!res.ok) {
-    console.error('Bulk sync failed:', res.status);
-    return { created: 0, updated: 0, skipped: 0, errors: [{ id: 'bulk', error: `HTTP ${res.status}` }] };
+  try {
+    return await timedFetchJson<BulkSyncResult>(
+      `${BASE}/${projectId}/chats/bulk-sync`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...projectHeaders() },
+        body: JSON.stringify({ chats }),
+      },
+      BULK_TIMEOUT_MS,
+      'bulkSync',
+    );
+  } catch (e) {
+    if (e instanceof SyncHttpError) {
+      console.error('Bulk sync failed:', e.status);
+      return { created: 0, updated: 0, skipped: 0, errors: [{ id: 'bulk', error: `HTTP ${e.status}` }] };
+    }
+    throw e;
   }
-  return res.json();
 }
 
 /**
@@ -163,10 +203,12 @@ export async function bulkSync(projectId: string, chats: ServerChat[]): Promise<
  * Returns true if deleted (or already gone), false on unexpected error.
  */
 export async function deleteChat(projectId: string, chatId: string): Promise<boolean> {
-  const res = await fetch(`${BASE}/${projectId}/chats/${chatId}`, {
-    method: 'DELETE',
-    headers: projectHeaders(),
-  });
+  const res = await timedFetchOk(
+    `${BASE}/${projectId}/chats/${chatId}`,
+    { method: 'DELETE', headers: projectHeaders() },
+    MUTATE_TIMEOUT_MS,
+    'deleteChat',
+  );
   // 404 is fine — already deleted by another instance
   return res.ok || res.status === 404;
 }
@@ -238,15 +280,12 @@ export async function setChatGlobal(
 ): Promise<ServerChat | null> {
   try {
     const headers: Record<string, string> = { 'Content-Type': 'application/json', ...projectHeaders() };
-    const res = await fetch(
+    return await timedFetchJson<ServerChat>(
       `${BASE}/${encodeURIComponent(projectId)}/chats/${encodeURIComponent(chatId)}/global`,
-      { method: 'POST', headers, body: JSON.stringify({ isGlobal }) }
+      { method: 'POST', headers, body: JSON.stringify({ isGlobal }) },
+      MUTATE_TIMEOUT_MS,
+      'setChatGlobal',
     );
-    if (!res.ok) {
-      console.warn(`📡 setChatGlobal: ${res.status} ${res.statusText}`);
-      return null;
-    }
-    return await res.json();
   } catch (e) {
     console.warn('📡 setChatGlobal failed:', e);
     return null;
@@ -271,15 +310,12 @@ export async function bulkGetChats(
   if (ids.length === 0) return { chats: [], missing: [] };
   try {
     const headers: Record<string, string> = { 'Content-Type': 'application/json', ...projectHeaders() };
-    const res = await fetch(
+    return await timedFetchJson<{ chats: ServerChat[]; missing: string[] }>(
       `${BASE}/${encodeURIComponent(projectId)}/chats/bulk-get`,
-      { method: 'POST', headers, body: JSON.stringify({ ids }) }
+      { method: 'POST', headers, body: JSON.stringify({ ids }) },
+      BULK_TIMEOUT_MS,
+      'bulkGetChats',
     );
-    if (!res.ok) {
-      console.warn(`📡 bulkGetChats: ${res.status} ${res.statusText}`);
-      return null;
-    }
-    return await res.json();
   } catch (e) {
     console.warn('📡 bulkGetChats failed:', e);
     return null;

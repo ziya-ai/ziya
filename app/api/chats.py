@@ -333,6 +333,7 @@ def search_chats_endpoint(
     all_projects: bool = Query(False),
     case_sensitive: bool = Query(False),
     max_snippet_length: int = Query(150, ge=10, le=2000),
+    sort: str = Query("relevance", pattern="^(relevance|newest|oldest)$"),
 ):
     """Search chat message/title text server-side.
 
@@ -341,6 +342,9 @@ def search_chats_endpoint(
     time (see app/storage/chat_search.search_chats) so the whole history
     is never resident in memory.  ``all_projects=False`` searches strictly
     this project; ``True`` searches every project.
+
+    ``sort`` selects ordering: ``relevance`` (weighted match score),
+    ``newest`` or ``oldest`` (by the conversation's last activity).
     """
     # Validate the project exists (consistent 404 with other endpoints).
     get_chat_storage(project_id)
@@ -352,6 +356,7 @@ def search_chats_endpoint(
         all_projects=all_projects,
         case_sensitive=case_sensitive,
         max_snippet_length=max_snippet_length,
+        sort=sort,
     )
 
 @router.post("/api/v1/projects/{project_id}/chats", response_model=Chat)
