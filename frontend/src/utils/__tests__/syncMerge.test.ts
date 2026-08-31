@@ -289,7 +289,11 @@ describe('mergeServerChat — server-only (no local copy)', () => {
         expect(d.record._isShell).toBe(true);
         expect(d.record._fullMessageCount).toBe(12);
         expect(d.record.messages).toEqual([]);
-        expect(d.record._version).toBe(NOW - 1_000);
+        // Deliberately NOT the server version.  This record carries no
+        // messages while the server reports 12, so stamping serverVersion
+        // would let a bodyless placeholder out-rank a fuller in-memory copy
+        // (see the two scenario tests below).  0 keeps real content winning.
+        expect(d.record._version).toBe(0);
         expect(d.record.title).toBe('Hello');
         expect(d.record.branchedFrom).toBe('parent-conversation');
         expect(d.record.branchedAtMessageIndex).toBe(7);
