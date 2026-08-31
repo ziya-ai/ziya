@@ -359,6 +359,7 @@ export const StreamedContent: React.FC<{}> = () => {
             await send({
                 messages,
                 question: "Please continue your previous response.",
+                conversationId: currentConversationId,
                 includeReasoning: true,
             });
         } catch (error) {
@@ -544,8 +545,15 @@ export const StreamedContent: React.FC<{}> = () => {
                 processing_context,
                 successful_tool_results,
                 tool_execution_summary,
-                error_detail
+                error_detail,
+                conversation_id
             } = event.detail;
+
+            // Route preserved content to the conversation the stream was bound
+            // to. The event may fire while the user is viewing a different
+            // conversation (or project); falling back to the displayed
+            // conversation is only for legacy events that carry no id.
+            const targetConversationId: string = conversation_id || currentConversationId;
 
             console.log('Received preserved content event:', {
                 eventType: 'preservedContent',
@@ -563,7 +571,7 @@ export const StreamedContent: React.FC<{}> = () => {
             if (preserved_content || existing_streamed_content || (successful_tool_results && successful_tool_results.length > 0) || (pre_streaming_work && pre_streaming_work.length > 0)) {
                 let preservedContent = preserved_content || '';
                 // Use the existing streamed content from the error data, or fall back to what's in the map
-                const actualExistingContent = existing_streamed_content || streamedContentMapRef.current.get(currentConversationId) || '';
+                const actualExistingContent = existing_streamed_content || streamedContentMapRef.current.get(targetConversationId) || '';
 
                 if (actualExistingContent && actualExistingContent.trim()) {
                     // If we have existing streamed content, preserve it at the top
@@ -609,8 +617,12 @@ export const StreamedContent: React.FC<{}> = () => {
                         : '');
                 preservedContent += errorContext;
 
-                // Signal React to render a proper continue button component
-                setShowPreservedContinue(true);
+                // Signal React to render a proper continue button component —
+                // only when the preserved content belongs to the conversation
+                // currently on screen.
+                if (targetConversationId === currentConversationId) {
+                    setShowPreservedContinue(true);
+                }
 
                 console.log('Creating preserved message with content length:', preservedContent.length);
                 console.log('First 200 chars:', preservedContent.substring(0, 200));
@@ -631,11 +643,11 @@ export const StreamedContent: React.FC<{}> = () => {
                     }
                 };
 
-                addMessageToConversation(preservedMessage, currentConversationId);
+                addMessageToConversation(preservedMessage, targetConversationId);
                 console.log('Added preserved message with successful tool results');
 
                 // Now remove the streaming conversation since we've preserved the content
-                removeStreamingConversation(currentConversationId);
+                removeStreamingConversation(targetConversationId);
             }
         };
 
@@ -718,7 +730,11 @@ export const StreamedContent: React.FC<{}> = () => {
                 await send({
                     messages: messagesToSend,
                     question: lastHumanMessage.content,
-                    isStreamingToCurrentConversation: true,
+                    // Bind explicitly: the guard above compared against a closure-
+                    // captured currentConversationId, while send() would otherwise
+                    // resolve the LIVE one — they can disagree if the user switched
+                    // conversations after this listener was registered.
+                    conversationId: retryConversationId,
                     includeReasoning: true,
                 });
             } catch (error) {
@@ -778,7 +794,8 @@ export const StreamedContent: React.FC<{}> = () => {
                 await send({
                     messages: messagesToSend,
                     question: lastHumanMessage.content,
-                    isStreamingToCurrentConversation: true,
+                    // Bind explicitly — see handleRetryAuthError.
+                    conversationId: retryConversationId,
                     includeReasoning: true,
                 });
             } catch (error) {
@@ -837,7 +854,11 @@ export const StreamedContent: React.FC<{}> = () => {
                 await send({
                     messages: messagesToSend,
                     question: lastHumanMessage.content,
-                    isStreamingToCurrentConversation: true,
+                    // Bind explicitly: this retry fires from a setTimeout 800ms
+                    // after a stream read error, so the user may have switched
+                    // conversations (or projects) — the source of the cross-
+                    // conversation content leak.
+                    conversationId: retryConversationId,
                     includeReasoning: true,
                 });
             } catch (error) {
