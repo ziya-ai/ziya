@@ -69,9 +69,26 @@ describe('resolveSpecWidth', () => {
     expect(resolveSpecWidth(spec, CONTAINER_W)).toBe(300);
   });
 
-  it('falls back to the measured width for composite specs with no width', () => {
-    const spec = { facet: { field: 'a' }, spec: { mark: 'bar' } };
+  it('falls back to the measured width for concat specs with no width', () => {
+    // Concat sub-views each span the full width, so the container measurement
+    // IS the right per-sub-view value. Faceted specs are not in this class —
+    // their top-level width sizes a single cell. See vegaFacetLayout.test.ts.
+    const spec = { vconcat: [{ mark: 'bar' }] };
     expect(resolveSpecWidth(spec, CONTAINER_W)).toBe(CONTAINER_W);
+  });
+
+  it('resolves a channel-faceted spec to a per-cell width, not container', () => {
+    // THE reported bug: encoding.row went unrecognised, so this returned
+    // 'container' and Vega-Lite emitted "Width 'container' only works for
+    // single views and layered views" once per cell plus once for the spec.
+    const spec = {
+      mark: 'bar',
+      encoding: { row: { field: 'dim' }, x: { field: 'score' } },
+    };
+    const width = resolveSpecWidth(spec, CONTAINER_W);
+    expect(width).not.toBe('container');
+    expect(typeof width).toBe('number');
+    expect(width as number).toBeLessThan(CONTAINER_W);
   });
 
   it('never returns a non-positive or non-finite composite width', () => {
@@ -105,21 +122,33 @@ describe('resolveAutosize', () => {
       .toEqual({ type: 'fit-x', contains: 'padding' });
   });
 
-  it('keeps an authored autosize for a pixel (composite) width', () => {
+  it("overrides an authored 'fit' for a pixel (composite) width", () => {
+    // Verified against vega-lite 6.4: a composite spec carrying autosize 'fit'
+    // warns "Autosize 'fit' only works for single views and layered views" and
+    // is silently rewritten to 'pad'. Returning 'fit' asked for something
+    // Vega-Lite would never honour, at the cost of a warning on every spec.
     const spec = { autosize: { type: 'fit', contains: 'content' } };
     expect(resolveAutosize(spec, 800))
-      .toEqual({ type: 'fit', contains: 'content' });
+      .toEqual({ type: 'pad', contains: 'padding' });
   });
 
-  it('defaults to fit/content for a pixel width with no authored autosize', () => {
+  it("keeps an authored 'pad' autosize for a pixel width", () => {
+    // 'pad' is accepted for composite specs, so the authored value stands.
+    const spec = { autosize: { type: 'pad', contains: 'content' } };
+    expect(resolveAutosize(spec, 800))
+      .toEqual({ type: 'pad', contains: 'content' });
+  });
+
+  it('defaults to pad/padding for a pixel width with no authored autosize', () => {
     expect(resolveAutosize({}, 800))
-      .toEqual({ type: 'fit', contains: 'content' });
+      .toEqual({ type: 'pad', contains: 'padding' });
   });
 
   it('copies rather than aliases an authored autosize object', () => {
-    const authored = { type: 'fit', contains: 'content' };
+    const authored = { type: 'pad', contains: 'content' };
     const out = resolveAutosize({ autosize: authored }, 800);
     expect(out).not.toBe(authored);
+    expect(out).toEqual(authored);
   });
 });
 
@@ -166,16 +195,55 @@ describe('applySizing', () => {
       { vconcat: [{ mark: 'bar' }] },
       { vconcat: [{ mark: 'bar' }], width: 300 },
       { facet: { field: 'a' }, spec: { mark: 'bar' }, width: 250 },
+      { mark: 'bar', encoding: { row: { field: 'a' }, x: { field: 'b' } } },
+      { mark: 'bar', encoding: { column: { field: 'a' }, x: { field: 'b' } } },
+      { mark: 'bar', encoding: { facet: { field: 'a' }, x: { field: 'b' } } },
     ];
     for (const spec of specs) {
       applySizing(spec, CONTAINER_W);
       if (spec.width === 'container') {
         expect(spec.autosize).toEqual({ type: 'fit-x', contains: 'padding' });
       } else {
+        // Composite specs get a pixel width and 'pad' — the only autosize
+        // Vega-Lite accepts there; a 'fit' variant warns and is rewritten.
         expect(typeof spec.width).toBe('number');
-        expect(spec.autosize.type).not.toBe('pad');
+        expect(spec.autosize.type).toBe('pad');
       }
     }
+  });
+
+  it('writes the facet operator cell width where Vega-Lite reads it', () => {
+    // Measured: a row-faceted operator spec given width:1160 at the TOP level
+    // assembled to 463px, i.e. the value was discarded and the default cell
+    // width used. The width has to land on the inner `spec`.
+    const spec: any = {
+      facet: { row: { field: 'dim' } },
+      spec: { mark: 'bar', encoding: { x: { field: 'score' } } },
+    };
+    const report = applySizing(spec, CONTAINER_W);
+
+    expect(report.widthTarget).toBe('spec');
+    expect(typeof spec.spec.width).toBe('number');
+    expect(spec.spec.width).toBe(report.width);
+    // Mirrored, not moved: vega-embed injects its own width option when
+    // spec.width is absent, which would overwrite the cell width above.
+    expect(spec.width).toBe(report.width);
+  });
+
+  it('does not treat a yOffset-grouped single view as composite', () => {
+    // The positive counterpart: the single-view rewrite of the reported chart
+    // must still get container width, or the fix would have over-reached.
+    const spec: any = {
+      mark: 'bar',
+      encoding: {
+        y: { field: 'dim' },
+        yOffset: { field: 'tool' },
+        x: { field: 'score' },
+      },
+    };
+    applySizing(spec, CONTAINER_W);
+    expect(spec.width).toBe('container');
+    expect(spec.autosize).toEqual({ type: 'fit-x', contains: 'padding' });
   });
 
   it('is idempotent', () => {
