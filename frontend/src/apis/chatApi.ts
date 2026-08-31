@@ -12,6 +12,7 @@ import { extractSingleFileDiff } from '../utils/diffUtils';
 import { drainSseFrames } from './sseFramer';
 import { applyContinuationRewind } from './continuationProtocol';
 import { resolveModelPin, ResolvedModelPin } from '../utils/modelPins';
+import { reportStreamModel } from '../services/modelSyncService';
 import {
     applyThinkingEvent,
     thinkingMarker,
@@ -995,6 +996,13 @@ export const sendPayload = async (
             throw new Error('No body in response');
         }
 
+        // Layer-2 model sync: the server names the model that actually
+        // streams this response.  A 'global'-sourced value that differs
+        // from the tab's last-known model proves the global model was
+        // changed elsewhere (another tab/browser) — reconcile the label.
+        reportStreamModel(response.headers.get('X-Ziya-Model'),
+            response.headers.get('X-Ziya-Model-Source'));
+
         // Use ReadableStream API for more reliable streaming
         const reader = response.body.getReader();
         readerRef = reader;
@@ -1393,7 +1401,10 @@ export const sendPayload = async (
 
                         // Dispatch the preserved content event
                         document.dispatchEvent(new CustomEvent('preservedContent', {
-                            detail: errorData
+                            // Bind the event to the originating request's conversation so
+                            // the handler cannot route preserved content into whichever
+                            // conversation happens to be displayed when the error lands.
+                            detail: { ...errorData, conversation_id: conversationId }
                         }));
                     }
                 } catch (e) {
@@ -1592,6 +1603,24 @@ export const sendPayload = async (
                 if (unwrappedData.type === 'refusal_recovery') {
                     showError(unwrappedData.message, conversationId,
                         addMessageToConversation, 'warning', unwrappedData.type);
+                    return;
+                }
+
+                // Feedback delivery acknowledgment. MUST sit with the other type
+                // dispatches, NOT inside the contentToAdd block below: this chunk
+                // carries only a message field, so contentToAdd is empty and the
+                // gate skipped the dispatch entirely — feedbackDelivered never
+                // fired, so the composer never pruned its retained copy and
+                // re-sent every delivered feedback as a fresh turn at turn end.
+                if (unwrappedData.type === 'feedback_delivered') {
+                    console.log('📝 FEEDBACK_DELIVERED:', unwrappedData.message);
+                    document.dispatchEvent(new CustomEvent('feedbackDelivered', {
+                        detail: {
+                            message: unwrappedData.message,
+                            conversationId,
+                            timestamp: Date.now()
+                        }
+                    }));
                     return;
                 }
 
@@ -2039,20 +2068,6 @@ export const sendPayload = async (
                             return; // Backend will handle retry
                         }
                     } // end if (!insideCodeFence)
-
-                    // Handle feedback delivery acknowledgment from backend
-                    if (unwrappedData.type === 'feedback_delivered') {
-                        console.log('📝 FEEDBACK_DELIVERED:', unwrappedData.message);
-                        // Dispatch event so SendChatContainer can update message status
-                        document.dispatchEvent(new CustomEvent('feedbackDelivered', {
-                            detail: {
-                                message: unwrappedData.message,
-                                conversationId,
-                                timestamp: Date.now()
-                            }
-                        }));
-                        return;
-                    }
 
                     // No hallucination detected — safe to add content
                     currentContent += contentToAdd;
@@ -2915,6 +2930,7 @@ export const sendPayload = async (
                         if (isPartialResponse) {
                             document.dispatchEvent(new CustomEvent('preservedContent', {
                                 detail: {
+                                    conversation_id: conversationId,
                                     existing_streamed_content: currentContent,
                                     error_detail: errorResponse.detail || 'An error occurred during processing'
                                 }
