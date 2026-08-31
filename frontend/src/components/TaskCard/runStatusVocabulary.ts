@@ -42,6 +42,12 @@ export const RUN_STATUS_FILL: Record<RunStatus, string> = {
   // amber here would read as a verdict on the work, which is precisely
   // the misreading 'held' exists to prevent.
   held: '#8957e5',
+  // Amber-forward rather than violet, unlike paused/held: this is the one
+  // status that is a request directed AT the reader.  A third violet
+  // non-animating gear would be indistinguishable from the other two in a
+  // narrow sidebar row — the same unreadability the gear-geometry fix
+  // addressed by making size, not just colour, carry the distinction.
+  awaiting_input: '#e3b341',
 };
 
 /**
@@ -77,6 +83,10 @@ export const RUN_STATUS_ANIMATES: Record<RunStatus, boolean> = {
   partial: false,
   failed: false,
   cancelled: false,
+  // Not animating: nothing is progressing.  The pull for attention comes
+  // from colour and from the hint text, not from motion, so the indicator
+  // stays honest under prefers-reduced-motion.
+  awaiting_input: false,
 };
 
 /**
@@ -92,6 +102,9 @@ export const RUN_STATUS_LABEL: Record<RunStatus, string> = {
   partial: 'partial',
   failed: 'failed',
   cancelled: 'cancelled',
+  // Second person on purpose.  Every other label names a state of the run;
+  // this one names an obligation of the reader.
+  awaiting_input: 'waiting on you',
 };
 
 /**
@@ -109,6 +122,7 @@ export const RUN_STATUS_HINT: Record<RunStatus, string> = {
   partial: 'Task stopped partway — some stages completed',
   failed: 'Task failed — the work or the card needs fixing',
   cancelled: 'Task cancelled',
+  awaiting_input: 'Task is waiting for your answer before it continues',
 };
 
 /**
@@ -120,7 +134,11 @@ export const RUN_STATUS_HINT: Record<RunStatus, string> = {
  * at the end of the line, where a narrow sidebar may clip it.
  */
 export const RUN_STATUS_ORDER: ReadonlyArray<RunStatus> = [
-  'held', 'failed', 'partial', 'cancelled',
+  // First of all, ahead even of 'held': this is the only status whose
+  // resolution is the reader's to give.  A row reading "3 done" before
+  // "1 waiting on you" buries the one item that cannot advance until
+  // they act.
+  'awaiting_input', 'held', 'failed', 'partial', 'cancelled',
   'running', 'paused', 'queued', 'done',
 ];
 

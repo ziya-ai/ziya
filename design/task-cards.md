@@ -55,6 +55,10 @@ Orthogonal options:
   a prior iteration's artifact; the iteration's conversation remains
   fresh either way)
 - repeat_max: upper bound on iterations
+- repeat_require_complete: for-each only — fail the loop unless every
+  roster member has a passing iteration (see below)
+- repeat_item_key: for-each only — dotted path naming each item's stable
+  identity when items are objects rather than scalars
 
 `repeat_max` is a **cost ceiling**, and in for-each mode it clips the
 resolved roster rather than raising: a 112-item queue under
@@ -72,6 +76,28 @@ output *directory* rather than the roster cannot tell the difference —
 which is how a reintegration phase came to report a finished pass having
 investigated 60 of 112 capabilities, with nothing anywhere naming the
 other 52.
+
+`repeat_require_complete` addresses the other half of that problem. A cap
+clip is a *dispatch*-level loss, but the two worst holes measured in the
+same study were production losses: the cap equalled the roster, every item
+was dispatched, and an artifact simply never appeared. Set it and the loop
+FAILS at exit unless every roster member has a passing iteration, naming
+the missing members on its artifact and recording the full list on the
+execution context — so the enclosing `on_failure` governs, because the
+author has declared that partial is not success. Opt-in; unset preserves
+the previous behaviour exactly.
+
+It contradicts a finite `repeat_max` (a cost ceiling and a completeness
+requirement cannot both hold) and is refused with it, at validation time
+and again at plan time; bound cost with `repeat_max_concurrency` instead.
+Duplicate member keys, an object item with no `repeat_item_key`, and an
+unresolvable source are refused the same way, before any spend — an
+ambiguous or unnameable roster cannot be diffed against what was produced.
+
+Its limit is worth stating plainly: coverage here is **status**-shaped, not
+output-shaped. An iteration that reports success while writing nothing
+still counts as covered. Catching that needs a per-iteration output
+contract, which is a separate primitive.
 
 ### Parallel (implicit/explicit)
 Stacking blocks is an implicit sequence. For concurrent execution of
@@ -128,10 +154,82 @@ when present, *are* surfaced live on the running card (showing the
 resolved values after launch-override merge), so formal state you can
 reference by name is also state you can watch.
 
+### Ask (amber) — the human-in-the-loop checkpoint
+
+A leaf, like State. It holds the run at a block boundary with status
+`awaiting_input` until a human answers, then binds the answer into the run
+exactly the way a State block binds its literals: `ask_variable` makes it
+readable as `{{var.NAME}}`, and a standing prose note reaches every task in
+scope without any templating.
+
+```
+Group
+├── Task    "cut the commits"
+├── Task    "tag the release"
+├── Ask     "Push v0.8.7.0 to the public remote?"   ← holds here
+└── Task    "push"
+```
+
+Named `ask` and not `gate` because "gate" already means two other things in
+this system — the infra fan-out gate (`TaskRun.held_gate_reason`) and the
+resume-from-block walk — and a third meaning in the same models would be a
+reader's problem forever.
+
+**Reject is a failed artifact, not a branch.** The grammar has no
+conditional, and the enclosing container's `on_failure` already expresses
+both readings: `stop` halts the sequence at the rejection, `continue` carries
+on with it recorded. Inventing a branch for this one case would be a second
+control-flow mechanism to keep in agreement with the first.
+
+**The answer lives on the run record, keyed by block id.** This is the whole
+design, and everything else follows from it. The block's execution is
+*"answer already recorded? apply it; else ask"*, which makes an Ask idempotent
+in the two places it has to be:
+
+- A **resume walk re-executes** an Ask rather than replaying its artifact (it
+  is grouped with State in the resume-skip gate for the same reason: both
+  rebuild run-scoped state that is not otherwise persisted). Re-running it
+  finds the settled answer and applies it, so the operator is not asked twice.
+- A **server restart** reconciles a waiting run to `held`, not `failed`, with
+  the question preserved and `held_at_block_id` naming the Ask. The answer
+  endpoint still accepts on a held run, so *answer, then resume* replays to
+  the Ask and finds it settled.
+
+That second point is why a gate cannot just be a flag on pause. A manual
+pause lasts seconds and `reconcile_stale_runs` correctly reads a paused run
+at startup as one whose executor died with the server. An ask lasts as long
+as a human takes — hours, days — so the restart is *expected* to outlive it,
+and reconciling it to `failed` would discard a run that had done all its work
+and was one answer from finishing. On a release sweep that means the commits
+are made and the tag is not.
+
+**Timeouts are deliberately absent.** An auto-approving checkpoint is worse
+than no checkpoint, because it presents as oversight while providing none.
+
+**Two enforced limits**, refused at validation rather than discovered at run
+time, both consequences of the single-slot answer record:
+
+- An Ask **inside a parallel container** is refused: a run records one open
+  question, so concurrent asks would overwrite each other and the run would
+  proceed on whichever answer landed last.
+- An Ask **inside a loop body** is refused: answers are keyed per block, so
+  the second iteration would silently reuse the first iteration's answer
+  instead of asking again. Put the checkpoint above the loop and ask about
+  the batch.
+
+Neither is permanent — they are the honest boundary of what the current
+record can express, stated where the author finds out before launching.
+
+Known limit: an agent cannot yet *initiate* a question mid-task. An Ask is
+authored into the tree, so the checkpoints are the ones the card's author
+chose. A model-initiated `ask_human` tool would need to hold inside a model
+turn, which no current hold point does.
+
 ### Composition rules
 - Any block's body can contain any other block.
 - Repeat nests freely inside Repeat.
 - Pipelines (implicit sequences) nest freely inside Repeats.
+- Ask sits in a sequence, never inside a loop or a parallel body.
 - Depth is unlimited; legibility is the only practical cap.
 
 ## Context scoping
@@ -400,6 +498,24 @@ Events are transient; persisted storage remains the source of truth.
 Reconnecting clients reconcile by reading the snapshot and then
 resuming the event stream.
 
+**Teardown is gated on the executor having unwound, not on the run being
+final.**  These are different conditions and the client keeps two lists
+for them (`useTaskRunStream`).  A `held` run is *not* final — it
+continues as a new run, so an older snapshot of it carries no authority
+— but its coroutine has already unwound, so nothing can still arrive on
+either channel and both the socket and the safety-net poll must close.
+Gating teardown on finality instead left a held run holding an open
+socket and a 15 s poll for as long as its tile stayed mounted, per tile,
+with no event able to release it: the server writes `held` only after
+`execute_block` has raised, the WS endpoint never closes from its own
+side, and a resume mints a new run id rather than reviving the record.
+
+`paused` is the deliberate exception and must stay live: it resumes *in
+place* (`_wait_if_paused` writes `running` back onto the same record), so
+its stream is genuinely coming back.  The distinction to preserve is
+"can anything still be produced for this run id?", never "is the run
+still running?".
+
 ### Cancellation
 
 `POST /task-runs/{id}/cancel` sets `TaskRun.cancel_requested = True`
@@ -648,6 +764,86 @@ persisted flags) and as ledger records carrying the full patch, so a
 run remains reconstructable.  A Repeat that restarts also re-records
 iteration summaries; the `improve_revision` events are what segment
 the passes.
+
+**The agent-facing write tool is held to the same invariant.**  The
+`task_card_write` MCP tool accepts a whole-`root` replacement, which
+historically could orphan a signed approval by accident: a model
+rewriting the tree from memory that drops a block's `id` gets a fresh
+one minted at save time, and the approval keyed by `(block_id,
+scope_hash)` silently stops matching — the block falls to the
+permission floor on its next run with nothing saying so.  The tool now
+refuses any submitted root whose `{block_id: scope}` map differs from
+the stored card's in any way (edited, added, or removed scope, or a
+scope-bearing block whose id changed or vanished), naming each offense
+and directing permissions changes to the editor, where they surface
+signing requirements to a human
+(`app/utils/task_card_write_guard.py`).  Text and structure edits that
+preserve ids and scopes pass untouched.  Every card-write path an
+agent can reach — the self-improvement patcher and the MCP tool —
+therefore enforces "text, never privilege" mechanically.
+
+**Judge tier.**  The improvement judge runs on the dedicated
+`improve_judge` service category, declared as the portable `medium`
+tier rung (`SERVICE_MODEL_TIERS`) rather than a hardcoded model id —
+resolved per-endpoint through the same per-model tier tags that
+`TaskScope.model_tier` uses (`resolve_tier_model`), so the judge
+follows the endpoint's tier assignments as models are added and
+retired, and "medium" means the same thing for the judge as it does
+for a card's workers.  Not the lite tier the yes/no evaluators use:
+a `revise` verdict *authors* the card's durable instruction text, so
+generation quality is the product — a lite-tier judge that rewrites
+instructions slightly worse each time is a card that degrades instead
+of converging, and the oscillation guard cannot catch monotonic
+mediocrity.  Volume is one call per improving level per run.
+Override via `ZIYA_IMPROVE_JUDGE_MODEL`.
+
+
+**Revertability.**  Every applied revision's ledger record carries a
+`pre_image`: the replaced fields' prior text, captured immediately
+before application (afterwards it exists nowhere), in the same
+`{block_id: {field: text}}` shape as the patch itself.  A pre-image is
+therefore a valid text patch, and revert
+(`POST /task-cards/{id}/lessons/revert`, keyed by `patch_hash` +
+`block_id` — ledger indices are not stable under the oldest-dropped
+cap) rides the exact same guarded path the improvement used, so
+un-teaching a card can no more touch privilege than teaching it could.
+Records written before pre-image capture existed return 409 rather
+than guessing.  One deliberate asymmetry: `apply_improve_patch` skips
+empty replacement text, so a revision that *filled* a previously-empty
+field reverts as a recorded no-op — the field keeps its new text and
+the ledger says so — rather than risking a clearing primitive.
+
+**Surfaces.**  Authoring: a 🌱 section on every container block editor
+(and on the card header for the group root — the root *is* a container
+level; schedule roots are excluded because the scheduler dispatches
+each fire as an independent run rooted at the body, so a root-level
+flag would never execute).  Observation: `improve_revision` events
+render as highlighted rows in the run inspector's Events tab, and
+`GET /task-cards/{id}/lessons` returns the card's full learning
+history (newest first, with `edits_applied`) from the ledger — the
+durable record, since relay events expire with the replay buffer.
+
+Deck-level: every card row carries a 🌱 badge sourced from
+`GET /task-cards/lessons-summary` — one ledger read aggregated per
+card (`{count, edits_applied, last_ts}`) rather than an N-request
+burst, the same shape the deck uses for run status.  The badge shows
+`edits_applied` when any revision has landed (the card's text has
+durably changed) and falls back to the verdict count, dimmer, so an
+observe-only trial (`improve_max: 0`) is visible too.  The route is
+registered ahead of `GET /{card_id}` deliberately — FastAPI matches in
+registration order, so placed later it would be captured as a card id.
+
+Selected-card level: the **Lessons panel** (`LessonsPanel.tsx`) sits
+above the editor in the deck library, beside the callee-hold panel and
+for the same reason — it is a fact about the card's current state, not
+its definition; the text in the editor below may exist *because* of a
+revision listed here.  Collapsed by default, fetch-on-expand (most
+cards have no lessons; the badge is the invitation).  Each applied
+revision expands to a before/after view of every changed field and
+carries one-click **Revert** wired to the revert endpoint; a record
+without a `pre_image` renders the button disabled with the reason,
+matching the server's 409.  After a revert the panel reloads the card
+so the editor shows the restored text.
 
 ## UX shape
 
