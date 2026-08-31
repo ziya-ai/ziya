@@ -132,11 +132,22 @@ export interface DotModel {
   total: number;
   /** True when the loop is mid-iteration (renders a pulsing dot). */
   running: boolean;
+  /**
+   * Ordinals of the iterations currently in flight, ascending.  A
+   * PARALLEL Repeat has several at once, and ``running`` — one boolean
+   * for the whole row — could only ever render a single pulsing dot, so
+   * a fan-out of 8 was indistinguishable from a serial loop.  Empty
+   * when the block is not running, or when no live iteration buckets
+   * are known (a reloaded run with no live events), in which case
+   * ``running`` alone still drives the legacy single dot.
+   */
+  runningIndices: number[];
 }
 
 export function buildDots(
   summaries: IterationSummary[] | undefined,
   blockRunning: boolean,
+  runningIndices: number[] = [],
 ): DotModel {
   const all = summaries ?? [];
   const total = all.length;
@@ -151,7 +162,24 @@ export function buildDots(
     overflow: total - shown.length,
     total,
     running: blockRunning,
+    runningIndices: blockRunning
+      ? [...runningIndices].sort((a, b) => a - b)
+      : [],
   };
+}
+
+/**
+ * Label for the count trailing a loop row's dot strip.  With a known
+ * roster size (a for_each Repeat persists ``planned_iterations`` at
+ * plan time) progress reads as "n/m" against the whole roster;
+ * without one, the bare completed count, as before.
+ */
+export function dotCountLabel(
+  total: number, planned?: number | null,
+): string {
+  return planned != null && planned > 0
+    ? `${total}/${planned}`
+    : String(total);
 }
 
 const TYPE_EMOJI: Record<string, string> = {
