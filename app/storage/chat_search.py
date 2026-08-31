@@ -20,12 +20,55 @@ Read-only: this module never mutates or deletes files.  Inactive chats
 (isActive == False) are skipped to match the sidebar list.
 """
 
+import math
 import json
 import time
 from pathlib import Path
 from typing import List, Optional
 
 from app.utils.logging_utils import logger
+
+# Relevance weighting.  Raw occurrence count was the old score, which let a
+# long conversation that mentions the term incidentally a dozen times outrank
+# the conversation whose *title* is the term.  Three corrections: a title hit
+# is worth many body hits, because a title is a short deliberate label; the
+# opening messages that establish a conversation's subject count double; and
+# repeated hits inside one message saturate, so no single verbose message can
+# dominate however many times it repeats the term.
+TITLE_WEIGHT = 8.0
+OPENING_MESSAGE_COUNT = 2
+OPENING_MULTIPLIER = 2.0
+# BM25-style term-frequency saturation constant.  A message's contribution
+# asymptotes at TF_K1 + 1 (~2.2), so 100 hits in one message is worth barely
+# more than 10.
+TF_K1 = 1.2
+# Conversations up to this length are not length-penalised at all.
+LENGTH_NORM_FREE_MESSAGES = 10
+
+SORT_MODES = ("relevance", "newest", "oldest")
+
+
+def _relevance_score(matches: List[dict], title_matches: bool,
+                     total_messages: int) -> float:
+    """Score one conversation against the query.
+
+    A matching message contributes occ*(k+1)/(occ+k), which rises from 1.0 at
+    one occurrence towards an asymptote of k+1 - so repetition inside a single
+    message is collapsed rather than counted linearly.  The body total is then
+    divided by sqrt(messages / 10) for conversations longer than ten messages,
+    so a sprawling thread must be proportionally on-topic to outrank a short
+    one.  The title term is added outside that normalisation: a title hit
+    describes the conversation, not its volume.
+    """
+    body = 0.0
+    for m in matches:
+        occ = max(1, len(m.get("highlightPositions") or ()))
+        weight = occ * (TF_K1 + 1.0) / (occ + TF_K1)
+        if m.get("messageIndex", 0) < OPENING_MESSAGE_COUNT:
+            weight *= OPENING_MULTIPLIER
+        body += weight
+    norm = max(1.0, math.sqrt(max(1, total_messages) / LENGTH_NORM_FREE_MESSAGES))
+    return (TITLE_WEIGHT if title_matches else 0.0) + body / norm
 
 
 def _to_searchable_text(content) -> str:
@@ -123,15 +166,20 @@ def _search_one_chat(data: dict, project_id: str, search_term: str,
 
     matches: List[dict] = []
     messages = data.get("messages") or []
+    total_messages = len(messages) if isinstance(messages, list) else 0
+    newest_msg_ts = 0
     if isinstance(messages, list):
         for index, msg in enumerate(messages):
             if not isinstance(msg, dict):
                 continue
+            raw_ts = msg.get("_timestamp") or msg.get("timestamp") or 0
+            if isinstance(raw_ts, (int, float)) and raw_ts > newest_msg_ts:
+                newest_msg_ts = int(raw_ts)
             content_str = _to_searchable_text(msg.get("content"))
             if not content_str:
                 continue
-            ts = (msg.get("_timestamp") or msg.get("timestamp")
-                  or data.get("lastAccessedAt") or data.get("lastActiveAt") or 0)
+            ts = (raw_ts or data.get("lastActiveAt")
+                  or data.get("lastAccessedAt") or 0)
             match = _build_match(
                 content_str, search_term, term_len, index,
                 msg.get("role") or "assistant", ts,
@@ -143,6 +191,13 @@ def _search_one_chat(data: dict, project_id: str, search_term: str,
     if not matches and not title_matches:
         return None
 
+    # Age is last *activity*, not last access.  lastAccessedAt moves when a
+    # chat is merely opened to skim, which made a two-year-old thread the
+    # "freshest" result the moment you looked at it.  lastActiveAt is when
+    # the chat was last written to; the newest message stamp covers records
+    # written before that field existed.
+    last_activity = (data.get("lastActiveAt") or newest_msg_ts
+                     or data.get("lastAccessedAt") or 0)
     return {
         "conversationId": data.get("id"),
         "conversationTitle": title,
@@ -150,6 +205,8 @@ def _search_one_chat(data: dict, project_id: str, search_term: str,
         "projectId": data.get("projectId") or project_id,
         "matches": matches,
         "totalMatches": len(matches) + (1 if title_matches else 0),
+        "relevanceScore": _relevance_score(matches, title_matches, total_messages),
+        "lastActivityAt": last_activity,
         "lastAccessedAt": data.get("lastAccessedAt") or data.get("lastActiveAt") or 0,
     }
 
@@ -168,15 +225,23 @@ def _iter_chat_files(chats_dir: Path):
 
 def search_chats(ziya_home: Path, project_id: str, query: str,
                  all_projects: bool = False, case_sensitive: bool = False,
-                 max_snippet_length: int = 150) -> List[dict]:
+                 max_snippet_length: int = 150,
+                 sort: str = "relevance") -> List[dict]:
     """Scan chat files for *query* and return SearchResult dicts.
 
     Streams one file at a time so peak memory is a single chat record
     regardless of history size.  ``all_projects=False`` scans strictly the
     requested project; ``True`` scans every project directory.
+
+    ``sort`` is one of ``relevance`` (weighted score, see _relevance_score),
+    ``newest`` or ``oldest`` (by last activity).  An unrecognised value falls
+    back to ``relevance`` rather than erroring, so a stale client that sends
+    a mode this server does not know still gets usable results.
     """
     if not query or not query.strip():
         return []
+    if sort not in SORT_MODES:
+        sort = "relevance"
 
     t0 = time.perf_counter()
     search_term = query if case_sensitive else query.lower()
@@ -209,10 +274,19 @@ def search_chats(ziya_home: Path, project_id: str, query: str,
                 seen_ids.add(chat_id)
                 results.append(result)
 
-    # Relevance (match count) then recency — same ordering as the old client.
-    results.sort(key=lambda r: (r["totalMatches"], r["lastAccessedAt"]), reverse=True)
+    if sort == "newest":
+        results.sort(key=lambda r: (r["lastActivityAt"], r["relevanceScore"]),
+                     reverse=True)
+    elif sort == "oldest":
+        # A 0 timestamp means "unknown", so push those last instead of letting
+        # them pose as the oldest conversations in the project.
+        results.sort(key=lambda r: (r["lastActivityAt"] or float("inf"),
+                                    -r["relevanceScore"]))
+    else:
+        results.sort(key=lambda r: (r["relevanceScore"], r["lastActivityAt"]),
+                     reverse=True)
     logger.debug(
-        f"search_chats[{project_id[:8]}] q={query!r} all={all_projects}: "
+        f"search_chats[{project_id[:8]}] q={query!r} all={all_projects} sort={sort}: "
         f"{len(results)} hits over {n_files} files in "
         f"{(time.perf_counter()-t0)*1000:.0f}ms"
     )
