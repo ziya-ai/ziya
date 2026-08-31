@@ -1,10 +1,28 @@
 import { type EmbedOptions } from 'vega-embed';
 import { D3RenderPlugin } from '../../types/d3';
-import { applySizing, isCompositeSpec, resolveAutosize, resolveSpecWidth } from './vegaSizing';
+import { applyHeightFloor, applySizing, isCompositeSpec, resolveAutosize, resolveSpecWidth } from './vegaSizing';
+import {
+  MAX_AXIS_LABEL_LIMIT,
+  applySharedAxisDefaults,
+  deduplicateLegendDomains,
+  synthesizeColorLegend,
+} from './vegaLayerDefaults';
+import { isFacetedSpec } from './vegaFacetLayout';
+import { applyFacetCellWidth, calibrateFacetView } from './vegaFacetFit';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 import { getZoomScript } from '../../utils/popupScriptUtils';
 import { collectDeclaredParamNames, dropDanglingParamConditions } from './vegaLiteParamGuard';
+import {
+  tolerantParseVegaSpec,
+  hoistMarkEncoding,
+  validateColorSchemes,
+  normalizeBareArrayData,
+  reconcileThemeColors,
+  enhanceArcChartsWithTextLabels,
+  sanitizeResolveScale,
+  applyCategoricalPaletteFix,
+} from './vegaRecovery';
 
 // SSRF hardening (PenPal #83, CWE-918). A Vega-Lite spec's `data.url`
 // makes Vega's default loader issue an HTTP fetch. This plugin also drives
@@ -227,6 +245,108 @@ export const buildCurrencyLocale = (symbol: string): Record<string, unknown> => 
   currency: [symbol, ''],
 });
 
+// ── G-53 / D-264: stale Vega-Lite $schema upgrade ──────────────────────────
+// A model frequently declares an old Vega-Lite schema URL (v1..v4) while using
+// syntax that only compiles under v5 (e.g. mark.cornerRadiusEnd, encoding-level
+// title, legend orient). vega-embed selects the compiler by the $schema
+// version, so the v5-only features are silently dropped. Upgrade any *stale
+// Vega-Lite* schema to v5. Non-lite Vega schemas ('/vega/vN') and already-v5
+// schemas are left untouched, so this never changes a spec that was correct.
+export function upgradeStaleVegaLiteSchema(schema: unknown): string | null {
+  if (typeof schema !== 'string') return null;
+  if (!schema.includes('vega-lite')) return null; // leave Vega (non-lite) / unknown alone
+  const m = schema.match(/vega-lite\/v(\d+)/);
+  if (!m) return null;
+  const major = parseInt(m[1], 10);
+  if (Number.isFinite(major) && major < 5) {
+    return 'https://vega.github.io/schema/vega-lite/v5.json';
+  }
+  return null;
+}
+
+// ── G-53 / D-266: high-cardinality legend cardinality estimate ─────────────
+// The legend-layout optimiser counts distinct values from data.values. For
+// generated data (data.sequence) or transform-derived colour fields the field
+// is absent from the raw rows, so the count is 0, the wrapping/symbolLimit
+// override never fires, and Vega's default legend symbolLimit (30) silently
+// truncates the legend. This estimates the cardinality when a direct distinct
+// count is unavailable: an upper bound from the sequence length or row count.
+export function estimateLegendCardinality(data: any, fieldName?: string): number {
+  if (!data || typeof data !== 'object') return 0;
+  const vals = (data as any).values;
+  if (Array.isArray(vals) && vals.length) {
+    if (fieldName) {
+      const s = new Set<any>();
+      for (const row of vals) {
+        if (row && row[fieldName] !== undefined && row[fieldName] !== null) s.add(row[fieldName]);
+      }
+      if (s.size) return s.size;
+    }
+    // field not present in raw rows (transform-derived): row count is the upper bound
+    return vals.length;
+  }
+  const seq = (data as any).sequence;
+  if (seq && typeof seq.start === 'number' && typeof seq.stop === 'number') {
+    const step = typeof seq.step === 'number' && seq.step !== 0 ? seq.step : 1;
+    const n = Math.ceil((seq.stop - seq.start) / step);
+    return n > 0 ? n : 0;
+  }
+  return 0;
+}
+
+// Vega's built-in default symbol legend cap. Legends above this are silently
+// truncated unless symbolLimit is overridden.
+export const VEGA_DEFAULT_SYMBOL_LIMIT = 30;
+
+// ── G-53 / D-269: temporal axis tick-count normalisation ───────────────────
+// A temporal x/y axis with no timeUnit/tickCount lets Vega pick nice ticks that
+// can be FINER than the data granularity, so multiple ticks format to the same
+// label (e.g. "Jan 2024" repeated) while the last period gets no label. When a
+// temporal field has only a few distinct values, target that many ticks so the
+// axis places roughly one tick per period. Author-set tickCount/values/timeUnit
+// and hidden axes (axis:null) are left untouched. Returns the number of axes
+// adjusted (for testing). Mutates the spec in place.
+export function applyTemporalTickCountFix(spec: any): number {
+  if (!spec || typeof spec !== 'object') return 0;
+  let changed = 0;
+  const topValues = Array.isArray(spec.data?.values) ? spec.data.values : null;
+  const fixEncoding = (encoding: any, values: any[] | null) => {
+    if (!encoding || !values) return;
+    for (const ch of ['x', 'y']) {
+      const enc = encoding[ch];
+      if (!enc || typeof enc !== 'object') continue;
+      if (enc.type !== 'temporal') continue;
+      if (enc.timeUnit) continue;              // already bucketed to a period
+      if (!enc.field) continue;
+      const axis = enc.axis;
+      if (axis === null) continue;             // hidden axis, nothing to label
+      if (axis && typeof axis === 'object' && (axis.tickCount != null || axis.values != null)) {
+        continue;                              // author already controls ticks
+      }
+      const s = new Set<string>();
+      for (const row of values) {
+        const v = row?.[enc.field];
+        if (v !== undefined && v !== null) s.add(String(v));
+      }
+      const distinct = s.size;
+      // Only intervene for a small number of distinct periods, where Vega's
+      // default tick density would exceed the data and produce duplicate labels.
+      if (distinct >= 2 && distinct <= 12) {
+        enc.axis = { ...(axis && typeof axis === 'object' ? axis : {}), tickCount: distinct };
+        changed++;
+      }
+    }
+  };
+  fixEncoding(spec.encoding, topValues);
+  if (Array.isArray(spec.layer)) {
+    for (const layer of spec.layer) {
+      const lv = Array.isArray(layer.data?.values) ? layer.data.values : topValues;
+      fixEncoding(layer.encoding, lv);
+    }
+  }
+  return changed;
+}
+
 // SSRF hardening (PenPal #83): recursively remove any `data.url` from a
 // spec before it reaches vegaEmbed, at every nesting level (top-level,
 // layer[], vconcat/hconcat/concat[], facet spec, named datasets). A
@@ -301,6 +421,70 @@ const isVegaLiteDefinitionComplete = (definition: string): boolean => {
     return false;
   }
 };
+
+// Fix 3.9 helper: clip zero-baselined marks whose explicit domain excludes 0.
+//
+// A bar/area mark anchors one end at the zero baseline. When an authored
+// quantitative positional domain excludes zero (e.g. [75, 100] for a
+// percentage chart), scale(0) lands far outside the plot — for a 700px-wide
+// plot with that domain, roughly 2000px off-canvas. Without clipping, those
+// giant overflowing rects dominate the rendered bounds and push the visible
+// chart out of the viewport, so the whole chart appears blank.
+//
+// Vega-Lite's own guidance for explicit domains that exclude data is to set
+// clip: true on the mark, and that is all this pass does. It fires only when:
+//  - the mark is baseline-anchored (bar or area),
+//  - a positional quantitative channel has an authored two-number domain
+//    that excludes 0,
+//  - stacking hasn't been explicitly disabled (stack: null baselines the
+//    mark at the domain edge instead of 0, so nothing overflows), and
+//  - the author hasn't set clip themselves (either value is respected).
+// Returns the number of marks that received clip: true.
+export function clipZeroBaselineMarksToDomain(view: any, inheritedEncoding?: any): number {
+  if (!view || typeof view !== 'object') return 0;
+  let clipped = 0;
+
+  // Layer children inherit positional encodings from their parent view.
+  const effectiveEncoding = { ...(inheritedEncoding || {}), ...(view.encoding || {}) };
+
+  const domainExcludesZero = (channel: string): boolean => {
+    const enc = effectiveEncoding[channel];
+    if (!enc || enc.type !== 'quantitative' || enc.stack === null) return false;
+    const domain = enc.scale?.domain;
+    if (!Array.isArray(domain) || domain.length !== 2 ||
+        !domain.every((v: any) => typeof v === 'number')) return false;
+    return Math.min(domain[0], domain[1]) > 0 || Math.max(domain[0], domain[1]) < 0;
+  };
+
+  const markType = typeof view.mark === 'object' ? view.mark?.type : view.mark;
+  if ((markType === 'bar' || markType === 'area') &&
+      (domainExcludesZero('x') || domainExcludesZero('y'))) {
+    if (typeof view.mark === 'string') {
+      view.mark = { type: view.mark, clip: true };
+      clipped++;
+    } else if (view.mark.clip === undefined) {
+      view.mark.clip = true;
+      clipped++;
+    }
+  }
+
+  if (Array.isArray(view.layer)) {
+    view.layer.forEach((child: any) => {
+      clipped += clipZeroBaselineMarksToDomain(child, effectiveEncoding);
+    });
+  }
+  // Concat children do not inherit encodings; facet/repeat sub-specs do.
+  ['hconcat', 'vconcat', 'concat'].forEach(key => {
+    if (Array.isArray(view[key])) {
+      view[key].forEach((child: any) => {
+        clipped += clipZeroBaselineMarksToDomain(child);
+      });
+    }
+  });
+  if (view.spec) clipped += clipZeroBaselineMarksToDomain(view.spec, effectiveEncoding);
+
+  return clipped;
+}
 
 export const vegaLitePlugin: D3RenderPlugin = {
   name: 'vega-lite-renderer',
@@ -1943,6 +2127,18 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       respectExplicitNumericDomain(spec);
 
+      // Fix 3.9: bar/area marks baseline at 0, so an authored domain that
+      // excludes 0 sends the baseline end of every bar far off-plot; the
+      // unclipped overflow blows out the rendered bounds and the chart
+      // appears blank. Clip such marks to the plot area.
+      const clippedMarks = clipZeroBaselineMarksToDomain(spec);
+      if (clippedMarks > 0) {
+        console.log(
+          `🔧 VEGA-PREPROCESS: Set clip:true on ${clippedMarks} zero-baselined ` +
+          `mark(s) whose explicit scale domain excludes 0`
+        );
+      }
+
       // Fix 4: Ensure schema exists
       if (!spec.$schema) {
         spec.$schema = 'https://vega.github.io/schema/vega-lite/v5.json';
@@ -2492,79 +2688,9 @@ export const vegaLitePlugin: D3RenderPlugin = {
     };
 
 
-    // Fix 17: Enhance arc/pie/donut charts with text labels on slices
-    // LLMs generate arc charts with meaningful text only in tooltips (hover-only),
-    // leaving the rendered chart as unlabeled colored wedges.  This converts the
-    // spec to a layered chart: arc layer + text-label layer, and flags descriptive
-    // fields so a post-render HTML panel can display long text content.
-    const enhanceArcChartsWithTextLabels = (spec: any): any => {
-      const markType = typeof spec.mark === 'string' ? spec.mark : spec.mark?.type;
-      if (markType !== 'arc') return spec;
-      if (!spec.encoding?.theta) return spec;
-      if (spec.layer) return spec; // already layered — don't double-process
-
-      const colorField = spec.encoding?.color?.field;
-      if (!colorField || !spec.data?.values || spec.data.values.length === 0) return spec;
-
-      console.log('🔧 ARC-TEXT-FIX: Enhancing arc chart with text labels');
-
-      // Detect descriptive text fields (strings longer than 25 chars)
-      const firstRow = spec.data.values[0];
-      const descriptiveFields = Object.keys(firstRow).filter(key => {
-        if (key === colorField) return false;
-        const val = firstRow[key];
-        return typeof val === 'string' && val.length > 25;
-      });
-
-      const outerRadius = spec.mark?.outerRadius || 90;
-
-      // Build text-label encoding: reuse theta (and theta2 if present)
-      const textEncoding: any = {
-        theta: { ...spec.encoding.theta },
-        text: { field: colorField, type: 'nominal' },
-      };
-      if (spec.encoding.theta2) {
-        textEncoding.theta2 = { ...spec.encoding.theta2 };
-      }
-
-      // Pick a contrasting text color based on the spec background
-      const bg = (spec.background || '').toLowerCase();
-      const isLightBg = !bg || bg === '#ffffff' || bg.startsWith('#f');
-      textEncoding.color = { value: isLightBg ? '#333333' : '#eeeeee' };
-
-      // Arc layer keeps the full original encoding
-      const arcLayer = { mark: spec.mark, encoding: { ...spec.encoding } };
-
-      // Text layer positioned just outside the arcs
-      const textLayer = {
-        mark: {
-          type: 'text',
-          radiusOffset: Math.max(15, Math.round(outerRadius * 0.18)),
-          fontSize: 12,
-          fontWeight: 'bold',
-        },
-        encoding: textEncoding,
-      };
-
-      // Lift mark + encoding into layers; keep everything else at top level
-      const { mark: _mark, encoding: _enc, ...rest } = spec;
-      const layeredSpec: any = {
-        ...rest,
-        layer: [arcLayer, textLayer],
-      };
-
-      // Stash metadata that the post-render code uses to build a details panel.
-      // Prefixed with __ so vega-embed's JSON-clone drops them (non-enumerable
-      // would be cleaner but JSON.parse(JSON.stringify()) strips them anyway).
-      if (descriptiveFields.length > 0) {
-        console.log(`🔧 ARC-TEXT-FIX: Found descriptive fields for detail panel: ${descriptiveFields.join(', ')}`);
-        layeredSpec.__arcDescriptiveFields = descriptiveFields;
-        layeredSpec.__arcColorField = colorField;
-        layeredSpec.__arcColorScale = spec.encoding?.color?.scale;
-      }
-
-      return layeredSpec;
-    };
+    // Fix 17 / D-261: arc/pie/donut text-label enhancement (incl. the radial
+    // label-placement fix) now lives in vegaRecovery.enhanceArcChartsWithTextLabels
+    // — an exported, unit-tested pure function. Called below with isDarkMode.
 
 
     // Fix 5: Improve LLM-generated chart compatibility
@@ -2623,7 +2749,9 @@ export const vegaLitePlugin: D3RenderPlugin = {
     if (typeof spec === 'string') {
       const extractedContent = extractDefinitionFromYAML(spec, 'vega-lite');
       try {
-        parsedSpec = JSON.parse(extractedContent);
+        // D-252: tolerant parse (fence/prose strip, smart quotes, trailing
+        // commas, unquoted keys, single quotes, trailing ';') before failing.
+        parsedSpec = tolerantParseVegaSpec(extractedContent);
       } catch (parseError) {
         console.debug('Vega-Lite: JSON parse error during processing:', parseError);
         throw parseError; // Re-throw to be handled by outer try-catch
@@ -2631,7 +2759,9 @@ export const vegaLitePlugin: D3RenderPlugin = {
     } else if (spec.definition) {
       const extractedContent = extractDefinitionFromYAML(spec.definition, 'vega-lite');
       try {
-        parsedSpec = JSON.parse(extractedContent);
+        // D-252: tolerant parse first (fence/prose strip, smart quotes,
+        // trailing commas, unquoted keys, single quotes, trailing ';').
+        parsedSpec = tolerantParseVegaSpec(extractedContent);
       } catch (parseError) {
         const errorPos = (parseError as SyntaxError).message.match(/position (\d+)/)?.[1];
         const isNearEnd = errorPos && parseInt(errorPos) >= extractedContent.length - 5;
@@ -2662,6 +2792,13 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
     // Sanitize and apply all chart fixes in one place
     let fixedSpec = sanitizeSpec(parsedSpec);
+    // D-252 (rider): mis-nested `mark.encoding` -> `spec.encoding`.
+    fixedSpec = hoistMarkEncoding(fixedSpec);
+    // D-256: a bare-array `data:[...]` -> `data:{values:[...]}` (skips Vega v5).
+    fixedSpec = normalizeBareArrayData(fixedSpec);
+    // D-255: drop an unknown scale.scheme name (else the render collapses to a
+    // blank canvas). Hex schemes are left for the arc fixer below.
+    validateColorSchemes(fixedSpec);
     fixedSpec = fixRectChartsWithFixedY(fixedSpec);
     fixedSpec = fixChartsWithMissingYAfterTransforms(fixedSpec);
     fixedSpec = fixInvalidColorSchemeInArcs(fixedSpec);
@@ -2674,7 +2811,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
     fixedSpec = fixLLMGeneratedCharts(fixedSpec);
     fixedSpec = fixTooltipEncodings(fixedSpec);
 
-    fixedSpec = enhanceArcChartsWithTextLabels(fixedSpec);
+    fixedSpec = enhanceArcChartsWithTextLabels(fixedSpec, isDarkMode);
     fixedSpec = fixAxisDomainExtrapolation(fixedSpec);
 
     // Fix area/line marks on log scale: ensure domain lower bound > 0
@@ -2829,10 +2966,22 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // COMPREHENSIVE FIX: Handle all cases that cause "Cannot read properties of null (reading 'slice')" error
       // This error occurs when Vega-Lite tries to process invalid scale domains or ranges
 
-      // Fix 0: Upgrade old schema versions that may be causing compatibility issues
-      if (vegaSpec.$schema && vegaSpec.$schema.includes('v4')) {
-        console.log('SCHEMA FIX: Upgrading old v4 schema to v5 for better compatibility');
-        vegaSpec.$schema = 'https://vega.github.io/schema/vega-lite/v5.json';
+      // Fix 0 (G-53/D-264): Upgrade ANY stale Vega-Lite schema (v1..v4) to v5.
+      // A model commonly declares an old schema URL while using v5-only syntax
+      // (cornerRadiusEnd, encoding-level title, legend orient); vega-embed picks
+      // the compiler by $schema version, so those features are silently dropped.
+      const upgradedSchema = upgradeStaleVegaLiteSchema(vegaSpec.$schema);
+      if (upgradedSchema) {
+        console.log(`SCHEMA FIX: Upgrading stale Vega-Lite schema (${vegaSpec.$schema}) to v5`);
+        vegaSpec.$schema = upgradedSchema;
+      }
+
+      // Fix 0.01 (G-53/D-269): normalise temporal axis tick counts so a
+      // low-cardinality temporal axis does not repeat the same formatted label.
+      try {
+        applyTemporalTickCountFix(vegaSpec);
+      } catch (e) {
+        console.warn('Temporal tick-count normalisation skipped:', e);
       }
 
       // Fix 0.1: Handle nominal fields with many categories that might cause slice errors
@@ -2997,7 +3146,6 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // driven to 0px while the total layout overflows its container. So the
       // value is clamped to a generous ceiling instead of dropped, which keeps
       // realistic labels intact while bounding the pathological case.
-      const MAX_AXIS_LABEL_LIMIT = 320;
 
       const clampAxisLabelLimits = (view: any): void => {
         if (!view || typeof view !== 'object') return;
@@ -3108,197 +3256,19 @@ export const vegaLitePlugin: D3RenderPlugin = {
         });
       }
 
-      // Fix synthetic legend layers with duplicate domain entries
-      // LLMs commonly generate legend layers like: domain: ["Task","Task","Task"], range: ["#1a1a2e","#2a9d8f","#ffd700"]
-      // where every domain entry is the same string mapped to different colors — making the legend useless.
-      if (vegaSpec.layer && Array.isArray(vegaSpec.layer)) {
-        vegaSpec.layer.forEach((layer: any, layerIndex: number) => {
-          const colorScale = layer.encoding?.color?.scale;
-          if (!colorScale?.domain || !Array.isArray(colorScale.domain) || colorScale.domain.length < 2) return;
-          if (!colorScale.range || !Array.isArray(colorScale.range)) return;
-
-          // Check if domain has duplicates
-          const uniqueDomain = new Set(colorScale.domain);
-          if (uniqueDomain.size === colorScale.domain.length) return; // all unique, nothing to fix
-
-          console.log(`🔧 LEGEND-DEDUP-FIX: Layer ${layerIndex} has duplicate legend domain entries:`, colorScale.domain);
-
-          // Determine if this is a synthetic/invisible legend layer
-          const isSyntheticLegend =
-            (layer.mark?.opacity === 0 || layer.mark?.size === 0) ||
-            (layer.data?.values && layer.data.values.every((d: any) =>
-              Object.values(d).some(v => v === 0) || layer.mark?.opacity === 0
-            ));
-
-          // Try to infer meaningful labels from sibling layers
-          const siblingLayers = vegaSpec.layer.filter((_: any, i: number) => i !== layerIndex);
-          const inferredLabels: string[] = [];
-
-          for (let i = 0; i < colorScale.domain.length; i++) {
-            if (i < siblingLayers.length) {
-              const sibling = siblingLayers[i];
-              const markType = sibling.mark?.type || sibling.mark || '';
-              const xField = sibling.encoding?.x?.field || '';
-              const yField = sibling.encoding?.y?.field || '';
-              // Use the most descriptive field name, falling back to mark type
-              const label = xField && xField !== yField && xField !== 'background'
-                ? xField
-                : yField || markType || `Series ${i + 1}`;
-              // Capitalise and clean up
-              inferredLabels.push(
-                label.replace(/[_-]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())
-              );
-            } else {
-              inferredLabels.push(`Series ${i + 1}`);
-            }
-          }
-
-          // Ensure the inferred labels are themselves unique
-          const seen = new Map<string, number>();
-          const dedupedLabels = inferredLabels.map(label => {
-            const count = seen.get(label) || 0;
-            seen.set(label, count + 1);
-            return count > 0 ? `${label} ${count + 1}` : label;
-          });
-
-          console.log(`🔧 LEGEND-DEDUP-FIX: Replaced domain with:`, dedupedLabels);
-          colorScale.domain = dedupedLabels;
-
-          // Also update the data values if this is a synthetic legend layer with a series field
-          if (isSyntheticLegend && layer.data?.values && layer.encoding?.color?.field) {
-            const field = layer.encoding.color.field;
-            layer.data.values = dedupedLabels.map((label: string, i: number) => ({
-              ...layer.data.values[i],
-              [field]: label
-            }));
-            console.log(`🔧 LEGEND-DEDUP-FIX: Updated synthetic legend data values`);
-          }
-        });
-      }
-
-      // Fix synthetic legend layers with duplicate domain entries
-      // LLMs commonly generate legend layers like: domain: ["Task","Task","Task"], range: ["#1a1a2e","#2a9d8f","#ffd700"]
-      // where every domain entry is the same string mapped to different colors — making the legend useless.
-      if (vegaSpec.layer && Array.isArray(vegaSpec.layer)) {
-        vegaSpec.layer.forEach((layer: any, layerIndex: number) => {
-          const colorScale = layer.encoding?.color?.scale;
-          if (!colorScale?.domain || !Array.isArray(colorScale.domain) || colorScale.domain.length < 2) return;
-          if (!colorScale.range || !Array.isArray(colorScale.range)) return;
-
-          // Check if domain has duplicates
-          const uniqueDomain = new Set(colorScale.domain);
-          if (uniqueDomain.size === colorScale.domain.length) return; // all unique, nothing to fix
-
-          console.log(`🔧 LEGEND-DEDUP-FIX: Layer ${layerIndex} has duplicate legend domain entries:`, colorScale.domain);
-
-          // Determine if this is a synthetic/invisible legend layer
-          const isSyntheticLegend =
-            (layer.mark?.opacity === 0 || layer.mark?.size === 0) ||
-            (layer.data?.values && layer.data.values.every((d: any) =>
-              Object.values(d).some(v => v === 0) || layer.mark?.opacity === 0
-            ));
-
-          // Try to infer meaningful labels from sibling layers
-          const siblingLayers = vegaSpec.layer.filter((_: any, i: number) => i !== layerIndex);
-          const inferredLabels: string[] = [];
-
-          for (let i = 0; i < colorScale.domain.length; i++) {
-            if (i < siblingLayers.length) {
-              const sibling = siblingLayers[i];
-              const markType = sibling.mark?.type || sibling.mark || '';
-              const xField = sibling.encoding?.x?.field || '';
-              const yField = sibling.encoding?.y?.field || '';
-              // Use the most descriptive field name, falling back to mark type
-              const label = xField && xField !== yField && xField !== 'background'
-                ? xField
-                : yField || markType || `Series ${i + 1}`;
-              // Capitalise and clean up
-              inferredLabels.push(
-                label.replace(/[_-]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())
-              );
-            } else {
-              inferredLabels.push(`Series ${i + 1}`);
-            }
-          }
-
-          // Ensure the inferred labels are themselves unique
-          const seen = new Map<string, number>();
-          const dedupedLabels = inferredLabels.map(label => {
-            const count = seen.get(label) || 0;
-            seen.set(label, count + 1);
-            return count > 0 ? `${label} ${count + 1}` : label;
-          });
-
-          console.log(`🔧 LEGEND-DEDUP-FIX: Replaced domain with:`, dedupedLabels);
-          colorScale.domain = dedupedLabels;
-
-          // Also update the data values if this is a synthetic legend layer with a series field
-          if (isSyntheticLegend && layer.data?.values && layer.encoding?.color?.field) {
-            const field = layer.encoding.color.field;
-            layer.data.values = dedupedLabels.map((label: string, i: number) => ({
-              ...layer.data.values[i],
-              [field]: label
-            }));
-            console.log(`🔧 LEGEND-DEDUP-FIX: Updated synthetic legend data values`);
-          }
-        });
-      }
-
-      // Fix layered charts missing legends for hardcoded colors
-      if (vegaSpec.layer && Array.isArray(vegaSpec.layer) && vegaSpec.layer.length > 1) {
-        console.log('🔧 VEGA-POST-PROCESS: Adding legends for layered chart with hardcoded colors');
-
-        // Check if any layer already has a proper color legend
-        const hasExistingColorLegend = vegaSpec.layer.some(layer =>
-          layer.encoding?.color?.field &&
-          layer.encoding.color.legend !== null &&
-          layer.encoding.color.legend !== false
-        );
-
-        if (hasExistingColorLegend) {
-          console.log('🔧 VEGA-POST-PROCESS: Skipping legend fix - layer already has proper color legend');
-        } else {
-
-          const layersWithHardcodedColors = vegaSpec.layer.filter(layer =>
-            layer.encoding?.color?.value || layer.mark?.color
-          );
-
-          if (layersWithHardcodedColors.length > 0) {
-            // Create a synthetic dataset for the legend
-            const legendData: { series: string; color: string }[] = [];
-            vegaSpec.layer.forEach((layer, index) => {
-              const color = layer.encoding?.color?.value || layer.mark?.color;
-              const yField = layer.encoding?.y?.field;
-
-              if (color && yField) {
-                legendData.push({
-                  series: yField.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase()),
-                  color: color
-                });
-              }
-            });
-
-            if (legendData.length > 0) {
-              // Add a legend layer
-              vegaSpec.layer.push({
-                data: { values: legendData },
-                mark: { type: 'point', size: 0, opacity: 0 },
-                encoding: {
-                  color: {
-                    field: 'series',
-                    type: 'nominal',
-                    scale: {
-                      domain: legendData.map(d => d.series),
-                      range: legendData.map(d => d.color)
-                    },
-                    legend: { title: 'Metrics' }
-                  }
-                }
-              });
-            }
-          }
-        }
-      }
+      // Legend repair and synthesis both live in ./vegaLayerDefaults, where
+      // the guards are documented and unit-tested. The dedup pass was inlined
+      // here TWICE, byte-identically. The synthesis guard is also stricter
+      // than the inline version it replaces: rejecting a set whose labels
+      // collapse to one distinct value catches layers that share a y field,
+      // which the previous field-name-length heuristic let through.
+      deduplicateLegendDomains(vegaSpec);
+      const legendResult = synthesizeColorLegend(vegaSpec);
+      console.log(
+        legendResult.added
+          ? `🔧 VEGA-POST-PROCESS: Added color legend for [${legendResult.series.join(', ')}]`
+          : `🔧 VEGA-POST-PROCESS: Skipped legend synthesis (${legendResult.skipped})`
+      );
 
       // Fix invalid color names like "#green"
       try {
@@ -3319,6 +3289,13 @@ export const vegaLitePlugin: D3RenderPlugin = {
       if (!vegaSpec || typeof vegaSpec !== 'object') {
         throw new Error('Invalid Vega-Lite specification: spec must be an object');
       }
+
+      // Whether the AUTHOR supplied a positive top-level height, captured here
+      // BEFORE the default below can fill one in. The small-height floor
+      // further down must fire only for a DEFAULTED height, never for an
+      // authored sparkline / wide-and-short height (D-267).
+      const _heightWasAuthored =
+        typeof vegaSpec.height === 'number' && vegaSpec.height > 0;
 
       // Measured container geometry. applySizing() decides whether the chart
       // uses 'container' width or a pixel width, but it still needs a concrete
@@ -3344,32 +3321,22 @@ export const vegaLitePlugin: D3RenderPlugin = {
       }
 
       // Only set height if not explicitly specified and not using complex layouts
-      if (!vegaSpec.height && vegaSpec.height !== 0 && !vegaSpec.vconcat && !vegaSpec.hconcat && !vegaSpec.facet) {
+      // A composite spec's top-level height is a PER-CELL height, so a default
+      // sized for one chart gets multiplied by the cell count: six row facets
+      // at 500px assembled to 3144px tall. isCompositeSpec also covers concat,
+      // repeat and channel faceting, none of which this guard excluded.
+      if (!vegaSpec.height && vegaSpec.height !== 0 && !isCompositeSpec(vegaSpec)) {
         // For simple charts without explicit height, use a reasonable default
         vegaSpec.height = Math.min(availableHeight * 0.8, 500);
       }
 
-      // Ensure axis labels are properly displayed without overriding user config
-      if (vegaSpec.layer) {
-        vegaSpec.layer.forEach(layer => {
-          if (layer.encoding?.x && !layer.encoding.x.axis) {
-            // Only add default axis config if none exists
-            layer.encoding.x.axis = {
-              labelAngle: 0,
-              // Generous but bounded: 0 (no limit) lets a single long label
-              // consume the entire plot area and overflow the container.
-              labelLimit: MAX_AXIS_LABEL_LIMIT,
-              labelFontSize: 11
-            };
-          }
-          if (layer.encoding?.y && !layer.encoding.y.axis) {
-            // Ensure y-axis labels are also properly displayed
-            layer.encoding.y.axis = {
-              labelLimit: MAX_AXIS_LABEL_LIMIT,
-              labelFontSize: 11
-            };
-          }
-        });
+      // Axis label defaults, injected ONCE per channel. Extracted to
+      // ./vegaLayerDefaults, which additionally handles
+      // resolve.axis:'independent' — where layers draw separate axes, so a
+      // per-layer default is correct and a single shared one is not.
+      const axesDefaulted = applySharedAxisDefaults(vegaSpec);
+      if (axesDefaulted.length > 0) {
+        console.log(`🔧 VEGA-POST-PROCESS: Applied axis label defaults to ${axesDefaulted.join(', ')}`);
       }
 
       // Ensure it has a schema if not present
@@ -3431,9 +3398,13 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // Minimum WIDTH clamp removed: width is now either 'container' (a
       // string, so the numeric comparison was silently inert) or a measured
       // container width that already has a 400px floor via availableWidth.
-      // Height keeps its floor — it is still a concrete pixel value.
-      if (vegaSpec.height && vegaSpec.height < 250) {
-        vegaSpec.height = 300;
+      // Height keeps its floor — it is still a concrete pixel value — but the
+      // floor applies ONLY to a height the plugin defaulted. An explicitly
+      // authored small height (sparkline / wide-and-short aspect) is honoured
+      // verbatim; inflating it to 300px silently killed those aspect ratios
+      // (D-267). See applyHeightFloor in ./vegaSizing.
+      if (vegaSpec.height) {
+        vegaSpec.height = applyHeightFloor(vegaSpec.height, _heightWasAuthored);
       }
 
       // Fix unrecognized signal references that may be added during preprocessing
@@ -4759,7 +4730,12 @@ export const vegaLitePlugin: D3RenderPlugin = {
         };
 
         // Helper to apply legend column wrapping
-        const applyLegendWrapping = (encoding: any, channel: string, data: any[]) => {
+        // dataObj is the data OBJECT (may carry .values OR a generator such as
+        // .sequence). D-266: when a legend field is transform-derived or the
+        // data is generated, distinct-value counting yields 0 and Vega's default
+        // symbolLimit (30) silently truncates the legend; estimateLegendCardinality
+        // recovers an upper bound so high-cardinality legends still wrap/uncap.
+        const applyLegendWrapping = (encoding: any, channel: string, dataObj: any) => {
           if (!encoding[channel] || !encoding[channel].field) return;
 
           // Don't wrap legends that are explicitly hidden
@@ -4767,13 +4743,14 @@ export const vegaLitePlugin: D3RenderPlugin = {
           if (encoding[channel].scale === null) return; // identity scale, no legend needed
 
           const fieldName = encoding[channel].field;
-          const uniqueCount = countUniqueValues(fieldName, data);
+          const dataArr = Array.isArray(dataObj?.values) ? dataObj.values : [];
+          const uniqueCount = countUniqueValues(fieldName, dataArr);
 
-          if (uniqueCount > maxItemsPerColumn) {
-            const neededColumns = Math.ceil(uniqueCount / maxItemsPerColumn);
+          const applyWrapping = (count: number) => {
+            const neededColumns = Math.ceil(count / maxItemsPerColumn);
             const columns = Math.min(neededColumns, 3); // Cap at 3 columns to prevent horizontal overflow
 
-            console.log(`Applying legend wrapping to ${channel} field "${fieldName}": ${uniqueCount} items -> ${columns} columns`);
+            console.log(`Applying legend wrapping to ${channel} field "${fieldName}": ${count} items -> ${columns} columns`);
 
             if (!encoding[channel].legend) {
               encoding[channel].legend = {};
@@ -4782,7 +4759,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
             encoding[channel].legend = {
               ...encoding[channel].legend,
               columns: columns,
-              symbolLimit: 0,
+              symbolLimit: 0, // lift Vega's default 30-entry cap so nothing is dropped
               labelLimit: 80, // Shorter labels to fit multiple columns
               titleLimit: 100,
               orient: 'bottom', // Move to bottom to avoid vertical overflow
@@ -4791,16 +4768,29 @@ export const vegaLitePlugin: D3RenderPlugin = {
               rowPadding: 2,
               columnPadding: 6
             };
+          };
+
+          if (uniqueCount > maxItemsPerColumn) {
+            applyWrapping(uniqueCount);
+          } else if (uniqueCount === 0) {
+            // Could not count from raw rows (generated/sequence data or a
+            // transform-derived colour field). Estimate the cardinality and only
+            // intervene when it EXCEEDS Vega's silent 30-entry truncation cap, so
+            // legends that would render complete (<=30) are left byte-unchanged.
+            const est = estimateLegendCardinality(dataObj, fieldName);
+            if (est > VEGA_DEFAULT_SYMBOL_LIMIT) {
+              applyWrapping(est);
+            }
           }
         };
 
-        // Get the main data source
-        const mainData = spec.data?.values || [];
+        // Get the main data source (as the OBJECT so generators are visible)
+        const mainDataObj = spec.data || {};
 
         // Apply to main spec encoding
         if (spec.encoding) {
           ['color', 'fill', 'stroke', 'shape', 'size', 'opacity'].forEach(channel => {
-            applyLegendWrapping(spec.encoding, channel, mainData);
+            applyLegendWrapping(spec.encoding, channel, mainDataObj);
           });
         }
 
@@ -4809,9 +4799,9 @@ export const vegaLitePlugin: D3RenderPlugin = {
           spec.layer.forEach((layer: any, layerIndex: number) => {
             if (layer.encoding) {
               // Use layer-specific data if available, otherwise use main data
-              const layerData = layer.data?.values || mainData;
+              const layerDataObj = layer.data || spec.data || {};
               ['color', 'fill', 'stroke', 'shape', 'size', 'opacity'].forEach(channel => {
-                applyLegendWrapping(layer.encoding, channel, layerData);
+                applyLegendWrapping(layer.encoding, channel, layerDataObj);
               });
             }
           });
@@ -4827,17 +4817,13 @@ export const vegaLitePlugin: D3RenderPlugin = {
         delete vegaSpec.height;
       }
 
-      // Remove resolve scales that can cause rendering issues
-      if (vegaSpec.resolve && vegaSpec.resolve.scale) {
-        delete vegaSpec.resolve;
-      }
-      // Same for nested spec.resolve in faceted/repeated specs — a
-      // `resolve.scale.y = "independent"` inside `spec` for a faceted
-      // layered chart causes vega-embed to hang during layout.
-      if (vegaSpec.spec && vegaSpec.spec.resolve && vegaSpec.spec.resolve.scale) {
-        console.log('🔧 VEGA-POST-PROCESS: Stripping nested spec.resolve.scale to avoid render hang');
-        delete vegaSpec.spec.resolve;
-      }
+      // D-262: strip resolve.scale only where it hangs/mislayouts the renderer,
+      // but PRESERVE it for a top-level LAYERED chart (the legitimate dual-axis
+      // case). The blanket delete used to flatten an `independent` y-scale so a
+      // bar+line combo collapsed the second series onto the first axis' domain.
+      // Nested spec.resolve (faceted/repeated) is still stripped to avoid the
+      // layout hang.
+      sanitizeResolveScale(vegaSpec);
 
       // Rewrite literal currency symbols (£, €, ¥, …) in format strings to the
       // d3 currency placeholder `$`, capturing the symbol so we can restore it
@@ -4846,6 +4832,27 @@ export const vegaLitePlugin: D3RenderPlugin = {
       if (currencySymbol) {
         console.log(`🔧 VEGA-POST-PROCESS: Rewrote currency symbol "${currencySymbol}" in format strings to "$" and installing matching formatLocale`);
       }
+
+      // vega-embed's own width/height options OVERWRITE the spec's values, and
+      // for a composite spec those are per-cell dimensions — injecting the
+      // container size there re-creates the overflow applySizing just resolved.
+      const embedMaySize = !isCompositeSpec(vegaSpec);
+
+      // D-257: reconcile theme-blind colours against the ACTIVE theme — set a
+      // themed default text-mark fill (invisible near-black text marks in dark)
+      // and nudge any explicit guide colour that is invisible on the effective
+      // canvas (e.g. axis.labelColor:'black' in dark = 1.66:1). The Vega 'dark'
+      // theme already whitens guide labels but not text marks or explicit
+      // overrides, so this closes the gap without altering legible author colours.
+      reconcileThemeColors(vegaSpec, isDarkMode);
+
+      // G-72 / D-260, D-265: ensure the categorical colour range is adequate.
+      // Both active theme palettes are only 10 entries (light 'excel' explicit,
+      // dark 'tableau10' fallback), so >10 series alias/repeat (D-265); and the
+      // light muted range dissolves at low mark opacity (D-260). This writes a
+      // themed config.range.category only when needed and never over an
+      // author-supplied colour scale/palette (see applyCategoricalPaletteFix).
+      applyCategoricalPaletteFix(vegaSpec, isDarkMode);
 
       // Apply theme
       const embedOptions: EmbedOptions = {
@@ -4857,13 +4864,13 @@ export const vegaLitePlugin: D3RenderPlugin = {
         loader: await getRestrictedVegaLoader(),
         ...(currencySymbol && { formatLocale: buildCurrencyLocale(currencySymbol) }),
         // Don't override width/height in embed options if they're set in the spec
-        ...((!vegaSpec.width || vegaSpec.width === 0) && { width: availableWidth }),
-        ...((!vegaSpec.height || vegaSpec.height === 0) && { height: availableHeight * 0.6 }),
+        ...(embedMaySize && (!vegaSpec.width || vegaSpec.width === 0) && { width: availableWidth }),
+        ...(embedMaySize && (!vegaSpec.height || vegaSpec.height === 0) && { height: availableHeight * 0.6 }),
         config: {
           view: {
             // Only set continuous dimensions if not explicitly specified
-            ...((!vegaSpec.width || vegaSpec.width === 0) && { continuousWidth: availableWidth }),
-            ...((!vegaSpec.height || vegaSpec.height === 0) && { continuousHeight: availableHeight * 0.6 }),
+            ...(embedMaySize && (!vegaSpec.width || vegaSpec.width === 0) && { continuousWidth: availableWidth }),
+            ...(embedMaySize && (!vegaSpec.height || vegaSpec.height === 0) && { continuousHeight: availableHeight * 0.6 }),
             stroke: 'transparent' // Remove default border
           }
         }
@@ -5051,6 +5058,67 @@ export const vegaLitePlugin: D3RenderPlugin = {
             requestAnimationFrame(retry);
           };
           requestAnimationFrame(retry);
+        }
+      }
+
+      // A faceted spec's width is a PER-CELL width, and the width vegaSizing
+      // had to work from was the 400px detached floor (D3Renderer appends
+      // tempContainer only after this render resolves), so what the spec
+      // carries right now is an estimate that cannot be correct. Measure the
+      // real relationship instead of guessing at chrome.
+      //
+      // Every faceting spelling compiles to one settable `child_width` signal,
+      // and assembled width is linear in it: `slope * cell + chrome`, where
+      // slope is the number of horizontally-tiled cells. Two probe points give
+      // the exact model. Calibration runs HERE, while still detached and
+      // therefore invisible; the solve happens once the real width is known.
+      if (isFacetedSpec(finalSpec) && result.view) {
+        const view = result.view;
+        const model = await calibrateFacetView(view);
+        if (!model) {
+          console.warn(
+            '🔧 VEGA-FACET-FIT: could not calibrate cell width; keeping the opening estimate'
+          );
+        } else {
+          const fitToContainer = (): boolean => {
+            const el: HTMLElement | null = typeof view.container === 'function'
+              ? view.container() : null;
+            // Same 0-is-not-a-measurement guard as the container-width sync
+            // above: 0 is finite, and treating it as real is what produced the
+            // original zero-width render.
+            const target = el?.clientWidth ?? 0;
+            if (!target) return false;
+            void applyFacetCellWidth(view, model, target)
+              .then((fit) => {
+                // A grid that cannot fit even at the floor must SCROLL rather
+                // than clip. This container is overflow:visible by design and
+                // nothing scales an oversized view back down, so without this
+                // the right-hand cells are simply lost off the edge.
+                if (fit.overflows) {
+                  renderContainer.style.overflowX = 'auto';
+                  renderContainer.style.maxWidth = '100%';
+                }
+                console.log(
+                  `🔧 VEGA-FACET-FIT: ~${model.slope.toFixed(0)} cell(s) across, ` +
+                  `chrome ~${Math.round(model.chrome)}px → cell ${fit.cellWidth}px, ` +
+                  `assembled ${Math.round(fit.assembledWidth ?? 0)}px in ${target}px` +
+                  (fit.clamped ? ' (at floor — scrolling)' : '')
+                );
+              })
+              .catch((e) => console.warn('🔧 VEGA-FACET-FIT: fit failed', e));
+            return true;
+          };
+
+          if (!fitToContainer()) {
+            // Still detached, the normal D3Renderer case. Retry after the
+            // append + layout that follows this render's resolution.
+            let attempts = 0;
+            const retry = () => {
+              if (fitToContainer() || ++attempts > 20) return;
+              requestAnimationFrame(retry);
+            };
+            requestAnimationFrame(retry);
+          }
         }
       }
 
