@@ -31,6 +31,59 @@ describe('formatLastActivity', () => {
   });
 });
 
+/**
+ * Coarse buckets past a day.  The deck's run history calls this with
+ * `created_at`, so a card run last spring rendered as "3020h ago": true,
+ * unreadable, and precisely the number a history list exists to save the
+ * reader from converting.  Hours remain the unit up to 23h so the
+ * heartbeat label on a long-running task is unaffected.
+ */
+describe('formatLastActivity coarse buckets', () => {
+  const H = 3600, D = 86400;
+  const ago = (s: number) => formatLastActivity(nowS - s, NOW_MS).label;
+
+  it('still reads in hours just below the day boundary', () => {
+    expect(ago(22.9 * H)).toBe('23h ago');
+  });
+
+  it('switches to days at 23h', () => {
+    expect(ago(23 * H)).toBe('1d ago');
+    expect(ago(24 * H)).toBe('1d ago');
+    expect(ago(3 * D)).toBe('3d ago');
+  });
+
+  it('switches to weeks at 7d', () => {
+    expect(ago(7 * D)).toBe('1w ago');
+    expect(ago(21 * D)).toBe('3w ago');
+  });
+
+  it('switches to months at 30d', () => {
+    expect(ago(30 * D)).toBe('1mo ago');
+    expect(ago(200 * D)).toBe('7mo ago');
+  });
+
+  it('switches to years at 365d', () => {
+    expect(ago(365 * D)).toBe('1y ago');
+    expect(ago(800 * D)).toBe('2y ago');
+  });
+
+  it('never reports an unconverted hour count past a day', () => {
+    // The defect verbatim: 3020h is ~4 months.  Paired with a positive
+    // assertion so this cannot pass by the function returning nothing.
+    const label = ago(3020 * H);
+    expect(label).not.toMatch(/\d{3,}h/);
+    expect(label).toBe('4mo ago');
+  });
+
+  it('keeps everything past an hour flagged stale', () => {
+    // The unit changes how the age reads; it must not change the
+    // judgement the running-tile surface keys on.
+    for (const s of [2 * H, 2 * D, 2 * 7 * D, 60 * D, 400 * D]) {
+      expect(formatLastActivity(nowS - s, NOW_MS).stale).toBe(true);
+    }
+  });
+});
+
 // Minimal harness: run accumulateLive's functional updater against a
 // plain previous state, mirroring accumulateLive.test.ts conventions.
 const EMPTY: LiveTaskState = { text: {}, toolCalls: [], events: [], iterations: [], variables: {}, blockStatuses: {} };
