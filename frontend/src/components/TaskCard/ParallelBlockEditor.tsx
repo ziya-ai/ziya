@@ -11,6 +11,7 @@ import React from 'react';
 import type { Block, TaskScope } from '../../types/task_card';
 import { BlockBody } from './BlockBody';
 import { BlockScopeButton } from './BlockScopeButton';
+import { SelfImproveSection } from './SelfImproveSection';
 import { DragHandle } from './DragContext';
 import './task-card-editor.css';
 
@@ -46,6 +47,7 @@ export const ParallelBlockEditor: React.FC<Props> = ({ block, onChange, onDelete
           onChange={(next: TaskScope) => update({ scope: next })}
           title={block.name || 'this Parallel block'}
         />
+        <SelfImproveSection block={block} onChange={update} />
       </div>
       <BlockBody
         parentId={block.id}
