@@ -23,6 +23,9 @@ import { LATEX_PROFILE_KEYS } from './latexProfiles';
    // PROFILE (``${plugin.name}-container``), not after 'circuitikz'.
    ...LATEX_PROFILE_KEYS,
   'packet',
+  'railroad',
+  'wavedrom',
+  'flamegraph',
   'drawio',
   'designinspector',
  ];
