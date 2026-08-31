@@ -75,7 +75,8 @@ const PartBody: React.FC<PartProps> = ({ part, projectId, runId }) => {
       return (
         <a className="tc-art__img-link" href={url} target="_blank" rel="noreferrer"
            title="Open full size">
-          <img className="tc-art__img" src={url} alt={part.name || fileNameOf(part)} />
+          <img className="tc-art__img" src={url} alt={part.name || fileNameOf(part)}
+               loading="lazy" decoding="async" />
         </a>
       );
     }
