@@ -157,6 +157,14 @@ export interface Block {
   repeat_until?: string | null;
   repeat_for_each_source?: string | null;
   repeat_item_template?: string | null;
+  /** for_each-only: dotted path into each roster item yielding its
+   *  stable string identity (e.g. "id").  Unset = items are scalars,
+   *  keyed as String(item).  See design/task-card-roster-assertion.md. */
+  repeat_item_key?: string | null;
+  /** for_each-only: fail the loop at exit unless every roster member
+   *  has a passed iteration, naming the missing keys.  Contradicts a
+   *  finite repeat_max — validation refuses the pair. */
+  repeat_require_complete?: boolean;
 
   // Container failure policy for this block's body sequence
   // (group / repeat / until / schedule).  'continue' (default/legacy):
@@ -164,6 +172,25 @@ export interface Block {
   // first failed child; its artifact becomes the sequence's result.
   // Parallel is unaffected.  See block_executor.py::_execute_sequence.
   on_failure?: 'stop' | 'continue' | null;
+
+  // Self-improvement — container blocks (group / repeat / until /
+  // parallel).  When enabled, the executor judges the completed level
+  // and may patch the card's TEXT (never privilege — patches are
+  // whitelisted to instructions/state_context and keyed by existing
+  // block ids, so scope bytes and signed approvals are untouched),
+  // then restart the level.  See app/utils/self_improve.py and
+  // block_executor.py::_maybe_self_improve.
+  self_improve?: boolean;
+  // Explicit acceptance criterion the judge measures against.  null →
+  // inferred from the block's own text (converges worse; the editor
+  // recommends authoring one).
+  improve_criterion?: string | null;
+  // Max card edits per run at this level.  null → backend default (2);
+  // 0 = observe-only (judge and record lessons, never edit).
+  improve_max?: number | null;
+  // Drift policy: 'conservative' (default) corrects toward the stated
+  // ask only; 'expansive' may strengthen beyond the ask.
+  improve_drift?: 'conservative' | 'expansive' | null;
 
   // Until-only
   until_mode?: UntilMode | null;
