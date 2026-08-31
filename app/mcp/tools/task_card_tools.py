@@ -242,6 +242,35 @@ class TaskCardWriteTool(BaseMCPTool):
             return {"error": True, "message": res["error"]}
         storage = res["storage"]
 
+        # ── Scope-preservation guard ────────────────────────────
+        # This tool's charter is text and structure; permissions are
+        # deliberately outside it.  A submitted root that edits any
+        # block's scope — or drops the id of a scope-bearing block,
+        # which _assign_block_ids would silently re-mint — orphans
+        # the signed approval keyed by (block_id, scope_hash) and
+        # drops that block to the permission floor with nothing
+        # saying so.  Refuse with the offenses named rather than
+        # save a definition that would degrade on its next run.
+        # See app/utils/task_card_write_guard.py.
+        if root is not None:
+            stored = storage.get(card_id)
+            if not stored:
+                return {"error": True,
+                        "message": (f"No task card with id '{card_id}' "
+                                    f"in this project.")}
+            from app.utils.task_card_write_guard import (
+                REMEDY, find_scope_violations,
+            )
+            violations = find_scope_violations(
+                stored.root.model_dump(), root)
+            if violations:
+                return {
+                    "error": True,
+                    "message": "Write refused — permissions would change. "
+                               + REMEDY,
+                    "violations": violations,
+                }
+
         # Build the partial update.  TaskCardUpdate.model_dump(exclude_unset)
         # in storage.update means only the fields we set are applied; the
         # root (if given) is validated into a Block and gets fresh ids.
