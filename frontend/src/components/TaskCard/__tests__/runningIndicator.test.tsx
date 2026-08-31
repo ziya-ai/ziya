@@ -329,9 +329,30 @@ describe('the cascade cannot erase the running state', () => {
   it('overrides the running row for the light theme', () => {
     // The map panel is rgba(0,0,0,0.03) in light mode, so the dark
     // theme's tint is nearly invisible there.
-    const light = CSS.slice(CSS.lastIndexOf('@media (prefers-color-scheme: light)'));
-    expect(light).toMatch(/\.tc-map__row--running\s*\{/);
-    expect(light).toMatch(/\.tc-map__tag--running\s*\{/);
+    //
+    // Scoped on `body:not(.dark)`, NOT `@media (prefers-color-scheme:
+    // light)`.  The app's theme is class-based — ThemeContext toggles
+    // `body.dark` — so a media query cannot see it: on an OS-dark /
+    // app-light machine the query never matches while the card is
+    // white, which is exactly the defect the stylesheet records in the
+    // comment above these rules.  This assertion previously demanded
+    // the media query, so it could only have passed while the theming
+    // was done the rejected way.
+    expect(CSS).toMatch(/body:not\(\.dark\)\s+\.tc-map__row--running\s*\{/);
+    expect(CSS).toMatch(/body:not\(\.dark\)\s+\.tc-map__tag--running\s*\{/);
+    // The hover variant needs its own light override for the same
+    // cascade reason the dark one does (see the test above) — without
+    // it, pointing at a running row in light mode drops it to the
+    // neutral grey hover.
+    expect(CSS).toMatch(/body:not\(\.dark\)\s+\.tc-map__row--running:hover\s*\{/);
+  });
+
+  it('does not theme via prefers-color-scheme, which cannot see the app theme', () => {
+    // Negative control paired with the assertion above, and the reason
+    // that one is written against `body:not(.dark)`: a media query
+    // reintroduced here would go green on an OS-light machine and be
+    // inert for every user running the app light on a dark desktop.
+    expect(CSS).not.toMatch(/@media\s*\(prefers-color-scheme/);
   });
 });
 

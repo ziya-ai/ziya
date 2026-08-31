@@ -233,8 +233,35 @@ describe('the sidebar renders the cluster', () => {
     expect(SIDEBAR()).toMatch(/Task starting…/);
   });
 
-  it('suppresses live gears while the chat itself is streaming', () => {
-    expect(SIDEBAR()).toMatch(/suppressLive=\{isStreaming\}/);
+  // A task run drives the chat, so isStreaming is true for nearly the
+  // whole time a run is live.  Suppressing animated gears on isStreaming
+  // therefore hid the gear in exactly the case it exists for: the row
+  // showed only the chat spinner, indistinguishable from a plain reply.
+  // Both indicators must be able to animate together.
+  it('does not gate the gear cluster on the chat spinner', () => {
+    expect(SIDEBAR()).not.toMatch(/suppressLive/);
+    expect(GEARS()).not.toMatch(/suppressLive/);
+  });
+
+  it('does not filter live clusters out of the rendered set', () => {
+    // The concrete mechanism that did the hiding: dropping every
+    // animating cluster before render.
+    expect(GEARS()).not.toMatch(/filter\(\s*c\s*=>\s*!c\.animate\s*\)/);
+  });
+
+  it('shows the launch gear even though launching starts the stream', () => {
+    // The optimistic branch covers the window before any binding exists,
+    // which is entered BY launching -- so !isStreaming blanked it for its
+    // entire lifetime.
+    expect(SIDEBAR()).not.toMatch(/isRunningTask && !isStreaming/);
+    expect(SIDEBAR()).toMatch(/isRunningTask \?/);
+  });
+
+  it('still renders the chat spinner alongside it', () => {
+    // Paired positive: the fix must not have removed the other indicator,
+    // which would "fix" the competition by deleting a participant.
+    expect(SIDEBAR()).toMatch(/\{isStreaming && \(/);
+    expect(SIDEBAR()).toMatch(/<SpinningSync sx=/);
   });
 
   it('treats run statuses as an ordering input, not just membership', () => {
