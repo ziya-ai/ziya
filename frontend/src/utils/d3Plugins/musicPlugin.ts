@@ -11,6 +11,7 @@
 
 import {
   filterPitch,
+  isKnownKeySignature,
   keySignatureMap,
   newBarState,
   sanitizeKeySignature,
@@ -374,6 +375,28 @@ export const ARTICULATION_CODES: Readonly<Record<string, string>> = {
   downbow: 'am',
 };
 
+/**
+ * Which side of the staff each articulation is engraved on.
+ *
+ * Every articulation was previously force-placed ABOVE the staff
+ * (`.setPosition(Modifier.Position.ABOVE)`), but that is WRONG for the
+ * inverted fermata: `fermata-below` selects the below-staff glyph ("a@u", the
+ * downward-curving fermata a score prints UNDER the lowest note or beneath a
+ * barline for the lower part), yet forcing it ABOVE drew that below-glyph
+ * hanging over the top of the staff -- the curve pointing the wrong way, on the
+ * wrong side.  Its name literally says "below", so the placement contradicted
+ * the request.
+ *
+ * A sparse map with an ABOVE default: only the entries that belong below are
+ * listed, so every OTHER articulation keeps its exact previous placement and
+ * the render is byte-identical for them.  Kept as its own lookup (rather than
+ * hard-coding the one case) so the friendly-name-through-a-table convention the
+ * rest of the plugin follows extends to placement too.
+ */
+export const ARTICULATION_POSITIONS: Readonly<Record<string, 'above' | 'below'>> = {
+  'fermata-below': 'below',
+};
+
 /** Friendly ornament name -> VexFlow code.  Closed for the same reason. */
 export const ORNAMENT_CODES: Readonly<Record<string, string>> = {
   trill: 'tr',
@@ -496,6 +519,51 @@ export const NAVIGATION_MARKS: Readonly<Record<string, string>> = {
   'to-coda': 'TO_CODA',
 };
 
+/**
+ * Engraved wording + anchor side for each Repetition.type key, used when a
+ * navigation mark has to be HAND-DRAWN in the overlay pass instead of pushed
+ * to VexFlow (see drawNavOverflowMarks).
+ *
+ * Why an overlay is needed at all: VexFlow's `Repetition` glyph is IMMOVABLE.
+ * `Repetition.draw()` computes its y as `stave.getYForTopText(numLines) +
+ * offset` and its x from the stave's left/right edge, and NEVER references the
+ * modifier's own `xShift`/`yShift` (verified against vexflow 5.0.0
+ * staverepetition.js -- both are stored in the constructor and then ignored by
+ * draw()).  So every LEFT-anchored mark (coda/segno) lands on the same left x
+ * and every RIGHT-anchored mark (D.C./D.S./Fine/To/coda-right) lands on the
+ * same right x, ALL sharing one y band -- meaning a real jump scheme with two
+ * marks on the same side (e.g. a "To Coda" and a "Fine" near the end, or a
+ * "D.S. al Coda" beside the closing "Coda") drew them ONE ON TOP OF THE OTHER,
+ * illegibly.  There is no VexFlow lever to separate them, so -- exactly as the
+ * tempo, dynamics, volta and breath layers do for their own immovable /
+ * mispositioned VexFlow primitives -- the SECOND and later marks on a side are
+ * drawn by hand, stacked on their own rows.
+ *
+ * `side` mirrors Repetition.draw()'s own switch: only CODA_LEFT / SEGNO_LEFT
+ * anchor left; everything else anchors right.  `text` is the wording VexFlow
+ * would have engraved, with the coda glyph rendered as the standard Unicode
+ * MUSICAL SYMBOL CODA (U+1D10C, surrogate pair D834 DD0C) / segno (U+1D10B,
+ * D834 DD0B) -- the widely-supported code points, the same choice the harp-
+ * pedal overlay makes with U+266D/E/F rather than VexFlow's private-use SMuFL
+ * code points, which a plain <text> without the Bravura font cannot show.
+ */
+export const NAV_OVERLAY_LABELS: Readonly<
+  Record<string, { text: string; side: 'left' | 'right' }>
+> = {
+  CODA_LEFT: { text: '\uD834\uDD0C', side: 'left' },
+  CODA_RIGHT: { text: '\uD834\uDD0C', side: 'right' },
+  SEGNO_LEFT: { text: '\uD834\uDD0B', side: 'left' },
+  SEGNO_RIGHT: { text: '\uD834\uDD0B', side: 'right' },
+  DC: { text: 'D.C.', side: 'right' },
+  DC_AL_CODA: { text: 'D.C. al \uD834\uDD0C', side: 'right' },
+  DC_AL_FINE: { text: 'D.C. al Fine', side: 'right' },
+  DS: { text: 'D.S.', side: 'right' },
+  DS_AL_CODA: { text: 'D.S. al \uD834\uDD0C', side: 'right' },
+  DS_AL_FINE: { text: 'D.S. al Fine', side: 'right' },
+  FINE: { text: 'Fine', side: 'right' },
+  TO_CODA: { text: 'To \uD834\uDD0C', side: 'right' },
+};
+
 /** Volta (repeat-ending bracket) placement -> Volta.type key. */
 export const VOLTA_TYPES: Readonly<Record<string, string>> = {
   begin: 'BEGIN',
@@ -588,6 +656,30 @@ export interface MusicMeasure {
    * unchanged from the measure before it.
    */
   timeSignature?: string;
+  /**
+   * Key-signature change taking effect AT this measure, e.g. "D" or "Bb".
+   *
+   * A piece is not fixed to one key -- a modulation mid-score (C to G to Eb)
+   * is ordinary published practice, and the new signature is engraved at the
+   * measure where it begins and then reads as governing every bar until the
+   * next change.  The spec's top-level `keySignature` is a single field and
+   * cannot express this, so the accidentals could only ever be printed once at
+   * the opening clef no matter how the tonality shifted later -- AND, worse,
+   * every bar's accidentals went on being FILTERED against that one opening key
+   * (see buildNoteString), so a note that is bare in the new key still had the
+   * old key's accidental suppressed or added.
+   *
+   * Drawn INSIDE the stave via a 0-tick KeySigNote tickable (the same mechanism
+   * as the mid-stave TimeSigNote/BarNote), carrying the PREVIOUS key as a
+   * cancel spec so the naturals that void the old sharps/flats print, exactly
+   * as an engraved modulation shows them.  The change also re-seeds the
+   * accidental filter from this bar on, so -- as always -- spell every note as
+   * its true sounding pitch and let the renderer decide which accidentals
+   * print.  Omit on the first measure (the opening key is printed by the stave
+   * once at the clef) and on any measure whose key is unchanged from the one
+   * before it.
+   */
+  keySignature?: string;
   /**
    * Start a new system (line) at this measure.
    *
@@ -1154,6 +1246,48 @@ export function clampKeyOctave(key: string): string {
   return `${m[1]}${m[2]}${clamped}`;
 }
 
+/**
+ * Reject a pitch key whose ACCIDENTAL (or overall shape) is unspellable,
+ * returning the key unchanged when renderable or `null` when it is not.
+ *
+ * clampKeyOctave already neutralises an out-of-range OCTAVE, but nothing
+ * guarded the accidental letter -- and a typo there is the ledger-line hang's
+ * sibling in the note-string path.  A pitch such as "ef/5" (the flat
+ * mis-spelled `f` instead of `b`, i.e. an intended "eb/5") matches neither
+ * clampKeyOctave's nor filterPitch's grammar, so it falls through unchanged;
+ * toEasyScoreKey then strips the stray slash to "ef5", EasyScore cannot parse
+ * the bogus accidental into a pitch/line, and the note is built with a NaN
+ * position -- freezing the Formatter's justification loop for the full ~30s
+ * render timeout with a blank canvas and no error, losing the WHOLE score for
+ * one mistyped accidental (the same failure mode the empty-keys guard in
+ * buildNoteString already prevents).
+ *
+ * A renderable pitch is letter [a-g] + optional accidental (n, #, ##, b, bb) +
+ * optional slash + signed octave -- VexFlow's own pitch grammar.  A valid key
+ * is returned UNTOUCHED, so the valid path is byte-identical; an unrenderable
+ * one is returned as `null` with a console warning, matching the plugin's
+ * unknown-value convention.  The caller drops a null key from a CHORD (keeping
+ * its still-valid keys, so one mistyped note does not discard a whole valid
+ * chord); but a note whose keys are ALL null is dropped from the emitted note
+ * string entirely, which trips buildNoteString's caller (renderMusicSpec) into
+ * its descriptive "Could not parse ... in measure N" error.  It is deliberately
+ * NOT turned into a rest: a silent rest would hide the typo on an otherwise-
+ * valid score, whereas VexFlow already fails a cleanly-unparseable key such as
+ * "not-a-pitch" the same honest way (and the committed suites assert it must).
+ *
+ * Exported pure/DOM-free for regression testing.
+ */
+export function sanitizePitch(key: string): string | null {
+  const raw = String(key).trim();
+  if (/^[a-gA-G](?:n|#{1,2}|b{1,2})?\/?-?\d+$/.test(raw)) return raw;
+  console.warn(
+    `musicPlugin: unrenderable pitch "${raw}" (bad accidental or format); `
+    + `dropped to avoid a Formatter render hang. Spell accidentals as `
+    + `#, ##, b, bb or n -- e.g. "eb/5" for E-flat.`,
+  );
+  return null;
+}
+
 export function toEasyScoreKey(key: string): string {
   // Clamp the octave FIRST so an extreme value (`c/999`) cannot reach VexFlow
   // and hang the ledger-line loop.  clampKeyOctave preserves the slash form
@@ -1230,6 +1364,43 @@ const REST_PITCH_FOR_CLEF: Readonly<Record<string, string>> = {
   tenor: 'A3',
   percussion: 'B4',
 };
+
+/**
+ * Rest pitch for a rest that shares a staff with ANOTHER independent voice.
+ *
+ * On a single-voice staff a rest is centred (REST_PITCH_FOR_CLEF), but on a
+ * multi-voice staff that centring is WRONG: two voices resting on the same
+ * beat both land on the middle line and OVERPRINT into a single glyph (a
+ * two-voice bar of simultaneous quarter rests drew ONE rest -- verified), and
+ * even a lone rest on the centre line no longer reads as belonging to the
+ * upper OR the lower voice.  Published two-voice engraving RAISES the upper
+ * voice's rests and LOWERS the lower voice's so each reads with its own line
+ * and simultaneous rests never collide.  A rest still carries a pitch that
+ * positions it (see REST_PITCH_FOR_CLEF), so the offset is expressed as an
+ * `upper`/`lower` pitch a third either side of the clef's centre -- one stave
+ * line up / down, which separates the two voices while keeping both rests on
+ * the staff.  Only consulted when a staff declares more than one voice, via
+ * buildNoteString's `restPitchOverride`, so every single-voice render is
+ * byte-identical.
+ */
+const REST_PITCH_MULTIVOICE: Readonly<Record<string, { upper: string; lower: string }>> = {
+  treble: { upper: 'D5', lower: 'G4' },
+  bass: { upper: 'F3', lower: 'B2' },
+  alto: { upper: 'E4', lower: 'A3' },
+  tenor: { upper: 'C4', lower: 'F3' },
+  percussion: { upper: 'D5', lower: 'G4' },
+};
+
+/**
+ * The raised (upper-voice) / lowered (lower-voice) rest pitch for a clef, or
+ * `undefined` for an unknown clef so the caller falls back to centring.
+ */
+export function multiVoiceRestPitch(
+  clef: string,
+  which: 'upper' | 'lower',
+): string | undefined {
+  return REST_PITCH_MULTIVOICE[clef]?.[which];
+}
 
 /**
  * Base duration codes VexFlow's EasyScore grammar actually understands.
@@ -1545,8 +1716,14 @@ export function buildNoteString(
   notes: MusicNoteSpec[],
   clef: string = 'treble',
   keySignature?: string,
+  // Rest pitch override.  Omitted, a rest is CENTRED for the clef (the
+  // single-voice case, byte-identical to before).  A multi-voice staff passes
+  // the raised/lowered pitch from REST_PITCH_MULTIVOICE so its voices' rests
+  // sit on their own lines and simultaneous rests do not overprint.
+  restPitchOverride?: string,
 ): string {
-  const restPitch = REST_PITCH_FOR_CLEF[clef] ?? REST_PITCH_FOR_CLEF.treble;
+  const restPitch = restPitchOverride
+    ?? REST_PITCH_FOR_CLEF[clef] ?? REST_PITCH_FOR_CLEF.treble;
   const implied = keySignatureMap(keySignature);
   const barState = newBarState();
   return notes
@@ -1583,15 +1760,41 @@ export function buildNoteString(
         // while "B4/q/r." is a dotted rest.
         return `${restPitch}/${base}/r${dotStr}`;
       }
+      // Reject any unrenderable pitch (a mistyped accidental such as "ef/5")
+      // BEFORE it reaches EasyScore: like an empty-keys entry, a bogus
+      // accidental builds a NaN-position note that hangs the Formatter for the
+      // full render timeout.  A CHORD keeps its still-valid keys (dropping only
+      // the mistyped ones, so one typo does not discard a whole valid chord);
+      // but a note whose keys are ALL unrenderable is DROPPED FROM THE OUTPUT
+      // (return null, filtered out below), NOT turned into a rest.  A silent
+      // rest would hide the author's typo on an otherwise-valid score; dropping
+      // the note instead makes buildNoteString emit FEWER entries than the spec
+      // has notes, which the caller's count-mismatch check (see renderMusicSpec)
+      // catches and reports as a descriptive "Could not parse ... in measure N"
+      // error -- honest failure, and the same clean rejection VexFlow itself
+      // gives a genuinely-unparseable key like "not-a-pitch".  (A real rest
+      // still comes from `rest:true` / empty `keys` above, which is unchanged.)
+      const renderable = n.keys
+        .map((k) => sanitizePitch(k))
+        .filter((k): k is string => k !== null);
+      if (renderable.length === 0) {
+        return null;
+      }
       // Filter BEFORE toEasyScoreKey so the filter sees the spec's own slash
       // form; it accepts either, but keeping one input shape here means the
       // two conversions cannot disagree about what an accidental is.
-      const keys = n.keys
+      const keys = renderable
         .map((k) => filterPitch(k, implied, barState))
         .map(toEasyScoreKey);
       const pitch = keys.length > 1 ? `(${keys.join(' ')})` : keys[0];
       return `${pitch}/${base}${dotStr}`;
     })
+    // Drop notes whose every key was unrenderable (they returned null above):
+    // emitting fewer entries than the spec has notes trips the caller's
+    // count-mismatch guard, surfacing a descriptive "Could not parse" error
+    // instead of a Formatter hang or a typo-hiding silent rest.  A real rest
+    // (rest:true / empty keys) returns a string above and is never dropped.
+    .filter((entry): entry is string => entry !== null)
     .join(', ');
 }
 
@@ -2054,6 +2257,18 @@ export function resolveMusicSpec(spec: any): any {
   // applies the type gate to this untouched object.
   if (hasMusicContent(spec)) return spec;
 
+  // An OBJECT definition arrives when the envelope itself was authored as
+  // JSON and parsed upstream (a ```d3 fence with a nested definition).  Same
+  // guarded lifting as the string path below -- claim the spec only when the
+  // body genuinely carries music -- and doubly important here because this
+  // function also backs canHandle: before this branch existed, an
+  // object-definition music spec was never SELECTED at all, which surfaced as
+  // the renderer's ~30s no-plugin timeout rather than any error.
+  if (spec.definition !== null && typeof spec.definition === 'object'
+      && hasMusicContent(spec.definition)) {
+    return { ...spec.definition, type: 'music' };
+  }
+
   // Only attempt recovery from a JSON-object `definition` string.
   if (typeof spec.definition !== 'string' || spec.definition.trim() === '') return spec;
   if (spec.definition.trimStart()[0] !== '{') return spec;
@@ -2470,6 +2685,68 @@ function titleBlockHeight(spec: MusicSpec): number {
  * composer credit right-aligns to the right margin, matching engraving
  * convention (lyricist left, composer right, beneath a centred title).
  */
+/**
+ * Font for a hand-drawn tempo NAME overlay.  Bold serif, matching VexFlow's
+ * `StaveTempo.name` (fontSize 14, fontWeight bold) so the split-out name reads
+ * like the metronome VexFlow still draws beside it.  The SAME string is used to
+ * MEASURE the name (measureTempoNameWidth) as to draw it, so the width the
+ * metronome is positioned against is self-consistent -- which is exactly the
+ * property VexFlow's own draw path lacks (see drawTempoName).
+ */
+const TEMPO_NAME_FONT = 'bold 15px "Times New Roman", Georgia, serif';
+
+/**
+ * Width in px of a tempo name in TEMPO_NAME_FONT, measured on a detached
+ * canvas.  Unlike VexFlow's internal measurement this is measured in the SAME
+ * font the overlay renders in, so the metronome placed off this width cannot
+ * overprint the name.  Falls back to a character-count estimate when no canvas
+ * 2d context is available (jsdom), which is enough to keep the two apart.
+ */
+function measureTempoNameWidth(text: string): number {
+  try {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.font = TEMPO_NAME_FONT;
+      const w = ctx.measureText(text).width;
+      if (Number.isFinite(w) && w > 0) return w;
+    }
+  } catch {
+    /* jsdom / no canvas -- fall through to the estimate. */
+  }
+  return text.length * 8;
+}
+
+/**
+ * Tempo NAME drawn as a d3 overlay, left of the VexFlow-drawn metronome.
+ *
+ * VexFlow's StaveTempo chains the "(♩ = N)" metronome group off
+ * `this.getWidth()` of the name, but that width is measured on a detached
+ * canvas whose font need not match the SVG render font in this environment;
+ * when it under-measures, the metronome overprints the end of the name and the
+ * leading "(" is lost (verified: "Andante con moto" + bpm collapsed the word
+ * spaces and overlapped the note glyph).  So -- exactly as the title, dynamics,
+ * lyric and nav-overflow layers do for their own mis-placed VexFlow
+ * primitives -- the name is hand-drawn here in the post-format pass while the
+ * metronome (which renders correctly on its own) stays with VexFlow, and picks
+ * its own theme-aware ink so it must run after the dark-mode recolour.  Null
+ * (a no-op) for name-only / bpm-only marks, which VexFlow still draws itself.
+ */
+export function drawTempoName(
+  d3: any,
+  svg: any,
+  plan: { text: string; x: number; y: number } | null,
+  isDarkMode: boolean,
+): void {
+  if (!plan) return;
+  svg.append('text')
+    .attr('x', plan.x).attr('y', plan.y)
+    .attr('text-anchor', 'start')
+    .attr('fill', musicInkColor(isDarkMode))
+    .style('font', TEMPO_NAME_FONT)
+    .text(plan.text);
+}
+
 export function drawTitleBlock(
   d3: any,
   svg: any,
@@ -2617,6 +2894,59 @@ export function drawMeasureNumbers(
       .attr('fill', textFill)
       .style('font', '400 11px "Times New Roman", Georgia, serif')
       .text(String(number));
+  }
+}
+
+/**
+ * The SECOND and later navigation marks on a given side, hand-drawn on their
+ * own stacked rows so they do not overprint the first.
+ *
+ * VexFlow's `Repetition` glyph is immovable (see NAV_OVERLAY_LABELS): every
+ * mark on a side lands on the same x AND the same y, so a jump scheme with two
+ * or more marks on one side drew them on top of each other.  The renderer lets
+ * VexFlow draw the FIRST mark on each side (byte-identical to the single-mark
+ * path, so every existing single-`mark` render is unchanged) and routes the
+ * overflow marks here.  Each is placed on its own row just above the top stave
+ * line -- row 1 nearest the line, higher rows above it -- which stays within
+ * the headroom `needsRoomAbove` already reserves for a mark and sits below the
+ * VexFlow-drawn primary, so nothing overprints.  Same overlay pass, and same
+ * theme-aware ink, as the dynamics / measure-number / volta layers, so it must
+ * run after formatting and after the dark-theme recolour.
+ *
+ * `plans` carries one entry per overflow mark: its Repetition.type key and its
+ * 1-based row on that side.  Left-anchored marks (coda/segno) draw at the
+ * stave's left edge, right-anchored ones at its right edge, matching the side
+ * VexFlow would have used.  An unknown key (should not happen -- the caller
+ * only pushes keys resolved through NAVIGATION_MARKS) is skipped.
+ */
+export function drawNavOverflowMarks(
+  d3: any,
+  svg: any,
+  stave: any,
+  plans: Array<{ key: string; row: number }>,
+  isDarkMode: boolean,
+): void {
+  if (!plans || plans.length === 0) return;
+  const textFill = musicInkColor(isDarkMode);
+  const topLineY = typeof stave.getYForLine === 'function' ? stave.getYForLine(0) : 20;
+  const staveX = typeof stave.getX === 'function' ? stave.getX() : 10;
+  const staveW = typeof stave.getWidth === 'function' ? stave.getWidth() : 0;
+  const leftX = staveX + 10;
+  const rightX = staveX + staveW - 8;
+  for (const { key, row } of plans) {
+    const label = NAV_OVERLAY_LABELS[key];
+    if (!label) continue;
+    const isLeft = label.side === 'left';
+    // Row 1 sits just above the top line; each further row is 14px higher, so
+    // the stack rises toward (but stays below) the VexFlow-drawn primary.
+    const y = topLineY - 8 - (Math.max(1, row) - 1) * 14;
+    svg.append('text')
+      .attr('x', isLeft ? leftX : rightX)
+      .attr('y', y)
+      .attr('text-anchor', isLeft ? 'start' : 'end')
+      .attr('fill', textFill)
+      .style('font', '700 13px "Times New Roman", "Segoe UI Symbol", Georgia, serif')
+      .text(label.text);
   }
 }
 
@@ -2958,6 +3288,11 @@ export function drawVoltaBracket(
   fromNote: any,
   toNote: any,
   isDarkMode: boolean,
+  // True when the ending's LAST measure is the final measure of its system, so
+  // its closing barline is the stave's own right edge rather than a barline
+  // between two bars.  Defaults false, keeping the interior-ending path (and
+  // the legacy test caller) byte-identical.
+  endsSystem: boolean = false,
 ): void {
   const textFill = musicInkColor(isDarkMode);
   const xOf = (note: any): number | null =>
@@ -2968,7 +3303,22 @@ export function drawVoltaBracket(
   // Start a touch left of the first notehead so the bracket opens at the
   // barline, and extend past the last notehead toward its bar's end.
   const x1 = startX - 10;
-  const x2 = endNoteX + 24;
+  // Right edge of the stave (its closing barline).  A volta on the FINAL
+  // measure of a system has no note-to-its-right to size against, so the fixed
+  // `endNoteX + 24` guess either COLLAPSED the bracket (a one- or two-note
+  // final ending stopped ~24px past its notehead, far short of the barline) or
+  // OVERSHOT it (a full final bar pushed the right hook past the stave's end).
+  // When the ending closes the system, run the bracket to the stave's right
+  // edge so the right hook lands on the final barline as published scores set
+  // it; otherwise never let it cross that edge.
+  const staveRightX =
+    typeof stave.getX === 'function' && typeof stave.getWidth === 'function'
+      ? stave.getX() + stave.getWidth()
+      : null;
+  let x2 = endNoteX + 24;
+  if (staveRightX != null) {
+    x2 = endsSystem ? staveRightX - 2 : Math.min(x2, staveRightX - 2);
+  }
   // Sit above the staff, clear of any note that pokes above the top line.
   const topLineY = typeof stave.getYForLine === 'function' ? stave.getYForLine(0) : 20;
   const y = topLineY - 22;
@@ -3392,6 +3742,101 @@ export function sanitizeBeamGroups(
   return valid.length > 0 ? valid : undefined;
 }
 
+/**
+ * Practical upper bound for a tuplet's `num` (notes played) and `inSpaceOf`
+ * (in the time of) counts.
+ *
+ * Even the densest published cadenza tops out well under this -- a 12- or
+ * 13-tuplet is already extreme -- so 99 admits every real tuplet while keeping
+ * the ratio label ("3:2") a legible one-or-two digits and, crucially, keeping
+ * the per-note tick rescale `Fraction(notesOccupied, numNotes)` (applied by
+ * Tuplet.attach) inside a sane range.  The cap mirrors the octave
+ * (clampKeyOctave), tempo-bpm (MAX_TEMPO_BPM) and measure-number
+ * (MAX_MEASURE_NUMBER) ceilings: a wildly out-of-range numeric input is not
+ * real notation and is refused rather than trusted.
+ */
+export const MAX_TUPLET_COUNT = 99;
+
+/**
+ * Validate a tuplet's `num` / `inSpaceOf` counts BEFORE they reach VexFlow's
+ * Tuplet tick machinery, returning the safe pair or `null` when the tuplet
+ * must be skipped.
+ *
+ * The tuplet loop already refused a count below 1 or non-integer: Tuplet.attach
+ * rescales every spanned note's tick by `Fraction(notesOccupied, numNotes)`, so
+ * a `num` of 0 divides by zero and a negative / fractional count yields a
+ * NaN/Infinity tick that hangs the Formatter's justification loop (the same
+ * non-converging-formatter hang sanitizeDuration and sanitizeBeamGroups
+ * defend).  But it left the UPPER bound open -- the ONE numeric spec input that
+ * capped its lower bound but not its upper, unlike clampKeyOctave /
+ * sanitizeTempoBpm / sanitizeMeasureNumber / sanitizeLayoutDimension.  An absurd
+ * count drives that same tick rescale to a DEGENERATE value: near-zero (`num`
+ * huge) re-triggers the formatter hang, and enormous (`inSpaceOf` huge) makes
+ * the bar wildly overfull -- and either way VexFlow prints a ratio label such
+ * as "3:1000" that runs clean off the system (verified against the served
+ * bundle: `inSpaceOf: 1000` drew a "3:1000" bracket).  Above MAX_TUPLET_COUNT
+ * the value is not real notation, so -- matching the tuplet loop's own
+ * skip-with-a-problem-note convention for an invalid range -- the tuplet is
+ * refused and its notes are left at face value rather than rescaled by garbage.
+ *
+ * A well-formed pair (the overwhelming case: num = member count, inSpaceOf = 2)
+ * is returned verbatim, so the ordinary triplet/quintuplet path is
+ * byte-identical.  Exported pure/DOM-free for regression testing.
+ */
+export function sanitizeTupletCounts(
+  num: number,
+  inSpaceOf: number,
+): { num: number; inSpaceOf: number } | null {
+  if (!Number.isInteger(num) || num < 1 || num > MAX_TUPLET_COUNT
+      || !Number.isInteger(inSpaceOf) || inSpaceOf < 1 || inSpaceOf > MAX_TUPLET_COUNT) {
+    return null;
+  }
+  return { num, inSpaceOf };
+}
+
+/**
+ * Key signature in effect at each measure, resolving per-measure `keySignature`
+ * changes forward -- the pitch analogue of the inline `effectiveMeterByMeasure`
+ * build, and the enabling piece of a mid-score modulation.  A change persists
+ * until the next one, exactly as a printed score reads it.  Kept as an exported
+ * pure helper (unlike the inline meter resolution) so the carry-forward can be
+ * unit-tested without a renderer.
+ *
+ * `baseKey` seeds the running key (the staff's own key, or the spec's, RAW as
+ * every use-site already receives it).  A per-measure `keySignature` advances
+ * the running key only when it names a signature VexFlow recognises
+ * (isKnownKeySignature) -- a typo leaves the previous key in force rather than
+ * silently modulating to "C", mirroring how an invalid per-measure meter
+ * leaves the previous meter.  When it advances, the trimmed canonical key is
+ * stored so the drawn KeySigNote and the filtered accidentals agree; the seed
+ * stays raw so a score with NO key change is byte-identical to the single-key
+ * path (each measure resolves to the same base value every consumer used
+ * before).
+ *
+ * Exported pure/DOM-free for regression testing.
+ */
+export function resolveEffectiveKeys(
+  measures: Array<{ keySignature?: string }>,
+  baseKey: string | undefined,
+): Array<string | undefined> {
+  const out: Array<string | undefined> = [];
+  let running = baseKey;
+  for (const measure of measures) {
+    // Advance only on a key VexFlow genuinely recognises.  isKnownKeySignature
+    // (not sanitizeKeySignature) is the gate on purpose: sanitizeKeySignature
+    // coerces an unrecognised value to "C" for the DRAW path, but here that
+    // would silently modulate to C major on a typo -- worse than leaving the
+    // previous key in force, which is what a real score does with a fat-
+    // fingered signature.  Store the trimmed canonical key so the drawn
+    // KeySigNote and the filtered accidentals agree.
+    if (measure?.keySignature != null && isKnownKeySignature(measure.keySignature)) {
+      running = measure.keySignature.trim();
+    }
+    out.push(running);
+  }
+  return out;
+}
+
 /** Estimated width of a system holding the measures at `indices`. */
 function estimateSystemWidth(measureWidths: number[], indices: number[]): number {
   if (indices.length === 0) return SYSTEM_LEAD_IN_PX;
@@ -3523,7 +3968,7 @@ export async function renderMusicSpec(
     Factory, Annotation, Renderer, Voice,
     StaveHairpin, Articulation, Ornament, Modifier, Accidental,
     Barline, Repetition, ChordSymbol, StaveTempo, BarNote, Beam, Fraction,
-    GraceNote, GraceNoteGroup, TimeSigNote, Tremolo, Stroke, GhostNote,
+    GraceNote, GraceNoteGroup, TimeSigNote, KeySigNote, Tremolo, Stroke, GhostNote,
   } = Vex as any;
 
   container.innerHTML = '';
@@ -4056,6 +4501,18 @@ export async function renderMusicSpec(
         effectiveMeterByMeasure[idx] = running;
       });
     }
+    // Key signature in effect at each measure, resolving per-measure
+    // `keySignature` changes forward the same way the meter is above -- a
+    // modulation persists until the next change.  Precomputed over the WHOLE
+    // staff so a continuation line re-prints the key carried into it and a
+    // change is detected against the immediately preceding bar wherever the
+    // system break falls.  Seeded with the staff's own key (else the spec's),
+    // RAW, so a score with NO key change resolves every bar to exactly the
+    // value each use-site consumed before -- byte-identical (see
+    // resolveEffectiveKeys).
+    const effectiveKeyByMeasure = resolveEffectiveKeys(
+      allMeasures, staffSpec.keySignature ?? spec.keySignature,
+    );
     /** Accumulated across systems, for the per-staff span view. */
     const staffNotes: any[] = [];
     const staffNoteSystem: number[] = [];
@@ -4105,6 +4562,21 @@ export async function renderMusicSpec(
         // shifts no note and both voices stay in sync.
         tickables.push(new TimeSigNote(meterHere));
       }
+      // Mid-stave key change (modulation): engrave the new signature as a
+      // 0-tick KeySigNote before this measure's notes, exactly where a printed
+      // score prints it, with the SAME two gates as the meter change above --
+      // a change on a system's first bar is already re-printed at that line's
+      // clef (see systemOpeningKey), and re-stating an unchanged key mid-line
+      // is wrong engraving.  Both keys are sanitized before comparing/drawing
+      // so the raw-seed vs canonical-change forms cannot spuriously differ, and
+      // the PREVIOUS key is passed as the cancel spec so the naturals voiding
+      // the old accidentals print, as an engraved modulation shows them.
+      const keyHere = sanitizeKeySignature(effectiveKeyByMeasure[globalIdx]);
+      const keyBefore = globalIdx > 0
+        ? sanitizeKeySignature(effectiveKeyByMeasure[globalIdx - 1]) : undefined;
+      if (measureIndex > 0 && keyHere && keyBefore && keyHere !== keyBefore) {
+        tickables.push(new KeySigNote(keyHere, keyBefore));
+      }
       const measureNotes = measure.notes ?? [];
       // Multi-measure rest: consolidate `multiRest` empty bars into one H-bar +
       // count.  The bar is silent by definition, so it holds no real notes --
@@ -4138,8 +4610,18 @@ export async function renderMusicSpec(
       }
       // Same precedence as the stave's own addKeySignature below, so the
       // notes are filtered against exactly the signature that is drawn.
+      // On a multi-voice staff this is the UPPER (voice 0) line, so raise its
+      // rests off the centre line -- otherwise a rest here would overprint a
+      // simultaneous rest in the lower voice (see REST_PITCH_MULTIVOICE).  A
+      // single-voice staff passes no override and its rests stay centred.
+      const primaryRestPitch = (staffSpec.voices?.length ?? 0) > 1
+        ? multiVoiceRestPitch(clef, 'upper')
+        : undefined;
       const noteStrings = buildNoteString(
-        measureNotes, clef, staffSpec.keySignature ?? spec.keySignature,
+        // Per-measure effective key, so accidentals are filtered against the
+        // signature actually in force after a modulation, not the opening one.
+        measureNotes, clef, effectiveKeyByMeasure[globalIdx],
+        primaryRestPitch,
       );
       const rendered = score.notes(noteStrings, { clef });
 
@@ -4171,7 +4653,13 @@ export async function renderMusicSpec(
       for (const name of specNote.articulations ?? []) {
         const code = ARTICULATION_CODES[name];
         if (!code) { problems.push(`unknown articulation "${name}"`); continue; }
-        note.addModifier(new Articulation(code).setPosition(Modifier.Position.ABOVE), 0);
+        // Place on the conventional side (ABOVE unless the name says otherwise,
+        // e.g. fermata-below), so the inverted below-staff fermata is not drawn
+        // hanging over the top of the staff.  See ARTICULATION_POSITIONS.
+        const side = ARTICULATION_POSITIONS[name] === 'below'
+          ? Modifier.Position.BELOW
+          : Modifier.Position.ABOVE;
+        note.addModifier(new Articulation(code).setPosition(side), 0);
       }
       for (const name of specNote.ornaments ?? []) {
         const code = ORNAMENT_CODES[name];
@@ -4240,19 +4728,62 @@ export async function renderMusicSpec(
         });
         const graceNotes = playableGraces.map((g) => {
           const { duration, dots } = toNoteStructDuration(g.duration);
-          return new GraceNote({
+          // Reject an unrenderable grace pitch (a mistyped accidental such as
+          // "ef/5" for "eb/5") BEFORE construction, exactly as the main-note
+          // path does via sanitizePitch (see buildNoteString).  toStaveNoteKey
+          // clamps only the OCTAVE; nothing guarded the ACCIDENTAL letter, so a
+          // bogus one fell through to `new GraceNote`, whose StaveNote key
+          // parser builds a NaN-position note that never converges in
+          // GraceNoteGroup's pre-format loop -- freezing the whole render for
+          // the ~30s timeout with a blank canvas, the SAME hang the empty-keys
+          // and out-of-range-octave guards already defend on this path.  A
+          // chord grace keeps its still-valid members; a grace whose keys are
+          // ALL unrenderable returns null and is dropped below, rather than
+          // being built on the wrong line or hanging.
+          const keys = g.keys
+            .map((k) => sanitizePitch(k))
+            .filter((k): k is string => k !== null)
+            .map(toStaveNoteKey);
+          if (keys.length === 0) {
+            console.warn('musicPlugin: grace note with no renderable keys skipped');
+            return null;
+          }
+          const grace = new GraceNote({
             // StaveNote's constructor (which GraceNote extends) parses its
             // keys with the slash `note/octave` grammar, NOT EasyScore's
             // slashless form -- feeding it a toEasyScoreKey result ("B4")
             // yields an unparseable pitch and hangs GraceNoteGroup's format
             // loop.  toStaveNoteKey keeps/repairs the slash form it needs.
-            keys: g.keys.map(toStaveNoteKey),
+            keys,
             duration, dots,
             // The slash is the acciaccatura ("crushed") vs the plain
             // appoggiatura; VexFlow draws it on a flagged/first grace note.
             slash: Boolean(g.slash),
           });
-        });
+          // Add the accidental GLYPH for any grace note that carries one.  A
+          // main note gets its sharp/flat/natural sign automatically because it
+          // rides the EasyScore string, which auto-attaches an Accidental; a
+          // GraceNote is hand-built through StaveNote's constructor, which sets
+          // the notehead LINE from the key's accidental but does NOT draw the
+          // sign -- so without this a "c#/5" or "bb/4" grace printed on the
+          // right line with no accidental, reading as the wrong pitch (the same
+          // omission the cautionary-accidental path already handles for main
+          // notes via addModifier(new Accidental(...)) below).  Grace notes
+          // bypass the key-signature filter, so the accidental written in the
+          // key IS the intended sign and is drawn verbatim -- one per chord
+          // member that carries one, indexed like the main-note path.
+          keys.forEach((k, ki) => {
+            const acc = /^[a-gA-G](n|#{1,2}|b{1,2})\//.exec(k)?.[1];
+            if (acc && typeof grace.addModifier === 'function') {
+              grace.addModifier(new Accidental(acc), ki);
+            }
+          });
+          return grace;
+        })
+          // Drop the grace notes whose keys were all unrenderable (returned
+          // null above): keeping them in the group would attach a NaN-position
+          // member and re-enter the very hang the sanitize pass just avoided.
+          .filter((g) => g !== null);
         // Every grace note was unplayable -- attaching an empty group would
         // re-enter the same non-converging format loop the filter just avoided.
         if (graceNotes.length > 0) {
@@ -4410,10 +4941,25 @@ export async function renderMusicSpec(
         if (localIdx > 0 && meterHere && meterBefore && meterHere !== meterBefore) {
           voiceTickables.push(new TimeSigNote(meterHere));
         }
+        // Mirror the primary voice's mid-stave key change so the voices stay
+        // in tick-sync across a modulation (the KeySigNote is 0-tick, like the
+        // TimeSigNote), and both draw the new signature at the same x.
+        const keyHere = sanitizeKeySignature(effectiveKeyByMeasure[globalIdx]);
+        const keyBefore = globalIdx > 0
+          ? sanitizeKeySignature(effectiveKeyByMeasure[globalIdx - 1]) : undefined;
+        if (localIdx > 0 && keyHere && keyBefore && keyHere !== keyBefore) {
+          voiceTickables.push(new KeySigNote(keyHere, keyBefore));
+        }
         const measureNotes = measure?.notes ?? [];
         if (measureNotes.length === 0) { voiceByMeasure.push([]); return; }
         const rendered = score.notes(
-          buildNoteString(measureNotes, clef, staffSpec.keySignature ?? spec.keySignature),
+          // A secondary (lower) voice: drop its rests below the centre line so
+          // they sit on their own line and never overprint the raised
+          // upper-voice rest at the same beat (see REST_PITCH_MULTIVOICE).
+          buildNoteString(
+            measureNotes, clef, effectiveKeyByMeasure[globalIdx],
+            multiVoiceRestPitch(clef, 'lower'),
+          ),
           { clef },
         );
         rendered.forEach((note: any, i: number) => {
@@ -4473,10 +5019,12 @@ export async function renderMusicSpec(
     // the global index, so a reminder still fires across a system break.
     // Entirely gated on the flag; the no-flag path is byte-identical.
     if (spec.cautionaryAccidentals) {
-      const keySig = staffSpec.keySignature ?? spec.keySignature;
       byMeasure.forEach((renderedMeasureNotes, localMi) => {
         if (!renderedMeasureNotes || renderedMeasureNotes.length === 0) return;
         const globalMi = globalMeasureIndices[localMi];
+        // The key in force AT this bar, so a reminder is judged against the
+        // signature actually reading here rather than the opening one.
+        const keySig = effectiveKeyByMeasure[globalMi];
         const curSpec = allMeasures[globalMi]?.notes ?? [];
         const prevSpec = globalMi > 0 ? (allMeasures[globalMi - 1]?.notes) : undefined;
         for (const mark of planCautionaryAccidentals(curSpec, prevSpec, keySig)) {
@@ -4519,8 +5067,17 @@ export async function renderMusicSpec(
     // path byte-identical), null for absent/empty (skip drawing, as before),
     // or "C" with a warning for a bad value -- the neutral no-accidental
     // signature, so no pitch a reader sees is altered.
-    const key = sanitizeKeySignature(staffSpec.keySignature ?? spec.keySignature);
-    if (key) stave.addKeySignature(key);
+    // Print the key at this system's clef.  On the first system that is the
+    // opening key; on a continuation line it is whatever key was carried into
+    // the line's first bar, so a score that modulated to G on a previous line
+    // re-prints G here rather than the stale opening signature -- exactly as
+    // systemOpeningMeter does for the meter.  A change first occurring mid-line
+    // is still drawn by the KeySigNote above; this re-states the key in force
+    // AT the line's start.
+    const systemOpeningKey = globalMeasureIndices.length > 0
+      ? sanitizeKeySignature(effectiveKeyByMeasure[globalMeasureIndices[0]])
+      : sanitizeKeySignature(staffSpec.keySignature ?? spec.keySignature);
+    if (systemOpeningKey) stave.addKeySignature(systemOpeningKey);
     // Meter-default beam grouping per measure of this system's slice, aligned
     // with byMeasure (both indexed by local measure position via
     // globalMeasureIndices), so the autoBeam pass can group a bar by ITS meter
@@ -4552,6 +5109,9 @@ export async function renderMusicSpec(
   // top staff of the FIRST system -- a tempo repeated on every line would be
   // wrong engraving, not merely redundant.
   const topStave = built[0].stave;
+  // A tempo NAME drawn as a d3 overlay (populated only for the name+bpm case;
+  // see the tempo block below), drawn in the post-format pass with drawTempoName.
+  let tempoNamePlan: { text: string; x: number; y: number } | null = null;
   if (spec.tempo) {
     // VexFlow's StaveTempo only engraves the metronome portion when it is
     // given a beat `duration`: a bpm with no duration draws the note glyph
@@ -4569,7 +5129,22 @@ export async function renderMusicSpec(
     // a bpm) is not resolved, so no lone "♩ =" is ever drawn.
     const bpm = sanitizeTempoBpm(spec.tempo.bpm);
     const hasBpm = bpm != null;
-    const rawTempoDuration = spec.tempo.duration ?? (hasBpm ? 'q' : undefined);
+    // The beat unit is resolved ONLY when there is a bpm to pair it with.  A
+    // metronome mark is inherently "beat-unit = number"; StaveTempo.draw gates
+    // the ENTIRE "(♩ = N)" scaffolding on `duration`, and when it is given a
+    // duration but no bpm it still draws the note glyph, the "=" and the
+    // surrounding parens with nothing after the equals -- i.e. "Allegro (♩ = )"
+    // (verified against vexflow 5.0.0 stavetempo.js: the "(", glyph and "=" are
+    // emitted under `if (duration)`, while the number is a nested `else if
+    // (bpm)` that is simply skipped when bpm is falsy).  This bit whenever an
+    // author wrote a NAME plus an explicit `duration` but the bpm was absent or
+    // sanitized away, since the explicit duration flowed straight through.
+    // Gating the duration on `hasBpm` means such a tempo renders its name
+    // ALONE (no dangling metronome), while a real "♩ = N" still resolves the
+    // duration -- defaulting to a quarter when a bpm was given without one, the
+    // overwhelming metronome convention.  A well-formed name+duration+bpm mark
+    // is byte-identical (hasBpm true -> the ?? still yields the given duration).
+    const rawTempoDuration = hasBpm ? (spec.tempo.duration ?? 'q') : undefined;
     // Sanitize the beat unit AND the augmentation-dot count before they reach
     // StaveTempo, which -- unlike every note duration -- receives them raw.
     // Two degenerate-input failures live in StaveTempo.draw (verified against
@@ -4612,17 +5187,61 @@ export async function renderMusicSpec(
       // own higher row when one is present.  tempoAboveMark already accounts
       // for both fields.
       const tempoShiftY = tempoAboveMark ? TEMPO_SHIFT_Y_WITH_MARK : TEMPO_SHIFT_Y;
-      const tempoMark = new StaveTempo(
-        {
-          name: spec.tempo.name,
-          duration: tempoDuration,
-          dots: tempoDots,
-          bpm,
-        },
-        topStave.x - tempoLeftShift(topStave),
-        tempoShiftY,
-      );
-      topStave.addModifier(tempoMark);
+      if (spec.tempo.name && hasBpm) {
+        // Split the mark: hand-draw the NAME and let VexFlow draw ONLY the
+        // parenthesised metronome to its right.  VexFlow's StaveTempo.draw
+        // positions the "(♩ = N)" group at `this.getWidth() + 3` past the
+        // name, but that width is measured on a detached canvas whose font need
+        // not match the SVG render font here; when it under-measures (verified:
+        // "Andante con moto" + bpm collapsed the word spaces and overprinted
+        // the name with the metronome, losing the leading "("), the combined
+        // mark is garbled.  Name-only and bpm-only each render correctly on
+        // their own, so ONLY the combination is re-routed: the name becomes a
+        // d3 overlay (measured in the SAME font it draws in, so the metronome
+        // cannot overprint it) and the metronome keeps VexFlow, wrapped in
+        // parens via the `parenthesis` flag StaveTempo.draw honours without a
+        // `name`.  This matches how every other fragile-VexFlow-placement layer
+        // here (title, dynamics, lyrics, nav overflow) is hand-drawn.
+        const nameWidth = measureTempoNameWidth(spec.tempo.name);
+        const nameX = topStave.x;
+        const NAME_METRO_GAP = 8;
+        // VexFlow draws the metronome's "(" at this.x + getModifierXShift +
+        // xShift(10).  Solving for this.x so the "(" lands NAME_METRO_GAP past
+        // the name end cancels the clef/key width getModifierXShift folds in
+        // (tempoLeftShift returns that same value), so a wide key signature no
+        // longer drifts the metronome relative to the fixed-x name.
+        const metroX =
+          nameX + nameWidth + NAME_METRO_GAP - 10 - tempoLeftShift(topStave);
+        const tempoMark = new StaveTempo(
+          { duration: tempoDuration, dots: tempoDots, bpm, parenthesis: true },
+          metroX,
+          tempoShiftY,
+        );
+        topStave.addModifier(tempoMark);
+        // Align the name's baseline with the metronome's: VexFlow draws the
+        // metronome at getYForTopText(1) + yShift, so the name uses the same y.
+        const topTextY = typeof topStave.getYForTopText === 'function'
+          ? topStave.getYForTopText(1)
+          : 0;
+        tempoNamePlan = { text: spec.tempo.name, x: nameX, y: topTextY + tempoShiftY };
+      } else {
+        // Name-only or bpm-only: VexFlow renders each correctly on its own, so
+        // keep the single-modifier path exactly as before (byte-identical).
+        // Constructed directly rather than via stave.setTempo() because that
+        // helper hardcodes the x as `this.x`, giving no way to cancel the
+        // clef-width shift that draw() adds -- see tempoLeftShift.
+        const tempoMark = new StaveTempo(
+          {
+            name: spec.tempo.name,
+            duration: tempoDuration,
+            dots: tempoDots,
+            bpm,
+          },
+          topStave.x - tempoLeftShift(topStave),
+          tempoShiftY,
+        );
+        topStave.addModifier(tempoMark);
+      }
     }
   }
   // Navigation marks.  A full jump scheme needs several (segno + D.S.-al-Coda +
@@ -4638,10 +5257,25 @@ export async function renderMusicSpec(
     : spec.mark
       ? [spec.mark]
       : [];
+  // VexFlow's Repetition glyph is immovable: draw() ignores its xShift/yShift,
+  // so every mark on a side lands on the same x AND y and 2+ same-side marks
+  // overprint (see NAV_OVERLAY_LABELS).  Let VexFlow draw the FIRST mark on
+  // each side -- byte-identical to the single-mark path, so every existing
+  // single-`mark` render is unchanged -- and hand-draw the rest, stacked, in
+  // the overlay pass (drawNavOverflowMarks).
+  const navSideCount: { left: number; right: number } = { left: 0, right: 0 };
+  const navOverflowPlans: Array<{ key: string; row: number }> = [];
   for (const markName of navMarks) {
     const key = NAVIGATION_MARKS[markName];
-    if (key) topStave.setRepetitionType(Repetition.type[key], 0);
-    else problems.push(`unknown mark "${markName}"`);
+    if (!key) { problems.push(`unknown mark "${markName}"`); continue; }
+    const side = NAV_OVERLAY_LABELS[key]?.side ?? 'right';
+    if (navSideCount[side] === 0) {
+      topStave.setRepetitionType(Repetition.type[key], 0);
+    } else {
+      // 2nd+ mark on this side -> its own stacked row (row is 1-based).
+      navOverflowPlans.push({ key, row: navSideCount[side] });
+    }
+    navSideCount[side] += 1;
   }
   // Volta (repeat-ending brackets).  NOT drawn via topStave.setVoltaType --
   // that stave modifier spans the whole stave, i.e. the entire system, so it
@@ -4659,7 +5293,7 @@ export async function renderMusicSpec(
       ? [spec.volta]
       : [];
   const voltaPlans: Array<
-    { volta: MusicVolta; systemIndex: number; fromNote: any; toNote: any }
+    { volta: MusicVolta; systemIndex: number; fromNote: any; toNote: any; endsSystem: boolean }
   > = [];
   if (voltaSpecs.length > 0) {
     // The voltas ride the TOP staff, whose measures define the ranges.  Note
@@ -4699,11 +5333,19 @@ export async function renderMusicSpec(
       const fromNote = top?.notes[firstFlat] ?? null;
       const toNote = top?.notes[lastFlat] ?? null;
       if (fromNote && toNote && top.noteSystem[firstFlat] === top.noteSystem[lastFlat]) {
+        // The ending closes its system when the note after its last note is on
+        // a different system (or does not exist) -- i.e. the ending's last bar
+        // is the final bar of the line, so its closing barline is the stave's
+        // own right edge.  drawVoltaBracket then runs the right hook to that
+        // edge instead of the fixed note+24 offset, which collapses/overshoots
+        // for a final-measure ending.
+        const endsSystem = top.noteSystem[lastFlat] !== top.noteSystem[lastFlat + 1];
         voltaPlans.push({
           volta: v,
           systemIndex: top.noteSystem[firstFlat],
           fromNote,
           toNote,
+          endsSystem,
         });
       } else {
         problems.push(
@@ -5009,26 +5651,26 @@ export async function renderMusicSpec(
       const members = notes.slice(from, to + 1);
       const num = tuplet.num ?? members.length;
       const inSpaceOf = tuplet.inSpaceOf ?? 2;
-      // Guard the two user-supplied tuplet counts against degenerate values
-      // BEFORE they reach VexFlow.  Tuplet.attach() rescales every spanned
-      // note's tick value by Fraction(notesOccupied, numNotes); a `num` of 0
-      // makes that a division by zero (Fraction(inSpaceOf, 0)) and a `num`/
-      // `inSpaceOf` that is negative or non-integer yields a nonsensical
-      // multiplier -- either way the note gets a NaN/Infinity/negative tick and
-      // the Formatter's justification loop NEVER RETURNS, hanging the whole
-      // render for 30s with a blank canvas (verified: `num: 0` -> render
-      // timeout, total data loss).  This is the same non-converging-formatter
-      // hang sanitizeDuration and the grace-note key path already defend, and
-      // the tuplet counts were the one user-supplied numeric input reaching the
-      // tick machinery without a guard.  Skip with a problem note, matching the
-      // plugin's unknown/invalid-value convention.  The defaults (num =
-      // members.length >= 2, inSpaceOf = 2) always pass, so the ordinary path
-      // is byte-identical.
-      if (!Number.isInteger(num) || num < 1
-          || !Number.isInteger(inSpaceOf) || inSpaceOf < 1) {
+      // Guard the two user-supplied tuplet counts before they reach VexFlow's
+      // tick machinery.  Tuplet.attach() rescales every spanned note's tick by
+      // Fraction(notesOccupied, numNotes): a count below 1 or non-integer makes
+      // that a division-by-zero / NaN tick and the Formatter's justification
+      // loop NEVER RETURNS (a 30s hang, blank canvas -- the same
+      // non-converging-formatter failure sanitizeDuration and sanitizeBeamGroups
+      // defend), and an ABSURDLY LARGE count drives the same rescale to a
+      // degenerate tick (near-zero -> hang; huge -> a wildly overfull bar) while
+      // printing a ratio label like "3:1000" that runs off the system (verified
+      // against the served bundle).  sanitizeTupletCounts caps BOTH ends -- the
+      // last numeric spec input to gain the upper bound its clamp/reject
+      // siblings (clampKeyOctave, sanitizeTempoBpm, sanitizeMeasureNumber, ...)
+      // already carry.  Skip with a problem note, matching this loop's other
+      // invalids.  The defaults (num = members.length, inSpaceOf = 2) always
+      // pass, so the ordinary triplet/quintuplet path is byte-identical.
+      const counts = sanitizeTupletCounts(num, inSpaceOf);
+      if (!counts) {
         problems.push(
           `tuplet ${from}-${to} has invalid num/inSpaceOf `
-          + `(${num}/${inSpaceOf}); both must be integers >= 1`,
+          + `(${num}/${inSpaceOf}); both must be integers between 1 and ${MAX_TUPLET_COUNT}`,
         );
         continue;
       }
@@ -5297,6 +5939,10 @@ export async function renderMusicSpec(
     // is not remapped.  `width` is the full canvas so the title centres and
     // the composer credit right-aligns to the margin.
     drawTitleBlock(d3, svg, spec, width, isDarkMode);
+    // Tempo NAME, when paired with a metronome: hand-drawn so VexFlow's
+    // under-measured metronome group cannot overprint it (see drawTempoName).
+    // Null (a no-op) for name-only / bpm-only marks, which VexFlow draws itself.
+    drawTempoName(d3, svg, tempoNamePlan, isDarkMode);
     // Instrument / part labels in the left gutter, one per named staff.  Drawn
     // here (post-format) so each staff's resolved x/y are available.
     drawStaffLabels(d3, svg, built, isDarkMode);
@@ -5306,6 +5952,12 @@ export async function renderMusicSpec(
     // drawMeasureNumbers.  Empty for scores without `measureNumbers`, so this
     // no-ops and the layout is unchanged for them.
     drawMeasureNumbers(d3, svg, measureNumberPlans, isDarkMode);
+    // Overflow navigation marks: the 2nd+ mark on a side, which VexFlow's
+    // immovable Repetition glyph would overprint (see drawNavOverflowMarks).
+    // Anchored to the FIRST system's top staff, the same staff the primary
+    // marks ride.  Empty for the common single-mark case, so this no-ops and
+    // that path is byte-identical.
+    drawNavOverflowMarks(d3, svg, topStave, navOverflowPlans, isDarkMode);
     // Leading "tr" glyphs for trill lines.  Deferred from the pre-format span
     // pass (drawTrillGlyph) because attaching the glyph as a note Ornament
     // before format was verified not to render; drawn here where the note's
@@ -5326,7 +5978,7 @@ export async function renderMusicSpec(
       if (entry) {
         drawVoltaBracket(
           d3, svg, entry.stave, plan.volta,
-          plan.fromNote, plan.toNote, isDarkMode,
+          plan.fromNote, plan.toNote, isDarkMode, plan.endsSystem,
         );
       }
     }

@@ -50,6 +50,61 @@ const draw = async (spec: MusicSpec) => {
   return container;
 };
 
+// VexFlow measures glyph/text width through its own measurement canvas
+// (Element.getTextMeasurementCanvas().getContext('2d')).  In this jsdom
+// environment that canvas resolves to a context whose metrics are empty, so
+// VexFlow logs "No context for txtCanvas" and every glyph width is 0.  That is
+// merely imprecise for most primitives, but FATAL for Vibrato: its constructor
+// divides by the glyph width and throws "Cannot set vibrato width if width is
+// 0", so a trill line aborts the whole render.  The setupTests.ts prototype
+// stub is meant to cover this but does not reach VexFlow's cached measurement
+// canvas here; install one directly through VexFlow's own API so glyph
+// emission (and therefore trill wiggles, and non-degenerate x positions) is
+// faithful.  Approximate metrics are fine -- layout assertions here compare
+// relative positions, not exact pixels.
+beforeAll(() => {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { Element } = require('vexflow');
+  const CH = 8;
+  Element.setTextMeasurementCanvas({
+    getContext: () => ({
+      font: '',
+      measureText: (t: string) => ({
+        width: (t ?? '').length * CH,
+        actualBoundingBoxAscent: CH,
+        actualBoundingBoxDescent: 2,
+        actualBoundingBoxLeft: 0,
+        actualBoundingBoxRight: (t ?? '').length * CH,
+        fontBoundingBoxAscent: CH,
+        fontBoundingBoxDescent: 2,
+      }),
+    }),
+  });
+});
+
+// DOM-capturing d3 for observing OVERLAY text (the tempo NAME via drawTempoName,
+// dynamics via drawDynamicsLayer): these are drawn as d3 <text>, not VexFlow
+// glyphs, so the no-op d3Stub above swallows them.  This appends real nodes so
+// their text is queryable, without disturbing VexFlow's own SVG output.
+const NS_ = 'http://www.w3.org/2000/svg';
+const domSel = (el: Element): any => {
+  const s: any = {
+    node: () => el,
+    append: (t: string) => { const c = document.createElementNS(NS_, t); el.appendChild(c); return domSel(c); },
+    attr: (k: string, v: any) => { el.setAttribute(k, String(v)); return s; },
+    style: () => s, classed: () => s, html: () => s,
+    text: (t: any) => { el.textContent = String(t); return s; },
+  };
+  return s;
+};
+const domD3 = { select: (el: Element) => domSel(el) };
+const drawDom = async (spec: MusicSpec) => {
+  const container = document.createElement('div');
+  document.body.appendChild(container);
+  await renderMusicSpec(container, spec, false, domD3);
+  return container;
+};
+
 const glyphs = (c: HTMLElement) =>
   Array.from(c.querySelectorAll('text')).map((t) => t.textContent ?? '').join('');
 /** Rendered text with SMuFL private-use glyphs removed. */
@@ -242,7 +297,11 @@ describe('trill lines', () => {
 
 describe('combined', () => {
   it('renders fingering, chords, brackets and a trill line together', async () => {
-    const c = await draw({
+    // Uses the DOM-capturing stub: the tempo NAME "Allegro" is drawn by the
+    // drawTempoName d3 overlay (VexFlow only draws the "= 132" metronome), so
+    // the no-op stub cannot see it -- while 8va / Cmaj7 / the wiggle are all
+    // VexFlow SVG glyphs and appear either way.
+    const c = await drawDom({
       type: 'music', timeSignature: '4/4', keySignature: 'C',
       tempo: { name: 'Allegro', duration: 'q', bpm: 132 },
       staves: [
