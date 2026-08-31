@@ -266,7 +266,11 @@ class TestLifecycleEvents:
         deadline = time.time() + timeout
         while time.time() < deadline:
             run = storage.get(run_id)
-            if run and run.status in ("done", "failed", "cancelled"):
+            # Complement of the LIVE set, not a list of terminal statuses:
+            # a hardcoded terminal list here silently stopped matching when
+            # 'partial' and 'held' were added, so such a run spun the full
+            # timeout before the helper gave up and returned it anyway.
+            if run and run.status not in ("queued", "running"):
                 return run
             time.sleep(0.02)
         return storage.get(run_id)
@@ -426,7 +430,11 @@ class TestProjectRootPropagation:
         deadline = time.time() + timeout
         while time.time() < deadline:
             run = storage.get(run_id)
-            if run and run.status in ("done", "failed", "cancelled"):
+            # Complement of the LIVE set, not a list of terminal statuses:
+            # a hardcoded terminal list here silently stopped matching when
+            # 'partial' and 'held' were added, so such a run spun the full
+            # timeout before the helper gave up and returned it anyway.
+            if run and run.status not in ("queued", "running"):
                 return run
             time.sleep(0.02)
         return storage.get(run_id)
