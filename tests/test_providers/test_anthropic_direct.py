@@ -430,10 +430,13 @@ class TestInitialization:
                     del os.environ["ANTHROPIC_API_KEY"]
                 
                 try:
-                    from importlib import reload
+                    # No reload: the provider imports `anthropic` INSIDE
+                    # __init__, so patch.dict(sys.modules) alone reaches it.
+                    # Reloading the module leaked a NEW class object into
+                    # sys.modules while modules imported earlier (e.g.
+                    # bedrock_mantle) kept subclassing the OLD one, breaking
+                    # identity assertions in any later test in the process.
                     import app.providers.anthropic_direct as adp_module
-                    # Reload to pick up the patched sys.modules
-                    reload(adp_module)
                     
                     with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
                         adp_module.AnthropicDirectProvider(
@@ -463,9 +466,9 @@ class TestInitialization:
         
         with patch.dict(sys.modules, {'anthropic': mock_anthropic}):
             with patch.dict("os.environ", {"ANTHROPIC_API_KEY": "sk-env-key"}):
-                from importlib import reload
+                # No reload — see test_requires_api_key for why a reload
+                # here poisoned later tests in the same process.
                 import app.providers.anthropic_direct as adp_module
-                reload(adp_module)
                 
                 provider = adp_module.AnthropicDirectProvider(
                     model_id="claude-sonnet-4-20250514",

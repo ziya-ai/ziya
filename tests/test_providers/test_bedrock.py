@@ -244,12 +244,13 @@ class TestMessageFormatting:
         assert len(msg["content"]) == 1
         assert msg["content"][0] == {"type": "text", "text": "Hello there!"}
 
-    def test_assistant_message_strips_mcp_prefix(self, bedrock_provider):
-        """Tool names should have mcp_ prefix stripped."""
+    def test_assistant_message_keeps_mcp_prefix(self, bedrock_provider):
+        """History tool_use names must match the prefixed names advertised
+        to the model — stripping made the model loop "correcting" them."""
         tool_uses = [{"id": "t1", "name": "mcp_run_shell_command", "input": {"command": "ls"}}]
         msg = bedrock_provider.build_assistant_message("", tool_uses)
         
-        assert msg["content"][0]["name"] == "run_shell_command"
+        assert msg["content"][0]["name"] == "mcp_run_shell_command"
 
     def test_assistant_message_text_and_tools(self, bedrock_provider):
         """Assistant message with both text and tools."""
