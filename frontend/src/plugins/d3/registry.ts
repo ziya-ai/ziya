@@ -80,6 +80,21 @@ const pluginMetadata: PluginMetadata[] = [
     loader: async () => (await import('./musicPlugin')).musicPlugin
   },
   {
+    name: 'railroad-renderer',
+    priority: 6,
+    loader: async () => (await import('./railroadPlugin')).railroadPlugin
+  },
+  {
+    name: 'wavedrom-renderer',
+    priority: 6,
+    loader: async () => (await import('./wavedromPlugin')).wavedromPlugin
+  },
+  {
+    name: 'flamegraph-renderer',
+    priority: 6,
+    loader: async () => (await import('./flamegraphPlugin')).flamegraphPlugin
+  },
+  {
     // Unlike every other entry here, this plugin renders SERVER-side: it POSTs
     // to /api/render-latex, which drives a local TeX installation, and mounts
     // the returned SVG (or PNG).  The dynamic chunk is therefore tiny -- no
@@ -177,7 +192,22 @@ export async function findPluginForSpec(spec: any): Promise<D3RenderPlugin | und
   // Try each plugin in priority order
   for (const metadata of sortedMetadata) {
     const plugin = await loadPlugin(metadata.name);
-    if (plugin && plugin.canHandle(spec)) {
+    if (!plugin) continue;
+    // canHandle runs against EVERY spec, not only the ones it accepts:
+    // the walk routes a vega-lite spec through basic-chart, vega and
+    // plotly first. An unguarded throw rejected the whole search,
+    // losing a render on behalf of a plugin that was never the right
+    // one -- and in D3Renderer that rejection latched the
+    // plugin-loading flag on permanently, wedging the component for
+    // the rest of the page's life.
+    let accepts = false;
+    try {
+      accepts = plugin.canHandle(spec);
+    } catch (e) {
+      console.error(`Plugin ${metadata.name} canHandle threw; skipping:`, e);
+      continue;
+    }
+    if (accepts) {
       console.debug(`Selected plugin ${plugin.name} for spec`);
       return plugin;
     }

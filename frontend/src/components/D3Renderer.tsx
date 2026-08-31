@@ -416,8 +416,41 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
 
             isLoadingPluginRef.current = true;
             console.log('🔧 D3RENDERER: Loading plugin for spec:', spec.type);
-            loadedPlugin = await findPluginForSpec(spec);
-            isLoadingPluginRef.current = false;
+            const PLUGIN_LOAD_TIMEOUT_MS = 15000;
+            try {
+                // Bounded by a race and released in the finally below. This
+                // was previously straight-line: set true, await, set false.
+                // A rejected OR never-settling load skipped the reset and
+                // latched the flag true permanently, so every later attempt
+                // returned at the gate above with hasPlugin false --
+                // measured at 232,449 attempts before the 35s capture gave
+                // up, with pageerrors=[] because nothing ever threw: the
+                // plugin chunk import simply never completed.
+                loadedPlugin = await Promise.race([
+                    findPluginForSpec(spec),
+                    new Promise<undefined>((_, reject) => setTimeout(
+                        () => reject(new Error(
+                            'Timed out loading a renderer plugin for "'
+                            + (spec?.type || 'unknown') + '" after '
+                            + PLUGIN_LOAD_TIMEOUT_MS + 'ms',
+                        )),
+                        PLUGIN_LOAD_TIMEOUT_MS,
+                    )),
+                ]);
+            } catch (err: any) {
+                // Report rather than stall again: a released latch that says
+                // nothing just re-enters the same wait on the next attempt.
+                const msg = err?.message || String(err);
+                console.error('🔧 D3RENDERER: Plugin load failed:', msg);
+                setRenderError(msg);
+                setErrorDetails([msg, 'The renderer plugin chunk did not '
+                    + 'load or timed out. This is a load failure, not a '
+                    + 'problem with the diagram definition.']);
+                setIsLoading(false);
+                return;
+            } finally {
+                isLoadingPluginRef.current = false;
+            }
             if (!loadedPlugin) {
                 console.error('🔧 D3RENDERER: No compatible plugin found for spec:', spec);
                 const msg = `No compatible plugin found for visualization type "${spec?.type || 'unknown'}"`;
