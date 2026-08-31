@@ -298,6 +298,43 @@ class LessonLedger:
         ]
         return matches[-limit:]
 
+    def for_card(
+        self, card_id: str, limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """Most recent records for a card across all its blocks, oldest
+        first.  Backs the GET /task-cards/{id}/lessons surface — the
+        card-level learning history a user reviews and reverts from."""
+        matches = [
+            r for r in self._read_all() if r.get("card_id") == card_id
+        ]
+        return matches[-limit:]
+
+    def summary_by_card(self) -> Dict[str, Dict[str, Any]]:
+        """One-read aggregate for the deck list's 🌱 badge:
+        {card_id: {count, edits_applied, last_ts}}.
+
+        Exists so the card list can badge every card from a SINGLE
+        ledger read — a per-card ``for_card`` fetch would be an
+        N-request burst on every deck open, the same shape the deck
+        already avoids for run status (see TaskCardsLibrary's
+        project-wide run index).
+        """
+        out: Dict[str, Dict[str, Any]] = {}
+        for r in self._read_all():
+            cid = r.get("card_id")
+            if not cid:
+                continue
+            agg = out.setdefault(cid, {
+                "count": 0, "edits_applied": 0, "last_ts": 0.0,
+            })
+            agg["count"] += 1
+            if r.get("applied"):
+                agg["edits_applied"] += 1
+            ts = r.get("ts") or 0.0
+            if isinstance(ts, (int, float)) and ts > agg["last_ts"]:
+                agg["last_ts"] = ts
+        return out
+
     def seen_patch_hash(self, card_id: str, block_id: str, h: str) -> bool:
         """True if this exact patch content was already applied for
         this (card, block) — the oscillation guard."""
@@ -358,3 +395,53 @@ def persist_patch_to_card(
     except Exception as e:  # noqa: BLE001 — persistence is best-effort
         logger.warning(f"self_improve: persist failed (non-fatal): {e}")
         return False
+
+
+def extract_pre_image(
+    patch: Dict[str, Dict[str, str]], root: Dict[str, Any],
+) -> Dict[str, Dict[str, str]]:
+    """Capture the CURRENT text of every field a patch is about to
+    replace, in the same {block_id: {field: text}} shape as the patch.
+
+    Recorded on the lesson-ledger entry BEFORE apply_improve_patch
+    mutates the tree, so a persisted revision is revertable: the
+    pre-image is itself a valid patch and flows back through the same
+    guarded path (persist_patch_to_card), keeping ids and scope bytes
+    untouched by construction.  Must be called before application —
+    afterwards the old text exists nowhere.
+
+    Only whitelisted fields on existing blocks are captured, mirroring
+    what apply_improve_patch would actually write; an absent field is
+    recorded as "" (apply skips empty replacements, so a revert of a
+    field that had no prior text is a recorded no-op, not a crash).
+    """
+    blocks = collect_blocks_by_id(root)
+    out: Dict[str, Dict[str, str]] = {}
+    for bid, fields in (patch or {}).items():
+        target = blocks.get(bid)
+        if target is None or not isinstance(fields, dict):
+            continue
+        for fname in fields:
+            if fname not in IMPROVABLE_TEXT_FIELDS:
+                continue
+            out.setdefault(bid, {})[fname] = str(target.get(fname) or "")
+    return out
+
+
+def revert_lesson_patch(
+    project_id: Optional[str], card_id: Optional[str],
+    record: Dict[str, Any],
+) -> bool:
+    """Write a ledger record's pre-image back onto the live card.
+
+    The one-click "un-teach" affordance: a pre-image is a text patch
+    like any other, so it rides persist_patch_to_card and inherits every
+    guard (field whitelist, existing-id keying, structure fingerprint).
+    Returns False when the record carries no pre-image (written before
+    pre-image capture existed, or nothing was applied) or when no field
+    changed — e.g. the card was already hand-edited back.
+    """
+    pre = record.get("pre_image")
+    if not isinstance(pre, dict) or not pre:
+        return False
+    return persist_patch_to_card(project_id, card_id, pre)
