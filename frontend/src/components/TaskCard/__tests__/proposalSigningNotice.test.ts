@@ -81,9 +81,37 @@ describe('a proposal can be persisted without being run', () => {
 
   it('reuses the saved card on a later Start', () => {
     // Save-then-Start must not leave two copies: the user would sign one
-    // and run the other, and the run would still be clamped.
+    // and run the other, and the run would still be clamped to the floor
+    // with nothing on screen explaining why.
+    //
+    // Asserted on the BRANCH, not on a helper name.  A previous revision
+    // pinned `const ensureCard` — an extraction that was never made — so
+    // this test failed while the behaviour it protects was present and
+    // correct, which is worse than no test: it trains the next reader to
+    // ignore the red.  Written this way it holds whether the reuse rule
+    // stays inline or is later hoisted into a shared helper, and still
+    // fails the moment any create becomes unconditional.
     expect(PROPOSAL).toContain('savedCardId');
-    expect(PROPOSAL).toMatch(/savedCardId\s*\n?\s*\?\s*await taskCardApi\.update/);
+
+    // Every create in this file is the fallback leg of a savedCardId
+    // branch, with the reuse (update) path as its sibling.  The length
+    // check is the positive control: without it, deleting every create
+    // would satisfy the loop vacuously.
+    const creates = [...PROPOSAL.matchAll(/taskCardApi\.create\(/g)];
+    expect(creates.length).toBeGreaterThan(0);
+    for (const m of creates) {
+      const before = PROPOSAL.slice(Math.max(0, m.index! - 600), m.index!);
+      expect(before).toMatch(/savedCardId/);
+      expect(before).toMatch(/taskCardApi\.update\(/);
+    }
+
+    // And the launch path resolves the card before binding, rather than
+    // binding an id it never reconciled against the saved copy.
+    const launch = PROPOSAL.match(
+      /const handleLaunch = useCallback\([\s\S]*?\n  \}, \[[^\]]*\]\);/);
+    expect(launch).not.toBeNull();
+    expect(launch![0]).toMatch(/savedCardId[\s\S]{0,140}taskCardApi\.update\(/);
+    expect(launch![0]).toMatch(/createBinding\(/);
   });
 
   it('tags proposals from ONE shared constant so the deck can group them', () => {
@@ -144,8 +172,13 @@ describe('every launch path is gated', () => {
   it('the staged goal tile warns and confirms', () => {
     // Staging exists precisely so permissions can be granted before work
     // starts; a Run that does not mention signing defeats its purpose.
+    //
+    // Updated 2026-08-24 to follow the gate's refactor: it now re-reads
+    // signature status at click time (fetchFresh) and confirms through
+    // Modal.confirm like the proposal panel and deck launch buttons,
+    // replacing the stale-count window.confirm this originally pinned.
     expect(TILE).toContain('tc-staged-signing-notice');
-    expect(TILE).toMatch(/unsignedCount > 0[\s\S]{0,200}window\.confirm/);
+    expect(TILE).toMatch(/gateUnsigned === 0[\s\S]{0,400}Modal\.confirm/);
   });
 
   it('all surfaces read needsSignature rather than each deriving it', () => {

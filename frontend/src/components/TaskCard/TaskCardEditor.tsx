@@ -10,6 +10,7 @@ import React from 'react';
 import type { TaskCard, Block, TaskScope } from '../../types/task_card';
 import { BlockEditor } from './BlockEditor';
 import { BlockScopeButton } from './BlockScopeButton';
+import { SelfImproveSection } from './SelfImproveSection';
 import { TaskCardDragProvider } from './DragContext';
 import { taskCardApi, type CardScopeStatus } from '../../services/taskCardApi';
 import { CARD_SCOPE_REFRESH_EVENT } from './useCardSignatureStatus';
@@ -216,6 +217,19 @@ export const TaskCardEditor: React.FC<Props> = ({
               )}
             </div>
           ))}
+          {/* One command signing every unapproved block at once — the same
+              vocabulary the chat proposal panel offers, so the two surfaces
+              cannot disagree about how to sign the same card.  Minted
+              server-side only when it saves work (>1 unsigned block); the
+              per-block commands above remain for signing selectively. */}
+          {scopeStatus.signAllCommand && (
+            <div className="tc-scope-approval-block">
+              <div className="tc-scope-approval-block-name">
+                To sign all at once:
+              </div>
+              <code className="tc-scope-approval-cmd">{scopeStatus.signAllCommand}</code>
+            </div>
+          )}
           {/* Re-check is meaningless for an unsaved spec: no approval can
               exist for block ids that were never assigned, so the button
               could only ever report "still unsigned" — which reads as
@@ -258,6 +272,17 @@ export const TaskCardEditor: React.FC<Props> = ({
           label="Card Permissions"
         />
       </div>
+      {/* Whole-card self-improvement rides the invisible group root —
+          the root IS a container level, so no special casing in the
+          executor.  Schedule roots are excluded: the scheduler
+          dispatches each fire as an independent run rooted at the
+          body, so a root-level improve flag would never execute. */}
+      {card.root.block_type === 'group' && (
+        <SelfImproveSection
+          block={card.root}
+          onChange={patch => setRoot({ ...card.root, ...patch })}
+        />
+      )}
       <div className="tc-card-canvas">
         <TaskCardDragProvider root={card.root} onRootChange={setRoot}>
           <BlockEditor block={card.root} onChange={setRoot} isRoot />
