@@ -266,7 +266,8 @@ def get_task_artifact_tools() -> List[Type[BaseMCPTool]]:
     """Get task artifact emission tools."""
     try:
         from app.mcp.tools.emit_artifact import EmitArtifactTool
-        return [EmitArtifactTool]
+        from app.mcp.tools.list_run_artifacts import ListRunArtifactsTool
+        return [EmitArtifactTool, ListRunArtifactsTool]
     except ImportError as e:
         logger.warning(f"Could not import emit_artifact tool: {e}")
         return []
