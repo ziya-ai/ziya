@@ -346,25 +346,22 @@ class BedrockProvider(LLMProvider):
         text: str,
         tool_uses: List[Dict[str, Any]],
         thinking_blocks: Optional[List[Dict[str, Any]]] = None,
+        text_index: Optional[int] = None,
+        text_segments: Optional[List[Any]] = None,
     ) -> Dict[str, Any]:
-        content_blocks: List[Dict[str, Any]] = []
-        # Thinking must lead the turn: the API requires signed reasoning blocks
-        # to precede text and tool_use, and rejects them out of order.
-        for tb in (thinking_blocks or []):
-            content_blocks.append(tb)
-        if text.strip():
-            content_blocks.append({"type": "text", "text": text.rstrip()})
-        for tu in tool_uses:
-            name = tu["name"]
-            # Keep the mcp_ prefix: history tool_use names must match the
-            # prefixed names advertised to the model, or it loops "correcting" them.
-            content_blocks.append({
-                "type": "tool_use",
-                "id": tu["id"],
-                "name": name,
-                "input": tu.get("input", {}),
-            })
-        return {"role": "assistant", "content": content_blocks}
+        # Blocks are emitted in their ORIGINAL response order when ordering
+        # metadata is present (thinking '_index', tool_use 'index',
+        # text_index).  With adaptive/interleaved thinking the model emits
+        # thinking blocks BETWEEN tool_use blocks, and the API rejects any
+        # reordering of them in the latest assistant message ("thinking or
+        # redacted_thinking blocks ... cannot be modified").  Without the
+        # metadata the classic thinking-first order is kept.
+        return {
+            "role": "assistant",
+            "content": self._ordered_assistant_content(
+                text, tool_uses, thinking_blocks, text_index,
+                text_segments=text_segments),
+        }
 
     def build_tool_result_message(
         self,
@@ -936,7 +933,7 @@ class BedrockProvider(LLMProvider):
                     _text = delta.get("text", "")
                     _text_deltas += 1
                     _text_chars += len(_text)
-                    yield TextDelta(content=_text)
+                    yield TextDelta(content=_text, index=idx)
 
                 elif delta_type == "thinking_delta":
                     _thinking = delta.get("thinking", "")
@@ -983,9 +980,10 @@ class BedrockProvider(LLMProvider):
                 # If a thinking block just finished, clear the flag
                 if in_thinking_block:
                     in_thinking_block = False
-                # Emit the completed thinking block for passback.  Unsigned
-                # readable blocks are dropped: the API rejects a thinking
-                # block whose signature is missing or does not match.
+                # Emit the completed thinking block for passback.  An
+                # unsigned readable block is surfaced with signature=None
+                # (not silently dropped) so the assembler can skip the
+                # whole turn's passback rather than send a gapped set.
                 _tb = _thinking_blocks.pop(idx, None)
                 if _tb is not None:
                     if _tb["type"] == "redacted_thinking":
@@ -999,9 +997,23 @@ class BedrockProvider(LLMProvider):
                             signature=_tb["signature"], index=idx,
                         )
                     else:
-                        logger.debug(
-                            "thinking block index=%s closed without signature "
-                            "— not eligible for passback", idx,
+                        # Unsigned readable block: surfaced with
+                        # signature=None instead of silently dropped
+                        # — a silent drop gapped the turn and shifted
+                        # every later block out of its original
+                        # position, the same "cannot be modified"
+                        # 400.  The assembler skips ALL thinking
+                        # passback for the turn.
+                        logger.warning(
+                            "🧠 THINKING_PASSBACK: thinking block "
+                            "index=%s closed without a signature "
+                            "(len=%d) — thinking passback will be "
+                            "skipped for this turn",
+                            idx, len(_tb.get("thinking", "")),
+                        )
+                        yield ThinkingBlock(
+                            content=_tb.get("thinking", ""),
+                            signature=None, index=idx,
                         )
                 # Find the tool that just finished
                 finished_id = None
