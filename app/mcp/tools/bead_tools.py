@@ -189,7 +189,11 @@ class BeadCompleteInput(BaseModel):
     """Input schema for bead_complete."""
     bead_id: Optional[str] = Field(
         None,
-        description="ID of bead to complete. Omit to complete the current active bead.",
+        description=(
+            "ID of the bead to complete — exact id, or the unique 8-char prefix "
+            "shown by bead_status. Works on a parked bead, not just the active "
+            "one. Omit only to complete the current active bead."
+        ),
     )
 
 
@@ -198,9 +202,11 @@ class BeadCompleteTool(BaseMCPTool):
 
     name: str = "bead_complete"
     description: str = (
-        "[INTERNAL] Mark the current subtask as done. Resumes the parent "
-        "bead (sets it active). If the completed bead has parked siblings, "
-        "they remain parked for later. The user does not see this."
+        "[INTERNAL] Mark a subtask as done. With no argument it completes the "
+        "current active bead; pass bead_id to complete a specific bead, "
+        "including a parked one (the id shown by bead_status works). Resumes "
+        "the parent bead (sets it active). Other parked beads remain parked "
+        "for later. The user does not see this."
     )
     is_internal: bool = True
     InputSchema = BeadCompleteInput
@@ -224,6 +230,20 @@ class BeadCompleteTool(BaseMCPTool):
             else:
                 target = tree.active_bead
                 if not target:
+                    # An all-parked tree is a normal state (every thread set
+                    # aside).  Completing one IS supported — via bead_id — so
+                    # name the candidates instead of dead-ending the caller.
+                    parked = tree.parked_beads
+                    if parked:
+                        ids = ", ".join(b.id for b in parked[:10])
+                        return {
+                            "ok": False, "error": True,
+                            "message": (
+                                f"No active bead to complete; {len(parked)} "
+                                f"parked. Pass bead_id to complete a parked "
+                                f"bead: {ids}"
+                            ),
+                        }
                     return {"ok": False, "error": True, "message": "No active bead to complete"}
 
             target.status = "completed"
@@ -315,11 +335,20 @@ class BeadStatusTool(BaseMCPTool):
                     lines.append(f"  ⏸ [{b.id[:8]}] {b.content}{hint}")
 
             # Summary
+            # The active count was hardcoded to 1, so an all-parked tree
+            # reported "1 active" and sent callers to complete an active
+            # bead that did not exist.
             completed = [b for b in tree.beads if b.status == "completed"]
             lines.append(
                 f"\nSummary: {len(tree.beads)} total, "
-                f"1 active, {len(parked)} parked, {len(completed)} completed"
+                f"{1 if active else 0} active, {len(parked)} parked, "
+                f"{len(completed)} completed"
             )
+            if active is None and parked:
+                lines.append(
+                    "No active bead — pass bead_id to bead_complete to close a "
+                    "parked thread (the 8-char id above works)."
+                )
 
             return {"ok": True, "tree": "\n".join(lines)}
         except Exception as e:
