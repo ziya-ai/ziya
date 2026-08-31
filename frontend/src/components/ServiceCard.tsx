@@ -12,9 +12,9 @@ import {
     Card, Button, Tag, Space, Tooltip, Alert, Typography, Statistic, Row, Col,
 } from 'antd';
 import {
-    DownloadOutlined, DeleteOutlined, InfoCircleOutlined, SafetyCertificateOutlined,
+    DownloadOutlined, DeleteOutlined, SafetyCertificateOutlined,
     ToolOutlined, ExperimentOutlined, WarningOutlined, GithubOutlined, StarOutlined,
-    ClockCircleOutlined, EyeOutlined, HeartOutlined, HeartFilled,
+    ClockCircleOutlined, EyeOutlined, HeartOutlined, HeartFilled, DownOutlined, UpOutlined,
 } from '@ant-design/icons';
 import { safeOpenExternal } from '../utils/safeExternalUrl';
 
@@ -152,10 +152,6 @@ const ServiceCard: React.FC<ServiceCardProps> = ({
                     onClick={() => onUninstall(service.serverName!)} />
             </Tooltip>
         ),
-        <Tooltip title={isExpanded ? 'Show less' : 'Show more'} key="info">
-            <Button icon={<InfoCircleOutlined />}
-                onClick={() => onToggleExpanded(service.serviceId)} />
-        </Tooltip>,
     ].filter(Boolean);
 
     /* ---- Title tags ---- */
@@ -187,9 +183,24 @@ const ServiceCard: React.FC<ServiceCardProps> = ({
     /* ---- Description body ---- */
     const descriptionContent = (
         <div>
-            <Paragraph ellipsis={isExpanded ? false : { rows: 2 }} style={{ marginBottom: 8 }}>
-                {description}
-            </Paragraph>
+            {/* A caret on the description itself reads as "expand this text";
+                the circled-i in the action row did not. */}
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 4, marginBottom: 8 }}>
+                <Paragraph
+                    ellipsis={isExpanded ? false : { rows: 2 }}
+                    style={{ marginBottom: 0, flex: 1 }}
+                >
+                    {description}
+                </Paragraph>
+                <Tooltip title={isExpanded ? 'Show less' : 'Show more'}>
+                    <Button
+                        type="text"
+                        size="small"
+                        icon={isExpanded ? <UpOutlined /> : <DownOutlined />}
+                        onClick={() => onToggleExpanded(service.serviceId)}
+                    />
+                </Tooltip>
+            </div>
 
             {matchingTools && matchingTools.length > 0 && (
                 <div style={{ marginBottom: 8 }}>

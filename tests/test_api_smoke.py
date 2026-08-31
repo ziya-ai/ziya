@@ -179,7 +179,11 @@ def test_full_pipeline_create_bind_poll_iterations_delete(pid_cid, ephemeral_car
         while time.time() < deadline:
             time.sleep(2)
             run = _get(f"/api/v1/projects/{pid}/task-runs/{run_id}")
-            if run["status"] in ("done", "failed", "cancelled"):
+            # Complement of the LIVE set: a hardcoded terminal list here
+            # stopped matching when 'partial' and 'held' were added, so a
+            # run that reached either polled the full 60s before failing
+            # with a stale status instead of breaking out immediately.
+            if run["status"] not in ("queued", "running"):
                 break
         assert run is not None and run["status"] == "done", (
             f"Run did not finish in 60s: status={run['status'] if run else None}"
