@@ -234,15 +234,48 @@ def test_skill_guards_against_claiming_unpublished_install_channels(
 # 5. Caps and dialect
 # ---------------------------------------------------------------------------
 
-def test_skill_states_hard_caps(skill_text: str):
-    assert "6 bullets" in skill_text
-    assert "1200" in skill_text
+def test_the_cap_is_on_length_not_on_item_count(skill_text: str):
+    """The cap moved twice, and both moves matter.
+
+    v1 capped bullet COUNT only and forbade trimming words, so a 251-char
+    opening bullet met the cap.  v2 added a per-bullet length cap but KEPT a
+    6-item ceiling, which is wrong for this repo in the other direction: a
+    release routinely carries dozens of significant items, and a ceiling
+    forces them to be dropped or merged away.  The cap is per line only.
+    """
+    assert "ONE TITLE PER ITEM" in skill_text
+    assert "70 characters" in skill_text
+    assert "NO CAP ON THE NUMBER OF ITEMS" in skill_text
+    # Both superseded caps must be gone, not merely outvoted elsewhere.
+    assert "1200" not in skill_text
+    assert "6 bullets" not in skill_text
+    assert "ONE CLAUSE PER BULLET" not in skill_text
 
 
-def test_overflow_is_routed_back_to_aggregation(skill_flat: str):
-    """The wrong repair for an overflow is trimming words from every bullet;
-    the right one is collapsing themes.  The skill must say which."""
-    assert "pass 1 was not done" in skill_flat.lower()
+def test_overflow_continues_and_never_drops_an_item(skill_flat: str):
+    """A count ceiling and "cut the lowest-impact item" together mean a large
+    release silently ships an incomplete announcement.  With no ceiling, the
+    only legal response to a long list is another message."""
+    flat = skill_flat.lower()
+    assert "continuing into another message" in flat
+    assert "never by lengthening" in flat
+    assert "more in thread" in flat
+    # Every superseded overflow rule must be absent.
+    assert "pass 1 was not done" not in flat
+    assert "do not solve an overflow by trimming words" not in flat
+    assert "cut the lowest-impact item" not in flat
+
+
+def test_a_title_must_be_rewritten_not_truncated(skill_flat: str):
+    """Measured: the changelog's bolded leads run a median of 104 chars, and
+    truncating each at its first comma still leaves 37 of 63 over the cap —
+    so "use the lead sentence" is not an implementation of this rule.  The
+    stump is also a correctness risk, not merely an ugly one."""
+    flat = skill_flat.lower()
+    assert "rewritten, not truncated" in flat
+    assert "median of 104 characters" in flat
+    assert "37 of 63" in flat
+    assert "it is false" in flat
 
 
 def test_skill_states_slack_mrkdwn_not_standard_markdown(skill_flat: str):
@@ -264,8 +297,54 @@ def test_all_four_passes_are_present_and_ordered(skill_text: str):
     trunk/leaf inversion, because ranking already happened."""
     passes = re.findall(r"^## Pass (\d+) — (\w+)", skill_text, re.M)
     assert [(int(n), name) for n, name in passes] == [
-        (1, "AGGREGATE"), (2, "AUDIENCE"), (3, "TIER"), (4, "RANK"),
+        (1, "AGGREGATE"), (2, "AUDIENCE"), (3, "LABEL"), (4, "RANK"),
     ]
+
+
+def test_label_is_a_prefix_and_never_a_sort_key(skill_flat: str):
+    """Pass 3 used to be TIER — ordered buckets — which is itself a sort key
+    and therefore silently overrode pass 4's "rank by impact".  A fix every
+    user was being re-billed for landed at bullet four purely because its
+    bucket was "Now works".  Bucketing must be forbidden, not merely
+    de-emphasised, or the two passes keep contradicting each other."""
+    flat = skill_flat.lower()
+    assert "it does **not** order the message" in flat
+    assert "do not group the message into label buckets" in flat
+    assert "the same label may appear on non-adjacent bullets" in flat
+
+
+def test_rank_is_by_impact_and_outranks_the_label(skill_flat: str):
+    """"Rank by new capability surface" biased the head of the message toward
+    New, so the top slot could not be won by a fix however severe."""
+    flat = skill_flat.lower()
+    assert "rank by impact" in flat
+    assert "even when it\nis a bug fix" in flat or "even when it is a bug fix" in flat
+    assert "not the label" in flat
+
+
+def test_comma_test_is_present_and_flagged_as_a_detector(skill_flat: str):
+    """The check that operationalises "only the first clause is valuable".
+    It must also warn that it detects rather than auto-edits: truncating
+    `19 defects across mermaid, Vega-Lite and PDF` at its comma yields a
+    narrower claim that is false."""
+    flat = skill_flat.lower()
+    assert "comma test" in flat
+    assert "delete everything from that mark onward" in flat
+    assert "detects**; it does not auto-edit" in flat
+    assert "19 rendering and export defects across mermaid`, which is now false" in flat
+
+
+def test_worked_example_specimen_does_not_itself_trail_a_list(skill_text: str):
+    """The ✅ specimen previously ended "— first renderers are chemistry
+    notation, musical scores, and circuit diagrams", i.e. it demonstrated the
+    trailing enumeration the caps forbid.  An example that contradicts the
+    rule teaches the example."""
+    m = re.search(r'^> ✅ "(.+?)"', skill_text, re.M | re.S)
+    assert m, "worked example lost its ✅ specimen"
+    specimen = m.group(1)
+    assert len(specimen) <= 100, f"specimen is {len(specimen)} chars: {specimen}"
+    for mark in (",", ";", "("):
+        assert mark not in specimen, f"specimen trails a list at {mark!r}: {specimen}"
 
 
 def test_aggregation_is_explicitly_first(skill_flat: str):
@@ -286,9 +365,39 @@ def test_skill_distinguishes_user_facing_from_internal_identifiers(
     assert "scope.tools" in skill_text
 
 
-def test_notable_fixes_collapse_to_a_single_bullet(skill_flat: str):
-    """One bullet per fix is what buried the highlights."""
-    assert "One bullet total" in skill_flat
+def test_fixes_aggregate_to_one_title_without_comma_joining(skill_flat: str):
+    """Aggregation survives; the comma-joined SPELLING of it does not.
+    "One bullet total, comma-joined" satisfied the bullet cap by turning the
+    bullet itself into a list — a 163-character line naming five fixes.  A
+    line still collapses N entries, but carries the theme or a bare count
+    and stops."""
+    flat = skill_flat.lower()
+    assert "produce **one** title" in flat
+    assert "no comma-joined list of further" in flat
+    assert "(n fixes)` count is the only parenthetical permitted" in flat
+    assert "comma-joined. not one bullet per fix" not in flat
+
+
+def test_aggregation_may_not_be_used_to_shorten_the_message(skill_flat: str):
+    """With no item cap, merging distinct work buys nothing and costs the
+    reader a change they can no longer see.  Aggregation removes duplication,
+    not volume — otherwise a 200-item release is compressed into six themes
+    and the announcement stops being an inventory."""
+    flat = skill_flat.lower()
+    assert "do not aggregate to shorten the message" in flat
+    assert "facets of one change" in flat
+    assert "200 distinct user-observable changes has 200 lines" in flat
+
+
+def test_thread_never_carries_the_changelog_in_any_form(skill_flat: str):
+    """The digest was the right fix for a 143KB raw attachment and the wrong
+    surface once the channel list became complete: two accounts of one
+    inventory at two verbosities is the padding this skill removes."""
+    flat = skill_flat.lower()
+    assert "not as a condensed digest" in flat
+    assert "143,590 bytes" in flat
+    # The superseded digest instruction must be gone from the skill.
+    assert "lead lines only" not in flat
 
 
 def test_skill_requires_a_trunk_vs_leaf_self_check(skill_flat: str):
