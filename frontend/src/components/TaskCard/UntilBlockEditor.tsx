@@ -13,6 +13,7 @@ import React from 'react';
 import type { Block, UntilMode, TaskScope } from '../../types/task_card';
 import { BlockBody } from './BlockBody';
 import { BlockScopeButton } from './BlockScopeButton';
+import { SelfImproveSection } from './SelfImproveSection';
 import { DragHandle } from './DragContext';
 import { AutoGrowTextarea } from './AutoGrowTextarea';
 import './task-card-editor.css';
@@ -85,6 +86,7 @@ export const UntilBlockEditor: React.FC<Props> = ({ block, onChange, onDelete, i
           onChange={(next: TaskScope) => update({ scope: next })}
           title={block.name || 'this Until block'}
         />
+        <SelfImproveSection block={block} onChange={update} />
       </div>
       <BlockBody
         parentId={block.id}
