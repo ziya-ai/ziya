@@ -1854,6 +1854,7 @@ class ConversationDB implements DB {
                     allProjects: !options.projectId,
                     caseSensitive: options.caseSensitive,
                     maxSnippetLength: options.maxSnippetLength,
+                    sort: options.sort,
                 });
                 if (server !== null) {
                     return server as SearchResult[];
@@ -1874,8 +1875,29 @@ class ConversationDB implements DB {
             return [];
         }
 
-        const { caseSensitive = false, maxSnippetLength = 150, projectId } = options;
+        const { caseSensitive = false, maxSnippetLength = 150, projectId,
+            sort = 'relevance' } = options;
         const searchTerm = caseSensitive ? query : query.toLowerCase();
+
+        // Mirrors app/storage/chat_search._relevance_score.  The two paths must
+        // agree, or results silently reorder whenever the server is briefly
+        // unreachable and this fallback runs instead.
+        const TITLE_WEIGHT = 8.0;
+        const OPENING_MESSAGE_COUNT = 2;
+        const OPENING_MULTIPLIER = 2.0;
+        const TF_K1 = 1.2;
+        const LENGTH_NORM_FREE_MESSAGES = 10;
+        const scoreOf = (ms: MessageMatch[], titleHit: boolean, total: number): number => {
+            let body = 0;
+            for (const m of ms) {
+                const occ = Math.max(1, m.highlightPositions?.length ?? 0);
+                let w = occ * (TF_K1 + 1) / (occ + TF_K1);
+                if (m.messageIndex < OPENING_MESSAGE_COUNT) w *= OPENING_MULTIPLIER;
+                body += w;
+            }
+            const norm = Math.max(1, Math.sqrt(Math.max(1, total) / LENGTH_NORM_FREE_MESSAGES));
+            return (titleHit ? TITLE_WEIGHT : 0) + body / norm;
+        };
 
         // Message.content is typed as string but at runtime can be an array
         // of content blocks (multimodal / tool / image messages) or undefined.
@@ -1967,6 +1989,11 @@ class ConversationDB implements DB {
 
                 // Add to results if there are matches in messages or title
                 if (matches.length > 0 || titleMatches) {
+                    // Age is last activity, not last access: conv.lastAccessedAt
+                    // moves when a chat is merely opened, so prefer the newest
+                    // message stamp and fall back only if there is none.
+                    const newestMsgTs = conv.messages.reduce(
+                        (acc, m) => Math.max(acc, (m as any)._timestamp || 0), 0);
                     results.push({
                         conversationId: conv.id,
                         conversationTitle: conv.title,
@@ -1974,20 +2001,25 @@ class ConversationDB implements DB {
                         projectId: conv.projectId,
                         matches,
                         totalMatches: matches.length + (titleMatches ? 1 : 0),
+                        relevanceScore: scoreOf(matches, titleMatches, conv.messages.length),
+                        lastActivityAt: newestMsgTs || conv.lastAccessedAt || 0,
                         lastAccessedAt: conv.lastAccessedAt || 0
                     });
                 }
             }
 
-            // Sort results by relevance (more matches first) and then by recency
-            results.sort((a, b) => {
-                // First by number of matches
-                if (b.totalMatches !== a.totalMatches) {
-                    return b.totalMatches - a.totalMatches;
-                }
-                // Then by recency
-                return b.lastAccessedAt - a.lastAccessedAt;
-            });
+            // Same ordering rules as the server (app/storage/chat_search.py).
+            const age = (r: SearchResult) => r.lastActivityAt ?? r.lastAccessedAt ?? 0;
+            const rel = (r: SearchResult) => r.relevanceScore ?? r.totalMatches;
+            if (sort === 'newest') {
+                results.sort((a, b) => (age(b) - age(a)) || (rel(b) - rel(a)));
+            } else if (sort === 'oldest') {
+                // 0 means unknown; push those last rather than first.
+                results.sort((a, b) =>
+                    ((age(a) || Infinity) - (age(b) || Infinity)) || (rel(b) - rel(a)));
+            } else {
+                results.sort((a, b) => (rel(b) - rel(a)) || (age(b) - age(a)));
+            }
 
             console.log(`🔍 Search completed: found ${results.length} conversations with matches`);
             return results;

@@ -185,6 +185,14 @@ export interface SearchResult {
     projectName?: string;
     matches: MessageMatch[];
     totalMatches: number;
+    // Weighted score used for relevance ordering (see
+    // app/storage/chat_search._relevance_score).  Optional so a result from
+    // an older server, or a hand-built fixture, still type-checks; consumers
+    // fall back to totalMatches.
+    relevanceScore?: number;
+    // When the conversation was last *written to*.  Distinct from
+    // lastAccessedAt, which moves when a chat is merely opened.
+    lastActivityAt?: number;
     lastAccessedAt: number;
 }
 
@@ -192,6 +200,9 @@ export interface SearchOptions {
     caseSensitive?: boolean;
     maxSnippetLength?: number;
     projectId?: string;  // When set, only return results from this project
+    // Result ordering.  'relevance' = weighted match score; 'newest'/'oldest'
+    // = by the conversation's last activity.  Defaults to 'relevance'.
+    sort?: 'relevance' | 'newest' | 'oldest';
 }
 
 // D3 Visualization Types
