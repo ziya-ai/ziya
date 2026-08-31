@@ -73,8 +73,18 @@ interface PrintOptions {
 }
 
 interface ConversationSpec {
+    /** 'conversation' (default) — transcript with per-message chrome;
+     *  'document' — authored IR render: `sections` each on their own page,
+     *  no message chrome (see app/utils/document_ir.py). */
+    kind?: 'conversation' | 'document';
     title?: string;
-    messages: PrintMessage[];
+    /** Document mode: front-matter author (report title block + PDF /Author). */
+    author?: string;
+    /** Document mode: 'report' (title block) | 'plain' (no chrome). */
+    layout?: string;
+    /** Document mode: pagebreak-split markdown bodies. */
+    sections?: string[];
+    messages?: PrintMessage[];
     options?: PrintOptions;
     footerHtml?: string;
     renderTimeoutMs?: number;
@@ -460,6 +470,13 @@ export const PrintRenderPage: React.FC = () => {
     const [diag, setDiag] = useState<{ elapsedMs: number; lastEvent: string }>({
         elapsedMs: 0, lastEvent: 'init',
     });
+    // Diagrams that failed to render, reported NON-FATALLY: one bad diagram
+    // in a 50-page export must not fail the whole document, but the caller
+    // should not have to eyeball the PDF to discover it. Unlike the /render
+    // harness, this page never stalled on an error card — its readiness gate
+    // accepts `pre`, which every error card contains — so the defect here was
+    // silence, not a hang.
+    const [diagramErrors, setDiagramErrors] = useState<string[]>([]);
     const contentRef = useRef<HTMLDivElement | null>(null);
     const observerRef = useRef<MutationObserver | null>(null);
     const safetyTimerRef = useRef<ReturnType<typeof setTimeout>>();
@@ -578,6 +595,17 @@ export const PrintRenderPage: React.FC = () => {
         [spec, options],
     );
 
+    // Document mode (authored IR render): pagebreak-split sections, no message
+    // chrome.  A document payload has no `messages`, so filteredMessages is []
+    // and the transcript map below renders nothing — the two modes coexist
+    // without touching the conversation path.  Mermaid theme normalization
+    // still applies (a dark baked theme would band on the white page).
+    const isDocument = spec?.kind === 'document';
+    const docSections = useMemo(() => {
+        if (!spec || spec.kind !== 'document') return [];
+        return (spec.sections || []).map(s => normalizeMermaidThemeToLight(s || ''));
+    }, [spec]);
+
     // ── Readiness detection ─────────────────────────────────────────────
     // Genuinely await async renderers. We consider the page COMPLETE when:
     //   (a) the DOM has stopped mutating for a short debounce window
@@ -617,6 +645,13 @@ export const PrintRenderPage: React.FC = () => {
         // tables are left untouched; see fitOverwideTables.  Runs after images
         // settle so measured cell widths are final.
         fitOverwideTables(node);
+        // Collect any plugin error cards so the caller learns which diagrams
+        // failed without parsing the rendered output.
+        const failed = Array.from(node.querySelectorAll('[data-diagram-error]'))
+            .map(el => el.getAttribute('data-diagram-error') || 'unknown')
+            .filter(Boolean);
+        setDiagramErrors(failed);
+
         setDiag({ elapsedMs: Date.now() - startedAt, lastEvent: 'images-settled' });
         setStatus('complete');
     }, []);
@@ -721,6 +756,8 @@ export const PrintRenderPage: React.FC = () => {
             id="print-render-root"
             data-render-status={status}
             data-error={errorMessage || undefined}
+            data-diagram-errors={diagramErrors.length ? String(diagramErrors.length) : undefined}
+            data-diagram-error-list={diagramErrors.length ? diagramErrors.join(' | ') : undefined}
             data-elapsed-ms={diag.elapsedMs}
             data-last-event={diag.lastEvent}
             data-theme={isDarkMode ? 'dark' : 'light'}
@@ -772,12 +809,42 @@ export const PrintRenderPage: React.FC = () => {
                                 maxWidth: '100%',
                             }}
                         >
-                            {spec.title && (
+                            {!isDocument && spec.title && (
                                 <h1 style={{ fontSize: 22, marginBottom: 16 }}>{spec.title}</h1>
+                            )}
+                            {isDocument && spec.layout === 'report' && (spec.title || spec.author) && (
+                                <header className="print-doc-titleblock" style={{ marginBottom: 28 }}>
+                                    {spec.title && (
+                                        <h1 style={{ fontSize: 26, marginBottom: 6 }}>{spec.title}</h1>
+                                    )}
+                                    {spec.author && (
+                                        <div className="print-doc-author" style={{ fontSize: 13, color: '#57606a' }}>
+                                            {spec.author}
+                                        </div>
+                                    )}
+                                    <div className="print-doc-date" style={{ fontSize: 12, color: '#8c8c8c' }}>
+                                        {new Date().toLocaleDateString()}
+                                    </div>
+                                </header>
                             )}
                             <React.Suspense
                                 fallback={<div style={{ padding: 20, color: '#888' }}>Loading renderer…</div>}
                             >
+                                {isDocument && docSections.map((body, i) => (
+                                    <div
+                                        key={i}
+                                        className="print-doc-section"
+                                        data-doc-section={i}
+                                        style={i > 0 ? { breakBefore: 'page' } : undefined}
+                                    >
+                                        <MarkdownRenderer
+                                            markdown={body}
+                                            enableCodeApply={false}
+                                            isStreaming={false}
+                                            forceRender={true}
+                                        />
+                                    </div>
+                                ))}
                                 {filteredMessages.map((msg, i) => {
                                     // PDF-07 (Card IV): the per-message separator
                                     // (bottom border + margin + padding) is a
