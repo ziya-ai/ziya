@@ -22,6 +22,8 @@ import {
   sanitizeDuration,
   toNoteStructDuration,
   sanitizeBeamGroups,
+  sanitizeTupletCounts,
+  MAX_TUPLET_COUNT,
 } from '../musicPlugin';
 
 let warn: jest.SpyInstance;
@@ -227,5 +229,36 @@ describe('sanitizeBeamGroups', () => {
   it('returns undefined for an absent or empty list', () => {
     expect(sanitizeBeamGroups(undefined)).toBeUndefined();
     expect(sanitizeBeamGroups([])).toBeUndefined();
+  });
+});
+
+describe('sanitizeTupletCounts', () => {
+  it('passes an ordinary triplet / quintuplet through byte-identically', () => {
+    // The overwhelming case: the well-formed pair round-trips unchanged, which
+    // is what keeps the guard from rewriting good tuplets.
+    expect(sanitizeTupletCounts(3, 2)).toEqual({ num: 3, inSpaceOf: 2 });
+    expect(sanitizeTupletCounts(5, 4)).toEqual({ num: 5, inSpaceOf: 4 });
+    // The boundary value is admitted.
+    expect(sanitizeTupletCounts(MAX_TUPLET_COUNT, MAX_TUPLET_COUNT))
+      .toEqual({ num: MAX_TUPLET_COUNT, inSpaceOf: MAX_TUPLET_COUNT });
+  });
+
+  it('rejects a zero / negative / fractional count (the formatter-hang path)', () => {
+    // A count of 0 divides by zero in Tuplet.attach's Fraction(inSpaceOf, num);
+    // negative / fractional yields a NaN tick -- both hang the formatter.
+    expect(sanitizeTupletCounts(0, 2)).toBeNull();
+    expect(sanitizeTupletCounts(3, 0)).toBeNull();
+    expect(sanitizeTupletCounts(-3, 2)).toBeNull();
+    expect(sanitizeTupletCounts(3.5, 2)).toBeNull();
+    expect(sanitizeTupletCounts(3, 2.5)).toBeNull();
+  });
+
+  it('rejects an absurd count above the cap (the "3:1000" / off-page path)', () => {
+    // The bug this fix closes: an unbounded count printed a ratio label like
+    // "3:1000" and drove the tick rescale off the page (or, near-zero, hung).
+    expect(sanitizeTupletCounts(3, 1000)).toBeNull();
+    expect(sanitizeTupletCounts(1000, 2)).toBeNull();
+    expect(sanitizeTupletCounts(MAX_TUPLET_COUNT + 1, 2)).toBeNull();
+    expect(sanitizeTupletCounts(3, MAX_TUPLET_COUNT + 1)).toBeNull();
   });
 });
