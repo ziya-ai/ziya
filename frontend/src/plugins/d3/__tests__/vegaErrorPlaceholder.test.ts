@@ -1,4 +1,7 @@
 /**
+ * @jest-environment jsdom
+ */
+/**
  * Regression test for Issue 15 (vega renderer): an error the Vega runtime
  * throws synchronously in ~1s (e.g. `Expression parse error: 1 +++ 2`) used to
  * decay into a 30s "timeout-no-output" with no surfaced message.

@@ -67,6 +67,8 @@ from app.services.latex_profiles import (
     install_command,
     requires_position_marks,
 )
+from app.utils.latex_color import normalize_colors
+from app.utils.latex_unicode import transliterate
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +76,14 @@ DEFAULT_TIMEOUT_SECONDS = 20
 MAX_BODY_CHARS = 64_000
 MAX_OUTPUT_BYTES = 12 * 1024 * 1024
 PNG_DPI = 150
+
+#: Bounds on the rasterisation resolution when a caller requests explicit
+#: width/height (D-006).  The floor keeps a "far below natural size" request
+#: (the documented downscaling escape hatch) from collapsing to an unreadable
+#: sub-pixel smear or a 0px image; the ceiling keeps a huge request from
+#: producing a raster that blows MAX_OUTPUT_BYTES or the render budget.
+MIN_PNG_DPI = 12
+MAX_PNG_DPI = 600
 
 #: Cap on LaTeX passes.  Position-mark documents need two; the cap exists
 #: because a pathological document can request a rerun indefinitely and each
@@ -114,6 +124,25 @@ _DENIED: tuple[tuple[re.Pattern, str], ...] = tuple(
 )
 
 _SANDBOX_DENY_PATHS = ("/etc", "/private/etc", "/Users", "/var/root", "/root")
+
+# Recovery preprocessing (F-...): the wrapper shapes a model commonly emits
+# around a diagram body.  These are stripped BEFORE the security prescan so the
+# commonest legitimate outputs -- a full ``\documentclass`` document, a body
+# with ``\usepackage`` lines prepended, a markdown code fence -- are recovered
+# to a bare body instead of being hard-rejected by the denylist (which
+# otherwise fires on ``\usepackage``/``\documentclass`` before any stripping).
+#
+# This does NOT weaken the security posture: whatever survives stripping is
+# still scanned, so a ``\usepackage`` or ``\input`` sitting inside the diagram
+# body (rather than a recognised preamble/wrapper) is rejected exactly as
+# before.  The profile always supplies the real preamble, so a discarded author
+# preamble costs nothing.
+_DOCUMENT_BODY_RE = re.compile(
+    r"\\begin\s*\{document\}(.*?)\\end\s*\{document\}", re.DOTALL)
+_PREAMBLE_LINE_RE = re.compile(
+    r"^[ \t]*\\(?:documentclass|usepackage|RequirePackage|usetikzlibrary)\b[^\n]*\n",
+    re.MULTILINE,
+)
 
 
 @dataclass
@@ -263,6 +292,48 @@ class LatexRenderer:
     # -- validation --------------------------------------------------------
 
     @staticmethod
+    def _sanitize_input(body: str) -> str:
+        """Strip common wrapper shapes so a diagram body reaches the prescan bare.
+
+        Recovers three shapes a model routinely emits, in order:
+
+          1. a single enclosing markdown code fence (``\u0060\u0060\u0060latex ... \u0060\u0060\u0060``);
+          2. a full document -- keep only what is between ``\\begin{document}``
+             and ``\\end{document}`` (the profile supplies the real preamble);
+          3. otherwise, preamble declarations (``\\documentclass`` /
+             ``\\usepackage`` / ``\\usetikzlibrary`` / ``\\RequirePackage``)
+             prepended before the body.
+
+        Purely subtractive and best-effort: if stripping would empty the body,
+        the original is returned so behaviour degrades to "render as written".
+        Runs before the security prescan, and only removes recognised
+        preamble/wrapper text -- anything else (including a ``\\usepackage`` or
+        ``\\input`` sitting inside the diagram body) is left for the prescan to
+        judge, so the deny-list still governs genuine in-body injection.
+        """
+        text = body.strip()
+
+        # 1. Unwrap a single enclosing markdown code fence.
+        if text.startswith("```"):
+            newline = text.find("\n")
+            if newline != -1:
+                text = text[newline + 1:]
+            trimmed = text.rstrip()
+            if trimmed.endswith("```"):
+                text = trimmed[:-3]
+            text = text.strip()
+
+        # 2. Full document: keep only the body between the document markers.
+        match = _DOCUMENT_BODY_RE.search(text)
+        if match:
+            text = match.group(1).strip()
+        else:
+            # 3. Prepended preamble lines (no document environment).
+            text = _PREAMBLE_LINE_RE.sub("", text).strip()
+
+        return text or body
+
+    @staticmethod
     def prescan(body: str) -> Optional[str]:
         """Return a rejection reason for dangerous input, else None."""
         if len(body) > MAX_BODY_CHARS:
@@ -276,8 +347,28 @@ class LatexRenderer:
     # -- rendering ---------------------------------------------------------
 
     def render(self, diagram_type: str, body: str,
-               fmt: str = "auto", use_cache: bool = True) -> RenderResult:
-        """Render ``body`` for ``diagram_type`` to SVG or PNG."""
+               fmt: str = "auto", use_cache: bool = True,
+               theme: str = "light",
+               width: Optional[int] = None,
+               height: Optional[int] = None) -> RenderResult:
+        """Render ``body`` for ``diagram_type`` to SVG or PNG.
+
+        ``theme`` selects the raster (PNG) surface: ``dark`` bakes a dark page
+        with light default ink, ``light`` a white page with dark ink.  Without
+        it the renderer emitted black ink on a transparent background for both
+        themes, so the same PNG shown on a dark panel was ~1.27:1 -- invisible.
+        The SVG path ignores theme (the browser recolours it live).
+
+        ``width``/``height`` are the caller's requested pixel bounds for the
+        PNG raster -- the only escape hatch for dense or extreme-aspect layouts.
+        They were previously dropped on the floor: the LaTeX path forwarded only
+        type/definition/fmt/theme, so ``standalone`` cropped to the natural
+        bounding box and every diagram rasterised at a fixed ``PNG_DPI`` (150)
+        regardless of the request (D-006).  They now scale the pdf->png
+        resolution so the tight crop is fit INSIDE the requested box (aspect
+        ratio preserved -- the cropped drawing has no slack to distort).  The
+        SVG path is resolution-independent, so they do not apply there.
+        """
         started = time.monotonic()
 
         profile = get_profile(diagram_type)
@@ -286,6 +377,13 @@ class LatexRenderer:
                 ok=False, error_kind="internal",
                 error=f"no LaTeX profile for diagram type {diagram_type!r}",
             )
+
+        # Recover common wrapper shapes (markdown fence, full document,
+        # prepended preamble) BEFORE the security prescan, so a legitimate
+        # ``\documentclass``/``\usepackage`` wrapper is stripped rather than
+        # hard-rejected by the deny-list.  Subtractive only; in-body injection
+        # still reaches the prescan below.
+        body = self._sanitize_input(body)
 
         rejection = self.prescan(body)
         if rejection:
@@ -296,10 +394,29 @@ class LatexRenderer:
         # is never rewritten) and before the cache key is computed, so the key
         # covers the body actually compiled.  Advisory only: a lint bug must
         # never turn a working render into a failure.
+        # Colour-form + Unicode normalisation (D-004, D-005).  Applied to EVERY
+        # LaTeX engine, after the security prescan (so a rejected body is never
+        # rewritten) and BEFORE the per-profile lint (so a rewritten
+        # ``fill={rgb,...}`` is already brace-protected when the circuitikz lint
+        # scans option values, and a transliterated symbol is in place before
+        # any ring/charge inspection).  Both are advisory and degrade to the
+        # body unchanged on any fault, so neither can break a working render.
+        pre_fixes: list[str] = []
+        body, uni_fixes = transliterate(body)
+        pre_fixes.extend(uni_fixes)
+        body, colour_fixes = normalize_colors(body, theme=theme)
+        pre_fixes.extend(colour_fixes)
+
         lint_warnings: tuple[str, ...] = ()
         lint_fixes: tuple[str, ...] = ()
         if profile.key == "chemfig":
             body, lint_fixes, lint_warnings = self._lint_chemfig(body)
+        elif profile.key == "circuitikz":
+            body, lint_fixes, lint_warnings = self._lint_circuitikz(body)
+        elif profile.key in ("tikz", "tikz-cd", "pgfplots"):
+            body, lint_fixes, lint_warnings = self._lint_tikz(body)
+        if pre_fixes:
+            lint_fixes = tuple(pre_fixes) + tuple(lint_fixes)
 
         cap = self.probe()
         if not cap.available:
@@ -342,8 +459,14 @@ class LatexRenderer:
         if target == "png" and not (cap.has_pdflatex and cap.has_ghostscript):
             return self._not_installed(profile, cap)
 
-        document = profile.build_document(body, standalone=cap.has_standalone, fmt=target)
-        key = self._cache_key(document, target)
+        document = profile.build_document(
+            body, standalone=cap.has_standalone, fmt=target, theme=theme)
+        # width/height only affect the PNG rasterisation resolution, not the
+        # compiled document, so they must join the cache key or a second call
+        # at a different requested size would be served the first size's PNG.
+        raster_w = width if target == "png" else None
+        raster_h = height if target == "png" else None
+        key = self._cache_key(document, target, raster_w, raster_h)
 
         if use_cache:
             hit = self._cache_get(key, target)
@@ -354,7 +477,12 @@ class LatexRenderer:
                     warnings=lint_warnings, autofixes=lint_fixes,
                 )
 
-        result = self._compile(document, target, cap)
+        # pgf position marks (chemfig \chemmove, TikZ ``remember picture``)
+        # resolve .aux-recorded coordinates and MUST get a second pass, which
+        # pgf does not request via the log (D-043).  Force a floor of two.
+        min_passes = 2 if requires_position_marks(body) else 1
+        result = self._compile(document, target, cap, min_passes=min_passes,
+                               width=raster_w, height=raster_h)
         result.duration_ms = int((time.monotonic() - started) * 1000)
         result.warnings = lint_warnings
         result.autofixes = lint_fixes
@@ -377,6 +505,62 @@ class LatexRenderer:
         """
         applied: list[str] = []
         warnings: list[str] = []
+
+        # HTML-entity decode (D-059).  A chemfig label pasted from a rich-text
+        # source can carry HTML entities (``&amp;``, ``&lt;``, ``&#8594;``).  A
+        # decoded ``&`` is a FATAL "Misplaced alignment tab" in a chemfig body,
+        # and a numeric entity for a symbol never renders.  Decode named
+        # entities to safe LaTeX and numeric entities to their character, then
+        # re-run the Unicode transliteration so a decoded symbol (e.g. the
+        # arrow from ``&#8594;``) routes through the maths fonts a minimal TeX
+        # install ships.  Chemfig-scoped, NOT global: rewriting ``&`` would
+        # corrupt a tikz-cd matrix, whose columns are ``&``-separated; chemfig
+        # is the one profile where a bare ``&`` is always an error.  Run first
+        # so the passes below see the decoded body.
+        try:
+            from app.utils.chemfig_lint import decode_entities
+
+            body, entity_fixes = decode_entities(body)
+            if entity_fixes:
+                body, tl_fixes = transliterate(body)
+                entity_fixes = tuple(entity_fixes) + tuple(tl_fixes)
+            for note in entity_fixes:
+                logger.info("chemfig entity decode: %s", note)
+            applied.extend(entity_fixes)
+        except Exception:                  # pragma: no cover - defensive
+            logger.exception("chemfig entity decode failed; body unchanged")
+
+        # Quoted-numeric recovery.  Model output frequently quotes a numeric
+        # chemfig argument as if the source were JSON -- a ring size *"6"(, a
+        # bond angle [:"30"], a setter dimension atom sep="2.4em".  Each is a
+        # FATAL compile error as written (*"6"( aborts with "Missing number"),
+        # and *"6"( in particular never matches the ring grammar so no other
+        # lint step can even see the ring.  Run FIRST so the deprecated-setter,
+        # charge and ring passes below all operate on unquoted numbers.
+        try:
+            from app.utils.chemfig_lint import unquote_numeric_fields
+
+            body, unquote_fixes = unquote_numeric_fields(body)
+            for note in unquote_fixes:
+                logger.info("chemfig unquote: %s", note)
+            applied.extend(unquote_fixes)
+        except Exception:                  # pragma: no cover - defensive
+            logger.exception("chemfig unquote failed; body unchanged")
+
+        # Deprecated-setter rewrite.  \setatomsep / \setbondoffset / \setdoublesep
+        # and friends were removed from modern chemfig and are a FATAL
+        # "Undefined control sequence" (which the log-parser then misattributes
+        # to a missing package); the modern \setchemfig{key=value} form renders
+        # identically.  Run first so the rest of the lint sees the repaired body.
+        try:
+            from app.utils.chemfig_lint import rewrite_deprecated_setters
+
+            body, setter_fixes = rewrite_deprecated_setters(body)
+            for note in setter_fixes:
+                logger.info("chemfig setter rewrite: %s", note)
+            applied.extend(setter_fixes)
+        except Exception:                  # pragma: no cover - defensive
+            logger.exception("chemfig setter rewrite failed; body unchanged")
 
         # \charge separator / math-mode repair.  Its failures are hard compile
         # errors whose messages name the wrong cause entirely, so repairing is
@@ -408,6 +592,62 @@ class LatexRenderer:
 
         return body, tuple(applied), tuple(warnings)
 
+    @staticmethod
+    def _lint_circuitikz(body: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+        """Brace pgfkeys-hostile option values in a circuitikz body.
+
+        An unbraced ``=`` inside an option value (``l=$R_C=\\SI{2.2}{\\kilo
+        \\ohm}$``) is split by pgfkeys before TeX evaluates it and aborts the
+        whole compile with ``Extra }, or forgotten $`` -- a fatal error naming
+        a cause the author never wrote.  The fix wraps such values in braces so
+        pgfkeys treats them as opaque.
+
+        Wrapped in a blanket except for the same reason as ``_lint_chemfig``:
+        this is a convenience check on model-authored input, and any defect
+        must degrade to "render the body as written", never to a failed render.
+        """
+        try:
+            from app.utils.circuitikz_lint import autofix
+
+            body, fixes, warnings = autofix(body)
+            for note in fixes:
+                logger.info("circuitikz autofix: %s", note)
+            for note in warnings:
+                logger.warning("circuitikz lint: %s", note)
+            return body, fixes, warnings
+        except Exception:                  # pragma: no cover - defensive
+            logger.exception("circuitikz lint failed; rendering body unchanged")
+            return body, (), ()
+
+    @staticmethod
+    def _lint_tikz(body: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+        r"""Structural recovery pass for TikZ / tikz-cd (fix group G-06).
+
+        Before this, ``tikz`` and ``tikz-cd`` matched neither the chemfig nor
+        the circuitikz branch, so they had no structural preprocessor at all.
+        This runs a small set of provably safe rewrites -- literal ``\n``
+        restoration, a periodic ``mod(...,360)`` clamp on loop-derived trig
+        arguments (output-preserving; avoids the pgfmath dimen overflow), and a
+        ``\pgfmathparse`` -> ``\pgfmathsetmacro`` capture (fixes the
+        node-coordinate clobber that silently prints the wrong number).
+
+        Wrapped in a blanket except for the same reason as ``_lint_chemfig``:
+        this is a convenience check on model-authored input, and any defect must
+        degrade to "render the body as written", never to a failed render.
+        """
+        try:
+            from app.utils.tikz_lint import autofix
+
+            body, fixes, warnings = autofix(body)
+            for note in fixes:
+                logger.info("tikz autofix: %s", note)
+            for note in warnings:
+                logger.warning("tikz lint: %s", note)
+            return body, fixes, warnings
+        except Exception:                  # pragma: no cover - defensive
+            logger.exception("tikz lint failed; rendering body unchanged")
+            return body, (), ()
+
     def _not_installed(self, profile: LatexProfile, cap: Capability,
                        missing: tuple[str, ...] = ()) -> RenderResult:
         """Build the actionable not-installed result."""
@@ -416,7 +656,10 @@ class LatexRenderer:
         # missing set: installing them alongside is strictly better (chemfig
         # without mhchem cannot typeset \ce{} equations), yet their absence must
         # not be reported as the reason a render failed.
-        needed.extend(profile.optional_tl_packages)
+        # Read through the effective view, not the raw field, so packages the
+        # preamble loads for EVERY profile (siunitx) are named here too --
+        # otherwise a guarded load degrades with no hint about how to fix it.
+        needed.extend(profile.effective_optional_tl_packages)
         if not cap.available:
             needed.extend(TOOLCHAIN_TL_PACKAGES)
         needed.extend(cap.missing_toolchain)
@@ -435,7 +678,94 @@ class LatexRenderer:
 
     # -- toolchain ---------------------------------------------------------
 
-    def _compile(self, document: str, target: str, cap: Capability) -> RenderResult:
+    @staticmethod
+    def _needs_another_pass(log_text: str, passes_done: int,
+                            min_passes: int) -> bool:
+        """Decide whether the LaTeX engine should be run again.
+
+        Two independent triggers, OR'd:
+
+        * ``passes_done < min_passes`` -- a floor set by the caller for bodies
+          whose second-pass requirement is NOT announced in the log (pgf
+          position marks; see ``_compile``).  Without this floor a chemfig
+          ``\\chemmove`` body stopped after one pass and its arrow was
+          misplaced/absent (D-043), because pgf's aux plumbing never prints the
+          LaTeX rerun message below.
+        * ``_RERUN_SIGNAL in log_text`` -- LaTeX's own "Rerun to get
+          cross-references right" request (\\label/\\ref, tikz-cd overlays).
+
+        Pure and side-effect free so the pass policy can be unit-tested without
+        a TeX installation.  ``min_passes == 1`` reproduces the historical
+        signal-only behaviour exactly.
+        """
+        if passes_done < min_passes:
+            return True
+        return _RERUN_SIGNAL in log_text
+
+    @staticmethod
+    def _pdf_media_box_points(pdf_path: Path) -> Optional[tuple[float, float]]:
+        """Natural (width, height) of ``pdf_path`` in PostScript points.
+
+        Parsed from the ``/MediaBox`` array, which ``standalone`` sets to the
+        cropped drawing (content + border) and which appears in plaintext in
+        the PDFs pdflatex emits.  Returns ``None`` on any parse failure so the
+        caller degrades to the fixed default DPI rather than raising.
+        """
+        try:
+            raw = pdf_path.read_bytes()
+        except OSError:
+            return None
+        # /MediaBox [x0 y0 x1 y1]  (whitespace and the leading space are all
+        # optional; values may be ints or reals, possibly negative).
+        m = re.search(
+            rb"/MediaBox\s*\[\s*(-?[\d.]+)\s+(-?[\d.]+)\s+"
+            rb"(-?[\d.]+)\s+(-?[\d.]+)\s*\]",
+            raw,
+        )
+        if not m:
+            return None
+        try:
+            x0, y0, x1, y1 = (float(m.group(i)) for i in range(1, 5))
+        except ValueError:
+            return None
+        w, h = abs(x1 - x0), abs(y1 - y0)
+        if w <= 0 or h <= 0:
+            return None
+        return w, h
+
+    @classmethod
+    def _raster_dpi(cls, pdf_path: Path,
+                    width: Optional[int], height: Optional[int]) -> float:
+        """Resolution (DPI) to rasterise ``pdf_path`` at.
+
+        With no size request this is the fixed ``PNG_DPI`` -- byte-identical to
+        the previous behaviour.  With a request, the natural point size is read
+        from the PDF and the DPI is chosen so the cropped drawing is fit INSIDE
+        the requested ``width`` x ``height`` box: for each supplied dimension
+        ``dpi = target_px * 72 / natural_pt`` and the smaller (fit-inside)
+        value wins, so the aspect ratio of the tight crop is preserved and
+        neither dimension overshoots.  Clamped to [MIN_PNG_DPI, MAX_PNG_DPI].
+        """
+        if not width and not height:
+            return float(PNG_DPI)
+        size = cls._pdf_media_box_points(pdf_path)
+        if size is None:
+            return float(PNG_DPI)
+        w_pt, h_pt = size
+        candidates: list[float] = []
+        if width and width > 0:
+            candidates.append(width * 72.0 / w_pt)
+        if height and height > 0:
+            candidates.append(height * 72.0 / h_pt)
+        if not candidates:
+            return float(PNG_DPI)
+        dpi = min(candidates)
+        return max(float(MIN_PNG_DPI), min(float(MAX_PNG_DPI), dpi))
+
+    def _compile(self, document: str, target: str, cap: Capability,
+                 min_passes: int = 1,
+                 width: Optional[int] = None,
+                 height: Optional[int] = None) -> RenderResult:
         with tempfile.TemporaryDirectory(prefix="ziya-latex-") as tmp:
             tmpdir = Path(tmp)
             (tmpdir / "doc.tex").write_text(document, encoding="utf-8")
@@ -448,18 +778,35 @@ class LatexRenderer:
 
             # Rerun until LaTeX stops asking, bounded by MAX_LATEX_PASSES.
             # Driven by LaTeX's own "Rerun to get cross-references right"
-            # signal rather than by inspecting the body, so it serves every
-            # construct with that need (position marks, \label/\ref, tikz-cd
-            # overlays) without the renderer having to enumerate them.
+            # signal (for \label/\ref, tikz-cd overlays, ...) PLUS a
+            # ``min_passes`` floor for constructs whose second-pass need is not
+            # announced by that string.
+            #
+            # pgf "position marks" (chemfig \chemmove electron-pushing arrows,
+            # TikZ ``remember picture`` overlays) resolve coordinates recorded
+            # in the .aux on the PREVIOUS run: on pass 1 the mark does not exist
+            # yet, so the arrow is drawn from a default position (or not at all).
+            # Crucially, pgf records those positions with its OWN aux plumbing
+            # and does not emit LaTeX's "Rerun to get cross-references right"
+            # message, so the signal-only loop stopped after a single pass and
+            # the arrow was silently misplaced/absent (D-043).  The profile layer
+            # already flags these bodies (requires_position_marks); render()
+            # turns that into min_passes>=2 so the documented mandatory second
+            # pass actually happens.  The floor is output-preserving for every
+            # other body (min_passes stays 1) and the pgf pass converges by
+            # pass 2, so a forced rerun on an already-settled body is a no-op.
             step: Optional[str] = ""
+            passes_done = 0
             for _ in range(MAX_LATEX_PASSES):
                 step = self._run(argv, tmpdir, cap)
+                passes_done += 1
                 if step is None:
                     break
                 if not log_path.exists():
                     break
-                if _RERUN_SIGNAL not in log_path.read_text(
-                        encoding="utf-8", errors="replace"):
+                if not self._needs_another_pass(
+                        log_path.read_text(encoding="utf-8", errors="replace"),
+                        passes_done, min_passes):
                     break
 
             if step is None:
@@ -490,9 +837,14 @@ class LatexRenderer:
                      "-o", "doc.svg", "doc.dvi"], tmpdir, cap)
                 out = tmpdir / "doc.svg"
             else:
+                # Scale the rasterisation resolution to fit the caller's
+                # requested pixel box (D-006).  With no request this is exactly
+                # the previous fixed PNG_DPI; with one, the tight standalone
+                # crop is fit INSIDE width x height, aspect preserved.
+                dpi = self._raster_dpi(artifact, width, height)
                 conv = self._run(
                     ["gs", "-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=pngalpha",
-                     f"-r{PNG_DPI}", "-sOutputFile=doc.png", "doc.pdf"], tmpdir, cap)
+                     f"-r{dpi:g}", "-sOutputFile=doc.png", "doc.pdf"], tmpdir, cap)
                 out = tmpdir / "doc.png"
 
             if conv is None:
@@ -621,8 +973,29 @@ class LatexRenderer:
                 pkg, feature = _OPTIONAL_COMMANDS[cmd]
                 return (f"{cmd} requires the optional `{pkg}' package ({feature}), "
                         f"which is not installed.  Run: sudo tlmgr install {pkg}")
-            return (f"Unknown LaTeX command {undefined.group(1)} -- it may belong to a "
-                    "package this diagram type does not load.")
+            return (f"Unknown or undefined command {undefined.group(1)} -- check for a "
+                    "typo or a stray token, or a command from a package this diagram "
+                    "type does not load.")
+        # A non-Latin / unsupported Unicode codepoint aborts (pdf)LaTeX with a
+        # TWO-LINE message whose SECOND line ("not set up for use with LaTeX")
+        # carries the actual cause.  The generic "! (.+)" fallback below
+        # captures only the first line, surfacing the sentence FRAGMENT
+        # "LaTeX Error: Unicode character X (U+NNNN)" -- it ends mid-clause
+        # with no verb, cause or remedy, verified against a live render of a
+        # CJK label ("电流探针").  Stock (pdf)LaTeX has no font for scripts such
+        # as CJK or emoji, so name the offending character and give the user an
+        # actionable remedy instead.  Applies to every diagram type, not just
+        # circuitikz.  Placed before the generic branch so the fragment never
+        # wins.
+        unicode_char = re.search(
+            r"! LaTeX Error: Unicode character (.+?) \((U\+[0-9A-Fa-f]+)\)",
+            log_text)
+        if unicode_char:
+            ch, code = unicode_char.group(1), unicode_char.group(2)
+            return (f"The diagram contains the character {ch} ({code}), which the "
+                    "LaTeX engine cannot typeset -- stock (pdf)LaTeX has no font for "
+                    "non-Latin scripts such as Chinese, Japanese, Korean or emoji.  "
+                    "Replace it with Latin text or a math label, or remove it.")
         first = re.search(r"^! (.+)$", log_text, re.MULTILINE)
         if first:
             return first.group(1).strip()
@@ -637,8 +1010,15 @@ class LatexRenderer:
     # -- cache -------------------------------------------------------------
 
     @staticmethod
-    def _cache_key(document: str, fmt: str) -> str:
+    def _cache_key(document: str, fmt: str,
+                   width: Optional[int] = None,
+                   height: Optional[int] = None) -> str:
         digest = hashlib.sha256(document.encode("utf-8")).hexdigest()
+        if width or height:
+            # The same document rasterised at a different requested size is a
+            # different artifact; fold the request into the key so the size is
+            # never served from a stale entry.
+            return f"{digest}.{width or 0}x{height or 0}.{fmt}"
         return f"{digest}.{fmt}"
 
     def _cache_get(self, key: str, fmt: str) -> Optional[bytes]:

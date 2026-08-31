@@ -315,6 +315,218 @@ def lint(body: str) -> tuple[Ring, ...]:
     return tuple(r for r in scan_rings(body) if not r.is_closed)
 
 
+#: A straight-double-quoted BARE number or dimension: ``"6"``, ``"30"``,
+#: ``"-30"``, ``"2.4em"``.  Models routinely quote numeric arguments as if the
+#: chemfig source were JSON -- a ring size ``*"6"(``, a bond angle ``[:"30"]``,
+#: a setter dimension ``atom sep="2.4em"``.  chemfig has NO notion of a quoted
+#: number: ``*"6"(`` never matches the ring grammar (``_RING_RE`` requires a
+#: digit right after ``*``) and aborts the whole compile with a fatal ``Missing
+#: number``, and a quoted dimension is an ``Illegal unit``.
+#:
+#: The body between the quotes must be numeric IN FULL (optional sign, an
+#: integer/decimal, an optional TeX unit).  A quoted TEXT literal -- chemfig's
+#: own ``"..."`` verbatim atom, e.g. a label ``"cat"`` or a formula ``"H2O"`` --
+#: contains a non-numeric character, does NOT match, and is left byte-for-byte
+#: untouched, so a legitimate verbatim node is never disturbed.
+_QUOTED_NUMERIC_RE = re.compile(
+    r'"(\s*[+-]?(?:\d+\.?\d*|\.\d+)'
+    r'(?:em|ex|pt|bp|cm|mm|in|pc|dd|cc|sp|px|%)?\s*)"'
+)
+
+
+def unquote_numeric_fields(body: str) -> tuple[str, tuple[str, ...]]:
+    r"""Strip straight double quotes that wrap a bare number or dimension.
+
+    Recovers the common model artefact of quoting a numeric chemfig argument as
+    if it were a JSON string -- a ring size ``*"6"(``, a bond angle ``[:"30"]``,
+    a setter value ``atom sep="2.4em"``.  Each is FATAL as written (``*"6"(``
+    aborts with ``Missing number``; a quoted dimension is an ``Illegal unit``),
+    and removing the quotes around a PURELY numeric body is a safe lexical
+    recovery that leaves the intended value intact.
+
+    A quoted verbatim TEXT atom (``"label"``, ``"H2O"``) contains a non-numeric
+    character, does not match ``_QUOTED_NUMERIC_RE`` and is left untouched.
+
+    Returns ``(new_body, applied)``; a no-op with empty ``applied`` when there
+    is no quoted numeric field, so it is safe to run on every chemfig body.
+    """
+    applied: list[str] = []
+
+    def _repl(m: "re.Match[str]") -> str:
+        inner = m.group(1).strip()
+        applied.append(
+            f'unquoted numeric field "{inner}" -> {inner} '
+            f"(chemfig rejects a quoted number/dimension; the quotes were a "
+            f"fatal 'Missing number'/'Illegal unit')."
+        )
+        return inner
+
+    out = _QUOTED_NUMERIC_RE.sub(_repl, body)
+    return out, tuple(applied)
+
+
+#: Legacy chemfig configuration setters removed from modern chemfig (>= v1.0,
+#: 2019).  Every one is FATAL on a current install -- ``\setatomsep`` now raises
+#: "Undefined control sequence" and takes the whole diagram down, even though
+#: the modern ``\setchemfig{...}`` equivalent renders identically.  Models
+#: trained on pre-2019 chemfig documentation emit these constantly, and the
+#: 1:1 rewrite to a ``\setchemfig`` key is mechanical and well defined.
+#:
+#: The renderer's "Undefined control sequence" branch actively MISDIAGNOSES
+#: this as a missing package ("may belong to a package this diagram type does
+#: not load") -- the package is loaded; the macro simply no longer exists --
+#: so rewriting is strictly better than reporting.
+_DEPRECATED_SETTER_KEYS: dict[str, str] = {
+    "setatomsep": "atom sep",
+    "setbondoffset": "bond offset",
+    "setdoublesep": "double bond sep",
+    "setarrowoffset": "arrow offset",
+    "setbondstyle": "bond style",
+}
+
+#: Setters whose value is a comma-bearing option list (not a bare dimension)
+#: and must be re-braced so the commas do not split the ``\setchemfig`` key list.
+_BRACED_VALUE_SETTERS = frozenset({"setbondstyle"})
+
+#: A legacy setter and its single braced argument.  ``[^{}]*`` keeps the match
+#: inside one flat brace group, which is all these dimension/style values ever
+#: are; a nested-brace value (never seen for these macros) is left untouched
+#: rather than mis-sliced.
+_DEPRECATED_SETTER_RE = re.compile(
+    r"\\(" + "|".join(map(re.escape, _DEPRECATED_SETTER_KEYS)) + r")\s*\{([^{}]*)\}"
+)
+
+
+def rewrite_deprecated_setters(body: str) -> tuple[str, tuple[str, ...]]:
+    """Rewrite removed ``\\set...`` setters to their ``\\setchemfig`` keys.
+
+    Returns ``(new_body, applied)``.  A no-op (and empty ``applied``) when the
+    body uses none of them, so it is safe to run on every chemfig body.
+    """
+    applied: list[str] = []
+
+    def _repl(m: "re.Match[str]") -> str:
+        macro, value = m.group(1), m.group(2)
+        key = _DEPRECATED_SETTER_KEYS[macro]
+        if macro in _BRACED_VALUE_SETTERS:
+            replacement = f"\\setchemfig{{{key}={{{value}}}}}"
+        else:
+            replacement = f"\\setchemfig{{{key}={value}}}"
+        applied.append(
+            f"rewrote deprecated \\{macro}{{{value}}} to {replacement} "
+            f"(the legacy setter was removed from modern chemfig)."
+        )
+        return replacement
+
+    out = _DEPRECATED_SETTER_RE.sub(_repl, body)
+    return out, tuple(applied)
+
+
+#: An HTML entity: a numeric reference (``&#8594;`` / ``&#x2192;``) or a named
+#: one (``&amp;``, ``&lt;``).  Models occasionally paste a chemfig label copied
+#: from a rich-text/HTML source, and the entities leak in verbatim.
+_ENTITY_RE = re.compile(r"&(#x[0-9A-Fa-f]+|#\d+|[A-Za-z][A-Za-z0-9]{1,31});")
+
+#: Named entities -> the LaTeX that renders them safely.  ``&`` and ``<``/``>``
+#: are LaTeX-special: a bare ``&`` is a FATAL "Misplaced alignment tab" in a
+#: chemfig body (chemfig has no alignment), and ``<`` / ``>`` render as garbage
+#: glyphs in OT1 text, so each is mapped to its escaped/macro form rather than
+#: to the raw character.  Only unambiguous, common entities are listed; an
+#: unknown named entity is left untouched rather than guessed at.
+_NAMED_ENTITY_LATEX: dict[str, str] = {
+    "amp": r"\&",
+    "lt": r"\textless{}",
+    "gt": r"\textgreater{}",
+    "quot": '"',
+    "apos": "'",
+    "nbsp": "~",
+    "ndash": r"\textendash{}",
+    "mdash": r"\textemdash{}",
+    "hellip": r"\ldots{}",
+    "deg": r"\ensuremath{^\circ}",
+    "times": r"\ensuremath{\times}",
+    "rarr": r"\ensuremath{\rightarrow}",
+    "larr": r"\ensuremath{\leftarrow}",
+}
+
+#: LaTeX-special characters that must be escaped when a NUMERIC entity decodes
+#: to one, so ``&#38;`` (an ampersand) becomes ``\&`` rather than a fatal bare
+#: ``&``.  A decoded char that is NOT special is returned as-is, so a numeric
+#: entity for a technical symbol (``&#8594;`` -> the arrow codepoint) is left as
+#: the Unicode character for ``latex_unicode.transliterate`` to route through
+#: the maths fonts on the following pass.
+_LATEX_SPECIAL_CHAR: dict[str, str] = {
+    "&": r"\&",
+    "%": r"\%",
+    "$": r"\$",
+    "#": r"\#",
+    "_": r"\_",
+    "{": r"\{",
+    "}": r"\}",
+    "<": r"\textless{}",
+    ">": r"\textgreater{}",
+    "~": r"\textasciitilde{}",
+    "^": r"\textasciicircum{}",
+}
+
+
+def decode_entities(body: str) -> tuple[str, tuple[str, ...]]:
+    r"""Decode HTML entities in a chemfig body to safe LaTeX.
+
+    A model sometimes emits a chemfig label carrying HTML entities copied from
+    a rich-text source (``**water** &amp; ice &#8594; steam &lt;br/&gt;``).
+    Two independent failures follow: a decoded ``&`` is a FATAL "Misplaced
+    alignment tab" (chemfig has no alignment, so an ``&amp;`` cannot be passed
+    through), and a numeric entity for a symbol (``&#8594;``) never renders as
+    the arrow the author meant.
+
+    Named entities are rewritten to their escaped/macro LaTeX form; numeric
+    entities decode to their character, with LaTeX-special results escaped and
+    everything else left as the Unicode character so the caller's
+    ``latex_unicode.transliterate`` pass routes it through the maths fonts.  An
+    UNKNOWN named entity is left byte-for-byte untouched rather than guessed at.
+
+    Deliberately confined to the chemfig path (see the caller in
+    ``latex_renderer._lint_chemfig``): rewriting ``&`` is unsafe for engines
+    where it is a column separator (tikz-cd matrices), and chemfig is the one
+    profile where a bare ``&`` is always an error.
+
+    Returns ``(new_body, applied)``; a no-op with empty ``applied`` when the
+    body carries no recognised entity, so it is safe to run on every chemfig
+    body.  Advisory: never raises (the caller also guards it).
+    """
+    applied: list[str] = []
+
+    def _repl(m: "re.Match[str]") -> str:
+        token = m.group(1)
+        original = m.group(0)
+        if token.startswith("#"):
+            try:
+                cp = int(token[2:], 16) if token[1] in "xX" else int(token[1:])
+                ch = chr(cp)
+            except (ValueError, OverflowError):
+                return original          # malformed numeric ref: leave as-is
+            repl = _LATEX_SPECIAL_CHAR.get(ch, ch)
+            applied.append(
+                f"decoded numeric entity {original} -> {repl!r} "
+                "(HTML entity leaked into a chemfig label)"
+            )
+            return repl
+        name = token
+        if name in _NAMED_ENTITY_LATEX:
+            repl = _NAMED_ENTITY_LATEX[name]
+            applied.append(
+                f"decoded entity {original} -> {repl} "
+                "(HTML entity leaked into a chemfig label; a bare '&' is a "
+                "fatal 'Misplaced alignment tab')"
+            )
+            return repl
+        return original                  # unknown named entity: do not guess
+
+    out = _ENTITY_RE.sub(_repl, body)
+    return out, tuple(applied)
+
+
 def _alternating_continuation(pattern: str, size: int, deficit: int) -> Optional[str]:
     """The unambiguous next bond for a Kekule ring, or None if ambiguous.
 

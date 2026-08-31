@@ -1,11 +1,66 @@
 import { D3RenderPlugin } from '../../types/d3';
-import initMermaidSupport, { enhancePacketDarkMode } from './mermaidEnhancer';
+import initMermaidSupport, { enhancePacketDarkMode, buildTimelineDarkThemeVariables, reapplyLinkStyleStrokes, moveGanttGridBehind, recolorGanttCritLabels } from './mermaidEnhancer';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 import { rerouteSkipEdges, shouldRerouteEdges } from './mermaidEdgeRerouter';
 import { getZoomScript, getDownloadSvgScript } from '../../utils/popupScriptUtils';
 import { hexToRgb, enhanceSVGVisibility } from '../../utils/colorUtils';
 import { escapeHtml } from '../../utils/htmlSanitize';
+
+// ---------------------------------------------------------------------------
+// D-159 (G-79): pie-slice / legend-swatch palette contrast.
+//
+// Mermaid's default pie palette fails the 3:1 graphical-object floor in BOTH
+// themes: the light "default" theme recycles near-white ivory (#ffffe0,
+// 1.02:1 on white) and pure yellow (#ffff00, 1.07:1), while the "dark" theme
+// collapses to near-black / maroon variants (1.19-1.31:1 on the dark page),
+// and adjacent wedges land on two barely-separable lavenders so a slice cannot
+// be matched to its legend swatch. The plugin previously set NO pie* theme
+// variables (the light branch passed `{}` and the dark branch set only base
+// colours), so mermaid's own defaults were used verbatim.
+//
+// Fix: resolve a curated categorical palette FROM the theme the renderer was
+// given (a light-tuned palette on the light page, a dark-tuned palette on the
+// dark page — not a single constant swap). Every entry clears >=3:1 against its
+// own background (verified with the WCAG relative-luminance formula):
+//   LIGHT on #ffffff: min 3.16 (#59a14f, #d17d00) .. max 5.85 (#7b4fb0)
+//   DARK  on #1f1f1f: min 6.94 (#b79be6) .. max 10.40 (#e0cf5c)
+//         on #262626: min 6.37 .. max 9.55
+// pieOpacity is pinned to 1 so those opaque ratios actually hold (mermaid's
+// default 0.7 would composite each fill toward the page and reduce contrast),
+// and a page-coloured inter-slice stroke draws a gap between neighbours so
+// adjacency never depends on two fills differing in luminance.
+// ---------------------------------------------------------------------------
+export const PIE_PALETTE_LIGHT: string[] = [
+    '#4e79a7', '#e15759', '#59a14f', '#b07aa1', '#9c6b3f', '#d17d00',
+    '#3a8a86', '#8e792b', '#c05299', '#6f6f6f', '#7b4fb0', '#2f7ab8',
+];
+export const PIE_PALETTE_DARK: string[] = [
+    '#7fb3e0', '#f28e8f', '#8fd48a', '#d6a9cf', '#d9a066', '#f0b24d',
+    '#67c7c2', '#e0cf5c', '#ed9ac9', '#b8b8b8', '#b79be6', '#6fc0f0',
+];
+
+/**
+ * Build the pie-specific mermaid themeVariables (pie1..pie12 + stroke/opacity)
+ * for the active theme. These keys only affect pie charts, so merging them into
+ * the global themeVariables leaves every other diagram type byte-for-byte
+ * unchanged. Exported for unit testing.
+ */
+export function buildPieThemeVariables(isDarkMode: boolean): Record<string, string> {
+    const palette = isDarkMode ? PIE_PALETTE_DARK : PIE_PALETTE_LIGHT;
+    const vars: Record<string, string> = {};
+    palette.forEach((color, i) => { vars[`pie${i + 1}`] = color; });
+    // Opaque fills so the verified per-theme contrast ratios hold (default 0.7
+    // would composite the fill toward the page and sink pale slices below floor).
+    vars.pieOpacity = '1';
+    // Page-coloured gap between adjacent slices + a contrasting outer ring, so
+    // neighbouring wedges are separable regardless of their fill luminance.
+    vars.pieStrokeColor = isDarkMode ? '#1f1f1f' : '#ffffff';
+    vars.pieStrokeWidth = '2px';
+    vars.pieOuterStrokeColor = isDarkMode ? '#e6e6e6' : '#333333';
+    vars.pieOuterStrokeWidth = '2px';
+    return vars;
+}
 
 // Add mermaid to window for TypeScript
 declare global {
@@ -396,7 +451,7 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             securityLevel: 'loose',
             fontFamily: '"Arial", sans-serif',
             fontSize: 14,
-            themeVariables: isDarkMode ? {
+            themeVariables: (isDarkMode ? Object.assign({
                 // High contrast dark theme
                 primaryColor: '#88c0d0',
                 primaryTextColor: '#eceff4', // Light text for dark backgrounds
@@ -441,7 +496,7 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                 altSectionBkgColor: '#434c5e',
                 gridColor: '#eceff4',
                 todayLineColor: '#88c0d0'
-            } : {},
+            }, diagramType === 'timeline' ? buildTimelineDarkThemeVariables() : {}, buildPieThemeVariables(true)) : buildPieThemeVariables(false)),
             flowchart: {
                 htmlLabels: true,
                 curve: 'basis',
@@ -641,6 +696,39 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             setTimeout(() => runVisibilityFix('delayed'), 500);
         } else {
             console.log('🎨 VISIBILITY-FIX: Skipping post-processing - diagram has explicit color styles');
+        }
+
+        // POST-RENDER (D-161 / G-40): re-apply explicit `linkStyle` edge strokes.
+        // In dark, the visibility pass repaints every edge with the theme
+        // lineColor, silently discarding deliberately colour-coded edges. Run
+        // AFTER the immediate + delayed (500ms) visibility fixes so it wins, and
+        // honour-then-lighten dark-unfriendly author strokes to clear 3:1.
+        // Light is untouched (the helper returns 0 there — strokes already kept).
+        if (isDarkMode && (diagramType === 'flowchart' || diagramType === 'graph')) {
+            const reapplyLinks = () => {
+                try {
+                    const n = reapplyLinkStyleStrokes(svgElement, rawDefinition, true);
+                    if (n) console.log(`🎨 LINKSTYLE-DARK-REAPPLY: restored ${n} edge stroke(s)`);
+                } catch (e) { console.warn('LINKSTYLE-DARK-REAPPLY failed:', e); }
+            };
+            reapplyLinks();
+            setTimeout(reapplyLinks, 650);
+        }
+
+        // POST-RENDER (D-170 / G-40): ensure gantt date gridlines paint BEHIND the
+        // task bars (mermaid can emit the grid group after the bars, slicing them),
+        // and recolour under-contrast crit-task labels to black (both themes).
+        if (diagramType === 'gantt') {
+            const fixGantt = () => {
+                try {
+                    if (moveGanttGridBehind(svgElement)) {
+                        console.log('📊 GANTT-GRID-ZORDER: moved date gridlines behind task bars');
+                    }
+                    recolorGanttCritLabels(svgElement);
+                } catch (e) { console.warn('GANTT-GRID-ZORDER failed:', e); }
+            };
+            fixGantt();
+            setTimeout(fixGantt, 650);
         }
 
         // POST-RENDER: Reroute skip edges that cut through intermediate nodes
@@ -1189,6 +1277,16 @@ ${svgData}`;
                     </details>
                 </div>
                 `;
+
+            // Tag the card so the headless harness fails fast with this
+            // message rather than polling for an svg the error card never
+            // contains (see railroadPlugin.renderError for the full contract).
+            const errorCard = container.querySelector('.mermaid-error');
+            if (errorCard) {
+                errorCard.setAttribute(
+                    'data-diagram-error',
+                    errorTitle + ': ' + (error.message || errorMessage));
+            }
 
             // Create buttons
             const viewSourceButton = document.createElement('button');

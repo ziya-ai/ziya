@@ -129,10 +129,13 @@ describe('applyPlotlyTheme', () => {
   });
 
   it('merges dark theme defaults with user layout (user wins on conflict)', () => {
-    const layout = { title: 'My Chart', paper_bgcolor: '#custom' };
+    // NOTE: uses a VALID hex — G-29/D-232 now validates author colours, and an
+    // invalid placeholder like '#custom' is (correctly) repaired to the theme
+    // surface rather than passed through. A real author colour still wins.
+    const layout = { title: 'My Chart', paper_bgcolor: '#654321' };
     const result = applyPlotlyTheme(layout, true);
     expect(result.title).toBe('My Chart');
-    expect(result.paper_bgcolor).toBe('#custom');
+    expect(result.paper_bgcolor).toBe('#654321');
     expect(result.font.color).toBe('#e0e0e0');
   });
 

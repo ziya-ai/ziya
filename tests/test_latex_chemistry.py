@@ -172,7 +172,8 @@ def test_absent_optional_package_is_never_reported_as_missing(renderer, monkeypa
                         lambda self, refresh=False: _full_capability())
     monkeypatch.setattr(
         LatexRenderer, "_compile",
-        lambda self, doc, target, cap: RenderResult(ok=True, content=b"x", fmt=target),
+        lambda self, doc, target, cap, **kwargs: RenderResult(
+            ok=True, content=b"x", fmt=target),
     )
     result = renderer.render("chemfig", r"\chemfig{A}", use_cache=False)
     assert result.ok, "an absent optional package must not block the render"
@@ -207,7 +208,10 @@ def test_position_marks_force_png_over_svg(renderer, monkeypatch):
                         lambda self, refresh=False: _full_capability())
     seen = {}
 
-    def fake_compile(self, document, target, cap):
+    # **kwargs so a new keyword at the call site (min_passes, added by the
+    # position-mark second-pass fix) cannot break this mock.  The assertion
+    # here is about the chosen TARGET FORMAT, not the pass count.
+    def fake_compile(self, document, target, cap, **kwargs):
         seen["target"] = target
         return RenderResult(ok=True, content=b"x", fmt=target)
 
@@ -226,7 +230,7 @@ def test_svg_is_retained_for_bodies_without_position_marks(renderer, monkeypatch
                         lambda self, refresh=False: _full_capability())
     seen = {}
 
-    def fake_compile(self, document, target, cap):
+    def fake_compile(self, document, target, cap, **kwargs):
         seen["target"] = target
         return RenderResult(ok=True, content=b"x", fmt=target)
 
@@ -271,7 +275,7 @@ def test_coloured_charge_forces_png_over_svg(renderer, monkeypatch):
                         lambda self, refresh=False: _full_capability())
     seen = {}
 
-    def fake_compile(self, document, target, cap):
+    def fake_compile(self, document, target, cap, **kwargs):
         seen["target"] = target
         return RenderResult(ok=True, content=b"x", fmt=target)
 

@@ -362,6 +362,51 @@ def test_generic_tex_error_falls_back_to_the_first_bang_line():
     assert LatexRenderer._extract_error("nothing wrong here") == ""
 
 
+def test_unsupported_unicode_character_error_is_actionable():
+    """A CJK/emoji codepoint aborts (pdf)LaTeX with a TWO-line message.
+
+    Regression for defect-24: a circuitikz label carrying a Chinese
+    character ("电流探针") aborts the compile with the verbatim log below
+    (captured from a live ``latex`` run).  The generic ``! (.+)`` fallback
+    surfaced only the FIRST line -- the sentence fragment "LaTeX Error:
+    Unicode character 电 (U+7535)" that ends mid-clause with no verb, cause
+    or remedy.  The fix names the character and gives an actionable remedy.
+    """
+    # Verbatim two-line block from the live compile (doc.log).
+    log = (
+        "! LaTeX Error: Unicode character \u7535 (U+7535)\n"
+        "               not set up for use with LaTeX.\n\n"
+        "See the LaTeX manual or LaTeX Companion for explanation.\n"
+    )
+    message = LatexRenderer._extract_error(log)
+
+    # Non-vacuity: the OLD generic branch (still present as the fallback)
+    # would have returned exactly the truncated fragment.  Prove the new
+    # message is strictly better than that fragment.
+    fragment = "LaTeX Error: Unicode character \u7535 (U+7535)"
+    assert message != fragment
+
+    # The remedy names the offending character AND its codepoint AND a fix.
+    assert "\u7535" in message
+    assert "U+7535" in message
+    assert "cannot typeset" in message
+    assert "Replace" in message or "remove" in message
+    # Not a truncated fragment: it ends in a full stop, not "(U+7535)".
+    assert message.rstrip().endswith(".")
+
+
+def test_unicode_error_generalises_beyond_the_cjk_instance():
+    """The remedy fires for any unsupported codepoint, not just U+7535.
+
+    Confirms the fix repairs the whole class (emoji, other scripts), not the
+    single defect-24 character.
+    """
+    log = "! LaTeX Error: Unicode character \U0001f600 (U+1F600)\n               not set up for use with LaTeX.\n"
+    message = LatexRenderer._extract_error(log)
+    assert "U+1F600" in message
+    assert "cannot typeset" in message
+
+
 def test_log_tail_is_bounded():
     tail = LatexRenderer._tail("\n".join(str(n) for n in range(500)), lines=40)
     assert len(tail.splitlines()) == 40
@@ -417,6 +462,90 @@ def test_renders_a_real_circuit(renderer):
     assert len(result.content) > 1000
 
 
+def test_circuitikz_profile_loads_the_positioning_library():
+    """``<key>=<dist> of <node>`` placement needs \\usetikzlibrary{positioning}.
+
+    circuitikz builds on TikZ but does not load the positioning library
+    itself.  Without it, ``\\node[adc, right=2.5cm of A]`` parses ``right=`` as
+    a bare PGF-math key and dies with "Unknown operator `of'" -- a fatal abort
+    with no image.  The library line must appear after the circuitikz package
+    (which pulls in TikZ) so \\usetikzlibrary is defined when it runs.
+    """
+    profile = get_profile("circuitikz")
+    doc = profile.build_document(r"\draw (0,0) to[R] (2,0);", standalone=True, fmt="svg")
+    # positioning is the first library in the combined \usetikzlibrary line
+    # (fit was added alongside it; see test_circuitikz_profile_loads_the_fit_library).
+    assert "positioning" in doc
+    assert r"\usetikzlibrary{positioning,fit}" in doc
+    assert doc.index(r"\usepackage[american]{circuitikz}") < doc.index(
+        r"\usetikzlibrary{positioning,fit}"
+    )
+
+
+@needs_circuitikz
+def test_positioning_of_syntax_compiles_instead_of_fatal_erroring(renderer):
+    """Regression for the ``... of ...`` chained-placement fatal compile abort.
+
+    Pre-fix this body produced no image and the log carried
+    "! Package PGF Math Error: Unknown operator `o' or `of' (in '2.5cm of A')."
+    followed by "Fatal error occurred, no output PDF file produced!".  With the
+    positioning library loaded it renders.  Uses ``op amp`` (which exposes the
+    ``.out``/``.in`` port anchors) rather than the bare ``amp`` bipole, so the
+    only thing under test is the positioning placement.
+    """
+    body = (
+        r"\node[amp] (A) at (0,0) {};"
+        r"\node[adc, right=2.5cm of A] (AD) {};"
+        r"\node[dac, right=2.5cm of AD] (DA) {};"
+        r"\draw (A) -- (AD) -- (DA);"
+    )
+    result = renderer.render("circuitikz", body, fmt="auto")
+    # ok=True is the whole point: pre-fix this was a fatal abort with no output.
+    assert result.ok, result.error
+    # A real drawing, not an empty document -- three placed nodes and two wires.
+    assert len(result.content) > 400
+
+
+def test_circuitikz_profile_loads_the_fit_library():
+    """``fit=(A)(B)`` bounding boxes need \\usetikzlibrary{fit}.
+
+    Like positioning, circuitikz builds on TikZ but does not load the fit
+    library itself.  Without it, ``\\node[draw, fit=(A)(B)]`` dies with
+    "I do not know the key '/tikz/fit'" -- a fatal abort with no image.  The
+    library line must appear after the circuitikz package (which pulls in
+    TikZ) so \\usetikzlibrary is defined when it runs.
+    """
+    profile = get_profile("circuitikz")
+    doc = profile.build_document(r"\draw (0,0) to[R] (2,0);", standalone=True, fmt="svg")
+    assert r"\usetikzlibrary{positioning,fit}" in doc
+    assert doc.index(r"\usepackage[american]{circuitikz}") < doc.index(
+        r"\usetikzlibrary{positioning,fit}"
+    )
+
+
+@needs_circuitikz
+def test_fit_key_compiles_instead_of_fatal_erroring(renderer):
+    """Regression for the ``fit=(A)(B)`` fatal compile abort.
+
+    Pre-fix this body produced no image and the log carried
+    "! Package pgfkeys Error: I do not know the key '/tikz/fit', to which you
+    passed '(A)(B)'" followed by "Fatal error occurred, no output PDF file
+    produced!".  With the fit library loaded it renders.  Draws a dashed
+    bounding box around two named junction nodes spanning a resistor -- a
+    plausible subcircuit annotation.
+    """
+    body = (
+        r"\draw (0,0) to[R, l=$R_1$] (3,0);"
+        r"\node[circ] (A) at (0,0) {};"
+        r"\node[circ] (B) at (3,0) {};"
+        r"\node[draw, dashed, rounded corners, inner sep=4pt, fit=(A)(B)] {};"
+    )
+    result = renderer.render("circuitikz", body, fmt="auto")
+    # ok=True is the whole point: pre-fix this was a fatal abort with no output.
+    assert result.ok, result.error
+    assert len(result.content) > 400
+
+
 @needs_tex
 def test_cache_returns_identical_bytes_and_reports_the_hit(renderer):
     body = r"\draw (0,0) -- (2,2);"
@@ -460,3 +589,39 @@ def test_runaway_expansion_is_killed_and_leaves_no_processes(tmp_path):
     result = renderer._compile(document, "png", renderer.probe())
     assert not result.ok
     assert result.error_kind == "timeout"
+
+
+# ---------------------------------------------------------------------------
+# CircuiTikZ option-value lint wiring (F: pgfkeys-hostile '=' in a value)
+# ---------------------------------------------------------------------------
+_CIRCUIT_BROKEN = (
+    r"\draw (0,0) to[V, l=$V_{in}$] (0,2)"
+    "\n  " r"to[R, l=$R_C=\SI{2.2}{\kilo\ohm}$] (3,2)"
+    "\n  " r"to[C, l=$C_1$] (3,0) to[short] (0,0) node[ground]{};"
+)
+
+
+def test_lint_circuitikz_braces_hostile_option_value(renderer):
+    """The renderer's circuitikz lint hook braces a value with a bare '='."""
+    body, fixes, warnings = renderer._lint_circuitikz(_CIRCUIT_BROKEN)
+    assert r"l={$R_C=\SI{2.2}{\kilo\ohm}$}" in body
+    assert len(fixes) == 1
+    assert warnings == ()
+
+
+def test_lint_circuitikz_leaves_clean_body_untouched(renderer):
+    """A body with no hostile value is returned byte-identical (over-reach)."""
+    clean = r"\draw (0,0) to[R, l=$R_1$] (2,0) to[C, l=$C_1$] (2,-2);"
+    body, fixes, warnings = renderer._lint_circuitikz(clean)
+    assert body == clean
+    assert fixes == ()
+
+
+def test_lint_circuitikz_hook_selected_for_profile_key():
+    """render() dispatches the circuitikz body through the circuitikz lint."""
+    import inspect
+    from app.services.latex_renderer import LatexRenderer
+
+    src = inspect.getsource(LatexRenderer.render)
+    assert 'profile.key == "circuitikz"' in src
+    assert "_lint_circuitikz" in src

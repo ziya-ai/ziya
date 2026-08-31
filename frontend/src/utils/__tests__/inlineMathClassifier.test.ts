@@ -5,6 +5,7 @@ import {
     MATH_INLINE_MARKER_PREFIX,
     MATH_INLINE_MARKER_SPLIT_RE,
     isInlineMathMarker,
+    createMathPlaceholderStore,
 } from '../inlineMathClassifier';
 
 /**
@@ -246,5 +247,60 @@ describe('processInlineMath — table column structure is preserved', () => {
         // If `---` were read as a delimiter row, the pipe-bearing line above it
         // would be cell-split and this math would be destroyed.
         expect(decodedMath('cost $9|b$ here\n\n---\n\nnext')).toEqual(['9|b']);
+    });
+});
+
+/**
+ * Reported bug (spec0-d1): inline math whose content holds an ESCAPED literal
+ * dollar (`\$`) was truncated. The span boundary scan matched a lone backslash
+ * with its non-dollar char class and then read the `$` of `\$` as the closing
+ * delimiter, so `$x = \$5$` became the span `x = \` (a lone trailing backslash
+ * => red KaTeX parse error) and leaked `5$` as literal text.
+ *
+ * The fix consumes a backslash-escape (`\\.`) as a unit before the non-dollar
+ * fallback, in BOTH boundary regexes (replaceMathSpans and the placeholder
+ * store's protect pass), so an escaped dollar stays inside the span and the
+ * real unescaped `$` closes it. General rule: an escaped `\$` is never a
+ * delimiter.
+ */
+describe('processInlineMath — escaped literal dollar inside inline math', () => {
+    it('keeps an escaped \\$ inside the span and closes on the real $', () => {
+        expect(decodedMath('$x = \\$5$')).toEqual(['x = \\$5']);
+    });
+
+    it('renders the reported spec construct as a single math span', () => {
+        const src = '$x_{\\text{net\\_cost} = \\{fee\\}} = \\$5$';
+        expect(decodedMath(src)).toEqual(['x_{\\text{net\\_cost} = \\{fee\\}} = \\$5']);
+    });
+
+    it('does not leak the post-escape remainder as literal text', () => {
+        const out = processInlineMath('a $x = \\$5$ b');
+        const markers = out
+            .split(MATH_INLINE_MARKER_SPLIT_RE)
+            .filter(part => part && isInlineMathMarker(part));
+        expect(markers).toHaveLength(1);
+        // The whole span became one marker; only the surrounding prose remains.
+        expect(out).toContain('a ');
+        expect(out).toContain(' b');
+        expect(out).not.toContain('5$');
+    });
+
+    it('multiple escaped dollars in one span all stay inside', () => {
+        // Needs a strong math signal (\alpha) to classify as math at all; the
+        // point here is that BOTH escaped dollars survive the boundary scan
+        // rather than closing the span early.
+        expect(decodedMath('$\\alpha = \\$3 + \\$4$')).toEqual(['\\alpha = \\$3 + \\$4']);
+    });
+
+    it('currency with a real (unescaped) $ boundary is still not math', () => {
+        // Regression guard: the escaped-dollar handling must not resurrect the
+        // "$900 ... + $300" currency false-positive (space kills adjacency).
+        expect(processInlineMath('$900 deposit + $300 fee')).not.toContain('⟨MATH_INLINE');
+    });
+
+    it('protect round-trips an escaped-dollar span byte-identically', () => {
+        const store = createMathPlaceholderStore();
+        const src = 'pay $x = \\$5$ now';
+        expect(store.restore(store.protect(src))).toBe(src);
     });
 });

@@ -240,7 +240,14 @@ const TABLE_CELL_SPLIT_RE = /(?<!\\)\|/;
  */
 function replaceMathSpans(scope: string): string {
     return scope.replace(
-        /\$(?=\S)([^$\n]+?)(?<=\S)\$/g,
+        // Content class consumes a backslash-escape (`\\.`) as a UNIT before
+        // the non-dollar fallback, so an escaped literal dollar (`\$`) stays
+        // INSIDE the span instead of being read as the closing delimiter. The
+        // `\\.` alternative is tried first at a backslash position, so `\$` is
+        // swallowed whole and the real (unescaped) `$` closes the span. Without
+        // this, `$x = \$5$` truncated to `$x = \$` (lone trailing backslash =>
+        // red KaTeX error) and leaked `5$` as literal text.
+        /\$(?=\S)((?:\\.|[^$\n])+?)(?<=\S)\$/g,
         (match, p1) => (
             isInlineMathContent(p1, match)
                 ? encodeInlineMathMarker(p1.trim())
@@ -327,7 +334,12 @@ export function createMathPlaceholderStore(): MathPlaceholderStore {
         protect(segment: string): string {
             // Negative lookbehind/lookahead keep `$$` display delimiters out.
             return segment.replace(
-                /(?<!\$)\$(?!\$)((?:(?!\$).)+?)\$(?!\$)/g,
+                // Same escaped-dollar rule as replaceMathSpans: `\\.` is
+                // consumed as a unit first, so a protected span containing an
+                // escaped literal dollar (`\$`) is lifted out whole rather than
+                // being split at the escape — otherwise the trailing remainder
+                // would be exposed to escapeNestedBacktickFences.
+                /(?<!\$)\$(?!\$)((?:\\.|(?!\$).)+?)\$(?!\$)/g,
                 match => {
                     const placeholder = `__MATH_INLINE_${storeId}_${counter}__`;
                     blocks.push({ placeholder, content: match });

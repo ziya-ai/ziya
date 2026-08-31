@@ -1,152 +1,180 @@
 /**
- * Prose-survival guard for the math preprocessing passes.
+ * Prose-survival + fence-scope guard for the math preprocessing passes.
  *
  * WHY THIS FILE EXISTS
  * --------------------
- * The three math preprocessing passes in MarkdownRenderer share a shape:
+ * The math preprocessing passes in MarkdownRenderer used to share this shape:
  *
  *     source.split(/(```fence```)/g).map((part, idx) => {
  *         if (idx % 2 === 1 && part.startsWith('```')) return part;
  *         return applyOutsideCodeSpans(part, ...);   // <-- the payload
  *     }).join('')
  *
- * That shape has a silent failure mode. If the `return` on the payload line is
- * ever lost — a truncated edit, a bad merge, an early `if` that forgets to
- * return — the callback yields `undefined`, and `Array.prototype.join`
- * stringifies `undefined` as the empty string. The result is not a crash and
- * not a parse error: the file still compiles, and every non-fenced segment of
- * every rendered message is silently DELETED. Fenced code blocks survive
- * (they take the early return), so the symptom is "all my prose disappeared
- * and only the code blocks are left", with nothing in the console.
+ * That idiom had TWO defects:
  *
- * This actually happened, twice, on the same construct — which is why the
- * invariant is pinned here rather than left to reviewer vigilance.
+ *   1. Silent prose deletion. If the payload `return` was ever lost (a
+ *      truncated edit, a bad merge), the callback yielded `undefined`, and
+ *      `Array.prototype.join` stringified it as the empty string — every
+ *      non-fenced segment of every rendered message was silently DELETED
+ *      with nothing in the console.
  *
- * These tests are deliberately structural rather than behavioural. They read
- * the renderer source and assert the shape of the passes, because:
+ *   2. Backtick-only fence scope. The split regex `(```...```)` recognises
+ *      ONLY backtick fences, so a TILDE (~~~) fenced code block was treated
+ *      as ordinary prose: `$$...$$` in its body was extracted into a
+ *      math-display div and the literal expression was DROPPED from the
+ *      rendered code block (spec-3 defect spec3-d1).
  *
- *   - MarkdownRenderer.tsx cannot be imported in isolation for this purpose
- *     (it pulls in the whole component tree, KaTeX, Prism, mermaid, ...), and
- *   - a truncation produces VALID TypeScript, so neither `tsc` nor a parse
- *     check can catch it. Only "does every branch return?" catches it.
+ * Both are fixed by routing the passes through the shared, CommonMark-aware
+ * `applyOutsideFences` (fenceScanner.ts), which:
+ *   - protects tilde fences exactly as it protects backtick fences, and
+ *   - THROWS (rather than silently deleting) if a transform returns
+ *     undefined, because it does `transform(buffer.join('\n')).split('\n')`.
  *
- * The companion behavioural check (`applyOutsideCodeSpans` itself never drops
- * text) lives at the bottom and does run against the real implementation.
+ * These tests are a mix of structural (read the renderer source, assert the
+ * passes are wired through applyOutsideFences) and behavioural (run the real
+ * fenceScanner helpers). MarkdownRenderer.tsx cannot be imported in isolation
+ * here (it pulls in the whole component tree, KaTeX, Prism, mermaid, ...), and
+ * a truncation produces VALID TypeScript that neither tsc nor a parse check
+ * catches — only "is the pass wired correctly?" catches it.
  */
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { applyOutsideCodeSpans } from '../fenceScanner';
+import { applyOutsideCodeSpans, applyOutsideFences } from '../fenceScanner';
 
 const RENDERER = path.resolve(__dirname, '../MarkdownRenderer.tsx');
 const source = fs.readFileSync(RENDERER, 'utf8');
 
 /**
- * Extract the callback bodies of the fence-splitting `.map(...)` passes that
- * perform math preprocessing.
- *
- * Anchored on `.split(/(```...```)/g)` followed by a `.map((part, idx) =>`,
- * which is the exact idiom all three passes use. If that idiom is refactored
- * this test fails loudly rather than silently passing on zero matches — see
- * the "finds the passes at all" assertion below.
+ * Return the slice of renderer source immediately preceding `anchor`, with
+ * trailing whitespace and full-line `//` comments stripped. Used to assert
+ * an anchor is wrapped by / assigned from the right construct.
  */
-function fenceSplitPasses(): string[] {
-    const bodies: string[] = [];
-    const marker = '.map((part, idx) => {';
-    let from = 0;
-    for (;;) {
-        const at = source.indexOf(marker, from);
-        if (at === -1) break;
-        // Walk braces from the callback's opening brace to its match, so the
-        // captured body is the whole callback regardless of nesting depth.
-        const open = source.indexOf('{', at + marker.length - 1);
-        let depth = 0;
-        let end = -1;
-        for (let i = open; i < source.length; i += 1) {
-            if (source[i] === '{') depth += 1;
-            else if (source[i] === '}') {
-                depth -= 1;
-                if (depth === 0) { end = i; break; }
-            }
-        }
-        if (end === -1) break;
-        bodies.push(source.slice(open, end + 1));
-        from = end;
-    }
-    return bodies;
+function windowBefore(anchor: string, chars = 600): string {
+    const at = source.indexOf(anchor);
+    expect(at).toBeGreaterThan(-1);
+    return source.slice(Math.max(0, at - chars), at);
 }
 
-describe('math preprocessing: prose must survive every pass', () => {
-    const passes = fenceSplitPasses();
+describe('math preprocessing: passes are scoped through applyOutsideFences', () => {
+    // Anchors uniquely identifying each of the three math passes.
+    // Uniquely the STANDALONE $$ pass (the ```latex/```math conversions use a
+    // different callback signature), so windowBefore lands on the right pass.
+    const DISPLAY_ENCODE = 'segment.replace(/\\$\\$([\\s\\S]*?)\\$\\$/g, (_match, innerContent)';
+    const INLINE_PROTECT = 'mathStore.protect(segment)';
+    const MARKER_EMIT = 'applyOutsideCodeSpans(processed, processInlineMath)';
 
-    it('finds the fence-splitting math passes at all', () => {
-        // Guards against this whole suite silently degrading to a no-op if the
-        // passes are renamed or restructured. Two passes exist today (the $$
-        // display pass and the $...$ placeholder pass); the marker-emitting
-        // pass uses a different idiom and is covered separately below.
-        expect(passes.length).toBeGreaterThanOrEqual(2);
+    it('the $$ display-encode pass is wrapped by applyOutsideFences (tilde-aware)', () => {
+        // Regression pin for spec3-d1: this pass previously used a
+        // backtick-only split, so $$...$$ inside a ~~~ fence was extracted and
+        // the literal expression dropped. It must now run outside ALL fences.
+        expect(windowBefore(DISPLAY_ENCODE)).toContain('applyOutsideFences(');
     });
 
-    it.each(passes.map((body, i) => [i, body] as const))(
-        'pass %i returns a value on every path (never falls through to undefined)',
-        (_i, body) => {
-            // The early-out for fenced content.
-            expect(body).toContain('return part;');
-            // The payload path. Without this return the callback yields
-            // undefined and join() erases the segment.
-            expect(body).toMatch(/return\s+applyOutsideCodeSpans\(/);
-        },
-    );
+    it('the inline-$ protect pass is wrapped by applyOutsideFences (tilde-aware)', () => {
+        expect(windowBefore(INLINE_PROTECT)).toContain('applyOutsideFences(');
+    });
 
-    it.each(passes.map((body, i) => [i, body] as const))(
-        'pass %i has no statement-terminated fall-through before its close',
-        (_i, body) => {
-            // A truncated edit leaves a dangling comment or blank region just
-            // before the closing brace. Assert the last meaningful statement
-            // in the callback is a return, not a comment.
-            const lines = body
-                .split('\n')
-                .map(l => l.trim())
-                .filter(l => l.length > 0 && l !== '}');
-            const last = lines[lines.length - 1];
-            expect(last).not.toMatch(/^\/\//);
-        },
-    );
+    it('the marker-emitting pass is wrapped by applyOutsideFences (tilde-aware)', () => {
+        // The marker pass's applyOutsideFences opener sits well before the
+        // MARKER_EMIT line (the multi-line $$ replace is in between), so pin
+        // the opener directly. Its `segment => {` signature is unique to this
+        // pass (the display and protect passes use `part =>`).
+        expect(source).toContain('applyOutsideFences(processedMarkdown, segment => {');
+        // And the marker emit lives inside it.
+        expect(source).toContain(MARKER_EMIT);
+    });
+
+    it('no math pass falls back to a backtick-only fence split', () => {
+        // The old, tilde-unaware idiom must not gate any math pass. If a future
+        // edit reintroduces `.split(/(```...```)/g).map((part, idx) => {` to
+        // feed math, this fails loudly.
+        expect(source).not.toContain('.map((part, idx) => {');
+    });
 
     it('the marker-emitting pass assigns the result of its transform', () => {
-        // The third pass is a direct assignment rather than a .map(), so it
-        // has a different truncation signature: losing the left-hand side
-        // would discard the markers entirely and math would render literally.
+        // Losing the left-hand side would discard the markers entirely and
+        // math would render literally.
         expect(source).toMatch(
             /processed\s*=\s*applyOutsideCodeSpans\(processed,\s*processInlineMath\)/,
         );
     });
 
-    it('every applyOutsideCodeSpans call site consumes its return value', () => {
-        // A bare `applyOutsideCodeSpans(...)` statement would be a no-op,
-        // since the helper is pure. Each CALL (the identifier followed by an
-        // open paren, which excludes the named-list import) must be preceded
-        // by `return` or `=` on the same line.
-        //
-        // Three call sites today: the $$ display pass, the $...$ placeholder
-        // pass, and the marker-emitting pass. Asserting >= 3 rather than an
-        // exact count lets a fourth pass be added without editing this test,
-        // while still failing if a pass loses its guard entirely.
-        const occurrences = [...source.matchAll(/applyOutsideCodeSpans\(/g)];
-        expect(occurrences.length).toBeGreaterThanOrEqual(3);
-        for (const m of occurrences) {
-            const lineStart = source.lastIndexOf('\n', m.index!) + 1;
-            const prefix = source.slice(lineStart, m.index!);
-            expect(prefix).toMatch(/(return|=)\s*$/);
+    it('every applyOutsideCodeSpans / applyOutsideFences call consumes its result', () => {
+        // A bare `applyOutside*(...)` statement would be a no-op (the helpers
+        // are pure) or, for a lost assignment, a silent behaviour change. Each
+        // call must be consumed: preceded by `return`, `=`, `=>`, or used as a
+        // call argument — never a bare statement after `;`, `{`, or `}`.
+        const calls = [
+            ...source.matchAll(/applyOutsideCodeSpans\(/g),
+            ...source.matchAll(/applyOutsideFences\(/g),
+        ];
+        // Three applyOutsideCodeSpans + several applyOutsideFences today.
+        expect(calls.length).toBeGreaterThanOrEqual(6);
+        for (const m of calls) {
+            const before = source.slice(0, m.index!);
+            // Strip trailing whitespace and any run of full-line // comments.
+            const cleaned = before.replace(/(?:\s|\/\/[^\n]*\n?)*$/, '');
+            const lastChar = cleaned.slice(-1);
+            // A consumed call is never preceded by a statement terminator or a
+            // block boundary. (import lines end with `{`/`,` and are excluded
+            // by the `(` in the search pattern — the import has no open paren.)
+            expect([';', '{', '}']).not.toContain(lastChar);
         }
     });
 });
 
+describe('applyOutsideFences: tilde fences protect their math body', () => {
+    // Behavioural pin using the REAL fenceScanner. Mimics the $$ display-encode
+    // transform and asserts a ~~~ fenced body is left byte-identical while a
+    // $$ OUTSIDE any fence is transformed.
+    const encode = (s: string): string =>
+        s.replace(/\$\$([\s\S]*?)\$\$/g, () => '<<ENCODED>>');
+
+    it('does NOT transform $$...$$ inside a ~~~ (tilde) fenced block', () => {
+        const md = [
+            'Outside: $$a=b$$',
+            '',
+            '~~~text',
+            'This is not math:',
+            '$$a^2 + b^2 = c^2$$',
+            'stays literal.',
+            '~~~',
+        ].join('\n');
+        const out = applyOutsideFences(md, encode);
+        // The tilde-fenced expression survives verbatim...
+        expect(out).toContain('$$a^2 + b^2 = c^2$$');
+        // ...while the one outside the fence is transformed.
+        expect(out).toContain('Outside: <<ENCODED>>');
+    });
+
+    it('still transforms $$...$$ inside a ```diff / ```python backtick fence body? no — leaves it literal', () => {
+        // Backtick fences were already protected; confirm the reroute keeps
+        // that behaviour (no regression on the ```diff / ```python cases).
+        const md = [
+            '```python',
+            'x = "$$not math$$"',
+            '```',
+            'prose $$m=n$$ here',
+        ].join('\n');
+        const out = applyOutsideFences(md, encode);
+        expect(out).toContain('x = "$$not math$$"');
+        expect(out).toContain('prose <<ENCODED>> here');
+    });
+
+    it('throws rather than silently deleting when the transform returns undefined', () => {
+        // The architectural safety property that replaces the old silent-
+        // prose-deletion failure mode of the .map().join() idiom.
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const bad = (() => undefined) as unknown as (s: string) => string;
+        expect(() => applyOutsideFences('some prose\nmore prose', bad)).toThrow();
+    });
+});
+
 describe('applyOutsideCodeSpans: total text conservation', () => {
-    // The structural checks above cannot prove the helper itself is lossless,
-    // and the tail segment after the LAST code span is the piece most easily
-    // dropped (it needs an extra transform call after the loop). These run
-    // against the real implementation.
+    // Unchanged behavioural checks: the helper itself must be lossless, and
+    // the tail segment after the LAST code span is the piece most easily
+    // dropped (it needs an extra transform call after the loop).
 
     it('is the identity when the transform is the identity', () => {
         const samples = [
@@ -166,8 +194,6 @@ describe('applyOutsideCodeSpans: total text conservation', () => {
     });
 
     it('preserves the tail after the final code span', () => {
-        // Regression: an implementation missing the post-loop
-        // `out += transform(text.slice(pos))` silently truncates here.
         const out = applyOutsideCodeSpans('start `mid` TAIL_MUST_SURVIVE', x => x);
         expect(out).toContain('TAIL_MUST_SURVIVE');
         expect(out.endsWith('TAIL_MUST_SURVIVE')).toBe(true);

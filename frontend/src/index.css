@@ -1022,6 +1022,20 @@ button[data-tooltip-delay="50"] {
   color: #ffffff;
 }
 
+/* Pulse the lower-left model label when its value changes — e.g. the
+   server-global model was switched from another browser session and
+   the sync service detected the drift.  Visual-only notification; no
+   conversation notice is injected for external changes. */
+.model-id-display .model-label-pulse {
+  animation: ziya-model-pulse 0.9s ease-in-out 2;
+  border-radius: 4px;
+}
+
+@keyframes ziya-model-pulse {
+  0%, 100% { background-color: transparent; }
+  50% { background-color: rgba(45, 212, 191, 0.35); }
+}
+
 .dark .token-summary .ant-progress-bg {
   background-color: #177ddc;
 }
@@ -1217,7 +1231,7 @@ body:not(.dark) .token.function {
 }
 
 body:not(.dark) .token.keyword {
-    color: #d73a49;
+    color: #b31d28;
 }
 
 body:not(.dark) .token.string {
@@ -1241,7 +1255,7 @@ body:not(.dark) .token.class-name {
 }
 
 body:not(.dark) .token.operator {
-    color: #d73a49;
+    color: #b31d28;
 }
 
 body:not(.dark) .token.property {

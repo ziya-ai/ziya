@@ -1,4 +1,5 @@
 import type { dia, shapes } from '@joint/core';
+import JSON5 from 'json5';
 
 import { D3RenderPlugin } from '../../types/d3';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
@@ -6,6 +7,169 @@ import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 import { sanitizeJointGeometry } from './jointGeometrySanitizer';
 import { sanitizeRouter, sanitizeConnector } from './jointLinkRouting';
 import { normalizeJointCells } from './jointShapeResolver';
+import { classifyColor, ensureReadableFill, namedColorToHex } from './chartTheme';
+
+// ---------------------------------------------------------------------------
+// Tolerant JSON recovery for the `definition` string (G-17 / D-139, D-140).
+//
+// The joint path previously gated the JSON branch on trimmed.startsWith('{')
+// and called a bare JSON.parse(); a markdown fence, smart quotes, trailing
+// commas, unquoted keys, single quotes, // or /* */ comments, or semicolon
+// separators each defeated that and dropped control to the JSON-blind line-DSL
+// (^(\w+) element regex), which found zero elements -> empty container -> 30s
+// headless timeout with NO image. These pure helpers recover the six near-miss
+// shapes before the parse. No DOM — unit-testable.
+// ---------------------------------------------------------------------------
+
+/** Strip a leading/trailing markdown ```json fence (D-140). */
+export function stripJointFence(raw: string): string {
+    let t = String(raw ?? '').trim();
+    const matched = /^```[a-zA-Z0-9_-]*\s*\n?([\s\S]*?)\n?```$/.exec(t);
+    if (matched) return matched[1].trim();
+    // Unmatched leading/trailing fences.
+    t = t.replace(/^```[a-zA-Z0-9_-]*\s*/, '').replace(/```\s*$/, '');
+    return t.trim();
+}
+
+/** Normalise smart/curly quotes to ASCII (D-139 w4-05). json5 rejects U+201C etc. */
+export function normalizeJointSmartQuotes(raw: string): string {
+    return String(raw ?? '')
+        .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+        .replace(/[\u2018\u2019\u201A\u201B]/g, "'");
+}
+
+/**
+ * Replace semicolons used as value/pair separators with commas (D-139 w4-15),
+ * leaving semicolons inside string literals untouched. Walks the string with a
+ * tiny quote-state machine so `"a;b"` is preserved while `"x": 1; "y": 2`
+ * becomes `"x": 1, "y": 2`.
+ */
+export function repairJsonSeparators(s: string): string {
+    let out = '';
+    let inStr = false;
+    let quote = '';
+    let esc = false;
+    for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        if (inStr) {
+            out += ch;
+            if (esc) { esc = false; }
+            else if (ch === '\\') { esc = true; }
+            else if (ch === quote) { inStr = false; }
+            continue;
+        }
+        if (ch === '"' || ch === "'") { inStr = true; quote = ch; out += ch; continue; }
+        if (ch === ';') { out += ','; continue; }
+        out += ch;
+    }
+    return out;
+}
+
+/**
+ * Lenient parse of a JSON-ish joint `definition`. Order: strip fence, normalise
+ * smart quotes, slice to the outermost {...} or [...] (drops leading prose /
+ * trailing semicolons), then strict JSON.parse (fast path, unchanged for valid
+ * input) -> JSON5.parse (trailing commas, unquoted keys, single quotes,
+ * comments) -> the same after semicolon-separator repair. Returns the parsed
+ * value, or `undefined` when unrecoverable (so control falls to the text DSL).
+ */
+export function parseJointJsonish(raw: string): any {
+    const cleaned = normalizeJointSmartQuotes(stripJointFence(String(raw ?? ''))).trim();
+    if (!cleaned) return undefined;
+    const firstObj = cleaned.indexOf('{');
+    const firstArr = cleaned.indexOf('[');
+    let start = -1;
+    if (firstObj === -1) start = firstArr;
+    else if (firstArr === -1) start = firstObj;
+    else start = Math.min(firstObj, firstArr);
+    if (start === -1) return undefined;
+    const closeCh = cleaned[start] === '{' ? '}' : ']';
+    const end = cleaned.lastIndexOf(closeCh);
+    if (end <= start) return undefined;
+    const body = cleaned.slice(start, end + 1);
+    try { return JSON.parse(body); } catch (_e) { /* try lenient */ }
+    try { return JSON5.parse(body); } catch (_e) { /* try repair */ }
+    const repaired = repairJsonSeparators(body);
+    try { return JSON.parse(repaired); } catch (_e) { /* try lenient */ }
+    try { return JSON5.parse(repaired); } catch (_e) { /* unrecoverable */ }
+    return undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Cell-type guard (G-17 / D-144).
+//
+// @joint/core v4 dia.Graph._prepareCell throws `dia.Graph: cell type must be a
+// string.` for any cell whose `type` attribute is not a non-empty string. The
+// bare `new dia.Element({...})` creators (createCylinderElement,
+// createElectricalElement, createDocumentElement, ...) never set `type`, so the
+// base dia.Element (whose defaults carry no `type`) is rejected at addCell — the
+// cell is dropped, its links dangle, and an all-custom-shape graph (e.g. every
+// electrical element) ends up with zero cells -> blank canvas. shapes.standard.*
+// instances already carry a type and are untouched.
+// ---------------------------------------------------------------------------
+
+/** True when `t` is a valid JointJS cell type (a non-empty string). */
+export function isValidCellType(t: any): boolean {
+    return typeof t === 'string' && t.length > 0;
+}
+
+/**
+ * A namespaced fallback type for a typeless custom element. Unknown namespaces
+ * resolve to the default dia.ElementView (which renders the element's own
+ * markup), so this only needs to be a stable non-empty string.
+ */
+export function fallbackCellType(shapeType: any): string {
+    const s = (typeof shapeType === 'string' && shapeType.trim()) ? shapeType.trim() : 'element';
+    return `custom.${s}`;
+}
+
+// ---------------------------------------------------------------------------
+// Scale-to-fit plan (G-17 / D-145).
+//
+// fitContentToPaper previously set finalWidth = max(contentWidth, containerWidth)
+// and wrote a viewBox of that oversized size while the SVG rendered at container
+// width, so any graph wider or taller than the capture window was cropped and
+// the rest silently dropped from the PNG (no downscale existed). This plan bounds
+// the emitted SVG to the capture box and reports the scale so content is framed
+// via viewBox instead of clipped. Content that already fits keeps its natural
+// size (scale 1) — small/medium graphs are unchanged.
+// ---------------------------------------------------------------------------
+
+export interface JointFitPlan {
+    paperWidth: number;
+    paperHeight: number;
+    scale: number;
+    scaled: boolean;
+}
+
+export function computeJointFitPlan(
+    contentWidth: number,
+    contentHeight: number,
+    containerWidth: number,
+    maxHeight: number,
+): JointFitPlan {
+    const cw = Math.max(1, containerWidth);
+    const mh = Math.max(1, maxHeight);
+    const contentW = Math.max(1, contentWidth);
+    const contentH = Math.max(1, contentHeight);
+    // Fits inside the capture box -> keep natural size (prior grow-to-fit).
+    if (contentW <= cw && contentH <= mh) {
+        return { paperWidth: cw, paperHeight: Math.round(contentH), scale: 1, scaled: false };
+    }
+    // Oversized in some dimension -> scale the content box down to fit inside
+    // cw x mh, preserving aspect ratio, so nothing is cropped.
+    const scale = Math.min(cw / contentW, mh / contentH);
+    return {
+        paperWidth: Math.max(1, Math.round(contentW * scale)),
+        paperHeight: Math.max(1, Math.round(contentH * scale)),
+        scale,
+        scaled: true,
+    };
+}
+
+/** Max SVG height the headless capture window is trusted to hold before we
+ *  downscale a very tall graph (D-145). Moderate graphs grow naturally below it. */
+export const JOINT_MAX_RENDER_HEIGHT = 2000;
 
 export interface JointSpec {
     type: 'joint' | 'jointjs' | 'diagram';
@@ -236,8 +400,8 @@ const createEnhancedRectElement = (elementSpec: JointElement, theme: 'light' | '
                 filter: theme === 'dark' ? 'drop-shadow(2px 2px 4px rgba(0,0,0,0.5))' : 'drop-shadow(2px 2px 4px rgba(0,0,0,0.2))'
             },
             label: {
-                text: text,
-                fill: theme === 'dark' ? '#eceff4' : '#2c3e50',
+                text: fitJointLabel(text, (size as any)?.width, 14),
+                fill: readableJointLabelFill(theme === 'dark' ? '#4c566a' : '#ffffff'),
                 fontSize: 14,
                 fontFamily: 'Arial, sans-serif',
                 fontWeight: 'bold',
@@ -272,8 +436,8 @@ const createEnhancedCircleElement = (elementSpec: JointElement, theme: 'light' |
                 filter: theme === 'dark' ? 'drop-shadow(2px 2px 6px rgba(0,0,0,0.4))' : 'drop-shadow(2px 2px 6px rgba(0,0,0,0.2))'
             },
             label: {
-                text: text,
-                fill: theme === 'dark' ? '#eceff4' : '#ffffff',
+                text: fitJointLabel(text, (size as any)?.width, 13),
+                fill: readableJointLabelFill(theme === 'dark' ? '#5e81ac' : '#3498db'),
                 fontSize: 13,
                 fontFamily: 'Arial, sans-serif',
                 fontWeight: 'bold',
@@ -308,8 +472,8 @@ const createEnhancedEllipseElement = (elementSpec: JointElement, theme: 'light' 
                 filter: theme === 'dark' ? 'drop-shadow(2px 2px 4px rgba(0,0,0,0.5))' : 'drop-shadow(2px 2px 4px rgba(0,0,0,0.2))'
             },
             label: {
-                text: text,
-                fill: theme === 'dark' ? '#eceff4' : '#ffffff',
+                text: fitJointLabel(text, (size as any)?.width, 13),
+                fill: readableJointLabelFill(theme === 'dark' ? '#bf616a' : '#e74c3c'),
                 fontSize: 13,
                 fontFamily: 'Arial, sans-serif',
                 fontWeight: 'bold',
@@ -345,8 +509,8 @@ const createEnhancedDiamondElement = (elementSpec: JointElement, theme: 'light' 
                 filter: theme === 'dark' ? 'drop-shadow(2px 2px 4px rgba(0,0,0,0.5))' : 'drop-shadow(2px 2px 4px rgba(0,0,0,0.2))'
             },
             label: {
-                text: text,
-                fill: theme === 'dark' ? '#2e3440' : '#ffffff',
+                text: fitJointLabel(text, (size as any)?.width, 12),
+                fill: readableJointLabelFill(theme === 'dark' ? '#ebcb8b' : '#f39c12'),
                 fontSize: 12,
                 fontFamily: 'Arial, sans-serif',
                 fontWeight: 'bold',
@@ -381,8 +545,8 @@ const createHexagonElement = (elementSpec: JointElement, theme: 'light' | 'dark'
                 filter: 'drop-shadow(2px 2px 4px rgba(0,0,0,0.3))'
             },
             label: {
-                text: text,
-                fill: theme === 'dark' ? '#eceff4' : '#ffffff',
+                text: fitJointLabel(text, (size as any)?.width, 12),
+                fill: readableJointLabelFill(theme === 'dark' ? '#a3be8c' : '#27ae60'),
                 fontSize: 12,
                 fontFamily: 'Arial, sans-serif',
                 fontWeight: 'bold',
@@ -523,10 +687,17 @@ const createNetworkElement = (elementSpec: JointElement, elementType: string, th
     const { shapes } = (globalThis as any).__jointRuntimeDeps || {};
     if (!shapes) throw new Error('Joint.js not initialized');
 
-    const element = new shapes.standard.Rectangle({
+    // D-151: pick a distinct shape per device type where cheap (cloud -> ellipse);
+    // getNetworkElementAttrs already colour-codes the fill/stroke per type. Define
+    // the four side port GROUPS up front so the default/custom ports actually
+    // render and links can anchor to them (D-153).
+    const netStyle = networkElementStyle(elementType, theme);
+    const ShapeCtor = netStyle.shape === 'ellipse' ? shapes.standard.Ellipse : shapes.standard.Rectangle;
+    const element = new ShapeCtor({
         id: elementSpec.id,
         position,
         size,
+        ports: { groups: standardJointPortGroups(theme) },
         attrs: {
             body: networkAttrs.body,
             label: {
@@ -787,6 +958,9 @@ const createElectricalElement = (elementSpec: JointElement, elementType: string,
         id: elementSpec.id,
         position,
         size,
+        // D-153: define the side port groups so createPortFromSpec's group-keyed
+        // ports have a position layout (else getPortCenter throws and links drop).
+        ports: { groups: standardJointPortGroups(theme) },
         markup: markup,
         attrs: electricalAttrs
     });
@@ -1371,6 +1545,25 @@ const createElement = (elementSpec: JointElement, theme: 'light' | 'dark') => {
     return element;
 };
 
+// ---------------------------------------------------------------------------
+// D-143 (G-47): coerce a string boolean to a real boolean.
+//
+// Models routinely emit JSON-encoded booleans as strings ("autoLayout":"false",
+// "grid":"0"). A non-empty string is truthy, so `spec.autoLayout !== false` was
+// TRUE for the string "false" and auto-layout ran anyway — discarding the
+// author's declared x/y positions and collapsing an intended horizontal row into
+// a DirectedGraph column. This coerces the recognised string boolean forms
+// ("true"/"false"/"1"/"0", case/space-insensitive) to their boolean value and
+// leaves real booleans, undefined, and every other value untouched (so a genuine
+// object-valued option or an unset field is unaffected).
+export function coerceJointBoolean(value: any): any {
+    if (typeof value !== 'string') return value;
+    const v = value.trim().toLowerCase();
+    if (v === 'true' || v === '1') return true;
+    if (v === 'false' || v === '0') return false;
+    return value;
+}
+
 // Enhanced link creation with better routing and styling
 const createEnhancedLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
     // Configure source/target with proper anchor and connection points
@@ -1396,6 +1589,14 @@ const createEnhancedLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
 
     const link = new shapes.standard.Link({
         id: linkSpec.id,
+        // D-147 (G-47): links are added to the graph AFTER elements, so their
+        // insertion-order z put every edge ABOVE the node bodies — at density the
+        // horizontal edge bundles were drawn straight through node labels and struck
+        // them out (35 of 40 labels lost). Pinning links to a z below the elements
+        // (which auto-assign z >= 1 on insertion) renders edges beneath the node
+        // bodies/labels in both themes; endpoints already terminate at the node
+        // boundary so no arrowhead information is lost.
+        z: -1,
         source: sourceConfig,
         target: targetConfig,
         // Normalize router/connector to a KNOWN JointJS name (graphics-stress Issue 29).
@@ -1439,6 +1640,14 @@ const createEnhancedLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
             position: 0.5,
             attrs: {
                 rect: {
+                    // D-148 (G-47): the calc(w/h/x/y) sizing terms are RELATIVE and
+                    // must reference the label's text bbox — without `ref: 'text'`
+                    // they resolved against a null reference, so the backing plate
+                    // collapsed and was effectively never drawn, leaving labels sitting
+                    // directly on the link stroke / arrowheads / each other (the 1.18
+                    // light / 1.74 dark overprint). JointJS's own builtin default label
+                    // rect carries `ref: 'text'` for exactly this reason.
+                    ref: 'text',
                     fill: theme === 'dark' ? '#3b4252' : '#ffffff',
                     stroke: theme === 'dark' ? '#4c566a' : '#bdc3c7',
                     strokeWidth: 1,
@@ -1482,6 +1691,14 @@ const createLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
 
     const link = new shapes.standard.Link({
         id: linkSpec.id,
+        // D-147 (G-47): links are added to the graph AFTER elements, so their
+        // insertion-order z put every edge ABOVE the node bodies — at density the
+        // horizontal edge bundles were drawn straight through node labels and struck
+        // them out (35 of 40 labels lost). Pinning links to a z below the elements
+        // (which auto-assign z >= 1 on insertion) renders edges beneath the node
+        // bodies/labels in both themes; endpoints already terminate at the node
+        // boundary so no arrowhead information is lost.
+        z: -1,
         source: sourceConfig,
         target: targetConfig,
         // Normalize router/connector to a KNOWN JointJS name (graphics-stress Issue 29).
@@ -1521,6 +1738,14 @@ const createLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
             position: 0.5,
             attrs: {
                 rect: {
+                    // D-148 (G-47): the calc(w/h/x/y) sizing terms are RELATIVE and
+                    // must reference the label's text bbox — without `ref: 'text'`
+                    // they resolved against a null reference, so the backing plate
+                    // collapsed and was effectively never drawn, leaving labels sitting
+                    // directly on the link stroke / arrowheads / each other (the 1.18
+                    // light / 1.74 dark overprint). JointJS's own builtin default label
+                    // rect carries `ref: 'text'` for exactly this reason.
+                    ref: 'text',
                     fill: theme === 'dark' ? '#3b4252' : '#ffffff',
                     stroke: theme === 'dark' ? '#4c566a' : '#bdc3c7',
                     strokeWidth: 1,
@@ -1546,6 +1771,306 @@ const createLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
 
     return link;
 };
+
+// ---------------------------------------------------------------------------
+// G-26 shared helpers (pure, exported for unit tests — no DOM / @joint/core dep)
+// ---------------------------------------------------------------------------
+
+// D-156: only a real theme token may be lifted off a model-supplied definition or
+// used to drive the theme ternaries. A bogus string ('nord-dark') must NOT outrank
+// the caller's render theme (which previously fell every ternary to its light branch,
+// painting a light slab inside a dark page).
+const VALID_JOINT_THEMES = new Set(['light', 'dark', 'auto']);
+export const isValidJointTheme = (t: any): boolean =>
+    typeof t === 'string' && VALID_JOINT_THEMES.has(t);
+
+// D-141: locate the first object (within maxDepth levels) that owns an elements/cells
+// array, so a one-level-deeper wrapper ({graph:{cells:[...]}}, {data:{elements:[...]}},
+// {diagram:{...}}, {spec:{...}}) is recovered instead of falling through to the
+// JSON-blind line-DSL (zero elements -> empty container -> 30s hang).
+export const findJointGraphContainer = (root: any, maxDepth = 3): any => {
+    const seen = new Set<any>();
+    const visit = (node: any, depth: number): any => {
+        if (!node || typeof node !== 'object' || seen.has(node)) return null;
+        seen.add(node);
+        const hasEls = Array.isArray(node.elements) ||
+            (node.elements && typeof node.elements === 'object' && !Array.isArray(node.elements));
+        const hasCells = Array.isArray(node.cells);
+        if (hasEls || hasCells) return node;
+        if (depth >= maxDepth) return null;
+        for (const k of Object.keys(node)) {
+            const child = node[k];
+            if (child && typeof child === 'object') {
+                const found = visit(child, depth + 1);
+                if (found) return found;
+            }
+        }
+        return null;
+    };
+    return visit(root, 0);
+};
+
+// D-155: per-fill luminance-aware label colour. The node body fills are hardcoded per
+// creator; a single hardcoded label colour (#ffffff/#eceff4) fails on the warm/pastel
+// fills (worst pair #eceff4 on #a3be8c = 1.77:1). Pick the higher-contrast of a
+// near-black / near-white candidate against the RESOLVED body fill so both themes work.
+const JOINT_LABEL_DARK = '#14171c';
+const JOINT_LABEL_LIGHT = '#f7f9fc';
+
+const _jointLin = (c: number): number => {
+    const s = c / 255;
+    return s <= 0.03928 ? s / 12.92 : Math.pow((s + 0.055) / 1.055, 2.4);
+};
+const _jointRelLum = (hex: string): number => {
+    const m = /^#?([0-9a-fA-F]{6})$/.exec((hex || '').trim());
+    if (!m) return 0;
+    const n = parseInt(m[1], 16);
+    return 0.2126 * _jointLin((n >> 16) & 255) +
+        0.7152 * _jointLin((n >> 8) & 255) +
+        0.0722 * _jointLin(n & 255);
+};
+export const jointContrastRatio = (a: string, b: string): number => {
+    const la = _jointRelLum(a);
+    const lb = _jointRelLum(b);
+    const hi = Math.max(la, lb);
+    const lo = Math.min(la, lb);
+    return (hi + 0.05) / (lo + 0.05);
+};
+/** Higher-contrast of the near-black / near-white label candidate against `bodyFill`.
+ *  Falls back to the light candidate for an unparseable (non 6-digit-hex) fill. */
+export const readableJointLabelFill = (bodyFill: string): string => {
+    if (!/^#?[0-9a-fA-F]{6}$/.test((bodyFill || '').trim())) return JOINT_LABEL_LIGHT;
+    return jointContrastRatio(bodyFill, JOINT_LABEL_DARK) >=
+        jointContrastRatio(bodyFill, JOINT_LABEL_LIGHT)
+        ? JOINT_LABEL_DARK : JOINT_LABEL_LIGHT;
+};
+
+// D-146: no textWrap/ellipsis exists, so a long label overruns the node/canvas and is
+// truncated mid-word at the raster edge (and an undersized node has its own stroke
+// bisect the glyphs). Headless has no text metrics, so estimate glyph advance (~0.6em
+// for the bold sans stack) and ellipsis-truncate to the node width.
+export const JOINT_LABEL_ELLIPSIS = '\u2026';
+export const fitJointLabel = (text: any, nodeWidth: number, fontSize: number): string => {
+    const s = (text === undefined || text === null) ? '' : String(text);
+    if (!s) return s;
+    const w = (typeof nodeWidth === 'number' && nodeWidth > 0) ? nodeWidth : 120;
+    const fs = (typeof fontSize === 'number' && fontSize > 0) ? fontSize : 13;
+    const padding = 12;                       // ~6px inset each side
+    const avgChar = fs * 0.6;                 // mean glyph advance for the bold sans stack
+    const cap = Math.max(3, Math.floor((w - padding) / avgChar));
+    if (s.length <= cap) return s;
+    if (cap <= 1) return JOINT_LABEL_ELLIPSIS;
+    return s.slice(0, cap - 1).replace(/\s+$/, '') + JOINT_LABEL_ELLIPSIS;
+};
+
+// ---------------------------------------------------------------------------
+// G-48 — joint element theming + network/port fixes.
+//   D-150 nested-container labels occluded / dark flat-slab fill
+//   D-151 network shapes flattened to a plain rect + ports never drawn
+//   D-152 author-supplied element `attrs` (fill/stroke/label) silently dropped
+//   D-153 string port position -> layoutCallback throw -> links dropped
+// Pure helpers (no live element) so they are unit-testable.
+// ---------------------------------------------------------------------------
+
+/** Effective page surface used for label-contrast reasoning when a node fill is
+ *  transparent (so the label sits on the page, not on a node fill). */
+export const jointPageBackground = (theme: 'light' | 'dark'): string =>
+    theme === 'dark' ? '#1e1e1e' : '#ffffff';
+
+/** Expand #rgb -> #rrggbb (lowercased); pass 6-digit through; null if not hex. */
+const expandJointHex = (s: string): string | null => {
+    const m = /^#?([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.exec((s || '').trim());
+    if (!m) return null;
+    let h = m[1].toLowerCase();
+    if (h.length === 3) h = h.split('').map(c => c + c).join('');
+    return '#' + h;
+};
+
+/**
+ * Normalise ONE author colour string for a joint body/stroke attribute.
+ *  - literal 'transparent'/'none' (or zero-alpha rgba) -> { value:'none', hex:null, absent:true }
+ *  - #hex / #rgb -> { value:#rrggbb, hex:#rrggbb }
+ *  - rgb()/rgba() (alpha>0) -> { value:#rrggbb, hex:#rrggbb } (alpha dropped)
+ *  - known CSS name -> { value:#rrggbb, hex:#rrggbb }; unknown name -> { value:name, hex:null }
+ *  - unresolvable token (var()/$x/--x) or non-string -> { value:null } (leave the creator default)
+ */
+export function normalizeJointColor(raw: any): { value: string | null; hex: string | null; absent?: boolean } {
+    if (typeof raw !== 'string') return { value: null, hex: null };
+    const lower = raw.trim().toLowerCase();
+    if (lower === 'transparent' || lower === 'none') return { value: 'none', hex: null, absent: true };
+    const cls = classifyColor(raw);
+    if (!cls) {
+        if (/^rgba?\(/.test(lower)) return { value: 'none', hex: null, absent: true }; // zero-alpha rgba
+        return { value: null, hex: null }; // unresolvable token -> leave default
+    }
+    if (cls.hex) {
+        const h = expandJointHex(cls.hex) || cls.hex;
+        return { value: h, hex: h };
+    }
+    const nm = namedColorToHex(cls.named!);
+    return nm ? { value: nm, hex: nm } : { value: cls.named!, hex: null };
+}
+
+/** True when an element is a container (owns a non-empty `embeds` list). */
+export function isJointContainer(spec: any): boolean {
+    return !!spec && Array.isArray(spec.embeds) && spec.embeds.length > 0;
+}
+
+/** Nesting depth of `id` following the `parent` chain within `specById`. */
+export function jointElementDepth(id: any, specById: Map<string, any>): number {
+    let depth = 0, cur = specById.get(String(id)), guard = 0;
+    while (cur && cur.parent != null && guard++ < 40) {
+        const p = specById.get(String(cur.parent));
+        if (!p || p === cur) break;
+        depth++; cur = p;
+    }
+    return depth;
+}
+
+// Dark per-depth container ramp: outer darkest -> inner lightest, so five nested
+// containers that all shared #4c566a (contrast 1.00 in dark) now read as distinct
+// bands. Light keeps its crisp boundary strokes, so it is left untouched.
+const JOINT_DARK_CONTAINER_RAMP = ['#2e3440', '#3b4252', '#434c5e', '#4c566a', '#5a657c', '#68758f'];
+
+/** Container body fill for `depth`. Dark: a per-depth ramp entry. Light: null. */
+export function jointContainerFill(depth: number, theme: 'light' | 'dark'): string | null {
+    if (theme !== 'dark') return null;
+    const i = Math.max(0, Math.min(depth, JOINT_DARK_CONTAINER_RAMP.length - 1));
+    return JOINT_DARK_CONTAINER_RAMP[i];
+}
+
+/**
+ * { body?, label? } attribute patch for a freshly-created joint element:
+ * author `attrs` override (D-152) + container styling (D-150). Pure.
+ *  - author body fill/stroke colour-form normalised; other body keys pass through.
+ *  - author label fill honoured but CLAMPED to >=4.5 contrast on the resolved
+ *    fill (author colours resolve AND stay legible in BOTH themes — the coupling
+ *    the group warns about).
+ *  - a container (embeds) gets a top-anchored title (children can't occlude it)
+ *    and, in dark, a per-depth ramp fill.
+ * Returns null when nothing changes (byte-identical output).
+ */
+export function computeJointElementStyle(
+    spec: any,
+    opts: { theme: 'light' | 'dark'; defaultBodyFill: string; pageBg: string; depth: number; isContainer: boolean }
+): { body?: Record<string, any>; label?: Record<string, any> } | null {
+    const body: Record<string, any> = {};
+    const label: Record<string, any> = {};
+
+    let effectiveFill = expandJointHex(opts.defaultBodyFill) || opts.defaultBodyFill;
+    let bodyFillChanged = false;
+
+    // (1) Container dark fill ramp (author attrs may override below).
+    if (opts.isContainer) {
+        const cf = jointContainerFill(opts.depth, opts.theme);
+        if (cf) { body.fill = cf; effectiveFill = cf; bodyFillChanged = true; }
+    }
+
+    // (2) Author attrs override (D-152).
+    const a = spec && typeof spec === 'object' ? spec.attrs : undefined;
+    if (a && typeof a === 'object') {
+        if (a.body && typeof a.body === 'object') {
+            for (const k of Object.keys(a.body)) {
+                if (k === 'fill') {
+                    const n = normalizeJointColor(a.body.fill);
+                    if (n.value !== null) {
+                        body.fill = n.value; bodyFillChanged = true;
+                        effectiveFill = n.absent ? opts.pageBg : (n.hex || effectiveFill);
+                    }
+                } else if (k === 'stroke') {
+                    const n = normalizeJointColor(a.body.stroke);
+                    if (n.value !== null) body.stroke = n.value;
+                } else {
+                    body[k] = a.body[k];
+                }
+            }
+        }
+        if (a.label && typeof a.label === 'object') {
+            for (const k of Object.keys(a.label)) {
+                if (k === 'fill') {
+                    const n = normalizeJointColor(a.label.fill);
+                    if (n.hex) {
+                        const surf = expandJointHex(effectiveFill) || effectiveFill;
+                        label.fill = (jointContrastRatio(n.hex, surf) >= 4.5)
+                            ? n.hex
+                            : ensureReadableFill(n.hex, surf, readableJointLabelFill(surf), 4.5);
+                    } else if (n.value !== null && !n.absent) {
+                        label.fill = n.value; // unknown named colour: honour verbatim
+                    }
+                } else if (k !== 'text') {
+                    label[k] = a.label[k];
+                }
+            }
+        }
+    }
+
+    // (3) Body fill changed but no author label fill -> recompute a readable label.
+    if (bodyFillChanged && label.fill === undefined) {
+        const surf = expandJointHex(effectiveFill) || effectiveFill;
+        if (/^#[0-9a-f]{6}$/i.test(surf)) label.fill = readableJointLabelFill(surf);
+    }
+
+    // (4) Container: top-anchor the title so later-drawn children can't cover it.
+    if (opts.isContainer) {
+        label.textVerticalAnchor = 'top';
+        label.refY = 0.08;
+    }
+
+    const out: { body?: Record<string, any>; label?: Record<string, any> } = {};
+    if (Object.keys(body).length) out.body = body;
+    if (Object.keys(label).length) out.label = label;
+    return (out.body || out.label) ? out : null;
+}
+
+// ── network shape semantics (D-151) ──────────────────────────────────────────
+// Every network device previously rendered as an identical rounded rect. Give
+// each a distinct fill/stroke (colour-coded, contrast-checked labels) and, where
+// cheap, a distinct shape (cloud -> ellipse). Full per-vendor iconography is out
+// of scope for a targeted fix.
+export interface JointNetworkStyle { fill: string; stroke: string; shape: 'rect' | 'ellipse'; }
+const JOINT_NETWORK_STYLES: Record<string, { light: JointNetworkStyle; dark: JointNetworkStyle }> = {
+    router:   { light: { fill: '#e8f0fe', stroke: '#1a56c4', shape: 'rect' },    dark: { fill: '#2b4a63', stroke: '#4cc9f0', shape: 'rect' } },
+    switch:   { light: { fill: '#e6f4ea', stroke: '#137333', shape: 'rect' },    dark: { fill: '#2f4a34', stroke: '#81c995', shape: 'rect' } },
+    server:   { light: { fill: '#fef7e0', stroke: '#a15c00', shape: 'rect' },    dark: { fill: '#4a3f2a', stroke: '#fdd663', shape: 'rect' } },
+    firewall: { light: { fill: '#fce8e6', stroke: '#c5221f', shape: 'rect' },    dark: { fill: '#5a2b2b', stroke: '#f28b82', shape: 'rect' } },
+    cloud:    { light: { fill: '#e8eaed', stroke: '#5f6368', shape: 'ellipse' }, dark: { fill: '#3c4043', stroke: '#9aa0a6', shape: 'ellipse' } },
+};
+
+/** Per-type network device style; falls back to the router style for unknowns. */
+export function networkElementStyle(elementType: string, theme: 'light' | 'dark'): JointNetworkStyle {
+    const e = JOINT_NETWORK_STYLES[elementType] || JOINT_NETWORK_STYLES.router;
+    return theme === 'dark' ? e.dark : e.light;
+}
+
+// ── port groups (D-151 ports never drawn, D-153 layoutCallback throw) ─────────
+// createPortFromSpec set `group: portSpec.type` (e.g. 'input') plus an `args`
+// position, but the element defined NO matching port group, so JointJS had no
+// position layout: ports were not drawn and getPortCenter threw
+// `(0,i.layoutCallback) is not a function` when a link anchored to a port,
+// dropping every link. Define the four side groups (each with a built-in
+// position layout) on any element that carries ports, and map a port's string
+// position to its side group.
+
+/** Map a port's declared `position` string to a side group name. */
+export function jointPortSide(position: any): 'top' | 'bottom' | 'left' | 'right' {
+    const p = typeof position === 'string' ? position.trim().toLowerCase() : '';
+    return (p === 'top' || p === 'bottom' || p === 'left' || p === 'right') ? p : 'top';
+}
+
+/** Side port-group definitions (with built-in position layouts) for an element. */
+export function standardJointPortGroups(theme: 'light' | 'dark') {
+    const portBody = {
+        fill: theme === 'dark' ? '#4cc9f0' : '#333333',
+        stroke: theme === 'dark' ? '#ffffff' : '#000000',
+        strokeWidth: 1, r: 4, magnet: true,
+    };
+    const grp = (position: 'top' | 'bottom' | 'left' | 'right') => ({
+        position,
+        markup: [{ tagName: 'circle', selector: 'portBody' }],
+        attrs: { portBody },
+    });
+    return { top: grp('top'), bottom: grp('bottom'), left: grp('left'), right: grp('right') };
+}
 
 export const jointPlugin: D3RenderPlugin = {
     name: 'joint-renderer',
@@ -1712,26 +2237,42 @@ export const jointPlugin: D3RenderPlugin = {
             let structuredFromDefinition: { elements: JointElement[]; connections: JointLink[] } | null = null;
             if (spec.definition) {
                 const rawDef = extractDefinitionFromYAML(spec.definition, 'joint');
-                const trimmed = (rawDef || '').trim();
-                if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+                // Strip a markdown ```json fence (D-140) and normalise smart quotes
+                // (D-139 w4-05) BEFORE the shape gate, then parse leniently: strict
+                // JSON -> JSON5 -> semicolon-separator repair (D-139). Trailing commas,
+                // unquoted keys, single quotes, // and /* */ comments and semicolon
+                // separators now recover instead of throwing and dropping to the
+                // JSON-blind line-DSL (zero elements -> empty container -> 30s hang).
+                const parsedJson = parseJointJsonish(rawDef || '');
+                if (parsedJson !== undefined && parsedJson !== null) {
                     try {
-                        const parsedJson = JSON.parse(trimmed);
-                        const obj = Array.isArray(parsedJson) ? { elements: parsedJson } : parsedJson;
+                        const top = Array.isArray(parsedJson) ? { elements: parsedJson } : parsedJson;
+                        // D-141: descend up to 3 levels for a wrapped graph
+                        // ({graph:{cells:[...]}}, {data:{elements:[...]}}, {diagram:...},
+                        // {spec:...}); the old guard only inspected depth 1, so a wrapped
+                        // spec stayed null and fell to the zero-element DSL -> 30s hang.
+                        const obj = findJointGraphContainer(top, 3) || top;
                         if (obj && (obj.elements || obj.cells)) {
-                            // Also lift structural hints (autoLayout/grid/layout/theme)
-                            // that would otherwise be lost when they arrive JSON-encoded.
-                            if (obj.autoLayout !== undefined && spec.autoLayout === undefined) spec.autoLayout = obj.autoLayout;
-                            if (obj.grid !== undefined && spec.grid === undefined) spec.grid = obj.grid;
-                            if (obj.layout !== undefined && spec.layout === undefined) spec.layout = obj.layout;
-                            if (obj.theme !== undefined && spec.theme === undefined) spec.theme = obj.theme;
+                            // Lift structural hints (autoLayout/grid/layout/theme) that would
+                            // otherwise be lost when JSON-encoded, from the graph container and
+                            // its outer wrapper (container wins). D-156: only a valid theme
+                            // token may be lifted — a bogus string must not outrank the render
+                            // theme and flip every ternary to its light branch.
+                            for (const src of [obj, top]) {
+                                if (!src || typeof src !== 'object') continue;
+                                if (src.autoLayout !== undefined && spec.autoLayout === undefined) spec.autoLayout = src.autoLayout;
+                                if (src.grid !== undefined && spec.grid === undefined) spec.grid = src.grid;
+                                if (src.layout !== undefined && spec.layout === undefined) spec.layout = src.layout;
+                                if (src.theme !== undefined && spec.theme === undefined && isValidJointTheme(src.theme)) spec.theme = src.theme;
+                            }
                             structuredFromDefinition = normalizeStructured(
                                 obj.elements || obj.cells,
                                 obj.connections || obj.links
                             );
                         }
                     } catch (e) {
-                        // Not valid JSON — fall through to the line-DSL / raw definition path.
-                        console.warn('joint: definition looked like JSON but failed to parse; using text parser', e);
+                        // Parsed but not the expected shape — fall through to the DSL.
+                        console.warn('joint: structured JSON normalise failed; using text parser', e);
                     }
                 }
             }
@@ -1801,8 +2342,14 @@ export const jointPlugin: D3RenderPlugin = {
                 console.warn('joint: geometry sanitize failed, using raw geometry', sanitizeErr);
             }
 
-            const theme = spec.theme === 'auto' ? (isDarkMode ? 'dark' : 'light') :
-                (spec.theme || (isDarkMode ? 'dark' : 'light'));
+            // D-156: resolve to a real theme. 'light'/'dark' pass through; 'auto',
+            // undefined AND any bogus token ('nord-dark') fall back to the caller's
+            // render theme instead of leaking through and flipping every
+            // `theme === 'dark'` ternary to its light branch under dark mode.
+            const theme: 'light' | 'dark' =
+                (spec.theme === 'light' || spec.theme === 'dark')
+                    ? spec.theme
+                    : (isDarkMode ? 'dark' : 'light');
 
             // Calculate container dimensions - walk up to find a rendered parent with actual dimensions
             const parentContainer = container.parentElement;
@@ -1829,6 +2376,16 @@ export const jointPlugin: D3RenderPlugin = {
 
             const width = spec.width || Math.max(availableWidth - 40, 400);
             const height = spec.height || Math.max(availableHeight - 40, 300);
+
+            // D-143 (G-47): coerce string-encoded booleans BEFORE the option checks
+            // below (grid at paper construction, interactive, autoLayout after link
+            // creation). A model-emitted "autoLayout":"false" is a truthy string, so
+            // without this the `spec.autoLayout !== false` guard fired and auto-layout
+            // overwrote the author's manual x/y positions. Only recognised string
+            // boolean forms are converted; real booleans / undefined pass through.
+            spec.autoLayout = coerceJointBoolean(spec.autoLayout);
+            spec.grid = coerceJointBoolean(spec.grid);
+            (spec as any).interactive = coerceJointBoolean((spec as any).interactive);
 
             // Create Joint.js graph and paper
             const graph = new dia.Graph({}, {
@@ -1959,6 +2516,13 @@ export const jointPlugin: D3RenderPlugin = {
             // Create shape registry for enhanced element creation
             const shapeRegistry = createShapeRegistry();
 
+            // G-48: index specs by id + resolve the page surface, so the per-element
+            // post-create hook below can honour author `attrs` (D-152) and style
+            // nested containers by depth (D-150).
+            const jointSpecById = new Map<string, any>();
+            elements.forEach((e: any) => { if (e && e.id != null) jointSpecById.set(String(e.id), e); });
+            const jointPageBg = jointPageBackground(theme);
+
             console.log('🔧 JOINT-DEBUG: Starting element creation');
             console.log('🔧 JOINT-DEBUG: Shape registry keys:', Object.keys(shapeRegistry));
 
@@ -2010,8 +2574,42 @@ export const jointPlugin: D3RenderPlugin = {
 
                     const element = actualCreator(elementWithDefaults, theme);
                     if (element) {
-                        jointElements.push(element);
+                        // D-144: @joint/core v4 rejects a cell whose `type` is not a
+                        // non-empty string ('dia.Graph: cell type must be a string').
+                        // The bare `new dia.Element({...})` custom creators never set
+                        // one, so guarantee a namespaced fallback type (resolves to the
+                        // default ElementView, which renders the element's own markup)
+                        // BEFORE addCell so the cell — and every link touching it — is
+                        // not dropped. standard.* shapes already carry a type: untouched.
+                        try {
+                            const existingType = (element as any)?.attributes?.type;
+                            if (!isValidCellType(existingType)) {
+                                (element as any).set('type', fallbackCellType(shapeType));
+                            }
+                        } catch (typeErr) {
+                            console.warn(`joint: could not assign fallback type for ${elementSpec.id}`, typeErr);
+                        }
+                        // G-48: honour author `attrs` (D-152) and style nested
+                        // containers (D-150). Reads the element's own creator fill as
+                        // the surface for label-contrast reasoning, then applies the
+                        // merged { body?, label? } patch. No-op (byte-identical) when
+                        // the element is neither a container nor carries author attrs.
+                        try {
+                            const curFill = (typeof (element as any).attr === 'function'
+                                ? (element as any).attr('body/fill') : undefined) || '#ffffff';
+                            const stylePatch = computeJointElementStyle(elementSpec, {
+                                theme,
+                                defaultBodyFill: String(curFill),
+                                pageBg: jointPageBg,
+                                depth: jointElementDepth(elementSpec.id, jointSpecById),
+                                isContainer: isJointContainer(elementSpec),
+                            });
+                            if (stylePatch) (element as any).attr(stylePatch);
+                        } catch (styleErr) {
+                            console.warn(`joint: could not apply author/container style for ${elementSpec.id}`, styleErr);
+                        }
                         graph.addCell(element);
+                        jointElements.push(element);
                         console.log(`🔧 JOINT-DEBUG: ✓ Created element ${elementSpec.id}`);
                     }
                 } catch (error) {
@@ -2096,11 +2694,19 @@ export const jointPlugin: D3RenderPlugin = {
                     const containerRect = container.getBoundingClientRect();
                     const containerWidth = containerRect.width > 0 ? containerRect.width : width;
 
-                    // Width: use container width, but ensure it fits content
-                    const finalWidth = Math.max(contentWidth, containerWidth);
-
-                    // Height: ALWAYS grow to fit content (don't cap at original height)
-                    const finalHeight = contentHeight;
+                    // D-145: never emit an SVG bigger than the capture box. The old
+                    // path set finalWidth = max(content, container) and wrote that
+                    // oversized value into the viewBox while the SVG rendered at
+                    // container width, so any graph larger than one capture window was
+                    // CROPPED and the rest silently dropped from the PNG (no downscale
+                    // existed). Bound the emitted paper/SVG to (containerWidth x
+                    // JOINT_MAX_RENDER_HEIGHT) and frame the FULL content extent via the
+                    // viewBox, so an oversized graph is scaled down to fit instead of
+                    // clipped. Content that already fits keeps its natural size.
+                    const maxHeight = Math.max(JOINT_MAX_RENDER_HEIGHT, spec.height || 0);
+                    const plan = computeJointFitPlan(contentWidth, contentHeight, containerWidth, maxHeight);
+                    const finalWidth = plan.paperWidth;
+                    const finalHeight = plan.paperHeight;
 
                     paper.setDimensions(finalWidth, finalHeight);
 
@@ -2128,20 +2734,26 @@ export const jointPlugin: D3RenderPlugin = {
                     // Also update max-height to allow growth
                     container.style.maxHeight = 'none';
 
-                    // Center the content
-                    paper.translate(padding - bbox.x, padding - bbox.y);
-                    console.log('Paper dimensions updated to fit content');
+                    // Keep the paper at the identity transform: the viewBox (set below)
+                    // maps the full content extent into the bounded viewport, so no
+                    // paper.translate is needed and the earlier oversize-crop is gone.
+                    paper.translate(0, 0);
+                    console.log('Paper dimensions updated to fit content', plan);
 
-                    // Force SVG to scale properly
+                    // Force SVG to scale properly. The viewBox frames the whole content
+                    // bbox (in paper coordinates) so preserveAspectRatio 'meet' scales
+                    // ALL content to fit the bounded SVG — nothing is cropped.
                     const svg = container.querySelector('svg');
                     if (svg) {
                         svg.style.width = '100%';
                         svg.style.height = '100%';
                         svg.style.maxWidth = '100%';
                         svg.style.maxHeight = 'none'; // Allow vertical growth
-                        svg.setAttribute('viewBox', `0 0 ${finalWidth} ${finalHeight}`);
+                        const vbX = bbox.x - padding;
+                        const vbY = bbox.y - padding;
+                        svg.setAttribute('viewBox', `${vbX} ${vbY} ${contentWidth} ${contentHeight}`);
                         svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
-                        console.log('SVG viewBox set to:', finalWidth, finalHeight);
+                        console.log('SVG viewBox set to content extent:', vbX, vbY, contentWidth, contentHeight);
                     }
                 }
             };
@@ -2259,16 +2871,21 @@ const getDefaultSizeForNetworkElement = (elementType: string) => {
 };
 
 const getNetworkElementAttrs = (elementType: string, theme: 'light' | 'dark') => {
+    // D-151: colour-code the body per device type so five distinct device types
+    // are no longer identical rounded rects. The label colour is derived from the
+    // resolved fill (readableJointLabelFill) so it clears the text floor in BOTH
+    // themes regardless of which per-type fill was chosen.
+    const s = networkElementStyle(elementType, theme);
     return {
         body: {
-            fill: theme === 'dark' ? '#2f3349' : '#ffffff',
-            stroke: theme === 'dark' ? '#4cc9f0' : '#333333',
+            fill: s.fill,
+            stroke: s.stroke,
             strokeWidth: 2,
             rx: elementType === 'cloud' ? 15 : 5,
             ry: elementType === 'cloud' ? 15 : 5
         },
         label: {
-            fill: theme === 'dark' ? '#ffffff' : '#000000',
+            fill: readableJointLabelFill(s.fill),
             fontSize: 11,
             fontFamily: 'Arial, sans-serif',
             textAnchor: 'middle',
@@ -2445,12 +3062,15 @@ const createJointPort = (portSpec: Port, theme: 'light' | 'dark') => {
 };
 
 const createPortFromSpec = (portSpec: Port, theme: 'light' | 'dark') => {
-    const portPosition = getPortPosition(portSpec.position || 'top');
-
-    return {
+    // D-153: the port's `group` MUST reference a group the element actually
+    // defines (standardJointPortGroups adds top/bottom/left/right, each with a
+    // built-in position layout). Keying `group` on portSpec.type (e.g. 'input')
+    // left the port group-less -> no layout -> getPortCenter threw
+    // `layoutCallback is not a function` and every link to the port was dropped.
+    // Map the declared string position to its side group instead.
+    const port: any = {
         id: portSpec.id,
-        group: portSpec.type || 'default',
-        args: portPosition,
+        group: jointPortSide(portSpec.position),
         markup: [{
             tagName: 'circle',
             selector: 'portBody'
@@ -2465,6 +3085,21 @@ const createPortFromSpec = (portSpec: Port, theme: 'light' | 'dark') => {
             }
         }
     };
+    if (portSpec.label) {
+        port.label = {
+            position: { name: 'outside' },
+            markup: [{ tagName: 'text', selector: 'label' }],
+            attrs: {
+                label: {
+                    text: portSpec.label,
+                    fill: theme === 'dark' ? '#ffffff' : '#000000',
+                    fontSize: 10,
+                    textAnchor: 'middle'
+                }
+            }
+        };
+    }
+    return port;
 };
 
 const getPortPosition = (position: string) => {

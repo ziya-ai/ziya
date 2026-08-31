@@ -129,7 +129,7 @@ describe('shared LaTeX registry agrees with the backend', () => {
     });
 
     it('rejects unknown languages rather than guessing', () => {
-        expect(latexProfileForLang('pgfplots')).toBeNull();
+        expect(latexProfileForLang('wavedrom')).toBeNull();
         expect(isLatexFenceLang('python')).toBe(false);
     });
 });

@@ -7,6 +7,32 @@ import { downloadSvg } from '../../utils/svgUtils';
 import { escapeHtml } from '../../utils/htmlSanitize';
 import { getZoomScript, getDownloadSvgScript } from '../../utils/popupScriptUtils';
 
+/**
+ * D-125: selectors for text the universal SVG enhancer must NOT recolour.
+ *
+ * Graphviz edge LABELS are `<text>` inside `<g class="edge">`, and this plugin
+ * already injects a theme-correct `fontcolor` for them (edge[] default:
+ * `#000000` in light / `#ffffff` in dark — see `defaultTextColor`). So the
+ * edge-label ink is authoritative before enhancement runs.
+ *
+ * The shared enhancer's `findElementBackground` (colorUtils.ts, out of this
+ * plugin's tree) picks the FIRST filled shape in the parent `<g>` as the
+ * label's background — but inside `<g class="edge">` that first shape is the
+ * ARROWHEAD `<polygon>`, filled with the (dark, e.g. `#333333`) edge colour.
+ * The enhancer therefore concludes the label sits on a dark surface and, in
+ * LIGHT mode, rewrites the label fill to white → white-on-white (~1:1),
+ * losing every edge label. In DARK the forced white merely re-affirms the
+ * already-white injected ink, which is why dark looked fine.
+ *
+ * Rather than have the plugin second-guess a heuristic it does not own, we
+ * tell the enhancer (via its documented `skipSelectors` option) to leave
+ * edge-label text alone, preserving the per-theme `fontcolor` this plugin
+ * already set. This is scoped to graphviz edge labels only; node/cluster/graph
+ * text is still enhanced (D-133/D-136/D-137 machinery), and the shared enhancer
+ * is unchanged for every other engine.
+ */
+export const GRAPHVIZ_ENHANCER_SKIP_SELECTORS = ['g.edge text'];
+
 export interface GraphvizSpec {
     type: 'graphviz';
     isStreaming?: boolean;
@@ -79,6 +105,473 @@ export function clampGraphvizSize(dot: string, minInches: number = GRAPHVIZ_MIN_
     );
     return out;
 }
+
+/* =====================================================================
+ * VIEWPORT FIT (G-56: D-129 crop / no-upscale, D-130 & D-135 sub-pixel font)
+ * ---------------------------------------------------------------------
+ * Viz.js emits an SVG sized in ABSOLUTE points with a viewBox but no
+ * responsive behaviour, and the plugin mounted it as-is. Three failures
+ * share this one missing fit-to-viewport step:
+ *   - D-129 (crop): a graph LARGER than the bounded capture window is sliced
+ *     at the edge instead of being scaled to fit; its mirror is a small /
+ *     `size="1.5,1.5!"`-forced graph that draws as a sub-pixel island with no
+ *     upscale into the empty canvas.
+ *   - D-130 / D-135 (sub-pixel labels): where the drawing IS shrunk to fit
+ *     there is no minimum legible-font floor, so at high fan-out / density the
+ *     labels dissolve below a readable size.
+ *
+ * `planGraphvizViewport` is the single shared lever. It is PURE and operates
+ * in CSS px: given the drawing's natural size and the container width it
+ * returns the target SVG width, the effective scale and whether the wrapper
+ * must scroll. It intervenes ONLY in the two defect regimes — a small graph is
+ * upscaled to fill, an over-wide graph past the min-font floor stops shrinking
+ * and scrolls — and returns natural size for the comfortable middle range, so
+ * a currently-fine render is byte-equivalent (no unrelated-output change).
+ * ===================================================================== */
+
+/** Points -> CSS px (1pt = 96/72 px). Graphviz SVG width/height attrs and the
+ *  viewBox user units are both in points. */
+export const GRAPHVIZ_PT_TO_PX = 96 / 72;
+
+/**
+ * Below this scale a shrink-to-fit pushes the graphviz default label (the
+ * plugin injects fontsize~12-14pt ~ 16px) under ~8px — the legibility floor.
+ * At or past it we stop shrinking and scroll instead of dissolving the text.
+ */
+export const GRAPHVIZ_MIN_FONT_SCALE = 0.5;
+
+/**
+ * A graph is only UPSCALED when it is at most ~2/3 of the container width
+ * (fitScale >= 1.5). Between 2/3 and full width the render is already
+ * comfortable and is left exactly as-is, so ordinary diagrams are untouched.
+ */
+export const GRAPHVIZ_UPSCALE_MIN_FITSCALE = 1.5;
+
+/** Cap the blow-up of a tiny graph so a 2-node stub does not become grotesque. */
+export const GRAPHVIZ_MAX_UPSCALE = 4;
+
+export interface GraphvizViewportPlan {
+    /** How the SVG is sized relative to natural size. */
+    mode: 'natural' | 'upscale' | 'fit' | 'scroll';
+    /** Target CSS width for the SVG element, in px (>= 1 for a sized graph). */
+    svgWidthPx: number;
+    /** svgWidthPx / naturalWpx — the on-screen scale applied to the drawing. */
+    effectiveScale: number;
+    /** Whether the wrapper must allow scroll/pan (content wider than the box). */
+    scroll: boolean;
+}
+
+/**
+ * Decide how to fit a laid-out graphviz drawing (natural size, in px) into the
+ * container. Pure and side-effect-free; unit-testable without a browser.
+ *
+ * Regimes (naturalWpx vs containerWpx):
+ *   - WIDER than container, shrink keeps labels >= floor -> 'fit' (width=container).
+ *   - WIDER than container, shrink would go below the floor -> 'scroll'
+ *     (clamp scale at the floor, SVG stays wider than the box, wrapper scrolls).
+ *   - clearly SMALLER (fitScale >= upscaleMin) -> 'upscale' to fill, capped.
+ *   - comfortable middle -> 'natural' (byte-equivalent to the old output).
+ */
+export function planGraphvizViewport(
+    naturalWpx: number,
+    naturalHpx: number,
+    containerWpx: number,
+    opts: { minFontScale?: number; upscaleMinFitScale?: number; maxUpscale?: number } = {}
+): GraphvizViewportPlan {
+    const minFontScale = opts.minFontScale ?? GRAPHVIZ_MIN_FONT_SCALE;
+    const upscaleMin = opts.upscaleMinFitScale ?? GRAPHVIZ_UPSCALE_MIN_FITSCALE;
+    const maxUpscale = opts.maxUpscale ?? GRAPHVIZ_MAX_UPSCALE;
+
+    // Defensive: unusable measurements -> leave the SVG at natural size.
+    if (!Number.isFinite(naturalWpx) || !Number.isFinite(containerWpx) ||
+        naturalWpx <= 0 || containerWpx <= 0) {
+        const w = naturalWpx > 0 ? naturalWpx : 0;
+        return { mode: 'natural', svgWidthPx: w, effectiveScale: 1, scroll: false };
+    }
+
+    const fitScale = containerWpx / naturalWpx;
+
+    if (naturalWpx > containerWpx) {
+        // Graph WIDER than the container.
+        if (fitScale >= minFontScale) {
+            // Shrink-to-fit keeps labels above the floor (today's max-width:100%).
+            return { mode: 'fit', svgWidthPx: containerWpx, effectiveScale: fitScale, scroll: false };
+        }
+        // Shrinking to fit would push labels below the legible floor: clamp the
+        // downscale at the floor and SCROLL past that point instead of vanishing.
+        return {
+            mode: 'scroll',
+            svgWidthPx: naturalWpx * minFontScale,
+            effectiveScale: minFontScale,
+            scroll: true,
+        };
+    }
+
+    // Graph fits within the container (naturalWpx <= containerWpx).
+    if (fitScale >= upscaleMin) {
+        // Clearly small (<= ~2/3 width): upscale to fill so sub-pixel labels
+        // (e.g. from a forced size="1.5,1.5!") become legible; cap the blow-up.
+        const scale = Math.min(fitScale, maxUpscale);
+        return { mode: 'upscale', svgWidthPx: naturalWpx * scale, effectiveScale: scale, scroll: false };
+    }
+
+    // Comfortably-sized graph: leave exactly as-is (no unrelated-output change).
+    return { mode: 'natural', svgWidthPx: naturalWpx, effectiveScale: 1, scroll: false };
+}
+
+/**
+ * Read a graphviz SVG's natural drawing size in CSS px, from its width/height
+ * attributes (points) and falling back to the viewBox user units. Returns
+ * {w:0,h:0} when nothing parseable is present (caller then leaves it alone).
+ * Takes an attribute getter so it is testable without a live SVG element.
+ */
+export function readGraphvizNaturalSizePx(
+    getAttr: (name: string) => string | null
+): { w: number; h: number } {
+    const parsePt = (v: string | null): number => {
+        if (!v) return 0;
+        const m = String(v).match(/-?[0-9]*\.?[0-9]+/);
+        if (!m) return 0;
+        const n = parseFloat(m[0]);
+        return Number.isFinite(n) && n > 0 ? n * GRAPHVIZ_PT_TO_PX : 0;
+    };
+    let w = parsePt(getAttr('width'));
+    let h = parsePt(getAttr('height'));
+    if (!w || !h) {
+        const vb = getAttr('viewBox');
+        if (vb) {
+            const parts = vb.trim().split(/[\s,]+/).map((s) => parseFloat(s));
+            if (parts.length === 4 && Number.isFinite(parts[2]) && Number.isFinite(parts[3])) {
+                if (!w && parts[2] > 0) w = parts[2] * GRAPHVIZ_PT_TO_PX;
+                if (!h && parts[3] > 0) h = parts[3] * GRAPHVIZ_PT_TO_PX;
+            }
+        }
+    }
+    return { w, h };
+}
+
+/* =====================================================================
+ * RECOVERY / COLOUR NORMALISATION (G-16: D-127, D-128)
+ * ---------------------------------------------------------------------
+ * The plugin previously had NO lexical/syntactic repair stage: a markdown
+ * fence, a JSON envelope, smart quotes, single-quoted attribute values,
+ * unbalanced braces, a graph/digraph edge-operator dialect mismatch, or an
+ * invalid comma node-group each reached Viz.js as-is, threw a DOT parse
+ * error, and — because the plugin's throw is delivered to the headless
+ * harness as a silent 30s watchdog timeout — surfaced as total data loss
+ * with no diagnostic (D-127). Separately, any colour Viz.js could not
+ * resolve (rgb()/rgba(), a design token, a near-miss name) fell back to
+ * solid #000000 — a black slab on the light page / a black hole on the
+ * dark panel (D-128).
+ *
+ * All of the functions below are PURE and IDEMPOTENT: clean, well-formed
+ * DOT is returned byte-identical, so they cannot alter a working spec.
+ * ===================================================================== */
+
+/** Mask double-quoted string literals so an edge-operator / comma rewrite can
+ *  never corrupt text inside a label. Returns the masked string + the tokens. */
+function maskDotStrings(s: string): { masked: string; tokens: string[] } {
+    const tokens: string[] = [];
+    const masked = s.replace(/"(?:\\.|[^"\\])*"/g, (m) => {
+        tokens.push(m);
+        return `\u0000${tokens.length - 1}\u0000`;
+    });
+    return { masked, tokens };
+}
+
+function unmaskDotStrings(s: string, tokens: string[]): string {
+    return s.replace(/\u0000(\d+)\u0000/g, (_m, i) => tokens[parseInt(i, 10)] ?? '');
+}
+
+/** Strip a leading/trailing markdown code fence (```dot / ```graphviz / ```).
+ *  Handles a properly closed fence AND an UNTERMINATED opening fence (a common
+ *  truncated-output shape) by removing the opening ```lang line and any trailing
+ *  fence when the body still looks like DOT. */
+export function stripGraphvizFence(input: string): string {
+    if (typeof input !== 'string') return input;
+    const fenced = input.match(/```[a-zA-Z0-9_-]*\s*\n?([\s\S]*?)\n?```/);
+    if (fenced && /\b(?:strict\s+)?(?:di)?graph\b/i.test(fenced[1])) {
+        return fenced[1].trim();
+    }
+    // Unterminated opening fence: ```lang\n<dot...>  (no closing fence)
+    if (/^\s*```/.test(input)) {
+        const stripped = input
+            .replace(/^\s*```[a-zA-Z0-9_-]*[ \t]*\n?/, '')
+            .replace(/\n?```\s*$/, '');
+        if (/\b(?:strict\s+)?(?:di)?graph\b/i.test(stripped)) {
+            return stripped.trim();
+        }
+    }
+    return input;
+}
+
+/** Unwrap a JSON envelope such as {"type":"graphviz","definition":"digraph{...}"}.
+ *  DOT never begins with a bare '{', so a parseable object carrying a string
+ *  definition/dot/graph/src key is unambiguously an envelope. */
+export function unwrapGraphvizJsonEnvelope(input: string): string {
+    if (typeof input !== 'string') return input;
+    const t = input.trim();
+    if (t[0] !== '{') return input;
+    try {
+        const obj = JSON.parse(t);
+        if (obj && typeof obj === 'object') {
+            for (const k of ['definition', 'dot', 'graph', 'src', 'source']) {
+                if (typeof obj[k] === 'string' && obj[k].trim().length > 0) {
+                    return obj[k];
+                }
+            }
+        }
+    } catch {
+        /* not a JSON envelope — leave untouched */
+    }
+    return input;
+}
+
+/** Normalise Unicode smart quotes to their ASCII equivalents. */
+export function normalizeGraphvizSmartQuotes(input: string): string {
+    if (typeof input !== 'string') return input;
+    return input
+        .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+        .replace(/[\u2018\u2019\u201A\u201B]/g, "'");
+}
+
+/** Convert single-quoted attribute values (`label='x'`) to DOT-legal double
+ *  quotes. Only fires after an `=` so an apostrophe inside a double-quoted
+ *  label is untouched. */
+export function normalizeGraphvizSingleQuotes(input: string): string {
+    if (typeof input !== 'string') return input;
+    return input.replace(/=\s*'([^'\n]*)'/g, (_m, v) => `="${v}"`);
+}
+
+/** Reconcile the edge operator with the graph keyword: a `digraph` must use
+ *  `->`, an undirected `graph` must use `--`. A mismatch is a hard parse error
+ *  in Viz.js. Runs on string-masked input so label text is never rewritten. */
+export function repairGraphvizEdgeDialect(input: string): string {
+    if (typeof input !== 'string') return input;
+    const isDirected = /\b(?:strict\s+)?digraph\b/i.test(input);
+    const isUndirected = !isDirected && /\b(?:strict\s+)?graph\b/i.test(input);
+    if (!isDirected && !isUndirected) return input;
+    const { masked, tokens } = maskDotStrings(input);
+    let out = masked;
+    if (isDirected) {
+        // any `--` used as an edge operator -> `->`
+        out = out.replace(/([\w\]}\u0000])\s*--\s*(?=[\w"{\u0000])/g, '$1 -> ');
+    } else {
+        // any `->` used as an edge operator -> `--`
+        out = out.replace(/([\w\]}\u0000])\s*->\s*(?=[\w"{\u0000])/g, '$1 -- ');
+    }
+    return unmaskDotStrings(out, tokens);
+}
+
+/** Repair invalid comma node-groups (`{a, b, c}` / `{a,b,c,}`) — legal DOT
+ *  separates grouped nodes with spaces/semicolons, not commas — and drop an
+ *  empty `[,]` attribute list. Attribute-list trailing commas (`[a=1,]`) are
+ *  LEGAL and left untouched: only pure identifier groups (no `=`/`;`/edge op)
+ *  are rewritten. Runs on string-masked input. */
+export function repairGraphvizNodeGroups(input: string): string {
+    if (typeof input !== 'string') return input;
+    const { masked, tokens } = maskDotStrings(input);
+    let out = masked.replace(/\[\s*,\s*\]/g, '[]');
+    out = out.replace(/\{([^{}]*)\}/g, (m, body) => {
+        if (!body.includes(',')) return m;
+        // Only a pure node group: identifiers/masked-strings separated by commas,
+        // with no attribute assignment, statement separator or edge operator.
+        if (/[=;]|->|--/.test(body)) return m;
+        if (!/^[\s\w"\u0000,]+$/.test(body)) return m;
+        const cleaned = body.replace(/\s*,\s*/g, ' ').replace(/\s+/g, ' ').trim();
+        return `{${cleaned}}`;
+    });
+    return unmaskDotStrings(out, tokens);
+}
+
+/** Append missing closing braces so an unterminated body reaches layout. */
+export function balanceGraphvizBraces(input: string): string {
+    if (typeof input !== 'string') return input;
+    const { masked } = maskDotStrings(input);
+    const open = (masked.match(/\{/g) || []).length;
+    const close = (masked.match(/\}/g) || []).length;
+    if (open > close) return input + '\n' + '}'.repeat(open - close);
+    return input;
+}
+
+/**
+ * Rewrite the deprecated `setlinewidth(N)` style idiom to the modern
+ * `penwidth=N` attribute (D-254). Pre-2011 DOT — which models were heavily
+ * trained on — expresses stroke width as `style="setlinewidth(3),filled"`.
+ * Modern graphviz silently DROPS the unrecognised `setlinewidth(...)` style
+ * token, so every node/edge falls back to the default width and the authored
+ * distinction (`Thick A` vs `Thin C`) is lost with no error. We lift the width
+ * out of the style string into a sibling `penwidth=N` attribute and keep any
+ * remaining style tokens (`filled`, `dashed`, ...). Pure and idempotent: a spec
+ * with no `setlinewidth` is returned byte-identical. Operates on the raw
+ * `style="..."` attribute (which maskDotStrings would otherwise hide), and only
+ * on a `style=` attribute so label text is never touched.
+ */
+export function normalizeGraphvizSetlinewidth(input: string): string {
+    if (typeof input !== 'string' || input.length === 0) return input;
+    if (!/setlinewidth/i.test(input)) return input;
+    return input.replace(/style\s*=\s*"([^"]*)"/gi, (match, body: string) => {
+        const m = body.match(/setlinewidth\s*\(\s*([\d.]+)\s*\)/i);
+        if (!m) return match;
+        const width = m[1];
+        const rest = body
+            .replace(/setlinewidth\s*\(\s*[\d.]+\s*\)/i, '')
+            .replace(/,\s*,/g, ',')
+            .replace(/^\s*,\s*/, '')
+            .replace(/\s*,\s*$/, '')
+            .trim();
+        return rest.length > 0
+            ? `penwidth=${width} style="${rest}"`
+            : `penwidth=${width}`;
+    });
+}
+
+/**
+ * Full lexical recovery pipeline (D-127). Ordered so masking is correct:
+ * fence/envelope -> smart quotes -> single-quote attrs -> setlinewidth ->
+ * dialect -> node groups -> brace balance. Idempotent; a no-op on clean DOT.
+ */
+export function repairGraphvizSource(input: string): string {
+    if (typeof input !== 'string' || input.length === 0) return input;
+    let out = input;
+    out = stripGraphvizFence(out);
+    out = unwrapGraphvizJsonEnvelope(out);
+    out = normalizeGraphvizSmartQuotes(out);
+    out = normalizeGraphvizSingleQuotes(out);
+    out = normalizeGraphvizSetlinewidth(out);
+    out = repairGraphvizEdgeDialect(out);
+    out = repairGraphvizNodeGroups(out);
+    out = balanceGraphvizBraces(out);
+    return out;
+}
+
+/** Colour attributes graphviz understands; used to scope token-dropping and
+ *  name-snapping so we never touch unrelated identifiers. */
+const GRAPHVIZ_COLOR_ATTRS = 'fillcolor|bgcolor|color|fontcolor|pencolor|labelfontcolor';
+
+/** Small near-miss -> canonical X11 name table (Levenshtein-1 cases that
+ *  graphviz rejects and would otherwise fall back to black). */
+const GRAPHVIZ_COLOR_NAME_FIX: Record<string, string> = {
+    cornflower: 'cornflowerblue',
+    dodger: 'dodgerblue',
+    slategrey: 'slategray',
+};
+
+/**
+ * Colour-form normaliser (D-128). Three targeted, deterministic steps — the
+ * antidote to Viz.js's fallback-to-#000000:
+ *   1. rgb()/rgba() FUNCTION -> #rrggbb (alpha dropped; xcolor/DOT have no
+ *      alpha channel). Percentage forms are left untouched (rare, ambiguous).
+ *   2. An unresolvable token in a colour attribute (var(--x), $token,
+ *      theme.foo, currentColor) -> DROP the whole attribute so the node
+ *      inherits the themed default, NEVER a literal black.
+ *   3. A near-miss colour name in a colour attribute -> snap to canonical.
+ * Pure and idempotent; resolvable colours (#hex, valid X11 names) pass through.
+ */
+export function normalizeGraphvizColors(input: string): string {
+    if (typeof input !== 'string' || input.length === 0) return input;
+    let out = input;
+
+    // (1) rgb()/rgba() -> #rrggbb  (integer 0-255 components only)
+    out = out.replace(
+        /rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*(?:,\s*[\d.]+\s*)?\)/gi,
+        (m, r, g, b) => {
+            const c = [r, g, b].map((n: string) => {
+                const v = Math.max(0, Math.min(255, parseInt(n, 10)));
+                return v.toString(16).padStart(2, '0');
+            });
+            return `#${c.join('')}`;
+        }
+    );
+
+    // (2) unresolvable token in a colour attribute -> drop the attribute
+    const tokenVal = '(?:var\\([^")\\]]*\\)|\\$[\\w-]+|theme\\.[\\w.]+|currentcolor)';
+    const dropRe = new RegExp(
+        `\\b(?:${GRAPHVIZ_COLOR_ATTRS})\\s*=\\s*("?)${tokenVal}\\1`,
+        'gi'
+    );
+    out = out.replace(dropRe, '');
+    // tidy attribute-list punctuation left dangling by a removed attribute
+    out = out
+        .replace(/\[\s*,/g, '[')
+        .replace(/,\s*,/g, ',')
+        .replace(/,\s*\]/g, ']')
+        .replace(/\[\s*\]/g, '[]');
+
+    // (3) near-miss colour name -> canonical X11 name (colour attributes only)
+    const nameRe = new RegExp(
+        `\\b(${GRAPHVIZ_COLOR_ATTRS})(\\s*=\\s*"?)([a-zA-Z]+)("?)`,
+        'gi'
+    );
+    out = out.replace(nameRe, (m, attr, eq, val, q) => {
+        const fixed = GRAPHVIZ_COLOR_NAME_FIX[val.toLowerCase()];
+        return fixed ? `${attr}${eq}${fixed}${q}` : m;
+    });
+
+    return out;
+}
+
+/**
+ * Record/port syntax detector (D-131). A record/Mrecord label declares ports as
+ * `<portname>` tokens and separates fields with `|`. The generic label->HTML-like
+ * rewrite HTML-escapes `<`/`>`, so `<f0> left` was rendered as the literal text
+ * `<f0> left` for every port (and roughly doubled each field's geometry at scale).
+ * A double-quoted DOT label already displays correctly for BOTH record shapes
+ * (ports parsed natively) and non-record shapes (the text shown literally), so the
+ * safe, minimal fix is to LEAVE such labels as plain quoted strings rather than
+ * force them through the HTML-like path. Trigger: a `<identifier>` port token.
+ */
+export function labelUsesRecordPortSyntax(labelContent: string): boolean {
+    return /<\s*[A-Za-z_][\w]*\s*>/.test(labelContent);
+}
+
+/**
+ * Convert DOT `label="..."` attributes to the more robust HTML-like `label=<...>`
+ * form, HTML-escaping metacharacters and mapping graphviz justification escapes to
+ * HTML-like <br> variants:
+ *   \n -> <br/>                 (centre)      [pre-existing]
+ *   \l -> <br align="left"/>    (D-132, left-justify)
+ *   \r -> <br align="right"/>   (D-132, right-justify)
+ * Record/port labels (D-131) are left as plain quoted strings so their `<port>`
+ * tokens are consumed as port identifiers, not escaped into visible text. Pure and
+ * idempotent; a label with no special content is byte-identical to the old output.
+ */
+export function convertLabelsToHtmlLike(dot: string): string {
+    if (typeof dot !== 'string' || dot.length === 0) return dot;
+    return dot.replace(/label\s*=\s*"((?:\\"|[^"])*)"/g, (match, content) => {
+        // First, unescape any `\"` in the original content string.
+        const unescapedContent = content.replace(/\\"/g, '"');
+
+        // D-131: a record/port label must stay a plain quoted string so graphviz
+        // parses its `<port>` tokens instead of us escaping them into text.
+        if (labelUsesRecordPortSyntax(unescapedContent)) {
+            return match;
+        }
+
+        // Escape for HTML-like label format, THEN map the justification escapes.
+        // Order matters: the `<br .../>` markup is inserted after the </>/" escaping
+        // steps so its own angle brackets and quotes survive intact.
+        const escapedForHtml = unescapedContent
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/\\n/g, '<br/>').replace(/\n/g, '<br/>')
+            .replace(/\\l/g, '<br align="left"/>')
+            .replace(/\\r/g, '<br align="right"/>');
+
+        return `label=<${escapedForHtml}>`;
+    });
+}
+
+// D-136: light-theme border palette. The previous clusterBorder '#cccccc'
+// (1.07:1 on the authored lightgrey #d3d3d3 cluster fill, 1.61:1 on white) and
+// nodeBorder '#999999' (2.85:1 on white) both fell below the 3:1 graphical-
+// boundary floor, so nested clusters collapsed into one flat box in light while
+// dark (cyan #4cc9f0) rendered them perfectly. Darkened to clear 3:1 on the white
+// page, the injected cluster/node fills AND the authored lightgrey cluster fill
+// (#6e6e6e: 5.10 on #ffffff, 3.41 on #d3d3d3, 4.47 on #f0f0f0, 4.68 on #f5f5f5).
+// Dark-theme borders are a separate palette entry and are UNCHANGED.
+export const GRAPHVIZ_LIGHT_CLUSTER_BORDER = '#6e6e6e';
+export const GRAPHVIZ_LIGHT_NODE_BORDER = '#6e6e6e';
 
 const isGraphvizSpec = (spec: any): spec is GraphvizSpec => {
     // Handle JSON-wrapped graphviz specs
@@ -276,12 +769,12 @@ export const graphvizPlugin: D3RenderPlugin = {
                     text: '#333333',                // Darker text for better contrast
                     stroke: '#555555',              // Darker stroke
                     nodeFill: '#f5f5f5',            // Light gray node fill
-                    nodeBorder: '#999999',          // Medium gray node border
+                    nodeBorder: GRAPHVIZ_LIGHT_NODE_BORDER, // D-136: 3:1-safe node border
                     edgeColor: '#333333',           // Dark edge color for better visibility
                     background: 'transparent',
                     labelText: '#333333',           // Dark label text
                     clusterBg: '#f0f0f0',           // Cluster background
-                    clusterBorder: '#cccccc'        // Cluster border
+                    clusterBorder: GRAPHVIZ_LIGHT_CLUSTER_BORDER // D-136: 3:1-safe cluster border
                 },
                 dark: {
                     // Bright, happy colors for dark mode
@@ -314,7 +807,17 @@ export const graphvizPlugin: D3RenderPlugin = {
 
             // Extract actual content from YAML wrapper if present
             let processedDefinition = rawDefinition;
-            
+
+            // RECOVERY (G-16 D-127/D-128): lexical repair + colour normalisation
+            // BEFORE any layout/theme work. Both are pure and idempotent, so a
+            // clean spec is returned byte-identical; a lexically-broken spec
+            // (fence / JSON envelope / smart or single quotes / unbalanced braces
+            // / graph<->digraph edge mismatch / comma node-group) is recovered
+            // rather than delivered as a silent 30s timeout, and an rgb()/token/
+            // near-miss colour is normalised rather than collapsing to #000000.
+            processedDefinition = repairGraphvizSource(processedDefinition);
+            processedDefinition = normalizeGraphvizColors(processedDefinition);
+
             console.log('Starting with rawDefinition:', rawDefinition.substring(0, 100));
             console.log('processedDefinition initialized as:', processedDefinition.substring(0, 100));
 
@@ -354,19 +857,11 @@ export const graphvizPlugin: D3RenderPlugin = {
             // Also fix any remaining -.-> arrows without attributes
             processedDefinition = processedDefinition.replace(/(\w+)\s*-\.->\s*(\w+)/g, '$1 -> $2');
 
-            // This converts all standard string labels to the more robust HTML-like label format.
-            processedDefinition = processedDefinition.replace(/label\s*=\s*"((?:\\"|[^"])*)"/g, (match, content) => {
-                // First, unescape any `\"` that might be in the original content string.
-                const unescapedContent = content.replace(/\\"/g, '"');
-
-                // Now, escape for HTML-like label format.
-                const escapedForHtml = unescapedContent
-                    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-                    .replace(/"/g, '&quot;').replace(/\\n/g, '<br/>').replace(/\n/g, '<br/>');
-
-                return `label=<${escapedForHtml}>`;
-
-            });
+            // Convert standard string labels to the more robust HTML-like label
+            // format. Record/port labels are left as plain quoted strings (D-131)
+            // and \l / \r justification escapes are mapped (D-132). See
+            // convertLabelsToHtmlLike for the full contract.
+            processedDefinition = convertLabelsToHtmlLike(processedDefinition);
 
             // Add theme attributes to dot with more styling options
             let themedDot = processedDefinition;
@@ -404,10 +899,6 @@ export const graphvizPlugin: D3RenderPlugin = {
 
             // Apply theme to SVG elements with more specific styling
             const elements = element.getElementsByTagName('*');
-
-            // For dark mode, prepare to assign different colors to nodes
-            let nodeIndex = 0;
-            const nodeColors = isDarkMode ? themeColors.dark.nodeColors : [];
 
             // First pass: Apply colors to nodes and collect background colors
             const nodeBackgroundColors = new Map(); // Map to store node background colors
@@ -459,49 +950,64 @@ export const graphvizPlugin: D3RenderPlugin = {
                         if (isDarkMode) {
                             // Check if this is a light color that needs to be darkened
                             if (originalFill && isLightBackground(originalFill)) {
-                                // For white or very light colors, use our node colors
-                                if (originalFill.toLowerCase() === '#ffffff' ||
-                                    originalFill.toLowerCase() === 'white' ||
-                                    getBrightness(originalFill) > 0.9) {
+                                // D-126: previously white / very-light fills were
+                                // replaced by nodeColors[nodeIndex % 7] — POSITIONAL
+                                // palette cycling with no notion of author intent.
+                                // That turned a deliberate #ffffcc "warn" node into
+                                // royal blue and, because an HTML-like table renders
+                                // each cell as its own <polygon>, cycled a different
+                                // colour through every cell (205 identical fills ->
+                                // confetti). Since the plugin injects its own dark
+                                // default fill, EVERY fill that reaches this branch is
+                                // author-chosen, so we now darken it the SAME way as
+                                // every other light fill: a pure, hue-preserving
+                                // function of the input colour. Identical author fills
+                                // therefore map to identical results (no confetti) and
+                                // the hue is preserved (no arbitrary blue).
+                                const darkColor = darkModeNodeFill(originalFill);
+                                el.setAttribute('fill', darkColor);
 
-                                    if (nodeColors.length > 0) {
-                                        const colorIndex = nodeIndex % nodeColors.length;
-                                        el.setAttribute('fill', nodeColors[colorIndex]);
+                                // Store the fact that we changed this color
+                                el.setAttribute('data-original-fill', originalFill);
+                                el.setAttribute('data-darkened', 'true');
 
-                                        // Store the fact that we changed this color
-                                        el.setAttribute('data-original-fill', originalFill);
-                                        el.setAttribute('data-darkened', 'true');
-
-                                        nodeIndex++;
-                                    } else {
-                                        el.setAttribute('fill', colors.nodeFill);
-
-                                        // Store the fact that we changed this color
-                                        el.setAttribute('data-original-fill', originalFill);
-                                        el.setAttribute('data-darkened', 'true');
-                                    }
-                                } else {
-                                    // For other light colors, darken them
-                                    const darkColor = getDarkVersionOfColor(originalFill);
-                                    el.setAttribute('fill', darkColor);
-
-                                    // Store the fact that we changed this color
-                                    el.setAttribute('data-original-fill', originalFill);
-                                    el.setAttribute('data-darkened', 'true');
-                                }
+                                // D-133: the fill we just darkened may now sit under
+                                // the author's (or the injected default) light-on-dark
+                                // or dark-on-light label text. Re-theme this node's
+                                // OWN <text> against the NEW fill so black author text
+                                // is not stranded invisibly on a now-dark fill. Scoped
+                                // to fills WE darkened, applied uniformly so siblings
+                                // sharing a default get the same treatment.
+                                retintNodeLabelForFill(el, darkColor);
                             }
 
                             // Set border color
                             el.setAttribute('stroke', colors.nodeBorder);
                             el.setAttribute('stroke-width', '1.5');
                         }
+                    } else if (isDarkMode) {
+                        // D-137: an unfilled node (fill="none") has NO fill to
+                        // darken, so the dark branch above never re-themed its
+                        // text. An authored #000000 fontcolor (or the graphviz
+                        // node-text default, which is black) then sits on the
+                        // ~#1e1e1e panel at 1.26:1. Re-theme this node's own
+                        // <text> against the EFFECTIVE (panel) background so it
+                        // is legible; text already light enough for the panel is
+                        // left untouched (a deliberate readable choice is kept).
+                        retintUnfilledNodeTextForDark(el);
                     }
                 }
             }
             
             // Apply universal visibility enhancement
             setTimeout(() => {
-                const result = enhanceSVGVisibility(element, isDarkMode, { debug: true });
+                // D-125: skip edge-label text so the enhancer's arrowhead-as-
+                // background misfire cannot repaint the (already theme-correct)
+                // edge fontcolor to white-on-white in light mode.
+                const result = enhanceSVGVisibility(element, isDarkMode, {
+                    debug: true,
+                    skipSelectors: GRAPHVIZ_ENHANCER_SKIP_SELECTORS,
+                });
                 console.log(`✅ Graphviz visibility enhanced:`, result);
             }, 300);
             
@@ -540,6 +1046,46 @@ export const graphvizPlugin: D3RenderPlugin = {
 
             // Add the SVG to the wrapper
             wrapper.appendChild(element);
+
+            // G-56 (D-129/D-130/D-135): fit the laid-out drawing to the viewport.
+            // Viz.js sizes the SVG in absolute points with no responsive
+            // behaviour, so a large graph is CROPPED by the bounded capture
+            // window and a small / size!-forced graph draws as a sub-pixel island
+            // with no upscale; where it IS shrunk to fit there is no minimum
+            // legible-font floor. Give the SVG a viewBox + preserveAspectRatio and
+            // apply the shared fit plan: upscale a small graph to fill, shrink a
+            // wider one to fit, and past the min-font floor stop shrinking and
+            // SCROLL instead of dissolving the labels. The comfortable middle
+            // range resolves to natural size (byte-equivalent to the old output).
+            try {
+                const svgEl = element as unknown as SVGSVGElement;
+                const nat = readGraphvizNaturalSizePx((n) => svgEl.getAttribute(n));
+                if (nat.w > 0 && nat.h > 0) {
+                    if (!svgEl.getAttribute('viewBox')) {
+                        svgEl.setAttribute(
+                            'viewBox',
+                            `0 0 ${nat.w / GRAPHVIZ_PT_TO_PX} ${nat.h / GRAPHVIZ_PT_TO_PX}`
+                        );
+                    }
+                    svgEl.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+                    const containerW = container.clientWidth || 1280;
+                    const plan = planGraphvizViewport(nat.w, nat.h, containerW);
+                    // Make the SVG fluid: drop the fixed pt width/height and drive
+                    // size via CSS so preserveAspectRatio scales the content.
+                    svgEl.removeAttribute('width');
+                    svgEl.removeAttribute('height');
+                    svgEl.style.maxWidth = 'none';
+                    svgEl.style.width = Math.max(1, Math.round(plan.svgWidthPx)) + 'px';
+                    svgEl.style.height = 'auto';
+                    if (plan.scroll) {
+                        // Over-wide past the min-font floor: keep it legible and let
+                        // the wrapper scroll rather than shrink the labels away.
+                        wrapper.style.justifyContent = 'flex-start';
+                    }
+                }
+            } catch (fitErr) {
+                console.warn('Graphviz viewport fit skipped:', fitErr);
+            }
 
             // Add wrapper to container
             container.appendChild(wrapper);
@@ -848,6 +1394,84 @@ function getDarkVersionOfColor(color: string): string {
         return `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
     } catch (e) {
         return '#2e3440'; // Default dark color if parsing fails
+    }
+}
+
+/**
+ * Deterministic dark-mode fill for an author-chosen light node fill (D-126).
+ * A PURE function of the input colour — identical author fills map to identical
+ * results, so a table's many same-coloured cells no longer become confetti and
+ * a warm fill is never swapped for an arbitrary palette blue. (Replaces the old
+ * positional `nodeColors[nodeIndex % 7]` cycling.)
+ */
+export function darkModeNodeFill(originalFill: string): string {
+    return getDarkVersionOfColor(originalFill);
+}
+
+/**
+ * Choose a label colour readable on `fillHex` (D-133). White text on a dark
+ * fill, black text on a light fill — decided by perceived brightness, so the
+ * choice tracks the ACTUAL fill rather than the raw isDarkMode flag.
+ */
+export function readableTextColorFor(fillHex: string): string {
+    return getBrightness(fillHex) < 0.5 ? '#ffffff' : '#000000';
+}
+
+/**
+ * Re-theme a node's own <text> children against a fill the plugin just changed
+ * (D-133). Without this, when the dark loop darkens an author light fill, the
+ * author's (or the injected default's) black label text is stranded invisibly
+ * on the now-dark fill. Applied uniformly to every darkened node so siblings
+ * sharing one default fontcolor are treated consistently.
+ */
+export function retintNodeLabelForFill(shapeEl: Element, fillHex: string): void {
+    const group = shapeEl.parentElement;
+    if (!group) return;
+    const desired = readableTextColorFor(fillHex);
+    const texts = group.getElementsByTagName('text');
+    for (let i = 0; i < texts.length; i++) {
+        texts[i].setAttribute('fill', desired);
+    }
+}
+
+/**
+ * Effective dark panel/page background the graphviz SVG composites over (the
+ * plugin sets bgcolor=transparent, so nodes sit directly on the ~#1e1e1e panel).
+ */
+export const GRAPHVIZ_DARK_PANEL_BG = '#1e1e1e';
+
+/**
+ * Whether a node-<text> fill is too dark to read on the dark panel and should be
+ * rescued (D-137). Missing fill (inherits black), the literal `black`, or a
+ * parseable dark hex/rgb colour qualify. Other named colours are assumed to be a
+ * deliberate, visible author choice and left alone.
+ */
+export function textNeedsDarkPanelRescue(cur: string | null): boolean {
+    if (!cur) return true;
+    const c = cur.trim().toLowerCase();
+    if (c === 'black') return true;
+    if (c.startsWith('#') || c.startsWith('rgb')) return getBrightness(cur) < 0.5;
+    return false;
+}
+
+/**
+ * Re-theme an UNFILLED node's <text> against the dark panel (D-137). The dark
+ * node loop only re-themes text when it darkens a fill; a fill="none" node is
+ * skipped, so an authored dark (e.g. #000000) fontcolor — or the graphviz
+ * node-text default — is stranded on the ~#1e1e1e panel at 1.26:1. Only text
+ * that is itself too dark to read on the panel is rescued to a readable colour
+ * (white, 16.67:1); already-light author text is left as-is so a deliberate
+ * readable choice is not clobbered. Dark-mode only (the caller gates on it).
+ */
+export function retintUnfilledNodeTextForDark(shapeEl: Element): void {
+    const group = shapeEl.parentElement;
+    if (!group) return;
+    const readable = readableTextColorFor(GRAPHVIZ_DARK_PANEL_BG); // '#ffffff'
+    const texts = group.getElementsByTagName('text');
+    for (let i = 0; i < texts.length; i++) {
+        if (textNeedsDarkPanelRescue(texts[i].getAttribute('fill'))) {
+            texts[i].setAttribute('fill', readable);
+        }
     }
 }
 
