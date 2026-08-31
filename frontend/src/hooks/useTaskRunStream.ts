@@ -13,12 +13,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { TaskRun } from '../types/task_run';
 import { getTaskRun } from '../services/taskRunApi';
+import { notifyRunStatusChanged } from './taskRunEvents';
 import {
   emptyLagStats, foldSample, formatLagStats, isLagProbeEnabled, LAG_LOG_EVERY,
 } from './streamLagProbe';
 
-// Must include 'partial' or the safety-net poll never stops and the WS
-// is never closed for a run that has already finished.
+// The run's FINAL word: nothing can supersede one of these for this run
+// object.  Governs the recency exemption in shouldAcceptFetchedRun and
+// nothing else.  Must include 'partial', or a run that finished partway is
+// treated as still supersedable by an older snapshot.
+//
+// Deliberately does NOT govern transport teardown — ``EXECUTOR_STOPPED``
+// below does, and is wider.  Conflating the two is what kept a held run's
+// socket and poll alive; see that list's docstring.
 const TERMINAL: ReadonlyArray<TaskRun['status']> =
   ['done', 'partial', 'failed', 'cancelled'];
 
@@ -34,6 +41,18 @@ const TERMINAL: ReadonlyArray<TaskRun['status']> =
  * Two lists rather than one because they answer different questions:
  * "should we stop polling / trust this snapshot?" vs "can anything
  * still be producing output?".
+ *
+ * TRANSPORT TEARDOWN READS THIS LIST.  Both the socket gate and the
+ * reconcile effect previously asked ``TERMINAL``, so a held run kept an
+ * open WebSocket and a 15 s REST poll for as long as its tile stayed
+ * mounted.  Nothing could ever arrive on either: the server writes 'held'
+ * only after execute_block has raised and the fan-out has been gathered,
+ * the relay endpoint never closes from its own side, and a resume mints a
+ * NEW run id rather than reviving this one.
+ *
+ * 'paused' is absent on purpose and must stay absent: it resumes IN PLACE
+ * (block_executor._wait_if_paused writes 'running' back onto the same
+ * record), so its stream is genuinely coming back.
  */
 const EXECUTOR_STOPPED: ReadonlyArray<TaskRun['status']> =
   ['done', 'partial', 'failed', 'cancelled', 'held'];
@@ -225,6 +244,14 @@ export function dispatchTaskRunEvent(
       // and close the WS — server will disconnect too.
       return { kind: 'refetch-and-close' };
     case 'block_started':
+      // A Repeat(for_each) persists its resolved roster size just
+      // before emitting this event, so a planned-carrying start IS a
+      // persisted-state change: refetch so the run map can show "0/m"
+      // before the first iteration completes.  A plain block_started
+      // still has nothing persisted to display.
+      return typeof (evt as { planned?: unknown }).planned === 'number'
+        ? { kind: 'refetch' }
+        : { kind: 'ignore' };
     case 'iteration_started':
     case 'whisper_received':
       // No new persisted state to display; swallow.
@@ -324,6 +351,10 @@ export function useTaskRunStream(
   // can never itself cause the re-render storm it exists to measure.
   // Inert unless localStorage['ziya.debug.taskRunLag'] === '1'.
   const lagRef = useRef(emptyLagStats());
+  // Last status this hook announced, per runId.  Scoped to the run so
+  // switching attempts cannot make the new run's first snapshot look like
+  // a transition out of the previous run's terminal status.
+  const announcedRef = useRef<{ runId?: string; status?: string }>({});
 
 
   const fetchOnce = useCallback(async () => {
@@ -344,6 +375,37 @@ export function useTaskRunStream(
   }, [projectId, runId]);
 
   const clearLive = useCallback(() => setLive(EMPTY_LIVE), []);
+
+  /**
+   * Publish the run's status to the rest of the app.
+   *
+   * The conversation list's gear reads ``TaskBinding.run_status``, which is
+   * fetched once per chat open; without this the row kept the status the
+   * run had at that moment — most damagingly a blue spinning "running"
+   * gear for a run that had since been held on an infrastructure fault,
+   * while the tile two pixels away showed the hold correctly from this
+   * very snapshot.
+   *
+   * The FIRST observation is announced too, not only transitions.  A hold
+   * can land within milliseconds of launch (the launch preflight mints a
+   * held run outright), so the bindings fetch triggered by the launch can
+   * read ``queued`` and the tile's first snapshot already be ``held`` —
+   * a transition-only signal never fires and the row stays wrong.  The
+   * cost of announcing mounts is bounded by the dedupe in taskRunEvents
+   * plus the consumer's coalescing, not by the number of tiles.
+   */
+  useEffect(() => {
+    if (!runId || !run || !run.status) return;
+    // Same stale-object guard the socket effect uses below: inside the
+    // commit that changes runId, ``run`` may still be the previous run.
+    if (run.id && run.id !== runId) return;
+    const prev = announcedRef.current;
+    announcedRef.current = { runId, status: run.status };
+    if (prev.runId === runId && prev.status === run.status) return;
+    notifyRunStatusChanged(
+      runId, run.status, prev.runId === runId ? prev.status : undefined,
+    );
+  }, [runId, run]);
 
   useEffect(() => {
     // Reset ``run`` to null on every runId change, BEFORE the fetch below
@@ -381,7 +443,18 @@ export function useTaskRunStream(
     // commit earlier, and it also spawned a transient socket that was
     // closed again microseconds later.
     if (run.id && run.id !== runId) return;
-    if (TERMINAL.includes(run.status)) return;
+    // EXECUTOR_STOPPED, not TERMINAL: a run already 'held' when first
+    // observed — reopening a chat that holds one, or the launch preflight
+    // minting one outright — has nothing left to stream and no
+    // ``run_completed`` still to come, since it ended before this client
+    // connected.  Gating on TERMINAL opened a socket and armed a 15 s poll
+    // for it, per mounted tile, for as long as the chat stayed open.
+    //
+    // This gate is evaluated on runId change only, never on a status
+    // transition (see the deps note at the end of this effect), so it
+    // covers the already-stopped case alone; a run that stops WHILE being
+    // watched is torn down by the reconcile effect below.
+    if (EXECUTOR_STOPPED.includes(run.status)) return;
 
     // Safety-net poll: the terminal run_completed WS event can be lost
     // (dropped relay frame, dead-but-open socket, backgrounded tab),
@@ -519,18 +592,29 @@ export function useTaskRunStream(
   // the tile stuck "running" forever.
   useEffect(() => {
     if (!run) return;
-    // Seal dangling 'running' buckets whenever the EXECUTOR has stopped,
-    // which is a wider condition than ``TERMINAL`` (it includes 'held').
-    // Done here, not only in the ``run_completed`` event branch, because
-    // this effect is the one place that observes the run ending however
-    // that was learned — WS event, safety-net poll, or the fetch after a
-    // socket drop.  Without it, the exact cases the poll exists to heal
+    // ONE condition — EXECUTOR_STOPPED — for both sealing and teardown.
+    // These were two blocks, sealing on EXECUTOR_STOPPED but tearing down
+    // on TERMINAL, which asserted two incompatible things about a held
+    // run: that nothing could still be executing (so seal the Live
+    // buckets) and that something might still arrive (so keep the socket
+    // and the 15 s poll).  The first is the correct one, so what the
+    // second bought was an idle socket and a poll re-reading a record
+    // only a human can change, every 15 s, per mounted tile.
+    //
+    // Done here rather than only in the ``run_completed`` event branch
+    // because this effect is the one place that observes the run ending
+    // however that was learned — WS event, safety-net poll, or the fetch
+    // after a socket drop.  Without it the cases the poll exists to heal
     // (lost terminal frame, dead-but-open socket) left the Live tab
-    // spinning on a run that had already finished.
+    // spinning on a finished run; and because that event branch closes
+    // the socket but never the poll, for a held run learned that way this
+    // is the only thing that stops the poll at all.
     if (EXECUTOR_STOPPED.includes(run.status)) {
       setLive(sealLiveForTerminal);
-    }
-    if (TERMINAL.includes(run.status)) {
+      // Load-bearing, not bookkeeping: ``ws.onclose`` schedules a
+      // reconnect unless this is set, so closing the socket below
+      // without it would trap a held run in a 1s→10s reconnect loop —
+      // strictly worse than the idle socket it replaces.
       terminalFetchedRef.current = true;
       if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
       // A reconnect may already be scheduled from a drop that happened
@@ -671,10 +755,29 @@ export function useTaskRunStream(
        // iteration owner's block_id (see app/agents/task_executor.py and
        // block_executor.py iteration-context plumbing) so this match
        // hits the correct bucket.
+       //
+       // When the event carries an ``index``, that pair is exact and is
+       // preferred: a PARALLEL Repeat has N buckets simultaneously
+       // 'running' under one block_id, and the last-running scan below
+       // resolves all N to the highest index — so every iteration's
+       // text landed in one bucket and the fan-out rendered as a single
+       // active block.  The exact match deliberately does NOT require
+       // 'running': a delta that arrives after its own iteration sealed
+       // still belongs to that iteration, not to a live sibling.
+       const evtIndex = typeof e.index === 'number' ? e.index : undefined;
        let target = -1;
-       for (let i = iterations.length - 1; i >= 0; i--) {
-         if (iterations[i].blockId === blockId && iterations[i].status === 'running') {
-           target = i; break;
+       if (evtIndex !== undefined) {
+         target = findIterIdx(
+           it => it.blockId === blockId && it.index === evtIndex,
+         );
+       }
+       if (target < 0) {
+         // No ordinal (a bare task, or a pre-fix run being replayed):
+         // fall back to the historical last-running scan.
+         for (let i = iterations.length - 1; i >= 0; i--) {
+           if (iterations[i].blockId === blockId && iterations[i].status === 'running') {
+             target = i; break;
+           }
          }
        }
        // Creation is gated; ROUTING into an existing bucket is not.

@@ -27,7 +27,7 @@ import type { TaskRun } from '../../types/task_run';
 import type { LiveTaskState } from '../../hooks/useTaskRunStream';
 import {
   flattenBlocks, resolveBlockStatus, isLoopBlock, buildDots,
-  blockEmoji, blockLabel,
+  blockEmoji, blockLabel, dotCountLabel,
 } from './runMapModel';
 import { deriveHoldChain, positionOf, holdLabel } from './holdChain';
 
@@ -109,7 +109,15 @@ export const TaskRunMap: React.FC<Props> = ({
         const status = resolveBlockStatus(block.id, live.blockStatuses, run);
         const state = run.block_states?.[block.id];
         const dots = isLoopBlock(block)
-          ? buildDots(state?.iteration_summaries, status === 'running')
+          ? buildDots(
+              state?.iteration_summaries, status === 'running',
+              // Live buckets are the only source that knows HOW MANY
+              // iterations are in flight; iteration_summaries records
+              // only completed ones.
+              live.iterations
+                .filter(it => it.blockId === block.id && it.status === 'running')
+                .map(it => it.index),
+            )
           : null;
         // The dots strip and the "running" chip both claim margin-left:
         // auto, so only one can hold the row's right edge.  The strip
@@ -213,10 +221,23 @@ export const TaskRunMap: React.FC<Props> = ({
                       />
                     );
                   })}
-                  {dots.running && (
-                    <span className="tc-map__dot tc-map__dot--running" />
-                  )}
-                  <span className="tc-map__dot-count">{dots.total}</span>
+                  {dots.runningIndices.length > 0
+                    ? dots.runningIndices.map(i => (
+                        <span
+                          key={`running-${i}`}
+                          className="tc-map__dot tc-map__dot--running"
+                          title={`#${i} running`}
+                        />
+                      ))
+                    : dots.running && (
+                        <span className="tc-map__dot tc-map__dot--running" />
+                      )}
+                  {/* "n/m" when the loop's roster size is known — a
+                      for_each Repeat persists it at plan time — else the
+                      bare completed count, as before. */}
+                  <span className="tc-map__dot-count">
+                    {dotCountLabel(dots.total, state?.planned_iterations)}
+                  </span>
                 </span>
               )}
               {status === 'running' && !showDots && (
@@ -240,17 +261,18 @@ export const TaskRunMap: React.FC<Props> = ({
                   disabled={!!resumingBlockId}
                   title={
                     resumingBlockId === block.id
-                      ? 'Starting a new run…'
-                      : 'Start a NEW run from this block, replaying the ' +
-                        'earlier blocks\u2019 recorded results instead of ' +
-                        're-running them. This run is kept as a record.'
+                      ? 'Re-running…'
+                      : 'Re-run this block and everything after it. This '
+                        + 'block EXECUTES AGAIN, so anything it wrote '
+                        + '(files, deck state) is produced from scratch. '
+                        + 'To keep its result, use "past here" instead.'
                   }
                   onClick={(e) => {
                     e.stopPropagation();   // row onClick focuses the block
                     onResumeFrom(block.id);
                   }}
                 >
-                  {resumingBlockId === block.id ? '…' : '↻ from here'}
+                  {resumingBlockId === block.id ? '…' : '↻ re-run from here'}
                 </button>
               )}
               {/* Continue past this block.  Offered alongside retry
@@ -264,10 +286,7 @@ export const TaskRunMap: React.FC<Props> = ({
                   className="tc-map__continue"
                   disabled={!!resumingBlockId}
                   title={
-                    'Start a NEW run that accepts this block\u2019s '
-                    + 'recorded result and continues from the NEXT block. '
-                    + 'Use after fixing the problem by hand. Earlier '
-                    + 'blocks replay from record; this run is kept.'
+                    'Continue from the next block. Use after fixing the problem by hand.'
                   }
                   onClick={(e) => {
                     e.stopPropagation();
