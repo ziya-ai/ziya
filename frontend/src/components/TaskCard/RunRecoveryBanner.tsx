@@ -33,6 +33,16 @@ interface Props {
   target: RecoveryTarget;
   /** Human label for the target block; falls back to its id. */
   targetLabel: string;
+  /**
+   * Iteration the resume is expected to restart at, when the target is a
+   * serial loop with banked iterations; null otherwise.
+   *
+   * A prediction of a server-side decision, so it is worded as where
+   * execution resumes rather than as a guarantee — see
+   * bankedIterationPrefix for the two cases where the server can land
+   * elsewhere.
+   */
+  resumeAtIteration?: number | null;
   /** Re-execute the target block. */
   onRetry: (blockId: string) => void;
   /** Accept the target's recorded outcome; start at the NEXT block. */
@@ -42,19 +52,25 @@ interface Props {
 }
 
 export const RunRecoveryBanner: React.FC<Props> = ({
-  run, target, targetLabel, onRetry, onContinue, busy,
+  run, target, targetLabel, resumeAtIteration, onRetry, onContinue, busy,
 }) => {
   const p = progressCounts(run);
+  // Iterations a mid-loop resume will replay.  Preferred over
+  // p.passedIterations for the loop clause because progressCounts
+  // deliberately EXCLUDES replayed records — a prior attempt's work must
+  // not be credited to this one — whereas a resume replays those too, so
+  // on a chained resume the progress figure under-states what is kept.
+  const keptIterations = resumeAtIteration ?? p.passedIterations;
   // Only claim preserved work when there is some.  A run that failed at
   // its first block has nothing to replay, and saying otherwise would
   // oversell what resuming buys.
-  const kept = p.completed > 0 || p.passedIterations > 0;
+  const kept = p.completed > 0 || keptIterations > 0;
   const keptParts: string[] = [];
   if (p.completed > 0) {
     keptParts.push(`${p.completed} completed stage${p.completed === 1 ? '' : 's'}`);
   }
-  if (p.passedIterations > 0) {
-    const n = p.passedIterations;
+  if (keptIterations > 0) {
+    const n = keptIterations;
     keptParts.push(`${n} passed loop iteration${n === 1 ? '' : 's'}`);
   }
 
@@ -110,7 +126,10 @@ export const RunRecoveryBanner: React.FC<Props> = ({
           <>
             <strong>{keptParts.join(' and ')}</strong> will be{' '}
             <strong>replayed from record</strong>, not re-run. Execution
-            resumes at <strong>{targetLabel}</strong>.
+            resumes at <strong>{targetLabel}</strong>
+            {resumeAtIteration != null && (
+              <>, at <strong>iteration #{resumeAtIteration}</strong></>
+            )}.
           </>
         ) : (
           <>
@@ -127,11 +146,17 @@ export const RunRecoveryBanner: React.FC<Props> = ({
           disabled={busy}
           onClick={() => onRetry(target.blockId)}
           title={
-            'Start a new run that replays the earlier stages\u2019 recorded '
-            + 'results, then re-runs this block.'
+            resumeAtIteration != null
+              ? 'Start a new run that replays the earlier stages\u2019 and '
+                + 'the loop\u2019s completed iterations from record, then '
+                + `continues the loop at #${resumeAtIteration}.`
+              : 'Start a new run that replays the earlier stages\u2019 '
+                + 'recorded results, then re-runs this block.'
           }
         >
-          {busy ? '…' : `↻ Retry ${targetLabel}`}
+          {busy ? '…' : (resumeAtIteration != null
+            ? `↻ Resume ${targetLabel} at #${resumeAtIteration}`
+            : `↻ Retry ${targetLabel}`)}
         </button>
         {onContinue && (
           <button
