@@ -146,7 +146,8 @@ from app.services.latex_profiles import PROFILES as _LATEX_PROFILES
 
 _VIZ_TYPES = (
     'graphviz', 'mermaid', 'vega-lite', 'd3', 'joint',
-    'packet', 'drawio', 'designinspector',
+    'packet', 'railroad', 'wavedrom', 'flamegraph', 'timeline',
+    'drawio', 'designinspector',
 ) + tuple(_LATEX_PROFILES)
 _VIZ_TYPES_RE = '|'.join(_VIZ_TYPES)
 
@@ -1590,37 +1591,13 @@ def _create_footer(
     format_type: str
 ) -> str:
     """Create footer with metadata and links."""
-    
-    # Default to public URLs
-    ziya_url = "https://github.com/ziya-ai/ziya"
-    repo_url = "https://github.com/ziya-ai/ziya"
-    
-    # Try to get URLs from active config provider (allows internal customization)
-    try:
-        from app.plugins import get_active_config_providers
-        from app.utils.logging_utils import logger
-        
-        config_providers = get_active_config_providers()
-        for provider in config_providers:
-            try:
-                provider_defaults = provider.get_defaults()
-                if 'urls' in provider_defaults:
-                    urls = provider_defaults['urls']
-                    if 'ziya_url' in urls:
-                        ziya_url = urls['ziya_url']
-                    if 'repo_url' in urls:
-                        repo_url = urls['repo_url']
-                    logger.debug(f"Using URLs from {provider.provider_id} config provider")
-                    break
-            except Exception as e:
-                logger.debug(f"Error getting URLs from provider: {e}")
-    except ImportError:
-        # Plugin system not available, use defaults
-        ziya_url = "https://github.com/ziya-ai/ziya"
-        repo_url = ziya_url
-    except Exception as e:
-        logger.debug(f"Could not get URLs from config providers: {e}")
-    
+    # The URL lookup lives in get_export_urls(): it used to run inline here
+    # with `for provider in config_providers:`, SHADOWING the `provider`
+    # PARAMETER with a config-provider object.  The HTML footer then rendered
+    # that object's repr, which the browser parsed as an unknown tag and
+    # displayed as nothing — the "Provider: is empty" defect.
+    ziya_url, _repo_url = get_export_urls()
+
     if format_type == 'html':
         return f'''
     <div class="footer">
@@ -1645,6 +1622,41 @@ def _create_footer(
 
 *This conversation was exported from Ziya — an AI client and orchestration harness for software engineering, system architecture, operations, and technical visualization. Ziya combines context-aware code intelligence with live system introspection, multi-model orchestration, and rich diagramming to support the full lifecycle from design through deployment.*
 """
+
+def get_export_urls():
+    """Resolve the ``(ziya_url, repo_url)`` pair used by export footers.
+
+    Defaults to the public GitHub URLs; an active enterprise config provider
+    may override them, so internal deployments show their internal link.
+    Shared by the HTML/markdown footers here and the PDF per-page footer
+    (app/services/pdf_exporter.py -> build_pdf_footer_template).
+    """
+    ziya_url = "https://github.com/ziya-ai/ziya"
+    repo_url = "https://github.com/ziya-ai/ziya"
+    try:
+        from app.plugins import get_active_config_providers
+        from app.utils.logging_utils import logger
+
+        for config_provider in get_active_config_providers():
+            try:
+                provider_defaults = config_provider.get_defaults()
+                if 'urls' in provider_defaults:
+                    urls = provider_defaults['urls']
+                    ziya_url = urls.get('ziya_url', ziya_url)
+                    repo_url = urls.get('repo_url', repo_url)
+                    logger.debug(
+                        f"Using URLs from {config_provider.provider_id} "
+                        f"config provider"
+                    )
+                    break
+            except Exception as e:
+                logger.debug(f"Error getting URLs from provider: {e}")
+    except ImportError:
+        pass  # Plugin system not available: keep the public defaults.
+    except Exception:
+        pass  # Never let URL lookup break an export.
+    return ziya_url, repo_url
+
 
 def _process_visualizations_for_markdown(content: str) -> str:
     """

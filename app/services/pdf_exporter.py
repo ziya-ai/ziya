@@ -307,6 +307,42 @@ _OUTLINE_SENTINEL_INJECT_JS = r"""
 };
 """
 
+# Document-mode variant: sentinels at each HEADING (h1-h4) inside the
+# rendered document, so the synthesized outline is the document's SECTION
+# TREE rather than a per-message list.  Returns [{index, label, token,
+# level}] where level is the heading depth (1-4).  Title-block and footer
+# headings are excluded.
+_DOC_OUTLINE_SENTINEL_INJECT_JS = r"""
+() => {
+  const root = document.getElementById('print-render-content')
+             || document.getElementById('print-render-root');
+  if (!root) return [];
+  const heads = Array.from(root.querySelectorAll('h1, h2, h3, h4'))
+    .filter(h => !h.closest('.print-footer') &&
+                 !h.closest('.print-doc-titleblock'));
+  const out = [];
+  heads.forEach((h, i) => {
+    const label = (h.textContent || '').trim().slice(0, 120);
+    const token = 'ZYAOUTLINEANCHOR' + i + 'X';
+    const span = document.createElement('span');
+    span.textContent = token;
+    span.setAttribute('data-zya-outline-anchor', String(i));
+    span.style.position = 'absolute';
+    span.style.left = '0';
+    span.style.top = '0';
+    span.style.fontSize = '2px';
+    span.style.color = 'rgba(255,255,255,0.004)';
+    span.style.pointerEvents = 'none';
+    span.style.userSelect = 'none';
+    if (getComputedStyle(h).position === 'static') h.style.position = 'relative';
+    h.insertBefore(span, h.firstChild);
+    out.push({ index: i, label, token,
+               level: parseInt(h.tagName.slice(1), 10) });
+  });
+  return out;
+};
+"""
+
 # Injected in the browser to strip the sentinels before the clean capture.
 _OUTLINE_SENTINEL_REMOVE_JS = r"""
 () => {
@@ -353,7 +389,13 @@ def _map_sentinels_to_pages(
         if page is None:
             continue
         mapped.append(
-            {"index": a.get("index"), "label": a.get("label") or "", "page": page}
+            {
+                "index": a.get("index"),
+                "label": a.get("label") or "",
+                "page": page,
+                # Heading depth (h1..h4) in document mode; None for messages.
+                "level": a.get("level"),
+            }
         )
     mapped.sort(key=lambda d: (d["page"], d["index"] if d["index"] is not None else 0))
     return mapped
@@ -376,17 +418,32 @@ def _synthesize_outline(clean_pdf: bytes, mapping: List[Dict[str, Any]]) -> byte
         writer = PdfWriter(clone_from=io.BytesIO(clean_pdf))
         n_pages = len(writer.pages)
         added = 0
+        # Heading-mode mappings carry a 1-based `level` (h1..h4); nest those
+        # bookmarks with a parent stack so the outline mirrors the section
+        # tree.  Message-mode items carry no level -> flat list (unchanged).
+        parent_stack: List[Tuple[int, Any]] = []
         for item in mapping:
             if added >= _OUTLINE_MAX_ITEMS:
                 break
             page = item.get("page")
             if page is None or page < 0 or page >= n_pages:
                 continue
-            label = item.get("label") or "Message"
+            label = item.get("label") or ""
             idx = item.get("index")
             num = (idx + 1) if isinstance(idx, int) else added + 1
-            title = f"{label} (message {num})" if label else f"Message {num}"
-            writer.add_outline_item(title, page)
+            level = item.get("level")
+            if isinstance(level, int):
+                # Document heading: the label IS the section title.
+                title = label or f"Section {num}"
+                while parent_stack and parent_stack[-1][0] >= level:
+                    parent_stack.pop()
+                parent = parent_stack[-1][1] if parent_stack else None
+                ref = writer.add_outline_item(title, page, parent=parent)
+                parent_stack.append((level, ref))
+            else:
+                mlabel = label or "Message"
+                title = f"{mlabel} (message {num})"
+                writer.add_outline_item(title, page)
             added += 1
         if added == 0:
             return clean_pdf
@@ -483,6 +540,149 @@ def _apply_document_metadata(pdf_bytes: bytes, metadata: Dict[str, str]) -> byte
         logger.warning("PDF metadata stamping failed; shipping default metadata",
                        exc_info=True)
         return pdf_bytes
+
+
+# ---------------------------------------------------------------------------
+# Per-page footer (Chromium ``page.pdf`` footer template)
+# ---------------------------------------------------------------------------
+#
+# The transcript used to APPEND the shared HTML footer block to the document
+# body, which cost a mostly-empty final page.  The PDF now draws a compact
+# two-line footer in the bottom margin of EVERY page instead: the Ziya mark
+# (an inlined PNG — footer templates cannot load external resources), the
+# one-line tagline, and a second line with the deployment URL (internal
+# deployments show their internal link via the same config-provider lookup
+# the other exports use), version, model and provider, plus live page
+# numbers.  The header template is explicitly blanked so Chromium's default
+# date/title header never appears.
+
+_PROVIDER_DISPLAY_NAMES = {
+    "bedrock": "Bedrock",
+    "google": "Google",
+    "openai": "OpenAI",
+    "anthropic": "Anthropic",
+    "zai": "z.ai",
+    "meta": "Meta",
+    "ollama": "Ollama",
+}
+
+# A non-empty header template is REQUIRED to suppress Chromium's default
+# date/title header once display_header_footer is enabled.
+_EMPTY_HEADER_TEMPLATE = "<span></span>"
+
+# Keep a section heading together with its FIRST following short block, so a
+# section start never sits stranded at the bottom of a page.
+#
+# WHY NOT CSS.  `break-after: avoid` (styles/print.css) only stops a heading
+# being orphaned with NOTHING after it; it is satisfied the moment ANY line
+# follows, so heading + one-sentence paragraph crammed at a page bottom passes
+# it.  CSS has no "keep with the next N blocks" primitive, so the binding must
+# be structural — wrap the pair in a `break-inside: avoid` unit, which Chromium
+# then moves WHOLE to the next page when it does not fit.
+#
+# WHY HERE AND NOT IN THE PAGE COMPONENT.  This re-parents React-owned nodes.
+# PrintRenderPage passes `streamingConversations={new Set()}` (a fresh identity
+# each render) into StreamingProvider, whose context memo depends on it, so
+# EVERY StreamingContext consumer — MarkdownRenderer included — re-renders on
+# any PrintRenderPage state change, `memo()` notwithstanding.  Running this
+# inside finalizeReadiness therefore mutated the DOM immediately before
+# setStatus('complete') forced a full reconcile against it, which can re-render
+# diagram subtrees at the instant the capture fires (observed as a diagram
+# landing in the PDF as its literal spec text).  Run from the driver instead,
+# after the render has settled and no further React state update occurs —
+# the same position the outline sentinels already occupy safely.
+_KEEP_WITH_NEXT_JS = r"""
+() => {
+  const MAX_PX = 160;
+  const root = document.getElementById('print-render-content')
+             || document.getElementById('print-render-root');
+  if (!root) return 0;
+  const heads = Array.from(root.querySelectorAll('h1, h2, h3, h4, h5, h6'));
+  let wrapped = 0;
+  for (const h of heads) {
+    if (h.closest('[data-print-keep-with-next]')) continue;
+    if (h.closest('.print-footer, .print-doc-titleblock')) continue;
+    const next = h.nextElementSibling;
+    if (!next) continue;
+    if (!['P', 'UL', 'OL', 'BLOCKQUOTE'].includes(next.tagName)) continue;
+    const rect = next.getBoundingClientRect();
+    if (rect.height <= 0 || rect.height > MAX_PX) continue;
+    const parent = h.parentElement;
+    if (!parent) continue;
+    const wrap = document.createElement('div');
+    wrap.setAttribute('data-print-keep-with-next', 'true');
+    wrap.style.setProperty('break-inside', 'avoid');
+    wrap.style.setProperty('page-break-inside', 'avoid');
+    parent.insertBefore(wrap, h);
+    wrap.appendChild(h);
+    wrap.appendChild(next);
+    wrapped++;
+  }
+  return wrapped;
+};
+"""
+
+_FOOTER_TAGLINE = (
+    "Exported from Ziya — an AI client and orchestration harness for "
+    "engineering, analysis, and technical visualization"
+)
+
+
+def _provider_display_name(endpoint: Optional[str]) -> str:
+    """Human-facing provider name for an endpoint id ('bedrock' → 'Bedrock')."""
+    ep = (endpoint or "").strip()
+    if not ep or ep.lower() in ("unknown", "test-provider"):
+        return ""
+    return _PROVIDER_DISPLAY_NAMES.get(ep.lower(), ep.capitalize())
+
+
+def build_pdf_footer_template(
+    *, version: str = "", model: str = "", provider: str = "",
+) -> str:
+    """Assemble the Chromium ``footer_template`` drawn on every page.
+
+    Layout: the Ziya logo spans both text lines on the left; line 1 is the
+    tagline, line 2 is ``url · vVERSION · model (Provider)``; live page
+    numbers sit on the right (``pageNumber``/``totalPages`` spans).  All
+    dynamic text is HTML-escaped; the logo is an inlined data-URI PNG (see
+    app/utils/export_logo.py for why a raster rather than the SVG).  The
+    template must carry its own font-size — Chromium renders footer
+    templates at font-size 0 by default.
+    """
+    import html as _html
+
+    from app.utils.conversation_exporter import get_export_urls
+    from app.utils.export_logo import get_logo_data_uri
+
+    ziya_url, _repo_url = get_export_urls()
+    display_url = ziya_url.split("://", 1)[-1].rstrip("/")
+
+    parts = [display_url]
+    if (version or "").strip():
+        parts.append(f"v{version.strip()}")
+    model_s = (model or "").strip()
+    if model_s and model_s.lower() not in ("unknown", "test-model"):
+        prov = _provider_display_name(provider)
+        parts.append(f"{model_s} ({prov})" if prov else model_s)
+    meta_line = " · ".join(_html.escape(p) for p in parts)
+
+    return (
+        '<div style="width:100%;font-size:6.5px;'
+        "font-family:-apple-system,'Segoe UI',Helvetica,Arial,sans-serif;"
+        'color:#8a919c;padding:0 10mm;box-sizing:border-box;">'
+        '<div style="border-top:0.5px solid #d9dce1;padding-top:3px;'
+        'display:flex;align-items:center;">'
+        f'<img src="{get_logo_data_uri()}" '
+        'style="height:17px;width:auto;margin-right:7px;"/>'
+        '<div style="flex:1;min-width:0;line-height:1.55;">'
+        f'<div>{_html.escape(_FOOTER_TAGLINE)}</div>'
+        f'<div style="color:#a8aeb8;">{meta_line}</div>'
+        "</div>"
+        '<div style="flex:none;margin-left:10px;">'
+        'Page <span class="pageNumber"></span> of '
+        '<span class="totalPages"></span>'
+        "</div></div></div>"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -746,6 +946,8 @@ class ConversationRenderSession:
         margin: Optional[Dict[str, str]] = None,
         outline: bool = True,
         metadata: Optional[Dict[str, str]] = None,
+        outline_mode: str = "messages",
+        footer_template: Optional[str] = None,
     ) -> bytes:
         """Render the conversation and return PDF bytes.
 
@@ -764,6 +966,10 @@ class ConversationRenderSession:
         the conversation title as /Title (never the app-shell <title>), plus
         /Author /Subject /Creator.  ``metadata`` overrides the fields derived
         from the payload; pass an explicit ``{}`` to skip the metadata pass.
+
+        ``outline_mode`` selects the sentinel targets: ``"messages"`` (default,
+        one bookmark per conversation message) or ``"headings"`` (document mode
+        — a nested bookmark tree mirroring the h1-h4 section structure).
         """
         async with self._lock:
             await self._ensure_browser()
@@ -790,22 +996,50 @@ class ConversationRenderSession:
                 "top": "12mm", "bottom": "16mm", "left": "10mm", "right": "10mm",
             }
 
-            async def _capture() -> bytes:
-                return await page.pdf(
-                    format="A4",
-                    print_background=True,
-                    margin=pdf_margin,
-                    prefer_css_page_size=False,
+            # Bind headings to their short following block BEFORE any capture,
+            # so the probe and clean outline passes share one pagination.
+            # Best-effort: a failure here costs the pagination nicety, never
+            # the export.
+            try:
+                await page.evaluate(_KEEP_WITH_NEXT_JS)
+            except Exception:  # pragma: no cover - defensive
+                logger.warning("keep-with-next pass failed; shipping unbound "
+                               "headings", exc_info=True)
+
+            # Per-page footer: drawn by Chromium in the bottom margin (see
+            # build_pdf_footer_template).  The header template is blanked so
+            # the default date/title header cannot appear.  The SAME kwargs
+            # feed the probe and clean outline passes below, so pagination is
+            # identical across passes.
+            pdf_kwargs: Dict[str, Any] = {
+                "format": "A4",
+                "print_background": True,
+                "margin": pdf_margin,
+                "prefer_css_page_size": False,
+            }
+            if footer_template:
+                pdf_kwargs.update(
+                    display_header_footer=True,
+                    header_template=_EMPTY_HEADER_TEMPLATE,
+                    footer_template=footer_template,
                 )
+
+            async def _capture() -> bytes:
+                return await page.pdf(**pdf_kwargs)
 
             if not outline:
                 return _apply_document_metadata(await _capture(), doc_metadata)
 
             # QUAL-01: two-pass outline synthesis.  Failures degrade to a plain
             # single-pass capture rather than losing the export.
+            inject_js = (
+                _DOC_OUTLINE_SENTINEL_INJECT_JS
+                if outline_mode == "headings"
+                else _OUTLINE_SENTINEL_INJECT_JS
+            )
             anchors: List[Dict[str, Any]] = []
             try:
-                anchors = await page.evaluate(_OUTLINE_SENTINEL_INJECT_JS)
+                anchors = await page.evaluate(inject_js)
             except Exception:  # pragma: no cover - defensive
                 logger.warning("outline sentinel injection failed", exc_info=True)
                 anchors = []
@@ -994,15 +1228,20 @@ async def export_conversation_pdf(
 
     opts = normalize_render_options(options)
 
-    footer_html = None
+    # includeFooter now selects the PER-PAGE footer (logo + tagline +
+    # url/version/model + live page numbers, drawn in the bottom margin of
+    # every page — see build_pdf_footer_template) instead of appending the
+    # HTML footer block to the document body, which cost a mostly-empty
+    # final page.  No footerHtml enters the /print payload on the PDF path
+    # (the HTML export keeps its end-of-document footer).
+    footer_template = None
     if opts.get("includeFooter"):
-        # Reuse the shared footer logic so PDF header/footer matches the other
-        # exports (version/model/provider plumbing).
-        from app.utils.conversation_exporter import _create_footer
-        footer_html = _create_footer("public", version, model, provider, "html")
+        footer_template = build_pdf_footer_template(
+            version=version, model=model, provider=provider,
+        )
 
     payload = build_print_payload(
-        messages, options=opts, footer_html=footer_html, title=title,
+        messages, options=opts, footer_html=None, title=title,
     )
 
     # QUAL-02: derive conversation-specific document metadata from the values
@@ -1015,6 +1254,7 @@ async def export_conversation_pdf(
     session = await get_render_session(server_port)
     pdf_bytes = await session.capture_pdf(
         payload, timeout_ms=timeout_ms, metadata=doc_metadata,
+        footer_template=footer_template,
     )
 
     meta = {
@@ -1024,3 +1264,117 @@ async def export_conversation_pdf(
         "conversation_id": conversation_id,
     }
     return pdf_bytes, meta
+
+
+# ---------------------------------------------------------------------------
+# Document export (authored IR → PDF) — see app/utils/document_ir.py
+# ---------------------------------------------------------------------------
+
+def build_document_print_payload(
+    meta: Dict[str, Any],
+    sections: List[str],
+    *,
+    footer_html: Optional[str] = None,
+    title: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Assemble the /print payload for an authored DOCUMENT render.
+
+    Unlike :func:`build_print_payload` (conversation transcript), the document
+    payload carries ``kind: "document"`` plus the pagebreak-split ``sections``
+    and the front-matter presentation knobs (``author``, ``layout``).  The
+    /print page renders each section on its own page with NO message chrome.
+    """
+    payload: Dict[str, Any] = {
+        "kind": "document",
+        "title": title or meta.get("title") or "Ziya Document",
+        "author": meta.get("author"),
+        "layout": meta.get("layout") or "plain",
+        "sections": sections,
+        "options": {"includeFooter": bool(footer_html)},
+    }
+    if footer_html:
+        payload["footerHtml"] = footer_html
+    return payload
+
+
+async def export_document_pdf(
+    *,
+    markdown: Optional[str] = None,
+    name: Optional[str] = None,
+    title: Optional[str] = None,
+    version: str = "0.3.8",
+    model: str = "unknown",
+    provider: str = "unknown",
+    include_footer: bool = False,
+    server_port: int = 6969,
+    timeout_ms: int = 60_000,
+) -> Tuple[bytes, Dict[str, Any]]:
+    """Render an authored IR document to PDF via the headless /print route.
+
+    The source is either inline ``markdown`` (front-matter + body) or ``name``,
+    a store-relative file under ``<project>/.ziya/documents/``.  Front-matter
+    drives the render: title/author/layout feed the title block and the PDF
+    Info dict (a front-matter ``author`` overrides the model/provider default),
+    ``page.margin`` feeds ``page.pdf()``, and ``<!-- ziya:pagebreak -->``
+    directives split the body into per-page sections.  The PDF outline is the
+    document's HEADING tree (``outline_mode="headings"``), not a message list.
+
+    ``include_footer`` defaults to False: a work product should not carry the
+    transcript's "exported from Ziya" footer unless explicitly requested.
+
+    Raises ImportError (Playwright absent), FileNotFoundError / ValueError
+    (bad ``name``), mirroring export_conversation_pdf's error surface.
+    """
+    from app.utils.document_ir import parse_document, split_sections, load_document
+
+    if markdown is None:
+        if not name:
+            raise ValueError(
+                "export_document_pdf requires either markdown or name"
+            )
+        doc = load_document(name)
+        meta, body = doc["meta"], doc["body"]
+    else:
+        meta, body = parse_document(markdown)
+
+    sections = split_sections(body)
+    doc_title = title or meta.get("title") or (name or "Ziya Document")
+
+    # Per-page footer (same treatment as the conversation export): drawn in
+    # the bottom margin of every page rather than appended to the body.
+    footer_template = None
+    if include_footer:
+        footer_template = build_pdf_footer_template(
+            version=version, model=model, provider=provider,
+        )
+
+    payload = build_document_print_payload(
+        meta, sections, footer_html=None, title=doc_title,
+    )
+
+    doc_metadata = _build_document_metadata(
+        title=doc_title, model=model, provider=provider,
+    )
+    if meta.get("author"):
+        # The document names its own author; model/provider is a fallback only.
+        doc_metadata["/Author"] = meta["author"]
+
+    margin = (meta.get("page") or {}).get("margin")
+
+    session = await get_render_session(server_port)
+    pdf_bytes = await session.capture_pdf(
+        payload,
+        timeout_ms=timeout_ms,
+        margin=margin,
+        metadata=doc_metadata,
+        outline_mode="headings",
+        footer_template=footer_template,
+    )
+
+    out_meta = {
+        "section_count": len(sections),
+        "size": len(pdf_bytes),
+        "title": doc_title,
+        "name": name,
+    }
+    return pdf_bytes, out_meta

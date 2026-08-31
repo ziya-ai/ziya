@@ -201,3 +201,50 @@ body.ziya-print-mode pre code {
   overflow-wrap: anywhere !important;
   word-break: break-word !important;
 }
+
+/* ── Typography refinement for exported artifacts ────────────────────────── */
+/*
+ * The export should read like a curated artifact, not a screen dump: enable
+ * real kerning and contextual ligatures, pick a deliberate face stack with
+ * metric fallbacks for fontless Linux servers, and use the newer text-wrap
+ * primitives — `balance` keeps multi-line headings from ragging, `pretty`
+ * avoids single-word last lines in paragraphs.  Scoped to the export DOM
+ * only (body.ziya-print-mode); the live app is untouched.  Engines lacking
+ * text-wrap simply ignore it (inert degradation).
+ */
+body.ziya-print-mode #print-render-content {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+               'Helvetica Neue', 'Liberation Sans', Arial, sans-serif;
+  font-size: 10.5pt;
+  line-height: 1.55;
+  text-rendering: optimizeLegibility;
+  font-kerning: normal;
+  font-variant-ligatures: common-ligatures contextual;
+  -webkit-font-smoothing: antialiased;
+}
+
+body.ziya-print-mode #print-render-content p {
+  text-wrap: pretty;
+}
+
+body.ziya-print-mode #print-render-content h1,
+body.ziya-print-mode #print-render-content h2,
+body.ziya-print-mode #print-render-content h3,
+body.ziya-print-mode #print-render-content h4 {
+  text-wrap: balance;
+  letter-spacing: -0.012em;
+}
+
+/* Code must NOT ligate (`=>`/`->` stay literal) and gets a metric-stable
+   mono stack. */
+body.ziya-print-mode #print-render-content pre,
+body.ziya-print-mode #print-render-content code {
+  font-variant-ligatures: none;
+  font-family: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas,
+               'Liberation Mono', monospace;
+}
+
+/* Lining tabular figures so numeric table columns align digit-for-digit. */
+body.ziya-print-mode #print-render-content table {
+  font-variant-numeric: lining-nums tabular-nums;
+}
