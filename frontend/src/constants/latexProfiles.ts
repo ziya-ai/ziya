@@ -23,6 +23,15 @@ export const LATEX_LANG_TO_PROFILE: Readonly<Record<string, string>> = {
   'latex-circuit': 'circuitikz',
   'chemfig': 'chemfig',
   'tikz-cd': 'tikz-cd',
+  'pgfplots': 'pgfplots',
+  // Labelled trees and proof trees.  Aliases exist because the fence a model
+  // reaches for is the notation's common name rather than the package's:
+  // 'syntax-tree' and 'proof-tree' are what actually get typed.
+  'forest': 'forest',
+  'syntax-tree': 'forest',
+  'bussproofs': 'bussproofs',
+  'prooftree': 'bussproofs',
+  'proof-tree': 'bussproofs',
 } as const;
 
 /**

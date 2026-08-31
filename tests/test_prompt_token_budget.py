@@ -101,9 +101,16 @@ def test_visualization_block_within_budget():
     Budget is deliberately close to the current size so that adding a new
     worked example forces an explicit decision (raise the budget, or move the
     detail into a skill) instead of silently taxing every request.
+
+    Re-baselined from 1250 to 1550 tokens: the visual-first rewrite, the
+    renderer-catalog bullets (pgfplots/forest/bussproofs/railroad/wavedrom/
+    flamegraph discoverability hooks), and the fence-integrity rule are all
+    deliberate always-on content, while the worked examples (html-mockup
+    login form, drawio XML) and duplicated prose were removed.  The budget
+    sits ~60 tokens above the trimmed block, still snug by design.
     """
     block = _viz_block()
-    budget_tokens = 1250
+    budget_tokens = 1550
     assert len(block) <= budget_tokens * CHARS_PER_TOKEN, (
         f"always-on visualization block is ~{len(block) // CHARS_PER_TOKEN} "
         f"tokens, over the {budget_tokens}-token budget. Move format details "
@@ -152,3 +159,28 @@ def test_fence_hints_retained(fence, label):
     """
     block = _viz_block()
     assert fence in block, f"{label} fence hint removed from always-on prompt"
+
+
+def test_fence_integrity_constraint_present():
+    """The universal no-embedded-fence rule must stay in the always-on block.
+
+    A literal triple-backtick inside any diagram fence terminates the fence
+    at the MARKDOWN layer, before any renderer sees the body -- the model
+    cannot infer this from renderer syntax alone, and the failure is silent
+    (a truncated fragment that produces a confusing engine-specific error).
+    The constraint is deliberately renderer-agnostic: the rule plus the
+    describe-in-words fallback is all that is needed for correctness, and
+    per-renderer escape details (e.g. mermaid's #96;) were judged not worth
+    their always-on token cost.
+    """
+    block = _viz_block()
+    assert "FENCE INTEGRITY" in block, (
+        "the universal fence-integrity constraint was dropped from the "
+        "always-on visualization block; embedded triple-backticks inside "
+        "diagram fences will silently truncate diagrams again"
+    )
+    assert "describe it in words" in block, (
+        "the fence-depiction fallback guidance was dropped; without it the "
+        "constraint forbids embedded fences but leaves the model no "
+        "sanctioned way to reference one in a diagram label"
+    )
