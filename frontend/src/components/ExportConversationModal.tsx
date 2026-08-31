@@ -15,6 +15,7 @@ import { captureAllVisualizations } from '../utils/visualizationCapture';
 import { exportConversationAsPdf } from '../utils/pdfExport';
 import { useProject } from '../context/ProjectContext';
 import { hydrateConversationMessages } from '../utils/conversationHydration';
+import { useResolvedModelPin } from '../hooks/useResolvedModelPin';
 import type { Message } from '../utils/types';
 
 const { Text, Paragraph } = Typography;
@@ -66,6 +67,9 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
     ]);
     const { currentConversationId: activeConversationId, currentMessages: activeMessages } = useActiveChat();
     const { currentProject } = useProject();
+    // Conversation-pinned model (conversation → folder → project) so the PDF
+    // footer names the model that actually answered, not the server default.
+    const { resolveFor } = useResolvedModelPin();
     // When an explicit target conversation is supplied and it is NOT the
     // active chat, export that conversation's messages (loaded from IDB)
     // rather than the active chat's.  Downstream code keeps using
@@ -199,6 +203,8 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
                     project_id: currentProject?.id,
                     messages: currentMessages,
                     title: 'Ziya Session Transcript',
+                    // Pinned model, so the export footer/metadata name it.
+                    model: resolveFor(currentConversationId)?.model,
                     roundLimit,
                     includeHuman,
                     includeCollapsed,
