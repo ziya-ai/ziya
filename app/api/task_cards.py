@@ -10,6 +10,7 @@ import asyncio
 import os
 import time
 from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
 from typing import List
 
 from ..models.task_card import (
@@ -51,6 +52,30 @@ async def list_task_cards(
 ):
     """List all task cards in a project, optionally templates only."""
     return _get_storage(project_id).list(templates_only=templates_only)
+
+
+@router.get("/lessons-summary")
+async def get_lessons_summary(project_id: str):
+    """Per-card self-improvement aggregates for the whole deck in one
+    request: {card_id: {count, edits_applied, last_ts}}.
+
+    Drives the deck list's 🌱 badge without an N-request burst (the
+    same shape the deck already uses for run status).  One ledger
+    read regardless of card count.
+
+    MUST be declared before ``get_task_card`` below: FastAPI matches
+    routes in declaration order, so with ``/{card_id}`` first this
+    literal path would be captured as a card id and 404.  The test
+    ``test_summary_route_not_shadowed_by_card_id`` exists to fail if
+    this route is ever moved below it.
+    """
+    # Validates the project exists (404 otherwise) — same gate every
+    # other endpoint gets via _get_storage.
+    _get_storage(project_id)
+    from ..utils.self_improve import LessonLedger
+    return {
+        "cards": LessonLedger(get_project_dir(project_id)).summary_by_card(),
+    }
 
 
 @router.get("/{card_id}", response_model=TaskCard)
@@ -281,11 +306,24 @@ async def get_card_scope_status(project_id: str, card_id: str):
     except Exception as e:  # noqa: BLE001 — staging is best-effort; never 500 the editor
         logger.warning(f"Could not stage task scopes for signing: {e}")
 
+    # One invocation that signs every unapproved block in this card. Offered
+    # only when it actually saves work (>1 unsigned block): a card with three
+    # escalating blocks otherwise makes the UI present three near-identical
+    # sudo lines, which is the wall of text users skip rather than read.
+    # Minted here rather than assembled in the frontend so the CLI's flag
+    # vocabulary lives in one place — a client-built string rots silently.
+    _unsigned = [b for b in blocks if not b["authorized"]]
+    sign_all_command = (
+        f"sudo ziya-approve --task {card_id} --project {project_id} --all"
+        if len(_unsigned) > 1 else ""
+    )
+
     return {
         "cardId": card_id,
         "preview": False,
         "anyUnapproved": any(not b["authorized"] for b in blocks),
         "anyNeedsSignature": any(b["needsSignature"] for b in blocks),
+        "signAllCommand": sign_all_command,
         "blocks": blocks,
     }
 
@@ -325,6 +363,9 @@ async def preview_card_scope(project_id: str, body: TaskCardCreate):
         "preview": True,
         "anyUnapproved": any(not b["authorized"] for b in blocks),
         "anyNeedsSignature": any(b["needsSignature"] for b in blocks),
+        # No persisted block ids exist, so no approval is mintable — same
+        # reason each row's signCommand is "".
+        "signAllCommand": "",
         "blocks": blocks,
     }
 
@@ -357,6 +398,85 @@ async def duplicate_task_card(
     if not card:
         raise HTTPException(status_code=404, detail="Task card not found")
     return card
+
+
+@router.get("/{card_id}/lessons")
+async def get_card_lessons(
+    project_id: str, card_id: str,
+    limit: int = Query(200, ge=1, le=2000),
+):
+    """The card's self-improvement history: every judge verdict and
+    every applied text revision, newest first.
+
+    Read from the project's lesson ledger (app.utils.self_improve.
+    LessonLedger) — the durable record; ``improve_revision`` WS events
+    are transient and expire with the relay's replay buffer.  The card
+    must exist (404 otherwise) so a deleted card's residual ledger
+    entries don't render as a ghost history.
+    """
+    if not _get_storage(project_id).get(card_id):
+        raise HTTPException(status_code=404, detail="Task card not found")
+    from ..utils.self_improve import LessonLedger
+    records = LessonLedger(get_project_dir(project_id)).for_card(
+        card_id, limit=limit)
+    return {
+        "card_id": card_id,
+        "count": len(records),
+        "edits_applied": sum(1 for r in records if r.get("applied")),
+        # Newest first for display; the ledger stores oldest-first.
+        "lessons": list(reversed(records)),
+    }
+
+
+class LessonRevertRequest(BaseModel):
+    """Identifies the applied revision to revert by content hash.
+
+    ``patch_hash`` (not a ledger index) because the ledger is capped
+    and oldest-dropped — an index is not stable across appends, and a
+    hash also cannot revert a DIFFERENT record than the one the user
+    was shown.  ``block_id`` disambiguates the same text applied at
+    two blocks.
+    """
+    patch_hash: str
+    block_id: str
+
+
+@router.post("/{card_id}/lessons/revert")
+async def revert_card_lesson(
+    project_id: str, card_id: str, body: LessonRevertRequest,
+):
+    """Write an applied revision's pre-image back onto the live card.
+
+    The pre-image is a text patch like any other, so it flows through
+    the same guarded path the improvement itself used
+    (persist_patch_to_card): field whitelist, existing-id keying,
+    structure fingerprint.  Privilege and signed approvals are
+    untouched by construction.
+    """
+    if not _get_storage(project_id).get(card_id):
+        raise HTTPException(status_code=404, detail="Task card not found")
+    from ..utils.self_improve import LessonLedger, revert_lesson_patch
+    records = LessonLedger(get_project_dir(project_id)).for_card(
+        card_id, limit=2000)
+    # Newest matching record wins — the same patch_hash can only recur
+    # across blocks (the oscillation guard blocks a same-block repeat).
+    match = next(
+        (r for r in reversed(records)
+         if r.get("patch_hash") == body.patch_hash
+         and r.get("block_id") == body.block_id and r.get("applied")),
+        None,
+    )
+    if not match:
+        raise HTTPException(
+            status_code=404, detail="No applied revision with that hash")
+    if not match.get("pre_image"):
+        raise HTTPException(
+            status_code=409, detail=(
+                "Revision predates pre-image capture and cannot be "
+                "auto-reverted; edit the card text directly."))
+    reverted = revert_lesson_patch(project_id, card_id, match)
+    return {"success": reverted, "card_id": card_id,
+            "block_id": body.block_id}
 
 
 def _seed_block_states(run_storage: TaskRunStorage, run_id: str, block: Block) -> None:
