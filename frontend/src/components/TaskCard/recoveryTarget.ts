@@ -15,7 +15,12 @@
  * re-running from earlier than the failure).
  */
 
-import type { TaskRun } from '../../types/task_run';
+import type { IterationSummary, TaskRun } from '../../types/task_run';
+import type { Block } from '../../types/task_card';
+// Reused rather than reimplemented: the loop-type list must stay in step
+// with the containers that push a binding frame, and a second copy of it
+// here would drift silently.  No cycle — runMapModel imports only types.
+import { isLoopBlock } from './runMapModel';
 import { firstFailedBlock } from './partialOutcome';
 
 export interface RecoveryTarget {
@@ -64,4 +69,69 @@ export function recoveryTarget(
     };
   }
   return null;
+}
+
+/**
+ * Iteration a mid-loop resume of ``block`` is expected to restart at, or
+ * null when there is no ordinal to name.
+ *
+ * Exists because RecoveryTarget carries a block id, and a loop is one
+ * block: the banner could only say "resumes at <loop>", which describes a
+ * resume preserving 22 iterations identically to one discarding them.
+ * That ambiguity is what let the discard go unnoticed.
+ *
+ * A PREDICTION of a server-side decision — ``serial_replay_prefix`` in
+ * app/utils/resume_targets.py — and deliberately mirrors its rule rather
+ * than approximating it:
+ *
+ *   - a contiguous PREFIX from 0, not a set of banked indices: a serial
+ *     loop's ``{{previous}}`` binds the immediate predecessor, so a gap
+ *     cannot be skipped past;
+ *   - the walk stops at the first index that is not a RETAINED PASS, for
+ *     two distinct reasons — a failed iteration is the work being redone,
+ *     and a pass past the 50-artifact retention cap would replay as an
+ *     empty ``{{previous}}``;
+ *   - ``replayed`` records COUNT, unlike in progressCounts: that
+ *     exclusion is about not crediting this attempt with a prior one's
+ *     work, whereas here the question is what can be replayed again.
+ *
+ * Two divergences are known, and are why the banner words this as where
+ * execution resumes rather than as a promise:
+ *
+ *   1. The server also consults ``resume_iteration_artifacts``, which is
+ *      not on the wire, so a chained resume can land LATER than predicted
+ *      (the banner under-states — the safe direction).
+ *   2. The server truncates at the first artifact missing from disk, so a
+ *      record/disk disagreement can land EARLIER.
+ *
+ * Null rather than 0 in every inapplicable case, so a caller cannot
+ * render "resumes at #0" and dress a from-scratch loop re-run as a
+ * mid-loop resume.  A parallel loop is inapplicable by design: the server
+ * resumes it by index set, and its iterations receive no ``previous``, so
+ * an ordinal would assert an ordering that does not exist.
+ */
+export function bankedIterationPrefix(
+  run: TaskRun | null | undefined,
+  block: Block | null | undefined,
+): number | null {
+  if (!run || !block) return null;
+  if (!isLoopBlock(block) || block.repeat_parallel) return null;
+  const summaries = run.block_states?.[block.id]?.iteration_summaries;
+  if (!summaries?.length) return null;
+  // Keyed by the index FIELD, never by array position: summaries are
+  // appended as iterations seal, which under a resume is not index order.
+  const byIndex = new Map<number, IterationSummary>();
+  for (const s of summaries) {
+    if (Number.isInteger(s.index) && s.index >= 0) byIndex.set(s.index, s);
+  }
+  let start = 0;
+  for (;;) {
+    const s = byIndex.get(start);
+    // has_artifact absent means "retained", matching the server's
+    // default — records written before the field existed would otherwise
+    // predict a prefix of 0 and lose the label entirely.
+    if (!s || s.status !== 'passed' || s.has_artifact === false) break;
+    start += 1;
+  }
+  return start > 0 ? start : null;
 }
