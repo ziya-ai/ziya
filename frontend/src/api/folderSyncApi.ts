@@ -7,6 +7,14 @@
  */
 
 import { ConversationFolder } from '../utils/types';
+import {
+  timedFetchJson,
+  timedFetchOk,
+  SyncHttpError,
+  LIST_TIMEOUT_MS,
+  BULK_TIMEOUT_MS,
+  MUTATE_TIMEOUT_MS,
+} from './timedFetch';
 
 const BASE = '/api/v1/projects';
 
@@ -19,14 +27,23 @@ function projectHeaders(): Record<string, string> {
  * Fetch all groups/folders from server for a project.
  */
 export async function listServerFolders(projectId: string): Promise<ConversationFolder[]> {
-  const res = await fetch(`${BASE}/${projectId}/chat-groups`, {
-    headers: projectHeaders(),
-  });
-  if (!res.ok) {
-    console.warn('Failed to list folders from server:', res.status);
-    return [];
+  // Awaited inside syncWithServer, so an unbounded hang here wedges the
+  // whole sync cycle exactly as a hung listChats does.
+  let groups: any[];
+  try {
+    groups = await timedFetchJson<any[]>(
+      `${BASE}/${projectId}/chat-groups`,
+      { headers: projectHeaders() },
+      LIST_TIMEOUT_MS,
+      'listServerFolders',
+    );
+  } catch (e) {
+    if (e instanceof SyncHttpError) {
+      console.warn('Failed to list folders from server:', e.status);
+      return [];
+    }
+    throw e;
   }
-  const groups = await res.json();
 
   // Map server ChatGroup shape → frontend ConversationFolder shape
   return groups.map((g: any) => ({
@@ -52,26 +69,36 @@ export async function bulkSyncFolders(
   projectId: string,
   folders: ConversationFolder[]
 ): Promise<{ created: number; updated: number; skipped: number; errors: any[] }> {
-  const res = await fetch(`${BASE}/${projectId}/chat-groups/bulk-sync`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...projectHeaders() },
-    body: JSON.stringify({ groups: folders }),
-  });
-  if (!res.ok) {
-    console.warn('Folder bulk sync failed:', res.status);
-    return { created: 0, updated: 0, skipped: 0, errors: [{ id: 'bulk', error: `HTTP ${res.status}` }] };
+  try {
+    return await timedFetchJson<{ created: number; updated: number; skipped: number; errors: any[] }>(
+      `${BASE}/${projectId}/chat-groups/bulk-sync`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...projectHeaders() },
+        body: JSON.stringify({ groups: folders }),
+      },
+      BULK_TIMEOUT_MS,
+      'bulkSyncFolders',
+    );
+  } catch (e) {
+    if (e instanceof SyncHttpError) {
+      console.warn('Folder bulk sync failed:', e.status);
+      return { created: 0, updated: 0, skipped: 0, errors: [{ id: 'bulk', error: `HTTP ${e.status}` }] };
+    }
+    throw e;
   }
-  return res.json();
 }
 
 /**
  * Delete a folder on the server.
  */
 export async function deleteServerFolder(projectId: string, folderId: string): Promise<boolean> {
-  const res = await fetch(`${BASE}/${projectId}/chat-groups/${folderId}`, {
-    method: 'DELETE',
-    headers: projectHeaders(),
-  });
+  const res = await timedFetchOk(
+    `${BASE}/${projectId}/chat-groups/${folderId}`,
+    { method: 'DELETE', headers: projectHeaders() },
+    MUTATE_TIMEOUT_MS,
+    'deleteServerFolder',
+  );
   return res.ok;
 }
 
@@ -91,19 +118,16 @@ export async function setFolderGlobal(
   isGlobal: boolean
 ): Promise<ConversationFolder | null> {
   try {
-    const res = await fetch(
+    const g: any = await timedFetchJson<any>(
       `${BASE}/${encodeURIComponent(projectId)}/chat-groups/${encodeURIComponent(folderId)}/global`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...projectHeaders() },
         body: JSON.stringify({ isGlobal }),
-      }
+      },
+      MUTATE_TIMEOUT_MS,
+      'setFolderGlobal',
     );
-    if (!res.ok) {
-      console.warn(`📡 setFolderGlobal: ${res.status} ${res.statusText}`);
-      return null;
-    }
-    const g: any = await res.json();
     return {
       id: g.id,
       name: g.name,
