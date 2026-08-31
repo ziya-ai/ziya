@@ -143,32 +143,89 @@ before doing anything, invoking `sweep` itself if the tag is missing.
 
 0. Resume an interrupted previous run, if one is detected
 1. Survey all staged/unstaged changes
-2. Group them into Conventional Commit categories
+2. Group them into Conventional Commits — one per `## [Unreleased]` changelog
+   entry, not one per subsystem
 3. Commit each group
 4. Verify & update CHANGELOG.md (cross-references git diff for completeness)
 5. Version bump across all version files
 6. Annotated git tag
 7. Push commits and tags
 8. Create the GitHub Release from the tag
-9. Announce to `#ziya-dev` — highlights in the channel, changelog and commit
-   link in a thread
+9. Announce to `#ziya-dev` — one short title per change in the channel, with
+   any overflow and the commit link in a thread
 
 Steps 8 and 9 are best-effort: a failure there is logged and does not fail
 the release.
 
+Commit granularity is keyed on the changelog, not on the diff's shape. The
+`## [Unreleased]` section is accumulated during development, so by step 2 it
+already enumerates the release's logical changes — each entry becomes its own
+commit. Two entries share a commit only when one indivisible edit satisfies
+both; sharing a file or a subsystem does not qualify, since separate hunks in
+one file stage independently. A sixty-entry release is therefore roughly sixty
+commits, and step 2 reports the ratio it computed so a coarse grouping shows
+up in the run output rather than in `git log` weeks later.
+
 The announcement text is not improvised. Step 9 loads the
-`release-announcement` skill, which turns the changelog into an abstract
-summary via four ordered passes — aggregate related entries into
-user-observable themes, drop anything unstatable without an internal symbol,
-tier it (New / Now works / Notable fixes / Security), then rank by new
-capability. It also caps the highlight message at six bullets so detail
-cannot crowd out signal, and specifies the per-channel voice.
+`release-announcement` skill, which turns the changelog into a **title
+list** via four ordered passes — aggregate entries that are facets of one
+change, drop anything unstatable without an internal symbol, label each
+(New / Now works / Fixed / Security), then rank strictly by impact. The
+label is a prefix rather than a sort key, so a high-impact fix is not
+demoted below a minor feature by its category.
+
+The cap is on **line length, not line count**: every significant item gets
+one title of **≤70 characters** that stops at its claim, and there is no
+limit on how many. A release carrying two hundred user-observable changes
+announces two hundred titles. Nothing is selected away to shorten the
+message, and aggregation may not be used to compress volume — only to
+remove duplication. A title is **rewritten** rather than truncated from the
+changelog's lead sentence, which is a declarative claim averaging well over
+the cap.
+
+When the list exceeds one Slack message (~45 titles) it continues in thread
+replies in impact order, with the channel message stating how many more
+there are. The thread otherwise carries only the commit-list link: it does
+**not** carry the changelog in any form, because the channel title list is
+already the complete inventory.
 
 It does **not** ask for confirmation at any step. If something goes wrong, it stops and reports the error.
 
 ```bash
 ziya task sweep
 ```
+
+#### When `sweep` is too big for one prompt
+
+`sweep` is a single linear prompt executed by one agent, which is the right
+shape for an ordinary release and the wrong shape for a very large one. Past
+roughly 40 changelog entries it runs out of context before it finishes
+committing, and the symptoms are specific: the run surveys, reports the
+grouping, and then either stalls or asks you to pick a strategy — which its own
+rules forbid, because at that scale the instruction genuinely is
+under-resourced rather than ambiguous.
+
+Three signals that you have crossed that line:
+
+- more `## [Unreleased]` entries than you would care to review in one sitting
+- files named by **several** entries, whose hunks must be split between them
+  before any commit can be staged
+- many changed files named by **no** entry, each needing its own triage
+
+For those releases use **`design/sweep-orchestrated.task-card.json`** instead:
+the same nine steps as a Task Card block tree, where the read-only work
+(per-file hunk attribution, per-batch triage) fans out in parallel to produce a
+commit plan, and a **serial** loop then cuts one commit per entry with roster
+completeness asserted rather than requested. It resumes from
+`.ziya/sweep/ledger.json` rather than a markdown checklist, so an interrupted
+run restarts at the lowest genuinely incomplete phase.
+
+It is a card, not a registered task — save it to the deck, sign the escalating
+blocks (the analysis half needs no signature), then Start. See
+`design/sweep-orchestrated.md` for the shape, the measured failure it responds
+to, and its known limits.
+
+The `release` task below is unchanged and still runs afterwards either way.
 
 ### `release`
 
@@ -205,12 +262,13 @@ ziya task release
 
 Neither task improvises its summary. Both load the `release-announcement`
 skill, which turns the changelog into an abstract summary via four ordered
-passes — aggregate related entries into user-observable themes, drop anything
-unstatable without an internal symbol, tier it (New / Now works / Notable
-fixes / Security), then rank by new capability. It caps the highlight message
-at six bullets so detail cannot crowd out signal, and specifies each
-channel's voice: tiered bullets for `#ziya-dev`, lowercase prose for
-`#ziya-interest`.
+passes — aggregate entries that are facets of one change, drop anything
+unstatable without an internal symbol, label each (New / Now works / Fixed /
+Security), then rank strictly by impact rather than by label. It caps each
+line at one title of ≤70 characters — stopping at the claim, so detail
+cannot crowd out signal — and caps nothing else: every significant item gets
+a line, however many that is. It also specifies each channel's voice:
+labelled titles for `#ziya-dev`, lowercase prose for `#ziya-interest`.
 
 ## CLI Reference
 

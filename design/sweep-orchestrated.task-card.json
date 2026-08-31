@@ -1,0 +1,224 @@
+{
+  "name": "Sweep (orchestrated)",
+  "description": "Release sweep as a decomposed block tree instead of one linear prompt: parallel read-only analysis (hunk attribution, unclaimed-file triage) produces a commit plan, then a SERIAL roster-complete loop cuts one commit per changelog entry. Escalation is confined to the blocks that mutate: the commit loop and residue sweep need git add/rm/commit (plus git apply to stage a split hunk set), the changelog and bump steps need to write CHANGELOG.md and the version files, the push step needs git push, and the GitHub Release step needs gh. The analysis half asks for nothing that mutates - its only grant is 'git apply --cached --check', a validate-only form that cannot touch the index - and the tag step needs git tag, whose read-only floor lists and verifies tags but no longer creates them. No grant anywhere admits reset, checkout, clean, rebase or a forced push.",
+  "root": {
+    "block_type": "group",
+    "name": "Orchestrated release sweep",
+    "on_failure": "stop",
+    "scope": { "model_tier": "medium" },
+    "body": [
+      {
+        "block_type": "state",
+        "name": "Release invariants",
+        "state_context": "You are one stage of an automated release sweep for this repository. Standing givens for every stage:\n\nERRORS vs AMBIGUITY. An error is a command that actually failed (non-zero exit, merge conflict, rejected push) - report it and fail your block. Ambiguity, judgment calls, an incomplete changelog, untracked files, and 'which version?' are NOT errors: the rules below already decide them. Never end your turn asking the operator to choose.\n\nTHE LEDGER IS THE RECORD. All cross-stage state lives in .ziya/sweep/ledger.json (writable, no permission needed). Read it first, write it last. Do not rely on prose from a previous stage for anything you can read out of the ledger - your conversation is sandboxed and discarded, the ledger is not.\n\nGROUPING RULE. One commit per changelog entry. The '- ' entries in the '## [Unreleased]' section of CHANGELOG.md ARE the enumeration of this release's logical changes. Two entries share a commit only when one indivisible hunk carries both. Sharing a file is NOT a reason to combine - separate hunks in one file stage independently and that is the ordinary case. The entry list is a FLOOR, not the whole roster: a changed file with no entry yet still gets its own group.\n\nVERSION RULE. LAST_RELEASED is the highest tag matching vX.Y.Z[.W]. FILE_VERSION is pyproject.toml (canonical if version files disagree). If FILE_VERSION > LAST_RELEASED a human already bumped it - TARGET = FILE_VERSION exactly, including a rollover ending in .0. Otherwise TARGET = LAST_RELEASED with the final segment + 1. Never leave a gap above LAST_RELEASED.\n\nEXCLUSION RULE. Tracked modifications are always in scope. An untracked file is in scope only if committed code references it or it already has an Unreleased entry. Any other untracked file or new package is in-progress work: exclude it and record the reason. Always exclude gitignored paths - note that .ziya/ is gitignored in this repo, so nothing under it is ever committable no matter what a changelog entry says about it.\n\nCHANGELOG RULE. '## [Unreleased]' is the only place entries go. Numbered version sections are published and must never be modified. Each of Added / Fixed / Changed / Removed / Security appears AT MOST ONCE per version section, with every entry of that category under it.",
+        "state_variables": {
+          "ledger": ".ziya/sweep/ledger.json",
+          "patch_dir": ".ziya/sweep/patches",
+          "triage_dir": ".ziya/sweep/triage",
+          "repo": "ziya-ai/ziya"
+        },
+        "body": []
+      },
+      {
+        "block_type": "task",
+        "name": "P0 - Reconcile any interrupted run",
+        "instructions": "Decide whether this is a fresh sweep or a resume, and write the answer into the ledger so no later stage has to re-derive it.\n\nRead {{var.ledger}}. A missing file means fresh - create it. If it exists, a previous run was interrupted; RECONCILE it against git rather than trusting it. The ledger is a hint, not the record: a stage may have completed work and died before recording it, so an unrecorded group is NOT evidence the work is undone.\n\nFor each group the ledger lists as incomplete, check whether its files still appear in `git status --porcelain`. If they do not, that group is already committed - mark it done. Verify against `git log $(git describe --tags --abbrev=0)..HEAD --oneline`.\n\nRe-derive the lowest incomplete phase from git state, not from the ledger:\n  - commits incomplete if `git status --porcelain` still lists in-scope tracked modifications\n  - changelog/bump incomplete if no `chore: bump version to X.Y.Z` commit exists for the target, or CHANGELOG.md still has a '## [Unreleased]' header holding this release's entries\n  - tag incomplete if `git tag -l vX.Y.Z` is empty\n  - push incomplete if `git status -sb` shows the branch ahead of upstream\n\nRe-triage the exclusion list from scratch. Any list a previous run recorded may have been enumerated once and never revisited, so it can name fewer paths than are currently untracked. Collect every '??' entry from `git status --porcelain` and hand the whole set forward - the triage stage will classify them. Pay particular attention to untracked modules that committed code references: grep for the module path and bare filename including `require(...)` and `import` under frontend/src. A committed reference to an uncommitted module is a release blocker even inside try/catch, because bundlers resolve specifiers at build time, so it breaks in a clean checkout while the author's tree builds fine.\n\nWrite the reconciled ledger back to {{var.ledger}} with keys: mode ('fresh' or 'resume'), resume_phase, groups_done, exclusions. Then emit_artifact a data part named \"resume\" holding {\"mode\": ..., \"resume_phase\": ..., \"groups_done\": <count>} and state in prose what you reconciled and what you are skipping."
+      },
+      {
+        "block_type": "task",
+        "name": "P1 - Survey and decide the target version",
+        "instructions": "Survey the release and fix the target version. Read-only - commit nothing.\n\nRun `git status --porcelain`, `git diff --stat`, `git diff --cached --stat`, `git describe --tags --abbrev=0` and `git tag -l --sort=-v:refname` (first few). Read the version out of pyproject.toml.\n\nApply the VERSION RULE from your standing context to compute TARGET. Do not ask which version to use - the rule decides. State the inputs you used and the branch of the rule you took, so the decision is auditable.\n\nCount, and report, three numbers because they size every later stage: total changed paths, tracked modifications, untracked paths.\n\nAppend a 'release' object to {{var.ledger}} with target_version, last_released_tag, file_version and those three counts. Then emit_artifact a data part named \"release\" holding {\"target_version\": \"X.Y.Z\", \"last_released_tag\": \"vX.Y.Z\", \"changed\": N, \"tracked\": N, \"untracked\": N} and state the survey in prose."
+      },
+      {
+        "block_type": "group",
+        "name": "P2 - Attribute contended files to entries",
+        "on_failure": "stop",
+        "body": [
+          {
+            "block_type": "task",
+            "name": "P2a - Index the Unreleased entries",
+            "instructions": "Build the entry index that drives the whole release. Read-only.\n\nExtract the '## [Unreleased]' section of CHANGELOG.md (everything up to the next '## [' header). Every '- ' item is one entry. For each, record: a stable entry_id (slugify the bolded lead sentence, truncated - it must be unique and stable, since the commit loop keys its roster on it), the '### ' heading it sits under, a short title, and every repository path named in backticks inside it.\n\nCross-reference those path lists against the actual `git status --porcelain` set and partition every CHANGED path into exactly one bucket:\n  - claimed: named by exactly one entry\n  - contended: named by two or more entries (its hunks must be split between them)\n  - unclaimed: named by no entry\nDiscard paths an entry names that are not actually changed, and note how many you dropped - a stale citation is normal, but a large count means the changelog is describing a different tree.\n\nWrite the full index to {{var.ledger}} under 'entry_index' (entries, claimed, contended, unclaimed, dropped_citations). Then emit_artifact a data part named \"contended\" holding {\"files\": [<contended paths>]} - this exact list drives the fan-out below, so it must be a JSON array of path strings and nothing else. Finally state in prose the four bucket sizes and the entry count.",
+            "scope": { "model_tier": "medium" }
+          },
+          {
+            "block_type": "repeat",
+            "name": "P2b - Split each contended file's hunks",
+            "repeat_mode": "for_each",
+            "repeat_for_each_source": "{{previous_sibling.outputs.contended.files}}",
+            "repeat_parallel": true,
+            "repeat_max_concurrency": 6,
+            "repeat_propagate": "none",
+            "body": [
+              {
+                "block_type": "task",
+                "name": "Attribute the hunks of one file",
+                "instructions": "You are attributing the hunks of ONE file to the changelog entries that claim it. Your file is: {{item}}\n\nThis stage is read-only with respect to git. Do NOT stage, commit, or touch the index - five siblings are running concurrently and the index is a single shared resource. You write patch files; a later serial stage applies them.\n\n1. Read 'entry_index' from {{var.ledger}} and collect every entry whose path list names {{item}}. That set is your target set.\n2. Get the full diff for the file: `git diff -- {{item}}` and `git diff --cached -- {{item}}`.\n3. Read each entry's changelog text. Attribute every hunk to exactly one entry, using what the entry says it changed. If a hunk genuinely carries two entries' changes in the same lines, assign it to the entry whose claim is load-bearing for it and record that decision explicitly - it is the one legitimate reason two entries share a commit.\n\nMERGE ESCAPE - take it rather than guessing, but prefer a split. If you cannot attribute this file's hunks to its claiming entries with confidence - the entries describe genuinely interleaved work, or the change is a wholesale rewrite with no per-entry seam - do NOT invent a split. Write no patch files for it and instead write {{var.patch_dir}}/_merges/<flattened-path>.json holding {\"file\": ..., \"entry_ids\": [every entry that claims it], \"reason\": \"<the specific obstacle>\"}. Those entries then share ONE commit. A recorded merge is worse history than a correct split and better history than a wrong one: a mis-split yields a clean commit whose subject names work it does not contain, and nothing downstream can ever detect that, whereas a merge is counted, reasoned, and visible in the plan. The reason must name what blocked the split - \"hard to tell\" is not a reason, and a merge asserted without one will be rejected by the plan stage.\n4. For each entry that got at least one hunk, write {{var.patch_dir}}/<entry_id>/<flattened-path>.patch containing the standard diff header for the file plus ONLY that entry's hunks. Hunk headers are independent: you may drop hunks without renumbering anything, and git apply tolerates the resulting offsets. Do not rewrite @@ line counts to compensate.\n5. Verify each patch you wrote with `git apply --cached --check <patch>` - the --check form validates without touching the index, which is what makes it safe to run here. A patch that fails --check is a real error: report it and fail.\n\nemit_artifact each patch file with group=\"attr-{{item}}\" and a label naming its entry_id, plus a text part named \"attribution\" in the same group listing hunk-count-per-entry. Then state in prose how many hunks went to which entry, and flag any hunk you could not attribute confidently.",
+                "scope": {
+                  "model_tier": "medium",
+                  "shell_commands": ["git apply --cached --check"]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "block_type": "group",
+        "name": "P3 - Triage the unclaimed files",
+        "on_failure": "stop",
+        "body": [
+          {
+            "block_type": "task",
+            "name": "P3a - Batch the unclaimed files",
+            "instructions": "Split the unclaimed-file set into batches small enough that one agent can judge each file carefully. Read-only.\n\nRead 'entry_index' from {{var.ledger}} and take its 'unclaimed' list. Group the paths into batches of at most 15, keeping files from the same directory or subsystem together so one agent sees related files at once. If there are no unclaimed files, emit an EMPTY list of batches so the fan-out below runs zero iterations - do not emit one empty batch, which would dispatch an iteration with nothing to do.\n\nemit_artifact a data part named \"unclaimed\" holding {\"batches\": [[\"path\", ...], ...]} - a JSON array of arrays and nothing else. Then state the batch count and total file count in prose.",
+            "scope": { "model_tier": "small" }
+          },
+          {
+            "block_type": "repeat",
+            "name": "P3b - Classify one batch",
+            "repeat_mode": "for_each",
+            "repeat_for_each_source": "{{previous_sibling.outputs.unclaimed.batches}}",
+            "repeat_parallel": true,
+            "repeat_max_concurrency": 6,
+            "repeat_propagate": "none",
+            "body": [
+              {
+                "block_type": "task",
+                "name": "Triage a batch of unclaimed files",
+                "instructions": "Classify each file in this batch. Your batch is: {{item}}\n\nRead-only with respect to git. Do not stage or commit anything.\n\nFor each path, apply the EXCLUSION RULE from your standing context and assign exactly one disposition:\n  - assign: it belongs to an existing Unreleased entry that failed to cite it (name the entry_id). Check 'entry_index' in {{var.ledger}} for a plausible owner - a test file usually belongs with the source change it covers.\n  - new_entry: it is a real user-visible change with no entry. DRAFT the changelog entry text and the '### ' category it belongs under, but do NOT write it into CHANGELOG.md - a later single stage owns that file, and concurrent writes to it would interleave.\n  - exclude: in-progress work. Record a one-line reason.\n\nBefore excluding any untracked module, grep the committed tree for its module path and bare filename, including `require(...)` and `import` forms under frontend/src. If committed code references it, it is 'assign' or 'new_entry', never 'exclude' - a committed reference to an uncommitted module breaks a clean checkout at build time even when wrapped in try/catch.\n\nWrite your verdicts to {{var.triage_dir}}/batch-{{index}}.json as {\"verdicts\": [{\"path\": ..., \"disposition\": ..., \"entry_id\": ..., \"draft_entry\": ..., \"category\": ..., \"reason\": ...}]}. Do NOT write the shared ledger - siblings are running and would clobber each other; the reconcile stage merges these files.\n\nemit_artifact that file, plus a text part named \"triage\" summarizing the disposition counts. Then state in prose anything you were unsure about and which way you resolved it.",
+                "scope": { "model_tier": "small" }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "block_type": "group",
+        "name": "P4 - Commit",
+        "on_failure": "stop",
+        "body": [
+          {
+            "block_type": "task",
+            "name": "P4a - Reconcile the commit plan",
+            "instructions": "Merge everything the analysis stages produced into ONE commit plan, and refuse to proceed if it does not cover the release. This is the gate: every later stage trusts this plan.\n\n1. Read 'entry_index' and 'release' from {{var.ledger}}.\n2. Read every {{var.triage_dir}}/batch-*.json. Fold 'assign' verdicts into their entry's file list. Turn each 'new_entry' verdict into its own group, carrying the drafted entry text forward in the plan so the changelog stage can write it. Collect 'exclude' verdicts into the exclusion list with their reasons.\n3. List {{var.patch_dir}} and attach each entry's patch files to its group.\n4. Build the groups. A group is {entry_id, entry_ids, subject, files, patches, mode, merge_reasons}. 'entry_ids' names every entry the group satisfies; 'entry_id' is the first of them and is the group's own identity for the commit loop's roster. Normally the list holds one element and the two agree.\n\nMERGES. Read every {{var.patch_dir}}/_merges/*.json the attribution stage wrote. Each names a set of entries that must share a commit because their file had no available split. Fold each such set into ONE group whose 'entry_ids' is the union, and carry the reasons into 'merge_reasons'. A merged group's subject must name every change it carries rather than picking one entry's claim and dropping the others - so it will need a comma, and the SUBJECT TEST below cannot be satisfied by splitting it, because the split is precisely what was unavailable. That comma is the visible cost of the merge and is the one case where it is allowed. Refuse any merge record whose reason does not name a specific obstacle. 'mode' is \"patch\" when the group has patch files (stage those, then any whole files it also owns) or \"whole\" when it owns its files outright. 'subject' is a Conventional Commit subject (feat/fix/refactor/docs/chore/test).\n\nSUBJECT TEST - apply it to every subject before recording it. Read the subject and stop at its first comma or semicolon. If what follows names a DIFFERENT change, split the group there and repeat. Listing the files one change touched is fine; listing several changes is not.\n\nHARD GATES - fail this block, with the numbers, if any hold:\n  - some Unreleased '- ' entry appears in no group's 'entry_ids'. This is the real invariant and it replaces comparing counts: an entry in no group silently will not ship, whereas a group count below the entry count is legitimate once merges are recorded. Report entry count, group count and merged-entry count as three separate numbers so the shape of the release is visible in the run output rather than only in git log weeks later.\n  - some entry appears in more than one group's 'entry_ids'. Two commits would each claim to satisfy it and neither would be the record.\n  - more than half the entries are in merged groups. Past that point attribution did not do its job and the run would produce a history no better than the omnibus commits this card exists to replace. Stop and let a human look rather than proceeding - this gate is what keeps the merge escape an escape instead of a default.\n  - any changed path appears in no group and no exclusion. A path in neither is a path that silently will not ship.\n  - any path appears in more than one group's whole-file list (patch-mode sharing is expected; whole-file sharing means two commits would fight over it).\n\nWrite the plan to {{var.ledger}} under 'commit_plan'. Then emit_artifact a data part named \"commit_plan\" holding {\"groups\": [{\"entry_id\": ..., \"subject\": ..., \"files\": [...], \"patches\": [...], \"mode\": ...}]} - and every group in that array must carry its 'entry_ids' list and, where it is a merge, its 'merge_reasons', because this artifact IS the roster the commit loop iterates and a field omitted here does not exist downstream. Then state the three counts (entries, groups, merged entries) as an explicit ratio, so a coarse grouping is visible in the run output rather than only in git log weeks later.",
+            "scope": { "model_tier": "large" }
+          },
+          {
+            "block_type": "repeat",
+            "name": "P4b - One commit per entry (serial)",
+            "repeat_mode": "for_each",
+            "repeat_for_each_source": "{{previous_sibling.outputs.commit_plan.groups}}",
+            "repeat_parallel": false,
+            "repeat_propagate": "none",
+            "repeat_item_key": "entry_id",
+            "repeat_require_complete": true,
+            "self_improve": true,
+            "improve_max": 0,
+            "improve_criterion": "every roster group produced exactly one commit containing exactly its own files, with no group skipped and no unrelated file swept in",
+            "body": [
+              {
+                "block_type": "task",
+                "name": "Commit one group",
+                "instructions": "Create exactly ONE commit for this group and verify it landed. Your group is: {{item}}\n\nYou are iteration {{index}} of a SERIAL loop. Earlier iterations have already committed; the index is shared, so leave it clean when you finish.\n\n1. Read {{var.ledger}}. If every one of this group's 'entry_ids' is already in 'groups_done', or none of its files appear in `git status --porcelain`, it is already committed: say so, change nothing, and succeed. Never re-commit.\n2. Confirm the index is empty (`git diff --cached --name-only`). If a previous iteration left it dirty, that is a real error - report it and fail rather than committing someone else's staged work into your commit.\n3. For each file, run `git check-ignore <file>` first. Skip any gitignored path - report it, do not force-add it, and do not treat it as an error.\n4. Stage:\n   - mode \"patch\": for each patch file, `git apply --cached --check <patch>` and only then `git apply --cached <patch>`. The --check pass first is what keeps a bad patch from half-staging, because you have no unstage grant to recover with.\n   - mode \"whole\": `git add <file>` for each, or `git rm` for a deletion.\n5. Verify the staged set is EXACTLY what the group claims: `git diff --cached --name-only`. If it names a file the group does not own, stop and fail - do not commit and do not attempt to clean up.\n6. Commit with the group's subject. Add a body only if the subject needed a qualifier.\n7. Verify: `git log -1 --stat`. Confirm the commit exists and contains the expected files. Merely having run git commit is not evidence it landed.\n8. Append EVERY id in this group's 'entry_ids' to 'groups_done' in {{var.ledger}} and write it back. A merged group satisfies several entries with one commit, so recording only its primary id would leave the others looking unshipped to the residue sweep, which would then try to commit them again and find nothing to stage.\n\nemit_artifact a text part named \"commit\" holding the commit subject, its hash, and its file list. Then state in prose what you committed and confirm the index is clean. Do not end on a bare tool call.",
+                "scope": {
+                  "model_tier": "medium",
+                  "shell_commands": [
+                    "git add",
+                    "git rm",
+                    "git commit",
+                    "git apply"
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "block_type": "until",
+        "name": "P5 - Account for every remaining change",
+        "until_mode": "model",
+        "until_condition": "every path the commit plan assigned to a group is now committed, and every path still showing as modified or untracked is present in the exclusion list with a stated reason",
+        "until_max": 3,
+        "on_failure": "stop",
+        "body": [
+          {
+            "block_type": "task",
+            "name": "Sweep the residue",
+            "instructions": "Close the gap between what the plan promised and what the tree shows. The exit condition is NOT a clean working tree - excluded in-progress work legitimately stays uncommitted. It is that every remaining path is accounted for.\n\n1. Run `git status --porcelain`. Read 'commit_plan', 'groups_done' and 'exclusions' from {{var.ledger}}.\n2. Partition what remains:\n   - a path the plan assigned to a group that is NOT committed: the group was missed. Stage exactly that group's files and commit them with the planned subject, verifying with `git log -1 --stat` as the commit loop does.\n   - a path in no group and no exclusion list: it was never triaged. Triage it now per the EXCLUSION RULE and either commit it as its own group or add it to 'exclusions' with a reason.\n   - a path already excluded with a reason: leave it alone. This is the expected steady state.\n3. Update {{var.ledger}} and state, path by path, what is now committed and what remains excluded and why.\n\nIf you make no progress on an iteration - the same paths remain unaccounted for and you have no new action to take - say so plainly rather than restating the previous pass. A stalled loop is detected from repeated non-progress, and an honest report of being stuck is more useful than a reworded one.\n\nemit_artifact a text part named \"residue\" listing the still-uncommitted paths with their reasons.",
+            "scope": {
+              "model_tier": "medium",
+              "shell_commands": [
+                "git add",
+                "git rm",
+                "git commit"
+              ]
+            }
+          }
+        ]
+      },
+      {
+        "block_type": "task",
+        "name": "P6 - Consolidate the changelog",
+        "instructions": "Rewrite the '## [Unreleased]' section so it is complete and correctly structured. You are the only stage that writes CHANGELOG.md, which is why the drafted entries from triage were carried in the plan instead of being written as they were found.\n\n1. Read the current '## [Unreleased]' section, and read 'commit_plan' from {{var.ledger}} for every group carrying a drafted entry.\n2. Fold each drafted entry in. Cross-check the committed set (`git log <last_released_tag>..HEAD --stat`) against the section: every committed file change should map to at least one entry, and every entry should correspond to real changes. Remove entries for work that was reverted or superseded.\n3. Re-emit the whole section with ONE heading block per category. Draft all entries first without committing to placement, bucket them by category, then emit a single '### Added' block containing every Added entry, then a single '### Fixed' block, then '### Changed', in that fixed order. Omit empty headings. A non-standard category gets its own single block, not an interleave.\n4. Scan the rendered section top to bottom and verify no '### ' heading text repeats. A repeat means entries were left scattered and must be merged into the earlier occurrence. Report the heading list you ended with as evidence you checked.\n\nDo NOT touch any numbered version section - those are published. Do not rename '## [Unreleased]' yet; the version stage does that.\n\nemit_artifact the file, plus a text part named \"headings\" listing the final heading order and each one's entry count. Then state what you folded in and what you removed.",
+        "scope": {
+          "model_tier": "large",
+          "paths": [{ "path": "CHANGELOG.md", "write": true }]
+        }
+      },
+      {
+        "block_type": "task",
+        "name": "P7 - Bump the version and finalize the changelog",
+        "instructions": "Apply the target version and close out the changelog section.\n\n1. Read target_version from 'release' in {{var.ledger}}. Do not recompute it - P1 already decided it under the VERSION RULE and a second derivation could disagree.\n2. Run `python bump-version.py <TARGET>`. If the files already hold the target this is close to a no-op, which is expected on the honored-human-bump branch - proceed regardless.\n3. In CHANGELOG.md: replace '## [Unreleased]' with '## [<TARGET>] - <today's date, YYYY-MM-DD>', then insert a fresh empty '## [Unreleased]' section above it with stub headings '### Added', '### Fixed', '### Changed'.\n4. Stage the version files and CHANGELOG.md and commit as `chore: bump version to <TARGET>`. Verify with `git log -1 --stat` that the commit contains the version files and the changelog.\n\nemit_artifact a text part named \"bump\" holding the target version and the commit hash. Then state which version files changed.",
+        "scope": {
+          "paths": [
+            { "path": "CHANGELOG.md", "write": true },
+            { "path": "pyproject.toml", "write": true },
+            { "path": "setup.py", "write": true },
+            { "path": "frontend/package.json", "write": true }
+          ],
+          "shell_commands": [
+            "re:^python3?\\s+bump-version\\.py\\s+[0-9]+(\\.[0-9]+){2,3}\\s*$",
+            "git add",
+            "git commit"
+          ]
+        }
+      },
+      {
+        "block_type": "task",
+        "name": "P8 - Tag",
+        "instructions": "Create the annotated tag for this release.\n\nRead target_version from 'release' in {{var.ledger}}. Check `git tag -l v<TARGET>` first - if the tag already exists this run is a resume past this point, so report that and succeed without re-tagging. Otherwise run `git tag -a v<TARGET> -m \"v<TARGET>\"` and confirm with `git tag -l v<TARGET>`.\n\nemit_artifact a text part named \"tag\" holding the tag name, then state whether you created it or found it already present.",
+        "scope": {
+          "shell_commands": [
+            "git tag"
+          ]
+        }
+      },
+      {
+        "block_type": "task",
+        "name": "P9 - Push",
+        "instructions": "Push the release. This is the point of no return, so verify before and after.\n\n1. Confirm the working tree holds no in-scope uncommitted change: `git status --porcelain`. Anything remaining must already be in 'exclusions' in {{var.ledger}} - if something is not, fail rather than pushing an incomplete release.\n2. Run `git push`, then `git push --tags`.\n3. Confirm with `git status -sb` that the branch is no longer ahead of upstream.\n4. Only now delete {{var.ledger}}'s incomplete markers - set mode to 'pushed'. An unpushed release is still incomplete, and a ledger cleared too early loses the resume path.\n\nemit_artifact a text part named \"push\" holding the pushed ref and tag. Then state the result. A failed push is a real error - fail the block.",
+        "scope": { "shell_commands": ["git push"] }
+      },
+      {
+        "block_type": "group",
+        "name": "P10 - Announce (best-effort)",
+        "on_failure": "continue",
+        "body": [
+          {
+            "block_type": "task",
+            "name": "P10a - GitHub Release",
+            "instructions": "Publish the GitHub Release from the tag. Best-effort: if `gh` fails, report the failure clearly and do not retry indefinitely - the next stage can proceed without you.\n\n1. Read target_version from 'release' in {{var.ledger}}.\n2. Extract the changelog body for this version: everything between the '## [<TARGET>]' header and the next '## [' header. Write it to /tmp/ziya-release-notes.md.\n3. Run: gh release create v<TARGET> --repo {{var.repo}} --title \"v<TARGET>\" --notes-file /tmp/ziya-release-notes.md --latest --verify-tag\n\nemit_artifact a text part named \"release_url\" holding https://github.com/{{var.repo}}/releases/tag/v<TARGET>, then state whether the release was created.",
+            "scope": { "shell_commands": ["gh release create"] }
+          },
+          {
+            "block_type": "task",
+            "name": "P10b - Announce in Slack",
+            "instructions": "Post the release announcement. Best-effort: if Slack posting fails, report it and stop.\n\nFIRST load the `release-announcement` skill with get_skill_details and follow it. It defines the aggregate/filter/rank procedure, the length caps, the per-channel voice and the Slack mrkdwn dialect. Do not improvise a format without loading it.\n\nGather: the changelog section for this version, `git diff --stat <last_released_tag>..HEAD` (a new top-level module is a candidate headline - it is what distinguishes a new platform from a feature built on one), `git log <last_released_tag>..HEAD --oneline | wc -l` for the commit count, and the release URL from the previous stage ({{previous_sibling.outputs.release_url}}).\n\nPost, in order:\n1. #ziya-dev: `v<TARGET> pushed to public :thread:`\n2. #ziya-dev CHANNEL (not the thread): the highlights message per the skill, ending with the release link. ONE TITLE PER ITEM, <=70 chars, each line stating one change and stopping. There is NO cap on the number of lines - every significant user-observable item gets one, so a large release is a long list of short titles and that is correct output. Do not select, drop or merge distinct items to shorten it. Order strictly by IMPACT on what a user experiences, never by category - the Added/Fixed label is a prefix, not a sort key. A title is REWRITTEN, not truncated: the changelog's bolded lead is not already a title, and cutting one at its first comma can leave a claim that is narrower than the truth. If the list exceeds ~3500 chars, continue in thread replies in impact order and end the channel message with `... +N more in thread`.\n3. #ziya-dev thread (replying to message 1): a link to https://github.com/{{var.repo}}/commits/v<TARGET> plus any overflow titles. Do NOT paste commit hashes inline and do NOT post or attach the changelog section in any form - one version's section runs tens of thousands of characters here and is unreadable in a thread even as a file. The title list in step 2 is already the complete inventory.\n\nDo NOT post to #ziya-interest. That channel announces AVAILABILITY, and nothing is installable at tag-push time - the separate `release` task owns that announcement.\n\nBefore posting, count: the number of title lines must equal the number of '- ' items in the changelog section, minus any merged as facets of one change and any cut by the audience gate. State that arithmetic - an unexplained shortfall means items were silently dropped, which is the one failure this surface cannot have.\n\nemit_artifact a text part named \"announcement\" holding the posted title list, then state the per-channel result you actually observed.",
+            "scope": { "model_tier": "large" }
+          }
+        ]
+      }
+    ]
+  }
+}
