@@ -284,17 +284,23 @@ Ziya renders inline diagrams from fenced code blocks. Supported formats:
 | Vega-Lite | `` ```vega-lite `` | JSON data visualization specs. |
 | HTML Mockup | `` ```html-mockup `` | Interactive UI prototypes in sandboxed iframes. Add the `figure` modifier (`` ```html-mockup figure ``) to drop the frame and controls for a graphic that is part of the discussion rather than a design under review. The iframe supplies a theme-matched foreground plus `--mockup-border` / `--mockup-muted`, so incidental text can be left unstyled and stay legible in both themes — deliberate colour (brand, status, palette, or a fixed light/dark design) is expected, and should carry its own background so the pairing does not depend on the surface behind it. |
 | Packet | `` ```packet `` | Bit-level protocol frame layouts. |
-| Music | `` ```music `` | Published-quality sheet music (VexFlow). Notes/chords/rests, beaming, tuplets, grace & cue notes, slurs/ties, dynamics/hairpins, articulations, ornaments, lyrics, chord symbols, pedal & harp-pedal lines, measures/repeats/voltas, tempo & navigation marks, title block, multi-voice & grand staff with cross-staff beams/slurs, and multi-system wrapping. A short phrase can also be written inline as `` `music: C4/q, D4/q` ``. |
+| Music | `` ```music `` | Published-quality sheet music (VexFlow). Notes/chords/rests, beaming, tuplets, grace & cue notes, slurs/ties, dynamics/hairpins, articulations, ornaments, lyrics, chord symbols, pedal & harp-pedal lines, measures/repeats/voltas, mid-score key & meter changes (modulation), tempo & navigation marks, title block, multi-voice & grand staff with cross-staff beams/slurs, and multi-system wrapping. A short phrase can also be written inline as `` `music: C4/q, D4/q` ``. Malformed input (bad octave/accidental/duration, out-of-range tuplet count) degrades gracefully instead of hanging the render. |
+| Railroad | `` ```railroad `` | Railroad (syntax) diagrams from a JSON spec: terminals, nonterminals, choice, optional, loops with separators, dashed groups — a single production or a stack of named rules. For grammars, regex structure, and config/URL/file formats. Tolerates trailing commas, comments, and stray fences in the JSON. |
+| WaveDrom | `` ```wavedrom `` | Digital timing diagrams from WaveJSON: clocks, signals, buses with labeled data, groups, gaps (`|`), and annotated node/edge arrows for setup/hold and handshake timing. Accepts the canonical JSON5 style (unquoted keys, single quotes). Dark mode uses WaveDrom's own dark skin. Also renders `reg` bit-field and `assign` logic specs. |
+| Flame graph | `` ```flamegraph `` | Interactive flame graphs for performance profiles (click a frame to zoom, click the root to reset). Accepts nested JSON (`{name, value, children}`) or collapsed-stack text — the `frame;frame;frame count` lines py-spy, perf, and flamegraph.pl emit — pasted directly into the fence. Frame names may contain spaces; `#` comment lines are skipped. |
 | TikZ | `` ```tikz `` | General LaTeX vector drawing. Rendered server-side. |
 | CircuiTikZ | `` ```circuitikz `` | Electronic circuit schematics. |
 | chemfig | `` ```chemfig `` | Chemical structures, reaction schemes, stereochemistry. |
 | tikz-cd | `` ```tikz-cd `` | Commutative diagrams. |
+| pgfplots | `` ```pgfplots `` | Typeset function/data plots with math-notation axes and legends, continuous with KaTeX derivations. Includes the `smithchart` and `polar` libraries. |
+| forest | `` ```forest `` (also `` ```syntax-tree ``) | Labelled trees in field-standard notation: constituency/syntax trees, taxonomies, decision and game trees, phylogenies, parse trees. Bracket syntax, with roofs over elided constituents, aligned tiers, and TikZ movement arrows. Prefer graphviz/mermaid for a generic hierarchy — forest is for trees whose *notation* matters. The `linguistics` and `edges` libraries are preloaded, so `roof` and `forked edges` work without declaring them. |
+| bussproofs | `` ```bussproofs `` (also `` ```prooftree ``, `` ```proof-tree ``) | Proof trees read as premises-over-conclusion: natural deduction, sequent calculus, typing rules. A stack discipline — `\AxiomC` pushes a pending subproof, `\UnaryInfC`/`\BinaryInfC`/`\TrinaryInfC` consume 1/2/3 — with `\RightLabel` rule annotations and `\fCenter` turnstile alignment. |
 
 Rendered diagrams include **Open** (popup with zoom/pan), **Save** (SVG download), and **Source** (view/edit definition) buttons.
 
 ### LaTeX diagrams (server-side)
 
-The four LaTeX-family types above are compiled by a local TeX installation rather
+The seven LaTeX-family types above are compiled by a local TeX installation rather
 than in the browser, so they need one to be present. When TeX is missing, the
 diagram is not lost: the block renders as a notice with the exact `tlmgr install`
 command for the packages that type needs, and the LaTeX source stays visible.
@@ -320,8 +326,16 @@ To install a minimal working toolchain:
 
 ```bash
 # macOS (BasicTeX), then the packages Ziya's profiles use
-sudo tlmgr install standalone dvisvgm pgf circuitikz siunitx chemfig tikz-cd
+sudo tlmgr install standalone dvisvgm pgf circuitikz siunitx chemfig tikz-cd pgfplots \
+                   forest bussproofs
 ```
+
+**No macro definitions.** `\def`, `\newcommand`, `\renewcommand`, `\let`, `\edef`
+and `\gdef` are refused in a diagram body across every LaTeX type, because they
+can construct unbounded expansions. Anything a notation genuinely needs is
+supplied by its profile's preamble instead — `bussproofs`, for example, presets
+`\fCenter` to a turnstile, since its own default (`\relax`) renders a sequent
+proof with no turnstile at all rather than failing.
 
 **Chemistry.** The `chemfig` type draws structures on its own. Two extras are
 worth installing alongside it:
@@ -947,18 +961,15 @@ faulted from the ones the gate cancelled — a cancelled sibling was killed
 deliberately because a peer hit dead infrastructure, so it is not counted as
 a failure of the work.
 
-One caveat worth knowing before resuming a wide parallel fan-out: resuming
-re-runs **every** iteration of that loop, not only the ones that faulted.
-Parallel iterations do not depend on each other, so there is no meaningful
-point to resume "from" — mid-loop resume is refused for them outright — and
-the block-level resume that remains does not skip the iterations that had
-already succeeded. Stages *before* the loop still replay from record. For an
-expensive fan-out this is the difference between re-running two subagents and
-re-running twenty, so it is worth weighing against simply fixing the
-infrastructure and accepting the repeat. Clicking an iteration of a parallel
-loop therefore explains this rather than offering a control that would be
-refused — the refusal is correct, but discovering it only after clicking is
-not.
+Resuming a wide parallel fan-out does **not** re-run every iteration. Picking
+a single iteration is refused — parallel iterations do not depend on each
+other, so there is no ordering for "resume at 3" to mean — but the block-level
+retry that remains banks every iteration that already produced a result and
+executes only the ones that never finished. For a 20-agent audit that lost one
+subagent to an expired credential, that is one subagent re-run, not twenty.
+Stages *before* the loop replay from record as usual. Clicking an iteration of
+a parallel loop therefore explains the refusal and points at the block-level
+retry, since taking it costs nothing.
 
 #### Resuming a finished run from a block
 
@@ -997,18 +1008,42 @@ carry per-block state — so you can click any row and let the server decide.
 Runs created before run snapshotting existed cannot be resumed, and show no
 button.
 
+Retrying a loop this way does **not** restart it at iteration zero. The retry
+banks the iterations the loop already completed and restarts at the first one
+that did not, so a run held 22 iterations into a serial campaign re-runs from
+22 — you do not have to find and click the right iteration dot to get that.
+
+The banner names that iteration rather than only the loop: the button reads
+**↻ Resume \<loop\> at #22** and the note says how many iterations will be
+replayed. Without it, the control that preserves 22 iterations described
+itself identically to one that would re-run them. The number is a prediction
+of a server-side decision, so it is worded as where execution resumes rather
+than as a promise — in the two cases it can be wrong (a chained resume whose
+carried iterations are not visible to the browser, or a record that disagrees
+with what is on disk) the run starts *earlier or later* than named, and the
+resumed run's dot strip shows what actually happened.
+
+The rule differs by loop shape, because the shapes mean different things:
+
+- A **serial** loop banks a *prefix*. Its iterations are dependent —
+  `{{previous}}` binds the one before — so the prefix ends at the first
+  iteration that failed, was never recorded, or whose full result was dropped
+  past the 50-pass retention cap. Everything before that point still replays.
+- A **parallel** loop banks an *index set*, since its iterations are
+  independent and a gap in the middle is simply filled.
+
+A `▶ Continue past it` on a loop is unaffected: it resumes *after* the loop,
+which then replays whole as a single block.
+
 #### Resuming inside a loop
 
-A loop was the one shape resume could not help. Picking any row inside a
-Repeat or Until body resumes the **whole enclosing loop**, because only
-structural blocks carry per-block state — so a five-iteration campaign that
-lost its last iteration to an expired credential had to re-pay all five, and
-the four banked passes were discarded. That is the most expensive lost work
-the task system had, since a long loop is precisely where a run is most
-likely to outlive a credential.
+The recovery banner already restarts a serial loop at the first iteration
+that did not complete, so you do not normally need this section. It exists for
+the *deliberate* choice: resuming from an iteration other than the automatic
+one — earlier than the failure, or one past a result you have fixed by hand.
 
-Iteration dots on a loop row now carry the same two actions the block rows
-do, applied to one iteration:
+Iteration dots on a loop row carry the same two actions the block rows do,
+applied to one iteration:
 
 Click an iteration dot to focus it; the detail panel below then offers:
 
@@ -1044,7 +1079,10 @@ a run that looks successful while feeding empty input to the work:
   prerequisites. Retry the whole loop instead.
 - **A predecessor whose full result was dropped.** Only the first 50 passing
   iterations of a loop keep their complete artifact; past that there is
-  nothing to replay into `{{previous}}`.
+  nothing to replay into `{{previous}}`. Picking a specific iteration past
+  that point is refused; the block-level retry instead banks everything up to
+  the cap and re-runs from there, which is a shorter prefix rather than a
+  refusal.
 
 While stepping, the status tag briefly reads `running`, because the executor
 genuinely is running the block your step bought. The `held` chip beside it is
