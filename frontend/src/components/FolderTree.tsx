@@ -8,6 +8,7 @@ import { TokenCountDisplay } from "./TokenCountDisplay";
 import { FolderOutlined } from '@ant-design/icons'; // Import icons
 import { ModelConfigButton } from './ModelConfigButton';
 import { useResolvedModelPin } from '../hooks/useResolvedModelPin';
+import { startModelSync } from '../services/modelSyncService';
 import { MessageOutlined } from '@ant-design/icons';
 import MUIChatHistory from './MUIChatHistory';
 import { MUIFileExplorer } from './MUIFileExplorer';
@@ -188,6 +189,10 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     }, []);
 
     useEffect(() => {
+        // Cross-session sync: revalidates the server-global model on
+        // focus / visibility / a slow interval, and dispatches
+        // 'modelChanged' when another session changed it (idempotent).
+        startModelSync();
         fetchModelId();
         updateModelInfo();
 
@@ -210,6 +215,23 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     // over saved pref).  The hook re-resolves on pin-store mutations and
     // record changes, so no manual event wiring is needed here.
     const { pin: activePin } = useResolvedModelPin();
+
+    // Value actually shown in the lower-left label.  When it changes
+    // after first render — a local apply OR external drift detected by
+    // modelSyncService — pulse the label so the change is noticeable.
+    const displayedModel = activePin ? activePin.model : (modelDisplayName || modelId);
+    const prevDisplayedModelRef = useRef<string>('');
+    const [modelJustChanged, setModelJustChanged] = useState(false);
+    useEffect(() => {
+        if (!displayedModel) return;
+        const prev = prevDisplayedModelRef.current;
+        prevDisplayedModelRef.current = displayedModel;
+        if (prev && prev !== displayedModel) {
+            setModelJustChanged(true);
+            const t = setTimeout(() => setModelJustChanged(false), 2000);
+            return () => clearTimeout(t);
+        }
+    }, [displayedModel]);
 
     return (
         <div ref={panelRef} className={`folder-tree-panel ${isPanelCollapsed ? 'collapsed' : ''}`}>
@@ -340,8 +362,8 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                 alignItems: 'center',
             }}>
                 {modelId && (
-                    <span style={{ flex: 1 }}>
-                        Model: {activePin ? activePin.model : (modelDisplayName || modelId)}
+                    <span style={{ flex: 1 }} className={modelJustChanged ? 'model-label-pulse' : undefined}>
+                        Model: {displayedModel}
                         {activePin && (() => {
                             // Higher-resolution pin indicator: the scope word
                             // ({conv|folder|proj}) says which hierarchy level
