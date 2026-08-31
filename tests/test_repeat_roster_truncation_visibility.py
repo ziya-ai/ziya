@@ -136,7 +136,15 @@ class TestTheTruncationIsRecordedOnTheContext:
         assert getattr(ctx, "roster_truncations", {}) == {}
 
     def test_two_loops_record_independently(self):
-        """Keyed by block id, so one loop's clip is not read as another's."""
+        """Keyed by block id, so one loop's clip is not read as another's.
+
+        Asserts the counts field-by-field rather than by whole-dict
+        equality: the record grew a ``dropped`` list of the un-run
+        identities (so a follow-up pass can run exactly the remainder
+        instead of the whole roster), and an equality assertion would
+        have to be rewritten every time the record gains a field while
+        testing nothing extra in exchange.
+        """
         ctx = _ctx()
         _plan_iterations(_loop(ROSTER, CEILING), ctx)
         other = _loop(90, 20)
@@ -144,7 +152,13 @@ class TestTheTruncationIsRecordedOnTheContext:
         _plan_iterations(other, ctx)
         got = getattr(ctx, "roster_truncations", {})
         assert got[LOOP_ID]["roster"] == ROSTER
-        assert got["b-other"] == {"roster": 90, "dispatched": 20}
+        assert got["b-other"]["roster"] == 90
+        assert got["b-other"]["dispatched"] == 20
+        # The identities are per-loop too, not pooled across loops: a
+        # shared list would make the remainder of one loop unrecoverable
+        # by mixing in another's, which is the whole point of the field.
+        assert got["b-other"]["dropped"] == [f"gap-{i:03d}" for i in range(20, 90)]
+        assert got[LOOP_ID]["dropped"][0] == f"gap-{CEILING:03d}"
 
 
 class TestTheBlockArtifactCarriesTheDecision:

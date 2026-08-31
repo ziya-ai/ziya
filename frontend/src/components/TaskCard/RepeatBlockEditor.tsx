@@ -6,6 +6,7 @@ import React from 'react';
 import type { Block, RepeatMode, PropagateMode, TaskScope } from '../../types/task_card';
 import { BlockBody } from './BlockBody';
 import { BlockScopeButton } from './BlockScopeButton';
+import { SelfImproveSection } from './SelfImproveSection';
 import { DragHandle } from './DragContext';
 import './task-card-editor.css';
 
@@ -51,11 +52,20 @@ export const RepeatBlockEditor: React.FC<Props> = ({ block, onChange, onDelete, 
         {mode === 'until' && (
           <>
             <span className="tc-label-dim">max</span>
+            {/* Displays the number the backend will actually use.  This
+                showed 3 while _plan_iterations reads
+                `int(repeat_max or 1)`, so an author who never touched the
+                field was promised three passes and got one — and the
+                sibling Until BLOCK defaults to 5, making three different
+                numbers for one concept.  Corrected here rather than
+                raising the runtime default, which would silently change
+                spend on every existing card that left this unset. */}
             <input
               type="number" min={1}
               className="tc-num-input"
-              value={block.repeat_max ?? 3}
+              value={block.repeat_max ?? 1}
               onChange={e => update({ repeat_max: parseInt(e.target.value, 10) || 1 })}
+              title="Maximum iterations before the loop gives up. Defaults to 1, which means the body runs once and the until-condition can never cause a second pass — raise it for the loop to actually retry."
             />
             <span className="tc-label-dim">until summary contains</span>
             <input
@@ -69,14 +79,32 @@ export const RepeatBlockEditor: React.FC<Props> = ({ block, onChange, onDelete, 
           </>
         )}
         {mode === 'for_each' && (
-          <input
-            type="text"
-            className="tc-text-input tc-flex-grow"
-            placeholder='["item1", "item2"] or {{sibling("plan-id").outputs.NAME.key}}'
-            value={block.repeat_for_each_source ?? ''}
-            onChange={e => update({ repeat_for_each_source: e.target.value || null })}
-            title='Items to iterate over: a JSON array literal, or a template resolved when the loop starts. Preferred: name a prior task&apos;s emit_artifact data part, e.g. {{sibling("plan-id").outputs.roster.slugs}} — parsed strictly (whole-string array). Other templated sources use the first JSON array found in the resolved text. A templated source that resolves to no array fails the block rather than looping over nothing.'
-          />
+          <>
+            <input
+              type="text"
+              className="tc-text-input tc-flex-grow"
+              placeholder='["item1", "item2"] or {{sibling("plan-id").outputs.NAME.key}}'
+              value={block.repeat_for_each_source ?? ''}
+              onChange={e => update({ repeat_for_each_source: e.target.value || null })}
+              title='Items to iterate over: a JSON array literal, or a template resolved when the loop starts. Preferred: name a prior task&apos;s emit_artifact data part, e.g. {{sibling("plan-id").outputs.roster.slugs}} — parsed strictly (whole-string array). Other templated sources use the first JSON array found in the resolved text. A templated source that resolves to no array fails the block rather than looping over nothing.'
+            />
+            {/* repeat_max governs this mode too, but used to be rendered
+                only for 'until'.  Switching modes does not clear it, so an
+                until-bound became an invisible, uneditable clip on the
+                roster — a 108-item fan-out silently ran 60.  Shown here so
+                the cap cannot act unseen, with 0 meaning uncapped. */}
+            <span className="tc-label-dim">cap</span>
+            <input
+              type="number" min={0}
+              className="tc-num-input"
+              value={block.repeat_max ?? 0}
+              onChange={e => {
+                const n = parseInt(e.target.value, 10);
+                update({ repeat_max: Number.isFinite(n) && n > 0 ? n : null });
+              }}
+              title="Maximum roster items to dispatch. 0 means uncapped — run every item the source resolves to; this is the right choice when the roster is produced at run time by an earlier task, since no fixed number can be known to cover it. A finite cap drops the roster's tail: the loop still reports success having run only part of its scope. To bound cost without losing scope, leave this at 0 and set the parallel concurrency limit instead."
+            />
+          </>
         )}
         <label className="tc-checkbox-label">
           <input
@@ -135,6 +163,7 @@ export const RepeatBlockEditor: React.FC<Props> = ({ block, onChange, onDelete, 
           onChange={(next: TaskScope) => update({ scope: next })}
           title={block.name || 'this Repeat block'}
         />
+        <SelfImproveSection block={block} onChange={update} />
       </div>
       <BlockBody
         parentId={block.id}
