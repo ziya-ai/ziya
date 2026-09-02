@@ -277,6 +277,15 @@ def _check_write_allowed(relative_path: str, project_root: str, file_exists: boo
     honours the project's ``direct_write_mode``.  Returns an empty string when allowed, or a human-readable rejection
     message that includes the approved paths (so the model can adjust).
     """
+    # PenPal #169 hard floor — checked BEFORE the YOLO and task-scope
+    # short-circuits below, because both of those return "" (allowed) without
+    # ever reaching WritePolicyManager, so a guard only inside the manager
+    # would not cover them. A .py written into app/extensions/ is executed at
+    # the next startup regardless of any policy the user has widened.
+    from app.config.write_policy import WritePolicyManager
+    if WritePolicyManager.is_install_extension_path(relative_path, project_root):
+        return ("Writes into the install extension directory are refused: "
+                "files there are auto-executed at startup (PenPal #169).")
     # YOLO mode: opened up via `/shell yolo` — unrestricted writes in-process
     # (mirrors the shell server's YOLO_MODE env handling).
     if os.environ.get("ZIYA_YOLO_MODE", "").lower() in ("1", "true", "yes"):
