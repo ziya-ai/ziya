@@ -21,6 +21,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 
+# Install-relative extension directory. Every ``*.py`` dropped here is executed
+# at startup by PromptExtensionManager.load_extensions_from_directory
+# (spec.loader.exec_module), so a write into it is *persistent* code execution
+# on the next launch — not a one-shot (PenPal #169, CWE-434). This is a HARD
+# floor: refused regardless of write policy, direct_write_mode, YOLO, or a
+# task-scope grant. Every write sink consults is_install_extension_path()
+# BEFORE any allow decision. write_policy.py lives at app/config/, so the
+# install ``app/`` root is two parents up.
+_INSTALL_APP_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_INSTALL_EXTENSIONS_DIR = os.path.realpath(os.path.join(_INSTALL_APP_ROOT, "extensions"))
+
+
 DEFAULT_WRITE_POLICY = {
     # Controls whether file_write can operate beyond safe paths + patterns.
     # "none" = only safe paths and patterns (default)
@@ -264,9 +276,33 @@ class WritePolicyManager:
         # skip the scan entirely.
         self._unresolved_roots.add(project_root)
 
+    @staticmethod
+    def is_install_extension_path(target_path: str, project_root: str = "") -> bool:
+        """True if *target_path* resolves inside the install extensions tree.
+
+        realpath both sides so a symlink into the tree is caught, and resolve
+        a relative target against *project_root* first (the shape file_write
+        and the shell both hand in). Callers MUST consult this before any
+        allow decision — including YOLO and task-scope grants — because the
+        whole point of PenPal #169 is that no policy setting can re-open the
+        auto-exec directory as a write target.
+        """
+        if not target_path:
+            return False
+        raw = os.path.expanduser(str(target_path).strip().strip("'\""))
+        candidate = (
+            os.path.join(project_root, raw)
+            if (project_root and not os.path.isabs(raw)) else raw
+        )
+        resolved = os.path.realpath(candidate)
+        ext = _INSTALL_EXTENSIONS_DIR
+        return resolved == ext or resolved.startswith(ext + os.sep)
+
     def is_write_allowed(self, target_path: str, project_root: str = "") -> bool:
         root = project_root or self._project_root or ziya_env("ZIYA_USER_CODEBASE_DIR") or ""
         self._ensure_loaded_for_root(root)
+        if self.is_install_extension_path(target_path, root):
+            return False
         return self._check_path(target_path, root)
 
     def is_direct_write_allowed(
@@ -290,6 +326,11 @@ class WritePolicyManager:
             or ziya_env("ZIYA_USER_CODEBASE_DIR") or ""
         )
         self._ensure_loaded_for_root(root)
+
+        # Hard floor, checked before the base-policy allow and before any
+        # direct_write_mode widening below (PenPal #169).
+        if self.is_install_extension_path(target_path, root):
+            return False, "Writes into the install extension directory are refused (auto-executed at startup)."
 
         # Always allow if the base policy already permits it
         if self._check_path(target_path, root):
