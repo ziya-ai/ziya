@@ -346,6 +346,78 @@ export function sanitizeLayoutGeometry(layout: any): any {
  */
 const HIERARCHY_TRACE_TYPES = new Set(['treemap', 'sunburst', 'icicle']);
 
+/**
+ * A d3-style NESTED hierarchy spec: `{type:"treemap", data:{name, children}}`.
+ *
+ * The prompt lists "d3" as a renderer, so a model asked for a treemap emits
+ * this shape -- the d3.hierarchy input format -- rather than Plotly's flat
+ * labels/parents table.  No plugin claimed it, so the registry reported
+ * `No compatible plugin found for visualization type "treemap"` to a first-run
+ * user.  Plotly draws treemap / sunburst / icicle natively, so the plotly
+ * plugin accepts this shape and flattens it (hierarchySpecToPlotly) instead
+ * of Ziya growing a separate d3 renderer.
+ *
+ * The root may be under `data`, `root` or `tree`.  A spec whose `data` is an
+ * ARRAY is Plotly's own trace list and is NOT this shape.
+ */
+export function isD3HierarchySpec(spec: any): boolean {
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) return false;
+  if (!HIERARCHY_TRACE_TYPES.has(spec.type)) return false;
+  const root = spec.data ?? spec.root ?? spec.tree;
+  return !!root && typeof root === 'object' && !Array.isArray(root)
+    && (Array.isArray(root.children) || root.name !== undefined);
+}
+
+/**
+ * Flatten a nested `{name, children, value}` tree into one Plotly hierarchy
+ * trace.  Identity is the slash-joined PATH, not the bare name: the classic
+ * hierarchy bug is two siblings in different branches sharing a name
+ * (`src/unit` vs `tests/unit`), which collapses or throws when labels are
+ * used as ids.  The visible label stays the bare name.  A branch with no
+ * value of its own is left `undefined` so Plotly sums its children under the
+ * default `branchvalues`; coercing it to 0 would make every branch vanish.
+ */
+export function hierarchySpecToPlotly(spec: any): { data: any[]; layout: any } {
+  const root = spec.data ?? spec.root ?? spec.tree;
+  const ids: string[] = [];
+  const labels: string[] = [];
+  const parents: string[] = [];
+  const values: Array<number | undefined> = [];
+  const seen = new Set<string>();
+
+  const visit = (node: any, parentId: string, index: number): void => {
+    if (!node || typeof node !== 'object') return;
+    const name = node.name !== undefined && node.name !== null
+      ? String(node.name) : `node${index}`;
+    let id = parentId ? `${parentId}/${name}` : name;
+    // Two same-named siblings under ONE parent still need distinct ids.
+    let dedupe = 2;
+    while (seen.has(id)) id = `${parentId ? `${parentId}/` : ''}${name}#${dedupe++}`;
+    seen.add(id);
+    ids.push(id);
+    labels.push(name);
+    parents.push(parentId);
+    const v = node.value ?? node.size;
+    values.push(typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+    if (Array.isArray(node.children)) {
+      node.children.forEach((child: any, i: number) => visit(child, id, i));
+    }
+  };
+  if (Array.isArray(root)) {
+    root.forEach((r: any, i: number) => visit(r, '', i));
+  } else {
+    visit(root, '', 0);
+  }
+
+  const trace: any = { type: spec.type, ids, labels, parents, values };
+  if (spec.branchvalues) trace.branchvalues = spec.branchvalues;
+  if (spec.textinfo) trace.textinfo = spec.textinfo;
+  if (spec.maxdepth) trace.maxdepth = spec.maxdepth;
+  const layout: any = { ...(spec.layout ?? {}) };
+  if (spec.title && layout.title === undefined) layout.title = { text: String(spec.title) };
+  return { data: [trace], layout };
+}
+
 export function disambiguateHierarchyLabels(data: any[]): any[] {
   if (!Array.isArray(data)) return data;
   return data.map(trace => {
@@ -405,18 +477,65 @@ export function disambiguateHierarchyLabels(data: any[]): any[] {
  *
  * General across the whole WebGL trace family, not one spec. Exported for
  * unit testing.
+ *
+ * `force` bypasses the webdriver gate: the interactive WebGL-context-loss
+ * recovery in plotlyPlugin re-renders with the same demotion.
  */
-export function demoteWebglTracesForCapture(data: any[]): any[] {
+export function demoteWebglTracesForCapture(data: any[], force = false): any[] {
   if (!Array.isArray(data)) return data;
   const isHeadlessCapture =
     typeof navigator !== 'undefined' && (navigator as any).webdriver === true;
-  if (!isHeadlessCapture) return data;
+  if (!isHeadlessCapture && !force) return data;
   return data.map(trace => {
     if (trace && typeof trace.type === 'string' && /gl$/.test(trace.type)) {
       return { ...trace, type: trace.type.replace(/gl$/, '') };
     }
     return trace;
   });
+}
+
+/**
+ * D-302 — a `splom` trace whose `xaxes` / `yaxes` arrays are SHORTER than its
+ * `dimensions` array makes Plotly.newPlot hang synchronously (the headless
+ * capture waits out the full 30s wall clock and yields svg:0/canvas:0 — total
+ * data loss, no diagnostic).
+ *
+ * A scatter-plot-matrix draws an N×N grid of subplots for N dimensions, so
+ * Plotly requires `xaxes` and `yaxes` to each name N axes. When the author
+ * supplies fewer (e.g. `dimensions:[d1,d2]` but `xaxes:['x3']`), Plotly's splom
+ * axis-assignment indexes past the end of the array (`xaxes[1]` is undefined),
+ * references an axis that was never created, and never settles. This is the
+ * same UNBOUNDED / DEGENERATE-INPUT class as the histogram nbins and graphviz
+ * minlen hangs: a single malformed field starves the render.
+ *
+ * NOTE: a Promise/setTimeout race around Plotly.newPlot (the earlier D-302
+ * attempt) CANNOT rescue this — the hang is synchronous on the JS main thread,
+ * so the timer callback can never fire until newPlot returns. The only reliable
+ * remedy is to repair the malformed input BEFORE newPlot is called.
+ *
+ * Fix: when a splom's `xaxes` / `yaxes` length does not match its dimension
+ * count, DROP both arrays so Plotly auto-generates a correct N×N axis set
+ * (which is exactly what an unspecified splom does). A splom whose axis arrays
+ * already match its dimensions, or supplies none, passes through UNCHANGED, and
+ * non-splom traces are never touched. Exported for unit testing.
+ */
+export function sanitizeSplomAxes(data: any[]): any[] {
+  if (!Array.isArray(data)) return data;
+  let changed = false;
+  const out = data.map(trace => {
+    if (!trace || typeof trace !== 'object' || trace.type !== 'splom') return trace;
+    const n = Array.isArray(trace.dimensions) ? trace.dimensions.length : 0;
+    if (n === 0) return trace;
+    const xMismatch = Array.isArray(trace.xaxes) && trace.xaxes.length !== n;
+    const yMismatch = Array.isArray(trace.yaxes) && trace.yaxes.length !== n;
+    if (!xMismatch && !yMismatch) return trace;
+    // Drop BOTH so Plotly regenerates a consistent N×N axis set. Removing one
+    // while keeping a mismatched other would leave the pairing inconsistent.
+    const { xaxes, yaxes, ...rest } = trace;
+    changed = true;
+    return rest;
+  });
+  return changed ? out : data;
 }
 
 /**
@@ -1183,6 +1302,240 @@ export function enforceInShapeTextFloor(spec: PlotlySpec): PlotlySpec {
   return { ...spec, layout: newLayout };
 }
 
+/* ======================================================================== *
+ * D-305 — pathologically long title / axis-title / legend text is neither
+ * wrapped nor ellipsized, so it clips at the paper edges.
+ *
+ * `enableAxisAutomargin` (title.automargin / axis.automargin) only reserves a
+ * larger MARGIN band; it cannot make a 150-char SINGLE LINE fit horizontally —
+ * the line is wider than the paper regardless of margin, so it still clips at
+ * the left/right canvas edges. The complementary fix is to insert `<br>` line
+ * breaks so each visual line fits the paper width (main + axis titles), and to
+ * ellipsize over-long legend NAMES (plotly legends do not wrap; a long name
+ * runs off the right edge). Theme-independent geometry — the same wrap/ellipsis
+ * applies on both backgrounds.
+ *
+ * Conservative: only strings LONGER than the per-role threshold and NOT already
+ * author-wrapped (no `<br>`/`\n`) are touched; everything else is returned by
+ * reference / byte-identical.
+ * ======================================================================== */
+export const PLOTLY_TITLE_WRAP_MAXCHARS = 60;
+export const PLOTLY_TITLE_WRAP_MAXLINES = 4;
+export const PLOTLY_LEGEND_NAME_MAXCHARS = 40;
+
+/** Truncate to `maxChars` including a trailing ellipsis. */
+function ellipsizePlotlyText(s: string, maxChars: number): string {
+  if (typeof s !== 'string' || s.length <= maxChars) return s;
+  return s.slice(0, Math.max(1, maxChars - 1)).replace(/\s+$/, '') + '\u2026';
+}
+
+/**
+ * Word-wrap `text` into lines no longer than `maxChars`, joined with `<br>`.
+ * A single word longer than `maxChars` is hard-broken. If the wrapped result
+ * would exceed `maxLines`, the surplus is folded into the last line and
+ * ellipsized so the block stays bounded. Author-wrapped text (already
+ * containing `<br>`/`\n`) and short text are returned unchanged.
+ * Exported for unit testing.
+ */
+export function wrapPlotlyText(text: string, maxChars: number, maxLines: number): string {
+  if (typeof text !== 'string') return text;
+  if (text.includes('<br>') || text.includes('\n')) return text;
+  if (text.length <= maxChars) return text;
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let cur = '';
+  const pushWord = (w: string) => {
+    let word = w;
+    // hard-break a single token wider than a line
+    while (word.length > maxChars) {
+      if (cur) { lines.push(cur); cur = ''; }
+      lines.push(word.slice(0, maxChars));
+      word = word.slice(maxChars);
+    }
+    if (!word) return;
+    if (cur === '') cur = word;
+    else if (cur.length + 1 + word.length <= maxChars) cur += ' ' + word;
+    else { lines.push(cur); cur = word; }
+  };
+  for (const w of words) pushWord(w);
+  if (cur) lines.push(cur);
+  if (lines.length > maxLines) {
+    const kept = lines.slice(0, maxLines);
+    const rest = lines.slice(maxLines).join(' ');
+    kept[maxLines - 1] = ellipsizePlotlyText(kept[maxLines - 1] + ' ' + rest, maxChars);
+    return kept.join('<br>');
+  }
+  return lines.join('<br>');
+}
+
+/**
+ * Wrap over-long single-line main title and cartesian axis titles so they fit
+ * the paper width instead of clipping at the edges (D-305). Returns the layout
+ * by reference when nothing is over length. Exported for unit testing.
+ */
+export function wrapLongTitles(layout: any): any {
+  if (!layout || typeof layout !== 'object') return layout;
+  let out: any = layout;
+  const clone = () => { if (out === layout) out = { ...layout }; };
+  const wrapTitle = (t: any): any => {
+    const title = typeof t === 'string' ? { text: t } : t;
+    if (!title || typeof title !== 'object' || typeof title.text !== 'string') return t;
+    const wrapped = wrapPlotlyText(title.text, PLOTLY_TITLE_WRAP_MAXCHARS, PLOTLY_TITLE_WRAP_MAXLINES);
+    if (wrapped === title.text) return t;
+    return { ...title, text: wrapped };
+  };
+  if (layout.title !== undefined) {
+    const nt = wrapTitle(layout.title);
+    if (nt !== layout.title) { clone(); out.title = nt; }
+  }
+  for (const key of Object.keys(layout)) {
+    if (!/^[xy]axis(\d*)$/.test(key)) continue;
+    const axis = layout[key];
+    if (!axis || typeof axis !== 'object' || Array.isArray(axis) || axis.title === undefined) continue;
+    const nt = wrapTitle(axis.title);
+    if (nt !== axis.title) { clone(); out[key] = { ...axis, title: nt }; }
+  }
+  return out;
+}
+
+/**
+ * Ellipsize over-long legend NAMES (plotly legends never wrap; a long name runs
+ * off the right edge and is clipped, D-305). Returns `data` by reference when no
+ * name is over length. Exported for unit testing.
+ */
+export function ellipsizeLongLegendNames(data: any[]): any[] {
+  if (!Array.isArray(data)) return data;
+  let changed = false;
+  const out = data.map(t => {
+    if (t && typeof t === 'object' && typeof t.name === 'string' &&
+        t.name.length > PLOTLY_LEGEND_NAME_MAXCHARS &&
+        !t.name.includes('<br>') && !t.name.includes('\n')) {
+      changed = true;
+      return { ...t, name: ellipsizePlotlyText(t.name, PLOTLY_LEGEND_NAME_MAXCHARS) };
+    }
+    return t;
+  });
+  return changed ? out : data;
+}
+
+/* ======================================================================== *
+ * D-303 — an indicator trace's own `title` collides with the layout title.
+ *
+ * plotly-w1-10 is a KPI gauge: `layout.title` = "Service Level Gauge" AND the
+ * indicator trace carries its own `title` = "SLA Attainment (%)". Both are
+ * drawn at the very top (the layout title in the top margin, the indicator
+ * title at the TOP of the trace's domain, which by default is `y:[0,1]` — the
+ * full paper height), so they print on top of each other, mutually illegible.
+ * `fixMultilineTitle` only fires on multi-line titles, so a single-line layout
+ * title stacked over an indicator title is not covered, and the plugin's fixed
+ * `margin.t:40` reserves no extra room.
+ *
+ * Fix (theme-independent geometry — same on both backgrounds): when a layout
+ * title coexists with an indicator trace that has its own title, (a) pull the
+ * indicator trace's domain TOP down so its title sits below the layout-title
+ * band instead of at the very top, and (b) reserve a top-margin band for the
+ * layout title. Both levers only ever ADD separation, never remove content, so
+ * doing both is robust regardless of whether Plotly measures indicator
+ * `domain` in paper- or plot-fraction. Conservative: fires only when BOTH
+ * titles are present and the author has not already pulled the domain top down
+ * / set a large top margin. Exported for unit testing.
+ * ======================================================================== */
+export const PLOTLY_INDICATOR_DOMAIN_TOP = 0.85;
+export const PLOTLY_INDICATOR_TITLE_MARGIN_T = 70;
+
+function titleText(t: any): string {
+  if (typeof t === 'string') return t;
+  if (t && typeof t === 'object' && typeof t.text === 'string') return t.text;
+  return '';
+}
+
+export function separateIndicatorFromLayoutTitle(spec: PlotlySpec): PlotlySpec {
+  if (!spec || typeof spec !== 'object' || !Array.isArray(spec.data)) return spec;
+  const layout = (spec.layout && typeof spec.layout === 'object') ? spec.layout : undefined;
+  if (!titleText(layout?.title)) return spec; // no layout title -> no collision
+
+  let anyChanged = false;
+  const newData = spec.data.map(trace => {
+    if (!trace || typeof trace !== 'object' || trace.type !== 'indicator') return trace;
+    if (!titleText(trace.title)) return trace; // indicator has no title of its own
+    const domain = (trace.domain && typeof trace.domain === 'object' && !Array.isArray(trace.domain))
+      ? trace.domain : {};
+    const y = Array.isArray(domain.y) ? domain.y : [0, 1];
+    const top = typeof y[1] === 'number' ? y[1] : 1;
+    if (top <= PLOTLY_INDICATOR_DOMAIN_TOP) return trace; // author already left room
+    anyChanged = true;
+    const bottom = typeof y[0] === 'number' ? y[0] : 0;
+    return { ...trace, domain: { ...domain, y: [bottom, PLOTLY_INDICATOR_DOMAIN_TOP] } };
+  });
+  if (!anyChanged) return spec;
+
+  const newLayout: any = { ...(layout || {}) };
+  const curTop = newLayout.margin?.t;
+  if (curTop === undefined || curTop < PLOTLY_INDICATOR_TITLE_MARGIN_T) {
+    newLayout.margin = { ...(newLayout.margin || {}), t: PLOTLY_INDICATOR_TITLE_MARGIN_T };
+  }
+  return { ...spec, data: newData, layout: newLayout };
+}
+
+/* ======================================================================== *
+ * D-308 — a many-dimension parcoords trace packs its per-axis dimension labels
+ * so tightly they overlap/collide across the top.
+ *
+ * plotly-w2-13 is a 24-dimension parallel-coordinates plot; with ~53px per axis
+ * and ~19-char labels ("dimension_00_metric"), the horizontal, top-anchored
+ * labels overprint into an illegible band. Plotly draws parcoords dimension
+ * labels horizontally by default with no rotation, staggering or thinning, so
+ * they simply collide. Plotly's own lever for this is `labelangle` (the angle
+ * of the dimension labels w.r.t. the horizontal); rotating the labels shrinks
+ * their horizontal footprint so adjacent labels stop overprinting. The rotation
+ * is steeper the denser the axes are. Rotated labels need vertical room, so we
+ * also reserve a top-margin band.
+ *
+ * Theme-independent geometry — identical on both backgrounds. Conservative:
+ * fires only for parcoords with more than PLOTLY_PARCOORDS_DENSE_DIMS
+ * dimensions and only when the author set no `labelangle`; sparse parcoords and
+ * author-angled ones pass through unchanged. (The distinct Viridis-vs-surface
+ * legibility note in triage is a named-colorscale concern that
+ * guardColorscaleAgainstSurface deliberately leaves untouched; this pass
+ * targets the label collision that names the defect.) Exported for testing.
+ * ======================================================================== */
+export const PLOTLY_PARCOORDS_DENSE_DIMS = 8;
+
+/** Rotation angle (degrees from horizontal) scaled by axis density. Steeper for
+ *  more axes so the label's horizontal footprint stays under the per-axis pitch. */
+export function parcoordsLabelAngleFor(dims: number): number {
+  if (dims > 16) return -60;
+  if (dims > 12) return -45;
+  return -30;
+}
+
+export function fixDenseParcoordsLabels(spec: PlotlySpec): PlotlySpec {
+  if (!spec || typeof spec !== 'object' || !Array.isArray(spec.data)) return spec;
+  let maxDims = 0;
+  let anyChanged = false;
+  const newData = spec.data.map(trace => {
+    if (!trace || typeof trace !== 'object' || trace.type !== 'parcoords') return trace;
+    const dims = Array.isArray(trace.dimensions) ? trace.dimensions.length : 0;
+    if (dims <= PLOTLY_PARCOORDS_DENSE_DIMS) return trace;
+    if (trace.labelangle !== undefined) { // author chose an angle; still track for margin
+      maxDims = Math.max(maxDims, dims);
+      return trace;
+    }
+    maxDims = Math.max(maxDims, dims);
+    anyChanged = true;
+    return { ...trace, labelangle: parcoordsLabelAngleFor(dims) };
+  });
+  if (!anyChanged) return spec;
+
+  const layout: any = { ...((spec.layout && typeof spec.layout === 'object') ? spec.layout : {}) };
+  const needTop = maxDims > 16 ? 120 : maxDims > 12 ? 100 : 80;
+  const curTop = layout.margin?.t;
+  if (curTop === undefined || curTop < needTop) {
+    layout.margin = { ...(layout.margin || {}), t: needTop };
+  }
+  return { ...spec, data: newData, layout };
+}
+
 /** Compose all preprocessors. Order matters: title fix first so subsequent
  *  passes see the adjusted title state. */
 export function preprocessPlotlySpec(spec: PlotlySpec): PlotlySpec {
@@ -1195,6 +1548,9 @@ export function preprocessPlotlySpec(spec: PlotlySpec): PlotlySpec {
   let layout = spec.layout;
   // D-231a: string-shorthand titles -> {text} (plotly v2 drops the string form).
   layout = coerceStringTitles(layout);
+  // D-305: wrap over-long single-line main/axis titles BEFORE fixMultilineTitle
+  // so it sees the inserted <br> and reserves the title band (y/margin.t).
+  layout = wrapLongTitles(layout);
   layout = fixMultilineTitle(layout);
   layout = adjustSceneDomainsForTitle(layout);
   layout = ensureSceneDomainGaps(layout);
@@ -1204,7 +1560,13 @@ export function preprocessPlotlySpec(spec: PlotlySpec): PlotlySpec {
   layout = clampDimensionsToViewportForCapture(layout);
   let data = clampColorbars(spec.data || []);
   data = demoteWebglTracesForCapture(data);
+  // D-302: repair a splom whose xaxes/yaxes arrays don't match its dimension
+  // count, which otherwise hangs Plotly.newPlot synchronously (blank capture).
+  data = sanitizeSplomAxes(data);
   data = disambiguateHierarchyLabels(data);
+  // D-223: declutter dense sankeys — floor node.pad so stacked labels stop
+  // colliding, and floor near-transparent link-ribbon alpha for visibility.
+  data = declutterDenseSankey(data);
   data = clampHistogramBins(data);
   // D-231b: demote marker-owned keys (color/size) emitted at the trace root.
   data = demoteTraceLevelMarkerKeys(data);
@@ -1213,6 +1575,8 @@ export function preprocessPlotlySpec(spec: PlotlySpec): PlotlySpec {
   // D-235: back-fill an omitted x on a later trace from a sibling so two series
   // align over the shared categories instead of appearing in disjoint halves.
   data = backfillMissingTraceX(data);
+  // D-305: ellipsize over-long legend names (legends never wrap; long names clip).
+  data = ellipsizeLongLegendNames(data);
   // Final magnitude pass over the WHOLE spec: clamp every font.size and any
   // astronomical marker.size that would block the render thread (Issue 48).
   let composed = clampExtremeSizes({ ...spec, data, layout });
@@ -1222,6 +1586,11 @@ export function preprocessPlotlySpec(spec: PlotlySpec): PlotlySpec {
   // D-239: min in-shape-text floor so pie/sunburst/treemap labels are dropped
   // when too small rather than shrunk into an illegible smear.
   composed = enforceInShapeTextFloor(composed);
+  // D-303: separate an indicator trace's own title from a coexisting layout
+  // title (pull the indicator domain top down + reserve a top-margin band).
+  composed = separateIndicatorFromLayoutTitle(composed);
+  // D-308: rotate dense parcoords dimension labels so they stop overprinting.
+  composed = fixDenseParcoordsLabels(composed);
   return composed;
 }
 
@@ -1382,3 +1751,189 @@ export const PLOTLY_EXTENDED_COLORWAY = [
   '#3182bd', '#e6550d', '#31a354', '#756bb1', '#636363',
   '#ad494a', '#8ca252', '#bd9e39', '#7b6888',
 ];
+
+/* ======================================================================== *
+ * D-197 / D-044 — dense-sankey node-label legibility via capture-height grow.
+ *
+ * A sankey trace produces exactly ONE legend entry, so `estimateLegendEntries`
+ * / `legendAwareRenderHeightPx` never grow the static capture div for it, yet
+ * the ~20 nodes stacked in a single sankey column are crushed into the default
+ * 60vh viewport and their labels overprint into an illegible smear (unlike the
+ * pie/sunburst/treemap family, sankey labels do NOT auto-shrink — they collide
+ * at full size, so `enforceInShapeTextFloor` does not help either). This is
+ * pure geometry, identical in both themes.
+ *
+ * The fix is the SAME "give crushed content vertical room" lever already used
+ * for legends: measure the busiest column (the most nodes sharing one layout
+ * column) and, when it exceeds a grow threshold, return a taller capture-div
+ * height so plotly spreads that column and the labels stop colliding. The
+ * column of each node is its longest-path depth in the link graph (the same
+ * notion plotly uses to place stages); with no/loose links every node is a
+ * single column, so a flat pile of N labels is also caught.
+ *
+ * Conservative: fires ONLY for a sankey whose busiest column exceeds the
+ * threshold and ONLY when the author fixed no explicit height (the plugin gates
+ * on `specHeight`); sparse sankeys return null (default 60vh, byte-identical).
+ * Capped at PLOTLY_LEGEND_MAX_HEIGHT_PX so a pathological column cannot request
+ * an unbounded canvas. Exported for unit testing.
+ * ======================================================================== */
+export const PLOTLY_SANKEY_GROW_THRESHOLD = 12;
+export const PLOTLY_SANKEY_NODE_ROW_PX = 26;
+
+/** Longest-path depth (layout column) of every sankey node from the link graph,
+ *  returning the largest node count in any single column. Cycle-safe (depth
+ *  relaxation is capped at node-count iterations). */
+function sankeyBusiestColumn(trace: any): number {
+  const labels = trace && trace.node ? trace.node.label : undefined;
+  if (!Array.isArray(labels) || labels.length === 0) return 0;
+  const n = labels.length;
+  const src = (trace.link && Array.isArray(trace.link.source)) ? trace.link.source : [];
+  const tgt = (trace.link && Array.isArray(trace.link.target)) ? trace.link.target : [];
+  const outEdges: number[][] = Array.from({ length: n }, () => []);
+  const m = Math.min(src.length, tgt.length);
+  for (let i = 0; i < m; i++) {
+    const a = src[i], b = tgt[i];
+    if (Number.isInteger(a) && Number.isInteger(b) &&
+        a >= 0 && a < n && b >= 0 && b < n && a !== b) {
+      outEdges[a].push(b);
+    }
+  }
+  // Longest-path depth via relaxation; capped at n passes so a cyclic (invalid)
+  // link set cannot loop forever.
+  const depth = new Array(n).fill(0);
+  for (let iter = 0; iter < n; iter++) {
+    let changed = false;
+    for (let a = 0; a < n; a++) {
+      const da1 = depth[a] + 1;
+      for (const b of outEdges[a]) {
+        if (depth[b] < da1) { depth[b] = da1; changed = true; }
+      }
+    }
+    if (!changed) break;
+  }
+  const perCol = new Map<number, number>();
+  let busiest = 0;
+  for (let i = 0; i < n; i++) {
+    const c = depth[i] | 0;
+    const v = (perCol.get(c) || 0) + 1;
+    perCol.set(c, v);
+    if (v > busiest) busiest = v;
+  }
+  return busiest;
+}
+
+/**
+ * When a sankey trace's busiest column exceeds the grow threshold, return a
+ * taller capture-div pixel height so the crowded column is not crushed into the
+ * default 60vh box (its labels stop overprinting); else `null` (the caller
+ * keeps the default height, so ordinary figures are unchanged). Exported for
+ * unit testing.
+ */
+export function sankeyAwareRenderHeightPx(data: any[]): number | null {
+  if (!Array.isArray(data)) return null;
+  let busiest = 0;
+  for (const t of data) {
+    if (t && typeof t === 'object' && t.type === 'sankey') {
+      const c = sankeyBusiestColumn(t);
+      if (c > busiest) busiest = c;
+    }
+  }
+  if (!(busiest > PLOTLY_SANKEY_GROW_THRESHOLD)) return null;
+  const needed = busiest * PLOTLY_SANKEY_NODE_ROW_PX + 120;
+  return Math.min(needed, PLOTLY_LEGEND_MAX_HEIGHT_PX);
+}
+
+/* ======================================================================== *
+ * D-223 — dense-sankey node-label COLLISION + near-invisible link ribbons.
+ *
+ * `sankeyAwareRenderHeightPx` grows the capture div so a crowded column is not
+ * crushed, but plotly still honours the trace's own `node.pad` as the vertical
+ * gap between nodes in a column. plotly-w2-07 sets `node.pad: 3` on 20 nodes
+ * per column, so even in a taller canvas the node boxes sit 3px apart and their
+ * ~12px labels overprint — the height grow alone cannot declutter them. This is
+ * the missing declutter rule: for a DENSE sankey, floor `node.pad` at a value
+ * that separates adjacent labels by more than a text line.
+ *
+ * The same trace draws its 400 flow ribbons at `rgba(...,0.25)`, which measures
+ * ~1.37:1 (light) / ~1.33:1 (dark) against the paper and effectively vanishes.
+ * We raise ONLY the alpha channel (hue preserved) to a visibility floor,
+ * lifting the ribbon to ~1.96:1 (light) / ~1.86:1 (dark) — a material gain
+ * while staying moderate, because 400 overlapping ribbons at full opacity fuse
+ * into an indistinct mass. Both moves are pure geometry / per-channel alpha and
+ * resolve identically on either background.
+ *
+ * Conservative: fires ONLY for a sankey whose busiest column exceeds the grow
+ * threshold, and each lever fires ONLY when the author's value is below the
+ * floor (a roomier pad or a more opaque ribbon is left untouched). Non-sankey
+ * traces and sparse sankeys are returned by reference. Exported for unit tests.
+ * ======================================================================== */
+export const PLOTLY_SANKEY_MIN_NODE_PAD = 15;
+export const PLOTLY_SANKEY_MIN_LINK_ALPHA = 0.5;
+
+/**
+ * If `color` is an `rgba(r,g,b,a)` string with `a` below `floor`, return the
+ * same colour with alpha raised to `floor`; otherwise return `null` (opaque
+ * rgb()/hex, an already-sufficient alpha, or a non-string are all left alone).
+ * Exported for unit testing.
+ */
+export function raiseRgbaAlphaToFloor(color: any, floor: number): string | null {
+  if (typeof color !== 'string') return null;
+  const m = color.match(
+    /^\s*rgba\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)\s*\)\s*$/i,
+  );
+  if (!m) return null;
+  const a = parseFloat(m[4]);
+  if (!(a < floor)) return null;
+  return `rgba(${m[1]}, ${m[2]}, ${m[3]}, ${floor})`;
+}
+
+/** Raise a link.color (string OR per-link array of strings) alpha to the floor.
+ *  Returns `{ color, changed }`; `changed` is false when nothing was below it. */
+function raiseLinkColorAlpha(color: any, floor: number): { color: any; changed: boolean } {
+  if (Array.isArray(color)) {
+    let changed = false;
+    const out = color.map((c) => {
+      const raised = raiseRgbaAlphaToFloor(c, floor);
+      if (raised !== null) { changed = true; return raised; }
+      return c;
+    });
+    return changed ? { color: out, changed: true } : { color, changed: false };
+  }
+  const raised = raiseRgbaAlphaToFloor(color, floor);
+  return raised !== null ? { color: raised, changed: true } : { color, changed: false };
+}
+
+/**
+ * Declutter dense sankeys: floor `node.pad` so stacked node labels stop
+ * colliding, and floor the flow-ribbon alpha so near-transparent links become
+ * visible. See the block comment above for the rationale and contrast figures.
+ * Returns the input array by reference when nothing changed. Exported for tests.
+ */
+export function declutterDenseSankey(data: any[]): any[] {
+  if (!Array.isArray(data)) return data;
+  let changed = false;
+  const out = data.map((t) => {
+    if (!t || typeof t !== 'object' || t.type !== 'sankey') return t;
+    if (!(sankeyBusiestColumn(t) > PLOTLY_SANKEY_GROW_THRESHOLD)) return t;
+    let trace = t;
+    // (1) node.pad floor — the actual declutter for column-internal collisions.
+    const node = (trace.node && typeof trace.node === 'object') ? trace.node : {};
+    // plotly's own default node.pad is 20; only an explicit smaller value crams.
+    const curPad = typeof node.pad === 'number' ? node.pad : 20;
+    if (curPad < PLOTLY_SANKEY_MIN_NODE_PAD) {
+      trace = { ...trace, node: { ...node, pad: PLOTLY_SANKEY_MIN_NODE_PAD } };
+      changed = true;
+    }
+    // (2) link ribbon alpha floor — near-invisible flows become legible.
+    const link = (trace.link && typeof trace.link === 'object') ? trace.link : undefined;
+    if (link && link.color !== undefined) {
+      const raised = raiseLinkColorAlpha(link.color, PLOTLY_SANKEY_MIN_LINK_ALPHA);
+      if (raised.changed) {
+        trace = { ...trace, link: { ...(trace.link), color: raised.color } };
+        changed = true;
+      }
+    }
+    return trace;
+  });
+  return changed ? out : data;
+}

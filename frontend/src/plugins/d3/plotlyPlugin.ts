@@ -14,14 +14,18 @@
 import { D3RenderPlugin } from '../../types/d3';
 import {
   preprocessPlotlySpec,
+  demoteWebglTracesForCapture,
   parsePlotlyDefinition,
   isValidColorToken,
   KNOWN_PLOTLY_TEMPLATES,
   guardColorscaleAgainstSurface,
   estimateLegendEntries,
   legendAwareRenderHeightPx,
+  sankeyAwareRenderHeightPx,
   PLOTLY_EXTENDED_COLORWAY,
   PLOTLY_COLORWAY_RECYCLE_THRESHOLD,
+  isD3HierarchySpec,
+  hierarchySpecToPlotly,
 } from './plotlyPreprocessor';
 import { classifyColor, namedColorToHex, isDarkBackground } from './chartTheme';
 
@@ -54,9 +58,22 @@ const PLOTLY_TRACE_TYPES = new Set([
   'indicator', 'table', 'image', 'splom',
 ]);
 
+/**
+ * Per-render budget for Plotly.newPlot (D-302). Some trace-family combinations
+ * never settle; without a bound the headless capture harness waits its full
+ * wall-clock timeout and yields a blank. 12s < the harness ceiling, so a hung
+ * combo throws a diagnostic with time to spare while a merely-slow-but-valid
+ * render still completes.
+ */
+export const PLOTLY_NEWPLOT_BUDGET_MS = 12000;
+
 function isPlotlySpec(spec: any): boolean {
   if (!spec || typeof spec !== 'object') return false;
   if (spec.type === 'plotly') return true;
+  // d3-style nested treemap/sunburst/icicle: Plotly renders these natively
+  // once flattened, and nothing else claims the shape (first-run "No
+  // compatible plugin found for visualization type \"treemap\"").
+  if (isD3HierarchySpec(spec)) return true;
   if (Array.isArray(spec.data) && spec.data.length > 0) {
     const firstType = spec.data[0]?.type;
     if (firstType && PLOTLY_TRACE_TYPES.has(firstType)) return true;
@@ -349,6 +366,29 @@ export function themeDarkAnnotations(layout: any, isDarkMode: boolean): any {
  * only when the author left it unset, so an explicit author colour is kept).
  * Exported for unit testing.
  */
+/**
+ * Trace families whose subplot DOMAIN Plotly auto-fits to a square sized for
+ * the plot area present at layout time and does NOT re-solve on a bare
+ * relayout({width,height}). A figure containing any of these needs a full
+ * Plotly.react() after the container settles so its domain re-centres at the
+ * final width (D-300). Cartesian families (scatter/bar/heatmap/...) are absent
+ * because relayout re-lays their plot area correctly on its own.
+ */
+export const PLOTLY_DOMAIN_TRACE_TYPES = new Set<string>([
+  'pie', 'sunburst', 'icicle', 'treemap', 'funnelarea',
+  'scatterpolar', 'scatterpolargl', 'barpolar',
+  'scatterternary',
+]);
+
+export function hasDomainTrace(data: any): boolean {
+  if (!Array.isArray(data)) return false;
+  return data.some(
+    (t) => t && typeof t === 'object' &&
+      typeof t.type === 'string' &&
+      PLOTLY_DOMAIN_TRACE_TYPES.has(t.type),
+  );
+}
+
 export function applyPlotlyTraceTheme(data: any[], isDarkMode: boolean): any[] {
   if (!isDarkMode || !Array.isArray(data)) return data;
   const DARK_CELL = '#1e1e1e';
@@ -385,6 +425,122 @@ export function applyPlotlyTraceTheme(data: any[], isDarkMode: boolean): any[] {
     };
   });
   return anyChanged ? out : data;
+}
+
+// D-301 (render-div-vertical-misalignment-clips-figure): the render div's
+// min-height. When the author fixed an explicit layout.height, that height is
+// the min-height too, so a short author-fixed figure (e.g. 4000x260) is NOT
+// inflated to a 400px div (which left an empty band above and clipped the
+// bottom on capture). The 400px legibility floor applies only when no explicit
+// height was authored. Pure/exported for unit testing.
+export function plotlyRenderMinHeightCss(specHeight: number | undefined | null): string {
+  return specHeight ? `${specHeight}px` : '400px';
+}
+
+// D-304 (title-clipped-by-grown-legend-div): the plugin forces a compact
+// `margin: { t: 40 }` on every figure. Plotly draws the layout title INSIDE
+// that top margin, so a 40px band is tight for a default ~17px title and the
+// glyphs are clipped through their middle — worst on a legend-grown tall div
+// (D-241), where the extra height made the squeeze visible on capture. Plotly's
+// `title.automargin` makes the title PUSH the top margin so it is always fully
+// reserved, regardless of the fixed margin.t or the div height. Enable it
+// whenever a title is present and the author has not chosen a value; a no-op for
+// titleless figures (byte-identical) and theme-independent (the title colour is
+// themed elsewhere), so it holds in light and dark alike. Pure/exported for
+// unit testing.
+export function ensurePlotlyTitleAutomargin(layout: any): any {
+  if (!layout || typeof layout !== 'object') return layout;
+  const title = layout.title;
+  if (title == null || title === '') return layout;
+  if (typeof title === 'string') {
+    return { ...layout, title: { text: title, automargin: true } };
+  }
+  if (typeof title === 'object') {
+    if (title.automargin === undefined) {
+      return { ...layout, title: { ...title, automargin: true } };
+    }
+  }
+  return layout;
+}
+
+/**
+ * Release everything a previous render attached to `container`: the
+ * ResizeObserver and, via Plotly.purge, the plot's DOM and its WebGL contexts.
+ *
+ * Without this, WebGL-backed traces (scattergl, heatmapgl, scatter3d, surface,
+ * ...) kept their GL context alive after the chart was re-rendered or
+ * unmounted until GC happened to collect the detached canvas. Chromium counts
+ * live contexts against a per-page ceiling (~16) and loses the OLDEST one when
+ * it is exceeded; a long conversation with several GL charts hit that ceiling
+ * and the lost contexts surfaced as repeated
+ * "gl-shader: Error compiling shader: null" throws from Plotly's draw loop.
+ * Safe to call on a container that never held a plot. Exported for testing.
+ */
+export function teardownPlotlyContainer(container: HTMLElement, Plotly?: any): void {
+  const c = container as any;
+  try { c._plotlyResizeObserver?.disconnect(); } catch { /* already gone */ }
+  c._plotlyResizeObserver = undefined;
+  const div = c._plotlyDiv;
+  c._plotlyDiv = undefined;
+  if (!div) return;
+  const P = Plotly || (typeof window !== 'undefined' ? (window as any).Plotly : undefined);
+  try { P?.purge?.(div); } catch { /* plot already torn down */ }
+}
+
+/** Recoveries attempted per container before giving up on a lost context. */
+export const PLOTLY_MAX_CONTEXT_LOSS_RECOVERIES = 1;
+
+/**
+ * Recover from `webglcontextlost` on the plot's canvases.
+ *
+ * Plotly has no context-loss recovery of its own: once Chromium revokes the
+ * context (context ceiling, GPU reset, sleep/wake) every subsequent draw in
+ * Plotly's rAF/hover callbacks throws `gl-shader: Error compiling shader:
+ * null` (null = getShaderInfoLog on a lost context) outside any await or try
+ * in this file, so the throws escape to window.onerror once per frame. Purge
+ * the dead plot immediately to stop that loop, then re-render once with the
+ * `*gl` traces demoted to their SVG equivalents so the chart comes back
+ * without a new GL context. Trace families with no SVG equivalent (3D) are
+ * retried as-is once; a second loss leaves a static notice rather than a
+ * throw loop.
+ */
+function installContextLossRecovery(
+  container: HTMLElement,
+  renderDiv: HTMLElement,
+  plotlySpec: any,
+  isDarkMode: boolean,
+  Plotly: any,
+): void {
+  const canvases = renderDiv.querySelectorAll('canvas');
+  if (canvases.length === 0) return;
+  let handled = false;
+  const onLost = () => {
+    if (handled) return;
+    handled = true;
+    const c = container as any;
+    const losses = (c._plotlyContextLosses || 0) + 1;
+    c._plotlyContextLosses = losses;
+    teardownPlotlyContainer(container, Plotly);
+    if (losses > PLOTLY_MAX_CONTEXT_LOSS_RECOVERIES) {
+      container.innerHTML =
+        '<div class="plotly-context-lost" style="padding:16px;text-align:center;color:#888;">' +
+        '📊 WebGL context lost; this chart could not be recovered. Reload to redraw it.</div>';
+      container.dispatchEvent(new CustomEvent('plotly-context-lost', {
+        detail: { recovered: false }, bubbles: true,
+      }));
+      return;
+    }
+    const demoted = { ...plotlySpec, data: demoteWebglTracesForCapture(plotlySpec.data, true) };
+    // `render` is async here, but the D3RenderPlugin interface types it as
+    // possibly sync; Promise.resolve normalizes either shape for `.then`.
+    Promise.resolve(plotlyPlugin.render(container, null, demoted, isDarkMode)).then(
+      () => container.dispatchEvent(new CustomEvent('plotly-context-lost', {
+        detail: { recovered: true }, bubbles: true,
+      })),
+      (err: unknown) => console.warn('Plotly context-loss re-render failed:', err),
+    );
+  };
+  canvases.forEach(cv => cv.addEventListener('webglcontextlost', onLost, { once: true }));
 }
 
 export const plotlyPlugin: D3RenderPlugin = {
@@ -430,6 +586,10 @@ export const plotlyPlugin: D3RenderPlugin = {
       plotlySpec = parsePlotlyDefinition(spec);
     } else if (spec.definition !== undefined) {
       plotlySpec = parsePlotlyDefinition(spec.definition);
+    } else if (isD3HierarchySpec(spec)) {
+      // Convert BEFORE the destructuring below, which strips `type` -- the
+      // very field the hierarchy shape is recognised by.
+      plotlySpec = hierarchySpecToPlotly(spec);
     } else {
       const { type, isStreaming, isMarkdownBlockClosed, forceRender, ...rest } = spec;
       plotlySpec = rest;
@@ -467,6 +627,9 @@ export const plotlyPlugin: D3RenderPlugin = {
 
     const Plotly = await loadPlotly();
 
+    // Purge any plot a previous render left on this container so its WebGL
+    // contexts are released now rather than when GC reaches the detached div.
+    teardownPlotlyContainer(container, Plotly);
     container.innerHTML = '';
     container.style.position = 'relative';
     container.style.width = '100%';
@@ -482,10 +645,23 @@ export const plotlyPlugin: D3RenderPlugin = {
     if (specHeight) {
       divHeight = specHeight + 'px';
     } else {
+      // D-241 legend grow OR D-197 dense-sankey grow, whichever is taller: a
+      // sankey draws only one legend entry, so the legend path never fires for
+      // it, but a crowded sankey column needs the same taller capture div.
       const grownPx = legendAwareRenderHeightPx(legendEntries);
-      divHeight = grownPx !== null ? grownPx + 'px' : '60vh';
+      const sankeyPx = sankeyAwareRenderHeightPx(plotlySpec.data);
+      const px = Math.max(grownPx ?? 0, sankeyPx ?? 0);
+      divHeight = px > 0 ? px + 'px' : '60vh';
     }
-    renderDiv.style.cssText = `width:100%;height:${divHeight};min-height:400px;box-sizing:border-box;`;
+    // D-301 (render-div-vertical-misalignment-clips-figure): when the author
+    // fixed an explicit layout.height, honour it as the min-height too. The
+    // former unconditional min-height:400px inflated a short author-fixed
+    // figure (e.g. 4000x260) to a 400px div, and safeResize() then relaid the
+    // plot to that inflated clientHeight — leaving a ~140px empty band above
+    // the figure and clipping it at the bottom. Only apply the 400px legibility
+    // floor when NO explicit height was authored.
+    const minHeightCss = plotlyRenderMinHeightCss(specHeight);
+    renderDiv.style.cssText = `width:100%;height:${divHeight};min-height:${minHeightCss};box-sizing:border-box;`;
     container.appendChild(renderDiv);
 
     const layout: any = {
@@ -500,6 +676,9 @@ export const plotlyPlugin: D3RenderPlugin = {
     if (layout.colorway === undefined && legendEntries > PLOTLY_COLORWAY_RECYCLE_THRESHOLD) {
       layout.colorway = PLOTLY_EXTENDED_COLORWAY;
     }
+    // D-304: reserve top-margin space for the title so the forced compact
+    // margin.t (40px) can never clip it — worst on a legend-grown tall div.
+    Object.assign(layout, ensurePlotlyTitleAutomargin(layout));
     const config = {
       responsive: true,
       displaylogo: false,
@@ -515,7 +694,27 @@ export const plotlyPlugin: D3RenderPlugin = {
     const surfaceBg = layout.plot_bgcolor || layout.paper_bgcolor;
     const plotData = guardColorscaleAgainstSurface(plotlySpec.data, surfaceBg);
 
-    await Plotly.newPlot(renderDiv, plotData, layout, config);
+    // D-302: certain trace-family combinations (a `splom` inside a layout.grid
+    // beside contour/histogram2d; `carpet` + `contourcarpet`) make
+    // Plotly.newPlot never settle, so the headless capture harness waited out
+    // its full wall-clock timeout and surfaced a blank capture (svg:0/canvas:0)
+    // with total data loss and NO diagnostic. demoteWebglTracesForCapture only
+    // rewrites 'gl'-suffix types, so nothing guards these families. Bound
+    // newPlot with a race so an un-settling combination throws a fast NAMED
+    // error (mirroring the D-230 parse-failure throw) instead of a silent hang —
+    // a named failure the harness can record beats a blank 30s timeout.
+    await Promise.race([
+      Plotly.newPlot(renderDiv, plotData, layout, config),
+      new Promise((_resolve, reject) => setTimeout(
+        () => reject(new Error(
+          `Plotly.newPlot did not settle within ${PLOTLY_NEWPLOT_BUDGET_MS}ms ` +
+          '(likely an unsupported trace-family combination such as splom-in-grid ' +
+          'or carpet/contourcarpet); aborting to surface a diagnostic instead of ' +
+          'a blank capture timeout.'
+        )),
+        PLOTLY_NEWPLOT_BUDGET_MS,
+      )),
+    ]);
 
     // Plotly.Plots.resize() returns a Promise that REJECTS asynchronously
     // ("Resize must be passed a displayed plot div element") when the div
@@ -526,17 +725,57 @@ export const plotlyPlugin: D3RenderPlugin = {
     // rejection. Check the div is connected AND actually displayed before
     // calling resize, and always attach a .catch() to swallow any
     // rejection that still slips through the check-then-call gap.
+    // D-300: Plotly.Plots.resize() recomputes only the CARTESIAN plot area from
+    // the new width; it does NOT re-solve domain-based trace geometry (pie,
+    // sunburst, icicle, treemap, scatterpolar, barpolar, scatterternary). After
+    // the container settles to its true capture width those traces stayed pinned
+    // to their stale newPlot-time domain — the disc rendered top-left in empty
+    // paper while the layout title and paper-referenced (0.5,0.5) annotations
+    // tracked the real 1280px width. Force a FULL relayout at the MEASURED
+    // container geometry (explicit width/height) so every trace family, domain
+    // ones included, re-solves against the final size. The measured-size guard
+    // (w/h > 0) also subsumes the old `offsetParent === null` bail: a
+    // detached/hidden div reports 0 and is skipped, but a displayed-yet-
+    // unpositioned div (e.g. in the headless capture harness) is no longer
+    // falsely skipped. Async rejection is still swallowed via try/catch + .catch.
+    // D-300: measuring the div and calling Plotly.relayout({width,height})
+    // re-centres PAPER-referenced items (layout.title, annotations at 0.5) at
+    // the new width but does NOT re-solve the auto-fitted DOMAIN of a
+    // non-cartesian subplot (pie/sunburst/icicle/treemap/funnelarea/polar/
+    // ternary). Plotly fits those subplots to a SQUARE sized for the plot area
+    // present at newPlot time; when newPlot ran at a stale narrow width the
+    // domain stayed e.g. x:[0,0.4], so after the paper grew to the true capture
+    // width the disc stayed pinned top-left while the title floated centred over
+    // empty paper (observed: w1-08/09/14, w2-05/15). relayout alone left this
+    // untouched — same blind spot as the earlier Plots.resize(). A full
+    // Plotly.react() re-runs supplyDefaults+calc so every subplot domain is
+    // recomputed against the final plot area; we hand it the already-themed
+    // data/layout so the D-214 polar/table theming is preserved. Cartesian-only
+    // figures keep the cheaper relayout path they already pass under, so the ~40
+    // cartesian specs are byte-identical.
+    const needsDomainResolve = hasDomainTrace(plotData);
     const safeResize = () => {
-      if (!renderDiv.isConnected || renderDiv.offsetParent === null) return;
+      if (!renderDiv.isConnected) return;
+      const w = Math.round(renderDiv.clientWidth || 0);
+      const h = Math.round(renderDiv.clientHeight || 0);
       try {
-        const p = Plotly.Plots.resize(renderDiv);
+        let p: any;
+        if (w > 0 && h > 0) {
+          const sizedLayout = { ...layout, width: w, height: h, autosize: false };
+          p = needsDomainResolve
+            ? Plotly.react(renderDiv, plotData, sizedLayout, config)
+            : Plotly.relayout(renderDiv, { width: w, height: h, autosize: false });
+        } else {
+          p = Plotly.Plots.resize(renderDiv);
+        }
         if (p && typeof p.catch === 'function') p.catch(() => { /* torn down mid-resize */ });
       } catch { /* torn down */ }
     };
 
     // Force a resize after the next paint — the container's final width
     // often isn't known at newPlot time, causing Plotly to fall back to
-    // its 700x450 default. Re-running Plots.resize picks up the real width.
+    // its 700x450 default. Re-running the relayout picks up the real width
+    // and re-solves domain-trace geometry.
     requestAnimationFrame(safeResize);
     setTimeout(safeResize, 200);
 
@@ -544,8 +783,13 @@ export const plotlyPlugin: D3RenderPlugin = {
     resizeObserver.observe(container);
     (container as any)._plotlyResizeObserver = resizeObserver;
     (container as any)._plotlyDiv = renderDiv;
+    // Teardown hook run by D3Renderer on re-render and unmount (the plugin
+    // contract returns void, so this is the only channel back to the host).
+    (container as any).__vizCleanup = () => teardownPlotlyContainer(container, Plotly);
 
     addActionButtons(container, renderDiv, plotlySpec, isDarkMode, Plotly);
+
+    installContextLossRecovery(container, renderDiv, plotlySpec, isDarkMode, Plotly);
 
     container.dispatchEvent(new CustomEvent('plotly-render-complete', {
       detail: { success: true }, bubbles: true,
