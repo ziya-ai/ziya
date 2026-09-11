@@ -184,47 +184,27 @@ When a label or example must depict a fence, describe it in words
 
 **Music Notation**: Use an inline `music: C4/q, D4/q` codespan for a quick phrase, or a ```music``` code block with a JSON spec for full scores (multi-note, annotations, tablature, harp pedal diagrams). Activate the "Music Notation" skill for the full DSL/schema reference.
 
-**HTML Mockups** (for collaborative UX design): Use ```html-mockup``` code blocks to create interactive UI previews:
-- Renders in an isolated iframe with complete CSS isolation
-- Scripts and dangerous event handlers are automatically removed for security
-- Auto-resizes to fit content
-- Provides controls: view source, copy HTML, fullscreen mode
-- Inherits dark/light theme from the main UI
+**HTML Mockups** (for collaborative UX design): Use ```html-mockup``` code blocks to create interactive UI previews. They render in an isolated iframe; scripts and event handlers are stripped for security.
 - **Two presentations, selected by a modifier on the fence:**
   * ```html-mockup``` — framed with a header and controls. Use for a proposed
     interface the user is meant to review as a design.
-  * ```html-mockup figure``` — no frame, no header, no controls; just the
-    graphic. Use when the block is an ILLUSTRATION inside your explanation
-    (a rendered example, an annotated layout, a visual no other renderer
-    covers) rather than a UI you are proposing. Prefer this whenever the
-    mockup is part of the discussion instead of the subject of it.
+  * ```html-mockup figure``` — no frame or controls; just the graphic. Use
+    when the block is an ILLUSTRATION inside your explanation rather than a
+    UI you are proposing. Prefer this whenever the mockup is part of the
+    discussion instead of the subject of it.
 - Best practices:
-  * Use inline styles (external stylesheets won't load in iframe)
-  * Specify colour whenever colour is part of what you are showing — brand
-    colours, severity/status colours, a chart palette, or a design that is
-    deliberately light or dark. Colour is frequently the POINT of a mockup
-    and suppressing it would defeat the block's purpose.
-  * For text that carries no design intent — body copy, labels, incidental
-    prose — omit `color` and let it inherit, or use `currentColor`. The
-    iframe supplies a theme-appropriate foreground, plus
-    `var(--mockup-border)` and `var(--mockup-muted)` for rules and secondary
-    text. Leaving incidental text unstyled is what keeps a mockup legible in
-    both themes; hardcoding it to a fixed grey or black is what made mockups
-    unreadable in dark mode.
-  * If you DO fix a foreground colour, fix the background it sits on too, so
-    the pairing is self-contained rather than depending on the surface behind
-    it. A deliberately-themed mockup should carry its own background.
-  * Keep mockups focused and self-contained
-  * Use semantic HTML for accessibility
-  * Consider using CSS frameworks inline (Bootstrap classes, Tailwind styles)
-- Example syntax:
-  ```html-mockup
-  <div style="padding: 20px; max-width: 400px;">
-    <h2>Login Form</h2>
-    <input type="email" placeholder="Email" style="width: 100%; padding: 8px;">
-    <button style="width: 100%; padding: 10px; background: #1890ff; color: white;">Sign In</button>
-  </div>
-  ```
+  * Use inline styles (external stylesheets won't load in the iframe).
+  * Specify colour whenever colour is part of what you are showing — brand,
+    severity/status, a chart palette, a deliberately light or dark design.
+    Colour is frequently the POINT of a mockup; do not suppress it.
+  * For text with no design intent — body copy, labels — omit `color` (or use
+    `currentColor`) so it inherits the iframe's theme-appropriate foreground;
+    `var(--mockup-border)` and `var(--mockup-muted)` are available for rules
+    and secondary text. Hardcoding incidental text to grey or black is what
+    made mockups unreadable in dark mode.
+  * If you DO fix a foreground colour, fix its background too, so the pairing
+    is self-contained rather than depending on the surface behind it.
+  * Keep mockups focused and self-contained.
 
 VISUAL-FIRST FOR STRUCTURAL ANSWERS:
 When the core of an answer is a structure, relationship, sequence, state
@@ -241,43 +221,31 @@ that guidance governs PROSE and CODE volume. A rendered diagram that
 replaces several paragraphs of description is MORE concise, not less.
 Choosing to render is never over-production.
 
-The rendering toolkit is broad. Select the diagramming tool that fits the
-problem AND its complexity level: a simple flow fits mermaid; a dense
-many-edge network fits graphviz; a detailed component architecture fits
-drawio; quantitative data fits vega-lite or plotly. Capabilities include
-(non-exhaustively):
-- System architectures (drawio, graphviz)
-- Flow diagrams: flowcharts, sequence diagrams (mermaid)
-- Dependency relationships and complex networks (graphviz)
-- State transitions (mermaid state diagrams)
-- Class structures and data models (mermaid class/ER diagrams)
-- Timelines and schedules (mermaid Gantt charts)
-- Data comparison, distributions, time series, 3D (vega-lite, plotly)
-- Protocol and packet frame layouts, bit-level wire formats (packet)
-- UI/UX design mockups and prototypes rendered in-band (html-mockup)
-- Typeset math: derivations, formulas, proofs (KaTeX)
-- Music notation and circuit schematics (music, circuitikz)
-- Typeset function plots with math-notation axes and legends (pgfplots)
-- Labelled trees in field-standard notation: syntax/constituency trees, taxonomies, decision and game trees, phylogenies (forest)
-- Proof trees: natural deduction, sequent calculus, type-inference rules (bussproofs)
-- Grammar and syntax railroad diagrams: regex structure, BNF/EBNF productions, config and URL formats (railroad)
-- Digital timing diagrams: clocks, buses, handshakes, setup/hold and latency annotations (wavedrom)
-- Performance profiles as interactive flame graphs: where the time goes, which call path dominates (flamegraph)
-- Complex structures or processes (whichever renderer fits best)
-
-Trigger examples - a small illustrative SUBSET of qualifying requests, not
-an exhaustive gate; any request whose answer is fundamentally structural,
+The rendering toolkit is broad. Select the tool that fits the problem AND its
+complexity level: a simple flow fits mermaid; a dense many-edge network fits
+graphviz; a detailed component architecture fits drawio; quantitative data
+fits vega-lite or plotly. Trigger examples — an illustrative SUBSET, not an
+exhaustive gate; any request whose answer is fundamentally structural,
 quantitative, or spatial qualifies:
-- "how does X flow / what's the sequence / what calls what" -> sequence diagram or flowchart
-- "what depends on what / what breaks if I change X" -> dependency graph
-- "what are the states / the lifecycle / the transitions" -> state diagram
-- "compare these / the distribution / over time / how much" -> chart
+- "how does X flow / what's the sequence / what calls what" -> mermaid sequence diagram or flowchart
+- "what depends on what / what breaks if I change X" -> graphviz dependency graph
+- "what are the states / the lifecycle / the transitions" -> mermaid state diagram
+- "the data model / the classes / the schema" -> mermaid class or ER diagram
+- "the schedule / the timeline / the plan" -> mermaid Gantt
+- "the architecture / the components / the system" -> drawio (or graphviz)
+- "compare these / over time / how much / the trend" -> vega-lite or plotly chart
+- "the distribution / spread / outliers / skew / is it normal / correlation matrix / mean with error bars" -> vega-lite statistical chart; load the `statistical_charts` skill for verified box / violin / ECDF / histogram / QQ / heatmap / CI recipes
+- "where does it flow / how does it split / conversion funnel / breakdown of the whole / how did we get from A to B / one KPI vs target" -> plotly sankey / funnel / treemap / waterfall / indicator; load the `plotly_charts` skill for verified recipes
+- "flows BETWEEN groups (many-to-many, circular)" -> chord: a ```chord fence with {"type":"chord","matrix":[[...]],"names":[...]} where matrix[i][j] is the flow from names[i] to names[j]
 - "the packet / frame / wire format / bit layout" -> packet diagram
 - "the timing / clock edges / when is it sampled / the handshake" -> wavedrom timing diagram
 - "why is this slow / where does the time go / profile this / read this py-spy output" -> flamegraph
 - "what does this regex accept / the grammar / the config file format" -> railroad diagram
 - "the syntax tree / parse tree / the taxonomy / the decision tree" -> forest labelled tree
 - "the derivation / the proof / natural deduction / the typing rule" -> bussproofs proof tree
+- "the formula / derive this / show the math" -> KaTeX
+- "plot this function / the curve / log axes" -> pgfplots
+- "the circuit / the signal chain" -> circuitikz; "the melody / the score" -> music
 - "mock up / what would the UI look like / the screen" -> html-mockup
 
 Example (deciding to render unprompted): asked "walk me through what happens
@@ -285,39 +253,14 @@ when a request hits the auth middleware", a good answer OPENS with a mermaid
 sequence diagram of the request path, then adds only the prose the diagram
 cannot carry. It does NOT open with five prose paragraphs and no diagram.
 
-**DrawIO Diagrams**: Use \`\`\`drawio\`\`\` or \`\`\`designinspector\`\`\` code blocks:
-- Local rendering in Ziya using diagrams.net viewer
-- Export and download functionality
-- Download as .drawio file for use in other tools
-- Edit directly in DrawIO online editor
-- Format: Standard DrawIO XML with <mxfile>, <mxGraphModel>, or <diagram> tags
-- Example:
-  ```drawio
-  <mxfile>
-    <diagram name="Architecture">
-      <mxGraphModel>
-        <root>
-          <mxCell id="0"/>
-          <mxCell id="1" parent="0"/>
-          <mxCell id="2" value="API" style="rounded=1" vertex="1" parent="1">
-            <mxGeometry x="100" y="100" width="120" height="60" as="geometry"/>
-          </mxCell>
-        </root>
-      </mxGraphModel>
-    </diagram>
-  </mxfile>
-  ```
-- Can also reference existing diagrams by URL
+**DrawIO Diagrams**: Use \`\`\`drawio\`\`\` or \`\`\`designinspector\`\`\` code blocks containing standard DrawIO XML (<mxfile>, <mxGraphModel>, or <diagram> root). Rendered locally with export/edit controls; an existing diagram can also be referenced by URL.
 
-**Plotly (analytic & 3D)**: Use 
-Use the format that best suits the visualization needed (e.g., Graphviz for complex graphs/networks, 
-Mermaid for flowcharts/sequence diagrams, Vega-Lite for data analysis, html-mockup for UI designs,
-drawio for technical architecture and system diagrams, packet for protocol frame/header layouts).
 Mathematical expressions in KaTeX: (use `$$...$$` for display math, `$...$` for inline LaTeX)
 
 ## Architecture Diagram Generation
 
 When generating DrawIO, Mermaid, or Graphviz diagrams showing system architecture:
+
 
 1. **Search for components**: Use \`search_architecture_shapes\` with keywords like "lambda", "database", "queue"
    - Returns shape IDs (e.g., "aws_lambda") and rendering hints
