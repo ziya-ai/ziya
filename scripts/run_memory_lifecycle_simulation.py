@@ -92,10 +92,13 @@ def _new_chat_trace(chat_id: str, title: str) -> None:
 # ─── wrappers ────────────────────────────────────────────────────────
 
 def _wrap_extract_memories(real_fn):
-    async def wrapped(stripped, existing, project_name=None, project_path=None):
+    # Accepts **kwargs so it transparently forwards params added to
+    # extract_memories over time (e.g. the stage-2 admission `hints=`).
+    async def wrapped(stripped, existing, project_name=None,
+                      project_path=None, **kwargs):
         result = await real_fn(stripped, existing,
                                project_name=project_name,
-                               project_path=project_path)
+                               project_path=project_path, **kwargs)
         _CHAT_TRACE["windows"].append({
             "stripped_chars": len(stripped),
             "existing_count": len(existing or []),
@@ -126,10 +129,15 @@ def _wrap_compare_memory(real_fn):
 # Embedding-dedup observation: hook the cache.search call site indirectly
 # via patching deduplicate to capture the corroboration_sink it produces.
 def _wrap_deduplicate(real_fn):
-    def wrapped(candidates, existing, corroboration_sink=None):
-        # Inject our own sink so we can see who got corroborated
+    def wrapped(candidates, existing, corroboration_sink=None,
+                proposal_corroboration_sink=None, **kwargs):
+        # Inject our own sink so we can see who got corroborated; forward the
+        # proposal-corroboration sink (added after this wrapper was written)
+        # and any future kwargs unchanged.
         sink = corroboration_sink if corroboration_sink is not None else []
-        result = real_fn(candidates, existing, corroboration_sink=sink)
+        result = real_fn(candidates, existing, corroboration_sink=sink,
+                         proposal_corroboration_sink=proposal_corroboration_sink,
+                         **kwargs)
         _CHAT_TRACE["corroboration_sink"].extend(sink)
         # Record: how many candidates went in, how many came out
         _CHAT_TRACE["embedding_dedup_events"].append({
@@ -161,14 +169,33 @@ def _make_sandbox(output_dir: Path, name: str):
     return sandbox, cache, proposals, memory_store
 
 
+# ── activity-counter sandbox ──────────────────────────────────────────
+# extractor._next_activity_count() unconditionally writes the REAL
+# ~/.ziya/memory/activity_counter.json (see baseline store-safety finding).
+# Patch it (and lifecycle.current_activity_count) to an in-process counter so
+# the simulation never mutates the protected store.
+import itertools as _itertools
+_sandbox_counter = _itertools.count(1)
+_sandbox_counter_val = {"n": 0}
+
+
+def _sandbox_next_activity_count() -> int:
+    _sandbox_counter_val["n"] = next(_sandbox_counter)
+    return _sandbox_counter_val["n"]
+
+
+def _sandbox_current_activity_count() -> int:
+    return _sandbox_counter_val["n"]
+
+
 async def _extract_one(chat, proposals_store, memory_store, cache,
                         record_dedup: bool = False) -> Dict[str, Any]:
     """Run extraction on one chat against the given sandbox stores."""
-    from app.utils.memory_extractor import (
+    from app.memory.extractor import (
         run_post_conversation_extraction, _count_salience_hits,
     )
-    from app.utils import memory_extractor
-    from app.utils import memory_comparator
+    from app.memory import extractor as memory_extractor
+    from app.memory import comparator as memory_comparator
 
     _new_chat_trace(chat.chat_id, chat.title)
     messages = [
@@ -190,15 +217,19 @@ async def _extract_one(chat, proposals_store, memory_store, cache,
               return_value=memory_store),
         patch("app.services.embedding_service.get_embedding_cache",
               return_value=cache),
+        patch("app.memory.extractor._next_activity_count",
+              side_effect=_sandbox_next_activity_count),
+        patch("app.memory.lifecycle.current_activity_count",
+              side_effect=_sandbox_current_activity_count),
         patch("app.mcp.builtin_tools.is_builtin_category_enabled",
               return_value=True),
-        patch("app.utils.memory_extractor.extract_memories",
+        patch("app.memory.extractor.extract_memories",
               side_effect=_wrap_extract_memories(real_extract)),
-        patch("app.utils.memory_comparator.compare_memory",
+        patch("app.memory.comparator.compare_memory",
               side_effect=_wrap_compare_memory(real_compare)),
     ]
     if record_dedup:
-        patches.append(patch("app.utils.memory_extractor.deduplicate",
+        patches.append(patch("app.memory.extractor.deduplicate",
                              side_effect=_wrap_deduplicate(real_dedup)))
 
     t0 = time.time()
@@ -541,12 +572,49 @@ def _render_summary(seed_traces, later_traces,
     return "\n".join(out)
 
 
+# ─── downstream-utility metric (redesign §4.2) ────────────────────────
+
+def _compute_later_hit_rate(later_chats, memory_store,
+                            seeded_ids: set) -> Dict[str, Any]:
+    """Design §4.2 downstream-utility metric (later_hit_rate).
+
+    After the SEED phase produced a sandbox store of ACTIVE memories
+    (``seeded_ids``), each LATER-phase chat's first user message becomes a
+    query; the chat scores 1 if a keyword search over the sandbox store
+    returns >= 1 seeded-active memory in its top 3.  Pure search over the
+    sandbox store — no model calls, no store writes."""
+    from app.memory.extractor import _strip_artifacts
+    per_chat: List[Dict[str, Any]] = []
+    hits = 0
+    for chat in later_chats:
+        q = _strip_artifacts(_first_user_text(chat))[:300]
+        results = memory_store.search(q, limit=3) if q.strip() else []
+        returned_ids = [getattr(m, "id", None) for m in results]
+        hit = any(rid in seeded_ids for rid in returned_ids)
+        if hit:
+            hits += 1
+        per_chat.append({
+            "chat_id": chat.chat_id,
+            "query": q[:80],
+            "returned_ids": returned_ids,
+            "hit": hit,
+        })
+    n = len(later_chats)
+    return {
+        "later_hit_rate": round(hits / n, 4) if n else None,
+        "hits": hits,
+        "n_later": n,
+        "active_seeded": len(seeded_ids),
+        "per_chat": per_chat,
+    }
+
+
 # ─── main ────────────────────────────────────────────────────────────
 
 async def run_sim(args: argparse.Namespace) -> int:
     _bootstrap_plugins()
 
-    from app.utils.memory_eval import iter_random_conversations
+    from app.memory.eval import iter_random_conversations
     chats = iter_random_conversations(
         sample_size=1_000_000, seed=args.seed, long_quota=0)
     if args.min_turns:
@@ -607,6 +675,10 @@ async def run_sim(args: argparse.Namespace) -> int:
     # ── Force-promote all surviving proposals ──────────────────────
     promoted = _force_promote_all(proposals, memory_store, cache)
     _eprint(f"\nForce-promoted {len(promoted)} proposals to active memories")
+    # Set of ACTIVE memory ids produced by the seed phase — the target set
+    # for the design's downstream-utility metric (§4.2).  Captured before the
+    # later phase so later-phase writes cannot enlarge it (UPDATEs keep ids).
+    seeded_ids = {p["memory_id"] for p in promoted if p.get("memory_id")}
 
     # ── Phase 2: LATER ─────────────────────────────────────────────
     _eprint("\n=== Phase 2: LATER extraction (seeded sandbox) ===")
@@ -643,6 +715,22 @@ async def run_sim(args: argparse.Namespace) -> int:
                                  seed_agg, later_agg, promoted, args)
     (output_dir / "summary.md").write_text(summary_md)
     _eprint(f"\nWrote {output_dir}/summary.md")
+
+    # ── Downstream-utility metric (redesign §4.2) ──────────────────
+    if getattr(args, "report_utility", False):
+        util = _compute_later_hit_rate(later_chats, memory_store, seeded_ids)
+        util["probationary_open"] = len(proposals.list_open())
+        (output_dir / "utility.json").write_text(
+            json.dumps(util, indent=2, default=str))
+        # Final JSON line on stdout for programmatic capture.
+        print(json.dumps({
+            "later_hit_rate": util["later_hit_rate"],
+            "hits": util["hits"],
+            "n_later": util["n_later"],
+            "active_seeded": util["active_seeded"],
+            "probationary_open": util["probationary_open"],
+            "per_chat": util["per_chat"],
+        }))
     return 0
 
 
@@ -659,6 +747,13 @@ def main() -> int:
     p.add_argument("--min-turns", type=int, default=4)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--output", default=None)
+    p.add_argument("--report-utility", dest="report_utility",
+                   action="store_true",
+                   help="Compute the design's downstream-utility metric "
+                        "(later_hit_rate): keyword-search each later chat's "
+                        "first user message over the seeded sandbox store and "
+                        "report the fraction hitting a seeded active memory. "
+                        "Prints a final JSON line and writes utility.json.")
     args = p.parse_args()
     return asyncio.run(run_sim(args))
 
