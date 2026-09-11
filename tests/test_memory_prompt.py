@@ -122,12 +122,22 @@ class TestMemoryPrompt:
         assert "**Lessons (avoid):**" in section
         assert "Static bandwidth allocation" in section
 
-    def test_pending_proposals_mentioned(self, patch_storage):
-        patch_storage.add_proposal(MemoryProposal(content="pending 1"))
-        patch_storage.add_proposal(MemoryProposal(content="pending 2"))
+    def test_pending_proposals_mentioned(self, patch_storage, tmp_path):
+        # The count must come from the probationary ProposalsStore (the
+        # queue the lifecycle engine actually drains), not the legacy
+        # proposals.json.  Seed the legacy file with a decoy so a regression
+        # to the old source produces the wrong number, not a coincidental
+        # match.
+        from app.storage.proposals import ProposalsStore
+        prob = ProposalsStore(memory_dir=tmp_path / "memory")
+        with patch("app.services.embedding_service.embed_and_cache"):
+            prob.add(MemoryProposal(content="pending 1"))
+            prob.add(MemoryProposal(content="pending 2"))
+        patch_storage.add_proposal(MemoryProposal(content="legacy decoy"))
 
         from app.memory.prompt import get_memory_prompt_section
-        section = get_memory_prompt_section()
+        with patch("app.storage.proposals.get_proposals_store", return_value=prob):
+            section = get_memory_prompt_section()
         # Wording is load-bearing, not cosmetic: "awaiting user review" told
         # both the user and the model that something was owed, which is what
         # let a self-draining queue read as a 50-item backlog.  Asserted on
