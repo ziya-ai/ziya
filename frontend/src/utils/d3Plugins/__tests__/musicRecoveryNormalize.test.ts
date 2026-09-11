@@ -209,35 +209,56 @@ describe('music recovery — reference fix logic (D-001/D-075/D-094/D-212)', () 
 // post-fix contract (kept in the reference block above).
 // ---------------------------------------------------------------------------
 describe('music recovery — CURRENT engine behaviour proves the defect is real', () => {
-  test('direction D-001: fenced valid JSON is NOT recovered by current code', () => {
+  test('D-250: fenced valid JSON IS recovered (lenient parse strips the fence)', () => {
     const w = wrap('```json\n{ "notes": [ { "keys": ["c/4"], "duration": "q" } ] }\n```');
     const r = resolveMusicSpec(w);
-    // pre-fix: first-char guard rejects the backtick -> returned unchanged
-    expect(r).toBe(w);
+    // post-fix: lenientParse strips the ```json fence, hasMusicContent gate
+    // passes, type is stamped.
+    expect(r).not.toBe(w);
+    expect(r.type).toBe('music');
+    expect(Array.isArray(r.notes)).toBe(true);
+    expect(r.notes[0].keys).toEqual(['c/4']);
   });
 
-  test('direction D-001: trailing-comma JSON is NOT recovered by current code', () => {
+  test('D-250: trailing-comma JSON IS recovered (JSON5 tolerates trailing commas)', () => {
     const w = wrap('{ "notes": [ { "keys": ["c/4"], "duration": "q", }, ], }');
-    expect(resolveMusicSpec(w)).toBe(w); // bare JSON.parse throws -> unchanged
+    const r = resolveMusicSpec(w);
+    // post-fix: JSON.parse throws on the trailing commas, JSON5 recovers.
+    expect(r).not.toBe(w);
+    expect(r.type).toBe('music');
+    expect(r.notes[0].duration).toBe('q');
   });
 
-  test('direction D-075: current code recovers JSON but DROPS pitch/dur aliases', () => {
+  test('D-075 (post-fix): resolveMusicSpec canonicalises pitch/dur + root time/key', () => {
     const w = wrap({ notes: [{ pitch: 'bb/4', dur: 'q' }], time: '3/4' });
     const r = resolveMusicSpec(w);
-    expect(r.type).toBe('music');           // type-stamp contract works today
-    expect(r.notes[0].keys).toBeUndefined(); // but keys/duration alias is dropped
-    expect(r.timeSignature).toBeUndefined();
+    expect(r.type).toBe('music');
+    // pitch (scalar string) -> keys (array); dur -> duration; time -> timeSignature.
+    expect(r.notes[0].keys).toEqual(['bb/4']);
+    expect(r.notes[0].duration).toBe('q');
+    expect(r.timeSignature).toBe('3/4');
+    // consumed aliases are removed, not left dangling.
+    expect(r.notes[0].pitch).toBeUndefined();
+    expect(r.time).toBeUndefined();
   });
 
-  test('direction D-094: current code leaves notes NESTED (drawn as rests)', () => {
+  test('D-094 (post-fix): resolveMusicSpec lifts double-nested notes to measures', () => {
     const w = wrap({ notes: [[{ keys: ['c/4'], duration: 'q' }], [{ keys: ['e/4'], duration: 'q' }]] });
     const r = resolveMusicSpec(w);
-    expect(Array.isArray(r.notes[0])).toBe(true); // inner arrays untouched
+    // Each inner array becomes a bar, so the notes render instead of drawing
+    // as a single keyless rest.
+    expect(r.notes).toBeUndefined();
+    expect(Array.isArray(r.measures)).toBe(true);
+    expect(r.measures).toHaveLength(2);
+    expect(r.measures[0].notes[0].keys).toEqual(['c/4']);
+    expect(r.measures[1].notes[0].keys).toEqual(['e/4']);
   });
 
-  test('direction D-212: current code leaves scalar tempo as a number', () => {
+  test('D-212 (post-fix): resolveMusicSpec leaves scalar tempo untouched (the tempo block lifts it)', () => {
     const w = wrap({ notes: [{ keys: ['c/4'], duration: 'q' }], tempo: 120 });
     const r = resolveMusicSpec(w);
-    expect(r.tempo).toBe(120); // not lifted to { bpm } -> mark later dropped
+    // Scalar tempo passes through resolveMusicSpec verbatim; coerceTempoSpec in
+    // renderMusicSpec's tempo block lifts it to { bpm } at draw time (D-153).
+    expect(r.tempo).toBe(120);
   });
 });

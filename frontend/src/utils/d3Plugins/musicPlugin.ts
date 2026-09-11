@@ -16,6 +16,11 @@ import {
   newBarState,
   sanitizeKeySignature,
 } from './musicAccidentals';
+// Shared lenient JSON-ish parse/recovery stage (fences, smart quotes, single
+// quotes, unquoted keys, trailing commas, comments, Python True/False/None,
+// semicolon separators). Reused so the music path recovers the same malformed
+// dialects as the rest of the D3 engine family (D-250).
+import { lenientParse } from '../d3SpecParser';
 
 export type MusicClef = 'treble' | 'bass' | 'alto' | 'tenor' | 'percussion';
 
@@ -342,6 +347,59 @@ export const WIGGLE_CODES: Readonly<Record<string, number>> = {
 };
 
 /**
+ * Resolve a note annotation's `position` to a VexFlow AnnotationVerticalJustify
+ * value.
+ *
+ * The vertical placement of a VexFlow Annotation is controlled by
+ * `setVerticalJustification(AnnotationVerticalJustify)`, NOT by the inherited
+ * `Modifier.setPosition()`.  VexFlow 5's ModifierPosition enum carries only
+ * CENTER/LEFT/RIGHT/ABOVE/BELOW -- there is no TOP or BOTTOM -- so the earlier
+ * `Annotation.Position.TOP` / `Annotation.Position.BOTTOM` both evaluated to
+ * `undefined`, and `setPosition(undefined)` left every annotation at the
+ * default (TOP) justification.  That is why `position:"below"` engraved ABOVE
+ * the staff (D-166: music-w1-07, music-w3-06).
+ *
+ * The VerticalJustify enum is passed in (rather than imported at module scope)
+ * because VexFlow is a dynamic import inside renderMusicSpec; this keeps the
+ * helper pure and unit-testable while still resolving against the real enum.
+ */
+export function resolveAnnotationVerticalJustify<T>(
+  position: string | undefined,
+  verticalJustify: { TOP: T; BOTTOM: T },
+): T {
+  return position === 'below' ? verticalJustify.BOTTOM : verticalJustify.TOP;
+}
+
+/**
+ * Collect a note's annotations from BOTH the plural `annotations` array and the
+ * singular `annotation` convenience field into one ordered list.
+ *
+ * The render core only ever iterated `specNote.annotations`, so a spec written
+ * with the (equally natural, and corpus-present) singular `annotation:{...}`
+ * form had every annotation silently dropped -- e.g. music-w2-09 gives all 40
+ * notes an above-staff `annotation` alongside a `chordSymbol`, and NONE of the
+ * annotations rendered.  Triage read this as an above-band "negotiation"
+ * failure, but the real cause is upstream: the field was never read at all.
+ * Once both fields are collected, VexFlow's ModifierContext stacks the
+ * Annotation above the ChordSymbol on its own, so no bespoke band logic is
+ * needed (D-166: music-w2-09).
+ *
+ * The singular entry is appended AFTER the plural array so that when an author
+ * supplies both, ordering is stable and deterministic.  Pure and
+ * unit-testable; takes a minimal structural type so the test needs no VexFlow.
+ */
+export function normalizeNoteAnnotations(
+  note: { annotations?: MusicAnnotation[]; annotation?: MusicAnnotation } | null | undefined,
+): MusicAnnotation[] {
+  if (!note) return [];
+  const out: MusicAnnotation[] = Array.isArray(note.annotations)
+    ? note.annotations.slice()
+    : [];
+  if (note.annotation != null) out.push(note.annotation);
+  return out;
+}
+
+/**
  * Engraved chord-symbol glyphs VexFlow ships.  A closed set for the same
  * reason as ARTICULATION_CODES: an unknown name is not rejected, and the
  * fallback would silently misrepresent the harmony.
@@ -496,6 +554,38 @@ export const BARLINE_TYPES: Readonly<Record<string, string>> = {
   'repeat-both': 'REPEAT_BOTH',
   none: 'NONE',
 };
+
+/**
+ * Resolve the two SCORE-EDGE barlines -- the outer barlines of the whole
+ * piece: the opening (begin) barline of the first bar and the closing (end)
+ * barline of the last bar.
+ *
+ * The spec-level `beginBar`/`endBar` are the documented way to spell these and
+ * take precedence.  But the SAME two edges can be spelled per-measure -- the
+ * FIRST measure's `beginBar` (e.g. `"repeat-begin"`) and the LAST measure's
+ * `endBar` (e.g. `"final"`) -- and those were previously dropped (D-146):
+ * `barlineBetween` only consults a measure's `beginBar`/`endBar` when the bar
+ * sits BETWEEN two others, so an INTERIOR `endBar` (`"repeat-end"`) rendered
+ * while the opening `beginBar` and the closing `endBar`, which have no
+ * neighbour on the outer side, were never applied.  This falls back to them so
+ * the outer edges honour either spelling.
+ *
+ * A per-measure INTERIOR barline is unaffected: this reads only the first
+ * bar's `beginBar` and the last bar's `endBar`, never a middle bar's, so it
+ * cannot double-apply a barline `barlineBetween` already draws.  Pure and
+ * DOM-free for unit testing.
+ */
+export function resolveScoreEdgeBarlines(
+  specBeginBar: string | undefined,
+  specEndBar: string | undefined,
+  firstMeasure: { beginBar?: string } | undefined,
+  lastMeasure: { endBar?: string } | undefined,
+): { beginBar: string | undefined; endBar: string | undefined } {
+  return {
+    beginBar: specBeginBar ?? firstMeasure?.beginBar,
+    endBar: specEndBar ?? lastMeasure?.endBar,
+  };
+}
 
 /**
  * Navigation marks (coda, segno, D.C./D.S., Fine) -> Repetition.type key.
@@ -874,6 +964,15 @@ export interface MusicNoteSpec {
    */
   rest?: boolean;
   annotations?: MusicAnnotation[];
+  /**
+   * Singular convenience alias for a single note annotation.  Authors (and the
+   * spec corpus, e.g. music-w2-09) commonly write `annotation: {text,position}`
+   * rather than the `annotations: [...]` array.  Before D-166 the singular
+   * field was read by NOTHING -- the render loop only iterated `annotations`
+   * -- so every singular annotation was silently dropped (music-w2-09 lost all
+   * 40).  normalizeNoteAnnotations() folds this into `annotations`.
+   */
+  annotation?: MusicAnnotation;
   /** LilyPond-style harp pedal diagram string, e.g. "^v-|vv-^" */
   harpPedal?: string;
   /**
@@ -2227,6 +2326,234 @@ const hasMusicContent = (s: any): boolean =>
   );
 
 /**
+ * Long-form / alternate English (and a few Italian) duration NAMES mapped to
+ * the VexFlow duration code the render path understands.  A model commonly
+ * emits `"quarter"`/`"half"`/`"whole"` instead of `"q"`/`"h"`/`"w"`;
+ * `sanitizeDuration` does not know these names, so it warns and falls them ALL
+ * back to a quarter -- turning a half or whole note into the wrong rhythm
+ * silently (D-151/D-152, music-w4-12).  Mapped here, before the value reaches
+ * `sanitizeDuration`, so the intended rhythm survives.  Only a KNOWN long-form
+ * name is rewritten; a valid code (`q`, `8`, `h.`) is not in this map and
+ * passes through untouched.
+ */
+const DURATION_NAME_ALIASES: Record<string, string> = {
+  whole: 'w', semibreve: 'w',
+  half: 'h', minim: 'h',
+  quarter: 'q', crotchet: 'q',
+  eighth: '8', quaver: '8',
+  sixteenth: '16', semiquaver: '16',
+  'thirty-second': '32', thirtysecond: '32', demisemiquaver: '32',
+  'sixty-fourth': '64', sixtyfourth: '64', hemidemisemiquaver: '64',
+};
+
+/**
+ * Canonicalise ONE note's near-miss field spellings so the render core (which
+ * reads only `keys` (array) and `duration` (code string)) sees what the author
+ * meant (D-151/D-152, music-w4-08/09/10/12):
+ *   - `keys` <- `pitch` | `pitches` (the two dialect spellings models emit);
+ *   - a SCALAR `keys` string (`"c/4"`) is lifted to `["c/4"]` -- otherwise the
+ *     draw path iterates the string character-by-character and HANGS (D-152);
+ *   - `duration` <- `dur`;
+ *   - a long-form duration NAME is mapped to its code (see DURATION_NAME_ALIASES);
+ *   - a SEPARATE `dots` count (which `buildNoteString` never reads) is folded
+ *     onto the duration string (`{duration:"q",dots:1}` -> `"q."`), so the
+ *     dotted rhythm is not silently dropped (D-151, music-w4-08).
+ * The consumed alias keys are deleted so nothing dangles.  A note already in
+ * canonical shape is returned as an equal shallow copy (idempotent).
+ *
+ * Exported pure/DOM-free for regression testing.
+ */
+export function normalizeMusicNote(n: any): any {
+  if (!n || typeof n !== 'object' || Array.isArray(n)) return n;
+  const out: any = { ...n };
+  // keys <- pitch | pitches (canonical wins if already present)
+  if (out.keys == null) {
+    if (out.pitch != null) out.keys = out.pitch;
+    else if (out.pitches != null) out.keys = out.pitches;
+  }
+  if ('pitch' in out) delete out.pitch;
+  if ('pitches' in out) delete out.pitches;
+  // A scalar keys string -> single-element array (prevents the keys.map hang).
+  if (typeof out.keys === 'string') out.keys = [out.keys];
+  // duration <- dur
+  if (out.duration == null && out.dur != null) out.duration = out.dur;
+  if ('dur' in out) delete out.dur;
+  // Long-form duration name -> code (before sanitizeDuration sees it).
+  if (typeof out.duration === 'string') {
+    const key = out.duration.trim().toLowerCase();
+    if (DURATION_NAME_ALIASES[key]) out.duration = DURATION_NAME_ALIASES[key];
+  }
+  // Fold a separate `dots` count onto the duration code (q + dots:1 -> "q.").
+  if (out.dots != null) {
+    const d = Number(out.dots);
+    if (Number.isFinite(d) && d > 0
+        && typeof out.duration === 'string' && !out.duration.includes('.')) {
+      out.duration = out.duration
+        + '.'.repeat(Math.max(0, Math.min(MAX_DURATION_DOTS, Math.floor(d))));
+    }
+    delete out.dots;
+  }
+  return out;
+}
+
+/** Normalise every note in a list (see normalizeMusicNote). */
+export function normalizeMusicNoteArray(arr: any[]): any[] {
+  return arr.map(normalizeMusicNote);
+}
+
+/**
+ * Coerce a dialect boolean flag to a real boolean.  Models emit `measureNumbers`
+ * / `autoBeam` as booleans, numbers, or the string spellings `"true"`/`"yes"`/
+ * `"on"`/`"1"` (D-176/music-w4-15); every non-affirmative value (including the
+ * truthy string `"false"`) resolves to false.  Pure/DOM-free for testing.
+ */
+export function coerceMusicFlag(v: any): boolean {
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'number') return v !== 0;
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase();
+    return s === 'true' || s === 'yes' || s === 'on' || s === '1';
+  }
+  return false;
+}
+
+/**
+ * Canonicalise a whole music body's near-miss field spellings (D-151/D-152):
+ *   - root `time`/`key`/`staff` -> `timeSignature`/`keySignature`/`clef`;
+ *   - a DOUBLE-NESTED `notes:[[..],[..]]` list (measures inlined into notes,
+ *     music-w4-09) is lifted to `measures:[{notes:[..]},...]` so each inner
+ *     array becomes a bar instead of being read as a single keyless note (which
+ *     draws as a rest, shipping a musically-empty score as "success");
+ *   - per-note aliases are canonicalised in `notes`, `measures[].notes`,
+ *     `voices[]` and (recursively) `staves[]`.
+ * The consumed root alias keys are deleted.  `tempo`/`width`/`height` and any
+ * unrecognised field pass through untouched (downstream sanitizers coerce the
+ * scalar ones); a correctly-authored body is returned as an equal copy.
+ *
+ * Exported pure/DOM-free for regression testing.
+ */
+export function normalizeMusicShape(obj: any): any {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;
+  const out: any = { ...obj };
+  // Root field aliases -> canonical names; consumed aliases removed.
+  if (out.timeSignature == null && out.time != null) out.timeSignature = out.time;
+  if ('time' in out) delete out.time;
+  if (out.keySignature == null && out.key != null) out.keySignature = out.key;
+  if ('key' in out) delete out.key;
+  if (out.clef == null && typeof out.staff === 'string') out.clef = out.staff;
+  if (typeof out.staff === 'string') delete out.staff;
+  // Display-flag aliases (D-176/music-w4-15): `showMeasureNumbers` is the
+  // dialect spelling of the canonical boolean `measureNumbers`, and several
+  // dialects emit string booleans (`"true"`/`"yes"`) for it and for `autoBeam`.
+  // Left un-normalised the numbers silently never draw, and a string `"false"`
+  // is truthy so it wrongly beams; coerced here they render as authored.
+  if (out.measureNumbers == null && out.showMeasureNumbers != null) {
+    out.measureNumbers = coerceMusicFlag(out.showMeasureNumbers);
+  }
+  if ('showMeasureNumbers' in out) delete out.showMeasureNumbers;
+  if (typeof out.autoBeam === 'string') out.autoBeam = coerceMusicFlag(out.autoBeam);
+  // A double-nested notes list is a measures list written into `notes`.
+  if (Array.isArray(out.notes) && out.notes.length > 0
+      && out.notes.every((e: any) => Array.isArray(e))
+      && !Array.isArray(out.measures)) {
+    out.measures = out.notes.map((inner: any[]) => ({ notes: normalizeMusicNoteArray(inner) }));
+    delete out.notes;
+  } else if (Array.isArray(out.notes)) {
+    out.notes = normalizeMusicNoteArray(out.notes);
+  }
+  if (Array.isArray(out.measures)) {
+    out.measures = out.measures.map((m: any) => {
+      if (!m || typeof m !== 'object' || Array.isArray(m)) return m;
+      const mm: any = { ...m };
+      if (Array.isArray(mm.notes)) mm.notes = normalizeMusicNoteArray(mm.notes);
+      // Per-measure `barline` is the dialect spelling of the canonical closing
+      // `endBar` (D-176/music-w4-15: `barline: "final"|"double"`); without the
+      // alias the closing barline silently reverts to a plain single.
+      if (mm.endBar == null && mm.barline != null) mm.endBar = mm.barline;
+      if ('barline' in mm) delete mm.barline;
+      // Measure-level `chords` shorthand -> per-note `chordSymbol` (the shape
+      // the render core reads), mapped positionally onto the measure's notes.
+      if (Array.isArray(mm.chords) && Array.isArray(mm.notes)) {
+        mm.notes = mm.notes.map((n: any, i: number) =>
+          (n && typeof n === 'object' && !Array.isArray(n)
+            && n.chordSymbol == null && mm.chords[i] != null)
+            ? { ...n, chordSymbol: mm.chords[i] } : n);
+      }
+      if ('chords' in mm) delete mm.chords;
+      return mm;
+    });
+  }
+  if (Array.isArray(out.voices)) {
+    out.voices = out.voices.map((v: any) =>
+      (Array.isArray(v) ? normalizeMusicNoteArray(v)
+        : (v && Array.isArray(v.notes) ? { ...v, notes: normalizeMusicNoteArray(v.notes) } : v)));
+  }
+  if (Array.isArray(out.staves)) out.staves = out.staves.map((s: any) => normalizeMusicShape(s));
+  return out;
+}
+
+/**
+ * True for a body that carries a music STRUCTURAL key (`notes`/`measures`/
+ * `staves`/`voices`) but NO renderable content -- the degenerate "empty score"
+ * (D-145, music-w3-09: a title with empty `measures`/`notes`/`staves`).  It is
+ * distinguished from an arbitrary non-music object (which has none of those
+ * keys) so the plugin can CLAIM it and draw a titled blank staff rather than
+ * leaving it unclaimed, which surfaces to the caller as a ~30s no-plugin
+ * timeout.  Kept separate from `hasMusicContent` (which stays the strict
+ * renderable-content gate) so a spec that IS empty is never treated as having
+ * content.
+ *
+ * Exported pure/DOM-free for regression testing.
+ */
+export function isEmptyMusicShape(obj: any): boolean {
+  if (typeof obj !== 'object' || obj === null) return false;
+  const hasShapeKey = Array.isArray(obj.notes) || Array.isArray(obj.measures)
+    || Array.isArray(obj.staves) || obj.voices != null;
+  return hasShapeKey && !hasMusicContent(obj);
+}
+
+/**
+ * True when the `{type, definition}` wrapper (or a bare spec) resolves to a
+ * degenerate, EMPTY music body (see isEmptyMusicShape) -- the D-145 hang: a
+ * well-formed but zero-content music spec that no plugin claims and that the
+ * orchestrator then retries to its ~30s inner timeout with zero output.  Used
+ * by the plugin's canHandle (so it claims the spec) and by its render (so it
+ * draws a titled blank staff) without touching `resolveMusicSpec`, which
+ * deliberately still returns an empty body untouched (no hijack).
+ *
+ * Exported pure/DOM-free for regression testing.
+ */
+export function degenerateMusicBody(spec: any): any {
+  if (typeof spec !== 'object' || spec === null) return null;
+  let body: any = spec;
+  if (spec.definition != null && typeof spec.definition === 'object') {
+    body = spec.definition;
+  } else if (typeof spec.definition === 'string' && spec.definition.trim() !== '') {
+    const parsed = lenientParse(spec.definition);
+    body = (parsed && typeof parsed === 'object') ? parsed : null;
+  }
+  return isEmptyMusicShape(body) ? body : null;
+}
+
+/**
+ * Lift a SCALAR tempo shorthand to the `{ bpm }` object the tempo block reads
+ * (D-153, music-w4-08's `tempo:"120"`).  `spec.tempo` is read as an object
+ * (`{name,bpm,duration}`); a bare number or numeric string is truthy so it
+ * ENTERS the tempo block, finds no `.bpm`, and the whole mark is dropped.
+ * A number|string is lifted to `{ bpm: N }` (only when N is finite and > 0);
+ * an object is returned unchanged; anything else yields `{}` (no mark).
+ *
+ * Exported pure/DOM-free for regression testing.
+ */
+export function coerceTempoSpec(raw: any): any {
+  if (typeof raw === 'number' || typeof raw === 'string') {
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? { bpm: n } : {};
+  }
+  return (raw && typeof raw === 'object') ? raw : {};
+}
+
+/**
  * Recover a music spec from the wrapper the `render_diagram` tool sends.
  *
  * The tool always ships `{ type: 'music', definition: '<json string>' }`,
@@ -2266,19 +2593,22 @@ export function resolveMusicSpec(spec: any): any {
   // the renderer's ~30s no-plugin timeout rather than any error.
   if (spec.definition !== null && typeof spec.definition === 'object'
       && hasMusicContent(spec.definition)) {
-    return { ...spec.definition, type: 'music' };
+    // Canonicalise the dialect field spellings (pitch/dur, time/key/staff,
+    // scalar keys, long-form durations, nested notes -> measures) BEFORE the
+    // type stamp so a near-miss body renders as authored rather than as a
+    // musically-empty score (D-151/D-152).
+    return { ...normalizeMusicShape(spec.definition), type: 'music' };
   }
 
-  // Only attempt recovery from a JSON-object `definition` string.
+  // Only attempt recovery from a `definition` string.
   if (typeof spec.definition !== 'string' || spec.definition.trim() === '') return spec;
-  if (spec.definition.trimStart()[0] !== '{') return spec;
 
-  let parsed: any;
-  try {
-    parsed = JSON.parse(spec.definition);
-  } catch (_e) {
-    return spec;
-  }
+  // Lenient parse (D-250): strict JSON first, then a fence/smart-quote/JSON5/
+  // Python-literal/semicolon recovery so trailing commas, unquoted keys,
+  // single/smart quotes, comments, True/False/None and ';' separators no
+  // longer leave the spec unparsed -> unclaimable -> 30s host timeout. The
+  // hasMusicContent gate below still prevents hijacking a non-music spec.
+  const parsed: any = lenientParse(spec.definition);
   if (typeof parsed !== 'object' || parsed === null) return spec;
 
   // Guard: only claim the spec when the parsed body is genuinely music.  A
@@ -2287,11 +2617,12 @@ export function resolveMusicSpec(spec: any): any {
   // untouched and their own (higher- or lower-priority) plugin handles them.
   if (!hasMusicContent(parsed)) return spec;
 
-  // The parsed body IS the music spec; stamp the type the wrapper carried so
-  // the downstream isMusicSpec gate accepts it.  Render params that live on
-  // the wrapper (theme/title) are intentionally dropped -- the music spec has
-  // its own width/height.
-  return { ...parsed, type: 'music' };
+  // The parsed body IS the music spec; canonicalise its dialect field
+  // spellings (D-151/D-152) and stamp the type the wrapper carried so the
+  // downstream isMusicSpec gate accepts it.  Render params that live on the
+  // wrapper (theme/title) are intentionally dropped -- the music spec has its
+  // own width/height.
+  return { ...normalizeMusicShape(parsed), type: 'music' };
 }
 
 /**
@@ -2437,6 +2768,56 @@ export function applyMusicDarkTheme(svgEl: SVGElement | null): void {
       // inheritance from the root keeps working.
       if (!value || value === 'none') continue;
       const mapped = DARK_COLOR_REMAP[value.toLowerCase()];
+      if (mapped) el.setAttribute(attr, mapped);
+    }
+  }
+}
+
+/**
+ * Light-theme stave/barline ink (D-149).
+ *
+ * VexFlow 5 draws its stave and barlines at #999999, which measures only
+ * 2.85:1 on the white light-theme surface -- below the 3:1 graphical-boundary
+ * floor -- so as the score scales down the thin rules fall under the
+ * anti-alias threshold and VANISH in light while surviving in dark (#999999 is
+ * 5.79:1 on the #1f1f1f dark surface, which is why DARK_COLOR_REMAP
+ * deliberately leaves it alone).  #6b6b6b measures 5.33:1 on white -- clearing
+ * the boundary floor with the margin the lines need to survive downscaling --
+ * while staying a mid-grey well subordinate to the 21:1 black noteheads it
+ * exists to position (the same darker-grey fix graphvizPlugin applied to its
+ * #999999 node border).
+ */
+const LIGHT_STAVE_LINE = '#6b6b6b';
+
+/**
+ * Explicit light-theme colours that must be darkened for contrast.  ONLY the
+ * #999999 stave/barline ink is remapped; black noteheads (21:1 on white) and
+ * every other value are left untouched, so the pass changes nothing but the
+ * too-faint rules.
+ */
+const LIGHT_COLOR_REMAP: Record<string, string> = {
+  '#999999': LIGHT_STAVE_LINE,
+  '#999': LIGHT_STAVE_LINE,
+};
+
+/**
+ * Recolour a rendered VexFlow SVG for light mode (D-149).
+ *
+ * The mirror of applyMusicDarkTheme, but far narrower: light mode already has
+ * legible black ink on white, so the ONLY problem is the #999999 stave/barline
+ * rules dropping below 3:1.  This rewrites just those explicit values to
+ * LIGHT_STAVE_LINE and leaves everything else -- including inheritance from the
+ * root -- exactly as VexFlow drew it.  Runs before the hand-drawn overlays
+ * (title/lyric/harp), which pick their own theme-aware ink and are never
+ * remapped.
+ */
+export function applyMusicLightTheme(svgEl: SVGElement | null): void {
+  if (!svgEl) return;
+  for (const el of Array.from(svgEl.querySelectorAll('*'))) {
+    for (const attr of ['fill', 'stroke'] as const) {
+      const value = el.getAttribute(attr);
+      if (!value || value === 'none') continue;
+      const mapped = LIGHT_COLOR_REMAP[value.toLowerCase()];
       if (mapped) el.setAttribute(attr, mapped);
     }
   }
@@ -3216,7 +3597,7 @@ export function shouldCenterLoneWholeBar(
     || specNote.breath != null || specNote.cue != null
     || specNote.tremolo != null || specNote.arpeggio != null
     || specNote.fingering != null || specNote.stringNumber != null
-    || (Array.isArray(specNote.annotations) && specNote.annotations.length > 0)
+    || normalizeNoteAnnotations(specNote).length > 0
     || (Array.isArray(specNote.articulations) && specNote.articulations.length > 0)
     || (Array.isArray(specNote.ornaments) && specNote.ornaments.length > 0)
     || (Array.isArray(specNote.graceNotes) && specNote.graceNotes.length > 0);
@@ -3698,6 +4079,161 @@ function estimateMeasureWidthFromNotes(notes: MusicNoteSpec[]): number {
 }
 
 /**
+ * A duration's length as a fraction of a whole note.
+ *
+ * Routed through sanitizeDuration so a dotted / aliased / unknown code
+ * resolves to a valid base first (an unknown base becomes a quarter, matching
+ * every other duration read).  A dot count `d` multiplies the base length by
+ * `2 - 2^-d` (one dot = 1.5x, two = 1.75x), the standard augmentation-dot
+ * series.  Tuplets are NOT applied here -- they are authored as staff-level
+ * ranges, not per-note fields -- so a note inside a triplet is over-counted by
+ * ~3:2; this only nudges a synthesised barline (below) a note early inside a
+ * tuplet run and never affects the far commoner untupleted case.  Exported
+ * pure for regression testing.
+ */
+export function noteDurationInWholes(duration: string | number): number {
+  const { base, dots } = sanitizeDuration(duration);
+  const BASE_WHOLES: Record<string, number> = {
+    w: 1, h: 1 / 2, q: 1 / 4, '8': 1 / 8, '16': 1 / 16,
+    '32': 1 / 32, '64': 1 / 64, '128': 1 / 128,
+    '1': 1, '2': 1 / 2, '4': 1 / 4,
+  };
+  const baseLen = BASE_WHOLES[base] ?? 1 / 4;
+  const dotFactor = 2 - Math.pow(0.5, dots);
+  return baseLen * dotFactor;
+}
+
+/**
+ * Parse a `timeSignature` string into [numBeats, beatValue], falling back to
+ * 4/4 for anything absent or non-numeric.  Kept in step with the meter parse
+ * the Voice builder uses (see renderMusicSpec), so the synthesised barlines
+ * land where the drawn meter says they should.  Exported pure for testing.
+ */
+export function parseMeterCounts(
+  timeSignature: string | undefined | null,
+): [number, number] {
+  const [n, d] = String(timeSignature ?? '4/4').split('/').map((x) => parseInt(x, 10));
+  return [
+    Number.isFinite(n) && n > 0 ? n : 4,
+    Number.isFinite(d) && d > 0 ? d : 4,
+  ];
+}
+
+/**
+ * Split a FLAT note list into measures at meter boundaries (D-138).
+ *
+ * A top-level `notes[]` staff is treated by measuresOf as a single indivisible
+ * measure, so planSystemBreaks -- which only breaks BETWEEN measures -- can
+ * never wrap it: 120 eighths become one ~9500px system at ~8% scale, and the
+ * plugin prints an accurate low-scale warning then renders the illegible image
+ * anyway.  Synthesising the barlines the author omitted routes the flat path
+ * into the SAME measures[] rendering the measures-authored specs already use
+ * (which wrap cleanly), rather than trusting a single unbreakable measure.
+ *
+ * Greedy fill against the meter's whole-note budget (numBeats/beatValue): a
+ * note is placed in the current measure until the next note would overflow the
+ * budget, then a new measure opens.  A note longer than a whole measure still
+ * occupies its own measure rather than looping.  Notes are never split across
+ * a barline, matching how a human would bar the same stream; the render's SOFT
+ * voice mode already tolerates the last measure being short.  Exported pure for
+ * regression testing.
+ */
+export function synthesizeMeasures(
+  notes: MusicNoteSpec[],
+  numBeats: number,
+  beatValue: number,
+): MusicMeasure[] {
+  if (!notes || notes.length === 0) return [{ notes: [] }];
+  const budget = (numBeats > 0 ? numBeats : 4) / (beatValue > 0 ? beatValue : 4);
+  const EPS = 1e-6;
+  const measures: MusicMeasure[] = [];
+  let current: MusicNoteSpec[] = [];
+  let acc = 0;
+  for (const note of notes) {
+    const len = noteDurationInWholes(note.duration);
+    if (current.length > 0 && acc + len > budget + EPS) {
+      measures.push({ notes: current });
+      current = [];
+      acc = 0;
+    }
+    current.push(note);
+    acc += len;
+  }
+  if (current.length > 0) measures.push({ notes: current });
+  return measures;
+}
+
+/**
+ * If a staff carries only a flat `notes[]` list whose natural width would make
+ * it an illegible single system, replace it with meter-synthesised measures so
+ * the wrapper can break it (D-138).  A staff that already has `measures` or
+ * `voices`, or whose flat run fits inside the legibility width, is returned by
+ * REFERENCE -- byte-identical -- so no currently-legible score gains a barline
+ * it did not have before.  Exported pure for testing.
+ */
+export function synthesizeFlatNotesMeasures(
+  staff: MusicStaff,
+  numBeats: number,
+  beatValue: number,
+): MusicStaff {
+  const hasMeasures = Array.isArray(staff.measures) && staff.measures.length > 0;
+  const hasVoices = Array.isArray(staff.voices) && staff.voices.length > 0;
+  if (hasMeasures || hasVoices) return staff;
+  const notes = staff.notes;
+  if (!Array.isArray(notes) || notes.length === 0) return staff;
+  // Only the illegibly-wide flat run is reshaped; a short one keeps its exact
+  // previous (barline-free) layout.
+  const naturalWidth = SYSTEM_LEAD_IN_PX + estimateMeasureWidthFromNotes(notes);
+  if (naturalWidth <= LEGIBILITY_WIDTH_LIMIT) return staff;
+  const measures = synthesizeMeasures(notes, numBeats, beatValue);
+  if (measures.length <= 1) return staff;
+  const { notes: _dropped, ...rest } = staff;
+  return { ...rest, measures };
+}
+
+/**
+ * Resolve a canvas dimension from an optional author value and the content's
+ * natural size (D-140).  An ABSENT author value yields the content size; a
+ * PRESENT one is honoured only down to the content floor -- an undersized
+ * author `width`/`height` used to squeeze notes into a too-narrow box or clip
+ * staves off a too-short one (dropping content outright) rather than sizing the
+ * box to the music.  A roomy author value (>= content) is returned unchanged,
+ * so every valid, generous dimension is byte-identical.  Exported pure.
+ */
+export function resolveAuthorCanvasDimension(
+  authorDim: number | undefined,
+  contentDim: number,
+): number {
+  if (authorDim == null) return contentDim;
+  return Math.max(authorDim, contentDim);
+}
+
+/**
+ * Stacked-score canvas height (D-139).  Every system advances by a full
+ * `perSystemHeight = staveAdvance*staves + systemTail`, so the canvas must
+ * budget that tail for EACH system, not once: the old "+ systemTail" (once)
+ * under-budgeted a wrapped score by systemTail*(systems-1) and clipped the
+ * final system(s) off the bottom, which read as "the draw loop stopped early"
+ * (large empty margins, missing trailing staves) when the real cause was a
+ * short canvas.  Extracted pure so the per-system-tail invariant is guarded by
+ * a unit test rather than only by an on-page measurement.
+ */
+export function stackedCanvasHeight(
+  numStaves: number,
+  numSystems: number,
+  staveAdvance: number,
+  systemTail: number,
+  systemSpacing: number,
+  roomAbove: number,
+  titleH: number,
+): number {
+  return staveAdvance * numStaves * numSystems
+    + systemTail * numSystems
+    + systemSpacing * Math.max(0, numSystems - 1)
+    + roomAbove + titleH;
+}
+
+/**
  * Validate a `beamGroups` list, dropping degenerate pairs BEFORE they reach
  * VexFlow's Fraction / Beam.generateBeams machinery.
  *
@@ -3975,6 +4511,11 @@ export async function renderMusicSpec(
   /** Non-fatal spec problems, reported together rather than failing the render. */
   const problems: string[] = [];
 
+  // Meter counts used both to synthesise barlines for a flat `notes[]` staff
+  // (D-138) and, later, to build the VexFlow Voice; parsed once so the two
+  // cannot disagree about where a bar ends.
+  const [synthNumBeats, synthBeatValue] = parseMeterCounts(spec.timeSignature);
+
   // A single-staff spec is treated as a one-element multi-staff spec, so the
   // grand staff is not a second code path that can drift from the first.
   const staffSpecs: MusicStaff[] = ((spec.staves?.length ?? 0) > 0
@@ -3999,7 +4540,15 @@ export async function renderMusicSpec(
     // Canonicalise a keyed-object / bare-array `voices` spelling to the array
     // shape measuresOf and the secondary-voice loop index; a staff already in
     // that shape is returned by reference, leaving existing specs untouched.
-    .map(normalizeStaffVoiceShape);
+    .map(normalizeStaffVoiceShape)
+    // D-138: split an illegibly-wide FLAT `notes[]` staff into meter
+    // boundaries so the wrapper can break it.  A staff with measures/voices,
+    // or a flat run that already fits one legible system, is returned by
+    // reference (byte-identical); only the runaway single-measure case is
+    // reshaped, routing it into the proven measures[] rendering path.
+    .map((s) => synthesizeFlatNotesMeasures(
+      s, synthNumBeats, synthBeatValue,
+    ));
 
   // Count across measures, and add room for each barline: a barline is a
   // tickable too, so without the allowance the notes are squeezed to make
@@ -4061,9 +4610,26 @@ export async function renderMusicSpec(
   // and content-sizing rather than pinning a NaN/gigapixel canvas, and a
   // runaway finite value is clamped.  A valid or absent value is unchanged, so
   // the pinned-width and wrapping paths are byte-identical for real specs.
-  const authorWidth = sanitizeLayoutDimension(
+  const rawAuthorWidth = sanitizeLayoutDimension(
     spec.width, MIN_CANVAS_WIDTH, MAX_CANVAS_DIM, 'width',
   );
+  // D-138: an explicit `width` WIDER than the legibility limit is
+  // self-defeating -- a single system that wide cannot be read at any container
+  // scale (w2-05 pins width:16000, one 60-note system at ~5%).  Treat it as
+  // unset and RE-ENABLE automatic wrapping, mirroring the non-finite ->
+  // undefined recovery sanitizeLayoutDimension already performs.  A width at or
+  // below the limit is a genuine author pin and is honoured unchanged, so every
+  // reasonable explicit width behaves exactly as before.
+  const authorWidth = (rawAuthorWidth != null && rawAuthorWidth > LEGIBILITY_WIDTH_LIMIT)
+    ? undefined
+    : rawAuthorWidth;
+  if (authorWidth == null && rawAuthorWidth != null) {
+    problems.push(
+      `explicit width ${Math.round(rawAuthorWidth)}px exceeds the ~` +
+      `${LEGIBILITY_WIDTH_LIMIT}px single-system legibility limit; enabling ` +
+      'automatic system breaks instead',
+    );
+  }
   const authorMaxSystemWidth = sanitizeLayoutDimension(
     spec.maxSystemWidth, MEASURE_NOTE_PX + SYSTEM_LEAD_IN_PX, MAX_CANVAS_DIM,
     'maxSystemWidth',
@@ -4083,7 +4649,12 @@ export async function renderMusicSpec(
     // right-hand margins line up down the page as engraving requires.
     ? Math.max(340, ...systems.map((sys) => estimateSystemWidth(measureWidths, sys)))
     : Math.max(340, 110 + longestStaff * 78 + mostBarlines * 24);
-  const width = (authorWidth ?? contentWidth) + labelGutter;
+  // D-140: never let an explicit `width` shrink the canvas below the music's
+  // natural size.  An undersized width (e.g. w2-06's width:120 for 40 notes)
+  // used to squeeze the notes into a too-narrow box and drop the ones that no
+  // longer fit; grow to the content width instead.  A roomy author width
+  // (>= content) is returned unchanged, so a genuine pin is byte-identical.
+  const width = resolveAuthorCanvasDimension(authorWidth, contentWidth) + labelGutter;
 
   // T1: an over-wide single system renders successfully but illegibly, and
   // silence makes that look intentional.  Only reachable when wrapping is off
@@ -4269,23 +4840,23 @@ export async function renderMusicSpec(
   const authorHeight = sanitizeLayoutDimension(
     spec.height, MIN_CANVAS_HEIGHT, MAX_CANVAS_DIM, 'height',
   );
-  const height = authorHeight
-    // Each system is PLACED at `firstSystemY + i * (perSystemHeight +
-    // systemSpacing)`, and perSystemHeight = STAVE_ADVANCE*staves + systemTail
-    // -- so every system, not just the last, advances by a full tail.  The old
-    // formula added `systemTail` only ONCE, which under-budgeted a wrapped
-    // score by systemTail*(systems-1): the final system overflowed the SVG
-    // viewport and was CLIPPED off the bottom, silently losing whole measures
-    // (measured: a 3-system dense score clipped its last bar by ~22px, and its
-    // trailing hairpin with it).  Budget the tail per system so the canvas
-    // matches the placement.  systems.length == 1 leaves the height
-    // byte-for-byte unchanged (systemTail*1 == systemTail), so every
-    // single-system layout -- and the parity snapshots pinning them -- is
-    // untouched; only multi-system scores grow, by exactly the missing tails.
-    ?? STAVE_ADVANCE * staffSpecs.length * systems.length
-       + systemTail * systems.length
-       + systemSpacing * Math.max(0, systems.length - 1)
-       + roomAbove + titleH;
+  // Content-required height: every system advances by a full perSystemHeight
+  // (STAVE_ADVANCE*staves + systemTail), so the canvas must budget that tail
+  // for EACH system, not once (D-139).  The old "+ systemTail" (once)
+  // under-budgeted a wrapped score by systemTail*(systems-1), overflowing the
+  // final system(s) off the bottom -- which read as "the draw loop stopped
+  // early" (empty margins, missing trailing staves) when the real cause was a
+  // short canvas.  systems.length == 1 leaves this byte-for-byte unchanged.
+  const contentHeight = stackedCanvasHeight(
+    staffSpecs.length, systems.length, STAVE_ADVANCE, systemTail,
+    systemSpacing, roomAbove, titleH,
+  );
+  // D-140: an author `height` is honoured only down to the content floor -- an
+  // undersized one (e.g. w2-13's height:60 for 12 staves) used to collapse the
+  // staves into a 2px rule and drop every note; grow to fit the music instead.
+  // A roomy pinned height (>= content) is returned verbatim, so real specs are
+  // byte-identical.
+  const height = resolveAuthorCanvasDimension(authorHeight, contentHeight);
 
   const factory = new Factory({
     // Renderer.Backends.SVG is 2; 1 is CANVAS.  Passing 1 with a <div>
@@ -4857,10 +5428,14 @@ export async function renderMusicSpec(
         }
         note.addModifier(symbol, 0);
       }
-      for (const a of specNote.annotations ?? []) {
+      for (const a of normalizeNoteAnnotations(specNote)) {
         const ann = new Annotation(a.text);
-        ann.setPosition(
-          a.position === 'below' ? Annotation.Position.BOTTOM : Annotation.Position.TOP,
+        // Vertical placement of an Annotation is controlled by
+        // setVerticalJustification(AnnotationVerticalJustify), NOT by
+        // Modifier.setPosition() -- see resolveAnnotationVerticalJustify for
+        // the full rationale (D-166: music-w1-07, music-w3-06).
+        ann.setVerticalJustification(
+          resolveAnnotationVerticalJustify(a.position, Annotation.VerticalJustify),
         );
         note.addModifier(ann, 0);
       }
@@ -5113,6 +5688,11 @@ export async function renderMusicSpec(
   // see the tempo block below), drawn in the post-format pass with drawTempoName.
   let tempoNamePlan: { text: string; x: number; y: number } | null = null;
   if (spec.tempo) {
+    // A scalar tempo shorthand (`tempo: 120` / `"120"`) is truthy and so
+    // enters this block, but `spec.tempo.bpm` is undefined and the whole mark
+    // was dropped (D-153, music-w4-08).  Lift it to `{ bpm }` here (an object
+    // tempo is returned unchanged) so the metronome mark renders.
+    const tempoSpec = coerceTempoSpec(spec.tempo);
     // VexFlow's StaveTempo only engraves the metronome portion when it is
     // given a beat `duration`: a bpm with no duration draws the note glyph
     // and "= N" as nothing at all, so `{"bpm":120}` silently produced an
@@ -5127,7 +5707,7 @@ export async function renderMusicSpec(
     // from the SANITIZED value so a bad bpm is treated as absent: with no name
     // the whole mark is skipped below, and the beat unit (which only pairs with
     // a bpm) is not resolved, so no lone "♩ =" is ever drawn.
-    const bpm = sanitizeTempoBpm(spec.tempo.bpm);
+    const bpm = sanitizeTempoBpm(tempoSpec.bpm);
     const hasBpm = bpm != null;
     // The beat unit is resolved ONLY when there is a bpm to pair it with.  A
     // metronome mark is inherently "beat-unit = number"; StaveTempo.draw gates
@@ -5144,7 +5724,7 @@ export async function renderMusicSpec(
     // duration -- defaulting to a quarter when a bpm was given without one, the
     // overwhelming metronome convention.  A well-formed name+duration+bpm mark
     // is byte-identical (hasBpm true -> the ?? still yields the given duration).
-    const rawTempoDuration = hasBpm ? (spec.tempo.duration ?? 'q') : undefined;
+    const rawTempoDuration = hasBpm ? (tempoSpec.duration ?? 'q') : undefined;
     // Sanitize the beat unit AND the augmentation-dot count before they reach
     // StaveTempo, which -- unlike every note duration -- receives them raw.
     // Two degenerate-input failures live in StaveTempo.draw (verified against
@@ -5167,12 +5747,12 @@ export async function renderMusicSpec(
     if (rawTempoDuration !== undefined) {
       const sd = sanitizeDuration(rawTempoDuration);
       tempoDuration = sd.base;
-      const rawDots = Number(spec.tempo.dots ?? sd.dots);
+      const rawDots = Number(tempoSpec.dots ?? sd.dots);
       tempoDots = Number.isFinite(rawDots)
         ? Math.max(0, Math.min(MAX_DURATION_DOTS, Math.floor(rawDots)))
         : 0;
     }
-    if (!spec.tempo.name && !hasBpm) {
+    if (!tempoSpec.name && !hasBpm) {
       problems.push('tempo has neither a name nor a bpm and was skipped');
     } else {
       // Constructed directly rather than via stave.setTempo() because that
@@ -5187,7 +5767,7 @@ export async function renderMusicSpec(
       // own higher row when one is present.  tempoAboveMark already accounts
       // for both fields.
       const tempoShiftY = tempoAboveMark ? TEMPO_SHIFT_Y_WITH_MARK : TEMPO_SHIFT_Y;
-      if (spec.tempo.name && hasBpm) {
+      if (tempoSpec.name && hasBpm) {
         // Split the mark: hand-draw the NAME and let VexFlow draw ONLY the
         // parenthesised metronome to its right.  VexFlow's StaveTempo.draw
         // positions the "(♩ = N)" group at `this.getWidth() + 3` past the
@@ -5202,7 +5782,7 @@ export async function renderMusicSpec(
         // parens via the `parenthesis` flag StaveTempo.draw honours without a
         // `name`.  This matches how every other fragile-VexFlow-placement layer
         // here (title, dynamics, lyrics, nav overflow) is hand-drawn.
-        const nameWidth = measureTempoNameWidth(spec.tempo.name);
+        const nameWidth = measureTempoNameWidth(tempoSpec.name);
         const nameX = topStave.x;
         const NAME_METRO_GAP = 8;
         // VexFlow draws the metronome's "(" at this.x + getModifierXShift +
@@ -5223,7 +5803,7 @@ export async function renderMusicSpec(
         const topTextY = typeof topStave.getYForTopText === 'function'
           ? topStave.getYForTopText(1)
           : 0;
-        tempoNamePlan = { text: spec.tempo.name, x: nameX, y: topTextY + tempoShiftY };
+        tempoNamePlan = { text: tempoSpec.name, x: nameX, y: topTextY + tempoShiftY };
       } else {
         // Name-only or bpm-only: VexFlow renders each correctly on its own, so
         // keep the single-modifier path exactly as before (byte-identical).
@@ -5232,7 +5812,7 @@ export async function renderMusicSpec(
         // clef-width shift that draw() adds -- see tempoLeftShift.
         const tempoMark = new StaveTempo(
           {
-            name: spec.tempo.name,
+            name: tempoSpec.name,
             duration: tempoDuration,
             dots: tempoDots,
             bpm,
@@ -5423,10 +6003,19 @@ export async function renderMusicSpec(
   // closing double-bar at the end of all six lines (measured: +6 <rect>s where
   // +1 was correct).  So beginBar goes on the first system, endBar on the last.
   const lastSystemIndex = vexSystems.length - 1;
-  for (const { stave, systemIndex } of built) {
+  for (const { stave, systemIndex, staffSpec } of built) {
+    // The two outer barlines of the whole piece.  spec.beginBar/endBar win,
+    // but a per-measure spelling -- the first bar's beginBar and the last
+    // bar's endBar -- names the same edges and was previously dropped because
+    // barlineBetween only reaches barlines that sit BETWEEN two bars (D-146).
+    const staffMeasures = measuresOf(staffSpec);
+    const edges = resolveScoreEdgeBarlines(
+      spec.beginBar, spec.endBar,
+      staffMeasures[0], staffMeasures[staffMeasures.length - 1],
+    );
     for (const [value, wanted, apply] of [
-      [spec.beginBar, 0, (t: number) => stave.setBegBarType(t)],
-      [spec.endBar, lastSystemIndex, (t: number) => stave.setEndBarType(t)],
+      [edges.beginBar, 0, (t: number) => stave.setBegBarType(t)],
+      [edges.endBar, lastSystemIndex, (t: number) => stave.setEndBarType(t)],
     ] as Array<[string | undefined, number, (t: number) => void]>) {
       if (!value || systemIndex !== wanted) continue;
       const key = BARLINE_TYPES[value];
@@ -5927,6 +6516,10 @@ export async function renderMusicSpec(
   // drawn above and add elements of their own, so a recolour done earlier
   // would leave those later additions black.
   if (isDarkMode) applyMusicDarkTheme(svgRoot as SVGElement | null);
+  // Light mode: darken only the too-faint #999999 stave/barline rules so they
+  // clear the 3:1 boundary floor on white (D-149).  Black ink is already
+  // legible on white, so this pass touches nothing else.
+  else applyMusicLightTheme(svgRoot as SVGElement | null);
 
   // Harp pedal overlay — anchor to each note's resolved x-position after
   // VexFlow has completed layout/formatting.  Drawn after the recolour
