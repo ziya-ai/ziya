@@ -1429,12 +1429,14 @@ class LazyLoadedModel:
         return model.bind(**kwargs)
  
 model = LazyLoadedModel()
-llm_with_stop = model.bind(stop=[TOOL_SENTINEL_CLOSE])
-if llm_with_stop is None:
-    logger.debug("Model binding deferred - will complete on first request")
-
-# Store the initial llm_with_stop in ModelManager
-ModelManager._state['llm_with_stop'] = llm_with_stop
+# No model.bind() at import time. bind() -> get_model() ->
+# ModelManager.initialize_model(force_reinit=True) built a real provider
+# client as a side effect of merely importing this module, which happened
+# before startup had applied --profile/--region (plugin init imports
+# app.server during argument parsing). create_agent_chain() binds the stop
+# sequence and seeds ModelManager._state['llm_with_stop'] on first use, so
+# nothing downstream needs this value before then.
+ModelManager._state.setdefault('llm_with_stop', None)
 
 file_state_manager = FileStateManager()
 
