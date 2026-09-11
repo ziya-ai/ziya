@@ -72,6 +72,17 @@ def get_available_models(endpoint: Optional[str] = None):
         user_allowed = None
 
     try:
+        from app.utils.local_models import is_local_endpoint
+        if is_local_endpoint(endpoint):
+            # A local endpoint's catalog is whatever its server reports, not
+            # the import-time placeholder; register (memoised) and resolve
+            # the alias before listing.
+            try:
+                from app.utils.local_models import register_local_endpoints, resolve_local_alias
+                register_local_endpoints()
+                endpoint = resolve_local_alias(endpoint)
+            except Exception as e:
+                logger.warning(f"local endpoint registration failed: {e}")
         models = []
         for name, config in ModelManager.MODEL_CONFIGS[endpoint].items():
             if user_allowed is not None and name not in user_allowed:
@@ -127,9 +138,21 @@ def get_endpoints():
     ``hint`` naming the variable to set — rather than hidden, so the user
     can see that e.g. Google exists and what it needs, instead of the
     option silently not being there.
+
+    Local servers appear one per running server (``local-dwarfstar``,
+    ``local-ollama``) with a ``label`` for display; the bare ``local`` alias
+    is listed only when no server answered, so it can show as unavailable.
     """
     active = os.environ.get("ZIYA_ENDPOINT", config.DEFAULT_ENDPOINT)
+    try:
+        from app.utils.local_models import register_local_endpoints, local_endpoint_label
+        local_ids = register_local_endpoints()
+    except Exception as e:
+        logger.warning(f"local endpoint registration failed: {e}")
+        local_ids, local_endpoint_label = [], (lambda _ep: None)  # noqa: E731
     names = list(ModelManager.MODEL_CONFIGS.keys())
+    if local_ids:
+        names = [n for n in names if n != "local"]
 
     if os.environ.get("ZIYA_ALLOW_ALL_ENDPOINTS") != "1":
         try:
@@ -156,6 +179,7 @@ def get_endpoints():
         avail = availability.get(name, True)
         endpoints.append({
             "id": name,
+            "label": local_endpoint_label(name) if name.startswith("local") else None,
             "default_model": ModelManager.DEFAULT_MODELS.get(name),
             "model_count": len(ModelManager.MODEL_CONFIGS.get(name, {})),
             "available": avail,

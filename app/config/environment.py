@@ -223,6 +223,20 @@ def setup_environment(args: Any) -> None:
             if hasattr(args, 'endpoint'):
                 args.endpoint = chosen
 
+    from app.utils.local_models import is_local_endpoint
+    if is_local_endpoint(endpoint):
+        # Every running local server becomes its own endpoint
+        # (local-dwarfstar, local-ollama, ...); the bare alias pins to one of
+        # them here so ZIYA_ENDPOINT names a concrete server and ZIYA_MODEL
+        # below is a model that server actually has.
+        try:
+            from app.utils.local_models import register_local_endpoints, resolve_local_alias
+            register_local_endpoints()
+            endpoint = resolve_local_alias(endpoint)
+            if hasattr(args, 'endpoint'):
+                args.endpoint = endpoint
+        except Exception as e:  # never block startup on discovery
+            logger.warning(f"local model discovery failed: {e}")
     os.environ["ZIYA_ENDPOINT"] = endpoint
     # Always set ZIYA_MODEL so a stale value from a previous run or shell
     # export doesn't leak across endpoint switches.
@@ -250,7 +264,15 @@ def setup_environment(args: Any) -> None:
     templates_dir = os.path.join(current_dir, "templates")
     os.environ["ZIYA_TEMPLATES_DIR"] = templates_dir
 
-    # -- Memory system (experimental, opt-in) --------------------------------
+    # -- Memory system (default-on; opt out via ZIYA_ENABLE_MEMORY=false) -----
+    # Materialize the flag into os.environ so BOTH ziya_env() consumers
+    # (server.py background init, system_jobs mind-map reorg) AND the call
+    # sites that read os.environ.get("ZIYA_ENABLE_MEMORY") directly
+    # (model_routes.py's memoryEnabled flag, is_builtin_category_enabled)
+    # observe the same value.  An explicit env value — or the --memory
+    # flag — still wins over the default.
     if getattr(args, 'memory', False):
         os.environ["ZIYA_ENABLE_MEMORY"] = "true"
         logger.info("Persistent memory system enabled (experimental)")
+    else:
+        os.environ.setdefault("ZIYA_ENABLE_MEMORY", "true")
