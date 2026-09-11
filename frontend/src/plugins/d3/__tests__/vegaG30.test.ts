@@ -220,3 +220,54 @@ describe('sanitizeResolveScale — independent scale preserved for layered chart
         expect(spec.spec.resolve).toBeUndefined();
     });
 });
+
+// ── independent scale preserved for concat specs ──────────────────────────────
+//
+// Concat panels share scales by default. When one panel pins an explicit
+// ordinal domain, a sibling panel's categories fall outside it, resolve to an
+// undefined fill, and its marks render invisibly. `resolve.scale.color =
+// "independent"` is the only correction, so it must survive sanitization.
+
+describe('sanitizeResolveScale — independent scale preserved for concat specs', () => {
+    const concatWithClashingColorDomains = (key: 'vconcat' | 'hconcat' | 'concat') => ({
+        [key]: [
+            {
+                mark: 'bar',
+                encoding: {
+                    color: {
+                        field: 'c',
+                        type: 'nominal',
+                        scale: { domain: ['deterministic', 'operating range'] },
+                    },
+                },
+            },
+            {
+                mark: 'bar',
+                encoding: {
+                    color: { field: 'm', type: 'nominal', scale: { domain: ['1 TTI', '2 TTI'] } },
+                },
+            },
+        ],
+        resolve: { scale: { color: 'independent' } },
+    });
+
+    (['vconcat', 'hconcat', 'concat'] as const).forEach(key => {
+        test(`${key} keeps resolve.scale.color independent`, () => {
+            const spec: any = concatWithClashingColorDomains(key);
+            sanitizeResolveScale(spec);
+            expect(spec.resolve).toBeDefined();
+            expect(spec.resolve.scale.color).toBe('independent');
+        });
+    });
+
+    test('concat spec with a nested faceted child still strips the child resolve', () => {
+        const spec: any = {
+            vconcat: [{ mark: 'bar' }],
+            spec: { layer: [], resolve: { scale: { y: 'independent' } } },
+            resolve: { scale: { color: 'independent' } },
+        };
+        sanitizeResolveScale(spec);
+        expect(spec.resolve.scale.color).toBe('independent');
+        expect(spec.spec.resolve).toBeUndefined();
+    });
+});
