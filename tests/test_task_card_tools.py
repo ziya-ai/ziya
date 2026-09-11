@@ -234,3 +234,115 @@ async def test_no_project_context_degrades_cleanly(tmp_path, monkeypatch):
     out = await TaskCardReadTool().execute(card_id="any")
     assert out.get("error") is True
     assert "project" in out["message"].lower()
+
+
+# ── pre-run feedback: validate + write carry the launch validator ──
+#
+# A model authoring a card needs to learn about a defect BEFORE anyone
+# spends a run on it.  Measured failure: a for_each source referencing the
+# upstream block by NAME; nothing reported it until the loop ran with 0
+# iterations.  Both tools now return the launch validator's findings.
+
+_ROSTER_PIPELINE = {
+    "block_type": "group", "name": "Pipeline", "body": [
+        {"block_type": "task", "id": "plan", "name": "Build roster",
+         "instructions": "emit the roster"},
+        {"block_type": "repeat", "name": "Fan out", "repeat_mode": "for_each",
+         "repeat_for_each_source": '{{sibling("Build roster").outputs.roster.docs}}',
+         "body": [{"block_type": "task", "name": "One",
+                   "instructions": "audit {{item}}"}]},
+    ],
+}
+
+
+def _fixed(tree):
+    import copy
+    t = copy.deepcopy(tree)
+    t["body"][1]["repeat_for_each_source"] = \
+        '{{sibling("plan").outputs.roster.docs}}'
+    return t
+
+
+@pytest.mark.asyncio
+async def test_validate_unsaved_root_reports_name_reference_with_fix(env):
+    from app.mcp.tools.task_card_tools import TaskCardValidateTool
+    out = await TaskCardValidateTool().execute(root=_ROSTER_PIPELINE)
+    assert out["success"] is True
+    assert out["ok"] is False
+    assert out["launchable"] is False
+    assert len(out["errors"]) == 1
+    e = out["errors"][0]
+    assert "block NAME" in e["message"]
+    assert 'sibling("plan")' in e["message"]       # the fix, verbatim
+    assert "Fan out" in e["path"]                  # locatable
+    assert "refuse" in out["message"]
+
+
+@pytest.mark.asyncio
+async def test_validate_corrected_root_is_clean(env):
+    from app.mcp.tools.task_card_tools import TaskCardValidateTool
+    out = await TaskCardValidateTool().execute(root=_fixed(_ROSTER_PIPELINE))
+    assert out["ok"] is True and out["errors"] == []
+    assert "launchable" in out["message"]
+
+
+@pytest.mark.asyncio
+async def test_validate_saved_card_by_id(env):
+    from app.mcp.tools.task_card_tools import TaskCardValidateTool
+    cid = _make_card(env, "Broken", root=_ROSTER_PIPELINE)
+    out = await TaskCardValidateTool().execute(card_id=cid)
+    assert out["ok"] is False
+    assert out["card_id"] == cid
+    # The saved block carries the explicit id the author set.
+    assert 'sibling("plan")' in out["errors"][0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_validate_requires_root_or_card_id(env):
+    from app.mcp.tools.task_card_tools import TaskCardValidateTool
+    out = await TaskCardValidateTool().execute()
+    assert out.get("error") is True
+
+
+@pytest.mark.asyncio
+async def test_validate_garbage_root_is_a_finding_not_a_crash(env):
+    from app.mcp.tools.task_card_tools import TaskCardValidateTool
+    out = await TaskCardValidateTool().execute(root={"block_type": 7})
+    assert out["ok"] is False
+    assert "not a valid block tree" in out["errors"][0]["message"]
+
+
+@pytest.mark.asyncio
+async def test_write_returns_validation_and_warns_in_message(env):
+    from app.mcp.tools.task_card_tools import TaskCardWriteTool
+    cid = _make_card(env, "Card")
+    out = await TaskCardWriteTool().execute(card_id=cid, root=_ROSTER_PIPELINE)
+    assert out["success"] is True                  # the write still lands
+    assert out["validation"]["ok"] is False
+    assert "launch will refuse" in out["message"]
+    assert 'sibling("plan")' in out["validation"]["errors"][0]["message"]
+    # Fix it via the same tool: the response flips clean.
+    out2 = await TaskCardWriteTool().execute(card_id=cid, root=_fixed(_ROSTER_PIPELINE))
+    assert out2["validation"]["ok"] is True
+    assert "Re-launch" in out2["message"]
+
+
+@pytest.mark.asyncio
+async def test_explicit_block_ids_survive_write(env):
+    # The contract the skill now states: set an id, reference it, and the
+    # save keeps it (only missing ids are generated).
+    from app.mcp.tools.task_card_tools import TaskCardWriteTool, TaskCardReadTool
+    cid = _make_card(env, "Card")
+    await TaskCardWriteTool().execute(card_id=cid, root=_fixed(_ROSTER_PIPELINE))
+    read = await TaskCardReadTool().execute(card_id=cid)
+    body = read["card"]["root"]["body"]
+    assert body[0]["id"] == "plan"
+    assert body[1]["id"]                            # generated for the rest
+    assert body[1]["repeat_for_each_source"] == \
+        '{{sibling("plan").outputs.roster.docs}}'
+
+
+def test_validate_tool_is_registered():
+    from app.mcp.builtin_tools import get_task_card_tools
+    names = [t.name for t in get_task_card_tools()]
+    assert "task_card_validate" in names

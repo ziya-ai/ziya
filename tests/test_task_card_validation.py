@@ -293,3 +293,105 @@ class TestSummary:
 
     def test_summary_is_empty_for_a_clean_card(self):
         assert _validate(_task()).summary() == ""
+
+
+# ── {{sibling("...")}} references ─────────────────────────────
+#
+# The reference's BLOCK half is static and checkable even though the
+# artifact half is not.  Measured failure: a for_each source naming the
+# upstream block by its NAME; the renderer's by-id lookup missed,
+# rendered "", and the run failed with zero iterations and a hint that
+# blamed the upstream emit_artifact.
+
+def _pipeline(for_each_ref, *, roster_id="b-roster", roster_name="Build roster"):
+    return Block(block_type="group", id="g", name="Pipeline", body=[
+        Block(block_type="task", id=roster_id, name=roster_name,
+              instructions="emit the roster"),
+        Block(block_type="repeat", id="b-fan", name="Fan out",
+              repeat_mode="for_each",
+              repeat_for_each_source=for_each_ref,
+              body=[Block(block_type="task", id="b-one", name="One",
+                          instructions="audit {{item}}")]),
+    ])
+
+
+class TestSiblingReferences:
+    def test_reference_by_id_is_clean(self):
+        res = _validate(_pipeline('{{sibling("b-roster").outputs.roster.docs}}'))
+        assert res.errors == []
+
+    def test_for_each_reference_by_name_is_an_error_naming_the_id(self):
+        # The exact shape of the observed failure.
+        res = _validate(_pipeline('{{sibling("Build roster").outputs.roster.docs}}'))
+        assert len(res.errors) == 1
+        f = res.errors[0]
+        assert f.block_id == "b-fan"
+        assert "block NAME" in f.message
+        assert 'sibling("b-roster")' in f.message  # the fix, verbatim
+        assert "repeat_for_each_source" in f.message
+
+    def test_name_reference_to_unsaved_block_suggests_an_explicit_id(self):
+        # An unsaved tree (no ids yet): the remedy cannot quote an id, so it
+        # tells the author to set one, and proposes a slug.
+        res = _validate(_pipeline('{{sibling("Build roster").outputs.roster.docs}}',
+                                  roster_id=""))
+        assert len(res.errors) == 1
+        assert 'explicit "id"' in res.errors[0].message
+        assert '"build-roster"' in res.errors[0].message
+
+    def test_ambiguous_name_is_an_error(self):
+        root = _pipeline('{{sibling("Build roster").outputs.roster.docs}}')
+        root.body.insert(0, Block(block_type="task", id="b-dup",
+                                  name="Build roster", instructions="x"))
+        res = _validate(root)
+        assert any("shared by 2 blocks" in e.message for e in res.errors)
+
+    def test_for_each_unknown_id_is_an_error_listing_known_ids(self):
+        res = _validate(_pipeline('{{sibling("b-nope").outputs.roster.docs}}'))
+        assert len(res.errors) == 1
+        assert "names no block" in res.errors[0].message
+        assert "b-roster" in res.errors[0].message
+
+    def test_instructions_unknown_id_is_only_a_warning(self):
+        # A callee card may reference its caller's blocks (shared registry),
+        # so an absent id in instructions is not provably wrong.
+        root = _pipeline('{{sibling("b-roster").outputs.roster.docs}}')
+        root.body[1].body[0].instructions = 'see {{sibling("b-elsewhere")}}'
+        res = _validate(root)
+        assert res.errors == []
+        assert any("b-elsewhere" in w.message and "Called" in w.message
+                   for w in res.warnings)
+
+    def test_instructions_name_reference_is_still_an_error(self):
+        root = _pipeline('{{sibling("b-roster").outputs.roster.docs}}')
+        root.body[1].body[0].instructions = 'see {{sibling("Build roster")}}'
+        res = _validate(root)
+        assert any("block NAME" in e.message and e.block_id == "b-one"
+                   for e in res.errors)
+
+    def test_self_and_ancestor_references_are_errors(self):
+        root = _pipeline('{{sibling("b-fan").outputs.x.y}}')  # self
+        res = _validate(root)
+        assert any("itself" in e.message for e in res.errors)
+        root = _pipeline('{{sibling("g").outputs.x.y}}')  # enclosing group
+        res = _validate(root)
+        assert any("enclosing" in e.message for e in res.errors)
+
+    def test_descendant_reference_is_an_error(self):
+        res = _validate(_pipeline('{{sibling("b-one").outputs.x.y}}'))
+        assert any("inside this one's body" in e.message for e in res.errors)
+
+    def test_repeated_reference_yields_one_finding(self):
+        root = _pipeline('{{sibling("b-roster").outputs.roster.docs}}')
+        root.body[1].body[0].instructions = (
+            '{{sibling("Build roster")}} and again {{sibling("Build roster")}}'
+        )
+        res = _validate(root)
+        assert len([e for e in res.errors if e.block_id == "b-one"]) == 1
+
+    def test_reference_to_earlier_sibling_of_an_ancestor_is_clean(self):
+        # Registry is run-scoped: a nested block may reference a block
+        # that completed earlier at a shallower depth.
+        root = _pipeline('{{sibling("b-roster").outputs.roster.docs}}')
+        root.body[1].body[0].instructions = '{{sibling("b-roster").summary}}'
+        assert _validate(root).errors == []
