@@ -35,7 +35,7 @@ from app.hallucination.shingle_index import (
 def _make_executor():
     """Minimal mock executor for process_text_delta."""
     executor = MagicMock()
-    executor._normalize_fence_spacing.side_effect = lambda text, tracker: text
+    executor._normalize_fence_spacing.side_effect = lambda text, tracker, **kw: text
     executor._update_code_block_tracker.return_value = None
     executor._block_opening_buffer = ""
     # Fake-tool-fence accumulator state — process_text_delta uses these

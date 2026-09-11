@@ -236,7 +236,13 @@ class TestValidationRefusals:
         decidable for a templated source."""
         blk = _loop()
         blk.repeat_for_each_source = '{{sibling("plan").outputs.r.ids}}'
-        assert _errors(blk) == []
+        # The referenced block must exist for the reference itself to be
+        # valid (sibling() references are checked statically since the
+        # by-name-vs-id defect); the roster's KEYS still are not.
+        root = Block(block_type="group", id="g", body=[
+            Block(block_type="task", id="plan", instructions="plan"), blk,
+        ])
+        assert _errors(root) == []
 
     def test_without_require_complete_none_of_this_fires(self):
         """Regression guard: the hazards are hazards OF the assertion.

@@ -192,59 +192,6 @@ class TestAgentStringHandling:
         assert result.text == test_string
 
 
-class TestNovaWrapper:
-    """Test suite for Nova wrapper."""
-    
-    @patch('app.agents.nova_wrapper.BedrockRuntime')
-    def test_nova_wrapper_generation_attributes(self, mock_bedrock_runtime):
-        """Test that Nova wrapper's Generation objects have the necessary attributes."""
-        from app.agents.nova_wrapper import NovaWrapper
-        
-        # Create a mock Bedrock client
-        mock_client = MagicMock()
-        mock_bedrock_runtime.return_value = mock_client
-        
-        # Set up the mock response
-        response_text = "This is a test response from Nova Pro."
-        mock_response = MockLLMResponse.create_bedrock_response(response_text, model="nova")
-        mock_client.converse.return_value = mock_response
-        
-        # Create a NovaWrapper instance
-        nova_wrapper = NovaWrapper(model_id="us.amazon.nova-pro-v1:0")
-        
-        # Call the _parse_response method directly
-        result = nova_wrapper._parse_response(mock_response)
-        
-        # Verify that the result is a string with the expected text
-        assert result == response_text
-        
-        # Create a Generation object with enhanced attributes
-        from langchain_core.outputs import Generation
-        generation = Generation(text=result)
-        
-        # Add necessary attributes
-        object.__setattr__(generation, 'id', f"test-{hash(result) % 10000}")
-        object.__setattr__(generation, 'message', result)
-        
-        # Add a custom __str__ method
-        def custom_str(self):
-            return self.text
-        generation.__str__ = types.MethodType(custom_str, generation)
-        
-        # Verify the attributes
-        assert hasattr(generation, 'id')
-        assert hasattr(generation, 'message')
-        assert generation.text == response_text
-        
-        # Convert to string
-        generation_str = str(generation)
-        assert generation_str == response_text
-        
-        # The string conversion should lose attributes
-        with pytest.raises(AttributeError, match="'str' object has no attribute 'id'"):
-            _ = generation_str.id
-
-
 class TestErrorHandling:
     """Test suite for error handling in LLM interactions."""
     

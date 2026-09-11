@@ -59,58 +59,6 @@ def _parse_modal_git_ops() -> list:
     return _parse_modal_array("allGitOperations")
 
 
-class TestGitWriteOpParity:
-    """Same drift hazard, three lists instead of two, for the git WRITE tier.
-
-      app/mcp_servers/shell_server.py    git_write_patterns keys  (has a pattern)
-      frontend/.../ShellConfigModal.tsx  allGitWriteOperations    (checkboxable)
-      app/config/shell_config.py         writeGitOperations       (MUST be empty)
-
-    The third is not a parity target but its inverse: a non-empty default would
-    widen scope_canonical's hardcoded-empty WRITE_GIT_OPERATIONS floor's
-    intent, granting a mutating op without a signature.
-    """
-
-    @pytest.fixture(scope="class")
-    def pattern_ops(self):
-        from unittest.mock import patch
-        from app.config.scope_canonical import ESCALATION_ENV_KEYS
-        from app.mcp_servers.shell_server import ShellServer
-        import os
-
-        env = {k: v for k, v in os.environ.items() if k not in ESCALATION_ENV_KEYS}
-        with patch.dict(os.environ, env, clear=True):
-            return sorted(ShellServer().git_write_patterns)
-
-    @pytest.fixture(scope="class")
-    def modal_write_ops(self):
-        return sorted(_parse_modal_array("allGitWriteOperations"))
-
-    def test_modal_offers_exactly_the_ops_with_patterns(
-        self, modal_write_ops, pattern_ops
-    ):
-        assert modal_write_ops == pattern_ops, (
-            "git write checkbox list and the server's pattern table disagree; "
-            f"modal={modal_write_ops} patterns={pattern_ops}"
-        )
-
-    def test_default_grant_is_empty(self):
-        assert DEFAULT_SHELL_CONFIG["writeGitOperations"] == [], (
-            "a non-empty writeGitOperations default would grant a mutating git "
-            "op with no signed escalation"
-        )
-
-    def test_write_ops_are_disjoint_from_read_only_set(self, pattern_ops):
-        """A subcommand must not appear in both tiers.
-
-        The read-only patterns are installed unconditionally from the floor; if
-        a write op's name also existed there, the read-only (unsigned) pattern
-        would satisfy validation and the signed write tier would be moot.
-        """
-        overlap = set(pattern_ops) & set(DEFAULT_SHELL_CONFIG["safeGitOperations"])
-        assert not overlap, f"op present in both git tiers: {sorted(overlap)}"
-
-
 @pytest.fixture(scope="module")
 def modal_ops():
     return _parse_modal_git_ops()

@@ -8,6 +8,10 @@ WARNING: These tests will incur actual API usage costs.
 import os
 import time
 import pytest
+
+# Calls live provider APIs (needs credentials + network); deselected by the
+# default run via pytest.ini's `-m "not integration"`.
+pytestmark = pytest.mark.integration
 from unittest.mock import patch
 
 import app.config as config

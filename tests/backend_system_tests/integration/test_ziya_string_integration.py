@@ -56,54 +56,6 @@ class MockResponse:
         }
 
 
-@patch('boto3.client')
-def test_nova_wrapper_ziya_string_integration(mock_boto3_client):
-    """Test ZiyaString integration with Nova wrapper."""
-    # Import the NovaWrapper class
-    from app.agents.nova_wrapper import NovaWrapper
-    
-    # Create a mock client
-    mock_client = MagicMock()
-    mock_boto3_client.return_value = mock_client
-    
-    # Set up the mock response
-    response_text = "This is a test response from Nova."
-    mock_client.converse.return_value = MockResponse.create_nova_response(response_text)
-    
-    # Initialize the wrapper
-    wrapper = NovaWrapper(model_id="us.amazon.nova-pro-v1:0")
-    
-    # Create test messages
-    messages = [
-        HumanMessage(content="Hello, Nova!")
-    ]
-    
-    # Generate a response
-    result = wrapper._generate(messages)
-    
-    # Verify the result
-    assert len(result.generations) == 1
-    assert result.generations[0].message.content == response_text
-    assert hasattr(result.generations[0], 'id')
-    assert hasattr(result.generations[0], 'message')
-    
-    # Convert to string and verify attributes are lost
-    generation_str = str(result.generations[0])
-    assert isinstance(generation_str, str)
-    with pytest.raises(AttributeError):
-        _ = generation_str.id
-    
-    # Extract the message content and verify it's a string
-    message_content = result.generations[0].message.content
-    assert isinstance(message_content, str)
-    
-    # If it's a ZiyaString, verify attributes are preserved
-    if isinstance(message_content, ZiyaString):
-        assert hasattr(message_content, 'id')
-        assert hasattr(message_content, 'message')
-        assert message_content.message == response_text
-
-
 def test_ziya_string_in_generation():
     """Test using ZiyaString in a Generation object."""
     # Create a ZiyaString

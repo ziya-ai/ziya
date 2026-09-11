@@ -28,6 +28,10 @@ import json
 import os
 import sys
 import pytest
+
+# Calls live provider APIs (needs credentials + network); deselected by the
+# default run via pytest.ini's `-m "not integration"`.
+pytestmark = pytest.mark.integration
 import tiktoken
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))

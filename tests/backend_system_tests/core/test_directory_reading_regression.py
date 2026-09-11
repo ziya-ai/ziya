@@ -221,18 +221,19 @@ class DirectoryReadingRegressionTest(unittest.TestCase):
     
     def test_cached_folder_structure(self):
         """Test that folder structure caching works."""
-        from app.utils.directory_util import get_cached_folder_structure, get_ignored_patterns
+        from app.services.folder_service import get_cached_folder_structure
+        from app.utils.directory_util import get_ignored_patterns
         
         ignored_patterns = get_ignored_patterns(self.test_dir)
         
         # First call
         start_time = time.time()
-        structure1 = get_cached_folder_structure(self.test_dir, ignored_patterns, max_depth=3)
+        structure1 = get_cached_folder_structure(self.test_dir, ignored_patterns, max_depth=3, synchronous=True)
         first_time = time.time() - start_time
         
         # Second call (should use cache)
         start_time = time.time()
-        structure2 = get_cached_folder_structure(self.test_dir, ignored_patterns, max_depth=3)
+        structure2 = get_cached_folder_structure(self.test_dir, ignored_patterns, max_depth=3, synchronous=True)
         second_time = time.time() - start_time
         
         # Results should be identical

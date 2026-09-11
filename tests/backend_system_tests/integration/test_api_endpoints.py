@@ -47,13 +47,14 @@ class TestAPIEndpoints(unittest.TestCase):
     
     def test_folder_endpoint_integration(self):
         """Test integration with /folder endpoint logic."""
-        from app.utils.directory_util import get_cached_folder_structure, get_ignored_patterns
+        from app.services.folder_service import get_cached_folder_structure
+        from app.utils.directory_util import get_ignored_patterns
         
         # Simulate the logic from the /folder endpoint
         ignored_patterns = get_ignored_patterns(self.test_dir)
         max_depth = 15  # Default from server
         
-        result = get_cached_folder_structure(self.test_dir, ignored_patterns, max_depth)
+        result = get_cached_folder_structure(self.test_dir, ignored_patterns, max_depth, synchronous=True)
         
         # Should return structure compatible with API response
         self.assertIsInstance(result, dict)
@@ -82,7 +83,8 @@ class TestAPIEndpoints(unittest.TestCase):
     
     def test_api_folders_endpoint_integration(self):
         """Test integration with /api/folders endpoint logic."""
-        from app.utils.directory_util import get_cached_folder_structure, get_ignored_patterns
+        from app.services.folder_service import get_cached_folder_structure
+        from app.utils.directory_util import get_ignored_patterns
         
         # Mock environment variable for user codebase directory
         with patch.dict(os.environ, {'ZIYA_USER_CODEBASE_DIR': self.test_dir}):
@@ -92,7 +94,7 @@ class TestAPIEndpoints(unittest.TestCase):
             ignored_patterns = get_ignored_patterns(user_codebase_dir)
             max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
             
-            result = get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth)
+            result = get_cached_folder_structure(user_codebase_dir, ignored_patterns, max_depth, synchronous=True)
             
             # Should return valid structure
             self.assertIsInstance(result, dict)
@@ -109,13 +111,14 @@ class TestAPIEndpoints(unittest.TestCase):
     
     def test_error_handling_in_api_context(self):
         """Test error handling when used in API context."""
-        from app.utils.directory_util import get_cached_folder_structure, get_ignored_patterns
+        from app.services.folder_service import get_cached_folder_structure
+        from app.utils.directory_util import get_ignored_patterns
         
         # Test with non-existent directory
         fake_dir = '/path/that/does/not/exist'
         ignored_patterns = []
         
-        result = get_cached_folder_structure(fake_dir, ignored_patterns, max_depth=5)
+        result = get_cached_folder_structure(fake_dir, ignored_patterns, max_depth=5, synchronous=True)
         
         # Should handle gracefully and return error structure
         self.assertIsInstance(result, dict)
@@ -129,7 +132,8 @@ class TestAPIEndpoints(unittest.TestCase):
     
     def test_environment_variable_integration(self):
         """Test integration with environment variables used by API."""
-        from app.utils.directory_util import get_cached_folder_structure, get_ignored_patterns
+        from app.services.folder_service import get_cached_folder_structure
+        from app.utils.directory_util import get_ignored_patterns
         
         # Test with various environment variable configurations
         test_configs = [
@@ -143,7 +147,7 @@ class TestAPIEndpoints(unittest.TestCase):
                 ignored_patterns = get_ignored_patterns(self.test_dir)
                 max_depth = int(os.environ.get("ZIYA_MAX_DEPTH", 15))
                 
-                result = get_cached_folder_structure(self.test_dir, ignored_patterns, max_depth)
+                result = get_cached_folder_structure(self.test_dir, ignored_patterns, max_depth, synchronous=True)
                 
                 # Should work with different configurations
                 self.assertIsInstance(result, dict)
@@ -174,13 +178,14 @@ class TestAPIEndpoints(unittest.TestCase):
     
     def test_caching_behavior_in_api_context(self):
         """Test caching behavior as used by API endpoints."""
-        from app.utils.directory_util import get_cached_folder_structure, get_ignored_patterns
+        from app.services.folder_service import get_cached_folder_structure
+        from app.utils.directory_util import get_ignored_patterns
         
         ignored_patterns = get_ignored_patterns(self.test_dir)
         
         # Multiple calls should use caching
-        result1 = get_cached_folder_structure(self.test_dir, ignored_patterns, max_depth=5)
-        result2 = get_cached_folder_structure(self.test_dir, ignored_patterns, max_depth=5)
+        result1 = get_cached_folder_structure(self.test_dir, ignored_patterns, max_depth=5, synchronous=True)
+        result2 = get_cached_folder_structure(self.test_dir, ignored_patterns, max_depth=5, synchronous=True)
         
         # Results should be identical (cached)
         self.assertEqual(result1, result2, "Cached results should be identical")
@@ -198,10 +203,11 @@ class TestAPIEndpoints(unittest.TestCase):
     
     def test_response_format_compatibility(self):
         """Test that response format is compatible with frontend expectations."""
-        from app.utils.directory_util import get_cached_folder_structure, get_ignored_patterns
+        from app.services.folder_service import get_cached_folder_structure
+        from app.utils.directory_util import get_ignored_patterns
         
         ignored_patterns = get_ignored_patterns(self.test_dir)
-        result = get_cached_folder_structure(self.test_dir, ignored_patterns, max_depth=5)
+        result = get_cached_folder_structure(self.test_dir, ignored_patterns, max_depth=5, synchronous=True)
         
         if 'error' not in result:
             # Check structure format expected by frontend
@@ -221,7 +227,8 @@ class TestAPIEndpoints(unittest.TestCase):
     
     def test_large_response_handling(self):
         """Test handling of large responses that might be returned by API."""
-        from app.utils.directory_util import get_cached_folder_structure, get_ignored_patterns
+        from app.services.folder_service import get_cached_folder_structure
+        from app.utils.directory_util import get_ignored_patterns
         
         # Create a larger directory structure
         large_dir = os.path.join(self.test_dir, 'large_structure')
@@ -234,7 +241,7 @@ class TestAPIEndpoints(unittest.TestCase):
                 f.write(f'Content for file {i}\n' * 10)
         
         ignored_patterns = get_ignored_patterns(self.test_dir)
-        result = get_cached_folder_structure(self.test_dir, ignored_patterns, max_depth=5)
+        result = get_cached_folder_structure(self.test_dir, ignored_patterns, max_depth=5, synchronous=True)
         
         # Should handle large responses
         self.assertIsInstance(result, dict)
