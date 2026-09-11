@@ -15,13 +15,14 @@
 import React from 'react';
 import { MarkdownRenderer } from '../MarkdownRenderer';
 import { useActiveChatOptional } from '../../context/ActiveChatContext';
+import { RawMarkdownView } from '../RawMarkdownView';
 
 type MarkdownRendererProps = React.ComponentProps<typeof MarkdownRenderer>;
 
 export const TaskMarkdown: React.FC<MarkdownRendererProps> = (props) => {
     const activeChat = useActiveChatOptional();
     if (activeChat?.currentDisplayMode === 'raw') {
-        return <pre className="raw-markdown-view">{props.markdown}</pre>;
+        return <RawMarkdownView content={props.markdown} />;
     }
     return <MarkdownRenderer {...props} />;
 };

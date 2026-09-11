@@ -6,6 +6,7 @@ import type { ProcessingState } from '../context/ChatContext';
 import { Space, Alert, Typography, Button } from 'antd';
 import { v4 as uuidv4 } from 'uuid';
 import StopStreamButton from './StopStreamButton';
+import { RawMarkdownView } from './RawMarkdownView';
 import { RobotOutlined, LoadingOutlined } from '@ant-design/icons';
 import { useQuestionContext } from '../context/QuestionContext';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
@@ -964,7 +965,7 @@ export const StreamedContent: React.FC<{}> = () => {
                                         />
                                     )}
                                     {isRawMode ? (
-                                        <pre className="raw-markdown-view">{streamedContent}</pre>
+                                        <RawMarkdownView content={streamedContent} />
                                     ) : (
                                         <MarkdownRenderer
                                             key={`stream-${currentConversationId}`}

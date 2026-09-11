@@ -28,6 +28,7 @@ import { useCopyCleanup } from '../hooks/useCopyCleanup';
 
 // Lazy load the MarkdownRenderer
 import { MarkdownRenderer } from "./MarkdownRenderer";
+import { RawMarkdownView } from "./RawMarkdownView";
 import { lazyWithRetry } from '../utils/lazyWithRetry';
 const TaskCardInlineTile = lazyWithRetry(() => import('./TaskCard/TaskCardInlineTile'));
 // --- Deferred markdown rendering ---------------------------------------------
@@ -1064,7 +1065,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                             {/* Only render message content if there's actual text content */}
                                             {msg.content && <div className="message-content">
                                                 {isRawMode ? (
-                                                    <pre className="raw-markdown-view">{msg.content}</pre>
+                                                    <RawMarkdownView content={msg.content} />
                                                 ) : (
                                                     <MessageIdContext.Provider value={msg.id}>
                                                         <LazyMarkdownRenderer
@@ -1100,7 +1101,7 @@ const Conversation: React.FC<ConversationProps> = memo(({ enableCodeApply, onOpe
                                             </div>
                                             <div className="message-content">
                                                 {isRawMode ? (
-                                                    <pre className="raw-markdown-view">{msg.content}</pre>
+                                                    <RawMarkdownView content={msg.content} />
                                                 ) : (
                                                     <MessageIdContext.Provider value={msg.id}>
                                                         <LazyMarkdownRenderer
