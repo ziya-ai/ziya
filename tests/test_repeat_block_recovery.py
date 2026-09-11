@@ -72,7 +72,7 @@ def _make_executor():
             # State/collaborators the loop touches.
             ex._block_opening_buffer = ""
             ex._repetition_suppressed = False
-            ex._normalize_fence_spacing = lambda text, tracker: text
+            ex._normalize_fence_spacing = lambda text, tracker, **kw: text
             ex._update_code_block_tracker = lambda text, tracker: None
             ex._sanitize_assistant_text = lambda t: t
             ex._normalize_tool_name = lambda n: n

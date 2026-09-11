@@ -379,6 +379,14 @@ class TextDeltaState:
     inline_thinking: InlineThinkingState = field(
         default_factory=InlineThinkingState)
 
+    # Set by the executor the first time native reasoning content arrives
+    # in this iteration (Claude thinking_delta, DeepSeek reasoning_content,
+    # GLM).  A provider that has delivered reasoning on its own channel
+    # does not also emit it as literal tags in the text stream, so the
+    # inline scanner is disabled for the rest of the iteration: any tag it
+    # would find is content.  Per-iteration like everything else here.
+    native_thinking_seen: bool = False
+
     # Output flags — checked by caller after each call
     hallucination_detected: bool = False
     # Populated when a shingle match fires. Consumed by caller to
@@ -441,11 +449,15 @@ def process_text_delta(
     # no raw tag can reach the renderer.  in_code_block leaves tags in a
     # diff or code sample intact -- the guard the rewrite lacked, which
     # is how it corrupted diffs of this feature.
-    _think_events, text = scan_inline_thinking(
-        text, state.inline_thinking, ts,
-        in_code_block=bool(state.code_block_tracker.get('in_block')),
-    )
-    events.extend(_think_events)
+    # Skipped once native reasoning has been seen this iteration: that
+    # provider's text stream carries no inline reasoning, and scanning it
+    # anyway is how a quoted tag in a Claude answer swallowed a diff.
+    if not state.native_thinking_seen:
+        _think_events, text = scan_inline_thinking(
+            text, state.inline_thinking, ts,
+            in_code_block=bool(state.code_block_tracker.get('in_block')),
+        )
+        events.extend(_think_events)
     if not text:
         return events
 
@@ -539,7 +551,11 @@ def process_text_delta(
                 return events  # skip — buffered
 
     # --- Fence spacing normalization ---
-    text = executor._normalize_fence_spacing(text, state.code_block_tracker)
+    # ``preceding`` lets the normaliser see an inline code span whose opener
+    # arrived in an earlier chunk, so it does not split the span at a fence-
+    # looking run inside it.
+    text = executor._normalize_fence_spacing(
+        text, state.code_block_tracker, preceding=state.assistant_text)
 
     # --- Strip stray bare fences before viz block openers ---
     # The model sometimes emits an empty bare ``` fence immediately before
