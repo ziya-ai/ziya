@@ -27,10 +27,14 @@ What this module deliberately does NOT do:
   already enforces both (``ExecutionContext.call_stack`` and
   ``MAX_CALL_DEPTH``) and is tested on them; duplicating that logic here
   would create two places for it to disagree.
-* Judge a templated ``for_each`` source.  It resolves against runtime
-  artifacts, so it cannot be checked statically, and flagging the
-  canonical planner-then-fan-out shape would teach authors to ignore the
-  validator.
+* Judge a templated ``for_each`` source's ITEMS.  They resolve against
+  runtime artifacts, so they cannot be checked statically, and flagging
+  the canonical planner-then-fan-out shape would teach authors to ignore
+  the validator.  The BLOCK a ``{{sibling("...")}}`` reference names is
+  a different matter: that part of the template is fully static, and a
+  reference to a block that is not in the tree — or that names a block
+  by its ``name`` rather than its ``id`` — can never resolve, so it is
+  refused here (see ``_check_sibling_refs``).
 * Invent findings it cannot substantiate.  With no project context a
   Call target is unresolvable-in-principle rather than wrong, and a
   resolver that throws an unexpected exception means "cannot verify",
@@ -43,7 +47,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 from ..agents.task_call import CallResolutionError, resolve_call_target
 from ..models.task_card import Block
@@ -73,6 +77,60 @@ CONTAINER_TYPES = frozenset({
 # block_executor.DEFAULT_REPEAT_CONCURRENCY; not imported, to keep this
 # module importable from the API layer without pulling in the executor.
 _WIDE_FANOUT_THRESHOLD = 8
+
+# The block a {{sibling("...")}} reference names.  Deliberately looser
+# than task_templating._PLACEHOLDER_RE (no closing braces, no field path)
+# so a malformed-but-recognisable reference is still checked: the author
+# clearly meant a sibling lookup, and the id inside it is what we are
+# here to verify.
+_SIBLING_REF_RE = re.compile(r"sibling\(\s*['\"]([^'\"]+)['\"]\s*\)")
+
+# How many known block ids to list in an "unknown id" finding before
+# truncating.  Enough to recognise the intended one; not the whole card.
+_KNOWN_IDS_SHOWN = 12
+
+
+@dataclass
+class _TreeIndex:
+    """Every block in the card, by id and by name.
+
+    Built once before the walk so a reference can be resolved against the
+    WHOLE tree, not just the ancestors seen so far — the executor's
+    ``artifact_registry`` is run-scoped, so a block may legitimately
+    reference an earlier sibling of one of its ancestors.
+    """
+    ids: Dict[str, Block] = field(default_factory=dict)
+    names: Dict[str, List[Block]] = field(default_factory=dict)
+
+
+def _index_tree(root: Block) -> _TreeIndex:
+    idx = _TreeIndex()
+
+    def _visit(b: Block) -> None:
+        if b.id:
+            idx.ids[b.id] = b
+        if b.name:
+            idx.names.setdefault(b.name, []).append(b)
+        for c in b.body or []:
+            _visit(c)
+
+    _visit(root)
+    return idx
+
+
+def _descendant_ids(block: Block) -> Set[str]:
+    out: Set[str] = set()
+    for c in block.body or []:
+        if c.id:
+            out.add(c.id)
+        out |= _descendant_ids(c)
+    return out
+
+
+def _slug_for(name: str) -> str:
+    """A suggested explicit id for a block that has none yet."""
+    slug = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
+    return slug[:40] or "step"
 
 
 @dataclass
@@ -132,7 +190,7 @@ def validate_card_tree(
             message="card has no root block", block_id="", path="(root)",
         ))
         return res
-    _walk(root, [], res, project_id, project_root)
+    _walk(root, [], res, project_id, project_root, index=_index_tree(root))
     return res
 
 
@@ -143,9 +201,13 @@ def _walk(
     project_id: Optional[str],
     project_root: Optional[str],
     enclosing: Tuple[str, ...] = (),
+    index: Optional[_TreeIndex] = None,
+    lineage: Tuple[str, ...] = (),
 ) -> None:
     path = " > ".join([*ancestry, _label(block)])
     bid = block.id or ""
+    if index is None:
+        index = _index_tree(block)
 
     def err(msg: str) -> None:
         res.errors.append(Finding(message=msg, block_id=bid, path=path))
@@ -198,6 +260,8 @@ def _walk(
     if btype in CONTAINER_TYPES and not (block.body or []):
         warn(f"{btype} block has an empty body - it will do nothing")
 
+    _check_sibling_refs(block, index, lineage, err, warn)
+
     # What this block is, as an ENCLOSURE for the subtree beneath it.  A
     # parallel Repeat is both at once, which is why these accumulate as tags
     # rather than resolving to a single kind.
@@ -207,9 +271,113 @@ def _walk(
     if btype in ("repeat", "until"):
         child_enclosing = (*child_enclosing, "loop")
 
+    child_lineage = (*lineage, bid) if bid else lineage
     for child in block.body or []:
         _walk(child, [*ancestry, _label(block)], res, project_id,
-              project_root, child_enclosing)
+              project_root, child_enclosing, index, child_lineage)
+
+
+def _sibling_ref_problem(
+    ref: str, block: Block, index: _TreeIndex, lineage: Tuple[str, ...],
+) -> Optional[Tuple[str, str]]:
+    """Why ``sibling(ref)`` cannot resolve, as ``(kind, message)``.
+
+    ``None`` when the reference is fine.  ``kind`` is ``"unknown"`` for an
+    id that is simply absent from this tree, and something else for every
+    case that is a certain authoring error; the caller uses that split to
+    choose severity.
+    """
+    if ref in index.ids:
+        if ref == block.id:
+            return ("self", (
+                "refers to this block itself - a block has no artifact "
+                "until it finishes, so this can never resolve"
+            ))
+        if ref in lineage:
+            return ("ancestor", (
+                "refers to an enclosing block, which cannot have completed "
+                "while its body (this block) is still running"
+            ))
+        if ref in _descendant_ids(block):
+            return ("descendant", (
+                "refers to a block inside this one's body, which has not "
+                "run yet when this template renders"
+            ))
+        return None
+    named = index.names.get(ref) or []
+    if len(named) == 1:
+        target = named[0]
+        if target.id:
+            remedy = f'use sibling("{target.id}")'
+        else:
+            slug = _slug_for(ref)
+            remedy = (
+                f'give that block an explicit "id" (for example '
+                f'"{slug}") and reference sibling("{slug}")'
+            )
+        return ("name", (
+            f"is a block NAME, but sibling() takes the block ID - {remedy}. "
+            f"Explicit ids are kept on save; only missing ones are "
+            f"generated"
+        ))
+    if len(named) > 1:
+        return ("name", (
+            f"is a block NAME shared by {len(named)} blocks - sibling() "
+            f"takes the block ID. Give the intended block an explicit "
+            f"\"id\" and reference that"
+        ))
+    known = sorted(index.ids)
+    shown = known[:_KNOWN_IDS_SHOWN]
+    more = f" (+{len(known) - len(shown)} more)" if len(known) > len(shown) else ""
+    return ("unknown", (
+        f"names no block in this card. Block ids here: {shown!r}{more}. "
+        f"If the block you mean has no id yet, set one explicitly and "
+        f"reference it"
+    ))
+
+
+def _check_sibling_refs(
+    block: Block, index: _TreeIndex, lineage: Tuple[str, ...], err, warn,
+) -> None:
+    """Refuse ``{{sibling("X")}}`` references that can never resolve.
+
+    Measured on a real run: a for_each source of
+    ``{{sibling("Build design-doc roster").outputs.roster.docs}}`` -
+    the block's NAME, because the authoring skill's examples show names
+    and ids are minted on save where the author never sees them.  The
+    renderer's by-id lookup missed, rendered "", and the runtime error
+    told the author to fix the upstream ``emit_artifact`` - the one part
+    of the card that was probably already right.
+
+    Severity: a reference in ``repeat_for_each_source`` is an error in
+    every case, because the block fails with zero iterations.  A
+    reference in ``instructions`` to an id that is merely absent is a
+    warning: the executor's registry is shared with Call'd cards, so a
+    callee may legitimately reference a block in its caller.  Naming a
+    block by its name, or referencing self / an ancestor / a descendant,
+    is an error wherever it appears - those cannot be right.
+    """
+    sources = []
+    if block.block_type == "repeat":
+        sources.append(("repeat_for_each_source",
+                        block.repeat_for_each_source or "", True))
+    sources.append(("instructions", block.instructions or "", False))
+    for field_name, text, hard in sources:
+        if "sibling(" not in text:
+            continue
+        # dict.fromkeys: de-duplicate while keeping first-seen order, so a
+        # reference used three times yields one finding.
+        for ref in dict.fromkeys(_SIBLING_REF_RE.findall(text)):
+            problem = _sibling_ref_problem(ref, block, index, lineage)
+            if problem is None:
+                continue
+            kind, message = problem
+            full = f'{field_name}: sibling("{ref}") {message}'
+            if kind == "unknown" and not hard:
+                warn(full + " (harmless only if this card is Called from "
+                            "a card that has that block)")
+            else:
+                err(full)
 
 
 def _check_ask(block: Block, err, enclosing: Tuple[str, ...]) -> None:
