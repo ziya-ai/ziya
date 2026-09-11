@@ -121,15 +121,23 @@ export function classifyColor(input: any): { hex?: string; named?: string } | nu
     const s = input.trim();
     if (!s) return null;
     const lower = s.toLowerCase();
-    if (lower === 'transparent' || lower === 'none') return null;
-    // Unresolvable design-system tokens: CSS functions we can't resolve, sigils,
-    // custom-prop refs, dotted namespaces, or anything with whitespace.
-    if (/^var\(|^calc\(|^\$/.test(lower) || lower.includes('--') || /\s/.test(s) || /[a-z0-9]\.[a-z]/i.test(s)) {
+    // Context-dependent / absent keywords that name no fixed colour. These are
+    // treated as absent so a caller falls back to a resolved default rather than
+    // letting a literal 'currentColor'/'inherit' skip contrast reconciliation
+    // (which cannot reason about it) and reach the canvas verbatim. (D-001)
+    if (lower === 'transparent' || lower === 'none'
+        || lower === 'currentcolor' || lower === 'inherit'
+        || lower === 'initial' || lower === 'unset') {
         return null;
     }
     if (s[0] === '#') {
         return hexToRgb(s) ? { hex: s } : null;
     }
+    // Parse functional rgb()/rgba() BEFORE the whitespace/token guard below: a
+    // valid rgb(255, 0, 0) carries inter-channel spaces and would otherwise be
+    // rejected by the /\s/ guard and dropped as "absent", so the colour skipped
+    // ensureReadableFill/readableStroke reconciliation entirely (D-001). The
+    // regex already tolerates the internal whitespace.
     const rgba = lower.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)$/);
     if (rgba) {
         const alpha = rgba[4] === undefined ? 1 : parseFloat(rgba[4]);
@@ -137,6 +145,11 @@ export function classifyColor(input: any): { hex?: string; named?: string } | nu
         return { hex: rgbToHex([parseInt(rgba[1], 10), parseInt(rgba[2], 10), parseInt(rgba[3], 10)]) };
     }
     if (lower.startsWith('rgb')) return null; // malformed rgb(...)
+    // Unresolvable design-system tokens: CSS functions we can't resolve, sigils,
+    // custom-prop refs, dotted namespaces, or anything with whitespace.
+    if (/^var\(|^calc\(|^\$/.test(lower) || lower.includes('--') || /\s/.test(s) || /[a-z0-9]\.[a-z]/i.test(s)) {
+        return null;
+    }
     // Bare alphabetic keyword — assume a valid CSS named colour.
     if (/^[a-z]+$/i.test(s)) return { named: s };
     return null;
@@ -174,6 +187,25 @@ const CSS_NAMED_COLORS: Record<string, string> = {
     violet: '#ee82ee', wheat: '#f5deb3', whitesmoke: '#f5f5f5', yellowgreen: '#9acd32',
     dimgray: '#696969', dimgrey: '#696969', darkslategray: '#2f4f4f', darkslategrey: '#2f4f4f',
     cornflowerblue: '#6495ed', mediumseagreen: '#3cb371', indianred: '#cd5c5c',
+    // Pale/pastel CSS keywords models frequently emit as node fills. These are
+    // dangerous for a theme-default white label (all resolve near-white), so
+    // resolving them here lets contrast reconciliation pick a dark text colour
+    // instead of leaving an illegible white-on-pale label (D-045).
+    papayawhip: '#ffefd5', moccasin: '#ffe4b5', peachpuff: '#ffdab9',
+    bisque: '#ffe4c4', blanchedalmond: '#ffebcd', cornsilk: '#fff8dc',
+    lemonchiffon: '#fffacd', antiquewhite: '#faebd7', palegoldenrod: '#eee8aa',
+    lightcyan: '#e0ffff', paleturquoise: '#afeeee', powderblue: '#b0e0e6',
+    mistyrose: '#ffe4e1', lavenderblush: '#fff0f5', seashell: '#fff5ee',
+    honeydew: '#f0fff0', mintcream: '#f5fffa', azure: '#f0ffff',
+    ghostwhite: '#f8f8ff', snow: '#fffafa', ivory: '#fffff0', linen: '#faf0e6',
+    oldlace: '#fdf5e6', floralwhite: '#fffaf0', thistle: '#d8bfd8',
+    gainsboro: '#dcdcdc', lightsteelblue: '#b0c4de', lightsalmon: '#ffa07a',
+    // A few common darker keywords, for LIGHT-theme symmetry (a dark author
+    // fill needs a light label): a single resolver covers both directions.
+    darkslateblue: '#483d8b', darkviolet: '#9400d3', darkmagenta: '#8b008b',
+    darkcyan: '#008b8b', darkolivegreen: '#556b2f', darkgoldenrod: '#b8860b',
+    mediumvioletred: '#c71585', deeppink: '#ff1493', deepskyblue: '#00bfff',
+    mediumpurple: '#9370db',
 };
 
 /**
@@ -198,8 +230,20 @@ export function namedColorToHex(name: any): string | null {
 export function ensureReadableFill(input: any, bgHex: string, fallback: string, minRatio = 3): string {
     const c = classifyColor(input);
     if (!c) return fallback;
-    if (c.named) return c.named;
-    const hex = c.hex!;
+    // Resolve a named CSS colour to a hex so its contrast CAN be reasoned about
+    // (D-001): a named colour already clearing the floor is returned verbatim
+    // (identity preserved), one below the floor is reconciled like any hex, and
+    // an unknown name — whose contrast is genuinely uncomputable — is passed
+    // through unchanged (previous behaviour for every named colour).
+    let hex: string;
+    if (c.hex) {
+        hex = c.hex;
+    } else {
+        const resolved = namedColorToHex(c.named!);
+        if (!resolved) return c.named!;
+        if (contrastRatio(resolved, bgHex) >= minRatio) return c.named!;
+        hex = resolved;
+    }
     if (contrastRatio(hex, bgHex) >= minRatio) return hex;
     const rgb = hexToRgb(hex)!;
     const bgRgb = hexToRgb(bgHex);

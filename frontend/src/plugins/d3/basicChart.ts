@@ -25,6 +25,26 @@ export interface BasicChartSpec {
 
 const defaultMargin = { top: 20, right: 20, bottom: 30, left: 40 };
 
+/**
+ * Clamp a caller-supplied margin UP to the known-good default gutter on each
+ * side (D-005 / basic-chart-w2-15). A degenerate `margin:{0,0,0,0}` was honoured
+ * verbatim, so with no left/bottom gutter the y-axis tick number labels rendered
+ * at negative x (left of the SVG origin) and the x-axis labels below the plot —
+ * every axis label clipped OUTSIDE the viewport. Clamping to the default gutter
+ * reserves room for the tick-label extent. Strict no-op for the default path and
+ * for any caller margin already >= default on a side; a bump only for a
+ * too-small / missing side. Each side is clamped independently.
+ */
+export function effectiveMargin(margin?: Partial<typeof defaultMargin> | null): typeof defaultMargin {
+    const m = margin || {};
+    return {
+        top: Math.max(defaultMargin.top, typeof m.top === 'number' ? m.top : defaultMargin.top),
+        right: Math.max(defaultMargin.right, typeof m.right === 'number' ? m.right : defaultMargin.right),
+        bottom: Math.max(defaultMargin.bottom, typeof m.bottom === 'number' ? m.bottom : defaultMargin.bottom),
+        left: Math.max(defaultMargin.left, typeof m.left === 'number' ? m.left : defaultMargin.left),
+    };
+}
+
 // ── schema recovery helpers (D-013) ──────────────────────────────────────────
 
 /**
@@ -181,7 +201,9 @@ export const basicChartPlugin: D3RenderPlugin = {
             // (D-013). Continuous charts keep their x/y/size rows untouched.
             const data: any[] = isContinuous ? rawData : rawData.map(aliasBandRow);
 
-            const margin = { ...(spec.margin || defaultMargin) };
+            // D-005: clamp a degenerate/too-small margin up to the default gutter
+            // so axis tick labels are never drawn outside the SVG viewport.
+            const margin = effectiveMargin(spec.margin);
 
             // Band (categorical) charts: plan label fitting up-front so we can
             // reserve bottom margin before the plot height is fixed (D-007).
@@ -298,6 +320,20 @@ export const basicChartPlugin: D3RenderPlugin = {
                     .attr('y', (d: any) => Math.max(minLabelY, y(d.y) - radiusOf(d) - 4))
                     .attr('text-anchor', 'middle')
                     .attr('fill', colors.label)
+                    // D-007: at density a bubble label (placed above its own
+                    // marker) lands ON a NEIGHBOURING bubble fill, where
+                    // colors.label — guaranteed only against the page background
+                    // — collapses (steelblue fill dropped it to ~1.1-1.9:1, so no
+                    // label cleared the floor in dark). Paint a halo the colour of
+                    // the EFFECTIVE surface UNDER the glyph (paint-order:stroke),
+                    // so each glyph reads over whatever it overlaps: the glyph-vs
+                    // -halo contrast is colors.label vs colors.bg = 12.63:1 in
+                    // both themes, independent of the overlapped fill. The halo
+                    // resolves from the theme (colors.bg), never a constant swap.
+                    .attr('stroke', colors.bg)
+                    .attr('stroke-width', 3)
+                    .attr('stroke-linejoin', 'round')
+                    .attr('paint-order', 'stroke')
                     .attr('font-size', colors.fontSize)
                     .text((d: any) => d.label);
 
