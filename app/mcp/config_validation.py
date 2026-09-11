@@ -231,8 +231,8 @@ def validate_server_entry(
         findings.append(_finding(
             server_name, "args_wrong_type",
             f"'args' must be an array, got {type(entry['args']).__name__}",
-            "Ziya coerced it to a single-element list, which is probably not "
-            "what was intended.",
+            "A null is treated as no arguments; any other scalar is coerced to "
+            "a single-element list, which is probably not what was intended.",
             severity="warning",
             line=_find_key_line(raw_text, server_name, "args"),
         ))
