@@ -11,7 +11,16 @@ import {
     renderRailroadSvg,
     lenientJsonParse,
 } from '../../utils/d3Plugins/railroadPlugin';
-import { extractDefinition } from '../../utils/d3Plugins/specEnvelope';
+import {
+    extractDefinition,
+    isStreamingIncomplete,
+} from '../../utils/d3Plugins/specEnvelope';
+
+/** A railroad body is renderable once it lenient-parses; a truncated one
+ *  yields undefined.  Shared by the streaming guard in render() and by the
+ *  plugin's isDefinitionComplete so the two can never disagree. */
+const railroadDefinitionComplete = (definition: string): boolean =>
+    lenientJsonParse(definition) !== undefined;
 
 function renderError(container: HTMLElement, message: string, rawSpec: any,
                      isDarkMode: boolean): void {
@@ -68,6 +77,14 @@ function renderError(container: HTMLElement, message: string, rawSpec: any,
 function render(container: HTMLElement, _d3: any, rawSpec: any,
                 isDarkMode: boolean): void {
     const definition = extractDefinition(rawSpec);
+
+    // Mid-stream the body arrives truncated, and canHandle claims the spec by
+    // TYPE, so render() runs on every chunk.  Painting an error card here
+    // flickers a red card until the fence closes, and it goes directly into the
+    // container, so D3Renderer's isStreaming error suppression cannot hide it.
+    // Skip silently and retry on the next chunk.  A body that PARSES but is
+    // invalid falls through: that error is real and must still be shown.
+    if (isStreamingIncomplete(rawSpec, railroadDefinitionComplete)) return;
 
     let result;
     try {
@@ -129,9 +146,10 @@ export const railroadPlugin: D3RenderPlugin = {
         },
     },
     canHandle: (spec: any): boolean => spec?.type === 'railroad',
-    // Streaming gate: a partial JSON body lenient-parses to undefined, so the
-    // renderer waits for the closed block instead of flashing error cards.
-    isDefinitionComplete: (definition: string): boolean =>
-        lenientJsonParse(definition) !== undefined,
+    // Retained for callers that DO consult it (the headless harness, and
+    // D3Renderer's string-spec path).  render() applies the same predicate
+    // itself, because D3Renderer never reaches this hook for the object
+    // envelope a markdown fence produces.
+    isDefinitionComplete: railroadDefinitionComplete,
     render,
 };
