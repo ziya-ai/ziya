@@ -1,0 +1,75 @@
+{
+  "_comment": [
+    "Shared parity fixtures for inline-math classification.",
+    "Asserted by BOTH frontend/src/utils/__tests__/inlineMathClassifierParity.test.ts",
+    "(against frontend/src/utils/inlineMathClassifier.ts, the source of truth)",
+    "and tests/test_inline_math_classifier.py (against the Python port in",
+    "app/utils/inline_math_classifier.py). A divergence between the two",
+    "implementations fails a test instead of silently shipping different",
+    "export tiers. Add new cases HERE, not to only one suite.",
+    "",
+    "classifier: content (+ optional match context) -> is the span math?",
+    "segments:   a markdown segment -> the exact spans treated as math,",
+    "            in order, exercising KaTeX adjacency and table-cell scoping",
+    "            as well as the classifier."
+  ],
+  "classifier": [
+    { "content": "x", "is_math": true, "note": "single variable" },
+    { "content": "\\frac{1}{2}", "is_math": true, "note": "LaTeX command (strong signal)" },
+    { "content": "\\text{the quick brown fox}", "is_math": true, "note": "strong signal bypasses prose gate" },
+    { "content": "|μ| ≤ 1", "is_math": true, "note": "math symbols (strong signal)" },
+    { "content": "a + b", "is_math": true, "note": "compact algebra" },
+    { "content": "x = 0", "is_math": true, "note": "compact algebra" },
+    { "content": "Sc/r", "is_math": true, "note": "compact algebra with slash" },
+    { "content": "<0.5", "is_math": true, "note": "numeric comparison, no variable letter" },
+    { "content": ">10", "is_math": true, "note": "numeric comparison" },
+    { "content": "0 < 0.5 < 1", "is_math": true, "note": "chained numeric comparison" },
+    { "content": "1", "is_math": false, "note": "regex back-reference $1" },
+    { "content": "5+", "is_math": false, "note": "span between $5+$10 — currency, no comparison operator" },
+    { "content": "5=", "is_math": false, "note": "span between $5=$5" },
+    { "content": "900 refundable security deposit + ", "is_math": false, "note": "currency run, prose-word veto" },
+    { "content": "300 non-refundable cleaning fee** (= ", "is_math": false, "note": "bold delimiter crossed" },
+    { "content": "255,100/yr | **", "is_math": false, "note": "table-crossing span with bold" },
+    { "content": "320,000/yr", "is_math": false, "note": "comma-grouped digits are currency" },
+    { "content": "cats and dogs", "is_math": false, "note": "prose, no operator" },
+    { "content": "x", "match": "foo.replace($x$, y)", "is_math": false, "note": "code-context guard" },
+    { "content": "a/b://c", "is_math": false, "note": "URL/path-like" }
+  ],
+  "segments": [
+    {
+      "segment": "Loss stays $<0.5$ in steady state.",
+      "math": ["<0.5"],
+      "note": "the reported defect: threshold written without a variable"
+    },
+    {
+      "segment": "Costs $5+$10 for two.",
+      "math": [],
+      "note": "currency arithmetic must not merge into one span"
+    },
+    {
+      "segment": "A $900 deposit + $300 fee applies.",
+      "math": [],
+      "note": "KaTeX adjacency: space before the closing delimiter"
+    },
+    {
+      "segment": "the value $a|b$ holds",
+      "math": ["a|b"],
+      "note": "pipe inside prose math survives (no table => no cell split)"
+    },
+    {
+      "segment": "| plan | cost |\n|---|---|\n| $99/yr | *$120/yr* |",
+      "math": [],
+      "note": "table cells are separate span scopes; no cross-cell span"
+    },
+    {
+      "segment": "Einstein: $E = mc^2$ and a variable $x$.",
+      "math": ["E = mc^2", "x"],
+      "note": "two genuine spans in one line"
+    },
+    {
+      "segment": "So $x = \\$5$ holds.",
+      "math": ["x = \\$5"],
+      "note": "escaped literal dollar stays inside the span"
+    }
+  ]
+}
