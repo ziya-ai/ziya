@@ -77,12 +77,30 @@ export function isInlineMathContent(p1: string, match: string = ''): boolean {
         // Exclude URL-like or path-like strings
         !/^https?:/.test(p1.trim()) && !p1.includes('://');
 
+    // A relation between NUMBERS, with no variable letter: `$<0.5$`, `$>10$`,
+    // `$0 < 0.5 < 1$`. hasAlgebraicNotation requires `[A-Za-z]`, so such a
+    // span matched no signal whatsoever and rendered as literal text — the way
+    // a threshold is habitually written in prose was the one shape that leaked.
+    // No other weak signal reaches it either: no braces or sub/superscripts,
+    // too long to be a single variable, and not digits-only.
+    //
+    // Requiring `<` or `>` is what keeps this from re-opening the currency
+    // hole. `$5+$10` yields the span `5+` and `$5=$5` yields `5=`; both pass
+    // KaTeX adjacency, so a rule keyed on "any operator beside a digit" would
+    // promote them to math. A bare `+` or `=` between bare numbers is
+    // genuinely ambiguous; a comparison is not — prices are not written with
+    // an inequality inside the delimiters.
+    const hasNumericComparison =
+        /[<>]/.test(p1) &&
+        /^\s*(?:\d[\d.]*\s*)?(?:[<>]=?\s*\d[\d.]*\s*)+$/.test(p1);
+
     // Two or more multi-letter English words ⇒ prose, not algebra.
     const proseWordCount = (p1.match(/\b[A-Za-z]{3,}\b/g) || []).length;
     const looksLikeProse = proseWordCount >= 2;
 
     const strongMath = hasLatex || hasMathSymbols;
-    const weakMath = hasComplexMath || isSingleVariable || hasAlgebraicNotation;
+    const weakMath = hasComplexMath || isSingleVariable || hasAlgebraicNotation ||
+        hasNumericComparison;
 
     return strongMath || (weakMath && !looksLikeProse);
 }

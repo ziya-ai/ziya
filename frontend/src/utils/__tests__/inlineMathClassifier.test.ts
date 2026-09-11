@@ -71,6 +71,51 @@ describe('isInlineMathContent — currency / prose rejection', () => {
     });
 });
 
+/**
+ * Numeric comparisons with no variable letter.
+ *
+ * `hasAlgebraicNotation` requires `[A-Za-z]` to be present, so a span that is
+ * purely a relation between numbers — `$<0.5$`, the way a threshold is
+ * habitually written in prose — matched NO signal at all and rendered as
+ * literal dollar-delimited text. Every other weak signal missed it too: no
+ * braces or sub/superscripts, more than one character so not a single
+ * variable, and not digits-only so the back-reference guard did not even
+ * apply.
+ *
+ * The gate is deliberately narrower than "any operator with a digit":
+ * requiring `<` or `>` is what keeps `$5+$10` (span `5+`) and `$5=$5`
+ * (span `5=`) classified as currency. A bare `+` or `=` between numbers is
+ * ambiguous; a leading or infix comparison is not.
+ */
+describe('isInlineMathContent — numeric comparison without variables', () => {
+    it('accepts a leading comparison against a number', () => {
+        expect(isInlineMathContent('<0.5')).toBe(true);
+        expect(isInlineMathContent('>10')).toBe(true);
+        expect(isInlineMathContent('<=0.5')).toBe(true);
+        expect(isInlineMathContent('>=1')).toBe(true);
+    });
+    it('accepts an infix comparison between numbers', () => {
+        expect(isInlineMathContent('0.5 < 1')).toBe(true);
+        expect(isInlineMathContent('0 < 0.5 < 1')).toBe(true);
+    });
+    it('still rejects currency arithmetic, which has no comparison', () => {
+        // "$5+$10" and "$5=$5" produce these spans; a bare + or = between
+        // numbers must NOT be promoted to math by the comparison rule.
+        expect(isInlineMathContent('5+')).toBe(false);
+        expect(isInlineMathContent('5=')).toBe(false);
+        expect(isInlineMathContent('5 + ')).toBe(false);
+    });
+    it('leaves the comma-grouped currency guard in force', () => {
+        // The existing digit-grouping guard runs first and is intentionally
+        // conservative: `1,000` is a currency spelling, not bare LaTeX.
+        expect(isInlineMathContent('<1,000')).toBe(false);
+    });
+    it('renders end to end through processInlineMath', () => {
+        expect(decodedMath('Loss stays $<0.5$ in steady state.')).toEqual(['<0.5']);
+        expect(decodedMath('Costs $5+$10 for two.')).toEqual([]);
+    });
+});
+
 describe('processInlineMath — full segment transformation', () => {
     const LEASE = [
         'Deposit = $900 refundable security deposit + $300 non-refundable cleaning fee (= $1,200 total).',
