@@ -52,7 +52,7 @@ def _make_executor():
 
             # Attributes that stream_with_tools expects to exist
             executor._block_opening_buffer = ""
-            executor._normalize_fence_spacing = lambda text, tracker: text
+            executor._normalize_fence_spacing = lambda text, tracker, **kw: text
             executor._update_code_block_tracker = lambda text, tracker: None
 
             # Content optimizer
