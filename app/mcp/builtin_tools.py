@@ -66,13 +66,20 @@ BUILTIN_TOOL_CATEGORIES: Dict[str, Dict[str, any]] = {
     "memory": {
         "name": "Structured Memory",
         "description": "Persistent memory across sessions — search, save, and propose memories",
-        "enabled_by_default": False,
+        "enabled_by_default": True,
         "requires_dependencies": [],
         "tools": [],
     },
     "context_management": {
         "name": "Context Management",
         "description": "Lets the model add/remove/list files in the current conversation's persistent context",
+        "enabled_by_default": True,
+        "requires_dependencies": [],
+        "tools": [],
+    },
+    "chat_history": {
+        "name": "Chat History",
+        "description": "Lets the model search, list and read past conversation transcripts (read-only)",
         "enabled_by_default": True,
         "requires_dependencies": [],
         "tools": [],
@@ -93,7 +100,14 @@ BUILTIN_TOOL_CATEGORIES: Dict[str, Dict[str, any]] = {
     },
     "task_cards": {
         "name": "Task Card Editing",
-        "description": "Read and edit saved Task Card definitions (block trees, instructions, loop conditions)",
+        "description": "Author, stage, read and edit Task Cards (block trees, instructions, loop conditions)",
+        "enabled_by_default": True,
+        "requires_dependencies": [],
+        "tools": [],
+    },
+    "shadow": {
+        "name": "Shadow Sessions",
+        "description": "Read and annotate live `ziya shadow` terminal sessions (observe-only; no exec)",
         "enabled_by_default": True,
         "requires_dependencies": [],
         "tools": [],
@@ -190,7 +204,24 @@ def get_nova_grounding_tools() -> List[Type[BaseMCPTool]]:
 
 
 def get_diagram_render_tools() -> List[Type[BaseMCPTool]]:
-    """Get diagram rendering tools."""
+    """Get diagram rendering tools, if Playwright AND its Chromium are installed.
+
+    The Chromium build is a post-install step pip cannot run, so it is absent
+    on a fresh ``pip install ziya``.  Offering the tool anyway meant a new
+    user's first diagram request was spent on the model calling render_diagram
+    and reading an install error -- on every diagram, every session.
+    Same gate as the PCAP tools on scapy: register nothing when the dependency
+    is missing and tell the operator, once, in the log.
+    """
+    from app.services import diagram_renderer
+    if not diagram_renderer._check_playwright():
+        from app.utils import optional_features
+        logger.info(
+            f"render_diagram / recall_image not registered: missing "
+            f"{optional_features.playwright_missing_description()}. "
+            f"{optional_features.browser_hint()} (then restart Ziya)"
+        )
+        return []
     try:
         from app.mcp.tools.diagram_render import (
             RecallImageTool, RenderDiagramTool,
@@ -250,13 +281,28 @@ def get_context_management_tools() -> List[Type[BaseMCPTool]]:
         return []
 
 
+def get_chat_history_tools() -> List[Type[BaseMCPTool]]:
+    """Get read-only chat-history tools (search / read / list past transcripts)."""
+    try:
+        from app.mcp.tools.chat_history_tools import (
+            ChatSearchTool, ChatReadTool, ChatListTool
+        )
+        return [ChatSearchTool, ChatReadTool, ChatListTool]
+    except ImportError as e:
+        logger.warning(f"Could not import chat history tools: {e}")
+        return []
+
+
 def get_task_card_tools() -> List[Type[BaseMCPTool]]:
     """Get task-card read/write tools."""
     try:
         from app.mcp.tools.task_card_tools import (
-            TaskCardListTool, TaskCardReadTool, TaskCardWriteTool
+            TaskCardListTool, TaskCardReadTool, TaskCardWriteTool,
+            TaskCardValidateTool,
         )
-        return [TaskCardListTool, TaskCardReadTool, TaskCardWriteTool]
+        from app.mcp.tools.task_card_stage import TaskCardStageTool
+        return [TaskCardStageTool, TaskCardListTool, TaskCardReadTool,
+                TaskCardWriteTool, TaskCardValidateTool]
     except ImportError as e:
         logger.warning(f"Could not import task card tools: {e}")
         return []
@@ -273,6 +319,20 @@ def get_task_artifact_tools() -> List[Type[BaseMCPTool]]:
         return []
 
 
+def get_shadow_tools() -> List[Type[BaseMCPTool]]:
+    """Get shadow-session observation tools (Docs/design/shadow-sessions.md §9)."""
+    try:
+        from app.mcp.tools.shadow_tools import (
+            ShadowListTool, ShadowReadTool, ShadowCommentTool, ShadowSetMetaTool,
+            ShadowAttachTool, ShadowDetachTool,
+        )
+        return [ShadowListTool, ShadowReadTool, ShadowCommentTool, ShadowSetMetaTool,
+                ShadowAttachTool, ShadowDetachTool]
+    except ImportError as e:
+        logger.warning(f"Could not import shadow tools: {e}")
+        return []
+
+
 def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
     """Get builtin tools for a specific category."""
     tool_getters = {
@@ -286,9 +346,11 @@ def get_builtin_tools_for_category(category: str) -> List[Type[BaseMCPTool]]:
         "skills": get_skill_tools,
         "memory": get_memory_tools,
         "context_management": get_context_management_tools,
+        "chat_history": get_chat_history_tools,
         "beads": get_bead_tools,
         "task_cards": get_task_card_tools,
         "task_artifacts": get_task_artifact_tools,
+        "shadow": get_shadow_tools,
     }
 
     getter = tool_getters.get(category)
