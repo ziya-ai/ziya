@@ -20,6 +20,12 @@
  *      a user decides to keep waiting instead of intervening, so spinning
  *      on a stopped run is the most costly thing this component could do.
  *
+ *   4. A run waiting on a HUMAN answer is not a gear at all.  It renders
+ *      as a filled chip with visible text ("Waiting on you"), because the
+ *      reader must notice it without hovering — nothing advances until
+ *      they act, and a small amber gear beside a small violet one does
+ *      not survive a glance in a narrow row.
+ *
  * Colours, ordering, animation and hints all come from
  * runStatusVocabulary so this cannot drift from the tile's own chrome.
  */
@@ -29,9 +35,26 @@ import Box from '@mui/material/Box';
 import Typography from '@mui/material/Typography';
 import Tooltip from '@mui/material/Tooltip';
 import SettingsIcon from '@mui/icons-material/Settings';
+import QuestionAnswerIcon from '@mui/icons-material/QuestionAnswer';
+import BuildIcon from '@mui/icons-material/Build';
 import { styled } from '@mui/material/styles';
 import type { TaskBinding } from '../../types/task_binding';
-import { statusClusters, clustersFromCounts, showCount } from './runStatusVocabulary';
+import type { RunStatus } from '../../types/task_run';
+import {
+  statusClusters, clustersFromCounts, showCount,
+  RUN_STATUS_FILL, RUN_STATUS_CHIP_TEXT, RUN_STATUS_CHIP_LABEL,
+} from './runStatusVocabulary';
+
+// Glyph per needs-human status.  Kept here rather than in the vocabulary
+// because the vocabulary is presentation DATA shared with non-React
+// callers (tests, the status index cross-check), and a component import
+// there would drag MUI into it.  Falls back to the question glyph so a
+// status added to RUN_STATUS_NEEDS_HUMAN without an entry here still
+// renders a chip, never nothing.
+const CHIP_ICON: Partial<Record<RunStatus, React.ElementType>> = {
+  awaiting_input: QuestionAnswerIcon,
+  held: BuildIcon,
+};
 
 // Slower rotation than the chat-streaming spinner so it reads as
 // "machinery" rather than "thinking" — the distinction that lets a user
@@ -79,7 +102,46 @@ export const RunStatusGears: React.FC<Props> = ({ bindings, counts }) => {
       display: 'flex', alignItems: 'center', gap: 0.75,
       mt: 0.5, flexWrap: 'wrap',
     }}>
-      {visible.map(c => (
+      {visible.filter(c => c.needsHuman).map(c => {
+        const Icon = CHIP_ICON[c.status] ?? QuestionAnswerIcon;
+        const text = RUN_STATUS_CHIP_LABEL[c.status] ?? c.label;
+        return (
+        <Tooltip
+          key={c.status}
+          title={c.count > 1 ? `${c.count} × ${c.hint}` : c.hint}
+          placement="top"
+        >
+          <Box
+            // role=status so assistive tech announces the change when a
+            // run flips into this state while the sidebar is mounted.
+            role="status"
+            data-testid="run-needs-human"
+            data-status={c.status}
+            aria-label={
+              c.count > 1
+                ? `${c.count} tasks ${c.label}`
+                : `Task ${c.label}`
+            }
+            sx={{
+              display: 'inline-flex', alignItems: 'center', gap: 0.5,
+              px: 0.75, py: 0.125, borderRadius: '10px',
+              bgcolor: RUN_STATUS_FILL[c.status],
+              color: RUN_STATUS_CHIP_TEXT[c.status],
+              lineHeight: 1.4,
+            }}
+          >
+            <Icon sx={{ fontSize: '13px' }} />
+            <Typography
+              variant="caption"
+              sx={{ fontSize: '11px', fontWeight: 700, color: 'inherit' }}
+            >
+              {c.count > 1 ? `${c.count} × ${text}` : text}
+            </Typography>
+          </Box>
+        </Tooltip>
+        );
+      })}
+      {visible.filter(c => !c.needsHuman).map(c => (
         <Tooltip
           key={c.status}
           title={c.count > 1 ? `${c.count} × ${c.hint}` : c.hint}

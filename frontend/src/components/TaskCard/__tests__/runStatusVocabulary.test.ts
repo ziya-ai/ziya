@@ -20,7 +20,7 @@ import {
 
 const ALL_STATUSES = [
   'queued', 'running', 'paused', 'done',
-  'partial', 'failed', 'cancelled', 'held',
+  'partial', 'failed', 'cancelled', 'held', 'awaiting_input',
 ] as const;
 
 function b(over: Partial<TaskBinding> & { id: string }): TaskBinding {
