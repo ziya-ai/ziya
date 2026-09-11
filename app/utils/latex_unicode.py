@@ -35,6 +35,7 @@ a render that would otherwise succeed.
 from __future__ import annotations
 
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,61 @@ _TRANSLITERATIONS: dict[str, str] = {
 }
 
 
+#: TS1 / text-companion symbol MACROS -> maths-mode equivalent (D-006).
+#:
+#: The codepoint table above only rescues a symbol a model wrote as a raw
+#: Unicode character.  A model just as often writes the SAME symbol as its
+#: LaTeX ``\text...`` macro -- ``\textmu``, ``\textdegree``, ``\textohm`` --
+#: and those are exactly as fatal on a minimal install: the macros are defined
+#: in the modern LaTeX kernel, but rendering them pulls the TS1 / text-
+#: companion Type1 fonts (``tcrm*``) that a BasicTeX / scheme-basic tree does
+#: NOT ship, so ``\text{\textmu}`` aborts the whole compile with
+#: "Font TS1/... not found" for an otherwise valid diagram (chemfig-w3-02).
+#:
+#: The rewrite is the same trick used for the codepoints: route the glyph
+#: through ``\ensuremath{...}`` so it renders from the maths fonts
+#: (``cmmi`` / ``cmsy`` / amssymb, all present) instead of TS1.  Only the
+#: symbol macros with an EXACT maths equivalent are listed; macros with no
+#: clean maths form (``\textregistered``, ``\texttrademark``) are left alone
+#: so the existing actionable font-error path still fires for them rather than
+#: being silently mistranslated.  ``\mho`` needs amssymb and ``\tfrac`` needs
+#: amsmath, both of which every LaTeX profile loads (see
+#: latex_profiles._BASE_MATH_PACKAGES).
+_MACRO_TRANSLITERATIONS: dict[str, str] = {
+    r"\textmu": r"\ensuremath{\mu}",
+    r"\textmicro": r"\ensuremath{\mu}",
+    r"\textdegree": r"\ensuremath{^\circ}",
+    r"\textcelsius": r"\ensuremath{^\circ\mathrm{C}}",
+    r"\textohm": r"\ensuremath{\Omega}",
+    r"\textmho": r"\ensuremath{\mho}",
+    r"\textpm": r"\ensuremath{\pm}",
+    r"\textminus": "-",
+    r"\texttimes": r"\ensuremath{\times}",
+    r"\textdiv": r"\ensuremath{\div}",
+    r"\textperiodcentered": r"\ensuremath{\cdot}",
+    r"\textbullet": r"\ensuremath{\bullet}",
+    r"\textonehalf": r"\ensuremath{\tfrac{1}{2}}",
+    r"\textonequarter": r"\ensuremath{\tfrac{1}{4}}",
+    r"\textthreequarters": r"\ensuremath{\tfrac{3}{4}}",
+    r"\textonesuperior": r"\ensuremath{^1}",
+    r"\texttwosuperior": r"\ensuremath{^2}",
+    r"\textthreesuperior": r"\ensuremath{^3}",
+}
+
+#: One alternation matching any TS1 macro name above, anchored so it fires only
+#: on a complete TeX control word: a control word ends at the first non-letter,
+#: so ``(?![A-Za-z])`` stops ``\textmu`` from matching the start of an unrelated
+#: longer macro.  Longest names first so the alternation is unambiguous.
+_MACRO_PATTERN = re.compile(
+    r"\\(?:"
+    + "|".join(
+        re.escape(name[1:])
+        for name in sorted(_MACRO_TRANSLITERATIONS, key=len, reverse=True)
+    )
+    + r")(?![A-Za-z])"
+)
+
+
 def transliterate(body: str) -> tuple[str, tuple[str, ...]]:
     """Replace supported Unicode technical symbols with maths-font macros.
 
@@ -165,6 +221,24 @@ def transliterate(body: str) -> tuple[str, tuple[str, ...]]:
                         f"transliterated U+{ord(ch):04X} ({ch!r}) -> {repl} "
                         "(routes through the maths fonts, which a minimal TeX "
                         "install ships, instead of the absent TS1 fonts)")
+
+        # TS1 / text-companion symbol MACROS (\textmu, \textdegree, ...).  A
+        # single boundary-anchored pass so a control word is only rewritten
+        # when it stands complete, never as the prefix of a longer macro.
+        macro_seen: set[str] = set()
+
+        def _sub_macro(m: "re.Match[str]") -> str:
+            name = m.group(0)
+            repl = _MACRO_TRANSLITERATIONS[name]
+            if name not in macro_seen:
+                macro_seen.add(name)
+                applied.append(
+                    f"transliterated TS1 macro {name} -> {repl} "
+                    "(routes through the maths fonts, which a minimal TeX "
+                    "install ships, instead of the absent TS1 fonts)")
+            return repl
+
+        out = _MACRO_PATTERN.sub(_sub_macro, out)
         return out, tuple(applied)
     except Exception:                      # pragma: no cover - defensive
         logger.exception("latex unicode transliteration failed; body unchanged")

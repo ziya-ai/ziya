@@ -171,7 +171,8 @@ class LatexProfile:
         return tuple(dict.fromkeys(n for n in merged if n))
 
     def build_document(self, body: str, *, standalone: bool, fmt: str = "png",
-                       theme: str = "light") -> str:
+                       theme: str = "light",
+                       extra_libraries: tuple[str, ...] = ()) -> str:
         """Assemble a full LaTeX document around ``body``.
 
         ``standalone`` selects the document class.  The standalone class crops
@@ -215,8 +216,39 @@ class LatexProfile:
         for pkg in _BASE_OPTIONAL_PACKAGES:
             if pkg.name not in declared:
                 lines.append(pkg.render_optional())
-        if self.libraries:
-            lines.append("\\usetikzlibrary{" + ",".join(self.libraries) + "}")
+        # siunitx ``\micro`` routes through the TS1 / text-companion glyph
+        # ``\textmu`` (via siunitx's internal ``\SIUnitSymbolMicro``), whose
+        # Type1 font ``tcrm*`` is ABSENT from a minimal TeX Live tree -- so
+        # ``\SI{10}{\micro\farad}`` (microfarads: the single most common analog
+        # unit, and the reason the circuitikz profile loads siunitx at all)
+        # aborts the whole compile with "Font tcrm1000 at 600 not found" and
+        # produces no image, for an otherwise valid schematic (D-056,
+        # circuitikz-w1-03).  Redefine the one macro siunitx uses for the micro
+        # sign so it renders from the MATHS fonts (cmmi's \mu, which every
+        # install ships) instead of TS1 -- exactly the sidestep
+        # latex_unicode.transliterate already uses for a raw U+00B5 / \textmu.
+        #
+        # Emitted after the siunitx load and guarded by ``\ifdefined`` so it is
+        # a harmless no-op on a profile that never loads siunitx (or a host
+        # without it).  ``\RenewDocumentCommand`` is a LaTeX-kernel primitive
+        # (always present) and covers siunitx v2 AND v3: v3 removed the
+        # ``math-micro``/``text-micro`` options but kept ``\SIUnitSymbolMicro``.
+        # Structural, theme-independent fix (the failure never reaches the
+        # rasteriser), so identical on the light and dark paths.
+        lines.append(
+            r"\ifdefined\SIUnitSymbolMicro"
+            r"\RenewDocumentCommand{\SIUnitSymbolMicro}{}{\ensuremath{\mu}}\fi")
+        # Profile libraries plus any the body requested via a (now-stripped)
+        # body-level \usetikzlibrary (D-005).  De-duplicated, profile order
+        # first.  Emitted for a TikZ-family profile even when it declares no
+        # libraries of its own (tikz-cd) so a body-requested library is not
+        # lost.
+        merged_libraries = list(self.libraries)
+        for lib in extra_libraries:
+            if lib and lib not in merged_libraries:
+                merged_libraries.append(lib)
+        if merged_libraries:
+            lines.append("\\usetikzlibrary{" + ",".join(merged_libraries) + "}")
         lines.extend(self.extra_preamble)
 
         if not standalone:
@@ -293,6 +325,41 @@ class LatexProfile:
 _DRAWING_ENVS: tuple[str, ...] = ("tikzpicture", "circuitikz", "tikzcd", "chemfig")
 
 
+def _circuitikz_block_alias(name: str) -> str:
+    """Make ``\\node[<name>]`` visible WITHOUT clobbering ``to[<name>]``.
+
+    circuitikz defines ``amp``/``adc``/``dac``/``dsp`` as PATH-style bipole
+    keys (``to[amp]``) and ships the node shapes under ``<name>shape``.  A bare
+    ``\\node[amp]`` therefore runs the bipole setup outside a path and draws
+    NOTHING (measured: 0 <path> elements; D-042).  The previous fix -- an
+    unconditional ``amp/.style={<rectangle>}`` -- cured the node case by
+    REPLACING the bipole key, so on a path ``to[amp]`` silently lost the
+    amplifier symbol (1 <path>, the wire, instead of 2) and ``to[amp, l={LNA}]``
+    died with ``I do not know the key '/tikz/l'`` because ``l`` is only valid
+    inside a bipole.  Both measured against a live circuitikz.
+
+    TikZ runs ``every to`` before a ``to[...]``'s own options, inside the
+    path's TeX group, so a flag raised there is visible to the key on a path
+    and has reverted by the time a later ``\\node[amp]`` runs (verified:
+    ``to[amp] ... \\node[amp]`` draws both).  The original key body is copied
+    aside under ``ziya-orig-<name>`` before being redefined; ``{#1}`` forwards
+    a ``to[amp=label]`` value and ``\\pgfkeysnovalue`` when there is none.
+    """
+    return (
+        rf"\pgfkeysgetvalue{{/tikz/{name}/.@cmd}}{{\ziyaorig}}"
+        rf"\pgfkeyslet{{/tikz/ziya-orig-{name}/.@cmd}}{{\ziyaorig}}"
+        rf"\tikzset{{{name}/.code={{\ifziyatopath"
+        rf"\pgfkeysalso{{/tikz/ziya-orig-{name}={{#1}}}}"
+        rf"\else\pgfkeysalso{{{name}shape}}\fi}}}}"
+    )
+
+
+_CIRCUITIKZ_BLOCK_ALIASES: tuple[str, ...] = (
+    r"\newif\ifziyatopath"
+    r"\tikzset{every to/.append style={/utils/exec=\ziyatopathtrue}}",
+) + tuple(_circuitikz_block_alias(n) for n in ("amp", "adc", "dac", "dsp"))
+
+
 # ---------------------------------------------------------------------------
 # The registry.  Add new LaTeX-family diagram types here.
 # ---------------------------------------------------------------------------
@@ -353,11 +420,16 @@ PROFILES: dict[str, LatexProfile] = {
         # ``piezoelectric`` (there is no quartz/crystal/xtal key).  Alias the
         # common guesses as real styles so ``to[quartz=$X_1$]`` and the bare
         # ``to[quartz]`` both resolve instead of dying in pgfkeys.
+        #
+        # amp/adc/dac/dsp: a model writes both ``\node[amp]`` (which draws
+        # nothing in stock circuitikz, D-042) and ``to[amp, l={LNA}]`` (a real
+        # bipole).  The same ``/tikz/<name>`` key serves both, so the alias
+        # must dispatch on context -- see _circuitikz_block_alias.
         extra_preamble=(
             r"\tikzset{quartz/.style={piezoelectric=#1},quartz/.default=,"
             r"crystal/.style={piezoelectric=#1},crystal/.default=,"
             r"xtal/.style={piezoelectric=#1},xtal/.default=}",
-        ),
+        ) + _CIRCUITIKZ_BLOCK_ALIASES,
     ),
     "chemfig": LatexProfile(
         key="chemfig",
@@ -404,7 +476,63 @@ PROFILES: dict[str, LatexProfile] = {
         # user-controlled: diagram bodies are prescanned and \input inside a
         # body is rejected, so this does not widen the file-access surface.
         extra_preamble=(
+            # chemfig 1.81 (2026/09/01) removed \CF_expafter and
+            # \CF_swapunbrace from chemfig.tex but shipped an UNCHANGED
+            # chemfig-lewis.tex that still calls \CF_expafter four times, so
+            # every \lewis on >= 1.81 aborts with "Undefined control sequence"
+            # -- verified against the CTAN sources and reproduced by stripping
+            # the two defs from a 1.71 chemfig.tex.  Supply the 1.71
+            # definitions (two lines, byte-for-byte) when chemfig has not.
+            # Guarded so on <= 1.71 this is a no-op, and placed BEFORE the
+            # chemfig-lewis.tex \input below.  chemfig defines its internals
+            # with \catcode`\_=11, so the group matches that.  Drop once an
+            # upstream release restores or replaces the macro.
+            "\\begingroup\\catcode`\\_=11\n"
+            "\\ifdefined\\CF_expafter\\else\n"
+            "\\gdef\\CF_swapunbrace#1#2{#2#1}%\n"
+            "\\gdef\\CF_expafter#1#2{\\expandafter\\CF_swapunbrace\\expandafter{#2}{#1}}%\n"
+            "\\fi\\endgroup",
             r"\IfFileExists{chemfig-lewis.tex}{\input{chemfig-lewis.tex}}{}",
+            # \chemname caption wider than the molecule it labels was cropped at
+            # BOTH ends -> silent caption text loss (D-039, chemfig-w4-08 /
+            # w4-14).  chemfig stacks the name under the molecule with
+            # ``\CF_parsemolname``, which sets every caption line in
+            # ``\hbox to\CF_wdstuffbox{\hss#1\hss}`` -- a box FIXED to the
+            # MOLECULE width.  When the caption is wider, the ``\hss`` glue lets
+            # it overflow the box symmetrically, so the enclosing ``\vtop``
+            # still reports only the molecule width and the standalone crop
+            # (a UNIFORM ``border``, which cannot grow one side) slices the
+            # caption at both ends.  The content is fully recovered upstream
+            # (entity decode + unicode transliteration) yet then truncated, so
+            # the render "succeeds" while dropping text -- a structural failure.
+            #
+            # Redefine ONLY the name-line typesetter so a caption WIDER than the
+            # molecule is set at its natural width (left-origin, so the ``\vtop``
+            # grows to include it and the crop captures the whole caption); a
+            # caption NARROWER than the molecule keeps the original centred
+            # ``\hbox to\CF_wdstuffbox{\hss#1\hss}`` behaviour byte-for-byte, so
+            # the common case (and the \chemname regression set) is unchanged.
+            # chemfig sets ``\catcode`\_=11`` while defining its internals, so
+            # the redefinition is wrapped in a matching catcode group; guarded
+            # by ``\@ifundefined`` so a future chemfig without this internal
+            # degrades to the stock (clipping) behaviour rather than erroring.
+            "\\makeatletter\n"
+            "\\newbox\\CFZIYAnamebox\n"
+            "\\begingroup\n"
+            "\\catcode`\\_=11\n"
+            "\\@ifundefined{CF_parsemolname}{}{%\n"
+            "\\gdef\\CF_parsemolname#1\\\\#2\\_nil{%\n"
+            "\\setbox\\CFZIYAnamebox\\hbox{#1}%\n"
+            "\\ifdim\\wd\\CFZIYAnamebox>\\CF_wdstuffbox\\relax\n"
+            "\\hbox{#1}%\n"
+            "\\else\n"
+            "\\hbox to\\CF_wdstuffbox{\\hss#1\\hss}%\n"
+            "\\fi\n"
+            "\\CF_doifnotempty{#2}{\\CF_parsemolname#2\\_nil}%\n"
+            "}%\n"
+            "}%\n"
+            "\\endgroup\n"
+            "\\makeatother",
         ),
         # Wider crop than the 2pt default: chemfig's \charge and \lewis place a
         # charge glyph / lone-pair dots OUTSIDE the atom's bounding box, which
@@ -617,6 +745,47 @@ LATEX_DIAGRAM_TYPES: frozenset = frozenset(PROFILES)
 #: profile.  ``standalone`` gives correct cropping; ``dvisvgm`` gives SVG.
 TOOLCHAIN_TL_PACKAGES: tuple[str, ...] = ("standalone", "dvisvgm")
 
+
+#: pgfplots ``shader=interp`` (and ``faceted interp``) is refused outright by
+#: the dvisvgm driver -- "surface shading (shader=interp) is NOT available for
+#: the selected driver `pgfsys-dvisvgm.def'" -- and under ``-halt-on-error``
+#: that is "No pages of output".  The same body compiles through pdflatex.
+#: Third member of the survives-PDF-but-not-DVI family with position marks and
+#: coloured \charge.  The lookahead keeps ``interpolate``-style keys out.
+_INTERP_SHADER_RE = re.compile(r"shader\s*=\s*(?:faceted\s+)?interp(?![A-Za-z])")
+
+
+def requires_interp_shading(body: str) -> bool:
+    """True when ``body`` asks pgfplots for Gouraud (``interp``) shading.
+
+    Such bodies must be routed to the PNG path; see downgrade_interp_shading
+    for the SVG-only fallback.
+    """
+    try:
+        return bool(_INTERP_SHADER_RE.search(body))
+    except Exception:                      # pragma: no cover - defensive
+        return False
+
+
+def downgrade_interp_shading(body: str) -> tuple[str, Optional[str]]:
+    """Rewrite ``shader=interp`` to ``shader=faceted`` for the SVG path.
+
+    Used only when PNG is not possible (no pdflatex/ghostscript, or the caller
+    pinned SVG): a flat-shaded surface is a degraded answer, a compile abort
+    is no answer.  Returns the body unchanged with ``None`` when nothing needed
+    rewriting, so callers can treat the note as the "did anything happen" flag.
+    """
+    try:
+        out, n = _INTERP_SHADER_RE.subn("shader=faceted", body)
+    except Exception:                      # pragma: no cover - defensive
+        return body, None
+    if not n:
+        return body, None
+    return out, (
+        "shader=interp is not supported by the dvisvgm (SVG) driver; rendered "
+        "with shader=faceted instead. Install pdflatex + ghostscript for the "
+        "PNG path to get smooth shading."
+    )
 
 def get_profile(diagram_type: str) -> Optional[LatexProfile]:
     """Look up a profile by diagram type, case/whitespace insensitively."""

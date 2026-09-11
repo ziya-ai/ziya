@@ -85,11 +85,161 @@ def test_node_and_nabla_not_corrupted_by_newline_pass():
 # --------------------------------------------------------------------------
 # D-249: periodic clamp on loop-derived trig arguments
 # --------------------------------------------------------------------------
-def test_loop_derived_trig_argument_is_mod_clamped():
+def _max_pgfmath_intermediate(expr: str, counter_max: int = 299) -> float:
+    r"""Emulate pgfmath's left-to-right fixed-point evaluation of ``expr`` and
+    return the largest magnitude of ANY arithmetic intermediate over a loop
+    counter in ``[0, counter_max]``.  pgfmath aborts with "Dimension too large"
+    once an intermediate crosses 16383.99998, so a value below that ceiling is
+    the overflow-safety property the reduction must guarantee.
+
+    Understands the operators and functions the clamp emits: ``+ - * /``,
+    ``mod(x,y)``, ``frac(x)`` and the trig wrappers (whose result is bounded so
+    only their argument's intermediates matter).
+    """
+    import ast
+
+    macros = sorted(set(re.findall(r"\\[A-Za-z@]+", expr)), key=len, reverse=True)
+    py = expr
+    for i, name in enumerate(macros):
+        py = py.replace(name, f"m{i}")
+    tree = ast.parse(py, mode="eval")
+
+    worst = 0.0
+
+    def record(v: float) -> float:
+        nonlocal worst
+        if abs(v) > worst:
+            worst = abs(v)
+        return v
+
+    def ev(node, env):
+        if isinstance(node, ast.Expression):
+            return ev(node.body, env)
+        if isinstance(node, ast.Constant):
+            return float(node.value)
+        if isinstance(node, ast.Name):
+            return float(env[node.id])
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+            return record(-ev(node.operand, env))
+        if isinstance(node, ast.BinOp):
+            a = ev(node.left, env)
+            b = ev(node.right, env)
+            if isinstance(node.op, ast.Add):
+                return record(a + b)
+            if isinstance(node.op, ast.Sub):
+                return record(a - b)
+            if isinstance(node.op, ast.Mult):
+                return record(a * b)
+            if isinstance(node.op, ast.Div):
+                return record(a / b)
+            raise AssertionError(f"unexpected op {node.op}")
+        if isinstance(node, ast.Call):
+            fname = node.func.id
+            args = [ev(a, env) for a in node.args]
+            if fname == "mod":
+                return record(args[0] - args[1] * math.trunc(args[0] / args[1]))
+            if fname == "frac":
+                return record(args[0] - math.trunc(args[0]))
+            if fname in ("sin", "cos", "tan", "cot", "sec", "cosec", "csc"):
+                return record(math.sin(math.radians(args[0])))
+            raise AssertionError(f"unexpected fn {fname}")
+        raise AssertionError(f"unexpected node {ast.dump(node)}")
+
+    import math
+
+    for n in range(counter_max + 1):
+        env = {f"m{i}": n for i in range(len(macros))}
+        ev(tree, env)
+    return worst
+
+
+def _trig_arg(body: str, func: str) -> str:
+    """Return the balanced argument of the first ``func(...)`` call in ``body``,
+    so only the arithmetic expression (not the surrounding TeX) is fed to the
+    intermediate-magnitude emulator."""
+    from app.utils.tikz_lint import _match_paren
+
+    idx = body.index(func + "(")
+    open_idx = idx + len(func)
+    close_idx = _match_paren(body, open_idx)
+    assert close_idx is not None
+    return body[open_idx + 1:close_idx]
+
+
+def test_loop_derived_trig_argument_is_overflow_safe():
+    # cos(\n*111) at \n up to 299 forms the product 33189, far past pgfmath's
+    # 16383.99998 dimen ceiling.  The OLD clamp emitted cos(mod(\n*111,360)),
+    # which STILL forms \n*111 first -> this assertion FAILS on the old output
+    # (33189 > 16384) and passes on the reduced form (period-mod keeps every
+    # intermediate under the ceiling).  Multiplier 111 has period 120, so the
+    # exact integer form is chosen and no rounding is introduced.
     raw = r"\pgfmathsetmacro{\dy}{0.09*cos(\n*111)}"
     fixed, applied, _ = autofix(raw)
-    assert r"cos(mod(\n*111,360))" in fixed
-    assert applied and any("mod(...,360)" in a for a in applied)
+    assert r"cos(mod(mod(\n,120)*111,360))" in fixed
+    assert r"\n*111" not in fixed          # the raw overflowing product is gone
+    assert _max_pgfmath_intermediate(_trig_arg(fixed, "cos")) < 16383.99998
+    assert applied and any("overflow-safe" in a for a in applied)
+
+
+def test_coprime_multiplier_uses_overflow_safe_frac_form():
+    # sin(\n*73): 73 is coprime to 360, so the period is the full 360 and no
+    # counter-mod can shrink the product below the ceiling (299*73 = 21827).
+    # The clamp must fall back to the frac form 360*frac((\n)/360*73), which
+    # divides the small counter by 360 BEFORE multiplying and so never forms a
+    # value near the ceiling.  FAILS on the old code (which emitted
+    # sin(mod(\n*73,360)) -> intermediate 21827 > 16384).
+    raw = r"\pgfmathsetmacro{\dx}{0.09*sin(\n*73)}"
+    fixed, _, _ = autofix(raw)
+    assert r"sin(360*frac((\n)/360*73))" in fixed
+    assert r"\n*73" not in fixed
+    assert _max_pgfmath_intermediate(_trig_arg(fixed, "sin")) < 16383.99998
+
+
+def test_reduced_trig_value_is_preserved():
+    # The reduction must be VALUE-preserving modulo 360.  Compare the reduced
+    # forms against the true trig value across the whole loop range; both the
+    # exact period form (111) and the near-exact frac form (73) must agree to
+    # well within a pixel of the 0.09-unit jitter they drive.
+    import math
+
+    def eval_arg(inner, n):
+        py = inner.replace(r"\n", str(n))
+        return eval(
+            py,
+            {
+                "mod": lambda a, b: a - b * math.trunc(a / b),
+                "frac": lambda x: x - math.trunc(x),
+            },
+        )
+
+    for mult, expect_form in ((111, "mod("), (73, "360*frac(")):
+        raw = rf"\pgfmathsetmacro{{\d}}{{0.09*cos(\n*{mult})}}"
+        fixed, _, _ = autofix(raw)
+        inner = re.search(r"cos\((.*)\)\}", fixed).group(1)
+        assert inner.startswith(expect_form)
+        for n in range(0, 300, 7):
+            reduced = 0.09 * math.cos(math.radians(eval_arg(inner, n)))
+            true = 0.09 * math.cos(math.radians(n * mult))
+            assert abs(reduced - true) < 1e-3
+
+
+def test_full_w2_14_body_has_no_overflowing_trig_product():
+    # The whole tikz-w2-14 body (300 jittered labels): after the clamp neither
+    # of its two loop-derived products (\n*73, \n*111) may survive as a raw
+    # multiplication, and every emitted intermediate must clear the ceiling.
+    body = (
+        r"\foreach \i in {0,...,19}{"
+        r"\foreach \j in {0,...,14}{"
+        r"\pgfmathtruncatemacro{\n}{\i*15+\j}"
+        r"\pgfmathsetmacro{\dx}{0.09*sin(\n*73)}"
+        r"\pgfmathsetmacro{\dy}{0.09*cos(\n*111)}"
+        r"\node[font=\tiny] at (\i*0.78+\dx, \j*0.42+\dy) {N\n};}}"
+    )
+    fixed, applied, _ = autofix(body)
+    assert r"sin(\n*73)" not in fixed and r"cos(\n*111)" not in fixed
+    assert _max_pgfmath_intermediate(r"sin(360*frac((\n)/360*73))") < 16383.99998
+    assert _max_pgfmath_intermediate(r"cos(mod(mod(\n,120)*111,360))") < 16383.99998
+    assert applied
 
 
 def test_constant_trig_angle_left_byte_identical():
@@ -110,11 +260,15 @@ def test_arcsin_boundary_not_mismatched():
 
 
 def test_trig_clamp_is_idempotent():
-    raw = r"\pgfmathsetmacro{\dx}{sin(\n*73)}"
-    once, _, _ = autofix(raw)
-    twice, _, _ = autofix(once)
-    assert once == twice
-    assert once.count("mod(") == 1
+    # The frac form (coprime multiplier) and the period form must both survive
+    # a second pass unchanged -- the renderer runs the lint unconditionally.
+    for raw in (
+        r"\pgfmathsetmacro{\dx}{sin(\n*73)}",
+        r"\pgfmathsetmacro{\dy}{cos(\n*111)}",
+    ):
+        once, _, _ = autofix(raw)
+        twice, _, _ = autofix(once)
+        assert once == twice
 
 
 # --------------------------------------------------------------------------

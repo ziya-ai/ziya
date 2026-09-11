@@ -86,8 +86,16 @@ def test_lowercase_css_name_becomes_camelcase():
 
 
 def test_base_color_and_prose_word_left_untouched():
-    """Direction check: base names and a colour WORD in label text are not touched."""
-    body = r"\node[fill=blue] {ok}; \node {orange juice and salmon};"
+    """Direction check: base names and a colour WORD in label text are not touched.
+
+    Uses a pale base fill (``yellow``) so this stays a pure SYNTAX-pass check:
+    the base colour name is not remapped to CamelCase and the prose colour words
+    are left alone.  A dark base fill (``fill=blue``) would now legitimately gain
+    a light label ink from the D-048 light-page contrast pass (black on pure
+    blue is 2.44:1, below the text floor) -- that behaviour is covered by
+    test_latex_g9943b5_light_fill_label_ink, and must not be conflated here.
+    """
+    body = r"\node[fill=yellow] {ok}; \node {orange juice and salmon};"
     out, applied = normalize_colors(body)
     assert out == body
     assert applied == ()

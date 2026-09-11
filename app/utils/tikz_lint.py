@@ -23,17 +23,31 @@ What it does (and, deliberately, what it does NOT)
   sequence and aborts the whole compile.  There is no legitimate standalone
   ``\n`` token in TikZ, so restoring it to a newline is strictly a repair.
 
-* **Trig argument periodic clamp** (D-249, ``tikz-w2-14``).  ``pgfmath`` routes
-  a trig argument through a TeX dimen register whose ceiling is 16383.99998pt,
-  so the common idiom ``cos(\n*111)`` -- deriving a per-element angle from a
-  loop counter -- throws a fatal "Dimension too large" once the product crosses
-  ~16384 (at ``\n = 148`` for ``*111``), naming a length the author never
-  wrote.  ``sin``/``cos``/``tan``/``cot``/``sec``/``cosec`` are 360-periodic in
-  pgfmath's degrees, so ``f(x) == f(mod(x,360))`` *exactly*; wrapping the
-  argument in ``mod(...,360)`` removes the overflow while leaving the rendered
-  result identical.  Applied only when the argument contains a macro (a ``\``),
+* **Trig argument overflow-safe reduction** (D-249 / D-011, ``tikz-w2-14``).
+  ``pgfmath`` routes every operation *result* through a TeX dimen register
+  whose ceiling is 16383.99998pt, so the common idiom ``cos(\n*111)`` --
+  deriving a per-element angle from a loop counter -- throws a fatal "Dimension
+  too large" once the product crosses ~16384 (at ``\n = 148`` for ``*111``),
+  naming a length the author never wrote.  A naive ``mod(inner,360)`` wrap does
+  NOT help here: pgfmath still forms the inner product ``\n*111`` (up to 33189
+  for ``\n<=299``) *before* ``mod`` runs, so it overflows first -- this is why
+  ``tikz-w2-14`` remained fatal after the original clamp and re-surfaced as
+  D-011.  ``sin``/``cos``/``tan``/``cot``/``sec``/``cosec`` are 360-periodic, so
+  the value is preserved by reducing modulo 360; the fix reduces *before* the
+  multiply, keeping every intermediate under the ceiling.  For a ``macro * K``
+  argument it emits either the **exact** integer form
+  ``mod(mod(macro,P)*K,360)`` where ``P = 360/gcd(K,360)`` is the true period of
+  ``k -> K*k (mod 360)`` (chosen when ``(P-1)*K`` clears the ceiling, e.g. K=111
+  -> P=120, product <=13209 -- pure integer, no rounding), or, when a
+  coprime/large multiplier leaves the period too big to shrink the product
+  (e.g. K=73, period 360, ``\n<=299`` unreduced -> 21827 overflow), the **frac**
+  form ``360*frac((macro)/360*K)`` which divides the small counter by 360 first
+  and is exact up to pgfmath's ~1e-5 fixed-point rounding (sub-pixel for any
+  coordinate use).  Applied only when the argument contains a macro (a ``\``),
   which is precisely the loop-counter case, so constant-angle diagrams
-  (``sin(30)``) are left byte-for-byte unchanged.
+  (``sin(30)``) are left byte-for-byte unchanged; a macro argument that is not a
+  single ``term * number`` product falls back to the generic ``mod(...,360)``
+  wrap (best effort, unchanged from before).
 
 * **``\pgfmathparse`` -> ``\pgfmathsetmacro`` capture** (D-248,
   ``tikz-w3-05``).  ``\pgfmathparse{E}`` stores its result in the shared
@@ -66,6 +80,7 @@ failure.
 from __future__ import annotations
 
 import logging
+import math
 import re
 
 logger = logging.getLogger(__name__)
@@ -123,6 +138,14 @@ def _macro_name(index: int) -> str:
 # followed by an operator/brace/space (``\n*111``, ``(\n,0)``, ``{\n}``), never
 # by a backslash, so this never touches a loop counter.
 _SERIALISED_NEWLINE_RE = re.compile(r"(?<!\\)\\n(?=\\)")
+# A serialised ``\n`` at the very END of the body (D-005, ``tikz-w4-15``).  A
+# JSON-serialised multiline body routinely carries a trailing ``\n`` after its
+# last statement, and ``_SERIALISED_NEWLINE_RE``'s ``(?=\\)`` lookahead cannot
+# match it -- there is no following command -- so it survives as a stray
+# undefined control sequence ``\n`` and aborts the whole compile.  This matches
+# a ``\n`` that is the last non-whitespace token so it can be dropped.  Same
+# ``(?<!\\)`` guard: a ``\node``/``\draw`` ending the body is never touched.
+_TRAILING_SERIALISED_NEWLINE_RE = re.compile(r"(?<!\\)\\n(?=\s*$)")
 
 
 def _restore_literal_newlines(body: str) -> tuple[str, tuple[str, ...]]:
@@ -130,14 +153,274 @@ def _restore_literal_newlines(body: str) -> tuple[str, tuple[str, ...]]:
         # A real newline survived -> the body was never single-line-serialised,
         # so any '\n' here is a macro reference.  Leave it entirely alone.
         return body, ()
-    count = len(_SERIALISED_NEWLINE_RE.findall(body))
+    mid = len(_SERIALISED_NEWLINE_RE.findall(body))
+    out = _SERIALISED_NEWLINE_RE.sub("\n", body)
+    # Drop a trailing serialised '\n' the mid-body pass could not reach (its
+    # lookahead needs a FOLLOWING command).  Done after the mid-body sub so the
+    # real newlines it inserted make ``\s*$`` anchor at the true end of body.
+    out, trail = _TRAILING_SERIALISED_NEWLINE_RE.subn("", out)
+    count = mid + trail
     if not count:
         return body, ()
-    body = _SERIALISED_NEWLINE_RE.sub("\n", body)
-    return body, (
+    return out, (
         f"restored {count} serialised '\\n' sequence(s) to newlines "
-        "(a stray '\\n' before a command is an undefined control sequence and "
-        "aborts the compile)",
+        "(a stray '\\n' before a command -- or trailing at end of body -- is an "
+        "undefined control sequence and aborts the compile)",
+    )
+
+
+# --------------------------------------------------------------------------
+# 1a2. SVG / CSS presentation-attribute dialect in option lists
+#      (D-250, tikz-w4-13)
+# --------------------------------------------------------------------------
+# A model that thinks in SVG/CSS reaches for presentation attributes as if they
+# were pgfkeys: ``stroke=white``, ``stroke-width=2``, ``font-size=12``,
+# ``text-anchor=middle``.  None of these is a valid TikZ key, so the FIRST one
+# aborts the whole compile with ``Package pgfkeys Error: I do not know the key
+# '/tikz/stroke-width'`` -- no image, for a drawing that is otherwise fine (the
+# quoted-hex ``fill="#hex"`` sibling of this dialect is already handled upstream
+# by ``latex_color._OPT_HEX_RE``).
+#
+# Two of the four have an EXACT TikZ equivalent and are translated so the
+# author's intent survives verbatim:
+#   * ``stroke=<colour>``     -> ``draw=<colour>``   (SVG stroke IS the outline)
+#   * ``stroke-width=<n>[px]`` -> ``line width=<n>pt`` (1px == 1pt at this DPI;
+#                                 SVG's default user unit maps to a TeX point)
+# The other two have no faithful TikZ key (``font-size`` in raw px would need a
+# font-switch the size cannot be trusted to pick, and ``text-anchor`` is SVG
+# horizontal justification, not TikZ node ``anchor=`` placement), so they are
+# DROPPED rather than guessed -- dropping a decorative attribute keeps the
+# geometry, whereas keeping it is fatal.
+#
+# Scope discipline: this fires ONLY inside a ``[...]`` option block and ONLY on
+# these four never-valid keys, so a body with none of them is byte-identical
+# and an option list that happens to be valid TikZ is untouched (none of the
+# four is a real TikZ key).  Comma-splitting is brace/paren-aware so a
+# normalised ``fill={rgb,255:...}`` value (whose internal commas are NOT entry
+# separators) is preserved intact.
+_SVG_DIALECT_KEY_RE = re.compile(
+    r"(?<![A-Za-z-])(?:stroke-width|stroke|font-size|text-anchor)\s*=",
+    re.IGNORECASE,
+)
+_SVG_OPT_BLOCK_RE = re.compile(r"\[([^\[\]]*)\]")
+
+
+def _split_option_entries(block: str) -> list[str]:
+    """Split a TikZ option-list body on its TOP-LEVEL commas.
+
+    Commas inside ``{...}`` (an ``{rgb,255:...}`` colour value) or ``(...)`` (a
+    coordinate) are not entry separators and are kept with their entry.  A
+    backslash escapes the next character so ``\\{`` never opens a group.
+    """
+    entries: list[str] = []
+    depth_brace = 0
+    depth_paren = 0
+    cur: list[str] = []
+    i = 0
+    n = len(block)
+    while i < n:
+        ch = block[i]
+        if ch == "\\":
+            cur.append(block[i:i + 2])
+            i += 2
+            continue
+        if ch == "{":
+            depth_brace += 1
+        elif ch == "}":
+            if depth_brace > 0:
+                depth_brace -= 1
+        elif ch == "(":
+            depth_paren += 1
+        elif ch == ")":
+            if depth_paren > 0:
+                depth_paren -= 1
+        elif ch == "," and depth_brace == 0 and depth_paren == 0:
+            entries.append("".join(cur))
+            cur = []
+            i += 1
+            continue
+        cur.append(ch)
+        i += 1
+    entries.append("".join(cur))
+    return entries
+
+
+def _translate_svg_entry(entry: str) -> str | None:
+    """Map one SVG/CSS presentation attribute to its TikZ equivalent.
+
+    Returns the translated entry, ``None`` when the attribute has no faithful
+    equivalent and must be DROPPED, or the entry unchanged when it is not a
+    recognised SVG-dialect key.
+    """
+    stripped = entry.strip()
+    m = re.match(r"(?i)^stroke-width\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*(?:px|pt)?\s*$",
+                 stripped)
+    if m:
+        return f"line width={m.group(1)}pt"
+    if re.match(r"(?i)^stroke-width\s*=", stripped):
+        return None                        # non-numeric width -> drop, don't guess
+    m = re.match(r"(?i)^stroke\s*=\s*(.+)$", stripped)
+    if m:
+        return f"draw={m.group(1).strip()}"
+    if re.match(r"(?i)^(?:font-size|text-anchor)\s*=", stripped):
+        return None                        # no faithful TikZ key -> drop
+    return entry
+
+
+def _translate_svg_attributes(body: str) -> tuple[str, tuple[str, ...]]:
+    if not _SVG_DIALECT_KEY_RE.search(body):
+        return body, ()
+    count = 0
+    out_parts: list[str] = []
+    last = 0
+    for m in _SVG_OPT_BLOCK_RE.finditer(body):
+        block = m.group(1)
+        if not _SVG_DIALECT_KEY_RE.search(block):
+            continue                       # no dialect key here -> leave as-is
+        new_entries: list[str] = []
+        changed = False
+        for entry in _split_option_entries(block):
+            translated = _translate_svg_entry(entry)
+            if translated is None:
+                changed = True
+                count += 1
+                continue                   # dropped attribute
+            if translated != entry:
+                changed = True
+                count += 1
+            new_entries.append(translated)
+        if not changed:
+            continue
+        out_parts.append(body[last:m.start()])
+        out_parts.append("[" + ",".join(new_entries) + "]")
+        last = m.end()
+    if not count:
+        return body, ()
+    out_parts.append(body[last:])
+    out = "".join(out_parts)
+    return out, (
+        f"translated/removed {count} SVG-attribute-dialect option(s) "
+        "(stroke->draw, stroke-width->line width; font-size/text-anchor have no "
+        "faithful TikZ key and were dropped -- each is an unknown pgfkey that "
+        "otherwise aborts the compile)",
+    )
+
+
+# --------------------------------------------------------------------------
+# 1b. Missing statement-terminating semicolons (D-005, tikz-w4-03 /
+#     circuitikz-w4-09)
+# --------------------------------------------------------------------------
+# A model very commonly omits the ``;`` that terminates a TikZ/circuitikz path
+# statement, because most other diagram DSLs are newline-terminated:
+#
+#     \node (a) at (1,1) {Read}          <- missing ';'
+#     \node (b) at (4,1) {Map};
+#     \draw (a)--(b)                     <- missing ';'
+#     \draw (b)--(c);
+#
+# ``! Package tikz Error: Giving up on this path.  Did you forget a
+# semicolon?`` -- a fatal abort, no image, for an otherwise valid drawing.
+#
+# The inserter is deliberately conservative and provably safe on VALID input:
+# it inserts ``;`` ONLY immediately before a statement-start control word (or
+# at end of body) and ONLY when a prior statement-start has not yet been
+# terminated by a ``;`` at brace-depth zero.  A well-formed body terminates
+# every statement before the next one begins, so ``pending`` is always False at
+# every trigger and NOTHING is inserted -- the pass is byte-identical on any
+# compiling body and repairs only a body that could not compile at all, exactly
+# the module's contract.
+#
+# Safety rests on three scoping rules, all tracked by a hand scanner:
+#   * brace depth -- a ``\node`` in a tree ``child {...}`` or a matrix cell
+#     ``{... & ...}`` sits at depth >= 1 and is ignored (it is the enclosing
+#     statement's business), as is a ``;`` inside a label;
+#   * ``$...$`` math -- an ``=``/``;`` inside math is skipped;
+#   * ``%`` comments -- skipped to end of line.
+# The path-operation spellings are ``node``/``coordinate``/``edge`` with NO
+# backslash, so a backslashed ``\node`` is unambiguously a statement, never a
+# mid-path operation.
+
+#: Control words that ALWAYS start a new top-level drawing statement (each
+#: terminated by ``;``) and never continue a path.
+_STMT_START_MACROS = frozenset({
+    "draw", "fill", "filldraw", "path", "node", "coordinate", "clip",
+    "shade", "shadedraw", "shadedpath", "useasboundingbox", "pattern",
+    "matrix", "graph", "addplot", "addplot3",
+})
+
+#: Control words that TERMINATE any pending statement but do not start one that
+#: needs a ``;`` (environment delimiters).  An unterminated path before one of
+#: these is just as fatal, so a pending ``;`` is flushed before them.
+_FLUSH_ONLY_MACROS = frozenset({"begin", "end"})
+
+
+def _insert_missing_semicolons(body: str) -> tuple[str, tuple[str, ...]]:
+    inserts: list[int] = []
+    depth = 0
+    math = False
+    pending = False        # a statement-start seen since the last ';'
+    i = 0
+    n = len(body)
+    while i < n:
+        ch = body[i]
+        if ch == "\\":
+            j = i + 1
+            if j < n and body[j].isalpha():
+                k = j
+                while k < n and body[k].isalpha():
+                    k += 1
+                name = body[j:k]
+                if depth == 0 and not math:
+                    if name in _STMT_START_MACROS:
+                        if pending:
+                            inserts.append(i)
+                        pending = True
+                    elif name in _FLUSH_ONLY_MACROS:
+                        if pending:
+                            inserts.append(i)
+                        pending = False
+                i = k
+                continue
+            # Control symbol (\\, \{, \;, ...): copy the two chars over.
+            i += 2
+            continue
+        if ch == "%":
+            nl = body.find("\n", i)
+            i = n if nl == -1 else nl + 1
+            continue
+        if ch == "$":
+            math = not math
+            i += 1
+            continue
+        if ch == "{":
+            depth += 1
+            i += 1
+            continue
+        if ch == "}":
+            if depth > 0:
+                depth -= 1
+            i += 1
+            continue
+        if ch == ";" and depth == 0 and not math:
+            pending = False
+            i += 1
+            continue
+        i += 1
+
+    if pending:
+        inserts.append(n)          # last statement runs to end of body unterminated
+
+    if not inserts:
+        return body, ()
+    out = body
+    for pos in sorted(inserts, reverse=True):
+        out = out[:pos] + ";" + out[pos:]
+    count = len(inserts)
+    plural = "" if count == 1 else "s"
+    return out, (
+        f"inserted {count} missing statement-terminating semicolon{plural} "
+        "(a TikZ/circuitikz path must end with ';' before the next statement; "
+        "the omission aborts the compile with 'Did you forget a semicolon?')",
     )
 
 
@@ -145,6 +428,96 @@ def _restore_literal_newlines(body: str) -> tuple[str, tuple[str, ...]]:
 # 2. Trig argument periodic clamp (D-249)
 # --------------------------------------------------------------------------
 _TRIG_RE = re.compile(r"(?<![A-Za-z@])(sin|cos|tan|cot|sec|cosec|csc)\(")
+
+#: pgfmath routes every operation result through a TeX dimen register whose
+#: magnitude ceiling is 16383.99998pt; an intermediate that reaches it aborts
+#: the compile with "Dimension too large".  We reduce well below the raw
+#: ceiling to leave headroom for pgfmath's own fixed-point rounding.
+_TRIG_DIMEN_CEILING = 16000
+
+_NUMBER_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
+
+
+def _split_top_level_product(expr: str) -> tuple[str, str] | None:
+    """Split ``A*B`` when there is *exactly one* top-level ``*`` and no other
+    top-level additive/multiplicative operator, so the two operands are an
+    unambiguous single product.  Returns ``None`` for anything more complex
+    (a sum, a chained product, a division) which is left to the generic
+    ``mod(...,360)`` wrap.  Operators inside parentheses do not count.
+    """
+    depth = 0
+    star = -1
+    for i, ch in enumerate(expr):
+        if ch == "\\":
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            if depth > 0:
+                depth -= 1
+        elif depth == 0 and ch in "+*/":
+            if ch == "*":
+                if star != -1:
+                    return None      # more than one top-level '*'
+                star = i
+            else:
+                return None          # a top-level '+' or '/' -> not a bare product
+        elif depth == 0 and ch == "-" and i > 0:
+            # A binary '-' at depth 0 disqualifies; a leading unary '-' (i==0)
+            # is tolerated so it can be carried inside an operand.
+            return None
+    if star == -1:
+        return None
+    return expr[:star], expr[star + 1:]
+
+
+def _overflow_safe_trig_arg(inner: str) -> str | None:
+    """Rewrite the loop-counter idiom ``\\n*K`` (a macro-bearing term times a
+    numeric constant) into an overflow-free form whose value is the same modulo
+    360, so the trig function is unchanged.
+
+    Two shapes, both keeping every pgfmath intermediate well under the dimen
+    ceiling:
+
+    * **Exact** integer form ``mod(mod(macro,P)*K,360)`` where
+      ``P = 360/gcd(K,360)`` is the true period of ``k -> K*k (mod 360)``.
+      Chosen only when ``(P-1)*K`` clears the ceiling, so the reduced counter
+      times ``K`` cannot overflow.  Pure integer arithmetic -> no rounding.
+
+    * **Frac** form ``360*frac((macro)/360*K)`` for the residual case (a period
+      that does not shrink the product enough -- e.g. a multiplier coprime to
+      360 -- or a non-integer multiplier).  Dividing the small loop counter by
+      360 *before* multiplying keeps the intermediate bounded regardless of
+      ``K``; the reduction is exact up to pgfmath's ~1e-5 fixed-point rounding
+      (sub-pixel for any coordinate use).
+
+    Returns ``None`` when ``inner`` is not a single ``term * number`` product,
+    leaving the caller to fall back to the generic ``mod(inner,360)`` wrap.
+    """
+    parts = _split_top_level_product(inner.strip())
+    if parts is None:
+        return None
+    left, right = parts[0].strip(), parts[1].strip()
+    if _NUMBER_RE.match(left) and "\\" in right and not _NUMBER_RE.match(right):
+        num, macro = left, right
+    elif _NUMBER_RE.match(right) and "\\" in left and not _NUMBER_RE.match(left):
+        num, macro = right, left
+    else:
+        return None
+    if not macro:
+        return None
+    try:
+        fval = float(num)
+    except ValueError:
+        return None
+    if fval == 0:
+        return None
+    if fval == int(fval):
+        k = int(fval)
+        period = 360 // math.gcd(abs(k), 360)
+        if (period - 1) * abs(k) < _TRIG_DIMEN_CEILING:
+            return f"mod(mod({macro},{period})*{k},360)"
+    return f"360*frac(({macro})/360*{num})"
 
 
 def _clamp_trig_arguments(body: str) -> tuple[str, tuple[str, ...]]:
@@ -163,7 +536,16 @@ def _clamp_trig_arguments(body: str) -> tuple[str, tuple[str, ...]]:
             continue
         if stripped.startswith("mod(") and stripped.endswith(",360)"):
             continue                        # already clamped (idempotent)
-        replacement = f"{func}(mod({inner},360))"
+        if stripped.startswith("360*frac("):
+            continue                        # already reduced (idempotent)
+        safe = _overflow_safe_trig_arg(inner)
+        if safe is not None:
+            replacement = f"{func}({safe})"
+        else:
+            # Generic best-effort wrap: exact for the value, but the inner
+            # product is still formed, so it only helps when the raw argument
+            # itself stays under the dimen ceiling.
+            replacement = f"{func}(mod({inner},360))"
         edits.append((m.start(), close_idx + 1, replacement))
 
     if not edits:
@@ -171,9 +553,12 @@ def _clamp_trig_arguments(body: str) -> tuple[str, tuple[str, ...]]:
     for start, end, replacement in reversed(edits):
         body = body[:start] + replacement + body[end:]
     return body, (
-        f"wrapped {len(edits)} trig argument(s) in mod(...,360) "
-        "(pgfmath trig is 360-periodic; this preserves the value and avoids the "
-        "'Dimension too large' overflow when an angle is derived from a loop index)",
+        f"reduced {len(edits)} loop-derived trig argument(s) to an "
+        "overflow-safe periodic form (pgfmath trig is 360-periodic; the loop "
+        "counter is period-reduced before the multiply, or divided by 360 "
+        "first via 360*frac(...), so the rendered value is preserved while the "
+        "'Dimension too large' dimen-register overflow at high loop indices is "
+        "avoided)",
     )
 
 
@@ -525,6 +910,13 @@ def _autofix(body: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
     applied: list[str] = []
     for step in (
         _restore_literal_newlines,
+        # Before the semicolon inserter and colour-agnostic of it: an SVG
+        # presentation attribute (stroke-width=, font-size=, ...) is an unknown
+        # pgfkey that aborts before any missing semicolon would matter.
+        _translate_svg_attributes,
+        # After newline restoration so a serialised single-line body is split
+        # into statements before the semicolon inserter scans it.
+        _insert_missing_semicolons,
         _clamp_trig_arguments,
         _capture_pgfmath_results,
         # After _restore_literal_newlines: a body whose newlines were
