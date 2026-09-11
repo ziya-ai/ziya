@@ -18,6 +18,12 @@ class ContextManagementSettings(BaseModel):
     # Per-file token cap for automatically added context files.
     # Files larger than this are never auto-added.  0 disables the limit.
     auto_add_token_limit: int = 12500
+    # Aggregate cap (running total) across ALL auto-added files, on top of
+    # the per-file cap above.  Many individually-small files auto-added over
+    # a long session otherwise accumulate without bound — the pattern that
+    # let a token badge show <100k while the submitted prompt exceeded 1M.
+    # 0 disables the limit.
+    auto_add_aggregate_budget: int = 100000
 
 class ProjectSettings(BaseModel):
     defaultContextIds: List[str] = []

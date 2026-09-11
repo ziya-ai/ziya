@@ -13,7 +13,7 @@ import { WritePolicy, ContextManagementSettings } from '../types/project';
 import type { DetectTemplateResponse, ProjectTemplate } from '../types/projectTemplate';
 import * as templateApi from '../api/projectTemplateApi';
 import { GENERAL_TEMPLATE_ID } from '../api/projectTemplateApi';
-import { DEFAULT_AUTO_ADD_TOKEN_LIMIT } from '../utils/autoAddTokenLimit';
+import { DEFAULT_AUTO_ADD_TOKEN_LIMIT, DEFAULT_AUTO_ADD_AGGREGATE_BUDGET } from '../utils/autoAddTokenLimit';
 
 const { Panel } = Collapse;
 
@@ -704,6 +704,28 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
                             onChange={v => setContextManagement(prev => ({
                                 ...prev,
                                 auto_add_token_limit: typeof v === 'number' ? v : DEFAULT_AUTO_ADD_TOKEN_LIMIT
+                            }))}
+                            disabled={contextManagement.auto_add_diff_files === false}
+                            addonAfter="tokens"
+                        />
+                    </div>
+
+                    <div>
+                        <strong>Auto-add aggregate budget</strong>
+                        <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+                            Total token cap across ALL auto-added files combined (a running
+                            total for the session, on top of the per-file limit above). Once
+                            spent, further auto-adds are skipped — manual adds are never
+                            limited. Set to 0 for no limit.
+                        </div>
+                        <InputNumber
+                            min={0}
+                            step={10000}
+                            style={{ width: 180 }}
+                            value={contextManagement.auto_add_aggregate_budget ?? DEFAULT_AUTO_ADD_AGGREGATE_BUDGET}
+                            onChange={v => setContextManagement(prev => ({
+                                ...prev,
+                                auto_add_aggregate_budget: typeof v === 'number' ? v : DEFAULT_AUTO_ADD_AGGREGATE_BUDGET
                             }))}
                             disabled={contextManagement.auto_add_diff_files === false}
                             addonAfter="tokens"

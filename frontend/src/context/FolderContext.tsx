@@ -8,7 +8,10 @@ import { useConfig } from "./ConfigContext";
 import { useProject } from "./ProjectContext";
 import { fetchDefaultIncludedFolders } from "../apis/folderApi";
 import { getTabState, setTabState } from '../utils/tabState';
-import { filterByAutoAddTokenLimit, DEFAULT_AUTO_ADD_TOKEN_LIMIT } from '../utils/autoAddTokenLimit';
+import {
+  filterByAutoAddTokenLimit, DEFAULT_AUTO_ADD_TOKEN_LIMIT,
+  filterByAggregateAutoAddBudget, DEFAULT_AUTO_ADD_AGGREGATE_BUDGET,
+} from '../utils/autoAddTokenLimit';
 import { resolveDocSeed } from '../utils/docSeedDismissal';
 
 // convertToTreeData does a full recursive rebuild of the whole folder tree.
@@ -1261,11 +1264,12 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
       if (options?.isAutoAdd) {
         const limit = currentProjectRef.current?.settings?.contextManagement?.auto_add_token_limit
           ?? DEFAULT_AUTO_ADD_TOKEN_LIMIT;
-        const { allowed, skipped } = filterByAutoAddTokenLimit(validPaths, limit, (p) => {
+        const getTokenCount = (p: string) => {
           const accurate = accurateTokenCountsRef.current[p]?.count;
           if (accurate && accurate > 0) return accurate;
           return getFolderTokenCount(p, foldersRef.current);
-        });
+        };
+        const { allowed, skipped } = filterByAutoAddTokenLimit(validPaths, limit, getTokenCount);
         if (skipped.length > 0) {
           console.warn(
             '📁 CONTEXT: Skipped ' + skipped.length + ' auto-add file(s) over the ' + limit + '-token limit:',
@@ -1273,6 +1277,28 @@ export const FolderProvider: React.FC<{ children: ReactNode }> = ({ children }) 
           );
         }
         pathsToAdd = allowed;
+
+        // Aggregate cap: the per-file check above only stops one huge file
+        // in a single call; it does nothing about many small files
+        // accumulating across a session with no ceiling — the pattern that
+        // let the token badge stay under 100k while the submitted prompt
+        // exceeded 1M tokens.  Count what prior auto-adds already spent
+        // and stop accepting new ones once the budget is gone.
+        const aggregateBudget = currentProjectRef.current?.settings?.contextManagement?.auto_add_aggregate_budget
+          ?? DEFAULT_AUTO_ADD_AGGREGATE_BUDGET;
+        const currentAutoAddedTotal = Array.from(autoAddedFilesRef.current)
+          .reduce((sum, p) => sum + Math.max(0, getTokenCount(p)), 0);
+        const aggResult = filterByAggregateAutoAddBudget(
+          pathsToAdd, currentAutoAddedTotal, aggregateBudget, getTokenCount,
+        );
+        if (aggResult.skipped.length > 0) {
+          console.warn(
+            '📁 CONTEXT: Skipped ' + aggResult.skipped.length + ' auto-add file(s) — aggregate auto-add budget of '
+            + aggregateBudget + ' tokens (~' + currentAutoAddedTotal + ' already used):',
+            aggResult.skipped.map(s => s.path + ' (~' + s.tokens + ' tokens)')
+          );
+        }
+        pathsToAdd = aggResult.allowed;
         if (pathsToAdd.length === 0) return [];
       }
 
