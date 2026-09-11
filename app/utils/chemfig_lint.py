@@ -422,6 +422,112 @@ def rewrite_deprecated_setters(body: str) -> tuple[str, tuple[str, ...]]:
     return out, tuple(applied)
 
 
+#: A parameterised ``\definesubmol`` whose argument count was written in
+#: LaTeX ``\newcommand`` style -- a bracketed number -- instead of chemfig's
+#: bare digit.  chemfig declares the argument count as a BARE digit right after
+#: the name (``\definesubmol{foo}3{...}``, ``\definesubmol\X2{...}``); a
+#: bracket there is NOT the count.  A model trained on ``\newcommand{\f}[1]{..}``
+#: routinely writes ``\definesubmol{arm}[1]{...#1...}`` -- and chemfig then
+#: parses the ``[1]`` as an (optional) display argument, declares the submol as
+#: taking ZERO arguments, and leaves every ``#1`` in the body unsubstituted.
+#: The literal ``#`` later reaches pgfmath as it evaluates a bond angle and the
+#: whole compile dies with ``Unknown operator `#'`` (D-030, chemfig-w3-08).
+#:
+#: The match is intentionally strict: the bracket must sit IMMEDIATELY after
+#: ``\definesubmol{NAME}`` and contain nothing but a single digit 1-9.  A
+#: genuine chemfig optional argument in that slot (``\definesubmol{foo}3[#3|..]``)
+#: carries the count digit BEFORE the bracket, so this pattern -- name then a
+#: bare ``[digit]`` -- never matches a well-formed definition.  Confirmation
+#: that the digit was meant as an argument count (a ``#`` in the body) is
+#: required by the replacer before any rewrite is made.
+_SUBMOL_DEF_BRACKET_COUNT_RE = re.compile(
+    r"(\\definesubmol\s*\{([^{}]+)\})\s*\[\s*([1-9])\s*\]"
+)
+
+
+def normalize_parameterised_submol(body: str) -> tuple[str, tuple[str, ...]]:
+    r"""Repair LaTeX-style argument syntax on chemfig parameterised submols.
+
+    chemfig's parameterised ``\definesubmol`` takes its argument COUNT as a bare
+    digit after the name and its arguments in BRACES at the call site::
+
+        \definesubmol{arm}1{-[:#1]C(-[:#1+90]H)(-[:#1-90]H)-}
+        \chemfig{H!{arm}{30}O!{arm}{-30}H}
+
+    Models trained on LaTeX ``\newcommand{\f}[1]{...}`` instead emit the count
+    in a bracket and pass the argument in a bracket too -- ``\definesubmol{arm}[1]{..}``
+    called ``!{arm}[30]``.  chemfig reads ``[1]`` as a (zero-arg) optional
+    display argument, so ``#1`` is never substituted; the literal ``#`` then
+    reaches pgfmath during an angle evaluation and the compile dies with
+    ``Unknown operator `#'`` (D-030).  Both are the SAME confusion (LaTeX
+    optional-argument brackets), so both are repaired here:
+
+      1. ``\definesubmol{NAME}[n]{...}`` -> ``\definesubmol{NAME}n{...}`` -- but
+         only when the definition body contains a ``#`` reference, proving the
+         digit was meant as an argument count rather than an optional display
+         part.
+      2. For every NAME thus recognised as parameterised, a call
+         ``!{NAME}[arg]`` -> ``!{NAME}{arg}`` -- the argument moves from a
+         (invalid) bracket to the brace group chemfig expects.  A brace-passed
+         call ``!{NAME}{arg}`` already correct is left untouched.
+
+    Deliberately narrow so it can never touch real chemfig syntax: bond-angle
+    brackets (``-[:#1]``, ``-[:30]``) are never preceded by ``\definesubmol{..}``
+    or ``!{name}`` and so match neither pattern.  Only NAMEs whose definition
+    was rewritten are eligible for the call rewrite, so a bracket following an
+    ordinary (non-parameterised) ``!{name}`` is left alone.
+
+    Returns ``(new_body, applied)``; a no-op with empty ``applied`` when the
+    body has no such construct, so it is safe to run on every chemfig body.
+    """
+    applied: list[str] = []
+    parameterised: list[str] = []
+
+    def _fix_def(m: "re.Match[str]") -> str:
+        head, name, digit = m.group(1), m.group(2), m.group(3)
+        # Only treat the bracket as a mis-written argument count when the
+        # definition body actually references an argument (``#1`` ...).  The
+        # body is the brace group immediately after this match.
+        body_open = m.end()
+        if body_open >= len(body) or body[body_open] != "{":
+            return m.group(0)            # not followed by a body group: leave
+        body_close = _match(body, body_open)
+        if body_close is None:
+            return m.group(0)            # unbalanced: do not guess
+        if "#" not in body[body_open + 1:body_close]:
+            return m.group(0)            # a real optional display arg, not count
+        parameterised.append(name)
+        applied.append(
+            f"rewrote \\definesubmol{{{name}}}[{digit}] -> "
+            f"\\definesubmol{{{name}}}{digit} (chemfig declares a submol's "
+            f"argument count as a bare digit, not a LaTeX-style [n]; the "
+            f"bracket left #{digit} unsubstituted -> fatal pgfmath 'Unknown "
+            f"operator #')."
+        )
+        return f"{head}{digit}"
+
+    out = _SUBMOL_DEF_BRACKET_COUNT_RE.sub(_fix_def, body)
+
+    # Now fix the matching call sites for every submol recognised as
+    # parameterised above: ``!{NAME}[arg]`` -> ``!{NAME}{arg}``.
+    for name in dict.fromkeys(parameterised):     # de-dup, keep order
+        call_re = re.compile(
+            r"(!\s*\{" + re.escape(name) + r"\})\s*\[([^\[\]]*)\]"
+        )
+
+        def _fix_call(m: "re.Match[str]", _name: str = name) -> str:
+            head, arg = m.group(1), m.group(2)
+            applied.append(
+                f"rewrote call {head}[{arg}] -> {head}{{{arg}}} "
+                f"(chemfig passes a submol argument in braces, not brackets)."
+            )
+            return f"{head}{{{arg}}}"
+
+        out = call_re.sub(_fix_call, out)
+
+    return out, tuple(applied)
+
+
 #: An HTML entity: a numeric reference (``&#8594;`` / ``&#x2192;``) or a named
 #: one (``&amp;``, ``&lt;``).  Models occasionally paste a chemfig label copied
 #: from a rich-text/HTML source, and the entities leak in verbatim.
@@ -525,6 +631,165 @@ def decode_entities(body: str) -> tuple[str, tuple[str, ...]]:
 
     out = _ENTITY_RE.sub(_repl, body)
     return out, tuple(applied)
+
+
+#: Markdown ``**bold**`` emphasis wrapping a run of PLAIN caption text.  Models
+#: paste a ``\chemname`` caption straight from a markdown source and the bold
+#: markers leak in verbatim (chemfig-w4-14, ``**water**``), typesetting literal
+#: asterisks around the word instead of the intended bold run.
+#:
+#: The capture is deliberately restricted to a run that carries NO
+#: chemfig-structural character, so it can never collide with real chemfig
+#: syntax:
+#:
+#:   * no ``*`` in the body -- so it can neither be the aromatic-ring opener
+#:     ``**n(`` (whose body starts with a digit) nor span the gap between two
+#:     adjacent rings ``**6(...)**5(...)``;
+#:   * no parenthesis / brace / bracket -- so it can never straddle a ring
+#:     body, a branch ``(-OH)`` or a bond option ``[:30]``;
+#:   * no backslash -- so it never swallows a following macro.
+#:
+#: and the body must contain at least one letter (checked in the replacer), so
+#: ``** **`` or a stray ``**--**`` is left alone.  A caption word such as
+#: ``**water**`` or ``**well-known**`` matches; an aromatic ring
+#: ``**6(-=-=-=)**`` never can, because its body carries ``(``.
+_MARKDOWN_BOLD_RE = re.compile(r"\*\*([^*(){}\[\]\\\n]+?)\*\*")
+
+
+def convert_markdown_bold(body: str) -> tuple[str, tuple[str, ...]]:
+    r"""Rewrite markdown ``**text**`` bold in a chemfig body to ``\textbf{text}``.
+
+    Recovers the common artefact of a ``\chemname`` caption pasted from a
+    markdown source with its bold markers intact (chemfig-w4-14): without this
+    the ``**`` renders as two literal asterisks flanking the word, which
+    contradicts the author's obvious intent and looks like broken output.
+
+    Scoped to the chemfig path (see the caller in
+    ``latex_renderer._lint_chemfig``): ``**`` is chemfig's aromatic-ring opener
+    (``**6(...)``), so the match is restricted to a run containing no
+    ring/branch/option/macro character and at least one letter -- a plain
+    caption word -- which an aromatic ring can never satisfy.  Applying it to a
+    non-chemfig engine would be unsafe (``**`` has other meanings), which is
+    why it lives behind the chemfig-only lint entry point.
+
+    Returns ``(new_body, applied)``; a no-op with empty ``applied`` when the
+    body carries no markdown bold, so it is safe to run on every chemfig body.
+    Advisory: never raises (the caller also guards it).
+    """
+    applied: list[str] = []
+
+    def _repl(m: "re.Match[str]") -> str:
+        inner = m.group(1)
+        if not re.search(r"[A-Za-z]", inner):
+            return m.group(0)            # no letters: not a bold word, leave it
+        applied.append(
+            f"converted markdown bold '**{inner}**' -> \\textbf{{{inner}}} "
+            "(markdown emphasis leaked into a chemfig label; the raw '**' "
+            "would typeset literal asterisks)"
+        )
+        return r"\textbf{" + inner + "}"
+
+    out = _MARKDOWN_BOLD_RE.sub(_repl, body)
+    return out, tuple(applied)
+
+
+#: Picture/path environments in which a bare ``;`` is a MANDATORY TikZ path
+#: terminator, not a stray statement separator.  A chemfig molecule embedded in
+#: one of these (``\node {\chemfig{...}};``) must keep its semicolons.
+_TIKZ_PATH_ENVS: frozenset = frozenset((
+    "tikzpicture", "circuitikz", "tikzcd", "scope", "pgfonlayer", "axis",
+    "semilogxaxis", "semilogyaxis", "loglogaxis", "polaraxis", "groupplot",
+))
+
+#: A ``\begin{env}`` / ``\end{env}`` delimiter, matched at a given offset.
+_ENV_DELIM_RE = re.compile(r"\\(begin|end)\s*\{([^}]*)\}")
+
+
+def strip_statement_terminators(body: str) -> tuple[str, tuple[str, ...]]:
+    r"""Drop stray ``;`` statement terminators borrowed from other dialects.
+
+    A model that learned newline/semicolon-terminated diagram DSLs routinely
+    appends a ``;`` after a chemfig molecule -- ``\chemfig{C=O};`` -- and
+    borrows the separator between two molecules (D-005, chemfig-w4-12).  chemfig
+    has NO statement ``;``: at the document top level it is not an operator, so
+    a bare ``;`` there merely typesets a stray semicolon glyph -- debris that
+    contradicts the author's obvious intent of a clean structure.
+
+    Scope is deliberately narrow so a legitimate ``;`` is never removed:
+
+      * only a ``;`` at BRACE-DEPTH ZERO is dropped.  A semicolon inside any
+        ``{...}`` -- a ``\chemname{...}{Ethanol; a solvent}`` caption, a node
+        label, a math/text group -- sits at depth >= 1 and is kept verbatim;
+      * a ``;`` inside ``$...$`` math (``$a;b$``) is kept;
+      * an escaped ``\;`` (a math thin-space macro) is kept -- the backslash
+        pair is skipped whole.
+
+    Returns ``(new_body, applied)``; a no-op with empty ``applied`` when the
+    body has no top-level ``;``, so it is safe to run on every chemfig body.
+    """
+    out: list[str] = []
+    depth = 0
+    tikz_depth = 0
+    math = False
+    removed = 0
+    i = 0
+    n = len(body)
+    while i < n:
+        ch = body[i]
+        if ch == "\\":                 # escaped char / control symbol: copy pair
+            # Recognise a ``\begin{env}`` / ``\end{env}`` opening or closing a
+            # TikZ path environment WHOLE, and track its nesting depth: a
+            # chemfig molecule is very commonly embedded in a ``tikzpicture``
+            # (``\node {\chemfig{...}}``), where every ``\node``/``\draw`` is
+            # terminated by a MANDATORY ``;``.  Those ``;`` sit at brace-depth 0
+            # yet are NOT stray -- stripping them aborts the compile with
+            # "Giving up on this path. Did you forget a semicolon?"
+            # (chemfig-w3-12/w3-13).  While ``tikz_depth > 0`` the ``;`` guard
+            # below leaves them untouched; a bare ``\chemfig{...};`` body has no
+            # such environment, so its stray terminators are still dropped.
+            envm = _ENV_DELIM_RE.match(body, i)
+            if envm:
+                if envm.group(2).strip() in _TIKZ_PATH_ENVS:
+                    if envm.group(1) == "begin":
+                        tikz_depth += 1
+                    elif tikz_depth > 0:
+                        tikz_depth -= 1
+                out.append(envm.group(0))
+                i = envm.end()
+                continue
+            out.append(body[i:i + 2])
+            i += 2
+            continue
+        if ch == "$":
+            math = not math
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "{":
+            depth += 1
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "}":
+            if depth > 0:
+                depth -= 1
+            out.append(ch)
+            i += 1
+            continue
+        if ch == ";" and depth == 0 and not math and tikz_depth == 0:
+            removed += 1
+            i += 1
+            continue                   # drop the stray terminator
+        out.append(ch)
+        i += 1
+    if not removed:
+        return body, ()
+    plural = "" if removed == 1 else "s"
+    return "".join(out), (
+        f"dropped {removed} stray top-level ';' terminator{plural} borrowed "
+        "from another dialect (chemfig has no statement semicolon; it would "
+        "typeset a stray glyph)",
+    )
 
 
 def _alternating_continuation(pattern: str, size: int, deficit: int) -> Optional[str]:
