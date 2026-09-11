@@ -123,3 +123,145 @@ export function registerDrawioExtraShapes(maxGraphModule: any): string[] {
         return [];
     }
 }
+
+/**
+ * G-cc6859 / D-091 — custom-and-orthogonal-arrowheads-dropped (the ER crow's-foot half).
+ *
+ * maxGraph core's `registerDefaultEdgeMarkers` registers only classic/classicThin,
+ * block/blockThin, open/openThin, oval, diamond/diamondThin. The drawio ER cardinality
+ * vocabulary (ERone, ERmany, ERzeroToOne, ERzeroToMany, ERoneToMany, ERmandOne) is NOT
+ * in that set, so `EdgeMarkerRegistry.createMarker` returns null for those types and the
+ * crow's-foot / cardinality terminator is dropped entirely — an ER edge renders as a bare
+ * line with no cardinality, in both themes (the markers stroke in the edge colour, so this
+ * is theme-independent).
+ *
+ * Fix: register minimal, geometrically-correct ER marker factories on the dynamically
+ * loaded maxGraph module's EdgeMarkerRegistry, once, right after it loads. Purely additive
+ * — a name already present in the registry (any core marker) is never overwritten, so no
+ * other edge output changes. The classic/block/open/oval/diamond names the triage also
+ * named are ALREADY core-registered and render fine; the real gap is only the ER family.
+ *
+ * Marker coordinate convention (matches maxGraph's built-in edge-markers): `pe` is the edge
+ * end point at the terminal, `unitX`/`unitY` is the unit vector pointing INTO the terminal,
+ * `size`/`sw` are the marker size and stroke width. The factory may mutate `pe` to shorten
+ * the connecting line, and returns a paint closure. ER markers are stroke-only (never filled).
+ */
+
+const ER_MARKER_NAMES = [
+    'ERone',
+    'ERmany',
+    'ERzeroToOne',
+    'ERzeroToMany',
+    'ERoneToMany',
+    'ERmandOne',
+] as const;
+
+/**
+ * Register the drawio ER crow's-foot edge markers that maxGraph core omits.
+ * Idempotent and never throws — an unexpected module shape leaves the (bare-line) fallback.
+ * Existing markers are preserved (additive); only unregistered ER names are filled.
+ *
+ * @returns the list of ER marker names present in the registry after the call (for tests).
+ */
+export function registerDrawioExtraEdgeMarkers(maxGraphModule: any): string[] {
+    try {
+        const EdgeMarkerRegistry = maxGraphModule?.EdgeMarkerRegistry;
+        if (
+            !EdgeMarkerRegistry ||
+            typeof EdgeMarkerRegistry.add !== 'function' ||
+            typeof EdgeMarkerRegistry.get !== 'function'
+        ) {
+            return [];
+        }
+
+        // Build the geometry shared by every ER marker: the tip at the terminal, a step
+        // vector `n` (one marker length back along the line) and a unit perpendicular `p`.
+        const geom = (pe: any, unitX: number, unitY: number, size: number, sw: number) => {
+            const d = size + sw;
+            const nx = unitX * d;
+            const ny = unitY * d;
+            const px = -unitY; // unit perpendicular
+            const py = unitX;
+            const hw = d * 0.7; // half-spread of a foot / half-length of a bar
+            const tip = pe.clone();
+            // Shorten the connecting line by one step so it does not overrun the terminal.
+            pe.x -= nx;
+            pe.y -= ny;
+            return { nx, ny, px, py, hw, tip };
+        };
+
+        // A single perpendicular bar at k steps back from the terminal.
+        const drawBar = (c: any, g: any, k: number) => {
+            const bx = g.tip.x - g.nx * k;
+            const by = g.tip.y - g.ny * k;
+            c.moveTo(bx + g.px * g.hw, by + g.py * g.hw);
+            c.lineTo(bx - g.px * g.hw, by - g.py * g.hw);
+        };
+
+        // A crow's foot: three prongs from an apex (one step back) fanning to the terminal.
+        const drawCrowsFoot = (c: any, g: any) => {
+            const ax = g.tip.x - g.nx;
+            const ay = g.tip.y - g.ny;
+            c.moveTo(ax, ay);
+            c.lineTo(g.tip.x, g.tip.y);
+            c.moveTo(ax, ay);
+            c.lineTo(g.tip.x + g.px * g.hw, g.tip.y + g.py * g.hw);
+            c.moveTo(ax, ay);
+            c.lineTo(g.tip.x - g.px * g.hw, g.tip.y - g.py * g.hw);
+        };
+
+        // A small circle centred k steps back (the "zero"/optional part).
+        const drawCircle = (c: any, g: any, k: number) => {
+            const cx = g.tip.x - g.nx * k;
+            const cy = g.tip.y - g.ny * k;
+            const r = g.hw * 0.7;
+            c.ellipse(cx - r, cy - r, r * 2, r * 2);
+        };
+
+        const factories: Record<string, any> = {
+            // Exactly one: a single bar.
+            ERone: (canvas: any, _s: any, _t: any, pe: any, ux: number, uy: number, size: number, _src: any, sw: number) => {
+                const g = geom(pe, ux, uy, size, sw);
+                return () => { canvas.begin(); drawBar(canvas, g, 1); canvas.stroke(); };
+            },
+            // Many: a crow's foot.
+            ERmany: (canvas: any, _s: any, _t: any, pe: any, ux: number, uy: number, size: number, _src: any, sw: number) => {
+                const g = geom(pe, ux, uy, size, sw);
+                return () => { canvas.begin(); drawCrowsFoot(canvas, g); canvas.stroke(); };
+            },
+            // Zero or one: a circle plus a bar.
+            ERzeroToOne: (canvas: any, _s: any, _t: any, pe: any, ux: number, uy: number, size: number, _src: any, sw: number) => {
+                const g = geom(pe, ux, uy, size, sw);
+                return () => { canvas.begin(); drawBar(canvas, g, 1); canvas.stroke(); canvas.begin(); drawCircle(canvas, g, 2); canvas.stroke(); };
+            },
+            // Zero or many: a circle plus a crow's foot.
+            ERzeroToMany: (canvas: any, _s: any, _t: any, pe: any, ux: number, uy: number, size: number, _src: any, sw: number) => {
+                const g = geom(pe, ux, uy, size, sw);
+                return () => { canvas.begin(); drawCrowsFoot(canvas, g); canvas.stroke(); canvas.begin(); drawCircle(canvas, g, 2); canvas.stroke(); };
+            },
+            // One or many: a bar plus a crow's foot.
+            ERoneToMany: (canvas: any, _s: any, _t: any, pe: any, ux: number, uy: number, size: number, _src: any, sw: number) => {
+                const g = geom(pe, ux, uy, size, sw);
+                return () => { canvas.begin(); drawCrowsFoot(canvas, g); drawBar(canvas, g, 2); canvas.stroke(); };
+            },
+            // One and only one (mandatory): two bars.
+            ERmandOne: (canvas: any, _s: any, _t: any, pe: any, ux: number, uy: number, size: number, _src: any, sw: number) => {
+                const g = geom(pe, ux, uy, size, sw);
+                return () => { canvas.begin(); drawBar(canvas, g, 1); drawBar(canvas, g, 2); canvas.stroke(); };
+            },
+        };
+
+        for (const name of ER_MARKER_NAMES) {
+            // Additive only: never clobber a marker the core (or a prior call) registered.
+            if (EdgeMarkerRegistry.get(name) == null) {
+                EdgeMarkerRegistry.add(name, factories[name]);
+            }
+        }
+
+        return ER_MARKER_NAMES.filter((n) => EdgeMarkerRegistry.get(n) != null);
+    } catch {
+        // A marker-registration problem must never break drawio rendering — the worst case
+        // is the pre-existing bare-line fallback for ER cardinality edges.
+        return [];
+    }
+}

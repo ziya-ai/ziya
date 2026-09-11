@@ -9,7 +9,7 @@ import { enhanceSVGVisibility, isLightBackground, getOptimalTextColor, hexToRgb,
 import { compositeOver, CHART_DARK_BG, CHART_LIGHT_BG } from './chartTheme';
 import { DrawIOEnhancer } from './drawioEnhancer';
 import { runLayout, applyLayoutToMaxGraph, LayoutNode, LayoutEdge, LayoutContainer } from './layoutEngine';
-import { registerDrawioExtraShapes } from './drawioShapes';
+import { registerDrawioExtraShapes, registerDrawioExtraEdgeMarkers } from './drawioShapes';
 
 /**
  * maxGraph's built-in default vertex fill. A styled vertex that specifies no
@@ -55,6 +55,49 @@ export function resolveFilllessFontColor(
     }
     // Label sits on the themed canvas.
     return isDarkMode ? '#e0e0e0' : '#000000';
+}
+
+/**
+ * G-793d89 / D-090 — auto-layout-geometry-label-desync (drawio wave 1,
+ * specs w1-02..w1-09).
+ *
+ * A drawio spec that carries author mxGeometry (explicit per-cell x/y) MUST be
+ * rendered at those coordinates and never handed to the ELK auto-layout /
+ * placement optimizer. When this gate mis-fired the auto-router re-laid the
+ * vertex FILLS at inflated geometry while the LABELS stayed at the original
+ * coordinates, stranding box/lane/boundary titles outside their fills — dark
+ * text on the bare dark canvas collapsed to ~1:1.
+ *
+ * A diagram is "explicit layout" when ANY non-root vertex declares a non-origin
+ * position: authors do not hand-place their whole diagram at (0,0). Extracted as
+ * a pure predicate over the vertex origins so the gate can be unit-tested
+ * without a live maxGraph / DOM. Logic is byte-identical to the former inline
+ * check (any vertex with x!==0 || y!==0).
+ */
+export function detectExplicitLayout(
+    vertexOrigins: Array<{ x: number; y: number }>
+): boolean {
+    return vertexOrigins.some(g => g.x !== 0 || g.y !== 0);
+}
+
+/**
+ * G-793d89 / D-090 (regression) — whether maxGraph's autoSizeCells may run.
+ *
+ * `graph.autoSizeCells = true` makes maxGraph resize every vertex to fit its
+ * HTML label at `graph.addCell` time (a 140x50 author box grows to ~290x100 to
+ * wrap "Transform"/"Store"). For a diagram with author mxGeometry that inflates
+ * the FILL while the label anchor stays put — the exact geometry/label desync of
+ * D-090 (dark labels then strand on the bare canvas ~1:1). addCell runs BEFORE
+ * the placement/router gate, so that gate cannot prevent this; the size must be
+ * frozen up front. A diagram is auto-sizable ONLY when it has no explicit author
+ * layout (all vertices at origin → ELK will size the boxes and autosize helps
+ * fit labels). Byte-inverse of detectExplicitLayout; extracted as a pure
+ * predicate so the wiring is unit-testable without a live maxGraph / DOM.
+ */
+export function shouldAutoSizeCells(
+    vertexOrigins: Array<{ x: number; y: number }>
+): boolean {
+    return !detectExplicitLayout(vertexOrigins);
 }
 
 /**
@@ -133,6 +176,67 @@ export function applyLabelFittingDefaults(
 }
 
 /**
+ * G-d9f712 / D-096 — edge-label OCCLUSION half of "labels-never-clipped-or-
+ * shortened-to-box" (drawio-w2-14).
+ *
+ * When the inter-node gap is smaller than the label (50px gap vs a ~95px label),
+ * an edge label spills onto the ADJACENT vertex fill and is chopped/illegible —
+ * 15 of 19 edge labels in w2-14. The edge branch deletes any author
+ * `labelBackgroundColor` to stop opaque WHITE slabs masking the routed line, but
+ * that over-correction left the overlapping label with no backing at all, so it
+ * reads against whatever vertex fill it crosses.
+ *
+ * The correct remedy is drawio's own default: back the label with the CANVAS
+ * colour resolved from the active theme (#ffffff light, #1e1e1e dark), not white.
+ * That masks only the glyph strip — the same colour the line already sits on
+ * BETWEEN nodes, so the routed line stays visible — while guaranteeing the label
+ * renders on the canvas rather than on a neighbouring box. Applied ONLY when the
+ * edge actually carries a label; edges without a label keep no background (the
+ * line is never masked). Theme-resolved, so it is correct on both canvases: the
+ * reconciled edge-label font (#000000 light / #e0e0e0 dark) sits on the matching
+ * canvas colour — 21:1 on #ffffff and 12.6:1 on #1e1e1e. Mutates and returns
+ * styleObj.
+ */
+export function resolveEdgeLabelBackground(
+    styleObj: Record<string, any>,
+    opts: { hasLabel: boolean; isDarkMode: boolean }
+): Record<string, any> {
+    if (!styleObj || typeof styleObj !== 'object') return styleObj;
+    if (!opts.hasLabel) return styleObj;
+    styleObj['labelBackgroundColor'] = opts.isDarkMode ? CHART_DARK_BG : CHART_LIGHT_BG;
+    return styleObj;
+}
+
+/**
+ * G-24 / D-082 (backlog) — text-cell-gets-default-vertex-fill (drawio-w1-15).
+ *
+ * A drawio TEXT primitive — `text;html=1;…` (→ shape=text), the `label` shape,
+ * or the bare `text` flag (→ styleObj.text = 1) — that declares NO fillColor is
+ * still painted inside maxGraph's DEFAULT light-blue vertex fill (#C3D9FF), so a
+ * title/legend caption grows a phantom slab in BOTH themes. In drawio a text
+ * cell is fill-less and stroke-less by design.
+ *
+ * Fix: default `fillColor` and `strokeColor` to `none` for text primitives ONLY,
+ * and ONLY when the author supplied neither (defaults — an author value always
+ * wins). Non-text vertices are untouched (they keep the default-fill path, so no
+ * unrelated output changes). Once the fill is cleared to `none`, the label is
+ * reconciled against the themed canvas by the existing contrast pass (the
+ * `fillColor !== 'none'` guard routes it to reconcileCanvasLabelColor), readable
+ * in light (#000000) and dark (#e0e0e0). Mutates and returns styleObj.
+ */
+export function applyTextCellFillDefaults(
+    styleObj: Record<string, any>
+): Record<string, any> {
+    if (!styleObj || typeof styleObj !== 'object') return styleObj;
+    const shape = styleObj['shape'];
+    const isTextPrimitive = shape === 'text' || shape === 'label' || styleObj['text'] != null;
+    if (!isTextPrimitive) return styleObj;
+    if (styleObj['fillColor'] == null) styleObj['fillColor'] = 'none';
+    if (styleObj['strokeColor'] == null) styleObj['strokeColor'] = 'none';
+    return styleObj;
+}
+
+/**
  * G-60 / D-114 — named-color (and mid-luminance opaque fill) bypasses the
  * contrast autofix.
  *
@@ -180,6 +284,33 @@ export function isResolvableColor(c?: string | null): boolean {
     if (/^rgba?\(/.test(v)) return true;
     if (/^hsla?\(/.test(v)) return true;
     return hexToRgb(c) !== null; // hex + CSS named colours
+}
+
+/**
+ * G-25 / D-085 — does this fillColor cause maxGraph to paint an OPAQUE fill the
+ * label actually sits on?
+ *
+ * The render-path contrast gate used to be `fillColor && fillColor !== 'none'`,
+ * which excluded only the literal `none`. But `transparent`/`inherit`/`default`
+ * are ALSO non-painting keywords: maxGraph paints no fill for them, so the label
+ * really sits on the themed canvas. Routing them through the opaque branch let
+ * the contrast be measured against the keyword (which `calculateContrastRatio`
+ * treats as `#ffffff`), so a light-tuned author fontColor (drawio-w4-09 "Outline
+ * Only", fontColor #102040) was judged fine and kept — invisible on the dark
+ * canvas (1.03:1) while unchanged in light.
+ *
+ * A fill paints opaque only when it is a resolvable colour that is NOT one of
+ * these non-painting keywords. Everything else (absent, empty, or a non-painting
+ * keyword) must route to the canvas-reconcile branch, which resolves the label
+ * against the ACTUAL backdrop per theme. Unresolvable tokens (var(--x), $primary)
+ * are already recovered to the default fill by resolveUnparseableCellColors()
+ * before this gate, so they never reach here as unresolvable. Theme-independent
+ * decision (whether a fill paints does not depend on the theme).
+ */
+export function drawioFillPaintsOpaque(fill?: string | null): boolean {
+    if (!isResolvableColor(fill)) return false;
+    const v = (fill as string).trim().toLowerCase();
+    return !DRAWIO_COLOR_KEYWORDS.has(v);
 }
 
 /**
@@ -252,6 +383,42 @@ export function shouldInferVertex(opts: {
     if (opts.hasVertexFlag || opts.isEdge) return false;
     if (opts.hasSource || opts.hasTarget) return false;
     return opts.width > 0 && opts.height > 0;
+}
+
+/**
+ * D-092: extract authored edge waypoints from a drawio <mxGeometry> element.
+ *
+ * drawio stores explicit edge routing as
+ *   <mxGeometry relative="1" as="geometry">
+ *     <Array as="points"><mxPoint x=".." y=".."/>...</Array>
+ *   </mxGeometry>
+ * The historical edge parser only read the `relative` flag and silently dropped
+ * the <Array as="points"> child, so authored routing was discarded and every edge
+ * was re-routed (and dense sets bundled onto shared trunks). Reading the waypoints
+ * into geometry.points lets maxGraph's Manhattan/SegmentConnector draw through the
+ * authored bends instead of inventing its own.
+ *
+ * Uses getElementsByTagName so it is correct whether the source was parsed as an
+ * XML document (tag names case-sensitive: "Array") or an HTML document. Terminal
+ * points (<mxPoint as="sourcePoint"/> / "targetPoint") live as direct children of
+ * <mxGeometry>, NOT inside the Array, so they are deliberately excluded here.
+ */
+export function parseAuthoredEdgeWaypoints(geometryElement: Element | null): { x: number; y: number }[] {
+    const out: { x: number; y: number }[] = [];
+    if (!geometryElement) return out;
+    const arrays = geometryElement.getElementsByTagName('Array');
+    let ptsArray: Element | null = null;
+    for (let i = 0; i < arrays.length; i++) {
+        if (arrays[i].getAttribute('as') === 'points') { ptsArray = arrays[i]; break; }
+    }
+    if (!ptsArray) return out;
+    const pts = ptsArray.getElementsByTagName('mxPoint');
+    for (let i = 0; i < pts.length; i++) {
+        const px = parseFloat(pts[i].getAttribute('x') || '');
+        const py = parseFloat(pts[i].getAttribute('y') || '');
+        if (Number.isFinite(px) && Number.isFinite(py)) out.push({ x: px, y: py });
+    }
+    return out;
 }
 
 // Export architecture shapes renderers
@@ -1082,6 +1249,15 @@ async function loadMaxGraph(): Promise<any> {
                 console.log('📐 DrawIO: Registered extra shapes:', registered.join(', ') || '(none)');
             } catch (shapeErr) {
                 console.warn('📐 DrawIO: extra-shape registration skipped:', shapeErr);
+            }
+            // D-091: register the drawio ER crow's-foot edge markers (ERone/ERmany/…) that
+            // maxGraph core omits, so ER cardinality terminators are no longer dropped.
+            // Additive + guarded; a failure leaves the bare-line fallback.
+            try {
+                const markers = registerDrawioExtraEdgeMarkers(maxGraphModule);
+                console.log('📐 DrawIO: Registered ER edge markers:', markers.join(', ') || '(none)');
+            } catch (markerErr) {
+                console.warn('📐 DrawIO: ER edge-marker registration skipped:', markerErr);
             }
             window.__maxGraphLoaded = true;
             console.log('✅ @maxgraph/core loaded successfully');
@@ -1940,6 +2116,15 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                             // node palette (readable + bounded in both themes).
                             resolveUnparseableCellColors(styleObj);
 
+                            // D-082: a drawio TEXT primitive (shape=text/label or
+                            // the bare `text` flag) with no author fillColor must be
+                            // fill-less/stroke-less — otherwise maxGraph paints it in
+                            // the default #C3D9FF vertex box (a phantom slab). Clears
+                            // fill/stroke to 'none' (author value wins), before the
+                            // contrast pass, so the caption is reconciled against the
+                            // themed canvas rather than the phantom fill.
+                            applyTextCellFillDefaults(styleObj);
+
                             // Fix arrow sizes for edges
                             if (edge) {
                                 // Arrow marker sizing: maxGraph computes marker extent
@@ -1953,11 +2138,20 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                                     styleObj['startSize'] = 3;
                                 }
 
-                                // Remove author's labelBackgroundColor if
-                                // set — we don't want white backgrounds
-                                // blocking the line behind labels.
+                                // Remove author's labelBackgroundColor/Border
+                                // (opaque WHITE slabs would mask the routed line).
                                 delete styleObj['labelBackgroundColor'];
                                 delete styleObj['labelBorderColor'];
+                                // D-096: back a LABELLED edge with the themed
+                                // canvas colour so a label that spills onto an
+                                // adjacent vertex (gap < label width, drawio-w2-14)
+                                // still reads on the canvas rather than the box.
+                                // Canvas-coloured, not white, so the line stays
+                                // visible between nodes; only glyphs mask it.
+                                resolveEdgeLabelBackground(styleObj, {
+                                    hasLabel: !!(value && value.trim()),
+                                    isDarkMode,
+                                });
                                 styleObj['spacingTop'] = styleObj['spacingTop'] || 2;
                                 styleObj['spacingBottom'] = styleObj['spacingBottom'] || 2;
                                 styleObj['spacingLeft'] = styleObj['spacingLeft'] || 4;
@@ -1971,8 +2165,13 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                             }
 
                             // CRITICAL: ALWAYS validate text contrast for ANY cell with fill colors
-                            // This includes vertices, text cells, and list items in swimlanes
-                            if (styleObj['fillColor'] && styleObj['fillColor'] !== 'none') {
+                            // This includes vertices, text cells, and list items in swimlanes.
+                            // D-085/G-25: gate on whether the fill PAINTS an opaque
+                            // backdrop, not merely on `!== 'none'`. transparent/
+                            // inherit/default paint nothing, so the label sits on the
+                            // themed canvas and must be reconciled against it (the
+                            // else branch), not measured against the keyword.
+                            if (drawioFillPaintsOpaque(styleObj['fillColor'])) {
                                 const fillColor = styleObj['fillColor'];
                                 const fontColor = styleObj['fontColor'];
 
@@ -2074,6 +2273,18 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                                 const relative = geometryElement.getAttribute('relative');
                                 if (relative === '1') {
                                     geometry.relative = true;
+                                }
+                                // D-092: honour authored routing. The old parser read
+                                // only the `relative` flag and dropped the authored
+                                // <Array as="points"> waypoints, so every explicit route
+                                // was discarded and re-routed (dense sets bundled onto
+                                // shared trunks). Load them into geometry.points so
+                                // maxGraph's Manhattan/SegmentConnector draws through the
+                                // authored bends.
+                                const authoredWaypoints = parseAuthoredEdgeWaypoints(geometryElement);
+                                if (authoredWaypoints.length > 0) {
+                                    geometry.points = authoredWaypoints.map(p => new Point(p.x, p.y));
+                                    console.log(`📐 DrawIO: Edge ${cellId} honours ${authoredWaypoints.length} authored waypoint(s)`);
                                 }
                             }
 
@@ -2296,6 +2507,26 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
 
                 console.log('📐 DrawIO: Adding cells in z-order (bottom to top):', { swimlanes: swimlaneVertices.length, edges: edgeCells.length, vertices: regularVertices.length });
 
+                // D-090 (regression): freeze author box dimensions BEFORE addCell.
+                // maxGraph's autoSizeCells resizes each vertex to fit its label at
+                // addCell time (a 140x50 author box balloons to ~290x100), which
+                // strands the label relative to the inflated fill — the geometry/
+                // label desync of D-090. addCell runs before the placement/router
+                // gate below, so autosize must be decided here from the parsed
+                // geometry. Diagrams with explicit author positions keep their
+                // author dimensions; genuine auto-layout diagrams (all vertices at
+                // origin) keep autosize so labels fit the ELK-sized boxes.
+                const autoSizeOrigins: Array<{ x: number; y: number }> = [];
+                cellMap.forEach((c, cid) => {
+                    if (cid === '0' || cid === '1') return;
+                    if (c.isVertex()) {
+                        const g = c.getGeometry();
+                        if (g) autoSizeOrigins.push({ x: g.x, y: g.y });
+                    }
+                });
+                graph.autoSizeCells = shouldAutoSizeCells(autoSizeOrigins);
+                console.log('📐 LAYOUT-CHECK: autoSizeCells =', graph.autoSizeCells);
+
                 nonRootIds.forEach(id => {
                     const cell = cellMap.get(id);
                     const cellElement = Array.from(cellElements).find(el => el.getAttribute('id') === id);
@@ -2355,16 +2586,15 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                 // Diagrams with author-specified coordinates should NOT be rearranged
                 // by the placement optimizer or the custom orthogonal router — those
                 // are for auto-layout diagrams only.
-                let hasExplicitLayout = false;
+                const explicitLayoutOrigins: Array<{ x: number; y: number }> = [];
                 cellMap.forEach((cell, id) => {
                     if (id === '0' || id === '1') return;
                     if (cell.isVertex()) {
                         const geom = cell.getGeometry();
-                        if (geom && (geom.x !== 0 || geom.y !== 0)) {
-                            hasExplicitLayout = true;
-                        }
+                        if (geom) explicitLayoutOrigins.push({ x: geom.x, y: geom.y });
                     }
                 });
+                const hasExplicitLayout = detectExplicitLayout(explicitLayoutOrigins);
                 console.log('📐 LAYOUT-CHECK: hasExplicitLayout =', hasExplicitLayout);
 
                 if (hasExplicitLayout) {
