@@ -203,6 +203,94 @@ def _consume_raw_word(segment: str) -> str:
     return segment[:i]
 
 
+def _split_raw_words(segment: str) -> list:
+    """Split *segment* into raw whitespace-delimited words, quotes intact.
+
+    Breaks where ``shlex.split`` breaks, but returns the *source* text of
+    each word instead of its unquoted value, so a caller can still ask
+    whether a character was quoted -- the information ``shlex`` destroys.
+    """
+    words = []
+    i, n = 0, len(segment)
+    while i < n:
+        if segment[i].isspace():
+            i += 1
+            continue
+        raw = _consume_raw_word(segment[i:])
+        if not raw:
+            break
+        words.append(raw)
+        i += len(raw)
+    return words
+
+
+def _unquoted_redirect_words(segment: str) -> list:
+    """Return the unquoted values of words that truly begin a redirection.
+
+    A redirection operator is an operator only when it is unquoted, so a
+    word qualifies only if its raw text starts with ``>`` (optionally after
+    one fd digit): ``>x`` is an operator, ``">x"`` is data.  This matches
+    how ``write_policy._redirection`` reads the same command, which is the
+    point -- the validator and the executor must agree on what a
+    redirection is, or the executor performs writes nobody approved.
+
+    The values returned are what ``shlex.split`` will yield for those
+    words, so a caller can re-identify them in a token list whose quotes
+    have already been stripped.
+    """
+    out = []
+    for raw in _split_raw_words(segment):
+        j = 1 if raw[:1] in ('1', '2') else 0
+        if raw[j:j + 1] != '>':
+            continue
+        try:
+            parts = shlex.split(raw)
+        except ValueError:
+            parts = []
+        out.append(parts[0] if len(parts) == 1 else raw)
+    return out
+
+
+_GLOB_METACHARS = ('*', '?', '[')
+
+
+def _has_unquoted_glob(raw: str) -> bool:
+    """Whether *raw* contains a glob metacharacter OUTSIDE quotes.
+
+    ``shlex.split`` strips quotes, so by the time a token exists a quoted
+    ``'*.json'`` is indistinguishable from a bare ``*.json`` -- and globbing
+    the former silently replaces a literal argument with a directory
+    listing.  That is how ``find . -name '*.json'`` came to be invoked with
+    two expanded filenames in place of the pattern, and why ``rm '*.txt'``
+    in a writable path would delete every matching file instead of the one
+    literally named ``*.txt``.
+
+    Mirrors bash: a metacharacter is an operator only when unquoted, and
+    single quotes, double quotes and a backslash each suppress it.
+    Deliberately a per-WORD verdict rather than per-character, so a word
+    mixing quoted and unquoted metacharacters (``a"*"b*``) is globbed on its
+    fully-unquoted value.  Bash would treat the quoted star as literal;
+    matching that needs a partially-escaped pattern, and the construct does
+    not occur in practice.
+    """
+    i, n = 0, len(raw)
+    in_sq = in_dq = False
+    while i < n:
+        ch = raw[i]
+        if ch == '\\' and not in_sq and i + 1 < n:
+            # Escaped: the next character is literal, never a metacharacter.
+            i += 2
+            continue
+        if ch == "'" and not in_dq:
+            in_sq = not in_sq
+        elif ch == '"' and not in_sq:
+            in_dq = not in_dq
+        elif not in_sq and not in_dq and ch in _GLOB_METACHARS:
+            return True
+        i += 1
+    return False
+
+
 def _find_substitution_spans(command: str) -> list:
     """Return outermost command-substitution spans in *command*.
 
@@ -594,10 +682,7 @@ class ShellServer:
         # merged view (os.environ overlaid with them) so assignments earlier
         # in the same command are visible; otherwise defer to the stdlib
         # expander to preserve its exact semantics.
-        if extra_env:
-            expanded = self._expandvars_with(cmd_segment, {**os.environ, **extra_env})
-        else:
-            expanded = os.path.expandvars(cmd_segment)
+        expanded = self._expand_vars(cmd_segment, extra_env)
 
         try:
             tokens = shlex.split(expanded)
@@ -609,11 +694,28 @@ class ShellServer:
         if not tokens:
             return tokens
 
+        # Which words carried an UNQUOTED glob metacharacter.  Derived from
+        # the raw (pre-shlex) text because quoting is still visible there;
+        # `tokens` has already lost it.  Alignment is by index: both split
+        # on the same whitespace boundaries, so word i is token i.  If the
+        # counts disagree -- reachable only via the malformed-quote fallback
+        # above, which splits differently -- the per-word verdict is dropped
+        # rather than misapplied to the wrong argument, leaving the older
+        # quote-blind behaviour in place.
+        raw_words = _split_raw_words(expanded)
+        globbable = None
+        if len(raw_words) == len(tokens):
+            globbable = [_has_unquoted_glob(w) for w in raw_words]
+
         # Apply tilde expansion and glob expansion per-token (after splitting)
         tokens = [os.path.expanduser(t) for t in tokens]
         result = [tokens[0]]
-        for arg in tokens[1:]:
-            if any(ch in arg for ch in ('*', '?', '[')):
+        for i, arg in enumerate(tokens[1:], start=1):
+            should_glob = (
+                any(ch in arg for ch in _GLOB_METACHARS) if globbable is None
+                else globbable[i]
+            )
+            if should_glob:
                 matches = glob.glob(arg)
                 if matches:
                     result.extend(sorted(matches))
@@ -624,6 +726,18 @@ class ShellServer:
                 result.append(arg)
 
         return result
+
+    def _expand_vars(self, cmd_segment: str, extra_env: dict | None = None) -> str:
+        """Expand ``$VAR``/``${VAR}`` without touching quotes or word breaks.
+
+        Shared by the tokenizer and the redirection scanner so both see the
+        same text.  If they expanded differently, a fused redirect with a
+        variable target (``cmd >$OUT``) would be an operator to one and
+        data to the other.
+        """
+        if extra_env:
+            return self._expandvars_with(cmd_segment, {**os.environ, **extra_env})
+        return os.path.expandvars(cmd_segment)
 
     @staticmethod
     def _peel_env_prefix(cmd_segment: str) -> tuple:
@@ -767,7 +881,7 @@ class ShellServer:
         return True, ""
 
     @staticmethod
-    def _extract_redirections(args: list) -> tuple:
+    def _extract_redirections(args: list, operator_words: list | None = None) -> tuple:
         """Extract shell-style redirections from tokenized args.
 
         Returns (cleaned_args, redir_spec).  redir_spec maps 'stdout' /
@@ -779,10 +893,24 @@ class ShellServer:
           2>&1                        -> stderr=subprocess.STDOUT
           [1|2]>/dev/null             -> DEVNULL
           [1|2]> file, [1|2]>> file   -> ('file', path, 'w'|'a')
+
+        ``operator_words`` lists the token values that began an *unquoted*
+        redirection in the raw segment (see ``_unquoted_redirect_words``).
+        ``shlex.split`` strips quotes, so by the time ``args`` exists a
+        quoted ``">pattern"`` argument is indistinguishable from a real
+        ``>pattern`` operator.  Guessing wrong is not cosmetic: the
+        argument is silently dropped from the command AND a file is created
+        that the write-policy layer never approved, because that layer IS
+        quote-aware and correctly saw no redirection.  When supplied, a
+        token is honoured as an operator only if it appears here.  ``None``
+        keeps the older quote-blind behaviour for callers without raw text.
         """
         cleaned = []
         kwargs = {}
         skip_next = False
+        # Consumed as they match, so several quoted look-alikes cannot each
+        # claim the same single real operator.
+        remaining_ops = None if operator_words is None else list(operator_words)
 
         for i, arg in enumerate(args):
             if skip_next:
@@ -793,6 +921,14 @@ class ShellServer:
             if not m:
                 cleaned.append(arg)
                 continue
+            if remaining_ops is not None:
+                if arg in remaining_ops:
+                    remaining_ops.remove(arg)
+                else:
+                    # Looks like an operator but was quoted in the source,
+                    # so it is data: a grep pattern, a JSON fragment, ...
+                    cleaned.append(arg)
+                    continue
 
             fd, op, target = m.group(1) or '1', m.group(2), m.group(3)
             if not target:
@@ -980,8 +1116,18 @@ class ShellServer:
                 accumulated_stderr += last_result.stderr
                 continue
 
-            # Extract redirections (2>&1, >/dev/null, etc.) from args
-            args, redir_kwargs = self._extract_redirections(args)
+            # Extract redirections (2>&1, >/dev/null, etc.) from args.
+            # The operator set comes from the RAW segment (expanded exactly
+            # as the tokenizer expands it) so a quoted ">literal" argument
+            # stays an argument: quotes are already gone from `args`, and
+            # inventing a redirection here would both drop the argument and
+            # write a file the quote-aware write-policy check never saw.
+            args, redir_kwargs = self._extract_redirections(
+                args,
+                _unquoted_redirect_words(
+                    self._expand_vars(resolved, {**shell_vars, **segment_env})
+                ),
+            )
 
             # Conditional chaining: skip based on previous result
             if operator == "&&" and last_result and last_result.returncode != 0:

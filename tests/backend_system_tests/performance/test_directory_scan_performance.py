@@ -112,18 +112,19 @@ This is a test project for performance testing.
     
     def test_cached_folder_structure_performance(self):
         """Test that caching improves performance."""
-        from app.utils.directory_util import get_cached_folder_structure, get_ignored_patterns
+        from app.services.folder_service import get_cached_folder_structure
+        from app.utils.directory_util import get_ignored_patterns
         
         ignored_patterns = get_ignored_patterns(self.test_dir)
         
         # First call (should populate cache)
         start_time = time.time()
-        structure1 = get_cached_folder_structure(self.test_dir, ignored_patterns, max_depth=5)
+        structure1 = get_cached_folder_structure(self.test_dir, ignored_patterns, max_depth=5, synchronous=True)
         first_call_time = time.time() - start_time
         
         # Second call (should use cache)
         start_time = time.time()
-        structure2 = get_cached_folder_structure(self.test_dir, ignored_patterns, max_depth=5)
+        structure2 = get_cached_folder_structure(self.test_dir, ignored_patterns, max_depth=5, synchronous=True)
         second_call_time = time.time() - start_time
         
         # Results should be identical
@@ -194,7 +195,16 @@ This is a test project for performance testing.
         accurate_time = time.time() - start_time
         
         self.assertLess(accurate_time, 5.0, f"Accurate counting took {accurate_time:.3f}s, should be < 5s")
-        self.assertGreater(accurate_tokens, 0, "Accurate counting should return positive tokens")
+        # get_accurate_token_count deliberately reports 0 for files above its
+        # 50k-token cap (this one is ~250k) so oversized files are excluded
+        # from context totals rather than counted.  The positive-count
+        # behaviour is asserted on a file under the cap.
+        self.assertEqual(accurate_tokens, 0, "Files over the 50k-token cap are excluded (0)")
+        small_file = os.path.join(self.test_dir, 'under_cap.txt')
+        with open(small_file, 'w') as f:
+            f.write(content * 200)  # ~2k tokens
+        self.assertGreater(get_accurate_token_count(small_file), 0,
+                           "Accurate counting should return positive tokens under the cap")
     
     def test_many_small_files_performance(self):
         """Test performance when handling many small files."""
