@@ -51,12 +51,20 @@ Answer "no" if the action-like language is any of the following:
 - conditional on the user doing something first ("once you apply it,
   I'll run the tests")
 - a question or a request for the user to decide
-- negated ("I won't check...") or past tense ("I checked before writing")
+- negated so the assistant is DECLINING to act ("I won't check that")
+  or past tense describing work already finished ("I checked before writing")
 - advice about what the user or someone else should do
+
+A caveat or principle stated ALONGSIDE a positive action announcement
+does NOT make the message "no".  If the assistant declares an immediate
+action AND adds why ("Let me verify the files exist first — I won't
+guess at names I haven't checked"), the positive announcement governs,
+so the answer is "yes".
 
 Answer "yes" only if the assistant is clearly declaring its own
 immediate next action and then stopped without performing it
-(e.g. "Let me read that file first." as the final sentence).
+(e.g. "Let me read that file first." as the final sentence, or
+"Let me confirm these exist before I run anything against them.").
 
 Reply with exactly one token: "yes" or "no".  No punctuation.  No
 explanation.  If you cannot tell, reply "no"."""
