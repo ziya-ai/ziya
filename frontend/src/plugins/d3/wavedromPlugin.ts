@@ -16,7 +16,16 @@ import {
     scopeSvgStyles,
     themeSvgSurface,
 } from '../../utils/d3Plugins/wavedromPlugin';
-import { extractDefinition } from '../../utils/d3Plugins/specEnvelope';
+import {
+    extractDefinition,
+    isStreamingIncomplete,
+} from '../../utils/d3Plugins/specEnvelope';
+
+/** A WaveJSON body is renderable once JSON5 parses it; a truncated one yields
+ *  undefined.  Shared by the streaming guard in render() and by the plugin's
+ *  isDefinitionComplete so the two can never disagree. */
+const wavedromDefinitionComplete = (definition: string): boolean =>
+    parseWaveJson(definition) !== undefined;
 
 /**
  * Monotonic render index.  WaveDrom bakes the index into the element ids it
@@ -74,6 +83,13 @@ function renderError(container: HTMLElement, message: string, rawSpec: any,
 async function render(container: HTMLElement, _d3: any, rawSpec: any,
                       isDarkMode: boolean): Promise<void> {
     const definition = extractDefinition(rawSpec);
+
+    // Mid-stream the body arrives truncated, and canHandle claims the spec by
+    // TYPE, so render() runs on every chunk.  The error card below is written
+    // into the container and so bypasses D3Renderer's isStreaming suppression;
+    // skip silently and retry on the next chunk.  A body that PARSES but fails
+    // validation falls through: that error is real and must still be shown.
+    if (isStreamingIncomplete(rawSpec, wavedromDefinitionComplete)) return;
     const source = typeof definition === 'string'
         ? parseWaveJson(definition) : definition;
     if (source === undefined) {
@@ -159,9 +175,10 @@ export const wavedromPlugin: D3RenderPlugin = {
         },
     },
     canHandle: (spec: any): boolean => spec?.type === 'wavedrom',
-    // Streaming gate: a partial WaveJSON body parses to undefined, so the
-    // renderer waits for the closed block instead of flashing error cards.
-    isDefinitionComplete: (definition: string): boolean =>
-        parseWaveJson(definition) !== undefined,
+    // Retained for callers that DO consult it (the headless harness, and
+    // D3Renderer's string-spec path).  render() applies the same predicate
+    // itself, because D3Renderer never reaches this hook for the object
+    // envelope a markdown fence produces.
+    isDefinitionComplete: wavedromDefinitionComplete,
     render,
 };
