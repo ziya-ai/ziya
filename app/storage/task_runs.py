@@ -16,6 +16,7 @@ from typing import Optional, List, Dict, Any
 from .base import BaseStorage, contained_path
 from ..models.task_run import (
     TaskRun, TaskRunCreate, TaskRunBlockState, IterationSummary, ProgressNote,
+    TERMINAL_RUN_STATUSES,
 )
 
 # Cap on the retained progress trail.  Bounded because a long campaign
@@ -26,6 +27,13 @@ PROGRESS_NOTE_CAP = 200
 from ..models.task_card import Artifact
 
 logger = logging.getLogger(__name__)
+
+# Throttle for _touch_source_conversation: at most one conversation
+# recency bump per chat per interval.  Module-level (like the chats
+# summary cache) because TaskRunStorage is constructed per-request on
+# the API paths, so an instance map would never see its own history.
+CHAT_TOUCH_INTERVAL_S = 30.0
+_chat_touch_times: Dict[str, float] = {}
 
 
 class TaskRunStorage(BaseStorage[TaskRun]):
@@ -53,6 +61,32 @@ class TaskRunStorage(BaseStorage[TaskRun]):
 
     def _iteration_file(self, run_id: str, block_id: str, index: int) -> Path:
         return self._iteration_dir(run_id) / f"{block_id}_{index}.json"
+
+    def _touch_source_conversation(self, run: Optional[TaskRun]) -> None:
+        """Bump the source conversation's ``lastActiveAt`` so a chat
+        with a bound task card sorts to the top of the conversation
+        list the same way a new message would.
+
+        Best-effort and silent: the run record is the durable source
+        of truth, and the conversation bump is a UI convenience that
+        must never break an actual run write.  A run with no
+        ``source_conversation_id`` (headless/scheduled launches) is a
+        normal no-op.  Throttled per chat because record_activity
+        heartbeats arrive every few seconds and the touch rewrites the
+        whole chat file, which can be large.
+        """
+        chat_id = getattr(run, "source_conversation_id", None) if run else None
+        if not chat_id:
+            return
+        now = time.time()
+        if now - _chat_touch_times.get(chat_id, 0.0) < CHAT_TOUCH_INTERVAL_S:
+            return
+        try:
+            from .chats import ChatStorage
+            ChatStorage(self.runs_dir.parent).touch(chat_id)
+            _chat_touch_times[chat_id] = now
+        except Exception:  # noqa: BLE001 — a UI convenience, never fatal
+            pass
 
     def get(self, run_id: str) -> Optional[TaskRun]:
         data = self._read_json(self._run_file(run_id))
@@ -115,6 +149,11 @@ class TaskRunStorage(BaseStorage[TaskRun]):
             id=run_id,
             card_id=data.card_id,
             source_conversation_id=data.source_conversation_id,
+            # Named explicitly for the same reason the fields below are:
+            # this constructor lists fields one by one rather than
+            # splatting ``data``, so an unnamed field is silently dropped
+            # and every run would fall back to the "interactive" default.
+            launch_context=data.launch_context,
             # Copied through explicitly: this constructor lists fields
             # one by one rather than splatting ``data``, so a new
             # TaskRunCreate field is silently dropped unless named here.
@@ -141,6 +180,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
             updated_at=now,
         )
         self._write_json(self._run_file(run_id), run.model_dump())
+        self._touch_source_conversation(run)
         return run
 
     def list_lineage(self, root_run_id: str) -> List[TaskRun]:
@@ -168,13 +208,13 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         run.status = status  # type: ignore[assignment]
         if status == "running" and run.started_at is None:
             run.started_at = time.time()
-        # "partial" is terminal: without it here completed_at is never
-        # stamped, so the tile shows no runtime, and record_activity's
-        # terminal guard keeps letting heartbeats through.
-        # "held" is terminal for this run OBJECT for the same reasons —
-        # the executor coroutine has unwound — even though the work is
-        # continuable; the continuation is a NEW run.
-        if status in ("done", "partial", "failed", "cancelled", "held"):
+        # Terminal statuses stamp completed_at, which drives the tile's
+        # runtime display and stops record_activity from letting
+        # heartbeats through.  Uses the shared set rather than an inline
+        # tuple: this list happened to be the CORRECT one while four
+        # endpoint guards disagreed with it, and two lists that must
+        # agree are what let that drift go unnoticed.
+        if status in TERMINAL_RUN_STATUSES:
             run.completed_at = time.time()
         if error:
             run.error = error
@@ -191,6 +231,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
             invalidate_for(str(self.runs_dir))
         except Exception:  # noqa: BLE001 — an indicator must never break a write
             pass
+        self._touch_source_conversation(run)
         return run
 
     def record_activity(
@@ -244,6 +285,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         run.updated_at = int(now * 1000)
         self._write_json(self._run_file(run_id), run.model_dump())
         self._last_activity_write[run_id] = now
+        self._touch_source_conversation(run)
         return run
 
     def set_artifact(
@@ -475,6 +517,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
             invalidate_for(str(self.runs_dir))
         except Exception:  # noqa: BLE001
             pass
+        self._touch_source_conversation(run)
         return run
 
     def request_pause(self, run_id: str) -> Optional[TaskRun]:
@@ -584,6 +627,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         run.updated_at = int(time.time() * 1000)
         self._write_json(self._run_file(run_id), run.model_dump())
         self._invalidate_status_index()
+        self._touch_source_conversation(run)
         return run
 
     def close_ask(self, run_id: str) -> Optional[TaskRun]:
@@ -603,6 +647,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         run.updated_at = int(time.time() * 1000)
         self._write_json(self._run_file(run_id), run.model_dump())
         self._invalidate_status_index()
+        self._touch_source_conversation(run)
         return run
 
     def record_ask_answer(

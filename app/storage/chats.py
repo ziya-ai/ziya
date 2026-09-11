@@ -313,6 +313,26 @@ class ChatStorage(BaseStorage[Chat]):
         except Exception as e:
             logger.debug("chat_index.on_chat_written failed: %s", e)
         return chat
+
+    def touch(self, chat_id: str) -> Optional[Chat]:
+        """Bump ``lastActiveAt`` without touching any other field.
+
+        Used to surface non-message activity — a task card run bound
+        to this chat starting, progressing, or finishing — as recency,
+        so the conversation sorts to the top of the list the same way
+        a new message would.  Also bumps ``_version`` so the next
+        client bulk-sync sees the server copy as newer (same pattern
+        as the mute endpoint in app/api/chats.py).  Returns None if
+        the chat doesn't exist, matching ``update``/``add_message``.
+        """
+        chat = self.get(chat_id)
+        if not chat:
+            return None
+        chat.lastActiveAt = int(time.time() * 1000)
+        d = chat.model_dump()
+        d["_version"] = chat.lastActiveAt
+        self._write_json(self._chat_file(chat_id), d)
+        return chat
     
     def update(self, chat_id: str, data: ChatUpdate) -> Optional[Chat]:
         chat = self.get(chat_id)
