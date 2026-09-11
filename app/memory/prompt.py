@@ -217,9 +217,15 @@ def get_memory_prompt_section() -> str:
 
     try:
         from app.storage.memory import get_memory_storage
+        from app.storage.proposals import get_proposals_store
         store = get_memory_storage()
         memories = store.list_memories(status="active")
-        pending_count = len(store.list_proposals())
+        # Count the probationary queue (what the lifecycle engine actually
+        # adjudicates), not the legacy proposals.json remnant.
+        try:
+            pending_count = len(get_proposals_store().list_open())
+        except Exception:
+            pending_count = 0
         mindmap_nodes = store.list_mindmap_nodes()
     except Exception as e:
         logger.debug(f"Could not load memories for prompt: {e}")
@@ -240,9 +246,13 @@ def get_memory_prompt_section() -> str:
             "### Domain Overview (use `memory_context`/`memory_expand` for detail)",
             "",
         ]
+        # Count only refs that resolve to an active memory.  Stale refs
+        # (deleted or archived memories) would otherwise advertise domains
+        # that memory_expand cannot deliver.
+        active_ids = {m.id for m in memories}
         for r in root_nodes:
             child_count = len(r.children)
-            mem_count = len(r.memory_refs)
+            mem_count = sum(1 for ref in r.memory_refs if ref in active_ids)
             lines.append(f"- **{r.handle}** — `{r.id}` ({mem_count} memories, {child_count} sub-topics)")
         lines.append("")
         lines.append(f"*{len(memories)} total memories across {len(root_nodes)} domains.*")
