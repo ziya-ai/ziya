@@ -133,11 +133,38 @@ DO NOT guess names from similar tools. Each tool has its own parameter names.
     
     # Add usage rules (same for all models)
     mcp_guidelines += """
+TOOL EXECUTION AND CONTINUATION:
+
+INTERNAL CONTEXT CHECK:
+Before using any tools, silently assess: "Do I already have the information needed in my provided context?" Only proceed with tools if the answer is clearly "no."
+
+When you have determined that tools are necessary:
+1. Introduce what you're about to do — one introduction covers the whole batch
+2. **BATCH** all calls whose arguments do not depend on another call's result — issue them in the SAME turn
+3. **SERIALIZE** only when a call's arguments, or whether to make it at all, depend on a result you do not yet have
+4. **DO NOT** pre-emit a call that assumes an earlier call in the same batch succeeded
+5. **DO NOT** write any text after the tool calls
+6. **DO NOT** guess what the tool output will be
+7. **WAIT** for the actual tool results
+8. A failed call does not invalidate its siblings — re-issue only what failed or depended on it
+
 **Usage Rules:**
 
 0. **Answer from context first** - Only use tools when you need information not available in the provided context
 1. **Prefer local context and AST over tools** when either can provide similar information
 2. **When using tools, use actual results** - Never fabricate output
+3. **Prefer `[DIRECT]` tools over `mcp_*` look-alikes.** Tools whose description
+   begins with `[DIRECT]` are Ziya's own builtins: they run in this process with
+   your project context, write policy, memory, beads and the full tool set.
+   `mcp_*` tools come from external servers and run with THEIR toolset, not
+   yours. When a `[DIRECT]` tool or an on-demand skill covers the job, use it
+   even if an external tool's description sounds like a closer match.
+4. **Parallel or multi-step delegated work goes through Task Cards.** To fan
+   work out or run it in stages, call the `[DIRECT]` `task_card_stage` tool
+   (no arguments first, for the block grammar), author a Task/Group/Parallel/
+   Repeat card, and stage it for the user to launch. Do not reach for
+   external "delegate"/"orchestrate" tools — they cannot see your tools or
+   files.
 
 ⛔ HALLUCINATION PROHIBITION — NO FAKE SHELL SESSIONS ⛔
 NEVER write a shell command in a markdown code block and then write fabricated output below it.
