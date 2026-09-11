@@ -59,6 +59,7 @@ _ENV_KEYS = [
     "ZIYA_THINKING_LEVEL",
     "ZIYA_MODEL_ID_OVERRIDE",
     "ZIYA_TEMPLATES_DIR",
+    "ZIYA_ENABLE_MEMORY",
 ]
 
 
@@ -252,6 +253,48 @@ class TestHelperFunctions:
         is_valid, err, _ = validate_model_and_endpoint("nonexistent", "some-model")
         assert not is_valid
         assert "Invalid endpoint" in err
+
+
+class TestMemoryFlag:
+    """ZIYA_ENABLE_MEMORY defaults on; --memory and an explicit env value win.
+
+    Two independent gates read this flag and they must agree:
+      * ziya_env("ZIYA_ENABLE_MEMORY") — server background init, mind-map jobs
+      * os.environ.get("ZIYA_ENABLE_MEMORY") — model_routes' memoryEnabled flag,
+        is_builtin_category_enabled("memory")
+    setup_environment() materializes the default into os.environ so both the
+    raw-read and registry-read consumers observe the same value. These tests
+    assert the outermost surface (os.environ) after setup, which is what every
+    consumer reads.
+    """
+
+    def test_memory_default_on_when_flag_absent(self):
+        """No --memory flag: default materializes ZIYA_ENABLE_MEMORY=true."""
+        from app.config.environment import setup_environment
+        args = _make_args()  # no 'memory' attribute at all
+        setup_environment(args)
+        assert os.environ.get("ZIYA_ENABLE_MEMORY") == "true"
+
+    def test_memory_flag_true_sets_env(self):
+        from app.config.environment import setup_environment
+        args = _make_args(memory=True)
+        setup_environment(args)
+        assert os.environ.get("ZIYA_ENABLE_MEMORY") == "true"
+
+    def test_explicit_env_false_beats_default(self):
+        """An explicit opt-out survives setup (setdefault, not overwrite)."""
+        from app.config.environment import setup_environment
+        os.environ["ZIYA_ENABLE_MEMORY"] = "false"
+        args = _make_args()  # flag absent, so it must not clobber the opt-out
+        setup_environment(args)
+        assert os.environ.get("ZIYA_ENABLE_MEMORY") == "false"
+
+    def test_registry_default_is_on(self):
+        """ziya_env consumers see True when the var is unset, matching the
+        materialized os.environ default so both gates agree."""
+        os.environ.pop("ZIYA_ENABLE_MEMORY", None)
+        from app.config.env_registry import ziya_env
+        assert ziya_env("ZIYA_ENABLE_MEMORY") is True
 
 
 if __name__ == '__main__':
