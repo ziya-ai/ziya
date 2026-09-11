@@ -392,7 +392,7 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
     };
 
     const dangerousCommands = ['rm', 'rmdir', 'mv', 'cp', 'chmod', 'chown', 'sudo', 'su'];
-    const allGitOperations = ['status', 'log', 'show', 'diff', 'grep', 'branch', 'remote', 'config --get', 'ls-files', 'ls-tree', 'blame', 'cat-file', 'check-ignore', 'tag', 'stash list', 'reflog', 'rev-parse', 'describe', 'shortlog', 'whatchanged'];
+    const allGitOperations = ['status', 'log', 'show', 'diff', 'grep', 'branch', 'remote', 'config --get', 'ls-files', 'ls-tree', 'blame', 'cat-file', 'check-ignore', 'tag', 'stash list', 'reflog', 'rev-parse', 'rev-list', 'describe', 'shortlog', 'whatchanged'];
 
     const isDangerous = (command: string) =>
         dangerousCommands.some(dangerous =>
