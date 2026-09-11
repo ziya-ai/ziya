@@ -367,6 +367,10 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
                 const result = await response.json();
                 if (result.success) {
                     message.success(result.message);
+                    if (!enabled) {
+                        // A disabled server's tool list is stale; fold its panel shut.
+                        setExpandedKeys(prev => prev.filter(key => key !== serverName));
+                    }
                     await fetchMCPStatus(); // Refresh status
                     window.dispatchEvent(new Event('mcpStatusChanged'));
                 } else {

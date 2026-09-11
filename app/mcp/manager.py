@@ -724,7 +724,13 @@ class MCPManager:
                             continue
                     
                     # RESILIENCE: Ensure args is an array if present
-                    if "args" in user_cfg and not isinstance(user_cfg["args"], list):
+                    if "args" in user_cfg and user_cfg["args"] is None:
+                        # str(None) is "None", which the coercion below passed
+                        # to the server process as a real argument. An explicit
+                        # null means "no arguments".
+                        logger.warning(f"Server '{name}' has null args, treating as no arguments")
+                        user_cfg["args"] = []
+                    elif "args" in user_cfg and not isinstance(user_cfg["args"], list):
                         logger.warning(f"Server '{name}' has non-array args, converting to list")
                         user_cfg["args"] = [str(user_cfg["args"])]
 
@@ -785,15 +791,34 @@ class MCPManager:
             # Connect to each configured server
             connection_tasks = []
 
-            for server_name, server_config in self.server_configs.items():
+            # Per-entry setup lives in a nested function rather than inline in
+            # the loop, so an unanticipated exception while preparing ONE server
+            # is attributed to that server instead of aborting the whole loop:
+            # the outer try/except returns False on ANY exception, so a single
+            # malformed entry (e.g. "env": null) previously cost the user every
+            # other MCP server, with one terminal line as the only evidence.
+            # Registers into self.clients / connection_tasks directly, exactly
+            # as the inline body did; an early return skips one entry.
+            def _prepare_and_queue_server(server_name, server_config):
                 if not server_config.get("enabled", True):
                     logger.debug(f"MCP server {server_name} is disabled, skipping")
-                    continue
+                    return
                 
                 # Set environment variables for the server process
                 server_env = os.environ.copy()
-                if "env" in server_config:
-                    server_env.update(server_config["env"])
+                # A null or non-dict "env" raised TypeError here, and the whole
+                # server loop runs inside one try/except that returns False —
+                # so one malformed entry silently cost the user every other MCP
+                # server, with a single terminal line as the only evidence.
+                # validate_config only warns about this; it never rejects it.
+                env_overrides = server_config.get("env")
+                if isinstance(env_overrides, dict):
+                    server_env.update(env_overrides)
+                elif env_overrides is not None:
+                    logger.warning(
+                        f"Server '{server_name}': 'env' must be an object, got "
+                        f"{type(env_overrides).__name__} — ignoring it"
+                    )
                 
                 # Task-level permission escalations (set by apply_task_permissions
                 # in cmd_task) must win over persisted server config values.
@@ -822,7 +847,7 @@ class MCPManager:
                     client = MCPClient(enhanced_config)
                     self.clients[server_name] = client
                     connection_tasks.append(self._connect_server(server_name, client))
-                    continue
+                    return
 
                 # Pre-validate command and script paths for clear diagnostics (stdio servers only)
                 if command and not server_config.get("builtin", False):
@@ -883,7 +908,7 @@ class MCPManager:
                         stub.logs.append(f"ERROR: {failure['summary']}")
                         stub.logs.append(f"INFO: {failure['detail']}")
                         self.clients[server_name] = stub
-                        continue
+                        return
 
                 if command:
                     # For built-in servers, the command path is already absolute.
@@ -899,14 +924,14 @@ class MCPManager:
                                 potential_user_script_path = proj_root_for_check / script_path_part
                                 if not potential_user_script_path.exists():
                                     logger.error(f"User-defined MCP server script not found: {script_path_part} (checked relative to {proj_root_for_check})")
-                                    continue
-                                continue
+                                    return
+                                return
                     elif server_config.get("builtin", False):
                         # For built-in, args[-1] should be the absolute path to the script
                         builtin_script_path = args[-1] if args else ""
                         if not Path(builtin_script_path).exists():
                             logger.error(f"Built-in MCP server script not found at resolved path: {builtin_script_path}")
-                            continue
+                            return
                 
                 # Pass the environment to the client
                 enhanced_config = server_config.copy()
@@ -939,6 +964,15 @@ class MCPManager:
                 client = MCPClient(enhanced_config)
                 self.clients[server_name] = client
                 connection_tasks.append(self._connect_server(server_name, client))
+
+            for server_name, server_config in self.server_configs.items():
+                try:
+                    _prepare_and_queue_server(server_name, server_config)
+                except Exception as e:  # noqa: BLE001 — see _register_setup_failure_stub
+                    # Contained to this entry: the remaining servers are still
+                    # prepared, and the failure is recorded where the GUI can
+                    # find it rather than only in the terminal.
+                    self._register_setup_failure_stub(server_name, server_config, e)
             
             # Wait for all connections to complete
             results = []
@@ -976,6 +1010,54 @@ class MCPManager:
         except Exception as e:  # Intentionally broad: server lifecycle orchestration catches varied OS/transport/auth errors
             logger.error(f"Error initializing MCP manager: {str(e)}")
             return False
+
+    def _register_setup_failure_stub(
+        self, server_name: str, server_config: Dict[str, Any], error: BaseException
+    ) -> None:
+        """Record a per-entry setup failure against the entry that caused it.
+
+        Reuses the preflight stub mechanism: a non-connecting MCPClient stays in
+        self.clients so GET /servers/{name}/details returns the reason instead
+        of 404-ing into an empty Logs pane, and preflight_failure makes
+        connect() terminal, so a health check or reconnect cannot respawn a
+        server whose configuration cannot be prepared.
+
+        The catch that calls this is deliberately broad — containing the
+        exceptions we did NOT anticipate is its entire purpose. Stub
+        construction is guarded separately, because a config pathological
+        enough to break setup could also break MCPClient.__init__, and losing
+        the diagnostic would put us back where we started.
+        """
+        logger.error(
+            f"MCP server '{server_name}' setup failed, skipping it "
+            f"(other servers unaffected): {type(error).__name__}: {error}"
+        )
+        failure = {
+            "code": "setup_failed",
+            "summary": f"Server setup failed: {type(error).__name__}: {error}",
+            "detail": (
+                "Ziya could not prepare this server's configuration, so no "
+                "process was created. Other MCP servers are unaffected."
+            ),
+            "hint": (
+                "Check this server's entry in your MCP config for malformed "
+                "values (env, args, auth)."
+            ),
+        }
+        try:
+            stub_config = dict(server_config)
+            stub_config["name"] = server_name
+            stub = MCPClient(stub_config)
+            stub.preflight_failure = failure
+            stub.startup_stage = "config"
+            stub.logs.append(f"ERROR: {failure['summary']}")
+            stub.logs.append(f"INFO: {failure['detail']}")
+            self.clients[server_name] = stub
+        except Exception as stub_error:  # noqa: BLE001
+            logger.error(
+                f"Could not register a diagnostic stub for '{server_name}': "
+                f"{stub_error}"
+            )
     
     async def _cleanup_stuck_external_servers(self):
         """Acquire the lifecycle lock so the detached cleanup task never walks
