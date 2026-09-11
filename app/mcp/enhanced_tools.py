@@ -26,6 +26,7 @@ from langchain_classic.tools import BaseTool
 from app.utils.logging_utils import logger
 from app.mcp.tools.base import coerce_json_string_args
 from app.utils.file_utils import read_file_content
+from app.utils.tool_schema_compact import compact_tool_schema
 
 # Constants for enhanced triggers
 CONTEXT_REQUEST_OPEN = "<<CONTEXT_REQUEST>>"
@@ -235,8 +236,20 @@ class DirectMCPTool(BaseTool):
             except (AttributeError, TypeError) as e:
                 logger.warning(f"Could not get args schema for {tool_instance.name}: {e}")
         
-        # Initialize BaseTool with the tool's metadata
+        # Publish the model-facing schema in metadata.  Every provider
+        # converter (Bedrock executor, OpenAI, Anthropic, Google) reads
+        # metadata["input_schema"] before falling back to args_schema, so
+        # this is the single point where the Pydantic JSON schema is
+        # compacted (titles, anyOf-null, default:null, docstring) before it
+        # is re-sent on every request.  args_schema itself stays the
+        # Pydantic class so LangChain-side argument validation is unchanged.
         metadata = {'is_internal': is_internal}
+        if args_schema is not None and hasattr(args_schema, 'model_json_schema'):
+            try:
+                metadata['input_schema'] = compact_tool_schema(
+                    args_schema.model_json_schema(), strip_root_description=True)
+            except (AttributeError, TypeError, ValueError) as e:
+                logger.warning(f"Could not build input_schema for {tool_instance.name}: {e}")
         
         super().__init__(
             name=tool_instance.name,
@@ -399,9 +412,11 @@ class SecureMCPTool(BaseTool):
             "max_output_size": 10000  # Maximum size of tool output
         }
         
-        # Store input_schema so it can be retrieved by streaming_tool_executor
+        # Store input_schema so it can be retrieved by streaming_tool_executor.
+        # Compacted losslessly; the root description is kept because for an
+        # external server it is the server's own text, not a docstring echo.
         if input_schema:
-            metadata["input_schema"] = input_schema
+            metadata["input_schema"] = compact_tool_schema(input_schema)
         
         # Initialize BaseTool with our metadata
         super().__init__(
@@ -887,7 +902,27 @@ def create_secure_mcp_tools() -> List[BaseTool]:
         pool = get_connection_pool()
         pool.set_server_configs(mcp_manager.server_configs)
         
-        # Create secure tools
+        # Builtin "[DIRECT]" tools go FIRST.  Tool lists are presented to
+        # the model in construction order and nothing downstream re-sorts
+        # them; with a large external MCP toolset the builtins otherwise
+        # land at the bottom of a ~200-entry list and lose selection to an
+        # external tool with a similar description (e.g. an external
+        # "delegate" tool over the task-card / swarm skills).  Builtins
+        # share the model's context, write policy and tool access, so when
+        # both cover a job the builtin is the right choice — put it where
+        # it is seen first.
+        try:
+            from app.mcp.builtin_tools import get_enabled_builtin_tools
+            builtin_tools = get_enabled_builtin_tools()
+            for tool_instance in builtin_tools:
+                secure_tools.append(DirectMCPTool(tool_instance))
+                logger.debug(f"Initialized builtin tool: {tool_instance.name}")
+            if builtin_tools:
+                logger.debug(f"Added {len(builtin_tools)} builtin MCP tools")
+        except ImportError as e:
+            logger.debug(f"Builtin tools not available: {e}")
+
+        # Create secure tools for external MCP servers
         for tool in mcp_tools:
             # Get server name for this tool
             tool_server_name = getattr(tool, "_server_name", None)
@@ -927,22 +962,6 @@ def create_secure_mcp_tools() -> List[BaseTool]:
             
             secure_tools.append(secure_tool)
         
-        # Add builtin direct MCP tools if enabled
-        try:
-            from app.mcp.builtin_tools import get_enabled_builtin_tools
-            builtin_tools = get_enabled_builtin_tools()
-            
-            for tool_instance in builtin_tools:
-                direct_tool = DirectMCPTool(tool_instance)
-                secure_tools.append(direct_tool)
-                logger.debug(f"Initialized builtin tool: {tool_instance.name}")
-                
-            if builtin_tools:
-                logger.debug(f"Added {len(builtin_tools)} builtin MCP tools")
-                
-        except ImportError as e:
-            logger.debug(f"Builtin tools not available: {e}")
-            
         # Add conversation management tools if available
         try:
             # Check if conversation tools are available (placeholder for future implementation)
