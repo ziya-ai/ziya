@@ -154,17 +154,49 @@ describe('SHELL_GUARD wiring — arming condition', () => {
     expect(code).toContain('getServerChat');
     // The server tier is reached routinely, not only on IDB corruption: a
     // _isShell record is excluded from every IDB write, so it may have no row.
-    expect(code).toMatch(/getServerChat:\s*\(p,\s*id\)\s*=>\s*syncApi\.getChat\(/);
+    expect(code).toMatch(/getServerChat:\s*async\s*\(p,\s*id\)\s*=>/);
+    // MUST be getChatResult, not getChat.  getChat collapses a 404 ("this
+    // project has no such chat") and a 5xx ("the server broke answering") to
+    // the same null, and recovery reads null as PROVEN absence -- so a
+    // transient server fault gets reported to the user as permanent loss.
+    expect(code).toContain('syncApi.getChatResult(');
+    expect(code).not.toMatch(/syncApi\.getChat\(/);
+  });
+
+  it('maps only a 404 to absence, and throws on every other status', () => {
+    // This mapping is what keeps 'gone' and 'unreachable' distinct downstream.
+    // Returning null for a 5xx would collapse them again at the call site,
+    // defeating getChatResult entirely.
+    const code = codeOnly(guardBlock());
+    expect(code).toMatch(/kind\s*===\s*'absent'[\s\S]*return null/);
+    expect(code).toMatch(/throw new Error/);
   });
 });
 
 describe('SHELL_GUARD wiring — failed recovery must not lose messages', () => {
-  it('does NOT delete the pending queue on a hold outcome', () => {
+  it('never discards held messages on a hold outcome', () => {
     // THE defect this suite exists for.  The old code deleted the queue
     // unconditionally and re-applied only on success, so when
     // db.getConversation returned null the queued human and assistant
     // messages were discarded with no error anywhere.
-    expect(holdBranch()).not.toContain('queue.delete');
+    //
+    // The original assertion here was "no queue.delete at all".  The hold
+    // path now deliberately RELEASES human text from the queue (it is handed
+    // back to the composer, and must have exactly one owner so it cannot be
+    // sent twice), so a delete is legitimate — but only after the queue has
+    // been partitioned, and only for the remainder that is empty.  An
+    // unconditional delete is still the bug.
+    const branch = holdBranch();
+    const del = branch.indexOf('queue.delete');
+    const part = branch.indexOf('partitionHeldMessages');
+    expect(part).toBeGreaterThan(-1);
+    if (del !== -1) {
+      // Any delete must come after the partition and be guarded by it.
+      expect(del).toBeGreaterThan(part);
+      expect(branch).toMatch(/keepQueued\.length\s*>\s*0\)\s*queue\.set[\s\S]*?else\s+queue\.delete/);
+    }
+    // And the non-composable remainder is retained, not dropped.
+    expect(branch).toMatch(/queue\.set\(conversationId,\s*keepQueued\)/);
   });
 
   it('does not silently swallow a hold — the user is told', () => {
