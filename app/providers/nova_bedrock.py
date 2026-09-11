@@ -25,6 +25,7 @@ from app.providers.base import (
     ToolUseStart, UsageEvent,
 )
 from app.utils.logging_utils import get_mode_aware_logger
+from app.utils import service_tier as _service_tier
 
 logger = get_mode_aware_logger(__name__)
 
@@ -85,6 +86,9 @@ class NovaBedrockProvider(LLMProvider):
 
     async def stream_response(self, messages, system_content, tools, config):
         params = self._build_converse_params(messages, system_content, tools, config)
+        # Task Card runs request the discounted Flex tier; empty outside a
+        # run or once this model has rejected the tier in this process.
+        params.update(_service_tier.converse_kwargs(self.model_id))
         timeout = int(os.environ.get("BEDROCK_CONNECT_TIMEOUT", "180"))
         logger.debug(f"NovaBedrockProvider: converse_stream {self.model_id}, msgs={len(messages)}")
         t0 = time.time()
@@ -94,11 +98,32 @@ class NovaBedrockProvider(LLMProvider):
                     _nova_connect_executor, lambda: self.bedrock.converse_stream(**params)),
                 timeout=timeout)
         except Exception as e:
-            ct = self._classify_error(str(e))
-            logger.warning(f"NovaBedrockProvider: failed {time.time()-t0:.1f}s — {ct.name}: {str(e)[:200]}")
-            yield ErrorEvent(message=str(e), error_type=ct,
-                             retryable=ct in (ErrorType.THROTTLE, ErrorType.READ_TIMEOUT, ErrorType.OVERLOADED))
-            return
+            response = None
+            err = e
+            # Tier rejection is per model: remember it and retry once at
+            # the standard tier before classifying anything else.
+            if "serviceTier" in params and _service_tier.is_service_tier_unsupported_error(str(e)):
+                tier = params.pop("serviceTier")["type"]
+                _service_tier.mark_unsupported(self.model_id, tier)
+                logger.info(f"NovaBedrockProvider: {self.model_id} does not support service tier "
+                            f"{tier!r}; retrying at standard tier")
+                try:
+                    response = await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(
+                            _nova_connect_executor, lambda: self.bedrock.converse_stream(**params)),
+                        timeout=timeout)
+                except Exception as retry_e:
+                    err = retry_e
+            if response is None:
+                ct = self._classify_error(str(err))
+                logger.warning(f"NovaBedrockProvider: failed {time.time()-t0:.1f}s — {ct.name}: {str(err)[:200]}")
+                yield ErrorEvent(message=str(err), error_type=ct,
+                                 retryable=ct in (ErrorType.THROTTLE, ErrorType.READ_TIMEOUT, ErrorType.OVERLOADED))
+                return
+        if "serviceTier" in params:
+            logger.info(f"NovaBedrockProvider: {self.model_id} service tier requested="
+                        f"{params['serviceTier']['type']} resolved="
+                        f"{_service_tier.resolved_tier_from_response(response) or 'unknown'}")
         async for ev in self._parse_converse_stream(response, config):
             yield ev
 

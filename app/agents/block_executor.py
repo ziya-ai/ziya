@@ -36,6 +36,9 @@ from ..models.task_run import IterationStatus, IterationSummary, TaskRunBlockSta
 from ..context import (
     set_task_iteration_context,
     reset_task_iteration_context,
+    set_task_service_tier,
+    reset_task_service_tier,
+    get_task_service_tier,
 )
 from ..storage.task_runs import TaskRunStorage
 from ..utils.roster_keys import derive_item_key, roster_key_problems
@@ -656,6 +659,42 @@ async def _mark_block_status(
 
 
 async def execute_block(block: Block, ctx: ExecutionContext) -> Artifact:
+    """Execute any block, requesting the task-run Bedrock service tier.
+
+    The tier (``ZIYA_TASK_SERVICE_TIER``, default ``flex``) is set on the
+    outermost ``execute_block`` of a run and inherited by everything
+    beneath it — nested blocks, ``Call``ed cards, and the Until/Improve
+    evaluators, all of which run inside this coroutine's context.  Nested
+    invocations see it already set and leave it alone, so every run root
+    (API launch, scheduler fire, CLI runner) gets the tier from this one
+    seam.  Providers read it via ``app.utils.service_tier``.
+    """
+    if get_task_service_tier() is not None:
+        return await _execute_block_dispatch(block, ctx)
+    from ..utils.service_tier import (
+        ENV_VAR, is_valid_tier_setting, resolve_task_tier_from_env,
+    )
+    raw = os.environ.get(ENV_VAR)
+    if not is_valid_tier_setting(raw):
+        logger.warning(
+            f"{ENV_VAR}={raw!r} is not a recognised service tier; "
+            f"task run will use the standard tier"
+        )
+    tier = resolve_task_tier_from_env()
+    if tier is None:
+        # Disabled: nothing to set, nothing to reset.  The nested check
+        # above stays None so this branch is re-evaluated per nested
+        # block; that is a cheap env read and keeps the disabled path
+        # free of any contextvar state.
+        return await _execute_block_dispatch(block, ctx)
+    token = set_task_service_tier(tier)
+    try:
+        return await _execute_block_dispatch(block, ctx)
+    finally:
+        reset_task_service_tier(token)
+
+
+async def _execute_block_dispatch(block: Block, ctx: ExecutionContext) -> Artifact:
     """Execute any block — dispatcher over block_type.
 
     Any block (leaf or container) may carry its own ``scope``, which
@@ -1257,7 +1296,7 @@ def _build_sibling_context(ctx: "ExecutionContext") -> str:
 # when the FIRST block of a run renders, which is precisely the state the
 # guard treated as "nothing to substitute".
 _SEQUENCE_PLACEHOLDER_RE = re.compile(
-    r"\{\{\s*(?:sibling\(|previous_sibling\b)"
+    r"\{\{\s*(?:sibling\(|previous_sibling\b|run\.)"
 )
 
 
@@ -1298,6 +1337,8 @@ def _apply_templating_to_task(block: Block, ctx: ExecutionContext) -> Block:
         _updates["previous_sibling"] = sibling_prev
     if ctx.artifact_registry:
         _updates["sibling_artifacts"] = ctx.artifact_registry
+    if ctx.run_id:
+        _updates["run_id"] = ctx.run_id
     bindings = replace(base, **_updates) if _updates else base
     rendered = task_templating.render(block.instructions, bindings)
     # Assemble preambles, prose givens first (the conversational
@@ -2104,6 +2145,105 @@ _PRECISE_SOURCE_RE = re.compile(
     r"(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*\s*\}\}\s*$"
 )
 
+# The same shape as _PRECISE_SOURCE_RE, with the pieces captured, so a
+# miss can be located: WHICH block, WHICH part, WHICH key.  Kept separate
+# rather than adding groups to the anchor regex so the two cannot drift
+# in what they accept without a test noticing (see
+# test_for_each_precise_miss_diagnosis).
+_PRECISE_SOURCE_PARTS_RE = re.compile(
+    r"^\s*\{\{\s*(?:"
+    r"sibling\(\s*['\"](?P<sib>[^'\"]+)['\"]\s*\)"
+    r"|(?P<pos>previous_sibling|previous)"
+    r")\.(?P<field>outputs(?:_all)?)\.(?P<part>[a-zA-Z_][a-zA-Z0-9_]*)"
+    r"(?P<path>(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\s*\}\}\s*$"
+)
+
+
+def _diagnose_precise_miss(
+    raw: str, ctx: "ExecutionContext",
+) -> Optional[str]:
+    """Say WHY a precise for_each source resolved to nothing.
+
+    The renderer collapses every miss to "" by design (an unknown block,
+    a missing part and a missing key are all "no result yet" to it), so
+    the executor's failure message could only say "resolved to empty
+    text" and offer one remedy - fix the upstream ``emit_artifact``.
+    Measured on a real run that remedy was wrong: the source named the
+    upstream block by its NAME, the roster part was probably fine, and
+    nothing pointed at the reference.  This walks the same registry the
+    renderer used and reports the first hop that failed.
+
+    Returns None when the miss cannot be located (a ``{{previous.…}}``
+    source, which is iteration-scoped and not in the registry, or a
+    payload that did resolve to an array - in which case the caller's
+    generic text is the honest one).
+    """
+    m = _PRECISE_SOURCE_PARTS_RE.match(raw or "")
+    if not m:
+        return None
+    sib, pos = m.group("sib"), m.group("pos")
+    if sib is not None:
+        art = ctx.artifact_registry.get(sib)
+        if art is None:
+            known = sorted(k for k in ctx.artifact_registry if k)
+            return (
+                f" No block with id {sib!r} has completed in this run. "
+                f"sibling() takes a block ID, not its name - if {sib!r} "
+                f"is the block's name, reference its id instead. Block "
+                f"ids completed so far: {known[:12]!r}."
+            )
+        label = f"block {sib!r}"
+    elif pos == "previous_sibling":
+        art = ctx.sibling_stack[-1] if ctx.sibling_stack else None
+        if art is None:
+            return (
+                " There is no previous sibling: this is the first block "
+                "in its sequence, so {{previous_sibling}} has nothing to "
+                "resolve to."
+            )
+        label = "the previous sibling"
+    else:
+        return None  # {{previous.…}}: iteration-scoped, not locatable here
+    if m.group("field") == "outputs_all":
+        # The plural form always renders a JSON array (possibly "[]"), so
+        # a miss here is not a lookup failure this function can explain.
+        return None
+    part_name = m.group("part")
+    parts = task_templating.find_all_output_parts(art, part_name)
+    if not parts:
+        emitted = sorted({
+            task_templating._part_name(p) for p in (art.outputs or [])
+            if task_templating._part_name(p)
+        })
+        return (
+            f" {label} completed but emitted no artifact part named "
+            f"{part_name!r}. Parts it did emit: {emitted!r}. Have it call "
+            f"emit_artifact(name={part_name!r}, part_type='data', "
+            f"data={{...}}) with the list under the referenced key."
+        )
+    # Last-wins, matching find_output_part - the renderer resolved the
+    # same part, so the diagnosis must describe that one.
+    cur: Any = task_templating._part_payload(parts[-1])
+    path = [seg for seg in m.group("path").split(".") if seg]
+    for i, key in enumerate(path):
+        if isinstance(cur, dict) and key in cur:
+            cur = cur[key]
+            continue
+        have = (
+            sorted(cur.keys()) if isinstance(cur, dict)
+            else type(cur).__name__
+        )
+        return (
+            f" Part {part_name!r} on {label} has no key "
+            f"{'.'.join(path[:i + 1])!r} (available: {have!r})."
+        )
+    if not isinstance(cur, list):
+        return (
+            f" {'.'.join([part_name, *path])!r} on {label} is a "
+            f"{type(cur).__name__}, not a JSON array."
+        )
+    return None
+
 
 def _resolve_for_each_items(
     block: Block, ctx: Optional["ExecutionContext"],
@@ -2148,14 +2288,20 @@ def _resolve_for_each_items(
         else f"resolved to {len(shown)} chars containing no JSON array: "
              f"{shown[:280]!r}"
     )
-    hint = (
-        " The source names an exact artifact part, so only a whole-string "
-        "JSON array is accepted - have the upstream task emit_artifact a "
-        "data part holding the list under that key."
-        if precise else
-        " Have the upstream task emit_artifact a data part and reference "
-        "it precisely, or ensure its summary contains exactly one JSON array."
-    )
+    # A precise reference can be walked hop by hop against the registry
+    # the renderer used, so say which hop missed.  Only when that yields
+    # nothing does the generic remedy apply.
+    hint = _diagnose_precise_miss(raw, ctx) if (precise and ctx) else None
+    if hint is None:
+        hint = (
+            " The source names an exact artifact part, so only a "
+            "whole-string JSON array is accepted - have the upstream task "
+            "emit_artifact a data part holding the list under that key."
+            if precise else
+            " Have the upstream task emit_artifact a data part and "
+            "reference it precisely, or ensure its summary contains "
+            "exactly one JSON array."
+        )
     raise ForEachSourceError(f"for_each source {raw!r} {detail}.{hint}")
 
 
@@ -2183,6 +2329,8 @@ def _render_for_each_source(
         updates["previous_sibling"] = sibling_prev
     if ctx.artifact_registry:
         updates["sibling_artifacts"] = ctx.artifact_registry
+    if ctx.run_id:
+        updates["run_id"] = ctx.run_id
     bindings = replace(base, **updates) if updates else base
     rendered = task_templating.render(raw, bindings)
     if rendered != raw:

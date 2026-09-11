@@ -290,6 +290,11 @@ async def _fire_one(target: _ScheduledCard) -> None:
 
     run = run_storage.create(TaskRunCreate(
         card_id=target.card_id, source_conversation_id=None,
+        # A scheduler fire has no attached session: nobody is watching to
+        # sign an escalation mid-run.  Marking it headless makes the
+        # scope-authorization seam fail an unsigned escalation loudly
+        # rather than shipping a silently-clamped run nobody asked for.
+        launch_context="headless",
     ))
     card_storage.record_run(target.card_id)
     # Seed block_states for the body so iteration_summaries can write.

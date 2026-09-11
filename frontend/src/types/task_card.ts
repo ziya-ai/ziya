@@ -60,6 +60,13 @@ export interface TaskScope {
   model_name?: string | null;
   model_id_override?: string | null;
   model_endpoint?: string | null;
+  /**
+   * Bedrock service tier for this task's model calls. A run requests
+   * ``flex`` (discounted) for everything by default; set ``default`` to
+   * pin a gating task to standard latency, or ``priority``. Last non-null
+   * wins on merge, like model_tier.
+   */
+  service_tier?: 'flex' | 'default' | 'priority' | null;
 }
 
 /** Portable model cost/capability rungs — see resolve_tier_model on the backend. */
@@ -119,7 +126,10 @@ export interface Artifact {
 // loop/trigger semantics and renders without visible chrome — it is the
 // invisible card-root wrapper that lets a State precede a loop without
 // entering the loop's scope.  Backend dispatches it to _execute_sequence.
-export type BlockType = 'task' | 'repeat' | 'parallel' | 'until' | 'schedule' | 'state' | 'group' | 'call';
+// Mirrors the block_type Literal in app/models/task_card.py.  'ask' is a
+// human-in-the-loop checkpoint: it holds the run at a boundary with status
+// 'awaiting_input' until a human answers, then binds the answer like state.
+export type BlockType = 'task' | 'repeat' | 'parallel' | 'until' | 'schedule' | 'state' | 'group' | 'call' | 'ask';
 export type RepeatMode = 'count' | 'until' | 'for_each';
 export type PropagateMode = 'none' | 'last' | 'all';
 export type UntilMode = 'model' | 'expression';
@@ -223,6 +233,19 @@ export interface Block {
   // placement-is-reset-policy.  See block_executor.py::_execute_state.
   state_context?: string | null;
 
+  // ---- Ask-only fields (human-in-the-loop checkpoint) ----
+  // Mirrors app/models/task_card.py.  An 'ask' block holds the run with
+  // status 'awaiting_input' until a human answers.
+  // The question put to the operator.  Required for an ask block: without
+  // it the run holds indefinitely on a blank prompt.
+  ask_question?: string | null;
+  // Optional name to bind the free-text answer under, readable downstream
+  // as {{var.NAME}}.  Unset means the answer reaches later blocks only as
+  // standing prose context (the common "should I go on?" case).
+  ask_variable?: string | null;
+  // Optional fixed choices.  Unset means free text.
+  ask_choices?: string[] | null;
+
   // Body (Task ignores this)
   body: Block[];
 }
@@ -241,11 +264,18 @@ export interface TaskCard {
   scope?: TaskScope | null;
   tags: string[];
   is_template: boolean;
+  // Unlisted: persisted so its blocks have ids a signature can key on, but
+  // absent from the deck until an explicit save promotes it.
+  draft?: boolean;
   source: string;
   created_at: number;
   updated_at: number;
   last_run_at?: number | null;
   run_count: number;
+  // Monotonic definition version.  Bumped only when the block tree or
+  // scope changes (not on metadata edits or runs).  Stamped into a run's
+  // card_snapshot at launch so a tile can show executed-vs-current drift.
+  version: number;
 }
 
 export interface TaskCardCreate {
@@ -255,6 +285,8 @@ export interface TaskCardCreate {
   scope?: TaskScope | null;
   tags?: string[];
   is_template?: boolean;
+  // Create unlisted — see TaskCard.draft.  Mirrors TaskCardCreate.draft.
+  draft?: boolean;
 }
 
 export interface TaskCardUpdate {
@@ -264,4 +296,7 @@ export interface TaskCardUpdate {
   scope?: TaskScope | null;
   tags?: string[];
   is_template?: boolean;
+  // Omit to leave unchanged; false promotes a draft into the deck.  The
+  // UI only ever sets this to false.  Mirrors TaskCardUpdate.draft.
+  draft?: boolean;
 }
