@@ -10,10 +10,19 @@ import gc
 from app.utils.logging_utils import logger
 from app.utils.extended_context_manager import get_extended_context_manager
 from app.utils.conversation_context import get_conversation_id
+from app.utils.context_debug import is_context_overflow_error
 from typing import Dict, List, Optional
 
 # Module global to store current conversation_id (workaround for thread boundary issues)
 _current_conversation_id: Optional[str] = None
+
+# Request identity for the in-flight provider call, set by
+# StreamingToolExecutor for the same thread-boundary reason as
+# _current_conversation_id above.  Used only to attribute a swallowed
+# context-overflow rejection to the round and iteration it belongs to;
+# both are optional and diagnostics degrade gracefully without them.
+_current_request_id: Optional[str] = None
+_current_iteration: int = 0
 
 class CustomBedrockClient:
     """
@@ -301,9 +310,39 @@ class CustomBedrockClient:
                             raise
 
                         # Check if it's a context limit error
-                        if (("input length and `max_tokens` exceed context limit" in error_message or
-                            "Input is too long" in error_message or "prompt is too long" in error_message) and conversation_id):
-                            
+                        if is_context_overflow_error(error_message) and conversation_id:
+
+                            # Record the overflow BEFORE any extended-context
+                            # retry.  This layer catches the rejection and
+                            # transparently retries with extended headers, so a
+                            # successful retry used to leave the overflow with
+                            # no trace anywhere -- which is why the debug panel
+                            # reported zero failures across thousands of
+                            # recorded iterations.  The serialised body is the
+                            # payload the provider actually rejected, so it is
+                            # handed through as the failure frame.
+                            try:
+                                from app.utils.context_debug import record_failure
+                                _ov_system = None
+                                _ov_messages = None
+                                try:
+                                    _ov_body = json.loads(kwargs.get('body') or '{}')
+                                    _ov_system = _ov_body.get('system')
+                                    _ov_messages = _ov_body.get('messages')
+                                except (TypeError, ValueError):
+                                    pass
+                                record_failure(
+                                    conversation_id,
+                                    globals().get('_current_iteration') or 0,
+                                    error_message=error_message,
+                                    request_id=globals().get('_current_request_id'),
+                                    system_content=_ov_system,
+                                    conversation=_ov_messages,
+                                    origin="custom_bedrock",
+                                )
+                            except Exception as _ov_e:  # noqa: BLE001 - diagnostics must never break the retry
+                                logger.debug(f"context_debug overflow record failed (non-fatal): {_ov_e}")
+
                             # Check if we've recently failed with extended context for this conversation
                             failure_time = self._extended_context_failures.get(conversation_id)
                             if (failure_time is not None
