@@ -2219,7 +2219,10 @@ def check_link_annotations(doc: "RenderedDocument") -> CheckResult:
 
 
 _CHROMIUM_DEFAULT_TITLES = {
-    "", "about:blank", "untitled", "chromium", "ziya - code assistant",
+    "", "about:blank", "untitled", "chromium",
+    # Current app-shell <title> plus historical values, so PDFs captured by
+    # older builds are still recognised as carrying the shell title.
+    "ziya - ai workbench", "ziya - code assistant",
 }
 _DATE_RE = re.compile(r"D:(\d{4})(\d{2})(\d{2})")
 
@@ -2234,7 +2237,7 @@ def check_document_metadata(
 
     Metadata is what a file manager, a PDF library, and assistive tech read to
     label the document.  Chromium's ``page.pdf()`` leaves /Title as the page's
-    ``<title>`` (the app shell — 'Ziya - Code Assistant'), /Creator as
+    ``<title>`` (the app shell — 'Ziya - AI Workbench'), /Creator as
     'Chromium', and sets NO /Author or /Subject.  A well-made export sets a
     conversation-specific title, an author, a subject, and its own creator
     string.  MEASURES which fields are present, which look like defaults, and
