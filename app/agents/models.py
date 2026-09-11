@@ -622,6 +622,16 @@ class ModelManager:
             
         # Get endpoint and model from environment variables
         endpoint = ziya_env("ZIYA_ENDPOINT")
+        from app.utils.local_models import is_local_endpoint
+        if is_local_endpoint(endpoint):
+            # Register every running local server as an endpoint (memoised)
+            # BEFORE the name is resolved, and pin the alias to a concrete
+            # local-<runtime> id so DEFAULT_MODELS[endpoint] is a model that
+            # server has and its entry carries the discovered context/caps.
+            from app.utils.local_models import register_local_endpoints, resolve_local_alias
+            register_local_endpoints()
+            endpoint = resolve_local_alias(endpoint)
+            os.environ["ZIYA_ENDPOINT"] = endpoint
         model_name = ziya_env("ZIYA_MODEL") or cls.DEFAULT_MODELS.get(endpoint)
         logger.debug(f"Initializing for endpoint: {endpoint}, model: {model_name}")
         
@@ -663,6 +673,9 @@ class ModelManager:
             elif endpoint == "meta":
                 logger.info("Using Meta Model API authentication flow only")
                 model = cls._initialize_meta_model(model_config)
+            elif is_local_endpoint(endpoint):
+                logger.info("Using local OpenAI-compatible server (no authentication)")
+                model = cls._initialize_local_model(model_config, endpoint=endpoint)
             elif endpoint == "anthropic":
                 logger.info("Using Anthropic authentication flow only")
                 model = cls._initialize_anthropic_model(model_config)
@@ -853,8 +866,15 @@ class ModelManager:
             os.environ["AWS_PROFILE"] = aws_profile
             cls._state['aws_profile'] = aws_profile
         else:
-            logger.info("Using default AWS credentials")
-            os.environ["AWS_PROFILE"] = "default"
+            # Do NOT write AWS_PROFILE="default" here. boto3 treats an explicit
+            # AWS_PROFILE as a hard requirement, so on a machine whose
+            # ~/.aws/config has no [default] section this manufactured a
+            # "profile 'default' could not be found" failure that had nothing
+            # to do with the user's setup. Leaving it unset lets the normal
+            # credential chain (env vars, SSO, instance role, ...) run, and a
+            # profile applied later by setup_environment() is honoured on the
+            # next (re)initialization instead of being shadowed.
+            logger.info("Using default AWS credential chain (no profile set)")
             
         # Get region from environment first, then config
         region = os.environ.get("AWS_REGION") or model_config.get("region", "us-west-2")
@@ -890,6 +910,39 @@ class ModelManager:
         # Delegate to specialised providers for models that don't use the
         # standard bedrock-runtime boto3 endpoint.
         endpoint_override = model_config.get("endpoint_override", "")
+        # Enforce the CLASSIC account-level retention switch for models actually
+        # served by bedrock-runtime (e.g. fable5.1), mirroring what the mantle
+        # branch below does for its own switch. Without this the only
+        # enforcement lived in start_server(), so `ziya chat` (which hands off
+        # to cli_main() and never runs the server startup hook) and any
+        # mid-session /model switch both reached a Covered Model with the switch
+        # untouched and failed the first call with a retention
+        # ValidationException. Raise-only: allow_downgrade defaults to False, so
+        # an account already at or above the required mode is left untouched and
+        # another user's more permissive setting is never downgraded.
+        if endpoint_override != "bedrock-mantle":
+            from app.config.models_config import get_required_retention_mode
+            _classic_mode = get_required_retention_mode(model_config)
+            if _classic_mode:
+                try:
+                    from app.utils.aws_utils import ensure_bedrock_data_retention_mode
+                    _cls_ok, _cls_err = ensure_bedrock_data_retention_mode(
+                        required_mode=_classic_mode,
+                        region=region,
+                        profile_name=aws_profile,
+                    )
+                    if not _cls_ok:
+                        # The model hard-requires this mode; invoking without it
+                        # fails at request time anyway, so surface the cause now
+                        # instead of a downstream ValidationException.
+                        raise RuntimeError(
+                            f"Could not set Bedrock account data retention to "
+                            f"'{_classic_mode}' in {region}: {_cls_err}"
+                        )
+                except RuntimeError:
+                    raise
+                except Exception as _cls_exc:
+                    logger.warning(f"Bedrock data-retention enforcement skipped: {_cls_exc}")
         if endpoint_override == "bedrock-mantle":
             from app.providers.bedrock_mantle import BedrockMantleProvider, resolve_mantle_region
             _mantle_region = resolve_mantle_region(
@@ -1421,6 +1474,59 @@ class ModelManager:
             base_url=base_url,
         )
         return model
+
+    @classmethod
+    def _initialize_local_model(cls, model_config: Dict[str, Any], endpoint: str = "local"):
+        """
+        Initialize a model served by a local OpenAI-compatible server
+        (Ollama, LM Studio, llama.cpp ``llama-server``, vLLM, ...).
+
+        Same arrangement as z.ai and Meta -- the DirectOpenAIModel wrapper
+        pointed at a different base URL -- except there is no credential to
+        check: the server ignores the API key, and a missing
+        ZIYA_LOCAL_MODEL_URL means the Ollama default, not an error.
+
+        Args:
+            model_config: Model configuration dict
+            endpoint: the local-<runtime> id (or the ``local`` alias)
+
+        Returns:
+            DirectOpenAIModel: The initialized model
+        """
+        from app.agents.wrappers.openai_direct import DirectOpenAIModel
+        from app.utils.local_models import local_endpoint_base_url, LOCAL_PLACEHOLDER_API_KEY
+
+        gc.collect()
+
+        model_id = model_config.get("model_id")
+        temperature = model_config.get("temperature", 0.3)
+        max_output_tokens = model_config.get("max_output_tokens", 4096)
+
+        # Apply environment overrides
+        settings = cls.get_model_settings(model_config)
+        if "temperature" in settings:
+            temperature = settings["temperature"]
+        if "max_output_tokens" in settings:
+            max_output_tokens = settings["max_output_tokens"]
+
+        base_url = local_endpoint_base_url(endpoint)
+        logger.info(
+            f"Initializing local model: {model_id} "
+            f"(temp={temperature}, max_output_tokens={max_output_tokens}, base_url={base_url})"
+        )
+
+        # Ollama takes the context window per request (options.num_ctx);
+        # discover_and_apply put it on the entry. Without it the server uses
+        # its VRAM-based default (4k on any machine under 24 GiB).
+        extra_body = model_config.get("request_extra_body")
+        return DirectOpenAIModel(
+            model_name=model_id,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            api_key=LOCAL_PLACEHOLDER_API_KEY,
+            base_url=base_url,
+            extra_body=extra_body if isinstance(extra_body, dict) else None,
+        )
 
     @classmethod
     def _check_meta_credentials(cls) -> None:
