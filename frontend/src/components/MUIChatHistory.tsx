@@ -430,7 +430,7 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                     always 0 today, so its icon never renders until the queue
                     lands (design/work-primitives-taxonomy.md). */}
                 {!isFolder && openBeadCount > 0 && (
-                  <Tooltip title={`${openBeadCount} open task thread${openBeadCount !== 1 ? 's' : ''} (beads)`}>
+                  <Tooltip title={`${openBeadCount} parked task thread${openBeadCount !== 1 ? 's' : ''} (beads)`}>
                     <span style={{ display: 'inline-flex', alignItems: 'center', marginLeft: 4, color: '#f59e0b', fontSize: 11, gap: 1 }}>
                       <AntBranchesOutlined style={{ fontSize: 12 }} />
                       {openBeadCount}

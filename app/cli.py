@@ -663,7 +663,7 @@ async def select_joinable_chat(summaries) -> Optional[str]:
             updated = '?'
         meta = f"{getattr(s, 'messageCount', 0)} msgs"
         open_beads = getattr(s, 'openBeadCount', 0) or 0
-        bead_tag = f" · {open_beads} open" if open_beads else ""
+        bead_tag = f" · {open_beads} parked" if open_beads else ""
         label = HTML(f"<b>{label_txt}</b>\n    {meta}{bead_tag}"
                      f"  <style fg='ansibrightblack'>{updated}</style>")
         radio_values.append((s.id, label))
@@ -1931,6 +1931,9 @@ class CLI:
             return await self._simple_invoke(messages, stream)
         
         state = ModelManager.get_state()
+        # Cost-ledger attribution: CLI process, not a browser chat.
+        from app.context import set_usage_attribution
+        set_usage_attribution({"source": "cli", "run_id": None, "block_id": None})
         executor = StreamingToolExecutor(
             profile_name=state.get('aws_profile'),
             region=state.get('aws_region', 'us-west-2')
@@ -4688,6 +4691,32 @@ def _print_auth_error(message: str = None):
 # Argument parsing
 # ============================================================================
 
+def cmd_shadow(args):
+    """Handle: ziya shadow [--label L] [--allow-exec] [--allow-control] [--meta k=v] [cmd...]"""
+    if args.list_sessions:
+        from app.shadow.client import list_sessions, format_session_table
+        print(format_session_table(list_sessions()))
+        return
+    meta = {}
+    for item in args.meta:
+        key, sep, value = item.partition('=')
+        if not sep or not key.strip():
+            print(f"\033[31m--meta expects K=V, got {item!r}\033[0m", file=sys.stderr)
+            sys.exit(2)
+        meta[key.strip()] = value
+    argv = list(args.cmd)
+    if argv and argv[0] == '--':
+        argv = argv[1:]
+    from app.shadow.pty_host import run_interactive
+    # The wrapper owns the terminal: undo the title push main() did so the
+    # child's own title handling is not fighting ours.
+    sys.stdout.write("\033[23;0t")
+    sys.stdout.flush()
+    code = run_interactive(argv, label=args.label, allow_exec=args.allow_exec,
+                           control_ceiling=args.allow_control, meta=meta)
+    sys.exit(code)
+
+
 def create_parser():
     """Create the CLI argument parser."""
     from app.config.common_args import add_common_arguments
@@ -4756,6 +4785,25 @@ Examples:
                              help='Show the prompt for a task')
     task_parser.set_defaults(func=cmd_task)
 
+    # shadow: PTY wrapper that journals a terminal session for chat to read
+    # (Docs/design/shadow-sessions.md).  Deliberately NOT given the common
+    # parent: it never talks to a model, so model/profile flags do not apply.
+    shadow_parser = subparsers.add_parser(
+        'shadow', help='Wrap a shell or command so chat sessions can read the terminal')
+    shadow_parser.add_argument('cmd', nargs=argparse.REMAINDER,
+                               help='Command to wrap (default: $SHELL). Use -- before flags.')
+    shadow_parser.add_argument('--label', help='Session label (default: the command)')
+    shadow_parser.add_argument('--allow-exec', action='store_true',
+                               help='Permit exec requests from chat (handshake lands in phase 2)')
+    shadow_parser.add_argument('--allow-control', nargs='?', const='gated',
+                               choices=['gated', 'unrestricted'], default='none',
+                               help='Control-lease ceiling (leases land in phase 3)')
+    shadow_parser.add_argument('--meta', action='append', default=[], metavar='K=V',
+                               help='Freeform session metadata (repeatable)')
+    shadow_parser.add_argument('--list', '-l', action='store_true', dest='list_sessions',
+                               help='List live shadow sessions and exit')
+    shadow_parser.set_defaults(func=cmd_shadow)
+
     return parser
     
     
@@ -4773,7 +4821,7 @@ def main():
     # Pre-process argv to support flags both before and after subcommand
     # e.g., "ziya --profile x chat" -> "ziya chat --profile x"
     argv = sys.argv[1:]
-    commands = {'chat', 'ask', 'review', 'explain', 'task'}
+    commands = {'chat', 'ask', 'review', 'explain', 'task', 'shadow'}
     global_flags = {'--model', '-m', '--profile', '--region', '--root', '--no-stream', '--debug'}
     
     # Find command position
