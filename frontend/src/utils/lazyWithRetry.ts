@@ -15,7 +15,7 @@ export function lazyWithRetry<T extends React.ComponentType<any>>(
   factory: () => Promise<{ default: T }>,
   maxRetries = 2,
 ): React.LazyExoticComponent<T> {
-  return React.lazy(() => retryImport(factory, maxRetries));
+  return React.lazy(() => importWithRetry(factory, maxRetries));
 }
 
 function wait(ms: number): Promise<void> {
@@ -69,10 +69,19 @@ function hardReload(): void {
   }
 }
 
-async function retryImport<T extends React.ComponentType<any>>(
-  factory: () => Promise<{ default: T }>,
-  retries: number,
-): Promise<{ default: T }> {
+/**
+ * Run a dynamic import() with the same chunk-error recovery lazyWithRetry
+ * uses, but for RUNTIME imports (event handlers, effects) rather than
+ * React.lazy components.  A stale build 404s a lazy chunk with a
+ * ChunkLoadError; webpack marks it dead in its JSONP registry, so only a
+ * hard reload recovers.  Without this, a runtime `await import(...)` throws
+ * the raw ChunkLoadError out of the caller (e.g. the folder-move handler),
+ * silently killing the user action instead of self-healing on reload.
+ */
+export async function importWithRetry<M>(
+  factory: () => Promise<M>,
+  retries: number = 2,
+): Promise<M> {
   // Clear a stale reload flag so a new session can still trigger a hard
   // reload if chunks keep failing.  Stale = set more than 30s ago, or
   // flag exists but no timestamp (written by old code without timestamp).
@@ -95,7 +104,7 @@ async function retryImport<T extends React.ComponentType<any>>(
         // A reload triggered by a sibling chunk's failure in this same page is
         // already in flight; the page is about to unload.  Never-settle rather
         // than throw, which would render the root error boundary in the gap.
-        if (reloadTriggered) return pendingUntilUnload<{ default: T }>();
+        if (reloadTriggered) return pendingUntilUnload<M>();
 
         // Webpack marks failed chunks in its internal JSONP registry.
         // Retrying factory() won't issue a new network request — only a
@@ -107,7 +116,7 @@ async function retryImport<T extends React.ComponentType<any>>(
           hardReload();
           // Stays pending through the unload window, then rejects if the
           // reload never landed rather than hanging Suspense forever.
-          return pendingUntilUnload<{ default: T }>();
+          return pendingUntilUnload<M>();
         }
         // Already reloaded once and still failing — genuine problem.
         throw err;
