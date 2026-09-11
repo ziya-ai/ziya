@@ -41,6 +41,19 @@ except Exception:  # pragma: no cover - exercised only when pygments absent
 # if node or the katex module is absent, or a render fails, the math degrades
 # gracefully to its original escaped LaTeX text and the export never hard-fails
 # (the architectural dual-mode contract — same discipline as _PYGMENTS_AVAILABLE).
+def _find_frontend_dir() -> Optional[Path]:
+    """The in-tree ``frontend`` directory, or ``None`` in an installed wheel.
+
+    ``frontend`` is excluded from the distribution (see MANIFEST.in), so both
+    the katex module and the shared sanitizer are dev-tree-only. They therefore
+    have the SAME availability domain: either both are present or server-side
+    math rendering is unavailable and the export degrades to escaped LaTeX.
+    """
+    # app/utils/conversation_exporter.py -> repo root is parents[2].
+    candidate = Path(__file__).resolve().parents[2] / 'frontend'
+    return candidate if candidate.is_dir() else None
+
+
 def _find_katex_node_modules() -> Optional[str]:
     """Locate the frontend ``node_modules`` dir that contains ``katex``.
 
@@ -48,30 +61,58 @@ def _find_katex_node_modules() -> Optional[str]:
     installed. Node resolves ``require('katex')`` relative to the executed
     script, not the CWD, so we must point NODE_PATH at the dir explicitly.
     """
-    # app/utils/conversation_exporter.py -> repo root is parents[2].
-    repo_root = Path(__file__).resolve().parents[2]
-    candidate = repo_root / 'frontend' / 'node_modules'
+    frontend = _find_frontend_dir()
+    if frontend is None:
+        return None
+    candidate = frontend / 'node_modules'
     if (candidate / 'katex' / 'package.json').is_file():
         return str(candidate)
     return None
 
 
+def _find_math_sanitizer() -> Optional[str]:
+    """Locate the sanitizer module shared with the browser renderer.
+
+    ``frontend/src/utils/mathSanitizer.js`` is the single source of truth for
+    every LaTeX correction applied before KaTeX. The browser imports it; this
+    exporter requires the SAME FILE so an exported document cannot disagree
+    with what the user saw on screen. Reimplementing the transforms in Python
+    is what allowed them to drift (the exporter lacked the \\text{} underscore
+    escape and the multline alias entirely).
+    """
+    frontend = _find_frontend_dir()
+    if frontend is None:
+        return None
+    candidate = frontend / 'src' / 'utils' / 'mathSanitizer.js'
+    return str(candidate) if candidate.is_file() else None
+
+
 _NODE_BIN = shutil.which('node')
 _KATEX_NODE_MODULES = _find_katex_node_modules()
-_KATEX_AVAILABLE = bool(_NODE_BIN and _KATEX_NODE_MODULES)
+_MATH_SANITIZER_JS = _find_math_sanitizer()
+_KATEX_AVAILABLE = bool(_NODE_BIN and _KATEX_NODE_MODULES and _MATH_SANITIZER_JS)
 
 # A single Node program renders a whole batch of expressions in one process
-# start (KaTeX is imported once), reading a JSON array of {tex, display} on
-# stdin and writing a JSON array of MathML strings (or null on per-item error)
-# on stdout. Kept deliberately tiny and side-effect free.
+# start (KaTeX and the sanitizer are imported once), reading a JSON array of
+# {tex, display} on stdin and writing a JSON array of MathML strings (or null
+# on per-item error) on stdout. Kept deliberately tiny and side-effect free.
+#
+# The sanitizer path arrives as argv[1] rather than being interpolated into the
+# program text, so a path containing quotes cannot break out of the source.
+# ``output: "mathml"`` is the one option that legitimately differs from the
+# browser's: it keeps the standalone document free of external font/CSS
+# dependencies. Everything governing how the LaTeX is INTERPRETED comes from
+# the shared KATEX_RENDER_OPTIONS.
 _KATEX_RENDER_JS = (
     'const katex=require("katex");'
+    'const S=require(process.argv[1]);'
     'let d="";process.stdin.on("data",c=>d+=c);'
     'process.stdin.on("end",()=>{'
     'let items;try{items=JSON.parse(d)}catch(e){process.stdout.write("[]");return}'
     'const out=items.map(it=>{try{'
-    'return katex.renderToString(String(it.tex),'
-    '{throwOnError:false,displayMode:!!it.display,output:"mathml"})'
+    'return katex.renderToString(S.sanitizeMathForKatex(String(it.tex)),'
+    'Object.assign({},S.KATEX_RENDER_OPTIONS,'
+    '{displayMode:!!it.display,output:"mathml"}))'
     '}catch(e){return null}});'
     'process.stdout.write(JSON.stringify(out))});'
 )
@@ -85,6 +126,10 @@ def _render_math_batch(items: List[Dict[str, Any]]) -> List[Optional[str]]:
     when that individual expression failed to render. Returns an all-``None``
     list (never raises) when KaTeX/node is unavailable or the subprocess fails,
     so the caller falls back to the original escaped LaTeX text.
+
+    Normalization is applied inside the Node program by the shared sanitizer
+    (``frontend/src/utils/mathSanitizer.js``) rather than here, so the exporter
+    and the browser cannot apply different corrections.
     """
     if not items:
         return []
@@ -94,7 +139,7 @@ def _render_math_batch(items: List[Dict[str, Any]]) -> List[Optional[str]]:
     env['NODE_PATH'] = _KATEX_NODE_MODULES  # type: ignore[assignment]
     try:
         proc = subprocess.run(
-            [_NODE_BIN, '-e', _KATEX_RENDER_JS],
+            [_NODE_BIN, '-e', _KATEX_RENDER_JS, '--', _MATH_SANITIZER_JS],
             input=json.dumps(items),
             capture_output=True,
             text=True,
@@ -143,6 +188,7 @@ def _viz_fingerprint(source: str) -> str:
 # the regex backtracks and matches the longer name.  Verified at all three
 # call sites.
 from app.services.latex_profiles import PROFILES as _LATEX_PROFILES
+from app.utils.inline_math_classifier import process_inline_math
 
 _VIZ_TYPES = (
     'graphviz', 'mermaid', 'vega-lite', 'd3', 'joint',
@@ -1434,16 +1480,23 @@ def _markdown_to_html_basic(markdown: str) -> str:
         math_blocks.append('')  # filled in after the batch render
         return f'\x00MATHBLOCK{len(math_blocks) - 1}\x00'
 
-    def convert_inline_math(match):
-        tex = match.group(1)
+    def convert_inline_math(tex):
         math_items.append({"tex": tex, "display": False})
         math_fallbacks.append(_escape_html_text(f'${tex}$'))
         math_blocks.append('')
         return f'\x00MATHBLOCK{len(math_blocks) - 1}\x00'
 
-    # Display first (``$$…$$`` may span lines); then inline single-line ``$…$``.
+    # Display first (``$$…$$`` may span lines); then inline single-line ``$…$``
+    # through the classifier port (app/utils/inline_math_classifier.py), so
+    # this fallback tier applies the SAME currency/prose/adjacency rules as
+    # the frontend renderer. The previous bare ``\$([^$\n]+?)\$`` pattern had
+    # no classification: "$900 deposit + $300 fee" became the math span
+    # ``900 deposit + `` and rendered as math-styled garbage, while the
+    # route-mode (frontend) tier correctly refused it — the two HTML export
+    # tiers disagreed about what is math. Parity is pinned by the shared
+    # fixture table asserted from both test suites.
     html = re.sub(r'\$\$(.+?)\$\$', convert_display_math, html, flags=re.DOTALL)
-    html = re.sub(r'\$([^$\n]+?)\$', convert_inline_math, html)
+    html = process_inline_math(html, convert_inline_math)
 
     if math_items:
         rendered_math = _render_math_batch(math_items)
