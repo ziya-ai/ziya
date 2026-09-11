@@ -121,15 +121,19 @@ describe('D-056 padAngle — N-aware, keeps arcs from starving to zero width', (
   });
 });
 
-describe('D-057 ribbon stroke width — dropped past the sub-pixel onset', () => {
+describe('D-042/D-057 ribbon stroke width — minimum-effective-width guarantee', () => {
   it('low edge count keeps the thin delimiting stroke (w2-01, N=40)', () => {
     expect(chordRibbonStrokeWidth(40)).toBe(0.5);
     expect(chordRibbonStrokeWidth(50)).toBe(0.5);
   });
 
-  it('high edge count drops the stroke to 0 so it cannot erase/smear sub-pixel ribbons (w2-02 N=80, w2-08 N=2450)', () => {
-    // Pre-fix this was an unconditional 0.5 for every edge count.
-    expect(chordRibbonStrokeWidth(80)).toBe(0);
-    expect(chordRibbonStrokeWidth(2450)).toBe(0);
+  it('high edge count keeps a POSITIVE min-width so sub-pixel ribbons never vanish (D-042; w2-07 N=870, w2-08 N=2450)', () => {
+    // D-057 dropped the stroke to 0 past the onset; that left the sub-pixel FILL
+    // with nothing to paint, so 100% of ribbons vanished (D-042). The corrected
+    // guarantee keeps a small positive width (the colour, not the width, is what
+    // stops the D-057 smear — see chordRibbonStrokeColor).
+    expect(chordRibbonStrokeWidth(80)).toBeGreaterThan(0);
+    expect(chordRibbonStrokeWidth(870)).toBeGreaterThan(0);
+    expect(chordRibbonStrokeWidth(2450)).toBeGreaterThan(0);
   });
 });
