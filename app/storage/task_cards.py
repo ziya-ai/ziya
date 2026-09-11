@@ -55,7 +55,15 @@ class TaskCardStorage(BaseStorage[TaskCard]):
             return TaskCard(**data)
         return None
 
-    def list(self, templates_only: bool = False) -> List[TaskCard]:
+    def list(self, templates_only: bool = False,
+             include_drafts: bool = False) -> List[TaskCard]:
+        """List cards, newest first.
+
+        Drafts are EXCLUDED unless asked for.  A draft was persisted only so
+        its blocks have ids a signed approval can key on (the proposal
+        panel's Sign path); surfacing it here would defeat the point of
+        signing without saving to the deck.
+        """
         cards: List[TaskCard] = []
         if self.cards_dir.exists():
             for card_file in self.cards_dir.glob("*.json"):
@@ -67,6 +75,10 @@ class TaskCardStorage(BaseStorage[TaskCard]):
                         logger.warning(f"Skipping corrupt task card {card_file}: {e}")
                         continue
                     if templates_only and not card.is_template:
+                        continue
+                    if not include_drafts and getattr(card, "draft", False):
+                        # getattr, not attribute access: cards written before
+                        # the field existed have no key, and are not drafts.
                         continue
                     cards.append(card)
         return sorted(cards, key=lambda c: c.updated_at, reverse=True)
@@ -81,7 +93,20 @@ class TaskCardStorage(BaseStorage[TaskCard]):
         only filling missing ones — see ``_assign_block_ids``.  Used by
         ``duplicate()``, whose incoming tree already carries the
         source card's ids.
+
+        ``data.draft`` stores the card UNLISTED: it is persisted (so its
+        blocks get ids an approval can key on) but hidden from every deck
+        listing until an explicit save promotes it.
         """
+        if data.draft:
+            # Bounded, self-limiting GC.  Nothing in the UI deletes a draft
+            # and none are visible in the deck, so the one thing that
+            # creates them is what cleans them up.  Best-effort — a prune
+            # failure must never fail the create.
+            try:
+                self.prune_stale_drafts()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"Stale-draft prune failed: {e}")
         card_id = str(uuid.uuid4())
         now = int(time.time() * 1000)
         root_dict = data.root.model_dump()
@@ -91,8 +116,13 @@ class TaskCardStorage(BaseStorage[TaskCard]):
             name=data.name,
             description=data.description,
             root=root_dict,
+            # Was omitted, so a card-level permissions baseline was silently
+            # dropped on save (and on every duplicate(), which forwards it).
+            # scope-status then graded a scope the run would not request.
+            scope=data.scope,
             tags=data.tags,
             is_template=data.is_template,
+            draft=data.draft,
             source=source,
             created_at=now,
             updated_at=now,
@@ -100,10 +130,39 @@ class TaskCardStorage(BaseStorage[TaskCard]):
         self._write_json(self._card_file(card_id), card.model_dump())
         return card
 
+    def prune_stale_drafts(
+        self, max_age_ms: int = 7 * 24 * 60 * 60 * 1000,
+    ) -> int:
+        """Delete never-run drafts older than ``max_age_ms``; count removed.
+
+        A draft that HAS run is kept regardless of age: its run records
+        reference the card by id, and deleting it would leave that history
+        unresolvable.
+        """
+        cutoff = int(time.time() * 1000) - max_age_ms
+        removed = 0
+        for card in self.list(include_drafts=True):
+            if (getattr(card, "draft", False) and card.run_count == 0
+                    and card.updated_at < cutoff):
+                if self.delete(card.id):
+                    removed += 1
+        return removed
+
     def update(self, card_id: str, data: TaskCardUpdate) -> Optional[TaskCard]:
         card = self.get(card_id)
         if not card:
             return None
+        # Capture the pre-edit structure + scope so a behaviour-changing
+        # edit (block tree or permissions) is told apart from a
+        # metadata-only one (name/description/tags/is_template).  Only the
+        # former bumps ``version`` and thereby invalidates any prior
+        # signing; a rename must not silently re-trigger a re-sign.
+        def _dump(v):
+            # ``update`` stores scope as a raw dict (it is NOT re-coerced
+            # to a model the way ``root`` is below), so the compare must
+            # tolerate a pydantic model or a plain dict on either side.
+            return v.model_dump() if hasattr(v, "model_dump") else v
+        old_root, old_scope = _dump(card.root), _dump(card.scope)
         update_dict = data.model_dump(exclude_unset=True)
         if "root" in update_dict and update_dict["root"]:
             _assign_block_ids(update_dict["root"])
@@ -116,6 +175,11 @@ class TaskCardStorage(BaseStorage[TaskCard]):
             # silently becoming an arbitrary-attribute-write primitive here.
             if key in type(data).model_fields:
                 setattr(card, key, value)
+        # A monotonic bump on a real definition change; an identical
+        # re-save (same tree, same scope) leaves the version — and any
+        # signature keyed to it — untouched.
+        if _dump(card.root) != old_root or _dump(card.scope) != old_scope:
+            card.version = (card.version or 1) + 1
         card.updated_at = int(time.time() * 1000)
         self._write_json(self._card_file(card_id), card.model_dump())
         return card
