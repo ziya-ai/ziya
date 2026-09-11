@@ -320,3 +320,165 @@ def test_carry_does_not_leak_across_states():
 def test_timestamp_is_propagated():
     events, _, _ = feed([OPEN['thinking'] + 'r' + CLOSE['thinking']])
     assert all(e.get('timestamp') == '0ms' for e in events)
+
+
+# --- guards across a delta boundary ------------------------------------
+#
+# Both guards in ``scan`` need one character of look-behind.  Before
+# ``prev_char`` they only saw the current buffer, so a boundary in the
+# wrong place defeated them and the rest of the answer -- diffs included --
+# was swallowed into the thinking panel.  Each test here replays a split
+# that did that.
+
+def test_inline_code_guard_survives_split_after_backtick():
+    """The backtick is emitted in delta N and ``<thi`` withheld as carry;
+    delta N+1 sees a complete opener at offset 0.  Previously that opened
+    a block and everything after it became thinking."""
+    tag = OPEN['thinking']
+    events, text, st = feed([
+        'each marker in `' + tag[:4],
+        tag[4:] + '` tags.\n\nThen the diff:\n+ line',
+    ])
+    assert events == []
+    assert not st.open
+    assert text == 'each marker in `' + tag + '` tags.\n\nThen the diff:\n+ line'
+
+
+def test_inline_code_guard_survives_split_before_tag():
+    """Boundary exactly between the backtick and ``<``."""
+    tag = OPEN['reasoning']
+    events, text, st = feed(['see `', tag + '` here'])
+    assert events == []
+    assert not st.open
+    assert text == 'see `' + tag + '` here'
+
+
+@pytest.mark.parametrize('name', TAG_NAMES)
+def test_tag_inside_fence_opened_in_same_delta_is_content(name):
+    """The caller's ``in_code_block`` lags one delta, so a tag arriving in
+    the same delta as the fence opener was scanned as prose."""
+    tag = OPEN[name]
+    delta = 'Apply this:\n```diff\n+    return "' + tag + '"\n'
+    events, text, st = feed([delta])          # caller flag still False
+    assert events == []
+    assert not st.open
+    assert text == delta
+
+
+def test_fence_split_across_deltas_is_still_recognised():
+    """Two backticks end delta N; the third and the tag arrive in N+1."""
+    tag = OPEN['thinking']
+    events, text, st = feed([
+        'Here:\n``',
+        '`python\nx = "' + tag + '"\n',
+    ])
+    assert events == []
+    assert not st.open
+    assert text == 'Here:\n```python\nx = "' + tag + '"\n'
+
+
+def test_partial_fence_tail_is_withheld_then_flushed():
+    tag = OPEN['thinking']
+    _, text1, st = feed(['Here:\n``'])
+    assert st.carry == '``'
+    assert text1 == 'Here:\n'
+    evs, text2 = flush(st)
+    assert evs == []
+    assert text2 == '``'
+
+
+def test_backticks_mid_line_are_not_a_fence():
+    """Inline code with three backticks mid-line must not suppress a real
+    opener that follows on the next line."""
+    tag = OPEN['thinking']
+    events, text, st = feed(['x ``` y\n', tag + 'r' + CLOSE['thinking'] + 'a'])
+    assert reasoning(events) == 'r'
+    assert text == 'x ``` y\na'
+
+
+def test_real_opener_after_fence_closes_is_still_honoured():
+    """Fence handling in the scanner defers to the caller's tracker: once
+    the caller reports the block closed, scanning resumes."""
+    tag = OPEN['thinking']
+    st = InlineThinkingState()
+    _, t1 = scan('```\ncode\n```\n', st, '0ms')            # fence seen here
+    _, t2 = scan(tag + 'r' + CLOSE['thinking'], st, '0ms',
+                 in_code_block=False)                       # tracker: closed
+    assert t1 == '```\ncode\n```\n'
+    assert t2 == ''
+    assert not st.open
+
+
+def test_prev_char_tracks_deferred_opener():
+    """A deferred opener (text before it in the same delta) still opens on
+    the next call -- prev_char is the preceding non-backtick char."""
+    tag = OPEN['thinking']
+    events, text, st = feed(['answer ' + tag, 'r' + CLOSE['thinking'] + 'b'])
+    assert reasoning(events) == 'r'
+    assert text == 'answer b'
+
+
+# --- hole #3: a wrongly opened block must not eat a fenced answer ----------
+#
+# A false opener (a prose mention that slipped the guards) previously stayed
+# open until ANY closer arrived, so the rest of the response -- a diff, most
+# damagingly -- was emitted as thinking.  A fence opening line inside a
+# block now closes it and returns the fence and everything after to text.
+
+FENCE = '`' * 3
+
+
+def test_fence_inside_open_block_closes_it_and_returns_text():
+    tag = OPEN['thinking']
+    diff = FENCE + 'diff\n--- a/x\n+++ b/x\n' + FENCE + '\n'
+    events, text, st = feed([tag + 'stray\n' + diff + 'after'])
+    assert reasoning(events) == 'stray\n'
+    assert dones(events) == 1
+    assert not st.open
+    assert text == diff + 'after'
+
+
+def test_fence_split_across_deltas_still_closes_open_block():
+    tag = OPEN['thinking']
+    events, text, st = feed([tag + 'stray\n`', '``diff\n+x\n' + FENCE + '\n'])
+    assert reasoning(events) == 'stray\n'
+    assert dones(events) == 1
+    assert text == FENCE + 'diff\n+x\n' + FENCE + '\n'
+
+
+def test_fence_arriving_in_its_own_delta_closes_open_block():
+    """prev_char must be tracked inside the block: the fence is at offset 0
+    of the delta and is only a fence because the block's text ended in a
+    newline."""
+    tag = OPEN['thinking']
+    events, text, st = feed([tag + 'stray\n', FENCE + 'python\nx=1\n' + FENCE])
+    assert reasoning(events) == 'stray\n'
+    assert dones(events) == 1
+    assert text == FENCE + 'python\nx=1\n' + FENCE
+
+
+def test_backticks_mid_line_inside_block_do_not_close_it():
+    """Only a fence LINE closes; three backticks mid-sentence are reasoning."""
+    tag = OPEN['thinking']
+    events, text, st = feed([tag + 'use ' + FENCE + ' for fences' + CLOSE['thinking'] + 'ans'])
+    assert reasoning(events) == 'use ' + FENCE + ' for fences'
+    assert dones(events) == 1
+    assert text == 'ans'
+
+
+def test_late_closer_after_fence_is_content_not_a_close():
+    """Once the fence has closed the block, the model's real closer -- if it
+    ever comes -- is plain text (matching the 'any closer closes' rule only
+    while a block is open)."""
+    tag = OPEN['thinking']
+    events, text, st = feed([tag + 'x\n' + FENCE + '\ncode\n' + FENCE + '\n' + CLOSE['thinking']])
+    assert dones(events) == 1
+    assert text.endswith(CLOSE['thinking'])
+
+
+def test_genuine_block_without_fence_is_unaffected():
+    tag = OPEN['reasoning']
+    events, text, st = feed([tag + 'step 1\nstep 2\n' + CLOSE['reasoning'] + 'answer'])
+    assert reasoning(events) == 'step 1\nstep 2\n'
+    assert dones(events) == 1
+    assert text == 'answer'
