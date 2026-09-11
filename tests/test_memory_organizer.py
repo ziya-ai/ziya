@@ -319,7 +319,20 @@ class TestReorganize:
             result = await reorganize(tmp_store)
 
         assert result["bootstrap"]["status"] == "success"
-        assert len(tmp_store.list_mindmap_nodes()) == 2
+        # §3 consolidation now enforces occupancy >= 2: the two single-memory
+        # domains ("Networking", "AI") have no tag/handle overlap, so they fold
+        # into the lazily-created "General" catch-all root.  What must hold is
+        # the structural invariant, not a fixed node count: every memory is
+        # reachable from exactly one node and no node is empty.
+        nodes = tmp_store.list_mindmap_nodes()
+        assert nodes, "reorganize must leave at least one node"
+        assert all(n.memory_refs or n.children for n in nodes)  # zero empty
+        placements = {}
+        for n in nodes:
+            for mid in n.memory_refs:
+                placements.setdefault(mid, []).append(n.id)
+        assert set(placements) == {m1.id, m2.id}
+        assert all(len(v) == 1 for v in placements.values())
 
 
 @pytest.mark.asyncio
