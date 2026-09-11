@@ -12,6 +12,7 @@
  * These tests exercise the real exported helpers, not a re-implementation.
  */
 import {
+  applyHeightFloor,
   applySizing,
   isCompositeSpec,
   resolveAutosize,
@@ -255,5 +256,80 @@ describe('applySizing', () => {
     expect(spec.autosize).toEqual(first.autosize);
     // Second pass has nothing left to replace.
     expect(second.replacedWidth).toBeNull();
+  });
+});
+
+describe('applyHeightFloor (D-240 authored-height honoured)', () => {
+  // D-240: authored top-level heights 40 and 28 (sparkline / wide-and-short
+  // aspect ratios) were inflated to ~300px, destroying the requested ratio.
+  // The floor must fire ONLY for a height the plugin defaulted, never one the
+  // author supplied. The old code ran `if (height < 250) height = 300`
+  // unconditionally, so these authored-preservation assertions fail against
+  // that pre-D-267 behaviour and pass with the wasAuthored short-circuit.
+  it.each([40, 28, 1, 249])(
+    'honours an authored small height (%dpx) verbatim',
+    (h) => {
+      expect(applyHeightFloor(h, /* wasAuthored */ true)).toBe(h);
+    },
+  );
+
+  it('honours an authored height at/above the floor verbatim', () => {
+    expect(applyHeightFloor(600, true)).toBe(600);
+    expect(applyHeightFloor(250, true)).toBe(250);
+  });
+
+  it('floors a DEFAULTED small height up to the flooredTo value', () => {
+    // A height the plugin itself defaulted from a short container is a squashed
+    // plot and is still corrected.
+    expect(applyHeightFloor(240, false)).toBe(300);
+    expect(applyHeightFloor(40, false)).toBe(300);
+  });
+
+  it('leaves a DEFAULTED height at/above the floor untouched', () => {
+    expect(applyHeightFloor(250, false)).toBe(250);
+    expect(applyHeightFloor(500, false)).toBe(500);
+  });
+});
+
+describe('D-261 authored-height preserved end-to-end for the sweep specs', () => {
+  // gfx-sweep G-5b9ba1 / D-261: the recorded verdict shows authored top-level
+  // heights 40 (vega-lite-w2-06) and 28 (vega-lite-w2-08) rendering at ~305px,
+  // destroying the wide-and-short / sparkline aspect ratio. The suspect was
+  // applyHeightFloor firing on an authored height. This reproduces the exact
+  // plugin sequence — capture _heightWasAuthored BEFORE any default, run
+  // applySizing (which resolves width/autosize but must NOT touch height), then
+  // apply the floor with that flag — and pins that the authored height survives.
+  //
+  // Direction: these assert the wasAuthored short-circuit; against the pre-D-267
+  // unconditional `if (height < 250) height = 300` floor the 40px/28px cases
+  // would come back as 300 and fail. w2-08 additionally proves the authored
+  // fixed WIDTH (45) is still swapped for 'container' without perturbing height.
+  const runPluginHeightPath = (spec: any, containerW: number): number => {
+    const heightWasAuthored =
+      typeof spec.height === 'number' && spec.height > 0;
+    applySizing(spec, containerW); // mutates width/autosize in place
+    if (spec.height) {
+      spec.height = applyHeightFloor(spec.height, heightWasAuthored);
+    }
+    return spec.height;
+  };
+
+  it('w2-06: honours authored height 40 (no width) and uses container width', () => {
+    const spec: any = { mark: 'line', height: 40 };
+    const h = runPluginHeightPath(spec, 1180);
+    expect(h).toBe(40);
+    expect(spec.height).toBe(40);
+    expect(spec.width).toBe('container');
+    expect(spec.autosize).toEqual({ type: 'fit-x', contains: 'padding' });
+  });
+
+  it('w2-08: honours authored height 28 and replaces the authored width 45', () => {
+    const spec: any = { mark: 'bar', width: 45, height: 28 };
+    const h = runPluginHeightPath(spec, 1180);
+    expect(h).toBe(28);
+    expect(spec.height).toBe(28);
+    // A fixed pixel width is never used for an inline chart.
+    expect(spec.width).toBe('container');
+    expect(spec.autosize).toEqual({ type: 'fit-x', contains: 'padding' });
   });
 });
