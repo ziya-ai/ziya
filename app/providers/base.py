@@ -139,6 +139,16 @@ class ErrorEvent(StreamEvent):
     message: str
     error_type: ErrorType = ErrorType.UNKNOWN
     retryable: bool = False
+    # A THIRD state, distinct from retryable: the fault was transient and
+    # would normally be retried, but partial TEXT has already been streamed
+    # to the consumer, so the provider cannot re-issue the request without
+    # duplicating it.  The orchestrator DOES own the accumulated text and can
+    # recover — by rewinding to the last complete line and resuming with that
+    # text as an assistant prefill.  Providers set this only when no tool_use
+    # block had started: a text prefill cannot complete a half-emitted tool
+    # call.  Collapsing this case into plain retryable=False is what turned a
+    # recoverable blip into a dead turn.
+    resumable: bool = False
     status_code: Optional[int] = None
 
 
@@ -240,11 +250,19 @@ class LLMProvider(ABC):
         text: str,
         tool_uses: List[Dict[str, Any]],
         thinking_blocks: Optional[List[Dict[str, Any]]] = None,
+        reasoning_content: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Build a conversation-history message for the assistant turn.
 
         ``tool_uses`` is a list of dicts with keys ``id``, ``name``, ``input``.
         The provider formats these into its native tool_use representation.
+
+        ``reasoning_content``, when supplied, is the flat chain-of-thought
+        string an OpenAI-compatible reasoning model streamed (DeepSeek/ds4,
+        z.ai GLM). Providers reporting
+        ``supports_feature("reasoning_content_replay")`` echo it back on the
+        assistant message so the server hits its KV prefix cache instead of
+        re-rendering the turn; all others ignore it.
 
         ``thinking_blocks``, when supplied, holds completed thinking blocks
         (already in the provider's native shape) that must be emitted BEFORE
