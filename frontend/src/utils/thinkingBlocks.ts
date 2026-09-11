@@ -76,6 +76,71 @@ export const THINKING_MARKER_RE = new RegExp(
     `${THINK_OPEN}THINKING:([a-z0-9]+):(\\d+)${THINK_CLOSE}`);
 
 /**
+ * Replace each thinking marker in ``content`` with the text of the block it
+ * points at, delimited by plain ``--- thinking ---`` / ``--- end thinking ---``
+ * lines so the boundary stays visible in a plain-text view.  Used by the raw
+ * markdown view, which otherwise shows only the opaque marker.  Markers that
+ * do not resolve (after a reload, or past the retention cap) are dropped,
+ * matching the rendered view where such blocks show nothing.
+ *
+ * The delimiter is deliberately not an angle-bracket tag: those are the
+ * literals the backend inline-reasoning scanner keys on, and a raw view
+ * whose text can be copied back into a prompt should not contain them.
+ *
+ * ``wrap`` overrides the delimiter; exports use ``wrapThinkingAsDetails``.
+ */
+export type ThinkingWrap = (body: string, complete: boolean) => string;
+
+const wrapThinkingRaw: ThinkingWrap = (body, complete) => {
+    const suffix = complete ? '' : '\n[thinking in progress]';
+    return `--- thinking ---\n${body}${suffix}\n--- end thinking ---`;
+};
+
+/**
+ * The shape the server exporter (``_clean_thinking_blocks``) already
+ * produces for legacy thinking fences, so exported markdown is uniform
+ * and the export modal's "include collapsed" filter -- which strips
+ * ``<details>`` blocks -- applies to positional thinking blocks too.
+ */
+export const wrapThinkingAsDetails: ThinkingWrap = (body, complete) => {
+    const suffix = complete ? '' : '\n\n_(thinking in progress)_';
+    return `\n<details>\n<summary>💭 Reasoning</summary>\n\n${body}${suffix}\n\n</details>\n`;
+};
+
+export function expandThinkingMarkers(
+    content: string,
+    map: Map<string, ThinkingBlockData[]> | undefined,
+    wrap: ThinkingWrap = wrapThinkingRaw,
+): string {
+    if (!content || !content.includes(THINK_OPEN)) return content;
+    const re = new RegExp(THINKING_MARKER_RE.source, 'g');
+    return content.replace(re, (_m, turnId: string, idx: string) => {
+        const block = map?.get(turnId)?.[Number(idx)];
+        if (!block) return '';
+        const body = block.content.replace(/\n+$/, '');
+        return wrap(body, block.complete);
+    });
+}
+
+/**
+ * Resolve thinking markers in every message of a list, for export.  The
+ * map is browser session state, so a server-side exporter can never
+ * resolve these; a message that leaves the browser with markers in it
+ * exports as literal ``⟨THINKING:…⟩`` text and no reasoning.  Messages
+ * without markers are returned by identity.
+ */
+export function resolveThinkingMarkersInMessages<T extends { content: string }>(
+    messages: T[],
+    map: Map<string, ThinkingBlockData[]> | undefined,
+    wrap: ThinkingWrap = wrapThinkingAsDetails,
+): T[] {
+    return messages.map(m => {
+        if (!m.content || !m.content.includes(THINK_OPEN)) return m;
+        return { ...m, content: expandThinkingMarkers(m.content, map, wrap) };
+    });
+}
+
+/**
  * Fold one ``thinking`` chunk into the block list.  Pure: never mutates
  * ``blocks``, and depends on nothing but its arguments.
  */
