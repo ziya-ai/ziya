@@ -120,21 +120,59 @@ export async function listChats(projectId: string, includeMessages = false): Pro
   }
 }
 
-export async function getChat(projectId: string, chatId: string): Promise<ServerChat | null> {
+/**
+ * Discriminated outcome of a single-chat fetch.
+ *
+ * getChat() collapses every SyncHttpError to null, so a 404 ("this project
+ * has no such chat") is indistinguishable from a 500 ("the server broke
+ * while answering").  Shell recovery must tell them apart: a 404 is a
+ * terminal fact that retrying cannot change, whereas a 5xx is transient.
+ * Reporting a 404 as "unreachable" asked the user to reopen and retry a
+ * conversation that would fail identically every time.
+ *
+ * Deadline and transport failures still THROW rather than surfacing here.
+ * They are not answers about whether the chat exists, and a caller that
+ * treated "we could not ask" as authoritative absence would act on a fact
+ * the server never asserted.
+ */
+export type GetChatResult =
+  /** The server returned the chat. */
+  | { ok: true; chat: ServerChat }
+  /** 404: the server authoritatively has no such chat.  Terminal. */
+  | { ok: false; kind: 'absent' }
+  /** Any other HTTP status: the server could not answer.  Retryable. */
+  | { ok: false; kind: 'error'; status: number };
+
+export async function getChatResult(projectId: string, chatId: string): Promise<GetChatResult> {
   try {
-    return await timedFetchJson<ServerChat>(
+    const chat = await timedFetchJson<ServerChat>(
       `${BASE}/${projectId}/chats/${chatId}`,
       { headers: projectHeaders() },
       SINGLE_TIMEOUT_MS,
       'getChat',
     );
+    return { ok: true, chat };
   } catch (e) {
-    // null means "the server has no such chat".  A deadline breach is not
-    // that: the post-sync rehydrate would read it as authoritative absence
-    // for a conversation the user is currently looking at.
-    if (e instanceof SyncHttpError) return null;
+    if (e instanceof SyncHttpError) {
+      return e.status === 404
+        ? { ok: false, kind: 'absent' }
+        : { ok: false, kind: 'error', status: e.status };
+    }
+    // Deadline breach or transport failure: not an existence answer.
     throw e;
   }
+}
+
+/**
+ * Back-compatible wrapper: null for BOTH "absent" and "server error".
+ *
+ * Eight call sites depend on this collapsing shape, so it is preserved
+ * exactly rather than migrated.  Callers that must distinguish the two --
+ * currently only shell recovery -- use getChatResult directly.
+ */
+export async function getChat(projectId: string, chatId: string): Promise<ServerChat | null> {
+  const r = await getChatResult(projectId, chatId);
+  return r.ok ? r.chat : null;
 }
 
 export async function bulkSync(projectId: string, chats: ServerChat[]): Promise<BulkSyncResult> {

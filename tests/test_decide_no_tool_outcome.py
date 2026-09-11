@@ -286,6 +286,58 @@ class TestEmptyAfterTools:
                      textonly_grace_used=2)[:2] == ('nudge', 'empty_after_tools_retry')
 
 
+class TestDroppedStream:
+    """stop_reason=None is a transport drop, not a model decision.
+
+    last_stop_reason is reset per iteration and assigned only from a
+    StreamEnd; every provider's StreamEnd carries a concrete reason.  So
+    None means no terminal event arrived.  Live case: iteration 48 of a
+    48-round Bedrock run returned one metrics chunk then EOF, the nudge
+    budget was already spent, and the turn ended silently.
+    """
+
+    def test_dropped_after_tools_retries_even_with_grace_spent(self, decide):
+        # The exact live shape: grace exhausted, no stop_reason.  Pre-fix
+        # this returned ('end', 'no_activity').
+        v = _call(decide, prev_is_tool_result=True, last_stop_reason=None,
+                  textonly_grace_used=1, empty_completion_retry_used=0)
+        assert v[:2] == ('spend_empty_retry', 'dropped_stream_retry')
+
+    def test_dropped_after_tools_retries_not_nudges(self, decide):
+        # Even with grace available, a drop is re-issued, not nudged: the
+        # model said nothing, so there is nothing to nudge against.
+        # Pre-fix this returned 'nudge'.
+        v = _call(decide, prev_is_tool_result=True, last_stop_reason=None,
+                  textonly_grace_used=0)
+        assert v[:2] == ('spend_empty_retry', 'dropped_stream_retry')
+
+    def test_dropped_after_user_turn_is_labelled_as_drop(self, decide):
+        v = _call(decide, prev_is_tool_result=False, last_stop_reason=None)
+        assert v[:2] == ('spend_empty_retry', 'dropped_stream_retry')
+
+    def test_drop_retry_budget_exhausted_falls_through(self, decide):
+        # Budget spent → the regular ladder applies (nudge if grace allows,
+        # else end).  Bounded, so a provider that drops every request cannot
+        # loop forever.
+        v = _call(decide, prev_is_tool_result=True, last_stop_reason=None,
+                  textonly_grace_used=1, empty_completion_retry_used=2)
+        assert v[:2] == ('end', 'no_activity')
+        v = _call(decide, prev_is_tool_result=True, last_stop_reason=None,
+                  textonly_grace_used=0, empty_completion_retry_used=2)
+        assert v[:2] == ('nudge', 'empty_after_tools_retry')
+
+    def test_real_end_turn_is_not_treated_as_drop(self, decide):
+        # Positive control for the None check: a genuine clean stop with
+        # grace spent still ends — the drop path must not widen into it.
+        v = _call(decide, prev_is_tool_result=True, last_stop_reason='end_turn',
+                  textonly_grace_used=1, empty_completion_retry_used=0)
+        assert v[:2] == ('end', 'no_activity')
+
+    def test_refusal_still_wins_over_drop_check(self, decide):
+        v = _call(decide, last_stop_reason='refusal', empty_completion_retry_used=0)
+        assert v[:2] == ('end', 'refusal')
+
+
 class TestEmptyCompletionRetry:
     """Branch (h) — empty after a normal user message."""
 
