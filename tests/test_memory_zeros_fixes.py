@@ -610,10 +610,11 @@ class TestColdCacheSkip:
         warm_cache = MagicMock()
         warm_cache.missing_ids.return_value = []   # warm
 
-        called = {"semantic": False}
+        called = {"semantic": False, "include_ids": None}
 
-        def _fake_semantic(query, top_k=10):
+        def _fake_semantic(query, top_k=10, include_ids=None, **kwargs):
             called["semantic"] = True
+            called["include_ids"] = include_ids
             return []
 
         with patch("app.services.embedding_service.get_embedding_cache", return_value=warm_cache), \
@@ -621,6 +622,10 @@ class TestColdCacheSkip:
             st.search("obp", limit=5)
 
         assert called["semantic"] is True
+        # The semantic leg must be restricted to the ids search can return;
+        # otherwise proposal / deleted-memory vectors consume top_k.
+        active_ids = {m.id for m in st.list_memories(status="active")}
+        assert called["include_ids"] == active_ids
 
 
 # ===========================================================================
