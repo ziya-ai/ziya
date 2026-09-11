@@ -105,13 +105,16 @@ describe('a proposal can be persisted without being run', () => {
       expect(before).toMatch(/taskCardApi\.update\(/);
     }
 
-    // And the launch path resolves the card before binding, rather than
-    // binding an id it never reconciled against the saved copy.
+    // And the launch path resolves the card through the shared reuse
+    // helper before binding, rather than binding an id it never
+    // reconciled against the saved copy.  ensureCard carries the
+    // savedCardId->update / else->create branch asserted above, so the
+    // launch path inherits the reuse rule instead of duplicating it — the
+    // ordering (resolve THEN bind) is the property that matters.
     const launch = PROPOSAL.match(
       /const handleLaunch = useCallback\([\s\S]*?\n  \}, \[[^\]]*\]\);/);
     expect(launch).not.toBeNull();
-    expect(launch![0]).toMatch(/savedCardId[\s\S]{0,140}taskCardApi\.update\(/);
-    expect(launch![0]).toMatch(/createBinding\(/);
+    expect(launch![0]).toMatch(/ensureCard\([\s\S]{0,200}createBinding\(/);
   });
 
   it('tags proposals from ONE shared constant so the deck can group them', () => {
