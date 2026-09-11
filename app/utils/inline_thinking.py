@@ -47,6 +47,7 @@ the delta pipeline -- including source code being authored -- which is how
 it corrupted diffs of this very feature.
 """
 
+import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -82,6 +83,54 @@ class InlineThinkingState:
     #: Carried across deltas: a trailing partial tag, or a deferred block
     #: opener (see ``scan``).  Drained by ``flush``.
     carry: str = ""
+    #: Last character consumed BEFORE ``carry`` (or before the next delta
+    #: when nothing is carried).  Both guards in ``scan`` need one character
+    #: of look-behind -- the inline-code check wants the backtick, the fence
+    #: check wants to know whether the buffer starts a line -- and without
+    #: this they only ever saw the current buffer.  A delta boundary that
+    #: fell between the backtick and the ``<`` therefore defeated the guard:
+    #: the backtick was emitted, ``<thi`` was withheld as carry, and the
+    #: next call saw a complete opener at offset 0 with nothing before it.
+    #: Starts as a newline so the stream begins at a line start.
+    prev_char: str = "\n"
+
+
+# A fenced-code opening line: up to three spaces of indentation then three
+# or more backticks, at the start of the buffer or after a newline.
+_FENCE_LINE_RE = re.compile(r'(?:^|\n)[ ]{0,3}`{3,}')
+
+# A trailing run that could be the START of a fence line split across
+# deltas: line start, optional indentation, one or two backticks.
+_PARTIAL_FENCE_TAIL_RE = re.compile(r'(?:^|\n)[ ]{0,3}`{1,2}\Z')
+
+
+def _line_anchored_start(buf: str, m: 're.Match', at_line_start: bool) -> int:
+    """Index where a ``(?:^|\\n)``-anchored match's line begins, or -1 when
+    the match sits at offset 0 without the buffer itself being at a line
+    start (the buffer began mid-line)."""
+    if m.start() == 0 and buf[0] != '\n':
+        return 0 if at_line_start else -1
+    return m.start() + 1
+
+
+def _find_fence_start(buf: str, at_line_start: bool) -> int:
+    """Index of the first fence opening line in ``buf``, else -1."""
+    for m in _FENCE_LINE_RE.finditer(buf):
+        i = _line_anchored_start(buf, m, at_line_start)
+        if i != -1:
+            return i
+    return -1
+
+
+def _pending_fence_prefix_len(buf: str, at_line_start: bool) -> int:
+    """Length of a trailing partial fence line (``\\n`` + up to two
+    backticks) that must be withheld so a fence split across deltas is
+    still recognised, else 0."""
+    m = _PARTIAL_FENCE_TAIL_RE.search(buf)
+    if not m:
+        return 0
+    i = _line_anchored_start(buf, m, at_line_start)
+    return 0 if i == -1 else len(buf) - i
 
 
 def _find_first_tag(text: str, tags: Tuple[str, ...]) -> Tuple[int, Optional[str]]:
@@ -150,9 +199,41 @@ def scan(
 
     while buf:
         if state.open:
+            at_line_start = state.prev_char == '\n'
             idx, closer = _find_first_tag(buf, CLOSERS)
+
+            # A fenced-code opening line inside a reasoning block is taken
+            # as evidence that the block was a misfire -- a prose mention
+            # of a tag, or a tag split across deltas that slipped the
+            # guards -- rather than reasoning.  Models that reason inline
+            # do not emit fenced diffs inside their thinking.  Without this
+            # a single false opener stayed open until any closer, so the
+            # rest of the answer -- typically a diff -- landed in the
+            # thinking panel.  Close the block at the fence and resume text
+            # scanning there; the fence itself passes through as content.
+            fence = _find_fence_start(buf, at_line_start)
+            if fence != -1 and (idx == -1 or fence < idx):
+                if fence:
+                    events.append({
+                        'type': 'thinking',
+                        'content': buf[:fence],
+                        'timestamp': timestamp,
+                    })
+                    state.prev_char = buf[fence - 1]
+                events.append({
+                    'type': 'thinking',
+                    'done': True,
+                    'timestamp': timestamp,
+                })
+                state.open = False
+                buf = buf[fence:]
+                continue
+
             if idx == -1:
-                hold = 0 if final else _pending_prefix_len(buf, CLOSERS)
+                hold = 0 if final else max(
+                    _pending_prefix_len(buf, CLOSERS),
+                    _pending_fence_prefix_len(buf, at_line_start),
+                )
                 keep = len(buf) - hold
                 if keep:
                     events.append({
@@ -160,6 +241,7 @@ def scan(
                         'content': buf[:keep],
                         'timestamp': timestamp,
                     })
+                    state.prev_char = buf[keep - 1]
                 state.carry = buf[keep:]
                 break
             if idx:
@@ -168,12 +250,14 @@ def scan(
                     'content': buf[:idx],
                     'timestamp': timestamp,
                 })
+                state.prev_char = buf[idx - 1]
             events.append({
                 'type': 'thinking',
                 'done': True,
                 'timestamp': timestamp,
             })
             state.open = False
+            state.prev_char = '>'
             buf = buf[idx + len(closer):]
             continue
 
@@ -181,20 +265,44 @@ def scan(
             # Tags are content here.  Pass through verbatim; the caller's
             # fence tracker decides when scanning resumes.
             out.append(buf)
+            state.prev_char = buf[-1]
             break
 
+        at_line_start = state.prev_char == '\n'
         idx, opener = _find_first_tag(buf, OPENERS)
+
+        # The caller's ``in_code_block`` is one delta stale: its tracker
+        # runs after this scan, so a fence opener arriving in THIS delta
+        # is not yet reflected.  A tag in the same delta as the fence --
+        # or in a diff line that arrived with it -- was scanned as prose.
+        # Detect the fence here: everything from it on is code and passes
+        # through; the caller reports in_code_block from the next delta.
+        fence = _find_fence_start(buf, at_line_start)
+        if fence != -1 and (idx == -1 or fence < idx):
+            out.append(buf)
+            state.prev_char = buf[-1]
+            break
+
         if idx == -1:
-            hold = 0 if final else _pending_prefix_len(buf, OPENERS)
+            hold = 0 if final else max(
+                _pending_prefix_len(buf, OPENERS),
+                _pending_fence_prefix_len(buf, at_line_start),
+            )
             keep = len(buf) - hold
             out.append(buf[:keep])
+            if keep:
+                state.prev_char = buf[keep - 1]
             state.carry = buf[keep:]
             break
 
         # Inline code span: the model is quoting the tag, not emitting it.
-        # Cheap partial cover for unfenced prose mentions.
-        if idx > 0 and buf[idx - 1] == '`':
+        # Cheap partial cover for unfenced prose mentions.  The look-behind
+        # falls back to prev_char so a boundary between the backtick and
+        # the tag does not defeat it.
+        prev = buf[idx - 1] if idx > 0 else state.prev_char
+        if prev == '`':
             out.append(buf[:idx + len(opener)])
+            state.prev_char = '>'
             buf = buf[idx + len(opener):]
             continue
 
@@ -202,10 +310,12 @@ def scan(
             # Answer text precedes the opener -- defer the block so the
             # caller emits this text before any thinking event.
             out.append(buf[:idx])
+            state.prev_char = buf[idx - 1]
             state.carry = buf[idx:]
             break
 
         state.open = True
+        state.prev_char = '>'
         buf = buf[len(opener):]
 
     return events, ''.join(out)

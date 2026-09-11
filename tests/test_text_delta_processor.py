@@ -19,7 +19,7 @@ def _make_executor():
     """Build a minimal mock executor with the methods process_text_delta needs."""
     executor = MagicMock()
     # _normalize_fence_spacing returns text unchanged by default
-    executor._normalize_fence_spacing.side_effect = lambda text, tracker: text
+    executor._normalize_fence_spacing.side_effect = lambda text, tracker, **kw: text
     # _update_code_block_tracker is a no-op by default
     executor._update_code_block_tracker.return_value = None
     # No block opening buffer initially
