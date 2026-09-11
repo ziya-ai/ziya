@@ -39,12 +39,24 @@
     stroke-width: 1.5px !important;
 }
 
-/* Text on darker backgrounds should be black for contrast,
-   but NOT when user has set explicit inline styles */
+/* Dark-theme node/cluster label text. Mermaid's own dark node fill (mainBkg
+   #3b4252, cluster #4c566a) is DARK, so the static default label colour must be
+   LIGHT, resolved from the dark theme's own primaryTextColor (#eceff4):
+     #eceff4 on #3b4252 (node)    = 8.73:1
+     #eceff4 on #4c566a (cluster) = 6.40:1
+     #eceff4 on #434c5e (secondBkg) = 7.49:1
+   all clear the 4.5:1 WCAG-AA floor. The previous value (#000000) was 2.09:1 on
+   #3b4252 — below floor — and survived only because the runtime contrast pass in
+   mermaidPlugin.ts flips it back to white; that pass is SKIPPED when the diagram
+   declares any explicit colour (shouldEnhanceMermaidVisibility === false), so a
+   default node's label was left illegible. This rule is .dark-scoped, so it never
+   paints in the light theme (where labels stay mermaid's default dark-on-white).
+   Genuinely light-filled classDef nodes are still flipped to dark text per-node,
+   background-aware, by the runtime pass. */
 .dark .mermaid-container .node .label text,
 .dark .mermaid-container .cluster .label text {
-    fill: #000000;
-    color: #000000;
+    fill: #eceff4;
+    color: #eceff4;
 }
 
 /* Text on lighter backgrounds should be white for contrast */

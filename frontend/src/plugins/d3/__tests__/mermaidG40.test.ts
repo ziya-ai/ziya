@@ -213,4 +213,44 @@ describe('D-170 gantt grid z-order', () => {
     expect(contrastRatio('#000000', '#ff0000')).toBeGreaterThanOrEqual(4.5);
     expect(contrastRatio('#ffffff', '#ff0000')).toBeLessThan(4.5);
   });
+
+  // D-151 regression: OUTSIDE-bar crit labels sit on the chart BACKGROUND, not
+  // the red fill. Forcing them black is invisible on the dark canvas (#1e1e1e =
+  // 1.26:1). They must resolve from the theme and clear 4.5:1 on BOTH backgrounds.
+  const DARK_BG = '#1e1e1e';
+  const LIGHT_BG = '#ffffff';
+
+  it('DARK: outside-bar crit labels are the light ink, legible on the dark canvas', () => {
+    const svg = svgEl('svg');
+    const outside = svgEl('text', 'taskTextOutsideRight crit');
+    svg.appendChild(outside);
+    recolorGanttCritLabels(svg, true);
+    const fill = (outside as SVGElement).style.getPropertyValue('fill');
+    // DIRECTION: black (the old behaviour) is 1.26:1 on #1e1e1e — this asserts
+    // the fix chose a light ink instead.
+    expect(fill).toBe('#ffffff');
+    expect(contrastRatio('#000000', DARK_BG)).toBeLessThan(4.5); // what we must NOT emit
+    expect(contrastRatio(fill, DARK_BG)).toBeGreaterThanOrEqual(4.5); // 16.67:1
+  });
+
+  it('LIGHT: outside-bar crit labels are the dark ink, legible on the light canvas', () => {
+    const svg = svgEl('svg');
+    const outside = svgEl('text', 'taskTextOutsideLeft crit');
+    svg.appendChild(outside);
+    recolorGanttCritLabels(svg, false);
+    const fill = (outside as SVGElement).style.getPropertyValue('fill');
+    expect(fill).toBe('#000000');
+    expect(contrastRatio(fill, LIGHT_BG)).toBeGreaterThanOrEqual(4.5); // 21:1
+  });
+
+  it('inside-bar crit labels stay black on the red fill in both themes', () => {
+    for (const dark of [true, false]) {
+      const svg = svgEl('svg');
+      const inside = svgEl('text', 'taskText crit');
+      svg.appendChild(inside);
+      recolorGanttCritLabels(svg, dark);
+      expect((inside as SVGElement).style.getPropertyValue('fill')).toBe('#000000');
+    }
+    expect(contrastRatio('#000000', '#ff0000')).toBeGreaterThanOrEqual(4.5);
+  });
 });

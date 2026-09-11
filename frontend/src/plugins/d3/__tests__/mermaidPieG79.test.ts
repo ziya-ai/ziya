@@ -110,6 +110,12 @@ describe('G-79 D-159 pie palette contrast', () => {
         const source = fs.readFileSync(
             path.join(__dirname, '..', 'mermaidPlugin.ts'), 'utf-8');
         // dark branch merges the dark palette, light branch supplies the light one.
-        expect(source).toMatch(/buildPieThemeVariables\(true\)\) : buildPieThemeVariables\(false\)/);
+        // (The light branch also merges buildMermaidLightThemeVariables() for the
+        // canvas-aware palette added in G-0daf08/D-153, so assert each pie-vars
+        // call is present per branch rather than pinning them adjacent.)
+        expect(source).toMatch(/buildPieThemeVariables\(true\)/);
+        expect(source).toMatch(/buildPieThemeVariables\(false\)/);
+        // The light branch still supplies its pie vars alongside the light palette.
+        expect(source).toMatch(/buildMermaidLightThemeVariables\(\),\s*buildPieThemeVariables\(false\)/);
     });
 });
