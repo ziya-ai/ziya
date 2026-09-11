@@ -129,6 +129,31 @@ export function normalizeChordColorToHex(input: any): string | null {
 }
 
 /**
+ * Resolve the effective canvas background to a VALIDATED hex (D-036).
+ *
+ * The old code did `const bg = style.background || (isDarkMode ? '#1a1a2e' :
+ * '#ffffff')`, so an unresolvable design-system token (e.g. 'var(--surface-bg)',
+ * chord-w4-14) or a transparent/none value was taken VERBATIM. Used raw it (a)
+ * became an invalid SVG `background` that composites to the (dark) host
+ * container, and worse (b) was fed as the effective canvas to isDarkBackground()
+ * / resolveChordLabelColor() / resolveChordArcStroke() / resolveChordFill(),
+ * where hexToRgb() fails, the surface is misclassified as LIGHT, and the label /
+ * arc colours are reconciled for the WRONG background — so under dark theme the
+ * labels resolve to the light default (#333333 on the actually-dark page =
+ * 1.35:1, erased). This validates the caller value through the SAME
+ * normalizeChordColorToHex() the node/label colours already use (D-070) and
+ * falls back to the per-theme default when it is unresolvable, so the effective
+ * canvas is always a real hex and downstream contrast reconciliation is correct
+ * in BOTH themes. A valid caller colour (hex / rgb() / CSS name) is honoured, so
+ * a legitimately pinned panel (D-053) is unchanged.
+ *
+ * Exported for regression testing.
+ */
+export function resolveChordBackground(rawBg: any, isDarkMode: boolean): string {
+  return normalizeChordColorToHex(rawBg) ?? (isDarkMode ? '#1a1a2e' : '#ffffff');
+}
+
+/**
  * Resolve a categorical arc/ribbon FILL guaranteed visible on the effective
  * canvas (D-052 / D-069 / D-070).
  *
@@ -648,19 +673,44 @@ export function chordPadAngle(nGroups: number): number {
 }
 
 /**
- * Ribbon boundary stroke width; drops to 0 past the sub-pixel onset (D-057).
+ * Ribbon boundary stroke width — a minimum-effective-width guarantee for dense
+ * bundles (D-042, superseding the D-057 stroke=0 behaviour).
  *
- * At low edge count a thin contrasting stroke delimits overlapping ribbons, but
- * once ribbons go sub-pixel (high edge count) the 0.5px stroke DOMINATES the
- * shape: with the old bg-coloured stroke it erased the ribbons entirely in light
- * and composited to a solid near-black disc in dark (w2-08 = 2450/2450 ribbons
- * lost). Past ~50 ribbons the stroke is removed so dense ribbons render as their
- * (opacity-blended) fill instead of a stroke smear.
+ * At low edge count a thin contrasting stroke delimits overlapping ribbons. Once
+ * ribbons go sub-pixel (high edge count) their FILL subtends less than one
+ * device pixel and renders NOTHING — so at 870/2450 edges 100% of ribbons
+ * vanished even though the arcs were healthy (D-042). The Stage-2 D-057 fix set
+ * the stroke to 0 to stop a *neutral/bg-coloured* stroke from erasing fills in
+ * light and smearing to a near-black disc in dark; but stroke=0 is precisely
+ * what leaves a sub-pixel fill with nothing to paint. The corrected fix keeps a
+ * small POSITIVE stroke past the onset AND paints it in each ribbon's OWN fill
+ * colour (see `chordRibbonStrokeColor` / the render path): the stroke outlines
+ * the ribbon's long sides crossing the disc, so the dense bundle paints its data
+ * colours (not a monochrome smear — that was D-057's neutral stroke) and every
+ * ribbon has a guaranteed minimum visible width. Below the onset the historical
+ * 0.5px contrasting separator is unchanged, so normal diagrams are byte-identical.
  *
  * Exported for regression testing.
  */
 export function chordRibbonStrokeWidth(edgeCount: number): number {
-  return edgeCount <= 50 ? 0.5 : 0;
+  return edgeCount <= 50 ? 0.5 : 0.75;
+}
+
+/**
+ * Ribbon stroke COLOUR — the other half of the D-042 minimum-width guarantee.
+ *
+ * Below the sub-pixel onset (≤50 edges) the stroke is the neutral `arcStroke`
+ * that delimits distinguishable ribbons (unchanged). Past the onset the stroke
+ * is the ribbon's OWN reconciled fill (`ownFill`), so the guaranteed-width
+ * hairlines paint the DATA colours rather than accumulating into the monochrome
+ * disc that a neutral stroke produced (D-057). `ownFill` is a `chordRibbonFill`
+ * output, already contrast-reconciled to clear 3:1 vs the effective canvas in
+ * BOTH themes, so as a solid stroke it is at least as legible. Theme-independent.
+ *
+ * Exported for regression testing.
+ */
+export function chordRibbonStrokeColor(edgeCount: number, arcStroke: string, ownFill: string): string {
+  return edgeCount <= 50 ? arcStroke : ownFill;
 }
 
 /**
@@ -850,7 +900,17 @@ export const chordPlugin: D3RenderPlugin = {
     needsDynamicHeight: true,
     needsOverflowVisible: false,
     observeResize: false,
-    containerStyles: { overflow: 'hidden' },
+    // Width-axis analog of the D-058 height fix (D-035). A chord canvas WIDER
+    // than the host viewport (chord-w1-14 860px, w2-10 1400px, w2-14 2000px) was
+    // hard-clipped on the right by the render wrapper's overflow — losing real
+    // arcs and labels with no affordance — because containerStyles.overflow was
+    // 'hidden'. 'auto' provides a horizontal scrollbar instead of silent data
+    // loss, and is a strict no-op for the common case: a canvas that fits the
+    // viewport gets no scrollbar and is byte-identical. The inner plugin
+    // container is sized to exactly `width`px so the SVG itself is never clipped;
+    // only the outer wrapper's clip is relaxed. Vertical stays governed by
+    // needsDynamicHeight (auto height grows the container rather than scrolling).
+    containerStyles: { overflow: 'auto' },
   },
 
   canHandle: isChordSpec,
@@ -869,7 +929,13 @@ export const chordPlugin: D3RenderPlugin = {
       coerceChordDimension(spec.width, 600),
       coerceChordDimension(spec.height, 600),
     );
-    const bg = style.background || (isDarkMode ? '#1a1a2e' : '#ffffff');
+    // Validate style.background through the same colour resolver used for node
+    // fills (D-070) before it becomes both the SVG background AND the effective
+    // canvas for contrast reconciliation. An unresolvable token / transparent
+    // value falls back to the per-theme default rather than poisoning
+    // isDarkBackground() into a LIGHT misclassification on an actually-dark page
+    // (D-036: chord-w4-14).
+    const bg = resolveChordBackground(style.background, isDarkMode);
     // Resolve foreground defaults from the EFFECTIVE canvas luminance, not the
     // raw isDarkMode flag. A caller may pin a light panel under dark theme (or
     // vice-versa) via style.background; label and stroke contrast must track the
@@ -1036,7 +1102,10 @@ export const chordPlugin: D3RenderPlugin = {
       .join('path')
       .attr('d', ribbon as any)
       .attr('fill', (d: any) => ribbonColors[d.target.index])
-      .attr('stroke', arcStroke)
+      // Past the sub-pixel onset the stroke is the ribbon's OWN reconciled fill
+      // (not the neutral arcStroke), so the guaranteed-width hairlines paint the
+      // data colours instead of a monochrome disc, and no ribbon vanishes (D-042).
+      .attr('stroke', (d: any) => chordRibbonStrokeColor(chords.length, arcStroke, ribbonColors[d.target.index]))
       .attr('stroke-width', ribbonStroke);
 
     ribbons.append('title').text((d: any) =>
