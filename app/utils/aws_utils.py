@@ -358,18 +358,80 @@ def debug_aws_credentials():
     logger.info("=== END AWS CREDENTIAL DEBUG ===")
 
 
+# Bedrock data-retention modes, ordered least -> most permissive, per
+# https://docs.aws.amazon.com/bedrock/latest/userguide/data-retention.html
+#
+#     none  <  default  <  aws_review  <  provider_data_share
+#
+# A model is invocable when the effective mode sits at or ABOVE the mode that
+# model requires, so a more permissive setting subsumes a stricter one: an
+# account already on provider_data_share satisfies a model asking for
+# aws_review, and AWS documents that such an account needs no change.
+#
+# 'inherit' is deliberately absent from the scale. It expresses no opinion at
+# its scope and defers to a broader one (project -> account -> model default),
+# so it cannot be compared against a requirement — an account on 'inherit'
+# resolves to the model's own default, which for any model that requires an
+# opt-in is necessarily below that requirement.
+#
+# provider_data_share is legacy: AWS does not share content with model
+# providers today, so it behaves identically to aws_review while ranking
+# above it. New requirements should be expressed as aws_review.
+_RETENTION_MODE_ORDER = ("none", "default", "aws_review", "provider_data_share")
+
+
+def retention_mode_rank(mode: str | None) -> int | None:
+    """Position of *mode* on the retention scale, or None if unrankable.
+
+    Returns None for 'inherit', empty values, and any unrecognised string —
+    all of which are cases where no ordering comparison can be made.
+    """
+    if not mode or not isinstance(mode, str):
+        return None
+    try:
+        return _RETENTION_MODE_ORDER.index(mode.strip().lower())
+    except ValueError:
+        return None
+
+
+def retention_mode_satisfies(current: str | None, required: str | None) -> bool:
+    """True when *current* is at or above *required* on the retention scale.
+
+    Used to avoid rewriting an account switch that is already permissive
+    enough. Returns False whenever either side is unrankable, so an
+    unknown or 'inherit' current mode is always treated as insufficient
+    (the safe direction: it triggers an explicit set rather than assuming
+    the model will be invocable).
+    """
+    req = retention_mode_rank(required)
+    cur = retention_mode_rank(current)
+    if req is None or cur is None:
+        return False
+    return cur >= req
+
+
 def _ensure_data_retention(
     endpoint_label: str,
     url: str,
     required_mode: str,
     region: str,
     profile_name: str | None = None,
+    allow_downgrade: bool = False,
 ) -> tuple[bool, str]:
     """Check an account-level data retention endpoint and set the mode if needed.
 
     Shared implementation for the bedrock control plane and the mantle
     endpoint, which expose the same GET/PUT contract at different URLs.
     Uses direct SigV4-signed HTTP because boto3 does not expose these APIs.
+
+    The comparison is ORDERING-AWARE, not equality-based: a current mode that
+    already sits at or above *required_mode* is left untouched. These switches
+    are account/region-wide and shared by every model and every concurrent
+    session in the account, so rewriting one to a stricter value to match the
+    model being started can break a different model (or another user's
+    in-flight session) that needs the more permissive value. Pass
+    allow_downgrade=True to force the mode to exactly *required_mode*
+    regardless of where it currently sits.
 
     Returns (True, "") on success, (False, error_message) on failure.
     """
@@ -400,6 +462,13 @@ def _ensure_data_retention(
             logger.debug(f"{endpoint_label} data retention mode already '{required_mode}'")
             return True, ""
 
+        if not allow_downgrade and retention_mode_satisfies(current_mode, required_mode):
+            logger.debug(
+                f"{endpoint_label} data retention mode '{current_mode}' already "
+                f"satisfies '{required_mode}' (more permissive); leaving unchanged"
+            )
+            return True, ""
+
         logger.info(
             f"{endpoint_label} data retention mode is '{current_mode}'; "
             f"setting to '{required_mode}' for model compatibility"
@@ -428,12 +497,17 @@ def ensure_bedrock_data_retention_mode(
     required_mode: str,
     region: str = "us-east-1",
     profile_name: str | None = None,
+    allow_downgrade: bool = False,
 ) -> tuple[bool, str]:
-    """Ensure the bedrock control-plane data retention mode (e.g. for Fable 5)."""
+    """Ensure the bedrock control-plane data retention mode (e.g. for Fable 5.1).
+
+    Raises the account switch to *required_mode* only when it is not already
+    at or above it. Pass allow_downgrade=True to force an exact value.
+    """
     return _ensure_data_retention(
         "Bedrock",
         f"https://bedrock.{region}.amazonaws.com/data-retention",
-        required_mode, region, profile_name,
+        required_mode, region, profile_name, allow_downgrade=allow_downgrade,
     )
 
 
@@ -441,10 +515,15 @@ def ensure_mantle_data_retention_mode(
     required_mode: str,
     region: str = "us-east-1",
     profile_name: str | None = None,
+    allow_downgrade: bool = False,
 ) -> tuple[bool, str]:
-    """Ensure the Bedrock Mantle data retention mode (API at /v1/data_retention)."""
+    """Ensure the Bedrock Mantle data retention mode (API at /v1/data_retention).
+
+    Raises the mantle switch to *required_mode* only when it is not already
+    at or above it. Pass allow_downgrade=True to force an exact value.
+    """
     return _ensure_data_retention(
         "Mantle",
         f"https://bedrock-mantle.{region}.api.aws/v1/data_retention",
-        required_mode, region, profile_name,
+        required_mode, region, profile_name, allow_downgrade=allow_downgrade,
     )
