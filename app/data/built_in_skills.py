@@ -80,7 +80,9 @@ at full fidelity in the PDF.
    curl -s -X POST localhost:6969/api/export/document \\
      -H 'Content-Type: application/json' \\
      -d '{"name": "report.md"}' -o /tmp/report.pdf
-   (or pass {"markdown": "..."} inline). Save output to /tmp or .ziya/ and
+   (or pass {"markdown": "..."} inline). The per-page footer (logo, version,
+   model) is included by default; add "includeFooter": false to the body
+   ONLY when the user asks for no footer. Save output to /tmp or .ziya/ and
    tell the user where the file is. HTTP 501 means the server has no
    Playwright/Chromium — tell the user to run:
    pip install playwright && playwright install chromium''',
@@ -233,7 +235,11 @@ training data with an appropriate caveat.''',
         'id': 'task_decomposition',
         'name': 'Task Decomposition, Delegation & Swarm',
         'description': 'Spawn parallel delegate agents (swarm), with optional coordinator and verifier roles, dependency ordering, and crystal handoff',
-        'visibility': MODEL_DISCOVERABLE,
+        # Deliberately NOT model-discoverable for now: the swarm interface
+        # needs work, and users are steered to Task Cards for parallel /
+        # multi-step work.  Still loadable by explicit get_skill_details
+        # ("task_decomposition") and toggleable in the UI.
+        'visibility': USER_SELECTABLE,
         'catalog_description': 'Spawn parallel delegate agents (swarm) with coordinator and verifier roles, dependency ordering, and crystal handoff',
         'keywords': ['decompose', 'parallel', 'delegate', 'orchestrate', 'split', 'swarm',
                      'agent', 'multi-agent', 'coordinator', 'verifier', 'crystal', 'handoff',
@@ -359,7 +365,7 @@ Rules:
         'name': 'Task Cards & Loops',
         'description': 'Compose a repeatable/loopable task card and launch it inline in the chat',
         'visibility': MODEL_DISCOVERABLE,
-        'catalog_description': 'Author a Task Card: Task / Repeat / Parallel blocks, runs inline in chat with live status',
+        'catalog_description': 'Author a Task Card: Task / Repeat / Parallel / Ask blocks, runs inline in chat with live status',
         'keywords': ['task', 'card', 'loop', 'repeat', 'iterate', 'fuzz',
                      'until', 'for each', 'retry', 'attempts', 'passes',
                      'parallel', 'count', 'do this N times', 'try again',
@@ -368,7 +374,10 @@ Rules:
                      'recurring', 'cron', 'daily', 'every hour', 'stages',
                      'multi-step', 'multi-stage', 'pipeline', 'state', 'artifact',
                      'variables', 'given', 'assume', 'call', 'reuse',
-                     'subtask', 'invoke', 'another card', 'named task'],
+                     'subtask', 'invoke', 'another card', 'named task',
+                     'approval', 'approve', 'human in the loop', 'hitl',
+                     'checkpoint', 'gate', 'confirm', 'sign off',
+                     'pause for me', 'ask me first'],
         'prompt': '''You can author a **Task Card** — a small block tree the user launches
 from the conversation.  A task card runs inline in the chat and reports live
 status; the user can cancel, inspect, and query it.  Use a task card when:
@@ -384,15 +393,16 @@ status; the user can cancel, inspect, and query it.  Use a task card when:
 - The user wants something to run on a recurring schedule (hourly, daily,
   cron) rather than once right now
 
-Use `delegate-tasks` instead (not this) when the work is a *fan-out of
-different specialized roles* (planner → workers → verifier) with
-dependencies and crystal handoff.  Task cards are for iteration and
-structured repetition; delegates are for multi-agent orchestration.
+A fan-out of different roles (planner → workers → verifier) is a Task
+Card too: a **Group** root whose stages are Tasks, with a **Parallel**
+block for the concurrent middle.  Do not route this to external
+"delegate" tools — they cannot see this project's files or tools.
 
 ## Block grammar
 
-Six block shapes compose the tree.  Any block's `body` can contain any
-other block (except Task and State, which are leaves with no body).
+Nine block shapes compose the tree.  Any block's `body` can contain any
+other block (except Task, State, Call and Ask, which are leaves with no
+body).
 
 **Task** — atomic action, one model invocation, returns one Artifact.
 
@@ -589,6 +599,62 @@ Three constraints to author within:
   call a stale duplicate.  Prefer distinct names, and delete superseded
   copies rather than leaving them saved alongside.
 
+**Ask** — a human-in-the-loop checkpoint.  A leaf (empty `body`) like State:
+it invokes no model of its own.  It holds the RUN at this block boundary
+with status `awaiting_input` until a human answers, then binds that answer
+into the run the way State binds its literals.
+
+    {
+      "block_type": "ask",
+      "id": "apply-gate",
+      "name": "Approve the proposed changes",
+      "ask_question": "Stage 3 wrote report.md and two diffs.  Apply them?",
+      "ask_choices": ["apply", "apply pricing only", "skip"],
+      "ask_variable": "apply_decision"
+    }
+
+- `ask_question` is required in practice: without it the run holds on a
+  blank prompt.
+- `ask_choices` offers fixed options; omit it for free text.
+- `ask_variable` binds the answer text under that name, readable downstream
+  as `{{var.NAME}}`.  Omit it for a plain "should I go on" gate — an
+  APPROVED Ask also injects a prose note ("Human checkpoint 'X' was
+  approved by Y.  They said: …") into later blocks' context automatically,
+  which is all most checkpoints need.
+
+**A rejection is a FAILURE, not a branch.**  An answer carries a decision of
+`approve` (the default) or `reject`, and reject returns a *failed* artifact.
+The grammar has no conditional, so the enclosing container's `on_failure` is
+what expresses both readings: `"stop"` halts the sequence at the Ask and
+skips every later sibling, `"continue"` proceeds with the rejection
+recorded.
+
+**This is the mechanism for gating a privileged stage.**  Put the Ask
+immediately before the stage it guards, inside a container with
+`on_failure: "stop"`: a rejection then PREVENTS the later stage from
+running, enforced by the executor.  Do NOT gate by handing a task a
+`{{var.…}}` flag and instructing it to obey — that is a request rather than
+a constraint, and it leaves the guarded stage's write grant live no matter
+what the human answered.
+
+An Ask and a signed escalation are different gates and neither substitutes
+for the other: the signature authorizes that a stage MAY hold a privilege
+at all; the Ask authorizes this particular run's use of it.
+
+Two properties worth relying on:
+- **It survives a restart.**  A run holding at an Ask when a server
+  lifetime ends reconciles to `held`, not `failed`, and the answer
+  endpoint still accepts on a held run — an Ask can legitimately be open
+  for days.
+- **It is idempotent, first-answer-wins.**  A resume walk re-executes the
+  Ask, finds the settled answer and applies it without asking twice; a
+  second answer cannot change what the run was already told.
+
+Unlike an unsigned escalation — which a `headless` (scheduled) run refuses
+outright rather than clamping — an Ask in a scheduled run simply holds
+until someone answers.  A cron card CAN therefore have a human gate; it
+just will not finish until the human arrives.
+
 ### Failure policy — on_failure
 
 Any container (Group / Repeat / Until / Schedule) may set `on_failure`
@@ -621,6 +687,11 @@ rendered at dispatch time:
   (propagate=last), `{{all}}` (propagate=all) — field access like
   `{{previous.summary}}`, `{{previous.decisions}}`.
 - Inside a sequence: `{{previous_sibling}}`, `{{sibling("block-id")}}`.
+  **`sibling()` takes the block's `id`, never its `name`.**  Ids are
+  generated on save for blocks that lack one, so any block you intend to
+  reference must carry an explicit `"id"` you chose (e.g. `"id": "plan"`)
+  — explicit ids are kept.  A reference by name renders empty and, in a
+  `for_each` source, fails the loop with zero iterations.
 - **Named artifact parts**: `{{previous_sibling.outputs.NAME}}`,
   `{{sibling("block-id").outputs.NAME}}`, `{{previous.outputs.NAME}}` —
   resolve a part a prior task declared with
@@ -642,11 +713,15 @@ reads the exact value the planner declared rather than scanning its
 summary for the first `[`:
 
 ```
+{"block_type": "task", "id": "plan", "name": "Plan the sweep",
+ "instructions": "... emit_artifact(name=\\"roster\\", part_type=\\"data\\", data={\\"slugs\\": [...]})"},
 {"block_type": "repeat", "repeat_mode": "for_each",
  "repeat_for_each_source": "{{sibling(\\"plan\\").outputs.roster.slugs}}",
  "repeat_parallel": true, "body": [ ]}
 ```
 
+Note the explicit `"id": "plan"` on the planner: that id — not the
+name — is what `sibling("plan")` resolves against.
 The planner task emits the list inside a data part:
 `emit_artifact(name="roster", part_type="data", data={"slugs": [...]})`.
 A data part must be a JSON **object**, so the list always lives under a
@@ -854,14 +929,27 @@ model passes `timeout` on every invocation:
 
 ## Output format
 
-Emit a fenced JSON block with language tag `task-card`.  The user can
-preview it, **Save to deck** (persists it without running — also the
-prerequisite for signing any escalation, since signatures key on
-persisted block ids), or click **Start** to launch a run bound to the
-chat, after which the inline tile shows live status.  If any block
-escalates, the proposal block says so before the user commits, and Start
-asks for confirmation — so escalate only where the work genuinely
-requires it.
+**Validate before you present.**  Call `task_card_validate` with the
+`root` you are about to emit.  It runs the same checks the launch button
+applies and returns each finding with its block path and, where known,
+the fix (e.g. "sibling(\"Plan\") is a block NAME — use sibling(\"plan\")").
+Fix every error and re-validate until it is clean, THEN emit the fence.
+`task_card_write` returns the same findings after a save.  A card with
+errors is refused at launch, so presenting one wastes the user's turn.
+
+Two ways to hand the card to the user; both end with the USER launching it:
+
+- **`task_card_stage(root, name)`** — validates, saves to the deck, and
+  stages an inline tile with a Run button in this chat.  Prefer this when
+  you are already in a tool-calling turn.
+- **A fenced JSON block with language tag `task-card`** — the user can
+  preview it, **Save to deck** (persists it without running — also the
+  prerequisite for signing any escalation, since signatures key on
+  persisted block ids), or click **Start**.
+
+Never state that the card is running; you staged it.  If any block
+escalates, the tile says so before the user commits, and Start asks for
+confirmation — so escalate only where the work genuinely requires it.
 
 ## Choosing a root block — decision guide
 
@@ -884,6 +972,10 @@ requires it.
   baseline each cycle → put a **State** block first in the relevant body
   (a Group root's body if the givens apply to the whole run; inside a
   Repeat/Until body if they should reset every iteration).
+- A privileged or destructive step must not run without a human saying so →
+  an **Ask** block immediately before it, inside a container with
+  `on_failure: "stop"` (a rejection is a failed artifact, so "stop" is what
+  turns it into "do not run the guarded stage").
 
 ## Example: fuzz test the renderer 10 times
 
@@ -922,6 +1014,11 @@ a single Task that generates the report.
   pipeline.  Unset means `continue`, which runs later stages on failed
   input and — because a container reports its LAST child's result — can
   report the whole container as succeeded.
+- Gate with an Ask, not with an instruction.  A stage that writes outside
+  `.ziya/`, applies a diff, or is otherwise hard to undo should be preceded
+  by an **Ask** inside a container with `on_failure: "stop"`.  Telling a
+  task to check a `{{var.…}}` flag and skip itself is a request, not a
+  gate.
 - A task's LAST act should be prose, not a tool call.  The summary is
   built from streamed prose, so a task that stops immediately after a
   tool call has no summary of its own work; that is detected and recorded
@@ -940,8 +1037,10 @@ a single Task that generates the report.
   (1000+) are supported but should be explicit in the user's request.
 - Use Until (not Repeat's until mode) whenever the stopping condition
   needs interpretation rather than a literal substring match.
-- Do not include `id`, `created_at`, or other server-assigned fields —
-  they are filled in on create.''',
+- Do not include `created_at` or other server-assigned fields — they are
+  filled in on create.  Block `id` is the one exception: omit it on
+  blocks nothing references, and SET it on any block another block
+  references via `sibling("id")`.''',
         'color': '#eab308',
     },
     {
@@ -1291,6 +1390,293 @@ Rules of thumb:
             '  you may write them directly.'
         ),
         'color': '#0ea5e9',
+    },
+    {
+        'id': 'statistical_charts',
+        'visibility': MODEL_DISCOVERABLE,
+        'catalog_description': 'Vega-Lite recipes for distribution & statistical charts: box, violin, ECDF, histogram, QQ, heatmap, error bars/CI',
+        'name': 'Statistical Charts (Vega-Lite)',
+        'description': 'Render distribution and statistical shapes in Vega-Lite: box plots, violins, ECDFs, histograms, QQ plots, heatmaps, and error bars / confidence intervals',
+        'keywords': ['distribution', 'spread', 'outlier', 'outliers', 'skew', 'skewed',
+                     'quartile', 'percentile', 'iqr', 'box plot', 'boxplot', 'box-plot',
+                     'violin', 'density', 'kde', 'ridgeline', 'ecdf', 'cdf',
+                     'cumulative', 'histogram', 'qq', 'q-q', 'quantile', 'normality',
+                     'is it normal', 'heatmap', 'heat map', 'correlation matrix',
+                     'confidence interval', 'error bar', 'error bars', 'ci', 'stderr',
+                     'standard error', 'variance', 'statistics', 'statistical'],
+        # Every recipe below was verified by rendering it through the real
+        # vega-lite pipeline (render_diagram).  The gotchas are the whole point:
+        # each is a spec that renders a PLAUSIBLE-BUT-WRONG or empty chart when
+        # the transform is done naively.  Fence markers are assembled from
+        # chr(96) so a literal triple backtick in this source cannot terminate
+        # the enclosing markdown fence when the file is quoted by tooling.
+        'prompt': (
+            'Render distribution and statistical shapes with a '
+            + chr(96) * 3 + 'vega-lite fence. Vega-Lite has native marks for\n'
+            'some of these and NONE for others -- the others are built from\n'
+            'transforms, and doing them naively yields an empty or subtly wrong\n'
+            'chart. Use these verified recipes.\n'
+            '\n'
+            'PREFER A DATASET HANDLE OVER INLINED NUMBERS. If the data is in a\n'
+            'file or a prior tool result, register it (dataset_register) and set\n'
+            '"data": {"url": "ziya://dataset/<id>"}, then let the TRANSFORMS\n'
+            'below aggregate it. Do not hand-transcribe rows or pre-compute\n'
+            'quartiles/means in your head -- that is exactly what these charts\n'
+            'exist to avoid.\n'
+            '\n'
+            'WHICH SHAPE FOR WHICH QUESTION\n'
+            '- one group, "the shape / is it skewed / modes" -> histogram or density\n'
+            '- compare a few groups spread / medians / outliers -> box plot\n'
+            '- compare many groups full shape (bi-modality shows) -> violin / ridgeline\n'
+            '- "what fraction is below X / compare distributions exactly" -> ECDF\n'
+            '- "is it normal / does it match distribution D" -> QQ plot\n'
+            '- matrix of values, or 2-variable density / correlation -> heatmap\n'
+            '- a mean/estimate with its uncertainty -> error bars (CI)\n'
+            '\n'
+            'BOX PLOT -- native mark. State the whisker rule; the default is\n'
+            'Tukey (1.5*IQR), which HIDES points beyond the whiskers as\n'
+            'outliers. Use extent "min-max" if you do not want outlier trimming.\n'
+            + chr(96) * 3 + 'vega-lite\n'
+            '{"data": {"url": "ziya://dataset/ds_x"},\n'
+            ' "mark": {"type": "boxplot", "extent": "min-max"},\n'
+            ' "encoding": {"x": {"field": "group", "type": "nominal"},\n'
+            '              "y": {"field": "value", "type": "quantitative"}}}\n'
+            + chr(96) * 3 + '\n'
+            '\n'
+            'HISTOGRAM -- bin the FIELD, count the rows. bin.step for\n'
+            'fixed-width bins, bin.maxbins otherwise. Do not pre-group yourself.\n'
+            + chr(96) * 3 + 'vega-lite\n'
+            '{"data": {"url": "ziya://dataset/ds_x"}, "mark": "bar",\n'
+            ' "encoding": {"x": {"field": "value", "bin": {"maxbins": 30}, "type": "quantitative"},\n'
+            '              "y": {"aggregate": "count", "type": "quantitative"}}}\n'
+            + chr(96) * 3 + '\n'
+            '\n'
+            'VIOLIN / RIDGELINE -- there is NO violin mark. Use the density\n'
+            'transform -> area, stacked center, axis hidden, one small multiple\n'
+            'per group. Set extent to the data range or the tails clip. row =\n'
+            'ridgeline (stacked), column = side-by-side violins.\n'
+            + chr(96) * 3 + 'vega-lite\n'
+            '{"data": {"url": "ziya://dataset/ds_x"},\n'
+            ' "transform": [{"density": "value", "groupby": ["group"], "extent": [0, 100]}],\n'
+            ' "mark": "area",\n'
+            ' "encoding": {"x": {"field": "value", "type": "quantitative"},\n'
+            '              "y": {"field": "density", "type": "quantitative", "stack": "center", "axis": null},\n'
+            '              "row": {"field": "group", "type": "nominal"},\n'
+            '              "color": {"field": "group", "type": "nominal", "legend": null}}}\n'
+            + chr(96) * 3 + '\n'
+            '\n'
+            'ECDF -- there is NO ecdf transform. Sort within group, running\n'
+            'count, divide by group total, step interpolation. Exact (no\n'
+            'smoothing), so it is the honest way to compare two distributions.\n'
+            + chr(96) * 3 + 'vega-lite\n'
+            '{"data": {"url": "ziya://dataset/ds_x"},\n'
+            ' "transform": [\n'
+            '   {"sort": [{"field": "value"}], "window": [{"op": "count", "as": "cnt"}], "groupby": ["group"]},\n'
+            '   {"joinaggregate": [{"op": "count", "field": "value", "as": "total"}], "groupby": ["group"]},\n'
+            '   {"calculate": "datum.cnt/datum.total", "as": "ecdf"}],\n'
+            ' "mark": {"type": "line", "interpolate": "step-after"},\n'
+            ' "encoding": {"x": {"field": "value", "type": "quantitative"},\n'
+            '              "y": {"field": "ecdf", "type": "quantitative", "title": "cumulative"},\n'
+            '              "color": {"field": "group", "type": "nominal"}}}\n'
+            + chr(96) * 3 + '\n'
+            '\n'
+            'QQ PLOT (vs normal) -- the quantile transform emits (p, v); map p\n'
+            'through the inverse-normal CDF quantileNormal(datum.p) for the\n'
+            'theoretical axis. Straight line == matches normal; curved tails ==\n'
+            'heavy/light tails.\n'
+            + chr(96) * 3 + 'vega-lite\n'
+            '{"data": {"url": "ziya://dataset/ds_x"},\n'
+            ' "transform": [{"quantile": "value", "step": 0.02, "as": ["p", "v"]},\n'
+            '               {"calculate": "quantileNormal(datum.p)", "as": "norm"}],\n'
+            ' "mark": "point",\n'
+            ' "encoding": {"x": {"field": "norm", "type": "quantitative", "title": "theoretical quantile"},\n'
+            '              "y": {"field": "v", "type": "quantitative", "title": "sample quantile"}}}\n'
+            + chr(96) * 3 + '\n'
+            '\n'
+            'HEATMAP -- rect + quantitative color. Use a perceptually uniform\n'
+            'scheme (viridis/magma), NOT the default. For a 2-D histogram /\n'
+            'density, bin both axes and aggregate:"count" the color. For a\n'
+            'correlation matrix, feed already-computed r values as (x, y, r)\n'
+            'rows with a diverging scheme centered at 0 -- use a Vega scheme\n'
+            'NAME: one of redblue, blueorange, redyellowblue, purpleorange,\n'
+            'spectral (NOT RdBu / coolwarm / RdYlBu -- those are not Vega\n'
+            'scheme names and are silently dropped to the default), plus\n'
+            '"domainMid": 0 on the scale so 0 sits at the neutral midpoint.\n'
+            + chr(96) * 3 + 'vega-lite\n'
+            '{"data": {"url": "ziya://dataset/ds_x"}, "mark": "rect",\n'
+            ' "encoding": {"x": {"field": "col", "type": "ordinal"},\n'
+            '              "y": {"field": "row", "type": "ordinal"},\n'
+            '              "color": {"field": "v", "type": "quantitative", "scale": {"scheme": "viridis"}}}}\n'
+            + chr(96) * 3 + '\n'
+            '\n'
+            'ERROR BARS / CONFIDENCE INTERVALS -- the errorbar mark computes the\n'
+            'interval from the RAW rows; feed it UN-aggregated data and pick\n'
+            'extent ("ci" = bootstrapped 95%, "stderr", "stdev", or "iqr").\n'
+            'Layer a point whose y is aggregate:"mean" for the center dot. Do\n'
+            'NOT pre-average the data then hand it to errorbar -- it needs the\n'
+            'spread to compute the interval.\n'
+            + chr(96) * 3 + 'vega-lite\n'
+            '{"data": {"url": "ziya://dataset/ds_x"},\n'
+            ' "encoding": {"x": {"field": "group", "type": "nominal"}},\n'
+            ' "layer": [\n'
+            '   {"mark": {"type": "errorbar", "extent": "ci"},\n'
+            '    "encoding": {"y": {"field": "value", "type": "quantitative", "title": "value"}}},\n'
+            '   {"mark": {"type": "point", "filled": true, "size": 60},\n'
+            '    "encoding": {"y": {"aggregate": "mean", "field": "value", "type": "quantitative"}}}]}\n'
+            + chr(96) * 3 + '\n'
+            '\n'
+            'CROSS-CUTTING\n'
+            '- vega_type matters: a numeric column encoded as "nominal" becomes\n'
+            '  categorical axis ticks and breaks binning/aggregation. Trust\n'
+            '  dataset_describe vega_type.\n'
+            '- For small multiples of any of the above, add "column" or "row"\n'
+            '  rather than emitting several fences.\n'
+            '- When the labels are mathematical or a fitted analytic curve sits\n'
+            '  alongside the points, prefer the pgfplots skill instead.'
+        ),
+        'color': '#22c55e',
+    },
+    {
+        'id': 'plotly_charts',
+        'visibility': MODEL_DISCOVERABLE,
+        'catalog_description': 'Plotly recipes for flows, hierarchies and KPIs: sankey, treemap/sunburst, funnel, waterfall, indicator/gauge, parallel coordinates',
+        'name': 'Flow, Hierarchy & KPI Charts (Plotly)',
+        'description': 'Render flow, hierarchy and specialty charts in Plotly: sankey, treemap, sunburst, funnel, waterfall, indicator gauges and parallel coordinates',
+        'keywords': ['sankey', 'flow', 'flows', 'throughput', 'where does it go', 'traffic mix',
+                     'budget flow', 'energy flow', 'treemap', 'sunburst', 'icicle', 'hierarchy',
+                     'breakdown', 'composition', 'disk usage', 'share of', 'part of whole',
+                     'funnel', 'conversion', 'pipeline stages', 'drop-off', 'cohort',
+                     'waterfall', 'bridge', 'running total', 'variance', 'what changed',
+                     'kpi', 'gauge', 'indicator', 'single number', 'delta', 'sla',
+                     'parallel coordinates', 'parcoords', 'trade-off', 'multi-dimensional',
+                     'plotly'],
+        # Every recipe below was verified by rendering it through the real
+        # plotly pipeline (render_diagram).  The gotchas are index/array
+        # alignment mistakes that render a plausible-but-wrong chart, not an
+        # error.  Fence markers are assembled from chr(96) so a literal triple
+        # backtick in this source cannot terminate an enclosing markdown fence.
+        'prompt': (
+            'Render flow, hierarchy and KPI charts with a ' + chr(96) * 3
+            + 'plotly fence containing {"data": [...], "layout": {...}}. These\n'
+            'shapes have no vega-lite equivalent; reach for plotly here, and\n'
+            'for vega-lite when the question is a distribution or a time series.\n'
+            '\n'
+            'WHICH SHAPE FOR WHICH QUESTION\n'
+            '- "where does X go / how does it split / traffic or budget mix" -> sankey\n'
+            '- "what makes up the whole / breakdown by nested category" -> treemap (or sunburst if depth matters more than area)\n'
+            '- "how many survive each stage / conversion / drop-off" -> funnel\n'
+            '- "how did we get from A to B / what changed / bridge" -> waterfall\n'
+            '- "one number vs target / SLA / is it green" -> indicator (gauge + delta)\n'
+            '- "trade-offs across 4+ dimensions per item" -> parcoords\n'
+            'Do NOT use choropleth / scattergeo / mapbox: they need network\n'
+            'basemaps and hang the renderer here.\n'
+            '\n'
+            'SANKEY -- nodes are ONE label array; links are THREE parallel\n'
+            'arrays indexed into it. A link is (source[i], target[i], value[i]).\n'
+            'The index gotcha: source/target are 0-based positions in\n'
+            'node.label, not names. Off-by-one draws a plausible chart with the\n'
+            'wrong flow. Keep node.label deduplicated; a repeated label is a\n'
+            'second node, not the same one.\n'
+            + chr(96) * 3 + 'plotly\n'
+            '{"data": [{"type": "sankey",\n'
+            '  "node": {"label": ["Ingress", "Cache", "Origin", "Client"], "pad": 15},\n'
+            '  "link": {"source": [0, 0, 1, 2],\n'
+            '           "target": [1, 2, 3, 3],\n'
+            '           "value":  [70, 30, 70, 30]}}],\n'
+            ' "layout": {"title": {"text": "Request flow (req/s)"}}}\n'
+            + chr(96) * 3 + '\n'
+            '\n'
+            'TREEMAP / SUNBURST -- flat arrays: labels, parents, values. The\n'
+            'root has parents "". Every parents[i] must EXACTLY match some\n'
+            'labels[j] (case, whitespace); a mismatch silently orphans the\n'
+            'subtree and it vanishes. Duplicate labels under different parents\n'
+            'need unique ids: add "ids" and point "parents" at ids instead.\n'
+            'Use branchvalues "total" when parent values are the sum of their\n'
+            'children (e.g. disk usage); omit it when only leaves carry values.\n'
+            + chr(96) * 3 + 'plotly\n'
+            '{"data": [{"type": "treemap",\n'
+            '  "labels":  ["/", "var", "usr", "log", "cache", "lib", "bin"],\n'
+            '  "parents": ["", "/", "/", "var", "var", "usr", "usr"],\n'
+            '  "values":  [100, 60, 40, 45, 15, 30, 10],\n'
+            '  "branchvalues": "total"}],\n'
+            ' "layout": {"title": {"text": "Disk usage (GB)"}}}\n'
+            + chr(96) * 3 + '\n'
+            'Swap "type": "sunburst" for the same arrays as concentric rings.\n'
+            '\n'
+            'FUNNEL -- y is the stage name, x the count; order y top-to-bottom\n'
+            'as the user experiences it. textinfo "value+percent initial" shows\n'
+            'survival vs the first stage; "percent previous" shows per-step\n'
+            'drop-off. Values should be monotonically non-increasing; if they\n'
+            'are not, it is not a funnel -- use a bar chart.\n'
+            + chr(96) * 3 + 'plotly\n'
+            '{"data": [{"type": "funnel",\n'
+            '  "y": ["Visited", "Signed up", "Activated", "Paid"],\n'
+            '  "x": [12000, 4800, 2100, 640],\n'
+            '  "textinfo": "value+percent initial"}],\n'
+            ' "layout": {"title": {"text": "Conversion funnel"}}}\n'
+            + chr(96) * 3 + '\n'
+            '\n'
+            'WATERFALL -- "measure" is a parallel array of "relative" (a delta\n'
+            'bar floating from the running total), "total" (a bar from zero\n'
+            'showing the running total), or "absolute" (reset to a value).\n'
+            'The gotcha: a missing or misaligned measure entry defaults to\n'
+            'relative, so a final "Total" row becomes a delta and the chart\n'
+            'lies. Negative deltas are negative numbers in y, not a separate\n'
+            'trace.\n'
+            + chr(96) * 3 + 'plotly\n'
+            '{"data": [{"type": "waterfall",\n'
+            '  "x": ["Q1 start", "New", "Churn", "Upsell", "Q1 end"],\n'
+            '  "y": [400, 120, -60, 35, 0],\n'
+            '  "measure": ["absolute", "relative", "relative", "relative", "total"],\n'
+            '  "connector": {"line": {"color": "gray"}}}],\n'
+            ' "layout": {"title": {"text": "ARR bridge ($k)"}}}\n'
+            + chr(96) * 3 + '\n'
+            'The "total" row y is ignored (computed); put 0 or omit it.\n'
+            '\n'
+            'INDICATOR -- one number, optionally a gauge and a delta vs a\n'
+            'reference. mode is any combination of "number", "delta", "gauge".\n'
+            'Give the trace its own title; the renderer keeps it clear of the\n'
+            'layout title. For several KPIs, use several indicator traces with\n'
+            'domain {"row": r, "column": c} and layout.grid {"rows", "columns"}.\n'
+            + chr(96) * 3 + 'plotly\n'
+            '{"data": [{"type": "indicator", "mode": "number+gauge+delta",\n'
+            '  "value": 99.72, "number": {"suffix": "%"},\n'
+            '  "delta": {"reference": 99.9, "suffix": "%"},\n'
+            '  "gauge": {"axis": {"range": [99, 100]},\n'
+            '            "threshold": {"value": 99.9, "line": {"color": "red", "width": 3}}},\n'
+            '  "title": {"text": "Availability"}}],\n'
+            ' "layout": {"title": {"text": "SLA this month"}}}\n'
+            + chr(96) * 3 + '\n'
+            'Set gauge.axis.range tightly around the meaningful band (99-100\n'
+            'here); 0-100 flattens every SLA to a full dial.\n'
+            '\n'
+            'PARALLEL COORDINATES -- one trace, dimensions[] each with label\n'
+            'and a values array; the k-th entry of every dimension is the same\n'
+            'item. All values arrays MUST be the same length or lines drop\n'
+            'silently. Colour the lines by one dimension via line.color +\n'
+            'colorscale so the trade-off reads.\n'
+            + chr(96) * 3 + 'plotly\n'
+            '{"data": [{"type": "parcoords",\n'
+            '  "line": {"color": [12, 35, 60, 90], "colorscale": "Viridis"},\n'
+            '  "dimensions": [\n'
+            '    {"label": "Cost ($/h)", "values": [0.10, 0.25, 0.48, 0.96]},\n'
+            '    {"label": "vCPU",      "values": [2, 4, 8, 16]},\n'
+            '    {"label": "RAM (GB)",  "values": [4, 16, 32, 64]},\n'
+            '    {"label": "p99 (ms)",  "values": [120, 80, 45, 30]}]}],\n'
+            ' "layout": {"title": {"text": "Instance trade-offs"}}}\n'
+            + chr(96) * 3 + '\n'
+            '\n'
+            'CROSS-CUTTING\n'
+            '- Every array in a trace is parallel: label[i] / parents[i] /\n'
+            '  measure[i] / values[i] describe the SAME item. Count them before\n'
+            '  emitting; a length mismatch is the most common silent failure.\n'
+            '- Do not set layout.width/height or paper/plot background; the\n'
+            '  renderer sizes and themes the chart for the current surface.\n'
+            '- Colours: use named colorscales (Viridis, Blues, RdBu) or hex.\n'
+            '- One chart per fence. For a KPI panel use indicator domains, not\n'
+            '  several fences.'
+        ),
+        'color': '#f97316',
     },
     {
         'id': 'structure_trees',
@@ -2605,5 +2991,151 @@ Guidance:
 - For a schematic that is mostly boxes and arrows rather than real components,
   Mermaid or Graphviz is a better fit than circuitikz.''',
         'color': '#14b8a6',
+    },
+    {
+        'id': 'chemistry_diagrams',
+        'visibility': MODEL_DISCOVERABLE,
+        'catalog_description': 'Render chemical structures, reactions and Lewis structures with chemfig (server-side LaTeX)',
+        'name': 'Chemistry Diagrams',
+        'description': 'Draw molecular structures, reaction schemes and Lewis structures using chemfig/mhchem',
+        'keywords': ['chemistry', 'chemfig', 'molecule', 'structure', 'reaction', 'mhchem',
+                     'lewis', 'organic', 'compound', 'bond', 'ring', 'stereochemistry',
+                     'skeletal formula'],
+        'prompt': '''Render molecules with a ```chemfig``` fenced block.  Compiled by a local TeX
+install.  Unlike `circuitikz`/`tikz`, the body is NOT auto-wrapped in an
+environment -- write \\chemfig{...} (or \\ce{...}) directly, with no
+\\begin{...}/\\end{...}.  \\documentclass, \\usepackage and \\begin{document} are
+rejected, same as every other LaTeX fence.
+
+TWO DIFFERENT JOBS -- STRUCTURES VS EQUATIONS
+----------------------------------------------
+chemfig draws STRUCTURES.  It cannot typeset a reaction equation itself.
+
+  STRUCTURE   -> \\chemfig{...}            skeletal formula, rings, stereochemistry
+  EQUATION    -> \\ce{...}   (needs mhchem)  2H2 + O2 -> 2H2O, ionic charges, states
+
+For a PURE equation with no structure drawing, prefer plain KaTeX math
+(`$\\ce{2H2 + O2 -> 2H2O}$` or a `$$...$$` block) over the chemfig fence: the
+browser's KaTeX bundles the mhchem extension, so \\ce{} there needs no TeX
+install at all.  Reach for the `chemfig` fence only when you need an actual
+drawn structure, or a structure alongside an equation in the same figure.
+
+BASIC BOND SYNTAX
+------------------
+  -   single      =   double      ~   triple
+  Angle a bond with `-[:ANGLE]` (degrees, counter-clockwise from east):
+      \\chemfig{A-[:30]B-[:-30]C}
+  A branch is parenthesised; it does not advance the main chain:
+      \\chemfig{A(-B)-C}                      % B hangs off A; chain continues A-C
+  A ring is `*n(...)` where n is the ring size:
+      \\chemfig{*6(-=-=-=)}                    % benzene, alternating bonds
+
+RING-CLOSURE COUNTING -- THE SILENT-FAILURE TRAP
+-------------------------------------------------
+An under-specified ring is NOT a syntax error.  chemfig draws exactly the
+bonds it was given, leaves the ring open, and the compile reports success --
+so you get a clean render of a DIFFERENT molecule with nothing in the log to
+say so.  The rule:
+
+  standalone ring         *n(...)   needs  n    top-level bonds
+  FUSED ring (nested       *n(...)   needs  n-1  (inherits its closing edge
+    inside another ring's                        from the ring it nests in)
+    parentheses)
+  PENDANT ring (nested     *n(...)   needs  n    (hangs off a branch, does
+    inside a BRANCH,                             NOT share an edge -- easy
+    not a ring)                                  to mistake for fused)
+
+Counting ignores branches, bond options and brace groups, because each can
+contain a bond-like character that is not a ring bond: `(-OH)` is a
+substituent, `-[:-30]` carries a negative angle, `SO_{4}^{2-}` ends in a
+minus sign.  `*5(-(=O)-(=O)-)` LOOKS like five bonds but has three top-level
+ring bonds -- a carbonyl-rich ring that reads as complete while it is short.
+
+A ring missing exactly one bond is auto-closed ONLY when unambiguous: an even
+ring with strictly alternating bonds (Kekule aromatic).  Everything else
+(odd rings, non-alternating, deficits above one, over-specified rings) is
+reported as a warning and left untouched -- guessing the bond order of a
+missing bond risks a plausible-looking WRONG structure, which is worse than
+leaving the gap visible.  Read any warning returned with the image; don't
+assume a rendered ring is the ring you intended.
+
+CHARGES AND LONE PAIRS
+-----------------------
+  \\charge{ANGLE=SYMBOL}{ATOM}          e.g.  \\charge{90=\\oplus}{N}
+  \\charge{90=\\|,180=\\|}{O}                two lone pairs on O
+
+The separator between angle and symbol is `=`, not `:` -- `:` is already used
+for the unrelated radial-offset field, and for BOND angles elsewhere
+(`-[:30]`), which makes `:` the natural but wrong first guess here.  A stray
+`:` is auto-repaired to `=`, and a bare TeX symbol (\\oplus, \\ominus, ...) is
+auto-wrapped in math mode since \\charge's argument is not math mode by
+default -- both corrections are reported alongside the image, so this is a
+"good to know", not something you need to hand-fix.
+
+For plain lone pairs, \\lewis{1:5:7:,O} is usually less fiddly than stacking
+\\charge marks by angle -- see Lewis structures below.
+
+LEWIS STRUCTURES -- NO EXTRA PACKAGE NEEDED
+---------------------------------------------
+\\lewis{...} / \\Lewis{...} are available with no extra \\usepackage: they come
+from chemfig's OWN bundled module, auto-loaded for you.  Do NOT reach for
+chemmacros -- it is not loaded (its dependency closure is 58 packages deep
+and breaks fatally on a typical install) and \\lewis is unavailable through
+it here regardless.
+    \\chemfig{\\lewis{2:6:,O}}                  % oxygen with two lone pairs
+
+REACTION EQUATIONS -- \\ce{} (OPTIONAL PACKAGE)
+--------------------------------------------------
+\\ce{} comes from mhchem, loaded only if the server's TeX install has it (an
+absent optional package degrades that one feature, never the render as a
+whole).  If it is missing you'll see it named in an install hint rather than
+a bare compile failure.
+    \\ce{2H2 + O2 -> 2H2O}                      % reaction
+    \\ce{Fe^2+ + 2OH- -> Fe(OH)2 v}              % charges, precipitate arrow
+Remember: this typesets an EQUATION, not a drawn structure -- combine it with
+a separate \\chemfig{...} in the same fence for a labelled structure-plus-
+equation figure.
+
+COLOUR
+------
+xcolor is preloaded with `svgnames,dvipsnames`, so CSS/SVG names work
+directly in \\color{}/\\textcolor{}/\\charge{}: Crimson, Navy, DarkGreen, Teal.
+Case matters -- lowercase `navy` is not a name in either set and is a
+genuine error, not something the renderer can rescue.
+    \\chemfig{*6(-=-*5(-\\color{Crimson}{N}H-=-)=-=)}    % indole, coloured N
+
+ELECTRON-PUSHING ARROWS RENDER AS PNG, NOT SVG -- BY DESIGN
+--------------------------------------------------------------
+A body using \\chemmove (or a TikZ `remember picture` overlay) is always
+rendered to PNG rather than SVG.  This is not a fallback you need to work
+around: those constructs resolve coordinates recorded on a PREVIOUS compile
+pass, and the SVG driver places them off-canvas, so SVG would compile clean
+while silently OMITTING the arrow.  PNG just costs that one diagram its
+selectable text and dark-mode recolouring -- expected, not a bug to report.
+    \\chemfig{@{a}A-@{b}B}\\chemmove{\\draw[-{Latex[length=2mm]}](a)--(b);}
+
+EXAMPLE -- indole with a coloured heteroatom and lone pairs
+```chemfig
+\\chemfig{*6(-=-*5(-\\color{Crimson}{N}H-=-)=-=)}
+```
+
+EXAMPLE -- reaction equation
+```chemfig
+\\ce{CH4 + 2O2 -> CO2 + 2H2O}
+```
+
+Guidance:
+- Dark mode is automatic (light-mode TeX ink is recoloured for the dark
+  background, hue preserved) -- don't hand-colour to compensate.
+- \\def / \\newcommand / \\let and friends are rejected in every LaTeX fence,
+  chemfig included; nothing here needs them.
+- If a ring renders but looks like the wrong molecule, recount top-level
+  bonds against the standalone/fused/pendant rule above before assuming a
+  typo elsewhere -- this is the single most common way a chemfig diagram is
+  wrong without erroring.
+- For a reaction pathway that is mostly boxes/arrows between named
+  compounds rather than real bond drawing, Mermaid or Graphviz may communicate
+  the sequence more clearly than forcing it into one chemfig figure.''',
+        'color': '#0ea5e9',
     },
 ]
