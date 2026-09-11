@@ -208,13 +208,35 @@ class EmitArtifactTool(BaseMCPTool):
         def_record = definition[:MAX_DIAGRAM_DEF_CHARS]
 
         try:
-            from app.services.diagram_renderer import get_diagram_renderer
             from app.config.env_registry import ziya_env
-            renderer = await get_diagram_renderer(server_port=ziya_env("ZIYA_PORT"))
-            image_bytes, diagnostics = await renderer.render_diagram_with_diagnostics(
-                {"type": dtype, "definition": definition, "theme": theme},
-                format="png",
-            )
+            from app.mcp.tools.diagram_render import CHAT_MESSAGE_TYPES
+            if dtype.strip().lower() in CHAT_MESSAGE_TYPES:
+                # A chat-message is not a plugin diagram: it has no entry on
+                # the /render harness, so posting it there leaves the page
+                # waiting out its 30s safety timeout and the emit is recorded
+                # as "render FAILED" evidence — which is exactly how the GFX
+                # Stage 2 run lost all 36 chat-message fixed-light/fixed-dark
+                # artifacts while render_diagram on the same definition
+                # succeeded.  Mirror render_diagram's dispatch: drive the real
+                # chat UI via render_chat_message instead.
+                from app.utils.chat_screenshot import render_chat_message
+                image_bytes, diagnostics = await render_chat_message(
+                    definition,
+                    role=str((diagram or {}).get("role") or "assistant"),
+                    theme=theme,
+                    server_port=ziya_env("ZIYA_PORT"),
+                )
+            else:
+                from app.services.diagram_renderer import get_diagram_renderer
+                renderer = await get_diagram_renderer(
+                    server_port=ziya_env("ZIYA_PORT"),
+                )
+                image_bytes, diagnostics = await (
+                    renderer.render_diagram_with_diagnostics(
+                        {"type": dtype, "definition": definition, "theme": theme},
+                        format="png",
+                    )
+                )
             file_uri, save_err = save_artifact_blob(f"{name}.png", image_bytes)
             if save_err:
                 raise RuntimeError(f"rendered OK but blob persistence failed: {save_err}")
