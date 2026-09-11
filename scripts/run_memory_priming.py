@@ -79,15 +79,35 @@ def _bootstrap_plugins() -> None:
 
 # -- prime ------------------------------------------------------------------
 
+# ── activity-counter sandbox ──────────────────────────────────────────
+# extractor._next_activity_count() unconditionally writes the REAL
+# ~/.ziya/memory/activity_counter.json (see baseline store-safety finding).
+# cmd_prime runs run_post_conversation_extraction, which calls it; patch it
+# (and lifecycle.current_activity_count) to an in-process counter so priming
+# never mutates the protected store.
+import itertools as _itertools
+_prime_counter = _itertools.count(1)
+_prime_counter_val = {"n": 0}
+
+
+def _prime_next_activity_count() -> int:
+    _prime_counter_val["n"] = next(_prime_counter)
+    return _prime_counter_val["n"]
+
+
+def _prime_current_activity_count() -> int:
+    return _prime_counter_val["n"]
+
+
 async def cmd_prime(args) -> int:
     """Run the production extraction pipeline against historical
     conversations, writing proposals to a sandbox store."""
     _bootstrap_plugins()
 
-    from app.utils.memory_eval import iter_random_conversations
+    from app.memory.eval import iter_random_conversations
     from app.storage.proposals import ProposalsStore
     from app.storage.memory import MemoryStorage
-    from app.utils.memory_extractor import run_post_conversation_extraction
+    from app.memory.extractor import run_post_conversation_extraction
 
     sandbox_dir = Path(args.source).expanduser()
     sandbox_dir.mkdir(parents=True, exist_ok=True)
@@ -116,6 +136,17 @@ async def cmd_prime(args) -> int:
         shutil.copy2(real_active, sandbox_active)
         _eprint(f"Copied {real_active.name} into sandbox for read-only dedup baseline.")
     sandbox_memory = MemoryStorage(memory_dir=sandbox_dir)
+
+    # Sandbox the embedding cache too.  Historically this was left GLOBAL
+    # "on purpose" (dedup-vs-real-knowledge), but the global cache mutates
+    # the REAL ~/.ziya/memory/embeddings.npz: MemoryStorage.save ->
+    # embed_and_cache writes vectors there, and load-time orphan eviction
+    # rewrites the .npz even in keyword-only mode.  That is a protected-store
+    # write.  Redirect the cache into the sandbox so priming can never touch
+    # embeddings.npz.  (Commit-time dedup uses content-hash-stable IDs, not
+    # this cache, so nothing is lost.)
+    from app.services.embedding_service import EmbeddingCache
+    sandbox_cache = EmbeddingCache(memory_dir=sandbox_dir)
 
     # iter_random_conversations expects sample_size > 0; pass a huge
     # number when --max isn't set so we walk every available chat.
@@ -162,6 +193,12 @@ async def cmd_prime(args) -> int:
                        return_value=sandbox), \
                  patch("app.mcp.builtin_tools.is_builtin_category_enabled",
                        return_value=True), \
+                 patch("app.memory.extractor._next_activity_count",
+                       side_effect=_prime_next_activity_count), \
+                 patch("app.memory.lifecycle.current_activity_count",
+                       side_effect=_prime_current_activity_count), \
+                 patch("app.services.embedding_service.get_embedding_cache",
+                       return_value=sandbox_cache), \
                  patch("app.storage.memory.get_memory_storage",
                        return_value=sandbox_memory):
                 result = await run_post_conversation_extraction(
@@ -259,7 +296,7 @@ async def cmd_commit(args) -> int:
 
     from app.storage.proposals import ProposalsStore, get_proposals_store
     from app.models.memory import MemoryProposal, MemoryReference
-    from app.utils.memory_extractor import _next_activity_count
+    from app.memory.extractor import _next_activity_count
 
     sandbox_dir = Path(args.source).expanduser()
     if not (sandbox_dir / "probationary.jsonl").exists():

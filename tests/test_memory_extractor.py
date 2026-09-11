@@ -687,9 +687,13 @@ class TestRunExtraction:
         assert "conv-B" in opens[0].get("corroborated_by", [])
 
     @pytest.mark.asyncio
-    async def test_skips_when_no_salience_signal(self, tmp_path):
-        """A conversation with no teaching/correcting/deciding patterns
-        should skip extraction entirely — no model call, no candidates."""
+    async def test_skips_when_no_salience_signal(self, tmp_path, monkeypatch):
+        """With triage BYPASSED (ZIYA_MEMORY_TRIAGE_DISABLED=1), the legacy
+        user-only regex gate still governs: a conversation with no
+        teaching/correcting/deciding patterns skips extraction entirely —
+        no model call, no candidates.  (Triage-enabled admission is
+        covered in tests/test_memory_admission_triage.py.)"""
+        monkeypatch.setenv("ZIYA_MEMORY_TRIAGE_DISABLED", "1")
         from app.storage.memory import MemoryStorage
         store = MemoryStorage(memory_dir=tmp_path / "memory")
 
@@ -765,11 +769,18 @@ class TestRunExtraction:
         extraction_call_count = 0
         candidates_per_call = []
 
+        from app.memory.extractor import TRIAGE_SYSTEM_PROMPT
+
         async def mock_call(category, system_prompt, user_message,
                              max_tokens=2048, temperature=0.2):
             nonlocal extraction_call_count
             if category == "memory_comparison":
                 return '{"action": "ADD"}'
+            if system_prompt == TRIAGE_SYSTEM_PROMPT:
+                # Admission triage: return a non-empty hint so extraction
+                # proceeds (salient windows are admitted regardless of hints).
+                # This call is NOT an extraction call and must not be counted.
+                return '{"candidates": [{"gist": "durable decision", "layer": "decision", "quote": ""}]}'
             extraction_call_count += 1
             # Return one unique candidate per call so we can count
             # distinct extractions across windows
