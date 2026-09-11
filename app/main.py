@@ -2,7 +2,7 @@
 # This must be the very first thing to ensure logging is configured correctly
 import sys
 import os
-if any(cmd in sys.argv for cmd in ['chat', 'ask', 'review', 'explain', 'task']):
+if any(cmd in sys.argv for cmd in ['chat', 'ask', 'review', 'explain', 'task', 'shadow']):
     os.environ["ZIYA_MODE"] = "chat"
     os.environ.setdefault("ZIYA_LOG_LEVEL", "WARNING")
 
@@ -455,11 +455,29 @@ def start_server(args):
                     ensure_bedrock_data_retention_mode,
                     get_current_region,
                 )
+                from app.config.models_config import get_required_retention_mode
                 _region = get_current_region()
-                if _model_cfg.get("requires_provider_data_share"):
-                    # Model opts into Anthropic data sharing (e.g. Fable 5).
+                # Mantle-routed models (fable5, mythos5, gpt-5.6) are gated on the
+                # MANTLE switch, applied in its own branch below. Skip them here:
+                # without this check, selecting a mantle model ALSO raised the
+                # classic account switch — contradicting the fable5 config comment
+                # ("no longer touches the classic switch other users' sessions rely
+                # on") and over-granting, since the legacy boolean resolves to
+                # provider_data_share where a bedrock-runtime Covered Model such as
+                # fable5.1 needs only aws_review. Mirrors the same gate in
+                # ModelManager._initialize_bedrock_model.
+                if _model_cfg.get("endpoint_override") == "bedrock-mantle":
+                    _required_mode = None
+                else:
+                    _required_mode = get_required_retention_mode(_model_cfg)
+                if _required_mode:
+                    # Model is gated on the CLASSIC account switch (e.g. Fable
+                    # 5.1 via bedrock-runtime). Ordering-aware: an account
+                    # already at or above _required_mode is left untouched, so
+                    # an account on the legacy provider_data_share is not
+                    # downgraded to satisfy an aws_review requirement.
                     _ok, _err = ensure_bedrock_data_retention_mode(
-                        required_mode="provider_data_share",
+                        required_mode=_required_mode,
                         region=_region,
                         profile_name=getattr(args, "profile", None),
                     )
@@ -469,23 +487,31 @@ def start_server(args):
                         print("=" * 80)
                         print(f"\n{_err}\n")
                         print(
-                            "Claude Fable 5 requires opting in to Anthropic data sharing.\n"
-                            "Bedrock retains prompts/completions for up to 30 days and shares\n"
-                            "them with Anthropic. Check that your IAM policy allows bedrock:*\n"
-                            "on the Bedrock service, then re-run Ziya."
+                            f"Model '{_model_name}' requires the Bedrock account data\n"
+                            f"retention mode '{_required_mode}'. Under aws_review, AWS\n"
+                            "retains prompts/completions for up to 30 days for human review\n"
+                            "WITHIN the AWS boundary; they are not shared with the model\n"
+                            "provider. Check that your IAM policy allows\n"
+                            "bedrock:PutAccountDataRetention, then re-run Ziya."
                         )
                         print("=" * 80 + "\n")
                         sys.exit(1)
-                else:
-                    # Selected model does NOT require data sharing. Reset the
-                    # account/region retention mode to 'inherit' so a prior Fable 5
-                    # session does not leave other models silently running under
-                    # provider_data_share. Best-effort: this model needs no
-                    # retention change, so a failure here only warns (never blocks).
+                elif os.environ.get("ZIYA_RESET_BEDROCK_RETENTION") == "1":
+                    # Opt-in teardown. This once ran unconditionally, to stop a
+                    # prior Fable 5 session leaving other models under
+                    # provider_data_share — but AWS documents that a permissive
+                    # account mode does NOT retain content for a model whose own
+                    # allowed_modes include 'none'; each model's declaration
+                    # governs. The reset therefore protected nothing, while
+                    # actively breaking this shared account-wide switch: starting
+                    # Ziya on any non-Covered model would strand an in-flight
+                    # Fable 5.1 session with a retention 400. Downgrades are now
+                    # explicit and opt-in.
                     _ok, _err = ensure_bedrock_data_retention_mode(
                         required_mode="inherit",
                         region=_region,
                         profile_name=getattr(args, "profile", None),
+                        allow_downgrade=True,
                     )
                     if not _ok:
                         logger.warning(
@@ -657,7 +683,7 @@ def check_auth(args):
 
 def main():
     # Check if running as CLI subcommand (ziya chat, ziya ask, etc.)
-    cli_commands = {'chat', 'ask', 'review', 'explain', 'task'}
+    cli_commands = {'chat', 'ask', 'review', 'explain', 'task', 'shadow'}
     
     # Check if any argument is a CLI command (handles both "ziya chat" and "ziya --profile x chat")
     if any(arg in cli_commands for arg in sys.argv[1:]):
@@ -733,6 +759,18 @@ def main():
         if allowed is not None and endpoint not in allowed:
             print(f"\n❌ Endpoint '{endpoint}' is restricted by your enterprise policy.")
             print(f"   Allowed endpoints: {', '.join(allowed)}\n")
+            sys.exit(1)
+
+    # The OpenAI-compatible endpoints import the openai SDK lazily at model
+    # init, where an ImportError used to be swallowed into a "provider failed
+    # to initialize" error on the first chat. Check it here, where a clear
+    # exit is possible.
+    from app.utils.local_models import openai_sdk_missing_message, is_local_endpoint
+    if (ziya_env("ZIYA_ENDPOINT") in ("openai", "zai", "meta")
+            or is_local_endpoint(ziya_env("ZIYA_ENDPOINT"))):
+        _sdk_err = openai_sdk_missing_message(ziya_env("ZIYA_ENDPOINT"))
+        if _sdk_err:
+            print(f"\n❌ {_sdk_err}\n")
             sys.exit(1)
 
     # Snapshot which endpoints have credentials, once. /api/endpoints serves
