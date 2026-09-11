@@ -1,6 +1,10 @@
 # Shadow Sessions: Terminal Observation & Cross-Session Attachment
 
-Status: DRAFT v1 — protocol design for review
+Status: v1 — Phase 1 (observe + read) implemented; Phases 2–5 remain design.
+Implementation: `app/shadow/` (`pty_host`, `sock_server`, `client`,
+`segmenter`, `journal`, `registry`, `masking`), `app/mcp/tools/shadow_tools.py`,
+`ziya shadow` in `app/cli.py`. Deviations from this text are noted inline
+as *Impl note*.
 Scope: `ziya shadow` PTY wrapper, journal format, attachment socket API,
 exec confirmation handshake. Annotation/intelligence engine is out of
 scope for this doc (phase 1 is observation-only).
@@ -95,6 +99,11 @@ e.g. `a3f21e`):
   clean exit (SIGTERM/SIGHUP handlers + atexit).
 - Socket and registry files are mode 0600; the sessions directory 0700.
   Same-user access only — this is the entire local authn model in v1.
+- *Impl note:* `AF_UNIX` paths are capped at 104 bytes (macOS) / 108
+  (Linux). When `~/.ziya/shadow/sessions/<id>.sock` overflows, the host
+  binds `$TMPDIR/ziya-shadow-<uid>/<id>.sock` (0700 dir, 0600 socket)
+  and records that path in the registry `socket` field; clients always
+  read the path from the registry rather than deriving it.
 
 ## 4. Journal format
 
@@ -347,8 +356,6 @@ exposure as shoulder-surfing the human's own session, plus actuation.
 It is the highest privilege in the system and the documentation must
 say so plainly.
 
-## 7. Secret masking
-
 ### 6.2 Headless sessions (agent-spawned)
 
 A shadow session does not require a human terminal. `shadow_spawn`
@@ -389,6 +396,73 @@ requested restriction.
 Soft-pause does not apply (no canvas keystrokes). Revoke is
 `shadow_release`, owner `shadow_kill`, or heartbeat death. Asks (§8)
 do not exist headless; the comment channel becomes a no-op.
+
+### 6.3 Command policy for line control
+
+A lease's restriction is not a single knob.  Two independent axes are
+set on both sides (shadow ceiling, controller request) and the
+**minimum wins** on each — the §6.1 two-sided rule, applied per axis.
+
+**Policy set — what counts as an allowed command.**
+
+| value | meaning |
+|---|---|
+| `inherit` | The persisted local shell allowlist (`mcp_config.json` shell config: allowed commands, git read-only/write tier, aws/curl/IaC blocks). The shadow host **reads this itself**; it never trusts an allowlist sent over the socket. Per-chat *session grants* (task-scope escalations) are process-local and unverifiable by the host, so they do **not** inherit. The local **yolo flag does not inherit** — yolo on the workstation never becomes yolo on a remote host; `unrestricted` is always an explicit per-lease choice. |
+| `named:<set>` | An explicit policy file `~/.ziya/shadow/policies/<set>.json`, same schema as the shell config so the existing editor works and the file can be checked into a repo and shared across a team (`prod-readonly.json`). |
+| `none` | Everything is allowed; only meaningful with mode `unrestricted`. |
+
+**Mode — what happens to a command the policy does not allow.**
+
+| verdict ↓ / mode → | `strict` | `gated` | `unrestricted` |
+|---|---|---|---|
+| allowed | run | run | run |
+| not allowed | refuse (`command_denied`), no human prompt | one-keystroke banner at the shadow terminal | run, journaled |
+
+- `strict` is the headless / fleet-loop mode: no human is watching a
+  banner, so the policy is the entire control.  It is the **only** mode a
+  `shadow_spawn`ed session may hold (§6.2).
+- `gated` is the interactive default.  Read-only diagnostics flow;
+  anything mutating asks the human at the canvas.
+- `unrestricted` + `none` is total control: requires the shadow ceiling
+  to permit it, an explicit request, and the keystroke grant (§6.1).
+
+Shadow side: `--allow-control[=strict|gated|unrestricted]
+[--policy inherit|<set>]`.  A host-pinned `--policy` overrides whatever
+the requester asks for — the human at the target decides what
+"allowed" means there.  The grant banner names both axes and
+summarises the effective set so the human knows what they are
+delegating: *chat 41c2 requests line control · gated · policy inherit
+(92 commands, git read-only, no writes)*.
+
+**Enforcement lives in the shadow host.**  The chat side may pre-check
+to give the model a fast, descriptive rejection, but the host runs the
+validator on every `send_line` itself; otherwise any same-UID process
+speaking the socket protocol bypasses the policy.  Every verdict is a
+`meta` record with provenance, effective mode and policy.
+
+**Validator reuse.**  `ShellServer.is_command_allowed` is a static
+check (tokenization, operator splitting, env-prefix peeling,
+redirections, destructive classes, git tiers) and transfers unchanged,
+under a *remote profile* with two substitutions: command substitutions
+(`$(...)`, backticks) are **not resolved** — resolving them would
+execute on the wrong machine — and are simply disallowed; and path-based
+write policy is replaced by "paths are opaque": a write is disallowed
+unless the command itself is allowlisted.  `get_allowed_commands_
+description` supplies the banner summary and the model's context block.
+
+**What the validator cannot see** (stated plainly in the tool
+description): the check is on the *text the model sends*.  The remote
+shell decides what it means — `ls` may be an alias, `git` a wrapper, a
+restricted shell may reject what we allowed.  The policy is a real
+control against the model (it bounds what it may ask for) and only
+advisory against the environment.  The human ceiling, the canvas,
+soft-pause, revoke and the journal remain the controls against the
+environment.  With OSC 133 instrumentation the marker-C echo records
+what the shell actually parsed, enabling a post-hoc journal check that
+flags divergence between sent and executed text.
+
+## 7. Secret masking
+
 Non-negotiable before any release:
 
 - Detect password-style prompts in the output stream (regex set:
@@ -400,6 +474,17 @@ Non-negotiable before any release:
 - Echo-off detection is the primary mechanism (it is how sudo/ssh/gpg
   actually behave); the regex set is belt-and-braces for prompts that
   read with echo on.
+- **"Echo off" means `ECHO` clear *and* `ICANON` set.** `ECHO` alone is
+  not a signal: zsh (ZLE) and bash (readline) clear `ECHO` at every
+  prompt and paint their own echo, in raw mode (`ICANON` clear). A real
+  password read — `sudo`, `ssh`, `read -s`, `getpass` — clears `ECHO`
+  but stays canonical. The first detector shipped keyed on `ECHO` alone
+  and masked *all* normal typing in any line-editing shell (the tests
+  had only used plain `sh`, which keeps `ECHO` on); regression tests now
+  run against real `zsh -f -i` and `bash --norc -i`. Residual: a raw-mode
+  application collecting a secret (a TUI password field) is not caught
+  here — whatever it echoes is on the human's screen and falls to the
+  redactor.
 
 ## 8. Shadow-side UX
 
@@ -414,6 +499,31 @@ Non-negotiable before any release:
   of the literal sequence available via double-press.
 - On start, one dim line: `⏺ shadow session a3f21e ("ssh prod-42") —
   journaling locally. C-x C-z for menu.` Then silence.
+- **Terminal title (always on).** The one persistent indicator that a
+  terminal is shadowed. The frontend rewrites the child's title
+  sequences (OSC 0 and OSC 2, BEL or ST terminated, carried across
+  reads with a 1 KiB cap; OSC 1 — icon name only — passes through, and
+  an ESC inside an OSC body aborts it exactly as xterm does) so the
+  terminal shows `⏺ <label> (<id>) · chat <id> (<child's own title>)`
+  — the child's title survives as the parenthetical; with no attached
+  chat the middle segment is omitted; with no child title there is no
+  parenthetical and the prefix is set once at start. Re-emitted on
+  attach, detach and relabel using the last child title seen. The
+  rewrite is on the *display* path only: the journal records the
+  child's original bytes. The frontend pushes the terminal's title
+  (`CSI 22;0 t`) at start and pops it (`CSI 23;0 t`) on exit so the
+  pre-shadow title is restored; a child's own push/pop passes through
+  untouched. Implemented in `app/shadow/title.py`. The prefix goes through
+  `safe_terminal_text`; the child's title is remote-controlled but
+  structurally bounded, so it is only stripped of control bytes and
+  length-capped. This is the single documented exception to
+  byte-faithful passthrough; a menu toggle disables it for programs
+  that depend on exact title round-tripping. Rationale for always-on:
+  a wrapped production terminal that is visually identical to an
+  unwrapped one is the first thing a security review asks about.
+  A persistent status *row* was rejected — it requires owning a
+  scroll region (DECSTBM), i.e. becoming a terminal emulator, and
+  fights the remote host's own tmux/screen.
 - The overlay renderer (dim ⏺-prefixed lines drawn below the current
   line, cleared by subsequent output) is a phase-1 component shared by
   attach notices, exec banners (§6), control banners (§6.1), the
@@ -459,6 +569,16 @@ same-process, same codebase):
 - `shadow_set_meta(session_id, label=None, **data)` → update the
   session's label/metadata — e.g. relabel to `prod-42` after observing
   a hop in the journal. Journaled with provenance.
+- `shadow_attach(session_id, mode="observe")` / `shadow_detach(session_id)`
+  → bind / unbind the *current* conversation to a session (§6.1, phase 2).
+  The binding identity is the injected `conversation_id`, not a tool
+  argument, so the model cannot attach on another conversation's behalf.
+  Observe mode is display-only: the shadow terminal shows a banner and a
+  `· chat <id>` window-title tag, and the session is surfaced to the chat;
+  it grants no exec/control. Observation is shareable, so attach is
+  last-writer-wins on the single display slot and journals the takeover;
+  detach only clears the association (reads still work), and a
+  conversation may only detach its own binding.
 - `shadow_spawn(argv, label=None, ceiling="gated")` → fork a headless
   session (§6.2): daemonized shadow host running `argv`. Returns the
   session id; the spawning conversation holds an implicit lease at the
@@ -502,15 +622,53 @@ auto-injects a `shadow_read` tail of the matching session.
 | Control authorization | §6.1: two-sided — shadow-side ceiling (`none\|gated\|unrestricted`) ∧ per-lease human grant at or below it; gated leases confirm mutating commands per-keystroke; human keystrokes auto-pause the lease; menu revoke; every model-sent byte journaled with provenance and effective restriction |
 | Headless authorization | §6.2: `shadow_spawn` is chat-side gated (normal tool approval); spawning conversation holds an implicit lease bounded by the spawn-time ceiling; later attachers grant in their own chat terminal; idle shutdown (24 h default); `spawned_by` provenance in registry and journal |
 | Secrets at rest | Echo-off + prompt-regex masking before journal write |
-| Journal exposure | Plaintext local file, 0600; documented as shell-history-equivalent; rotation cap |
+| Journal exposure | Local file, 0600, unlinked on exit; rotation cap. **Encrypted at rest when ALE is active** for `session_data`: each line is an independent `!ale1:<base64 envelope>` (per-line, not per-file, because the journal is append-only and read while written). Readers decode both forms; a reader without key material raises rather than presenting the journal as empty; a writer whose policy requires encryption but cannot encrypt refuses to journal in plaintext. The registry entry (`<id>.json`: label, redacted argv, meta) stays plaintext — it is the discovery index and carries no terminal content. Without ALE the file is plaintext, documented as shell-history-equivalent |
 | Model exposure | Chat side sends journal excerpts to the model — same trust boundary as the user pasting terminal output, but automated; excerpt size bounded by tool params |
 
-Known v1 gaps (accepted, documented): no encryption at rest; no
-cross-user or cross-host attach; prompt-heuristic segmentation can
-mis-split on exotic prompts; output of `cat secrets.txt` is journaled
-(masking covers *input* secrets, not displayed file contents);
-multi-hop sessions have no endpoint detection — the label/meta is a
-user- or model-maintained claim about the far end, not a measurement.
+### 10.1 Phase 1 security review (implemented controls)
+
+A pre-release audit (`tests/test_shadow_security.py`, one test per
+finding, each written to fail against the unhardened code) added the
+following. The threat model has three byte sources: the human (trusted),
+the wrapped program / remote host (untrusted — a compromised host writes
+arbitrary bytes into the stream), and the chat model (untrusted for
+control — it must never be able to type into the session or steer the
+human's terminal emulator).
+
+| # | Finding | Control |
+|---|---|---|
+| F1 | Prompt-regex masking dropped the echo tail *at Enter*, but the echo of a pasted/fast-typed secret arrives afterwards and was journaled | After a masked Enter (any reason but echo-off) output is suppressed through the next newline |
+| F2 | One input read carrying several lines (`sudo cmd⏎password⏎`) concatenated into one `cmd` record; the gate was consulted against termios state that predates the write | Input is split per terminator; only the first line is gate-checked, later lines are masked fail-closed (`mask` reason `multi-line-input`). Their kernel echo — the same bytes on the human's screen — can still reach the journal as output and is the redactor's job |
+| F3 | Model-controlled text (`comment`, `label`, provenance) was written raw to the human's TTY. An escape sequence there is terminal-emulator injection, and DSR/CPR/answerback *replies* arrive on stdin and would be forwarded to the wrapped shell as keystrokes — a model→shell path bypassing the "nothing typed invisibly" principle | `overlay()` reduces all chat-originated text to printables: every ESC/CSI/OSC sequence, C0/C1 control, bidi override and zero-width character is removed and newlines folded (`redaction.safe_terminal_text`) |
+| F4 | Displayed credentials (`env`, `aws sts`, `curl -v` auth headers, PEM dumps, `mysql -pX`) were journaled verbatim — the §10 "known gap" | `redaction.Redactor` is the single choke point in `JournalWriter.cmd/output`: AWS keys, PEM blocks (stateful across chunks), JWTs, GitHub/Slack/Google/`sk-` tokens, `Bearer …`, `KEY=value` with credential-named keys (value ≥ 8 chars incl. a letter, so `tokens: 1266457` survives), and `-pSECRET` on command lines. Replaced with `[REDACTED:<kind>]`. Defense in depth, not a guarantee |
+| F5 | Same-UID authn rested on socket-path perms alone | The server also reads the peer's UID from the connection (`SO_PEERCRED` / `LOCAL_PEERCRED`) and refuses any other uid, or an undeterminable one, before parsing a request |
+| F6 | The `$TMPDIR` socket-dir fallback used `makedirs(exist_ok=True)`; a pre-planted symlink or foreign-owned dir was accepted | Both shadow directories are verified with `lstat`: real directory, owned by us, no group/other bits, else refuse |
+| F7 | `remove()` unlinked whatever paths a registry entry named; a corrupt or foreign entry turned the routine stale-entry reap in `shadow_list` into an arbitrary-unlink primitive | Unlink is confined to files whose parent is one of the two shadow directories |
+| F8 | Command lines carry credentials (`mysql -pX`, `--token=X`, `KEY=VALUE` prefixes) and argv is recorded in the registry, the `start` record and `shadow_list` | Recorded argv/default label pass through `redact_argv`; the child receives the real argv |
+| F9 | A model-supplied `search` regex runs inside the human's terminal wrapper; `(a+)+$b` hung a handler thread for >60 s | Patterns are capped at 256 chars and any quantified group (`(…)+`, `(…)*`, `(…){n}`) or count ≥ 100 is refused |
+| F10 | The transcript is remote-host-controlled bytes headed for the model but was classified `trust="medium"` and not sanitized | `shadow_read` is `trust="low"` (same as fetched web content); the transcript passes the SDO-183 hidden-character sanitizer and the encoded-payload scanner (`source="shadow_read"`) |
+| F11 | In `osc133` mode `on_enter` returned before consulting `masked`, so with an instrumented shell the echo between markers B and C — the secret — was recorded verbatim as the *command* at C | Masking is handled first in every mode; a masked line yields no `cmd` at marker C |
+
+Known v1 gaps (accepted, documented): encryption at rest depends on ALE
+being enabled (`ZIYA_ENCRYPTION_KEY` or an enterprise KEK provider) —
+without it the journal is plaintext for its (short, unlink-on-exit)
+lifetime, and a `SIGKILL`ed host leaves it until the next reader reaps
+the stale entry; with ALE the leftover is ciphertext but still occupies
+disk until reaped; base64 expands encrypted lines ~1.9×, so the 50 MiB
+rotation cap holds about half the plaintext history; no cross-user or cross-host attach; prompt-heuristic segmentation can
+mis-split on exotic prompts; output-side redaction is shape-based, so an
+arbitrary password printed with no surrounding hint is not caught, and
+the kernel echo of pasted lines after the first is journaled as output
+(as the human sees it on screen); `provenance` on `comment`/`set_meta` is
+asserted by the connecting same-UID process and is an audit *label*, not
+an authenticated identity; multi-hop sessions have no endpoint detection —
+the label/meta is a user- or model-maintained claim about the far end, not
+a measurement. Sending terminal output from a production host to a model
+is the same trust boundary as the user pasting it, but automated; the
+provider allowlist that governs every other Ziya turn governs this one,
+and organisations with a data-classification policy for production
+output should gate `ziya shadow` under the same policy they apply to
+pasting.
 
 ## 11. Phasing
 
@@ -525,12 +683,24 @@ user- or model-maintained claim about the far end, not a measurement.
   chat sessions can reason over live remote terminal state.
 - **Phase 2 — exec.** `--allow-exec`, confirmation handshake, audit
   records, allowlist-informed banners.
+- **Phase 2 (revised) — attach + push.** Chat-side attachment record
+  binding a live session to a conversation (from the terminal menu or a
+  `shadow_attach` tool / UI affordance); a per-turn system-context block
+  so the model knows an attached terminal exists and its state; the
+  terminal banner names the attached chat.  The backend `subscribe`s
+  and injects `ask` records as conversation turns, replying via
+  `comment` overlays.  The standalone per-command exec handshake is
+  folded into Phase 3's `gated` mode rather than built separately.
 - **Phase 3 — line control.** Control leases (§6.1) in line mode only
   (§6.1a): `control_acquire`/`send_line`/`wait_idle`, pause/revoke
-  semantics, altscreen/echo-off input rejection, multi-session
-  orchestration tools, and headless spawn (`shadow_spawn`/
-  `shadow_kill`, §6.2). No screen mirror — the smallest path to
-  model-driven remote operations.
+  semantics, altscreen/echo-off input rejection, command policy ×
+  mode (§6.3: `inherit|named|none` × `strict|gated|unrestricted`,
+  remote-profile validator reuse, shareable policy files under
+  `~/.ziya/shadow/policies/`), multi-session orchestration tools, and
+  headless spawn (`shadow_spawn`/`shadow_kill`, §6.2, `strict` only).
+  No screen mirror — the smallest path to model-driven remote
+  operations.  Exec authority is granted to an *attachment*, so the
+  audit trail reads "chat X ran Y on session Z".
 - **Phase 4 — screen control.** Screen mode (§6.1b): headless screen
   mirror, `send_keys`/`screen`, TUI-capable control loops.
 - **Phase 5 — ergonomics + intelligence.** `@label` addressing,
