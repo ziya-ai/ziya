@@ -64,6 +64,55 @@ def _resolve_card_storage() -> Dict[str, Any]:
     }
 
 
+def _validation_payload(root: Any, project_id: Optional[str]) -> Dict[str, Any]:
+    """Run the launch-time validator on a block tree, as tool output.
+
+    The same ``validate_card_tree`` the launch endpoint applies, surfaced
+    here so an agent authoring a card learns about a defect at WRITE
+    time — with the remedy text — rather than when the run reaches the
+    block, which for a fan-out may be an hour of spend later.  Measured
+    failure this closes: a ``for_each`` source naming the upstream block
+    by its NAME; the validator now says which id to use instead, and an
+    agent that sees that in the write response can fix it in the next
+    turn without anything having run.
+
+    ``root`` may be a Block or a plain dict (an unsaved tree from the
+    agent).  A validator fault is reported, never raised: a broken
+    validator must not make a card unwritable.
+    """
+    from app.models.task_card import Block
+    from app.utils.task_card_validation import validate_card_tree
+    try:
+        block = root if isinstance(root, Block) else Block(**(root or {}))
+    except Exception as e:  # noqa: BLE001
+        return {"ok": False, "errors": [{
+            "path": "(root)", "block_id": "",
+            "message": f"root is not a valid block tree: {e}",
+        }], "warnings": []}
+    try:
+        from app.context import get_project_root_or_none
+        res = validate_card_tree(
+            block, project_id=project_id,
+            project_root=get_project_root_or_none(),
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"task_card validation skipped: {e}")
+        return {"ok": True, "errors": [], "warnings": [],
+                "note": f"validation skipped: {e}"}
+
+    def _f(f):
+        return {"path": f.path, "block_id": f.block_id, "message": f.message}
+
+    return {
+        "ok": res.ok,
+        "errors": [_f(f) for f in res.errors],
+        "warnings": [_f(f) for f in res.warnings],
+        # The launch endpoint refuses on errors; say so here, so the
+        # agent knows a write with errors is a card that cannot run.
+        "launchable": res.ok,
+    }
+
+
 # ── Tool: task_card_list ────────────────────────────────────────
 
 class TaskCardListInput(BaseModel):
@@ -219,9 +268,12 @@ class TaskCardWriteTool(BaseMCPTool):
         "Update a Task Card's definition in place — replace its root block "
         "tree (to fix loop structure, instructions, counts, conditions), "
         "and/or its name/description.  Read the card first with "
-        "task_card_read, edit the block tree, then write it back.  Block "
-        "ids are reassigned on write.  Does NOT launch the card; it edits "
-        "the saved definition only."
+        "task_card_read, edit the block tree, then write it back.  Blocks "
+        "WITHOUT an id get one on write; explicit ids are kept, so set an "
+        "id on any block another block references via sibling(\"id\").  "
+        "The response carries the launch validator's findings; fix any "
+        "errors before launching, as launch refuses them.  Does NOT "
+        "launch the card; it edits the saved definition only."
     )
     InputSchema = TaskCardWriteInput
 
@@ -297,10 +349,85 @@ class TaskCardWriteTool(BaseMCPTool):
             return {"error": True,
                     "message": f"No task card with id '{card_id}' in this project."}
 
+        validation = _validation_payload(card.root, res["project_id"])
+        if validation["ok"]:
+            tail = "Re-launch it to run the new definition."
+        else:
+            n = len(validation["errors"])
+            tail = (f"It has {n} structural error(s) and launch will "
+                    f"refuse it - see 'validation' and write a corrected "
+                    f"root.")
         return {
             "success": True,
             "card_id": card_id,
             "name": card.name,
-            "message": (f"Task card '{card.name}' ({card_id[:8]}) updated. "
-                        f"Re-launch it to run the new definition."),
+            "message": f"Task card '{card.name}' ({card_id[:8]}) updated. {tail}",
+            "validation": validation,
+        }
+
+
+# ── Tool: task_card_validate ────────────────────────────────────
+
+class TaskCardValidateInput(BaseModel):
+    """Input schema for task_card_validate."""
+    root: Optional[Dict[str, Any]] = Field(
+        None,
+        description=("A block tree to check WITHOUT saving it — the JSON "
+                     "you are about to emit in a task-card fence or pass "
+                     "to task_card_write.  Give either root or card_id."),
+    )
+    card_id: Optional[str] = Field(
+        None,
+        description="Alternatively, the id of a saved card to validate.",
+    )
+
+
+class TaskCardValidateTool(BaseMCPTool):
+    """Validate a task card block tree (saved or not) without launching."""
+
+    name: str = "task_card_validate"
+    description: str = (
+        "Run the launch validator on a Task Card block tree and return its "
+        "findings, without saving or launching anything.  Pass 'root' to "
+        "check a tree you are about to emit in a task-card fence, or "
+        "'card_id' to check a saved card.  Errors mean launch will refuse "
+        "the card (e.g. a for_each source referencing a block by NAME "
+        "instead of id, a task with no instructions, an unresolvable Call "
+        "target); each finding carries a path and, where possible, the "
+        "fix.  Call this before presenting a card so it can be corrected "
+        "before anyone spends a run on it."
+    )
+    InputSchema = TaskCardValidateInput
+
+    async def execute(self, **kwargs) -> Dict[str, Any]:
+        root = kwargs.get("root")
+        card_id = (kwargs.get("card_id") or "").strip()
+        if root is None and not card_id:
+            return {"error": True,
+                    "message": "Provide either root (a block tree) or card_id."}
+        res = _resolve_card_storage()
+        project_id = res.get("project_id") if res["ok"] else None
+        if root is None:
+            if not res["ok"]:
+                return {"error": True, "message": res["error"]}
+            card = res["storage"].get(card_id)
+            if not card:
+                return {"error": True,
+                        "message": (f"No task card with id '{card_id}' "
+                                    f"in this project.")}
+            root = card.root
+        validation = _validation_payload(root, project_id)
+        if validation["ok"]:
+            msg = "No structural errors; the card is launchable."
+            if validation["warnings"]:
+                msg += f" {len(validation['warnings'])} warning(s) to review."
+        else:
+            msg = (f"{len(validation['errors'])} structural error(s) - "
+                   f"launch would refuse this card. Fix each finding at its "
+                   f"path and validate again.")
+        return {
+            "success": True,
+            "card_id": card_id or None,
+            "message": msg,
+            **validation,
         }
