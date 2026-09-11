@@ -1192,6 +1192,25 @@ export const sendPayload = async (
                     }
                 }
 
+                // Live UI sync for model-staged task cards.  task_card_stage
+                // creates the card + a staged binding server-side mid-turn;
+                // useTaskBindings only re-fetches on this event, so without
+                // it the tile would not appear until a reload.
+                if (unwrappedData.type === 'tool_display'
+                    && unwrappedData.tool_name === 'task_card_stage') {
+                    try {
+                        const raw = unwrappedData.result;
+                        const result = typeof raw === 'string'
+                            ? (() => { try { return JSON.parse(raw); } catch { return null; } })()
+                            : raw;
+                        if (result && result.success && result.binding_id) {
+                            window.dispatchEvent(new CustomEvent('task-binding-created'));
+                        }
+                    } catch (e) {
+                        console.warn('Failed to parse task_card_stage result:', e);
+                    }
+                }
+
                 // Handle diff validation status (informational only - no rewind)
                 if (unwrappedData.type === 'diff_validation_failed' ||
                     unwrappedData.type === 'diff_validation_status' ||
