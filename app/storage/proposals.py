@@ -149,6 +149,10 @@ class ProposalsStore:
         can still inspect them — filter on status when querying.
         """
         state: Dict[str, Dict[str, Any]] = {}
+        # Distinct foreign conversations that have corroborated each id.
+        # Kept separately from the display list ``corroborated_by`` (which
+        # is capped) so the count cannot be re-inflated once the cap trims.
+        corroborators: Dict[str, set] = {}
         for ev in events:
             kind = ev.get("kind")
             pid = ev.get("id")
@@ -164,13 +168,21 @@ class ProposalsStore:
                 state[pid]["status"] = ev["status"]
                 state[pid]["status_changed_at"] = ev.get("ts", int(time.time() * 1000))
             elif kind == EVENT_CORROBORATE and pid in state:
-                state[pid]["corroborations"] = (
-                    state[pid].get("corroborations", 0) + 1
-                )
-                # Track which conversations corroborated, capped to last 5.
-                seen = state[pid].setdefault("corroborated_by", [])
                 conv = ev.get("conversation_id")
-                if conv and conv not in seen:
+                # Corroboration is evidence of independent observation.  The
+                # proposing conversation re-deriving its own fact on a later
+                # turn (extraction re-runs per stream) is not independent, an
+                # already-counted conversation is not new, and an unattributed
+                # event cannot be shown to be either.  None of those count.
+                origin = state[pid].get("conversation_id")
+                seen_set = corroborators.setdefault(pid, set())
+                if not conv or conv == origin or conv in seen_set:
+                    continue
+                seen_set.add(conv)
+                state[pid]["corroborations"] = len(seen_set)
+                # Display list of corroborating conversations, capped to last 5.
+                seen = state[pid].setdefault("corroborated_by", [])
+                if conv not in seen:
                     seen.append(conv)
                     if len(seen) > 5:
                         del seen[0]
@@ -268,6 +280,18 @@ class ProposalsStore:
         """
         return list(self._projection().values())
 
+    @staticmethod
+    def _evict_vector(proposal_id: str) -> None:
+        """Drop the proposal's cached embedding.  ``add()`` caches one so
+        retrieval-feedback can score open proposals; once the proposal is
+        terminal nothing reads it again, and leaving it inflates the cache
+        every search must scan.  Best-effort: never blocks the transition."""
+        try:
+            from app.services.embedding_service import get_embedding_cache
+            get_embedding_cache().remove(proposal_id)
+        except Exception as e:
+            logger.debug(f"Proposal vector eviction skipped (non-fatal): {e}")
+
     def mark_promoted(self, proposal_id: str,
                       target_memory_id: str) -> bool:
         """Record that a proposal has graduated to the active memory store.
@@ -288,6 +312,7 @@ class ProposalsStore:
             "status": STATUS_PROMOTED,
             "target_memory_id": target_memory_id,
         })
+        self._evict_vector(proposal_id)
         return True
 
     def mark_archived(self, proposal_id: str,
@@ -308,6 +333,7 @@ class ProposalsStore:
             "status": STATUS_ARCHIVED,
             "reason": reason,
         })
+        self._evict_vector(proposal_id)
         return True
 
     def corroborate_by_id(self, proposal_id: str,
