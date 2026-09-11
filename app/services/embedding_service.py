@@ -60,7 +60,15 @@ class BedrockTitanProvider(EmbeddingProvider):
         self._region = region or ziya_env("ZIYA_EMBEDDING_REGION", default=DEFAULT_REGION)
         self._model_id = model_id or ziya_env("ZIYA_EMBEDDING_MODEL", default=DEFAULT_MODEL)
         self._dim = dim or ziya_env("ZIYA_EMBEDDING_DIM", default=DEFAULT_DIM)
-        self._profile = aws_profile or os.environ.get("AWS_PROFILE", "default")
+        # Follow the same profile the main Bedrock model uses.  ZIYA_AWS_PROFILE
+        # is what --profile / startup config resolve to; AWS_PROFILE is set from
+        # it by app.config.environment but only once that code has run, which
+        # scripts, tests and eval harnesses never do.  Falling to "default"
+        # here is how embeddings silently downgraded to keyword-only.
+        self._profile = (aws_profile
+                         or os.environ.get("ZIYA_AWS_PROFILE")
+                         or os.environ.get("AWS_PROFILE")
+                         or "default")
         self._client = None
         self._warned = False
 
@@ -214,11 +222,38 @@ class EmbeddingCache:
             del self._id_to_idx[memory_id]
             self._dirty = True
 
+    def retain_only(self, keep_ids: set) -> int:
+        """Drop every cached vector whose id is not in ``keep_ids``.
+
+        One O(N) rebuild instead of N swap-removals.  Returns the number
+        of vectors removed; a no-op (nothing to remove) leaves the dirty
+        flag untouched so no spurious flush follows.
+        """
+        with self._lock:
+            self._ensure_loaded()
+            if not self._ids:
+                return 0
+            keep_idx = [i for i, mid in enumerate(self._ids) if mid in keep_ids]
+            removed = len(self._ids) - len(keep_idx)
+            if removed == 0:
+                return 0
+            self._ids = [self._ids[i] for i in keep_idx]
+            self._vectors = (self._vectors[keep_idx]
+                             if keep_idx
+                             else np.zeros((0, self._dim), dtype=np.float32))
+            self._id_to_idx = {mid: i for i, mid in enumerate(self._ids)}
+            self._dirty = True
+            return removed
+
     def search(self, query_vec: np.ndarray, top_k: int = 10,
-               exclude_ids: Optional[set] = None) -> List[Tuple[str, float]]:
+               exclude_ids: Optional[set] = None,
+               include_ids: Optional[set] = None) -> List[Tuple[str, float]]:
         """Find the top-K most similar memory IDs by cosine similarity.
 
         Returns list of (memory_id, similarity_score) tuples, descending.
+        ``include_ids`` restricts ranking to that set (an allow-list);
+        ``exclude_ids`` removes ids from consideration.  Both may be
+        given; exclusion is applied after inclusion.
         """
         with self._lock:
             self._ensure_loaded()
@@ -226,6 +261,10 @@ class EmbeddingCache:
                 return []
             # Dot product = cosine similarity (vectors are pre-normalized)
             scores = self._vectors @ query_vec
+            if include_ids is not None:
+                for mid, idx in self._id_to_idx.items():
+                    if mid not in include_ids:
+                        scores[idx] = -1.0
             if exclude_ids:
                 for mid, idx in self._id_to_idx.items():
                     if mid in exclude_ids:
@@ -307,7 +346,10 @@ def _resolve_provider() -> EmbeddingProvider:
                 return provider
         except Exception as e:
             logger.info(f"Bedrock embedding unavailable: {e}")
-    logger.info("Embedding provider: disabled (keyword search only)")
+    logger.warning(
+        "Embedding provider: disabled (keyword search only) — memory dedup, "
+        "corroboration, contradiction detection and semantic search are degraded. "
+        f"Profile tried: {os.environ.get('ZIYA_AWS_PROFILE') or os.environ.get('AWS_PROFILE') or 'default'}")
     return NoopProvider()
 
 
@@ -344,7 +386,8 @@ def embed_and_cache(memory_id: str, content: str) -> Optional[np.ndarray]:
 
 
 def semantic_search(query: str, top_k: int = 10,
-                    exclude_ids: Optional[set] = None) -> List[Tuple[str, float]]:
+                    exclude_ids: Optional[set] = None,
+                    include_ids: Optional[set] = None) -> List[Tuple[str, float]]:
     """Embed query and return top-K similar memory IDs with scores."""
     provider = get_embedding_provider()
     if isinstance(provider, NoopProvider):
@@ -353,7 +396,8 @@ def semantic_search(query: str, top_k: int = 10,
     if query_vec is None:
         return []
     cache = get_embedding_cache()
-    return cache.search(query_vec, top_k=top_k, exclude_ids=exclude_ids)
+    return cache.search(query_vec, top_k=top_k, exclude_ids=exclude_ids,
+                        include_ids=include_ids)
 
 
 def remove_embedding(memory_id: str):
