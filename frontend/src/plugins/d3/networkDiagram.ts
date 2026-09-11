@@ -621,6 +621,13 @@ export interface NetworkColors {
     linkColor: string;
     /** Link stroke opacity actually used. */
     linkOpacity: number;
+    /**
+     * Node circle outline, >= 3:1 against effectiveBg (D-161). Was a hardcoded
+     * '#fff' (1.00:1 on the light canvas — an invisible outline that let a
+     * low-contrast fill melt into the page and adjacent circles merge). Resolved
+     * from the effective canvas, never a blind constant swap.
+     */
+    nodeStroke: string;
 }
 
 function parseHexRgb(hex: string): [number, number, number] | null {
@@ -709,7 +716,17 @@ export function resolveNetworkColors(isDarkMode: boolean, style: any = {}): Netw
             if (contrastRatio(compositeOver(linkColor, effectiveBg, effOpacity), effectiveBg) >= 3) break;
         }
     }
-    return { effectiveBg, darkCanvas, labelColor, linkColor, linkOpacity: effOpacity };
+    // Node outline (D-161): the old hardcoded '#fff' was invisible on the light
+    // canvas (1.00:1) so a low-contrast fill had no separating edge and dense
+    // circles merged. Resolve from the effective canvas — dark stroke on a light
+    // surface, light stroke on a dark one — so the ring clears the 3:1 graphical
+    // floor against the background it is actually drawn on, in BOTH themes. An
+    // author `nodeStroke` is honoured when it already clears the floor and
+    // reconciled toward the surface-opposite (opacity 1) when it does not.
+    const defaultNodeStroke = darkCanvas ? '#ffffff' : '#333333';
+    const nodeStroke = readableLinkStroke(
+        style?.nodeStroke || defaultNodeStroke, effectiveBg, 1, defaultNodeStroke, 3);
+    return { effectiveBg, darkCanvas, labelColor, linkColor, linkOpacity: effOpacity, nodeStroke };
 }
 
 /** Nudge a text colour to >= 4.5:1 against `bgHex` (named/unresolvable -> fallback). */
@@ -972,7 +989,7 @@ export const networkDiagramPlugin: D3RenderPlugin = {
             nodeGroups.append('circle')
                 .attr('r', (d: any) => d.size || 10)
                 .attr('fill', (d: any) => resolveNodeFill(d))
-                .attr('stroke', '#fff')
+                .attr('stroke', netColors.nodeStroke)
                 .attr('stroke-width', 1.5);
 
             const haloWidth = Math.max(2, fontSizePx * 0.18);
