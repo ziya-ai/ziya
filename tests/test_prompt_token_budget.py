@@ -184,3 +184,24 @@ def test_fence_integrity_constraint_present():
         "constraint forbids embedded fences but leaves the model no "
         "sanctioned way to reference one in a diagram label"
     )
+
+
+def test_viz_block_has_no_duplicate_renderer_list_or_dangling_stub():
+    """The renderer catalog appears ONCE, as phrasing -> renderer triggers.
+
+    The pre-trim block carried an 18-bullet "Capabilities include" list that
+    restated the "Trigger examples" list one-for-one (~400 tokens), plus a
+    truncated "**Plotly (analytic & 3D)**: Use " stub left by an abandoned
+    edit.  Neither may return; the trigger list is the single home for
+    renderer discoverability, and every renderer must still be reachable
+    from it.
+    """
+    block = _viz_block()
+    assert "Capabilities include" not in block, "duplicated renderer list is back"
+    assert "**Plotly (analytic" not in block, "dangling Plotly stub is back"
+    # Every renderer keeps a discoverability hook in the trigger list.
+    for renderer in ("mermaid", "graphviz", "drawio", "vega-lite", "plotly",
+                     "packet", "wavedrom", "flamegraph", "railroad", "forest",
+                     "bussproofs", "KaTeX", "pgfplots", "circuitikz", "music",
+                     "html-mockup"):
+        assert renderer in block, f"{renderer} lost its discoverability hook"
