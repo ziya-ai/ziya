@@ -15,9 +15,16 @@ import {
   compositeOver,
   ensureReadableFill,
   isDarkBackground,
+  namedColorToHex,
   truncateLabel,
 } from './chartTheme';
 import JSON5 from 'json5';
+
+// Re-export the contrast primitives so callers/tests can verify a resolved
+// force-directed colour against its effective background without reaching into
+// chartTheme directly (the composited-edge / label contrast checks in the
+// G-FORCE tests import these from here).
+export { contrastRatio, compositeOver } from './chartTheme';
 
 interface ForceNode {
   id: string;
@@ -62,6 +69,53 @@ export const FORCE_MAX_NODE_RADIUS = 200;
 export const FORCE_MAX_LABEL_CHARS = 24;
 
 /**
+ * Minimum EFFECTIVE link stroke-opacity actually applied, regardless of a lower
+ * caller `style.linkOpacity` (D-095). A user value below this composites the
+ * edge under the 3:1 graphical floor on both canonical surfaces (0.08 -> ~1.05:1
+ * light / ~1.27:1 dark). At 0.5 a canvas-opposite stroke reaches 3.98:1 on
+ * #ffffff and 5.04:1 on #212121, so readableStroke can always lift the edge to
+ * the floor. Only raises a too-faint value; a higher opacity is left as-is.
+ */
+export const FORCE_MIN_LINK_OPACITY = 0.5;
+
+/**
+ * Interactive zoom-out floor (used for the d3.zoom scaleExtent lower bound).
+ * This is a UX bound on how far a user may pan/zoom out, NOT a bound on the
+ * automatic fit — see FORCE_FIT_MIN_K. Kept for API compatibility with tests
+ * and callers that reference it.
+ */
+export const FORCE_MIN_FIT_SCALE = 0.05;
+
+/**
+ * Positivity guard for the AUTOMATIC fit-to-extent scale (D-110, ex-D-094).
+ *
+ * The fit's whole job is CONTAINMENT: it must always be able to shrink the
+ * settled layout enough to fit the frame. Any non-trivial lower floor on the
+ * fit scale can therefore only ever clip a sufficiently large graph — the 0.2
+ * floor lost 20-50% of a 6000px-extent graph, and even the lowered 0.05 floor
+ * still clamped-and-clipped w2-02/w2-15 whose settled extents exceed ~20x the
+ * canvas (needed k < 0.05). Legibility at small k is handled independently by
+ * effectiveLabelFontSize (labels enlarge as k shrinks) and the declutter pass,
+ * so the fit no longer needs a legibility floor at all. This is a bare
+ * epsilon that only keeps k strictly positive and finite; containment always
+ * wins. computeFitTransform still applies the maxScale ceiling (2x) so a tiny
+ * graph is not blown up.
+ */
+export const FORCE_FIT_MIN_K = 1e-4;
+
+/**
+ * Sane bounds for the render canvas (D-092). A declared width/height that is
+ * grossly oversized (6000x4000 -> sub-pixel text), extreme-aspect (3000x200,
+ * 15:1) or sub-sized (120x90) renders illegibly or effectively blank because the
+ * viewBox is the declared w/h scaled uniformly into a differently-shaped frame.
+ * normalizeForceCanvas clamps each dimension into [MIN, MAX] and caps the aspect
+ * ratio; the 700x500 default is within range and passes through unchanged.
+ */
+export const FORCE_MIN_CANVAS_DIM = 320;
+export const FORCE_MAX_CANVAS_DIM = 2000;
+export const FORCE_MAX_CANVAS_ASPECT = 3;
+
+/**
  * Canonical page surfaces used for contrast resolution when the caller does not
  * pin an explicit background. The DARK surface matches the app's dark page
  * (~#212121) rather than the old hardcoded #1a1a2e, which sat at only 1.06:1
@@ -102,9 +156,21 @@ export function readableStroke(
   minRatio = 3,
 ): string {
   const c = classifyColor(input);
-  // Named CSS colours: keep as-is (contrast uncomputable without resolving).
-  if (c && c.named) return c.named;
-  let hex = c && c.hex ? c.hex : (classifyColor(fallback)?.hex || fallback);
+  // Resolve a named CSS colour so its composited contrast CAN be reasoned about
+  // (D-001). Already-readable at this opacity -> keep verbatim (identity); below
+  // the floor -> fall through and nudge toward the canvas-opposite; an unknown
+  // name (uncomputable) -> pass through unchanged.
+  let hex: string;
+  if (c && c.hex) {
+    hex = c.hex;
+  } else if (c && c.named) {
+    const resolved = namedColorToHex(c.named);
+    if (!resolved) return c.named;
+    if (contrastRatio(compositeOver(resolved, bg, opacity), bg) >= minRatio) return c.named;
+    hex = resolved;
+  } else {
+    hex = classifyColor(fallback)?.hex || fallback;
+  }
   const dark = isDarkBackground(bg);
   const target = dark ? '#ffffff' : '#000000';
   // Try the requested colour first, then blend toward the canvas-opposite.
@@ -141,6 +207,34 @@ export function readableStroke(
  *     floor) instead of being passed through verbatim.
  * Pure/testable (no DOM, no d3).
  */
+
+/**
+ * Floor a link stroke-opacity so `stroke` composited over `bg` clears the 3:1
+ * graphical floor (D-095). A caller opacity that already clears the floor (e.g.
+ * the 0.9 default) is returned verbatim; a too-faint value (0.08 -> ~1.05:1) is
+ * raised in small steps to the minimum opacity at which the stroke clears the
+ * floor. FORCE_MIN_LINK_OPACITY is an absolute lower bound. The stroke passed in
+ * resolveForceColors is the canvas-opposite (white on dark, black on light) —
+ * the best case readableStroke can nudge to — so the returned opacity guarantees
+ * SOME stroke can reach the floor. Pure/testable.
+ */
+export function floorLinkOpacity(
+  stroke: string,
+  bg: string,
+  opacity: number,
+  minRatio = 3,
+): number {
+  const o = Number.isFinite(opacity) ? Math.max(0, Math.min(1, opacity)) : 0.9;
+  const sHex = classifyColor(stroke)?.hex || (isDarkBackground(bg) ? '#ffffff' : '#000000');
+  if (contrastRatio(compositeOver(sHex, bg, o), bg) >= minRatio) return o;
+  const start = Math.max(o, FORCE_MIN_LINK_OPACITY);
+  for (let a = start; a <= 1.0001; a += 0.05) {
+    const aa = Math.min(1, a);
+    if (contrastRatio(compositeOver(sHex, bg, aa), bg) >= minRatio) return aa;
+  }
+  return 1;
+}
+
 export function resolveForceColors(isDarkMode: boolean, style: ForceStyle = {}): ForceColorResolution {
   const themeBg = isDarkMode ? FORCE_DARK_BG : FORCE_LIGHT_BG;
   const explicit = classifyColor(style.background);
@@ -149,7 +243,17 @@ export function resolveForceColors(isDarkMode: boolean, style: ForceStyle = {}):
   const darkCanvas = isDarkBackground(effectiveBg);
 
   const defaultLink = darkCanvas ? '#b0b0b0' : '#6b6b6b';
-  const linkOpacity = typeof style.linkOpacity === 'number' ? style.linkOpacity : 0.9;
+  // A caller `style.linkOpacity` was taken verbatim, so a value like 0.08
+  // composited the edge to ~1.05:1 in both themes — the edges (the actual
+  // information) vanished, leaving only arrowheads (D-095). Floor the APPLIED
+  // opacity to whatever the canvas-opposite stroke needs to clear the 3:1
+  // graphical floor (floorLinkOpacity); readableStroke then nudges the stroke to
+  // reach it at that opacity. Only raises a too-faint value — a higher caller
+  // opacity (and the 0.9 default) already clears the floor and is left verbatim,
+  // so ordinary output is unchanged.
+  const rawOpacity = typeof style.linkOpacity === 'number' ? style.linkOpacity : 0.9;
+  const canvasOpposite = darkCanvas ? '#ffffff' : '#000000';
+  const linkOpacity = floorLinkOpacity(canvasOpposite, effectiveBg, rawOpacity);
   const linkStroke = readableStroke(style.linkColor || defaultLink, effectiveBg, linkOpacity, defaultLink);
 
   const defaultLabel = darkCanvas ? '#e0e0e0' : '#333333';
@@ -365,8 +469,13 @@ export interface FitTransform { k: number; x: number; y: number; }
  * ratios — was silently clipped or ejected off-canvas (D-016). Applying this
  * transform to the zoom group re-centres and scales the graph to fit.
  *
- * Scale is clamped to [0.2, 2]: never below the zoom floor, and tiny graphs are
- * not blown up past 2x (which would turn a 3-node graph into giant blobs).
+ * Scale is clamped to (FORCE_FIT_MIN_K, 2] (D-110, ex-D-094): the automatic fit
+ * carries only a bare positivity floor, so a graph of ANY settled extent is
+ * CONTAINED rather than clamped-then-clipped. The old 0.2 floor lost ~20-50% of
+ * a 6000px-extent graph; even a 0.05 floor still clipped w2-02/w2-15, whose
+ * settled extents exceed ~20x the canvas (needed k < 0.05). Only the 2x ceiling
+ * remains, so a tiny graph is not blown up. On-screen label legibility at small
+ * k is preserved separately by effectiveLabelFontSize.
  * Non-finite points are ignored; fewer than one usable point returns identity.
  * Pure/testable.
  */
@@ -375,7 +484,7 @@ export function computeFitTransform(
   width: number,
   height: number,
   padding = 30,
-  minScale = 0.2,
+  minScale = FORCE_FIT_MIN_K,
   maxScale = 2,
 ): FitTransform {
   const pts = (points || []).filter(
@@ -464,6 +573,108 @@ export function clampNodeRadiusToCanvas(r: number, width: number, height: number
     : FORCE_MAX_NODE_RADIUS;
   const cap = Math.max(12, Math.min(FORCE_MAX_NODE_RADIUS, canvasCap));
   return Math.min(rr, cap);
+}
+
+/**
+ * Normalise a declared render canvas into a legible range (D-092). A grossly
+ * oversized canvas (6000x4000) drives on-screen text sub-pixel; an extreme
+ * aspect ratio (3000x200 = 15:1, or 200x3000) collapses the graph into a thin
+ * band; a sub-sized canvas (120x90) leaves it effectively blank. Each dimension
+ * is clamped into [FORCE_MIN_CANVAS_DIM, FORCE_MAX_CANVAS_DIM] and the aspect
+ * ratio is capped at FORCE_MAX_CANVAS_ASPECT by shrinking the longer side. A
+ * canvas already within range (including the 700x500 default) passes through
+ * unchanged, so ordinary output is untouched. Pure/testable.
+ */
+export function normalizeForceCanvas(
+  width: number,
+  height: number,
+): { width: number; height: number } {
+  let w = Number.isFinite(width) && width > 0 ? width : 700;
+  let h = Number.isFinite(height) && height > 0 ? height : 500;
+  w = Math.max(FORCE_MIN_CANVAS_DIM, Math.min(FORCE_MAX_CANVAS_DIM, w));
+  h = Math.max(FORCE_MIN_CANVAS_DIM, Math.min(FORCE_MAX_CANVAS_DIM, h));
+  if (w > h * FORCE_MAX_CANVAS_ASPECT) w = h * FORCE_MAX_CANVAS_ASPECT;
+  else if (h > w * FORCE_MAX_CANVAS_ASPECT) h = w * FORCE_MAX_CANVAS_ASPECT;
+  return { width: Math.round(w), height: Math.round(h) };
+}
+
+/**
+ * Build the point set the fit-to-extent transform must contain (D-091).
+ * computeFitTransform previously fitted only the node discs ({x,y,r}); a node
+ * label is drawn to the RIGHT of the node (x = radius+4 rightward) with no width
+ * term, so the label extent was outside the fit box and clipped at the canvas
+ * edge even for a graph that otherwise fits. Here each node contributes its disc
+ * plus a point at the far end of its (truncated) label so the label's bounding
+ * box is part of the extent. Label width is estimated at ~0.6em per glyph.
+ * Non-finite node positions are skipped. Pure/testable.
+ */
+export function forceFitPoints(
+  nodes: Array<{ x?: number; y?: number; label?: string; id?: string }>,
+  radiusOf: (n: any) => number,
+  fontSize: number,
+): Array<{ x: number; y: number; r: number }> {
+  const pts: Array<{ x: number; y: number; r: number }> = [];
+  const fs = Number.isFinite(fontSize) && fontSize > 0 ? fontSize : 10;
+  for (const n of nodes || []) {
+    if (!Number.isFinite(n.x as number) || !Number.isFinite(n.y as number)) continue;
+    const x = n.x as number;
+    const y = n.y as number;
+    const rr = radiusOf(n);
+    pts.push({ x, y, r: rr + 4 });
+    const raw = String(n.label != null ? n.label : (n.id != null ? n.id : ''));
+    if (raw) {
+      const chars = Math.min(raw.length, FORCE_MAX_LABEL_CHARS);
+      const labelEndX = x + labelRightExtent(chars, rr, fs);
+      // A zero-height point at the label's far end plus a small vertical extent
+      // (half the font) so the label band is bounded on both axes.
+      pts.push({ x: labelEndX, y: y + 3, r: Math.max(2, fs / 2) });
+    }
+  }
+  return pts;
+}
+
+/**
+ * The rightward extent (from a node centre) that its label occupies: the node
+ * radius, a small gap, plus the label width estimated at ~0.6em per glyph
+ * (D-091). Fitting only the node discs omitted this and clipped labels at the
+ * canvas edge. Degenerate inputs coerce to safe finite values. Pure/testable.
+ */
+export function labelRightExtent(len: number, r: number, fontSize: number): number {
+  const L = Number.isFinite(len) && len > 0 ? len : 0;
+  const rr = Number.isFinite(r) && r > 0 ? r : 0;
+  const fs = Number.isFinite(fontSize) && fontSize > 0 ? fontSize : 10;
+  return rr + 4 + L * fs * 0.6;
+}
+
+/**
+ * Greedy label declutter (D-093). Every node label was drawn unconditionally, so
+ * at density labels overprint into an unreadable mat (worsened, not helped, by
+ * the >=9px on-screen font floor). This selects which labels to SHOW by scanning
+ * in priority order (larger nodes first) and keeping a label only when its
+ * axis-aligned box does not overlap an already-kept one; hidden labels keep their
+ * hover <title>. Boxes are expressed in a single consistent (user) space, so the
+ * overlap test is scale-invariant. A sparse graph has no overlaps and shows every
+ * label, so low-density output is unchanged. No geometry is moved. Pure/testable.
+ */
+export function selectVisibleLabels(
+  boxes: Array<{ x0: number; y0: number; x1: number; y1: number; priority: number }>,
+): boolean[] {
+  const n = boxes.length;
+  const vis = new Array(n).fill(false);
+  const order = boxes
+    .map((_, i) => i)
+    .sort((a, b) => (boxes[b].priority - boxes[a].priority) || (a - b));
+  const shown: number[] = [];
+  for (const i of order) {
+    const b = boxes[i];
+    let ok = true;
+    for (const j of shown) {
+      const s = boxes[j];
+      if (b.x0 < s.x1 && b.x1 > s.x0 && b.y0 < s.y1 && b.y1 > s.y0) { ok = false; break; }
+    }
+    if (ok) { vis[i] = true; shown.push(i); }
+  }
+  return vis;
 }
 
 /**
@@ -586,12 +797,49 @@ export function normalizeSmartQuotes(raw: string): string {
 }
 
 /**
+ * Rewrite statement/member-separator SEMICOLONS to commas OUTSIDE of string
+ * literals (D-037).
+ *
+ * JSON5 accepts `,` between array/object members but NOT `;`, so a model that
+ * writes `{ "a": 1; "b": 2 }` or `[1; 2; 3]` (a habit borrowed from JS/CSS)
+ * defeats even the tolerant parse and the whole spec stays unclaimable ->
+ * "No plugin found" -> orchestrator retry-to-timeout with zero output
+ * (chord-w4-15). A `;` inside a string value must be preserved. Because a bare
+ * `;` is never a valid JSON5 separator, converting the out-of-string ones can
+ * only ever RECOVER otherwise-doomed input — it cannot corrupt a valid JSON5
+ * body (which has none). String scanning honours `\`-escapes so an escaped
+ * quote does not prematurely close the literal. Pure/testable.
+ */
+export function normalizeSemicolonSeparators(raw: string): string {
+  const s = String(raw);
+  let out = '';
+  let inStr: string | null = null; // the quote char of the open string, or null
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) {
+      out += ch;
+      if (ch === '\\') {
+        // Copy the escaped character verbatim so `\'` / `\"` don't end the string.
+        if (i + 1 < s.length) out += s[++i];
+        continue;
+      }
+      if (ch === inStr) inStr = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { inStr = ch; out += ch; continue; }
+    out += ch === ';' ? ',' : ch;
+  }
+  return out;
+}
+
+/**
  * Lenient parse of a JSON-ish object string. Tries strict JSON.parse first
  * (fast path, unchanged behaviour), then json5 (trailing commas, unquoted keys,
  * single quotes, comments) after stripping a markdown fence, normalising smart
  * quotes, and slicing to the outermost {...} so leading prose / trailing
- * semicolons are ignored. Returns the parsed object, or `undefined` when it is
- * unrecoverable. Pure/testable — no DOM.
+ * semicolons are ignored. When json5 still fails, retries ONCE with out-of-string
+ * `;` member-separators rewritten to `,` (D-037). Returns the parsed object, or
+ * `undefined` when it is unrecoverable. Pure/testable — no DOM.
  */
 export function lenientParseObject(raw: any): any {
   if (typeof raw !== 'string') return undefined;
@@ -609,6 +857,16 @@ export function lenientParseObject(raw: any): any {
   try {
     return JSON5.parse(body);
   } catch (_e2) {
+    /* fall through to the semicolon-separator recovery below */
+  }
+  // Final fallback: a JSON5 body whose only remaining fault is `;` used as a
+  // member separator (chord-w4-15). Semicolons are never a valid JSON5
+  // separator, so this pass only recovers input that already failed strict
+  // JSON and JSON5 — valid bodies never reach it, so existing consumers
+  // (force-directed etc.) are byte-identical.
+  try {
+    return JSON5.parse(normalizeSemicolonSeparators(body));
+  } catch (_e3) {
     return undefined;
   }
 }
@@ -626,19 +884,48 @@ export function findGraphContainer(
   depth = 0,
 ): { container: any; nodes: any[]; links: any[] } | undefined {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj) || depth > 4) return undefined;
+  const linksOf = (o: any): any[] =>
+    Array.isArray(o.links) ? o.links : Array.isArray(o.edges) ? o.edges : [];
+  // Unambiguous `nodes` array — links read from the same container.
   if (Array.isArray(obj.nodes)) {
-    const links = Array.isArray(obj.links)
-      ? obj.links
-      : Array.isArray(obj.edges)
-        ? obj.edges
-        : [];
-    return { container: obj, nodes: obj.nodes, links };
+    return { container: obj, nodes: obj.nodes, links: linksOf(obj) };
+  }
+  // Alternately-named node arrays: vega-lite's `data.values`, or `vertices`
+  // (D-097). findGraphContainer previously keyed ONLY on `nodes`, so a
+  // vega-lite-style node array was never found -> no plugin claimed the spec ->
+  // 30s empty-DOM hang. The links may be co-located here or live at the parsed
+  // root (w4-09), in which case resolveForceDirectedSpec back-fills them. The
+  // downstream type gate in isForceDirectedSpec prevents this from hijacking a
+  // non-force spec, so no sibling-links requirement is needed.
+  for (const k of ['values', 'vertices'] as const) {
+    if (Array.isArray((obj as any)[k])) {
+      return { container: obj, nodes: (obj as any)[k], links: linksOf(obj) };
+    }
   }
   for (const key of Object.keys(obj)) {
     const found = findGraphContainer(obj[key], depth + 1);
     if (found) return found;
   }
   return undefined;
+}
+
+/**
+ * Locate a links/edges array that belongs with a discovered node container but
+ * may not be co-located with it (D-097). In the vega-lite dialect (w4-09) the
+ * node array lives under `data.values` while the links sit at the parsed root,
+ * so reading links only from the node container dropped every edge. Checks the
+ * object, its `data` wrapper, then a shallow key scan for the first links/edges
+ * array. Returns [] when none is found. Pure/testable.
+ */
+export function findLinkArray(obj: any): any[] {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return [];
+  if (Array.isArray(obj.links)) return obj.links;
+  if (Array.isArray(obj.edges)) return obj.edges;
+  if (obj.data && typeof obj.data === 'object' && !Array.isArray(obj.data)) {
+    if (Array.isArray(obj.data.links)) return obj.data.links;
+    if (Array.isArray(obj.data.edges)) return obj.data.edges;
+  }
+  return [];
 }
 
 export function resolveForceDirectedSpec(spec: any): any {
@@ -648,26 +935,42 @@ export function resolveForceDirectedSpec(spec: any): any {
   const hasNodes = Array.isArray(spec.nodes) || Array.isArray(spec.data?.nodes);
   if (hasNodes) return spec;
 
-  // Only attempt recovery from a `definition` string.
-  if (typeof spec.definition !== 'string' || spec.definition.trim() === '') return spec;
+  // Recover the graph either from a `definition` JSON STRING (the render_diagram
+  // wrapper), or — when there is no definition string — from the spec OBJECT
+  // itself. An object-form spec can bury nodes deeper than spec.data.nodes (e.g.
+  // data.data.nodes), or carry `definition` as an already-parsed object; the old
+  // `definition must be a string` guard returned such a spec untouched -> no
+  // nodes surfaced -> unclaimable -> 30s empty-DOM hang (D-065).
+  let parsed: any;
+  if (typeof spec.definition === 'string' && spec.definition.trim() !== '') {
+    // Lenient parse: strict JSON first, then a fence/smart-quote/json5 recovery
+    // so trailing commas, unquoted keys, single/smart quotes, comments and a
+    // leading markdown fence no longer leave the spec node-less. D-024.
+    parsed = lenientParseObject(spec.definition);
+    if (typeof parsed !== 'object' || parsed === null) return spec;
+  } else {
+    parsed = spec;
+  }
 
-  // Lenient parse: strict JSON first, then a fence/smart-quote/json5 recovery so
-  // trailing commas, unquoted keys, single/smart quotes, comments and a leading
-  // markdown fence no longer leave the spec node-less (-> unclaimable -> 30s
-  // hang). D-024.
-  const parsed = lenientParseObject(spec.definition);
-  if (typeof parsed !== 'object' || parsed === null) return spec;
-
-  // Recursively discover the nodes/links container (top level, `data`, or one
-  // wrapper level deeper). Requires genuine force-directed content: without a
-  // nodes array there is nothing to lay out, so leave the spec untouched for
-  // another plugin (never hijacks a non-force spec).
+  // Recursively discover the nodes/links container (top level, `data`, a wrapper
+  // level deeper, or a vega-lite `values`/`vertices` node array). Requires
+  // genuine force-directed content: without a nodes array there is nothing to
+  // lay out, so leave the spec untouched for another plugin (never hijacks a
+  // non-force spec).
   const graph = findGraphContainer(parsed);
   if (!graph) return spec;
 
   const resolved: any = { ...spec };
   resolved.nodes = graph.nodes;
-  resolved.links = graph.links;
+  // Links may be co-located with the nodes, or (vega-lite dialect, w4-09) sit at
+  // the parsed root while the node array is under `data.values`. Back-fill from
+  // the root when the discovered container carries none (D-097).
+  if (Array.isArray(graph.links) && graph.links.length > 0) {
+    resolved.links = graph.links;
+  } else {
+    const rootLinks = findLinkArray(parsed);
+    resolved.links = rootLinks.length > 0 ? rootLinks : graph.links;
+  }
   // Tuning / geometry / style discriminators may live on the parsed root OR the
   // discovered container; prefer the container, fall back to the root.
   const pick = (key: string): any =>
@@ -783,8 +1086,15 @@ export const forceDirectedPlugin: D3RenderPlugin = {
 
     const style: ForceStyle = spec.style || {};
 
-    const width = spec.width || 700;
-    const height = spec.height || 500;
+    // Normalise the declared canvas into a legible range (D-092): a grossly
+    // oversized / extreme-aspect / sub-sized canvas otherwise renders text
+    // sub-pixel, as a thin band, or effectively blank. The 700x500 default is
+    // in range and passes through unchanged. spec.width/height are coerced so a
+    // numeric string ("3000") is honoured rather than dropped to the default.
+    const { width, height } = normalizeForceCanvas(
+      toFiniteOrUndefined(spec.width) ?? 700,
+      toFiniteOrUndefined(spec.height) ?? 500,
+    );
     // Resolve every theme-dependent colour from the EFFECTIVE canvas, not a raw
     // isDarkMode flag: no self-painted background (inherit the page, D-019),
     // link stroke/opacity that clears 3:1 composited (D-017), and a
@@ -828,7 +1138,11 @@ export const forceDirectedPlugin: D3RenderPlugin = {
 
     // Zoom / pan behaviour
     const zoom = d3.zoom()
-      .scaleExtent([0.2, 5])
+      // Lower bound = the fit's positivity floor, not the interactive
+      // FORCE_MIN_FIT_SCALE: a very large graph fits at k < 0.05, and the
+      // programmatic fit transform below must be reachable within the extent
+      // (and never clamped up) so the whole graph stays contained (D-110).
+      .scaleExtent([FORCE_FIT_MIN_K, 5])
       .on('zoom', (event: any) => g.attr('transform', event.transform));
     svg.call(zoom);
 
@@ -965,8 +1279,12 @@ export const forceDirectedPlugin: D3RenderPlugin = {
     // ratios — was silently clipped or ejected off-canvas (D-016). Zoom-to-bounds
     // the settled extent so the whole graph is visible; applied THROUGH the zoom
     // behaviour so pan/zoom stays consistent from the fitted view.
+    // Include each node's LABEL bounding box in the fit extent (D-091). Labels
+    // are drawn to the right of the node with no width term, so fitting only the
+    // discs clipped labels at the canvas edge for a graph that otherwise fits;
+    // forceFitPoints adds the label corners so the fit contains them too.
     const fit = computeFitTransform(
-      nodes.map((n) => ({ x: n.x as number, y: n.y as number, r: radiusOf(n) + 4 })),
+      forceFitPoints(nodes, radiusOf, fontSize),
       width,
       height,
     );
@@ -978,7 +1296,31 @@ export const forceDirectedPlugin: D3RenderPlugin = {
     // when the caller sets a tiny style.fontSize. Enlarge the applied size so the
     // on-screen size clears FORCE_MIN_LABEL_ON_SCREEN_PX; never shrink a larger
     // caller choice (D-122).
-    labelText.attr('font-size', `${effectiveLabelFontSize(fontSize, fit.k)}px`);
+    const appliedFont = effectiveLabelFontSize(fontSize, fit.k);
+    labelText.attr('font-size', `${appliedFont}px`);
+
+    // Declutter overlapping labels (D-093): at density every label was drawn
+    // unconditionally, overprinting into an unreadable mat. Keep a label only
+    // when its box does not overlap an already-kept, higher-priority
+    // (larger-node) label; a hidden label keeps its hover <title>. A sparse
+    // graph has no overlaps and shows every label, so low-density output is
+    // unchanged. Boxes are built in the same user space the labels live in, so
+    // the overlap test is scale-invariant with the fit zoom. No geometry moves.
+    const declutterBoxes = nodes.map((d) => {
+      const rr = radiusOf(d);
+      const chars = Math.min(String(d.label || d.id).length, FORCE_MAX_LABEL_CHARS);
+      const x0 = (d.x as number) + rr + 4;
+      const y1 = (d.y as number) + 3;
+      return {
+        x0,
+        y0: y1 - appliedFont,
+        x1: x0 + chars * appliedFont * 0.6,
+        y1,
+        priority: rr,
+      };
+    });
+    const labelVisible = selectVisibleLabels(declutterBoxes);
+    labelText.attr('display', (_d: any, i: number) => (labelVisible[i] ? null : 'none'));
 
     // Cleanup function — stop simulation when component unmounts
     return () => {
