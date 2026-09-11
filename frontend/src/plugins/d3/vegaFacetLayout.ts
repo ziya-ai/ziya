@@ -170,3 +170,100 @@ export function resolveFacetCellWidth(
   const usable = availableWidth - FACET_CHROME_ESTIMATE;
   return Math.max(Math.floor(usable / layout.columns), MIN_FACET_CELL_WIDTH);
 }
+
+/**
+ * Lift a wrapped facet's `columns` grid directive from where Vega-Lite ignores
+ * it to where it honours it (D-234 / G-17).
+ *
+ * Vega-Lite reads a wrapped facet's grid width ONLY at the TOP LEVEL of the
+ * facet-OPERATOR spec ({ facet: {...}, columns: N, spec: {...} }). It silently
+ * ignores `columns` when it sits INSIDE the facet field definition
+ * (spec.facet.columns) — measured on vega-lite 6.4.2: the operator form with a
+ * buried columns compiles to `layout.columns: undefined`, the top-level form to
+ * `layout.columns: N`.
+ *
+ * vegaLitePlugin rewrites the common LLM spelling `encoding: { facet: { field,
+ * columns } }` into the operator form by moving the facet field def VERBATIM,
+ * which buries `columns` at spec.facet.columns and collapses an N-column wrap
+ * (24 cells / 6 columns) into one compressed single row. This hoists the buried
+ * value to the operator top level so the grid actually wraps.
+ *
+ * Only touches the OPERATOR form (spec.facet). The channel form
+ * (encoding.facet.columns) IS honoured by Vega-Lite directly and is left alone.
+ * An author-set top-level `columns` always wins; the buried duplicate is still
+ * removed so it cannot confuse the compiler, but the effective grid is not
+ * changed. Non-positive / non-finite buried values are ignored.
+ *
+ * Mutates in place (matching how the plugin works on its local spec copy) and
+ * returns true only when it changed the effective grid width.
+ */
+export function hoistFacetColumns(spec: any): boolean {
+  if (!spec || typeof spec !== 'object') return false;
+  const facet = spec.facet;
+  if (!facet || typeof facet !== 'object') return false;
+
+  const buried = positiveNumber(facet.columns);
+  if (buried === null) return false;
+
+  const authoredTop = positiveNumber(spec.columns);
+  if (authoredTop !== null) {
+    // Author already chose a top-level grid width; keep it, drop the duplicate.
+    delete facet.columns;
+    return false;
+  }
+
+  spec.columns = Math.floor(buried);
+  delete facet.columns;
+  return true;
+}
+
+/**
+ * Mirror a facet OPERATOR's authored per-cell width/height from where
+ * Vega-Lite IGNORES them (the operator top level) to where it READS them (the
+ * inner `spec`) — the height companion to hoistFacetColumns (D-255 / D-312).
+ *
+ * A facet operator ({ facet: {...}, spec: {...} }) takes its cell size from the
+ * INNER spec; a width/height on the operator top level is silently dropped and
+ * the cell falls back to Vega-Lite's 300x300 default (measured on vega-lite
+ * 6.4.2: top-level width:110 height:80 with an empty inner spec compiles to
+ * child_width=300, child_height=300; the same values in the inner spec compile
+ * to 110/80).
+ *
+ * vegaLitePlugin's `encoding: { facet: {...} }` -> operator rewrite moves the
+ * facet field def but leaves the authored top-level `width`/`height` at the top
+ * level, so the cell is inflated to the 300px default. For a wrapped high-cell
+ * grid that inflation compounds down the rows: a 24-cell / 6-column fan-out
+ * authored at 110x80 became a 6x4 grid of 300px-tall cells (~1300px assembled
+ * height) that is then clipped by the capture window — the D-312 symptom and
+ * the D-255 regression.
+ *
+ * Copies each authored top-level dimension into the inner spec only when the
+ * inner spec does not already carry it (an author-set inner cell size wins).
+ * The top-level value is LEFT IN PLACE: the operator ignores it for layout, and
+ * removing it would let vega-embed inject its own width when spec.width is
+ * absent (the reason applySizing mirrors rather than moves). 'container' is
+ * accepted as a legitimate responsive width; any non-positive/non-finite value
+ * is ignored.
+ *
+ * Only acts on the operator form (both spec.facet and spec.spec present), so a
+ * pre-rewrite channel-form spec or a simple view is untouched. Mutates in place
+ * and returns true only when it moved a dimension.
+ */
+export function sinkFacetCellSize(spec: any): boolean {
+  if (!spec || typeof spec !== 'object') return false;
+  const facet = spec.facet;
+  const inner = spec.spec;
+  if (!facet || typeof facet !== 'object') return false;
+  if (!inner || typeof inner !== 'object') return false;
+
+  let changed = false;
+  for (const dim of ['width', 'height'] as const) {
+    const top = spec[dim];
+    const usable = positiveNumber(top) !== null || top === 'container';
+    if (usable && inner[dim] === undefined) {
+      inner[dim] = top;
+      changed = true;
+    }
+  }
+  return changed;
+}

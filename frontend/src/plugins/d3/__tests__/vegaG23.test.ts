@@ -116,8 +116,13 @@ describe('computeReTickDimensions — text-size floor via re-tick (D-277)', () =
     expect(r).not.toBeNull();
     expect(r!.width).toBe(600);          // clamped into the legible band
     expect(r!.width).toBeLessThanOrEqual(1600);
-    // aspect preserved (2400:90) -> ~600:22
-    expect(r!.height).toBe(Math.round(90 * (600 / 2400)));
+    // (D-221) The bare aspect-preserved height (90 * 600/2400 ≈ 23px) is a
+    // sub-legible strip, so the short-axis legibility floor lifts it to the
+    // default minLegibleShortAxis (160). See vegaG18ReTickLegibilityFloor for
+    // the dedicated floor coverage; here we just assert the floor is honoured
+    // rather than the stale bare-aspect height.
+    expect(Math.round(90 * (600 / 2400))).toBeLessThan(160); // pre-floor strip
+    expect(r!.height).toBe(160);
   });
 
   it('re-ticks a tiny undersized canvas (w2-09 70x45)', () => {

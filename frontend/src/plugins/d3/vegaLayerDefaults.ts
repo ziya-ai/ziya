@@ -23,6 +23,31 @@
  */
 export const MAX_AXIS_LABEL_LIMIT = 320;
 
+/**
+ * Width-aware ceiling for an authored axis labelLimit.
+ *
+ * MAX_AXIS_LABEL_LIMIT is the right bound when the chart width is unknown
+ * (the plugin renders into a detached div, so the measured width is the
+ * 400px floor). It is the wrong bound when the width IS known: clamping a
+ * requested 480px to 320px in an 1100px-wide chart truncated a 75-character
+ * row label that had plenty of room — the ellipsis was Ziya's, not Vega's.
+ *
+ * The cap therefore scales with the width the axis can afford to consume
+ * while leaving most of the width for the plot, floored at the legacy value
+ * so an unknown width changes nothing, and capped so a very wide viewport
+ * does not license an unbounded label column.
+ */
+export const AXIS_LABEL_LIMIT_WIDTH_FRACTION = 0.45;
+export const AXIS_LABEL_LIMIT_HARD_MAX = 600;
+
+export function axisLabelLimitCap(availableWidth: number): number {
+  if (!Number.isFinite(availableWidth) || availableWidth <= 0) {
+    return MAX_AXIS_LABEL_LIMIT;
+  }
+  const proportional = Math.floor(availableWidth * AXIS_LABEL_LIMIT_WIDTH_FRACTION);
+  return Math.min(AXIS_LABEL_LIMIT_HARD_MAX, Math.max(MAX_AXIS_LABEL_LIMIT, proportional));
+}
+
 function layersOf(spec: any): any[] {
   return spec && Array.isArray(spec.layer) ? spec.layer : [];
 }
@@ -147,7 +172,7 @@ export function synthesizeColorLegend(spec: any): LegendSynthesisResult {
   );
   if (!hasHardcodedColors) return { added: false, series: [], skipped: 'no-hardcoded-colors' };
 
-  const legendData: { series: string; color: string }[] = [];
+  const legendData: { series: string; color: string; [key: string]: any }[] = [];
   layers.forEach((layer: any) => {
     const color = layer?.encoding?.color?.value || layer?.mark?.color;
     const yField = layer?.encoding?.y?.field;
@@ -162,6 +187,35 @@ export function synthesizeColorLegend(spec: any): LegendSynthesisResult {
   const series = legendData.map(d => d.series);
   if (legendData.length < 2 || new Set(series).size !== series.length) {
     return { added: false, series, skipped: 'not-a-series-set' };
+  }
+
+  // D-310 (phantom-undefined-x-category): a layered spec shares its top-level
+  // `encoding` with every layer (Vega-Lite merges it in), so the appended
+  // legend layer INHERITS the shared x channel. Its own rows carry only
+  // {series,color} and no x field, so x resolves to `undefined` and enters the
+  // shared band-scale domain as a phantom empty category (an empty gridded
+  // band in light, a literal 'undefined' tick in dark) to the right of the
+  // real data. Pin each legend row's x to a real, in-domain value — the marks
+  // are invisible (size:0, opacity:0), so the position is irrelevant — so the
+  // synthesized layer never widens the x domain.
+  const sharedXField =
+    spec?.encoding?.x?.field ||
+    layers.map((l: any) => l?.encoding?.x?.field).find(Boolean);
+  if (sharedXField) {
+    const sampleX = (rows: any) =>
+      Array.isArray(rows)
+        ? rows.map((r: any) => r?.[sharedXField]).find((v: any) => v !== undefined && v !== null)
+        : undefined;
+    let xVal = sampleX(spec?.data?.values);
+    if (xVal === undefined) {
+      for (const l of layers) {
+        xVal = sampleX(l?.data?.values);
+        if (xVal !== undefined) break;
+      }
+    }
+    if (xVal !== undefined) {
+      legendData.forEach((row) => { row[sharedXField] = xVal; });
+    }
   }
 
   spec.layer.push({
@@ -201,6 +255,60 @@ const AXIS_DEFAULTS: Record<string, Record<string, unknown>> = {
 };
 
 /**
+ * Above this many characters a nominal category label cannot lie flat without
+ * colliding with its neighbours. Chosen well above short business/month/day
+ * labels (which must stay horizontal) and well below the 65-75 char names that
+ * exposed D-309.
+ */
+export const LONG_LABEL_CHARS = 12;
+
+/**
+ * The x-axis label defaults, made cardinality- and label-WIDTH-aware.
+ *
+ * D-309: the base AXIS_DEFAULTS.x forces `labelAngle:0` + `labelOverlap:true`.
+ * That pairing is correct for MANY SHORT nominal categories — w2-01's 200
+ * short labels smear into an illegible band unless laid flat and thinned — but
+ * catastrophic for FEW LONG ones: w2-05's eight 65-75 char programme names
+ * cannot sit horizontally, so `labelOverlap:true` DROPS six of the eight to
+ * avoid collision, leaving only the first and last and destroying
+ * identification. The correct degradation for long labels is ROTATION with no
+ * thinning, so every category stays legible.
+ *
+ * So when the x channel is nominal/ordinal and its longest category label
+ * exceeds LONG_LABEL_CHARS, rotate (labelAngle:-45) and turn overlap-thinning
+ * OFF (keep every label); otherwise the short-label defaults are unchanged.
+ * Falls back to the base defaults whenever the data/field is unavailable, so
+ * behaviour only ever narrows to the case it must fix.
+ */
+export function resolveXAxisLabelDefaults(dataNode: any, enc: any): Record<string, unknown> {
+  const base = AXIS_DEFAULTS.x;
+  const type = enc?.type;
+  if (type !== 'nominal' && type !== 'ordinal') return { ...base };
+
+  const field = enc?.field;
+  const values = Array.isArray(dataNode?.data?.values) ? dataNode.data.values : null;
+  if (!field || !values) return { ...base };
+
+  let maxLen = 0;
+  const seen = new Set<any>();
+  for (const row of values) {
+    const v = row?.[field];
+    if (v === undefined || v === null || seen.has(v)) continue;
+    seen.add(v);
+    const len = String(v).length;
+    if (len > maxLen) maxLen = len;
+  }
+  if (seen.size === 0) return { ...base };
+
+  if (maxLen > LONG_LABEL_CHARS) {
+    // Long labels: rotate and keep every one rather than laying them flat and
+    // thinning the overlapping majority away.
+    return { ...base, labelAngle: -45, labelOverlap: false };
+  }
+  return { ...base };
+}
+
+/**
  * Supply readable axis label defaults to a layered spec, ONCE per channel.
  *
  * Writing these into every layer that lacked an `axis` was not additive: the
@@ -229,9 +337,34 @@ function applyUnitAxisDefaults(unit: any, prefix: string): string[] {
 
   ['x', 'y'].forEach((channel) => {
     const enc = encoding[channel];
-    if (enc && typeof enc === 'object' && !enc.axis) {
-      enc.axis = { ...AXIS_DEFAULTS[channel] };
+    if (!(enc && typeof enc === 'object')) return;
+    // x label defaults are width/cardinality-aware (D-309); y is unchanged.
+    const defaults = channel === 'x' ? resolveXAxisLabelDefaults(unit, enc) : AXIS_DEFAULTS[channel];
+
+    if (!enc.axis) {
+      enc.axis = { ...defaults };
       injected.push(`${prefix}${channel}`);
+      return;
+    }
+
+    // D-239 (dense-nominal-labels-overprint): an authored axis that set only
+    // NON-label properties (e.g. just a `title`) previously suppressed EVERY
+    // readable label default, so a title-only nominal x axis rendered rotated
+    // 90° with no overlap thinning — vega-lite-w2-01's 200 categories smeared
+    // into an illegible band. Fill in the label defaults the author omitted,
+    // but ONLY when the author touched no label-* property: an axis where the
+    // author DID configure labels (labelAngle/labelLimit/labelFontSize/
+    // labelOverlap) is still left entirely alone, preserving the established
+    // hands-off contract, and no authored value is ever overwritten. Applies
+    // to unit (single-view) specs only — there is no cross-layer scale merge to
+    // conflict with here, which is exactly why the layered path stays strict.
+    if (enc.axis && typeof enc.axis === 'object') {
+      const keys = Object.keys(defaults); // every AXIS_DEFAULTS key is label-*
+      const authoredAnyLabelKey = keys.some((k) => enc.axis[k] !== undefined);
+      if (!authoredAnyLabelKey) {
+        keys.forEach((k) => { enc.axis[k] = defaults[k]; });
+        injected.push(`${prefix}${channel}~labels`);
+      }
     }
   });
 
@@ -263,6 +396,14 @@ export function applySharedAxisDefaults(spec: any): string[] {
 
   const injected: string[] = [];
 
+  // Shared data for a layered spec lives at the top level; a layer may carry
+  // its own. x label defaults are width/cardinality-aware (D-309), y unchanged.
+  const defaultsFor = (channel: string, layer: any, enc: any) => {
+    if (channel !== 'x') return { ...AXIS_DEFAULTS[channel] };
+    const dataNode = layer && Array.isArray(layer?.data?.values) ? layer : spec;
+    return resolveXAxisLabelDefaults(dataNode, enc);
+  };
+
   ['x', 'y'].forEach((channel) => {
     const independent = spec?.resolve?.axis?.[channel] === 'independent';
     const encodes = (layer: any) => Boolean(layer?.encoding?.[channel]);
@@ -270,7 +411,7 @@ export function applySharedAxisDefaults(spec: any): string[] {
     if (independent) {
       layers.forEach((layer: any, i: number) => {
         if (encodes(layer) && !layer.encoding[channel].axis) {
-          layer.encoding[channel].axis = { ...AXIS_DEFAULTS[channel] };
+          layer.encoding[channel].axis = defaultsFor(channel, layer, layer.encoding[channel]);
           injected.push(`${channel}@${i}`);
         }
       });
@@ -280,10 +421,101 @@ export function applySharedAxisDefaults(spec: any): string[] {
     if (layers.some((layer: any) => encodes(layer) && layer.encoding[channel].axis)) return;
 
     const firstIndex = layers.findIndex(encodes);
-    if (firstIndex === -1) return;
-    layers[firstIndex].encoding[channel].axis = { ...AXIS_DEFAULTS[channel] };
+    if (firstIndex === -1) {
+      // D-238 (nominal-axis-labels-forced-90deg): no layer encodes the channel,
+      // but a layered spec may SHARE it at the TOP LEVEL — a dual-axis combo
+      // authors x once in the top-level `encoding` and its y per layer. The
+      // old layer-only findIndex returned -1 here and bailed, so the shared
+      // top-level x axis never received labelAngle:0 and rendered rotated 90°.
+      // Inject the readable default onto the top-level encoding, unless the
+      // author already configured an axis there (same hands-off guarantee as
+      // the per-layer path).
+      const topEnc = spec?.encoding?.[channel];
+      if (topEnc && typeof topEnc === 'object' && !topEnc.axis) {
+        topEnc.axis = defaultsFor(channel, null, topEnc);
+        injected.push(`${channel}@top`);
+      }
+      return;
+    }
+    layers[firstIndex].encoding[channel].axis =
+      defaultsFor(channel, layers[firstIndex], layers[firstIndex].encoding[channel]);
     injected.push(`${channel}@${firstIndex}`);
   });
 
   return injected;
+}
+
+/**
+ * Marks for which Vega-Lite has no x2/y2 channel. A secondary channel that
+ * reaches one of these through layer inheritance is dropped with
+ * `WARN x2 dropped as it is incompatible with "text"`.
+ */
+const SECONDARY_CHANNEL_INCOMPATIBLE_MARKS = new Set([
+  'text', 'point', 'circle', 'square', 'tick', 'line', 'trail', 'geoshape', 'arc',
+]);
+
+function markTypeOf(view: any): string | undefined {
+  const m = view?.mark;
+  if (typeof m === 'string') return m;
+  if (m && typeof m === 'object' && typeof m.type === 'string') return m.type;
+  return undefined;
+}
+
+/**
+ * Sink a shared x2 / y2 from a layer group's encoding down onto the child
+ * layers that can consume it.
+ *
+ * The idiom "bar with x/x2 range plus a text label at x2" is naturally
+ * written with x2 in the SHARED encoding, because the bar is the only mark
+ * that needs it. Vega-Lite merges the shared encoding into every child, so
+ * the text layer also receives x2 and drops it with a warning. The chart is
+ * still correct, but the warning is noise in every render and the model that
+ * authored the spec has no way to avoid it short of duplicating encodings.
+ *
+ * Only acts when at least one leaf would drop the channel; a group whose
+ * leaves are all bars keeps its shared encoding untouched. A child that
+ * already declares its own x2/y2 wins. A nested layer group is treated as a
+ * consumer (it receives the channel) and then processed recursively.
+ *
+ * Returns `${channel}@${path}` for every layer that received a channel.
+ */
+export function sinkSecondaryChannels(view: any): string[] {
+  const moved: string[] = [];
+
+  const walk = (node: any, path: string): void => {
+    if (!node || typeof node !== 'object') return;
+
+    const layers = Array.isArray(node.layer) ? node.layer : null;
+    if (layers) {
+      const enc = node.encoding;
+      (['x2', 'y2'] as const).forEach(ch => {
+        if (!enc || enc[ch] === undefined) return;
+        const wouldDrop = layers.some(
+          (l: any) => SECONDARY_CHANNEL_INCOMPATIBLE_MARKS.has(markTypeOf(l) ?? ''),
+        );
+        if (!wouldDrop) return;
+
+        layers.forEach((l: any, i: number) => {
+          if (!l || typeof l !== 'object') return;
+          const t = markTypeOf(l);
+          if (t !== undefined && SECONDARY_CHANNEL_INCOMPATIBLE_MARKS.has(t)) return;
+          if (l.encoding && l.encoding[ch] !== undefined) return;
+          l.encoding = { ...(l.encoding || {}), [ch]: enc[ch] };
+          moved.push(`${ch}@${path}${i}`);
+        });
+        delete enc[ch];
+      });
+      layers.forEach((l: any, i: number) => walk(l, `${path}${i}.`));
+    }
+
+    ['hconcat', 'vconcat', 'concat'].forEach(key => {
+      if (Array.isArray(node[key])) {
+        node[key].forEach((s: any, i: number) => walk(s, `${path}${key}${i}.`));
+      }
+    });
+    if (node.spec && typeof node.spec === 'object') walk(node.spec, `${path}spec.`);
+  };
+
+  walk(view, '');
+  return moved;
 }
