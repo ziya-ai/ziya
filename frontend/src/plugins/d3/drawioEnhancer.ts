@@ -6,6 +6,94 @@
  * - Text overflow and clipping issues
  */
 
+/**
+ * G-793d89 / D-090 — auto-layout-geometry-label-desync (drawio wave 1, the
+ * container/boundary specs w1-08 and w1-09).
+ *
+ * A drawio container/swimlane/trust-boundary vertex carries its TITLE with the
+ * drawio idiom `verticalAlign=top;align=left` (title pinned to the top-left of a
+ * wide box). maxGraph emits the label foreignObject spanning the whole box and
+ * positions the text horizontally with a CSS `margin-left`; for these wide boxes
+ * the emitted margin-left carries the title toward the RIGHT of the box. The old
+ * enhancer path only *clamped* that margin-left to stop it overflowing the right
+ * edge — which pinned a LEFT-aligned title flush against the right edge (the
+ * recorded symptom: "container/boundary titles stranded at the far-right canvas
+ * edge, clipped, not on their boxes"). In dark the stranded title lands on the
+ * bare canvas and collapses to ~1:1.
+ *
+ * The correct behaviour is to HONOUR the author's `align`, exactly as
+ * `forceTextCellPositioning` already does for text-only cells: place a
+ * left-aligned title at the box's left edge + spacingLeft. This predicate
+ * identifies the box-title idiom so those vertices are routed through the
+ * alignment-honouring path instead of the right-edge clamp.
+ *
+ * Kept narrow on purpose: only a vertex whose author style asks for a top-left
+ * title matches, so ordinary centre/middle leaf boxes are untouched.
+ */
+export function isBoxTitleLabel(
+    style: Record<string, any> | string | null | undefined
+): boolean {
+    if (!style || typeof style !== 'object') return false;
+    const align = String(style['align'] ?? 'center').toLowerCase();
+    const vAlign = String(style['verticalAlign'] ?? 'middle').toLowerCase();
+    // The drawio container / swimlane / trust-boundary title idiom: text pinned
+    // to the top and to the left (or explicitly left with a top-anchored title).
+    return align === 'left' && vAlign === 'top';
+}
+
+/**
+ * G-793d89 / D-090 — pure margin-left solver shared by the text-cell and
+ * container-title positioning passes.
+ *
+ * Given the on-screen rects of a cell's background SHAPE and its label DIV, the
+ * accumulated parent-chain scale, the current margin-left and the author's
+ * horizontal `align`, return the margin-left (in the pre-scale frame margin-left
+ * lives in) that places the label per the author's alignment:
+ *   - left:   div left edge at shape left  + spacingLeft
+ *   - center: div centre    at shape centre
+ *   - right:  div right edge at shape right - spacingRight
+ *
+ * Byte-identical to the math previously inlined in forceTextCellPositioning;
+ * extracted so both passes share one implementation and it can be unit-tested
+ * without a live browser (getBoundingClientRect / getBBox return 0 in jsdom).
+ */
+export function computeAlignedMarginLeft(params: {
+    shapeLeft: number;
+    shapeWidth: number;
+    divLeft: number;
+    divWidth: number;
+    accumScale: number;
+    currentMl: number;
+    align?: string;
+    spacingLeft?: number;
+    spacingRight?: number;
+}): number {
+    const align = (params.align || 'left').toLowerCase();
+    const spacingLeft = params.spacingLeft ?? 0;
+    const spacingRight = params.spacingRight ?? 0;
+    let accumScale = params.accumScale;
+    if (!accumScale || !isFinite(accumScale)) accumScale = 1;
+
+    let screenDx: number;
+    if (align === 'center') {
+        const shapeCenter = params.shapeLeft + params.shapeWidth / 2;
+        const divCenter = params.divLeft + params.divWidth / 2;
+        screenDx = shapeCenter - divCenter;
+    } else if (align === 'right') {
+        const shapeRight = params.shapeLeft + params.shapeWidth;
+        const divRight = params.divLeft + params.divWidth;
+        screenDx = shapeRight - divRight;
+    } else {
+        // left (default)
+        screenDx = params.shapeLeft - params.divLeft;
+    }
+
+    const inset = align === 'left' ? spacingLeft
+        : align === 'right' ? -spacingRight
+        : 0;
+    return params.currentMl + screenDx / accumScale + inset;
+}
+
 export class DrawIOEnhancer {
     /**
      * Fix ALL foreignObject positioning issues
@@ -25,6 +113,11 @@ export class DrawIOEnhancer {
         // compute the absolute SVG coordinates.
         if (isExplicitLayout && graph) {
             DrawIOEnhancer.forceTextCellPositioning(svgElement, graph);
+            // G-793d89 / D-090: place container / boundary TITLES at their
+            // author top-left alignment before the generic right-edge clamp
+            // runs, so a left-aligned title is never stranded at the box's
+            // right edge (marks its label data-force-positioned to skip clamp).
+            DrawIOEnhancer.positionContainerTitles(svgElement, graph);
         }
 
         console.log('🔧 DrawIOEnhancer: Fixing ALL foreignObject positioning');
@@ -466,24 +559,6 @@ export class DrawIOEnhancer {
                 ? (cellStyle['align'] || 'left')
                 : 'left';
 
-            // Compute target screenDx based on declared alignment:
-            // - left:   div's left edge sits at shape's left + spacingLeft
-            // - center: div's center x sits at shape's center x
-            // - right:  div's right edge sits at shape's right - spacingRight
-            let screenDx: number;
-            if (align === 'center') {
-                const shapeCenter = shapeScreen.x + shapeScreen.width / 2;
-                const divCenter = divScreen.x + divScreen.width / 2;
-                screenDx = shapeCenter - divCenter;
-            } else if (align === 'right') {
-                const shapeRight = shapeScreen.x + shapeScreen.width;
-                const divRight = divScreen.x + divScreen.width;
-                screenDx = shapeRight - divRight;
-            } else {
-                // left (default)
-                screenDx = shapeScreen.x - divScreen.x;
-            }
-
             // Convert screen-px delta to the margin-left coordinate frame,
             // which is scaled by the accumulated parent-chain scale.
             let accumScale = 1;
@@ -499,13 +574,15 @@ export class DrawIOEnhancer {
             const styleStr = innerDiv.getAttribute('style') || '';
             const mlMatch = styleStr.match(/margin-left:\s*(-?[\d.]+)px/);
             const currentMl = mlMatch ? parseFloat(mlMatch[1]) : 0;
-            // screenDx / accumScale converts the delta to pre-scale units.
-            // For left alignment, add spacingLeft as the author-declared inset.
-            // For center/right, the formula already places the text correctly.
-            const inset = align === 'left' ? spacingLeft
-                : align === 'right' ? -spacingRight
-                : 0;
-            const newMl = currentMl + screenDx / accumScale + inset;
+            // Honour the author's alignment via the shared solver (also used by
+            // positionContainerTitles for container/boundary titles — G-793d89).
+            const newMl = computeAlignedMarginLeft({
+                shapeLeft: shapeScreen.x, shapeWidth: shapeScreen.width,
+                divLeft: divScreen.x, divWidth: divScreen.width,
+                accumScale, currentMl, align,
+                spacingLeft, spacingRight,
+            });
+            const screenDx = (newMl - currentMl - (align === 'left' ? spacingLeft : align === 'right' ? -spacingRight : 0)) * accumScale;
 
             const newStyle = mlMatch
                 ? styleStr.replace(/margin-left:\s*-?[\d.]+px/, `margin-left: ${newMl}px`)
@@ -520,6 +597,101 @@ export class DrawIOEnhancer {
                 `margin-left ${currentMl.toFixed(1)} → ${newMl.toFixed(1)} `+
                 `(scale=${accumScale.toFixed(3)})`
             );
+        });
+    }
+
+    /**
+     * G-793d89 / D-090 — position container / swimlane / trust-boundary TITLES
+     * at their author-declared alignment (top-left), instead of letting the
+     * generic overflow clamp strand a left-aligned title at the box's right
+     * edge.
+     *
+     * Walks the model for box vertices whose author style is the title idiom
+     * (`verticalAlign=top;align=left`, see isBoxTitleLabel) and rewrites their
+     * label foreignObject's margin-left so the title sits at the box's left edge
+     * + spacingLeft — reusing the same shape-vs-div screen measurement and the
+     * shared computeAlignedMarginLeft solver that forceTextCellPositioning uses
+     * for text-only cells. Each fixed label is marked data-force-positioned so
+     * the generic clamp in fixAllForeignObjects skips it.
+     *
+     * Structural / theme-independent: keeps the title on its box in BOTH themes,
+     * which is what stops the dark-canvas ~1:1 collapse of a stranded title.
+     */
+    static positionContainerTitles(svgElement: SVGSVGElement, graph: any): void {
+        const model = graph?.getModel?.() || graph?.model;
+        const view = graph?.view;
+        if (!model || !view?.getState) return;
+
+        const titles: Array<{ id: string; cell: any }> = [];
+        const visit = (cell: any) => {
+            if (!cell) return;
+            if (cell.isVertex?.() && cell.getValue?.()) {
+                const style = cell.getStyle?.();
+                const valueStr = String(cell.getValue()).trim();
+                if (valueStr.length > 0 && isBoxTitleLabel(style)) {
+                    // Exclude genuine text-only cells — those are already handled
+                    // by forceTextCellPositioning and marked data-force-positioned.
+                    const isText = style && typeof style === 'object' &&
+                        (style['shape'] === 'text' || style['text'] === 1 || style['text'] === '1');
+                    if (!isText) titles.push({ id: cell.getId(), cell });
+                }
+            }
+            const childCount = cell.getChildCount?.() || (cell.children?.length ?? 0);
+            for (let i = 0; i < childCount; i++) {
+                visit(cell.getChildAt?.(i) ?? cell.children?.[i]);
+            }
+        };
+        visit(model.getRoot?.());
+
+        if (titles.length === 0) return;
+        console.log(`🏷️ positionContainerTitles: ${titles.length} box title(s) to align`);
+
+        titles.forEach(({ id, cell }) => {
+            const state = view.getState(cell);
+            const shapeNode: Element | null = state?.shape?.node || null;
+            const labelNode: Element | null = state?.text?.node || null;
+            if (!shapeNode || !labelNode) return;
+
+            const foreignObj = labelNode.querySelector('foreignObject') as SVGForeignObjectElement | null;
+            if (!foreignObj) return;
+            const innerDiv = foreignObj.querySelector('div') as HTMLDivElement | null;
+            if (!innerDiv) return;
+
+            const shapeScreen = shapeNode.getBoundingClientRect();
+            const divScreen = innerDiv.getBoundingClientRect();
+
+            const cellStyle = cell.getStyle?.();
+            const spacingLeft = cellStyle && typeof cellStyle === 'object'
+                ? (parseFloat(cellStyle['spacingLeft']) || 0) : 0;
+
+            let accumScale = 1;
+            let p: Element | null = foreignObj.parentElement;
+            while (p && p.tagName !== 'svg' && p.tagName !== 'SVG') {
+                const t = (p.getAttribute && p.getAttribute('transform')) || '';
+                const m = t.match(/scale\(([\d.]+)\)/);
+                if (m) accumScale *= parseFloat(m[1]);
+                p = p.parentElement;
+            }
+            if (!accumScale || !isFinite(accumScale)) accumScale = 1;
+
+            const styleStr = innerDiv.getAttribute('style') || '';
+            const mlMatch = styleStr.match(/margin-left:\s*(-?[\d.]+)px/);
+            const currentMl = mlMatch ? parseFloat(mlMatch[1]) : 0;
+
+            const newMl = computeAlignedMarginLeft({
+                shapeLeft: shapeScreen.x, shapeWidth: shapeScreen.width,
+                divLeft: divScreen.x, divWidth: divScreen.width,
+                accumScale, currentMl, align: 'left', spacingLeft,
+            });
+
+            const newStyle = mlMatch
+                ? styleStr.replace(/margin-left:\s*-?[\d.]+px/, `margin-left: ${newMl}px`)
+                : styleStr + `; margin-left: ${newMl}px;`;
+            innerDiv.setAttribute('style', newStyle);
+            // Prevent the generic right-edge clamp in fixAllForeignObjects from
+            // running on this label and undoing the left alignment.
+            foreignObj.setAttribute('data-force-positioned', 'true');
+            console.log(`  🏷️ Title ${id}: margin-left ${currentMl.toFixed(1)} → ${newMl.toFixed(1)} (left-aligned)`);
         });
     }
 

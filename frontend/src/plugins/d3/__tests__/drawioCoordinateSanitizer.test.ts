@@ -125,3 +125,59 @@ describe('sanitizeDrawioCoordinates (Issue 8)', () => {
     expect(out).toContain('relative="1" x="0.5" y="-0.5"');
   });
 });
+
+/**
+ * G-402df4 / D-095 — the MAD/dim window must work at the COMPACT (1e4–1e5)
+ * scale, not just the 1e9 blow-out case. Triage claimed MIN_POS_WINDOW=3000
+ * "squashes a 530x190 cluster to slivers" and dimCap "buries normal cells";
+ * these pin the ACTUAL behaviour so a future parameter change that regresses
+ * neighbour survival is caught. (Confirmed: the window is derived from the
+ * cluster's own MAD, so a runaway is pulled to the window edge WITHOUT moving
+ * the neighbours — the neighbours are preserved byte-for-byte.)
+ */
+describe('sanitizeDrawioCoordinates — compact-scale neighbour survival (D-095)', () => {
+  // drawio-w2-13: 29 tightly-packed nodes (x=0..2520, y=0) + one runaway at
+  // (90000,70000). The runaway must be pulled in; every clustered node must
+  // survive verbatim (was: 24/30 clipped when the cluster was squashed).
+  it('w2-13: pulls a lone 1e4–1e5 runaway in while preserving the whole cluster', () => {
+    const cluster: string[] = [];
+    for (let i = 0; i < 29; i++) {
+      cluster.push(`<mxCell id="o${i}" vertex="1" parent="1"><mxGeometry x="${i * 90}" y="0" width="80" height="30" as="geometry"/></mxCell>`);
+    }
+    const xml = `<mxGraphModel><root>${cluster.join('')}` +
+      `<mxCell id="run" vertex="1" parent="1"><mxGeometry x="90000" y="70000" width="80" height="30" as="geometry"/></mxCell>` +
+      `</root></mxGraphModel>`;
+    const out = sanitizeDrawioCoordinates(xml);
+    // Runaway coordinates are gone (pulled to the cluster's MAD window edge)...
+    expect(out).not.toContain('x="90000"');
+    expect(out).not.toContain('y="70000"');
+    // ...but every clustered node keeps its exact position (no slivering).
+    expect(out).toContain('x="0" y="0"');
+    expect(out).toContain('x="2520" y="0"'); // the 29th cluster node (28*90)
+    // The whole surviving extent stays legible-scale, not 90000-wide.
+    const maxAbs = Math.max(...positions(out).map(Math.abs));
+    expect(maxAbs).toBeLessThan(20000);
+  });
+
+  // drawio-w2-08: two absurdly-large boxes (20000x15000, 18000x400) alongside
+  // two normal 200x60 boxes. The absurd DIMENSIONS must be capped; the normal
+  // neighbours' geometry must survive verbatim (was: normal cells vanished
+  // when the giant box dominated the fit).
+  it('w2-08: caps absurd dimensions while normal neighbours survive verbatim', () => {
+    const xml = `<mxGraphModel><root>` +
+      `<mxCell id="h1" vertex="1" parent="1"><mxGeometry x="0" y="0" width="20000" height="15000" as="geometry"/></mxCell>` +
+      `<mxCell id="h2" vertex="1" parent="1"><mxGeometry x="0" y="16000" width="18000" height="400" as="geometry"/></mxCell>` +
+      `<mxCell id="h3" vertex="1" parent="1"><mxGeometry x="200" y="200" width="200" height="60" as="geometry"/></mxCell>` +
+      `<mxCell id="h4" vertex="1" parent="1"><mxGeometry x="200" y="400" width="200" height="60" as="geometry"/></mxCell>` +
+      `</root></mxGraphModel>`;
+    const out = sanitizeDrawioCoordinates(xml);
+    // Absurd dimensions are capped (dimCap floor 6000), none survive raw.
+    expect(out).not.toContain('width="20000"');
+    expect(out).not.toContain('height="15000"');
+    expect(out).not.toContain('width="18000"');
+    // The two normal boxes keep both position AND size — they are not buried
+    // or resized by the giant box's presence.
+    expect(out).toContain('x="200" y="200" width="200" height="60"');
+    expect(out).toContain('x="200" y="400" width="200" height="60"');
+  });
+});
