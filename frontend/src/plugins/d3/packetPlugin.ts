@@ -14,6 +14,7 @@ import {
   bracketLabelLayout,
   normalizePacketSpec, sanitizeFieldBits, sanitizeBrackets, sectionLabel,
   normalizeSectionRows, sanitizePacketBitWidth,
+  sectionContentHeight, SECTION_LABEL_LINE_H,
 } from '../../utils/d3Plugins/packetPlugin';
 import { getOptimalTextColor } from '../../utils/colorUtils';
 import { getZoomScript, getDownloadSvgScript } from '../../utils/popupScriptUtils';
@@ -200,6 +201,40 @@ export function effectiveCellBackdrop(fillBg: string | undefined, canvasBg: stri
   return fillBg;
 }
 
+/**
+ * Choose a stride for ruler-tick LABELS so they stay legible at very large
+ * bit widths (D-201). Each bit cell is `bitW` px wide and a tick label is up to
+ * `String(bits-1)` digits at bold 12px "Consolas" monospace (~7.2px/digit).
+ * When one cell is too narrow to hold the widest label without colliding with
+ * its neighbour, label only every Nth bit (N a power of two) so the numbers
+ * never overlap.
+ *
+ * At bitWidth 512 (PACKET_MAX_BIT_WIDTH) the natural grid is ~8k px and the
+ * post-render capture-fit downscales it under the 6000px ceiling; a per-bit
+ * ruler then rendered all 512 three-digit numbers into sub-legible smears. A
+ * UNIFORM downscale shrinks the cell and the font by the same factor, so a
+ * label that fits its (strided) cell at natural scale still fits at any capture
+ * scale — deciding the stride at natural scale is therefore correct regardless
+ * of the later fit factor. Pure / DOM-free / testable.
+ *
+ * Returns 1 (label every bit — byte-identical ruler) for the common case:
+ * bitWidth <= 32 uses BIT_W >= 24, wide enough for a 2-digit label.
+ */
+export function rulerTickStride(bits: number, bitW: number): number {
+  const n = Math.max(0, Math.floor(Number(bits)) || 0);
+  const w = Math.max(1, Number(bitW) || 1);
+  const digits = String(Math.max(0, n - 1)).length;
+  const TICK_CHAR_W = 7.2;                 // bold 12px monospace advance
+  const labelW = digits * TICK_CHAR_W + 4; // + small inter-label gap
+  const need = Math.ceil(labelW / w);
+  if (need <= 1) return 1;
+  // Round up to the next power of two so tick spacing lands on natural bit
+  // boundaries (…128, 64, 32, 16) rather than an arbitrary count.
+  let stride = 1;
+  while (stride < need) stride *= 2;
+  return stride;
+}
+
 function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boolean): void {
   // Accept either a direct PacketSpec or { definition: string }. The string
   // may be: packet-beta DSL text (bridged), fenced content (D-215), or
@@ -221,7 +256,7 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
       // Not DSL — lenient JSON parse (strict first, json5 fallback). Only when
       // even that fails do we surface the error card (no more silent 30s hang
       // on a recoverable slip).
-      const parsed = lenientParsePacketJson(def);
+      const parsed = lenientParsePacketJson(cleaned);
       if (parsed === undefined) {
         renderError(container, 'Invalid JSON in definition', rawSpec, isDarkMode);
         return;
@@ -229,7 +264,7 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
       pkt = parsed as PacketSpec;
     }
   } else {
-    pkt = def as PacketSpec;
+    pkt = extractDefinition(rawSpec) as PacketSpec;
   }
 
   // Normalize common alternate formats (flat fields, array wrapper, name/width aliases)
@@ -307,14 +342,26 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
   }
 
   // ── Bit ruler ──────────────────────────────────────────────────────────
+  // Decimate tick labels when a single bit cell is too narrow to hold the
+  // widest number without colliding with its neighbour (D-201). At bitWidth
+  // 512 the ~8k px grid is capture-fit-downscaled under the 6000px ceiling and
+  // a per-bit ruler smeared all 512 three-digit numbers into sub-pixel
+  // illegibility; labelling every Nth bit keeps every drawn number legible at
+  // any capture scale. stride === 1 (label every bit) for bitWidth <= 32, so
+  // ordinary rulers are byte-identical.
+  const rulerStride = rulerTickStride(bits, L.BIT_W);
   const drawRuler = (ry: number) => {
     for (let b = 0; b < bits; b++) {
+      const bitVal = bits - 1 - b;
+      // Always keep the two end ticks so the bit range stays anchored; between
+      // them, label only on the bit-value stride.
+      if (rulerStride > 1 && b !== 0 && b !== bits - 1 && bitVal % rulerStride !== 0) continue;
       svg.append('text')
         .attr('x', gridX + b * L.BIT_W + L.BIT_W / 2)
         .attr('y', ry + 14)
         .attr('text-anchor', 'middle').attr('fill', dimFill)
         .style('font', 'bold 12px "Consolas", "Courier New", monospace')
-        .text(bits - 1 - b);
+        .text(bitVal);
     }
   };
   drawRuler(y);
@@ -328,20 +375,30 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
     // its fields instead of iterating object keys. Row COUNT is preserved, so
     // this stays in agreement with computeDimensions' height math.
     const secRows = normalizeSectionRows(sec.rows);
-    const secH = secRows.length * L.ROW_H;
+    // Section height is the GREATER of the row block and the vertical room a
+    // multi-line section label needs (D-180) — shared with computeDimensions'
+    // sectionContentHeight so the drawn label can never overrun the computed
+    // SVG height. A single-line label leaves this exactly `rows * ROW_H`.
+    const secLabelLines = sectionLabel(sec).split('\n');
+    const secH = sectionContentHeight(secRows.length, secLabelLines.length, L);
     const sectionColor = resolveColor(sec.color, isDarkMode, sectionIdx);
 
     // Section label (left column, vertically centered).
     // Defense-in-depth: resolve via sectionLabel() so a section that reached
     // the renderer with `name`/`title` (not `label`) or a non-string label
     // can never make `.split` throw and blank the whole canvas.
-    const lines = sectionLabel(sec).split('\n');
+    const lines = secLabelLines;
     const midY = secY + secH / 2;
+    // Center the whole multi-line block on midY so it stays inside the section
+    // (whose height now reserves room for the lines — D-180). The old formula
+    // stacked lines strictly DOWNWARD from midY, so a tall label spilled past
+    // the section bottom and overprinted the ruler even after the height grew.
+    const blockTop = midY - ((lines.length - 1) * SECTION_LABEL_LINE_H) / 2;
     lines.forEach((ln, li) => {
       const isMain = li === 0;
       const lineY = lines.length === 1
         ? midY + 4
-        : midY + (li === 0 ? -4 : li * 14 - 4);
+        : blockTop + li * SECTION_LABEL_LINE_H + 4;
       svg.append('text')
         .attr('x', gridX - 8).attr('y', lineY)
         .attr('text-anchor', 'end')

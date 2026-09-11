@@ -63,19 +63,38 @@ const THEMES_DARK: Record<string, ColorTriple> = {
 
 // Deterministic palette for auto-assignment when no color is specified.
 // Spread across hue space so adjacent sections don't clash.
+// D-183: the auto-palette recycles by `autoIndex % len`, so a diagram with
+// many sections lands multiple sections on this list. Two entries here were
+// same-hue near-duplicates of earlier slots — index 5 (#D1F2EB, hue 167°) was
+// a teal-green all-but-identical to index 2's green (#D5F5E3, 21° apart, fill
+// contrast 1.02), and index 9 (#A9DFBF) was a THIRD green (hue 144°) — so at
+// ~6+ sections two bands became indistinguishable. WCAG contrast is a poor
+// distinctness metric for equal-lightness pastels (blue vs yellow reads 1.14
+// yet is obviously distinct), so the fix restores HUE separation: the two
+// duplicate slots are recoloured to fill the empty lime (~95°) and periwinkle
+// (~242°) gaps, giving every slot >=37° hue separation from all others while
+// staying pastel with dark, >=4.5:1 label text. Only the LATER duplicate slots
+// (5, 9) changed, so any diagram with <=5 sections is byte-identical.
 const AUTO_PALETTE_LIGHT: ColorTriple[] = [
   { bg: '#B2E0F0', border: '#4BA3C7', text: '#1A5276' },
   { bg: '#F9E79F', border: '#D4AC0D', text: '#7D6608' },
   { bg: '#D5F5E3', border: '#82E0AA', text: '#1E8449' },
   { bg: '#FADBD8', border: '#E74C3C', text: '#922B21' },
   { bg: '#E8DAEF', border: '#AF7AC5', text: '#6C3483' },
-  { bg: '#D1F2EB', border: '#48C9B0', text: '#0E6655' },
+  { bg: '#D8F1C6', border: '#69AC39', text: '#3A631D' }, // lime (was #D1F2EB, a dup green of idx 2)
   { bg: '#FDEBD0', border: '#F0B27A', text: '#935116' },
   { bg: '#D6EAF8', border: '#5DADE2', text: '#1B4F72' },
   { bg: '#D4A5C7', border: '#9B59B6', text: '#4A235A' },
-  { bg: '#A9DFBF', border: '#27AE60', text: '#1E8449' },
+  { bg: '#D1D0F1', border: '#5C59C0', text: '#2C297A' }, // periwinkle (was #A9DFBF, a 3rd green)
 ];
 
+// D-183 (dark side): index 7 (#1B4F72, hue 204°) was a near-identical blue to
+// index 0 (#1A5276, 1° apart, fill contrast 1.04) and index 9 (#196F3D, hue
+// 145°) was an identical-hue green to index 2 (#1E8449, 0° apart), so recycled
+// dark bands blurred together. The two later duplicate slots are recoloured to
+// the empty lime (~95°) and indigo (~243°) gaps — every slot now has >=40° hue
+// separation from all others, staying deep with light, >=4.5:1 label text.
+// Only slots 7 and 9 changed; diagrams with <=7 sections are byte-identical.
 const AUTO_PALETTE_DARK: ColorTriple[] = [
   { bg: '#1A5276', border: '#4BA3C7', text: '#D6EAF8' },
   { bg: '#7D6608', border: '#D4AC0D', text: '#FEF9E7' },
@@ -84,9 +103,9 @@ const AUTO_PALETTE_DARK: ColorTriple[] = [
   { bg: '#6C3483', border: '#AF7AC5', text: '#E8DAEF' },
   { bg: '#0E6655', border: '#48C9B0', text: '#D1F2EB' },
   { bg: '#935116', border: '#F0B27A', text: '#FDEBD0' },
-  { bg: '#1B4F72', border: '#5DADE2', text: '#D6EAF8' },
+  { bg: '#416F20', border: '#82CB4D', text: '#D9EBCB' }, // lime (was #1B4F72, a dup blue of idx 0)
   { bg: '#4A235A', border: '#9B59B6', text: '#E8DAEF' },
-  { bg: '#196F3D', border: '#27AE60', text: '#A9DFBF' },
+  { bg: '#312D76', border: '#7E79D2', text: '#D4D3EE' }, // indigo (was #196F3D, a dup green of idx 2)
 ];
 
 // ── Public types ────────────────────────────────────────────────────────────
@@ -225,6 +244,54 @@ export function defaultLayout(bitWidth: number): LayoutConfig {
 
 // ── Color resolution ────────────────────────────────────────────────────────
 
+/**
+ * Theme page background the packet diagram is drawn on. A field whose fill is
+ * `transparent`/`none` shows THIS colour through, so it is the surface the
+ * label text actually sits on. Ziya's dark canvas is #1e1e1e; light is white.
+ */
+export const PACKET_PAGE_BG_LIGHT = '#ffffff';
+export const PACKET_PAGE_BG_DARK = '#1e1e1e';
+
+/**
+ * True when a fill value paints nothing, so the themed canvas shows through:
+ * the `transparent`/`none` keywords, an empty/absent value, or a zero-alpha
+ * `rgba(...)`. Case- and whitespace-tolerant.
+ */
+export function isSeeThroughFill(bg: string | undefined | null): boolean {
+  if (bg == null) return true;
+  if (typeof bg !== 'string') return false;
+  const v = bg.trim().toLowerCase();
+  if (v === '' || v === 'transparent' || v === 'none') return true;
+  // rgba(r,g,b,0) / rgba(r,g,b, 0.0) - a fully transparent explicit colour.
+  const m = v.match(/^rgba?\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*,\s*([\d.]+)\s*\)$/);
+  if (m) return !(parseFloat(m[1]) > 0);
+  return false;
+}
+
+/**
+ * Resolve the ACTUAL backdrop a field label sits on: for a see-through fill
+ * (`transparent`/`none`/empty/zero-alpha) that is the themed `canvas`, not the
+ * keyword; for any opaque fill it is the fill itself, returned unchanged.
+ *
+ * D-208 / D-227: the theme-blind colour helpers treat `transparent` as white
+ * (namedColorToHex: transparent -> #ffffff), so a label derived directly from
+ * the fill commits to black - correct on the white light canvas, invisible on
+ * the #1e1e1e dark canvas (black-on-dark = 1.26:1). Routing the label backdrop
+ * through the real themed canvas fixes dark WITHOUT touching light.
+ */
+export function effectiveCellBackdrop(fill: string | undefined | null, canvas: string): string {
+  return isSeeThroughFill(fill) ? canvas : (fill as string);
+}
+
+/**
+ * Pick a readable label colour for a given field fill under the current theme,
+ * resolving a see-through fill against the theme page background first (D-208).
+ */
+export function textColorForFill(bg: string | undefined, isDarkMode: boolean): string {
+  const canvas = isDarkMode ? PACKET_PAGE_BG_DARK : PACKET_PAGE_BG_LIGHT;
+  return getOptimalTextColor(effectiveCellBackdrop(bg, canvas));
+}
+
 /** Resolve a color spec to a concrete triple for the current theme. */
 export function resolveColor(
   color: string | ColorTriple | undefined,
@@ -241,12 +308,24 @@ export function resolveColor(
     return {
       bg: color.bg,
       border: color.border,
-      text: color.text || getOptimalTextColor(color.bg),
+      // D-208: a transparent/none fill shows the THEME page, not a white page —
+      // resolve the label colour against the theme background so it stays
+      // readable in dark as well as light.
+      text: color.text || textColorForFill(color.bg, isDarkMode),
     };
   }
   // Named theme
   const themes = isDarkMode ? THEMES_DARK : THEMES_LIGHT;
   if (themes[color]) return themes[color];
+  // A bare `transparent`/`none` fill keyword: keep the fill transparent so the
+  // page shows through, but pick the label colour against the theme page.
+  if (isSeeThroughFill(color)) {
+    return {
+      bg: color,
+      border: '#888888',
+      text: textColorForFill(color, isDarkMode),
+    };
+  }
   // Treat as a hex background color, derive the rest
   if (color.startsWith('#')) {
     return {
@@ -272,6 +351,47 @@ function darkenHex(hex: string, factor: number): string {
 
 // ── Dimension calculation ───────────────────────────────────────────────────
 
+/**
+ * Line height (px) used when stacking a multi-line section label. Shared by the
+ * section-height math here and the renderer's label-draw loop so the computed
+ * SVG height and the drawn label can never disagree (D-180).
+ */
+export const SECTION_LABEL_LINE_H = 14;
+
+/**
+ * Pixel height a section occupies: the GREATER of its row block
+ * (`rowCount * ROW_H`) and the vertical room a multi-line section LABEL needs
+ * (D-180). Pure and DOM-free so computeDimensions (SVG height) and the
+ * renderer's per-section draw math consume ONE source of truth.
+ *
+ * A section label may carry `\n`-separated lines; the renderer stacks them at
+ * SECTION_LABEL_LINE_H each, centered on the section. Sizing the section only
+ * from `rowCount * ROW_H` (the old behaviour) let a tall label (e.g. 60 lines
+ * on a 2-row section) overrun the computed viewBox bottom and overprint the
+ * bottom ruler — silent content loss. Reserving `lines * LINE_H + pad` when the
+ * label is taller than the rows fixes both.
+ *
+ * Strict no-op for the common case: a single-line label needs no extra room, so
+ * the result is exactly `rowCount * ROW_H` and every well-formed spec is
+ * byte-identical.
+ */
+export function sectionContentHeight(rowCount: number, labelLineCount: number, L: LayoutConfig): number {
+  const rowsH = Math.max(0, rowCount) * L.ROW_H;
+  const lines = Math.max(1, Math.floor(labelLineCount) || 1);
+  // A single line always fits inside any row height, so only multi-line labels
+  // can force the section taller. +8 keeps a small top/bottom margin.
+  const labelH = lines > 1 ? lines * SECTION_LABEL_LINE_H + 8 : 0;
+  return Math.max(rowsH, labelH);
+}
+
+/** Sum of every section's content height (row block vs. multi-line label). */
+function sectionsBlockHeight(sections: PacketSection[], L: LayoutConfig): number {
+  return sections.reduce(
+    (h, s) => h + sectionContentHeight(
+      s.rows?.length ?? 0, sectionLabel(s).split('\n').length, L),
+    0);
+}
+
 export function computeDimensions(spec: PacketSpec): { width: number; height: number; layout: LayoutConfig } {
   // Coerce to a positive integer so the grid width (bits * BIT_W) and the ruler
   // agree with the plugin (which sanitizes identically) — a fractional/degenerate
@@ -280,7 +400,6 @@ export function computeDimensions(spec: PacketSpec): { width: number; height: nu
   const L = defaultLayout(bits);
 
   const sections = spec.sections ?? [];
-  const totalRows = sections.reduce((n, s) => n + (s.rows?.length ?? 0), 0);
   const numSections = sections.length;
   // Gutter widths on each side (shared with the renderer via a single helper
   // so layout sizing and drawing can never drift out of agreement).
@@ -292,7 +411,7 @@ export function computeDimensions(spec: PacketSpec): { width: number; height: nu
   const height =
     L.TOP_PAD + L.TITLE_H + subtitleH +
     L.HEADER_H +
-    totalRows * L.ROW_H +
+    sectionsBlockHeight(sections, L) +
     Math.max(0, numSections - 1) * L.SECTION_GAP +
     L.HEADER_H + L.TOP_PAD;
 
@@ -570,8 +689,19 @@ export function computeBracketGutters(
     ? maxLabelW + 8 + maxLeftDepth * L.BRACKET_W + 14
       + horizOverflow(maxLeftHorizW, maxLeftDepth)
     : 0;
+  // Reserve left gutter for a section label WIDER than the fixed LABEL_W column
+  // even when NO left brackets exist (D-177). The renderer right-anchors the
+  // label at `gridX - 8` (gridX = LEFT_PAD + left + LABEL_W), so its text runs
+  // from `gridX - 8 - maxLabelW` leftward; without this a label longer than
+  // ~LABEL_W ran off the viewBox left edge and was clipped (e.g. a `packet-beta`
+  // DSL title copied into the sole section's label). The condition to keep the
+  // label's left edge at >= LEFT_PAD is `left >= maxLabelW + 8 - LABEL_W`.
+  // Bounded because maxLabelW is already capped at PACKET_MAX_LABEL_GUTTER_W.
+  // Strict no-op for labels that fit the 180px column (term <= 0) and no left
+  // brackets, so normal specs are byte-identical.
+  const labelOverflow = Math.max(0, maxLabelW + 8 - L.LABEL_W);
   return {
-    left: Math.max(0, leftNeeded - L.LABEL_W),
+    left: Math.max(Math.max(0, leftNeeded - L.LABEL_W), labelOverflow),
     right: Math.max(maxRightDepth, 1) * L.BRACKET_W + 14
       + horizOverflow(maxRightHorizW, maxRightDepth),
     flipLeftToRight,
@@ -690,7 +820,31 @@ export function normalizeSectionRows(rows: any): PacketSection['rows'] {
       // The cast is required because TS 5.5+ infers a type predicate for the
       // `every` callback, narrowing `row` to `any[][]`, which is not assignable
       // to the fixed-length tuple union even though every element is a tuple.
-      if (row.every((f: any) => Array.isArray(f))) return row as PacketSection['rows'][number];
+      if (row.every((f: any) => Array.isArray(f))) {
+        // Row nested one level too DEEP (D-173 / w4-13): each element is
+        // itself an array OF arrays (a wrapped row-of-tuples), not a
+        // `[name, bits]` tuple whose first element is a scalar. Such a row
+        // passes `every(Array.isArray)` yet hands the draw loop an array as
+        // field[0]/field[1], writing invalid SVG (30s timeout). Flatten one
+        // level so the loop sees real field tuples. A canonical row (elements
+        // are `[name,bits]` tuples, so each element's OWN first element is a
+        // scalar) is NOT over-nested and is returned by reference below —
+        // byte-identical; this is a targeted gap fill, not a catch-all.
+        const overNested = row.length > 0 && row.every(
+          (f: any) => Array.isArray(f) && f.length > 0 && f.every((g: any) => Array.isArray(g)));
+        if (overNested) {
+          const flat = ([] as any[]).concat(...row);
+          return flat.map(fieldToTuple);
+        }
+        return row as PacketSection['rows'][number];
+      }
+      // A row that is itself a bare field tuple `[name, bits(, color)]` —
+      // nested one level too SHALLOW (D-173 / w4-13). Without this it fell to
+      // `.map(fieldToTuple)`, turning each scalar element into an empty
+      // `['', 0]` cell. Wrap it as a single-field row instead.
+      if (typeof row[0] === 'string' && typeof row[1] === 'number') {
+        return [fieldToTuple(row)] as PacketSection['rows'][number];
+      }
       return row.map(fieldToTuple);
     }
     const fields = Array.isArray(row?.fields) ? row.fields
@@ -711,8 +865,15 @@ export function normalizeSectionRows(rows: any): PacketSection['rows'] {
 export function normalizeSection(sec: any, bitWidth: number): PacketSection {
   const label = sectionLabel(sec);
   let rows = normalizeSectionRows(sec?.rows);
-  if (rows.length === 0 && Array.isArray(sec?.fields) && sec.fields.length > 0) {
-    rows = flatFieldsToRows(sec.fields, bitWidth);
+  // A flat field list may arrive under `fields` OR `cells` at the SECTION
+  // level (D-174 / w4-15). `cells` was honoured as a ROW key but not a SECTION
+  // key, so a section keyed with `cells` silently lost every field to the
+  // placeholder row. Both aliases resolve to the same flat-field wrapping.
+  const flatFields = Array.isArray(sec?.fields) && sec.fields.length > 0 ? sec.fields
+    : Array.isArray(sec?.cells) && sec.cells.length > 0 ? sec.cells
+    : null;
+  if (rows.length === 0 && flatFields) {
+    rows = flatFieldsToRows(flatFields, bitWidth);
   }
   if (rows.length === 0) {
     rows = [[[label || 'Section', bitWidth] as [string, number]]];
@@ -757,17 +918,25 @@ function flatFieldsToRows(fields: FlatField[], bitWidth: number): PacketSection[
   let currentRow: Array<[string, number] | [string, number, string]> = [];
   let rowBits = 0;
 
-  for (const f of fields) {
-    if (rowBits + f.bits > bitWidth && currentRow.length > 0) {
+  for (const raw of fields) {
+    // Resolve the same name/bits/color aliases fieldToTuple uses, so a flat
+    // field list arriving under `cells` (D-174) or a mix of {label,width} /
+    // {name,size} field objects wraps correctly instead of leaving bits
+    // undefined → NaN. A canonical {name, bits(, color)} field is unchanged.
+    const f = raw as any;
+    const name: string = f?.name ?? f?.label ?? '';
+    const bits: number = f?.bits ?? f?.width ?? f?.size ?? 0;
+    const color: string | undefined = f?.color;
+    if (rowBits + bits > bitWidth && currentRow.length > 0) {
       rows.push(currentRow);
       currentRow = [];
       rowBits = 0;
     }
-    const tuple: [string, number] | [string, number, string] = f.color
-      ? [f.name, f.bits, f.color]
-      : [f.name, f.bits];
+    const tuple: [string, number] | [string, number, string] = color
+      ? [name, bits, color]
+      : [name, bits];
     currentRow.push(tuple);
-    rowBits += f.bits;
+    rowBits += bits;
     if (rowBits >= bitWidth) {
       rows.push(currentRow);
       currentRow = [];
