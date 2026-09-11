@@ -22,14 +22,14 @@ import type { TaskBinding } from '../../types/task_binding';
 import type {
   TaskRun, RunStatus, IterationsResponse, ProgressNote,
 } from '../../types/task_run';import type { TaskCard, Block, Artifact } from '../../types/task_card';
-import { cancelTaskRun, pauseTaskRun, resumeTaskRun, stepTaskRun, resumeRunFromBlock, resumeRunFromIteration, listIterations, getIterationArtifact, getRunLineage } from '../../services/taskRunApi';
-import type { IterationResumeMode, ResumeMode } from '../../services/taskRunApi';import { createBinding, deleteBinding, launchStagedBinding } from '../../services/taskBindingApi';
+import { cancelTaskRun, pauseTaskRun, resumeTaskRun, stepTaskRun, resumeRunFromBlock, resumeRunFromIteration, listIterations, getIterationArtifact, getRunLineage, answerTaskRunAsk } from '../../services/taskRunApi';import type { IterationResumeMode, ResumeMode } from '../../services/taskRunApi';import { createBinding, deleteBinding, launchStagedBinding } from '../../services/taskBindingApi';
 import { TASK_BINDING_EVENT, TASK_CARD_OPEN_EVENT } from '../../hooks/useTaskBindings';
 import { useTaskRunStream } from '../../hooks/useTaskRunStream';
 import { taskCardApi, type CardScopeStatus } from '../../services/taskCardApi';
 import { CommandBlock } from '../CommandBlock';
 import { TaskRunInspector } from './TaskRunInspector';
 import { TaskRunMap } from './TaskRunMap';
+import { AskAnswerPanel } from './AskAnswerPanel';
 import { BlockDetailPanel } from './BlockDetailPanel';
 import { ArtifactViewer } from './ArtifactViewer';
 import { RunRecoveryBanner } from './RunRecoveryBanner';
@@ -490,7 +490,11 @@ export const TaskCardInlineTile: React.FC<Props> = ({ binding, hideWhenTerminal 
 
 const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }) => {
   const { currentProject } = useProject();
-  const projectId = currentProject?.id ?? '';
+  // Prefer the project the binding actually lives in (stamped by the
+  // server on GET /task-bindings for cross-project global chats) over
+  // the viewing project: the card, run, and binding file all live
+  // there, so targeting the viewing project 404s every follow-up call.
+  const projectId = binding.project_id ?? currentProject?.id ?? '';
 
   // Signature status: shown while running and after finishing, because a
   // clamped run is indistinguishable from an authorized one otherwise —
@@ -521,6 +525,7 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
   const [expanded, setExpanded] = useState(true);
   const [cancelError, setCancelError] = useState<string | null>(null);
   const [rerunning, setRerunning] = useState(false);
+  const [answering, setAnswering] = useState(false);
   // Focus: which block (and optional loop iteration) the output region
   // shows detail for.  null = the whole-run artifact (default).  This
   // is the "uplevel": the run map navigates, the region below reflects
@@ -790,6 +795,30 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
       // advanced anything, so claiming "advancing…" would be a lie.
       setStepping(false);
       setCancelError(String(err));
+    }
+  }, [projectId, run, refresh]);
+
+  /**
+   * Answer the Ask checkpoint the run is holding at.  The block id comes
+   * from the run's own ``pending_ask`` rather than a prop, so the panel
+   * cannot answer a checkpoint other than the one currently open — the
+   * server also refuses a block the run has not reached, but keying off
+   * pending_ask means the UI never even offers the wrong one.
+   */
+  const handleAnswer = useCallback(async (
+    decision: 'approve' | 'reject', answer: string,
+  ) => {
+    if (!projectId || !run?.pending_ask) return;
+    setAnswering(true);
+    try {
+      await answerTaskRunAsk(projectId, run.id, run.pending_ask.block_id, {
+        decision, answer,
+      });
+      refresh();  // WS delivers ask_answered too; this covers a slow socket
+    } catch (err) {
+      setCancelError(String(err));
+    } finally {
+      setAnswering(false);
     }
   }, [projectId, run, refresh]);
 
@@ -1247,6 +1276,27 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
       </div>
 
       <div className="tc-tile__body">
+        {/* Ask checkpoint FIRST: a run stopped waiting on the user's
+            answer, so the control that unsticks it outranks the
+            description, the signing notice and the run map.
+
+            Mounted for 'held' as well as 'awaiting_input': a server
+            restart reconciles an unanswered Ask to held with the question
+            kept, and the answer endpoint accepts on a held run — but
+            without this branch nothing in the browser could reach it.
+            Gated on the Ask still being OPEN (pending_ask set, no answer
+            recorded for its block): on a held run the answer does not
+            clear pending_ask until the resumed run reaches the block, so
+            status+pending_ask alone would re-ask a settled question. */}
+        {(run.status === 'awaiting_input' || run.status === 'held')
+          && run.pending_ask
+          && !run.ask_answers?.[run.pending_ask.block_id] && (
+          <AskAnswerPanel
+            pending={run.pending_ask}
+            busy={answering}
+            onAnswer={handleAnswer}
+          />
+        )}
         {displayCard?.description && (
           <div className="tc-tile__description">{displayCard.description}</div>
         )}
@@ -1603,7 +1653,9 @@ const LaunchedCardTile: React.FC<Props> = ({ binding, hideWhenTerminal = false }
 
 const StagedCardTile: React.FC<{ binding: TaskBinding }> = ({ binding }) => {
   const { currentProject } = useProject();
-  const projectId = currentProject?.id ?? '';
+  // Same cross-project resolution as LaunchedCardTile: the staged card
+  // and its binding live in the binding's own project.
+  const projectId = binding.project_id ?? currentProject?.id ?? '';
   const [card, setCard] = useState<TaskCard | null>(null);
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);

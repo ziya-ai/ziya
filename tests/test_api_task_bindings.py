@@ -90,11 +90,20 @@ def client(ziya_home, project_dir):
              patch("app.api.task_bindings.get_project_dir", return_value=pdir), \
              patch("app.api.task_cards.get_ziya_home", return_value=ziya_home), \
              patch("app.api.task_cards.get_project_dir", return_value=pdir), \
-             patch("app.api.task_cards.execute_block", new=_stub_execute):
+             patch("app.api.task_cards.execute_block", new=_stub_execute), \
+             patch("app.api.task_runs.get_ziya_home", return_value=ziya_home), \
+             patch("app.api.task_runs.get_project_dir", return_value=pdir):
 
             from app.api.task_bindings import router as bindings_router
+            # The runs router is mounted too: the has_open_ask tests drive
+            # the real answer endpoint (POST /task-runs/{id}/ask/{block})
+            # rather than writing the answer through storage, so the seam
+            # between "answer recorded" and "binding enrichment" is the one
+            # production exercises.
+            from app.api.task_runs import router as runs_router
             app = FastAPI()
             app.include_router(bindings_router)
+            app.include_router(runs_router)
             yield TestClient(app), project_dir, chat.id, card.id
 
 
@@ -392,3 +401,74 @@ def test_dangling_run_id_degrades_gracefully(client, ziya_home, project_dir):
     rows = res.json()
     assert len(rows) == 1
     assert rows[0].get("run_status") is None
+
+
+# ──────────────────────────────────────────────────────────────────
+# has_open_ask enrichment on GET
+#
+# The sidebar renders a "waiting on you" chip from the binding.  A run
+# holding at an Ask survives a server restart as ``held`` with the
+# question kept (reconcile_stale_runs); ``run_status`` alone would make
+# that read as an infrastructure fault.  These pin the bit that lets the
+# client tell the two apart, driven through the REAL reconcile path.
+# ──────────────────────────────────────────────────────────────────
+
+def test_has_open_ask_is_true_for_a_reconciled_unanswered_ask(
+    client, ziya_home, project_dir,
+):
+    tc, pid, chat_id, card_id = client
+    pdir = ziya_home / "projects" / project_dir
+    run, _ = _seed_run_and_binding(pdir, chat_id, card_id, status="running")
+    run_storage = TaskRunStorage(pdir)
+    run_storage.open_ask(run.id, "ask-1", question="Ship it?")
+    url = f"/api/v1/projects/{pid}/chats/{chat_id}/task-bindings"
+
+    rows = tc.get(url).json()
+    assert rows[0]["run_status"] == "awaiting_input"
+    assert rows[0]["has_open_ask"] is True
+
+    # The restart: the executor is gone, the question is not.
+    assert run_storage.reconcile_stale_runs() == 1
+    rows = tc.get(url).json()
+    assert rows[0]["run_status"] == "held", "reconcile contract changed"
+    assert rows[0]["has_open_ask"] is True, (
+        "a held run with an unanswered Ask must still report the open "
+        "ask, or the sidebar tells the user to fix infrastructure when "
+        "it needs an answer"
+    )
+
+
+def test_has_open_ask_clears_once_the_held_run_is_answered(
+    client, ziya_home, project_dir,
+):
+    """Answering does NOT clear pending_ask on a held run (close_ask is
+    the executor's, on the resumed run).  The bit must key on the answer
+    too, or the row keeps asking after the user has answered."""
+    tc, pid, chat_id, card_id = client
+    pdir = ziya_home / "projects" / project_dir
+    run, _ = _seed_run_and_binding(pdir, chat_id, card_id, status="running")
+    run_storage = TaskRunStorage(pdir)
+    run_storage.open_ask(run.id, "ask-1", question="Ship it?")
+    run_storage.reconcile_stale_runs()
+
+    res = tc.post(
+        f"/api/v1/projects/{pid}/task-runs/{run.id}/ask/ask-1",
+        json={"decision": "approve", "answer": "yes"},
+    )
+    assert res.status_code == 200, res.text
+    assert res.json()["pending_ask"] is not None, "premise: answer keeps pending_ask"
+
+    rows = tc.get(f"/api/v1/projects/{pid}/chats/{chat_id}/task-bindings").json()
+    assert rows[0]["run_status"] == "held"
+    assert rows[0]["has_open_ask"] is False
+
+
+def test_has_open_ask_is_false_for_a_plain_infrastructure_hold(
+    client, ziya_home, project_dir,
+):
+    tc, pid, chat_id, card_id = client
+    pdir = ziya_home / "projects" / project_dir
+    _seed_run_and_binding(pdir, chat_id, card_id, status="held")
+    rows = tc.get(f"/api/v1/projects/{pid}/chats/{chat_id}/task-bindings").json()
+    assert rows[0]["run_status"] == "held"
+    assert rows[0]["has_open_ask"] is False

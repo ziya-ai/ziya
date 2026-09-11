@@ -142,6 +142,87 @@ export const RUN_STATUS_ORDER: ReadonlyArray<RunStatus> = [
   'running', 'paused', 'queued', 'done',
 ];
 
+/**
+ * Does this status wait on the READER rather than on the machine?
+ *
+ * A status in this set is rendered as a filled chip with a visible label,
+ * not as a gear.  This is the row's ONE structural distinction: a chip
+ * means "nothing moves until you act", a gear means "the machine is, or
+ * was, doing something".  Encoding that in colour alone failed — a row
+ * with four gear colours carries no reading at a glance, because a gear,
+ * whatever its hue, says only "machinery, in some state".
+ *
+ * Two statuses qualify.  ``awaiting_input`` is an explicit question the
+ * run put to the user.  ``held`` is an infrastructure fault the executor
+ * could not work around — a dead credential, an unreachable service —
+ * and the run stays exactly where it stopped until the environment is
+ * fixed and someone presses resume.  Both are waits on a person; neither
+ * is a verdict on the work.  ``failed`` deliberately stays a gear: it
+ * reports an outcome, and reading it is optional in a way that answering
+ * a question or resuming a stalled release sweep is not.
+ */
+export const RUN_STATUS_NEEDS_HUMAN: Record<RunStatus, boolean> = {
+  queued: false,
+  running: false,
+  paused: false,
+  held: true,
+  done: false,
+  partial: false,
+  failed: false,
+  cancelled: false,
+  awaiting_input: true,
+};
+
+/**
+ * Text colour for a label drawn ON a RUN_STATUS_FILL chip.  Per status
+ * because the fills differ in lightness: amber is light enough that white
+ * text fails contrast, so it takes dark text; violet is dark enough that
+ * dark text fails, so it takes white.  Statuses that never render as a
+ * chip still get a sensible value so a future addition to
+ * RUN_STATUS_NEEDS_HUMAN cannot produce unreadable text by omission.
+ */
+export const RUN_STATUS_CHIP_TEXT: Record<RunStatus, string> = {
+  queued: '#ffffff',
+  running: '#ffffff',
+  paused: '#ffffff',
+  held: '#ffffff',
+  done: '#1b1f24',
+  partial: '#1b1f24',
+  failed: '#ffffff',
+  cancelled: '#1b1f24',
+  awaiting_input: '#1b1f24',
+};
+
+/**
+ * Chip label per needs-human status.  Sentence case, unlike the one-word
+ * gear labels, because it is read as a message and not as a tag, and it
+ * names the ACTION: the two chips are the same colour family as two of
+ * the gears they replaced, so the text is what tells them apart.
+ */
+export const RUN_STATUS_CHIP_LABEL: Partial<Record<RunStatus, string>> = {
+  awaiting_input: 'Waiting on you',
+  held: 'Held — fix & resume',
+};
+
+/**
+ * Status as the ROW should read it.
+ *
+ * A server restart reconciles an unanswered ``awaiting_input`` run to
+ * ``held``, keeping the question on the record.  Rendered literally, that
+ * shows the violet "fix & resume" chip for a run that needs an answer —
+ * visible, but the wrong instruction.  A held run whose Ask is still open
+ * is therefore displayed as ``awaiting_input``.  Everything else passes
+ * through, so a genuine infrastructure hold keeps its own chip.
+ *
+ * Mirrors ``display_status`` in app/utils/run_status_index.py, which the
+ * project-wide index applies server-side; the two data paths must agree
+ * or a conversation's row would change meaning when it is opened.
+ */
+export function displayStatus(status: RunStatus, hasOpenAsk: boolean): RunStatus {
+  if (status === 'held' && hasOpenAsk) return 'awaiting_input';
+  return status;
+}
+
 export interface StatusCluster {
   status: RunStatus;
   /** How many distinct run lineages are in this status. */
@@ -150,6 +231,8 @@ export interface StatusCluster {
   color: string;
   /** Whether the glyph should spin. */
   animate: boolean;
+  /** Render as a labelled chip rather than a gear — see RUN_STATUS_NEEDS_HUMAN. */
+  needsHuman: boolean;
   label: string;
   hint: string;
 }
@@ -175,7 +258,7 @@ export function statusClusters(
   for (const b of bindings) {
     if (!b.run_id || !b.run_status) continue;
     if (superseded.has(b.id)) continue;
-    const st = b.run_status as RunStatus;
+    const st = displayStatus(b.run_status as RunStatus, !!b.has_open_ask);
     // Unknown status from a newer server: skip rather than crash or
     // invent a colour.  A missing gear is recoverable; a thrown render
     // takes the whole sidebar with it.
@@ -191,6 +274,7 @@ export function statusClusters(
       count,
       color: RUN_STATUS_FG[status],
       animate: RUN_STATUS_ANIMATES[status],
+      needsHuman: RUN_STATUS_NEEDS_HUMAN[status],
       label: RUN_STATUS_LABEL[status],
       hint: RUN_STATUS_HINT[status],
     });
@@ -228,6 +312,7 @@ export function clustersFromCounts(
       count,
       color: RUN_STATUS_FG[status],
       animate: RUN_STATUS_ANIMATES[status],
+      needsHuman: RUN_STATUS_NEEDS_HUMAN[status],
       label: RUN_STATUS_LABEL[status],
       hint: RUN_STATUS_HINT[status],
     });

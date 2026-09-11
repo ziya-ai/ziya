@@ -191,6 +191,20 @@ export interface HeldFaults {
   block_ids: string[];
 }
 
+/**
+ * The open Ask checkpoint a run is holding at.  Set by the executor
+ * (app/storage/task_runs.py::open_ask) only while status is
+ * 'awaiting_input'; cleared on answer or cancel.  Mirrors the dict
+ * shape written there.
+ */
+export interface PendingAsk {
+  block_id: string;
+  question: string;
+  /** Fixed answer options; empty means free text. */
+  choices: string[];
+  opened_at: number;
+}
+
 export interface TaskRun {
   id: string;
   card_id: string;
@@ -240,6 +254,19 @@ export interface TaskRun {
   parameter_overrides?: Record<string, unknown>;
   artifact?: Artifact | null;
   block_states: Record<string, TaskRunBlockState>;
+  /**
+   * Set only while status === 'awaiting_input': the Ask block the run
+   * is holding at.  The inline tile renders an answer panel from it.
+   */
+  pending_ask?: PendingAsk | null;
+  /**
+   * Answers recorded per Ask block id (app/storage/task_runs.py::
+   * record_ask_answer).  Not cleared with ``pending_ask``: on a held run
+   * the answer lands here and the question stays until the resumed run
+   * reaches the block, so "is this Ask still open" is
+   * ``pending_ask && !ask_answers[pending_ask.block_id]``.
+   */
+  ask_answers?: Record<string, { decision: string; answer: string }>;
   total_tokens: number;
   total_tool_calls: number;
   /** Heartbeat: wall-clock seconds of most recent executor activity. */
