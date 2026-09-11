@@ -31,6 +31,7 @@ from app.providers.base import (
     StreamEnd, StreamEvent, TextDelta, ThinkingDelta, UsageEvent,
 )
 from app.utils.logging_utils import get_mode_aware_logger
+from app.utils import service_tier as _service_tier
 
 logger = get_mode_aware_logger(__name__)
 
@@ -109,21 +110,45 @@ class OpenAIBedrockProvider(LLMProvider):
 
         # The persistent client may be a wrapper; get the raw boto3 client.
         client = getattr(self.bedrock, 'client', self.bedrock)
+        # Task Card runs request the discounted Flex tier; empty outside a
+        # run or once this model has rejected the tier in this process.
+        tier_kwargs = _service_tier.invoke_kwargs(self.model_id)
 
+        def _invoke():
+            return client.invoke_model_with_response_stream(
+                modelId=self.model_id,
+                body=json.dumps(body),
+                contentType="application/json",
+                accept="application/json",
+                **tier_kwargs,
+            )
+
+        response = None
+        failure: Optional[Exception] = None
         try:
             response = await asyncio.wait_for(
-                asyncio.get_event_loop().run_in_executor(
-                    _oai_connect_executor,
-                    lambda: client.invoke_model_with_response_stream(
-                        modelId=self.model_id,
-                        body=json.dumps(body),
-                        contentType="application/json",
-                        accept="application/json",
-                    ),
-                ),
+                asyncio.get_event_loop().run_in_executor(_oai_connect_executor, _invoke),
                 timeout=timeout,
             )
         except Exception as e:
+            failure = e
+            # Tier rejection is per model: remember it and retry once at
+            # the standard tier before classifying anything else.
+            if tier_kwargs and _service_tier.is_service_tier_unsupported_error(str(e)):
+                _service_tier.mark_unsupported(self.model_id, tier_kwargs["serviceTier"])
+                logger.info(f"OpenAIBedrockProvider: {self.model_id} does not support service "
+                            f"tier {tier_kwargs['serviceTier']!r}; retrying at standard tier")
+                tier_kwargs.clear()
+                try:
+                    response = await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(_oai_connect_executor, _invoke),
+                        timeout=timeout,
+                    )
+                    failure = None
+                except Exception as retry_e:
+                    failure = retry_e
+        if failure is not None:
+            e = failure
             ct = self._classify_error(str(e))
             logger.warning(
                 f"OpenAIBedrockProvider: failed {time.time()-t0:.1f}s — "

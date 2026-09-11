@@ -38,6 +38,7 @@ from app.providers.base import (
 )
 from app.utils.logging_utils import get_mode_aware_logger
 from app.providers.bedrock_region_router import BedrockRegionRouter
+from app.utils import service_tier as _service_tier
 
 from app.config.env_registry import ziya_env
 logger = get_mode_aware_logger(__name__)
@@ -178,9 +179,14 @@ class BedrockProvider(LLMProvider):
 
         for _attempt in range(1):  # Single attempt; loop kept for break-on-success
             try:
+                # Task Card runs request the discounted Flex tier (see
+                # app.utils.service_tier).  Empty outside a run or once
+                # this model has rejected the tier in this process.
+                tier_kwargs = _service_tier.invoke_kwargs(self.model_id)
                 api_params = {
                     "modelId": self.model_id,
                     "body": body_json,
+                    **tier_kwargs,
                 }
                 # Run the synchronous boto3 call in a thread so it doesn't
                 # block the event loop while waiting for the Bedrock API to
@@ -208,11 +214,39 @@ class BedrockProvider(LLMProvider):
                 else:
                     error_str = str(e) or f"{type(e).__name__}"
 
+                # Service-tier rejection is a property of the model, not
+                # the request: drop the tier, remember the answer, and
+                # retry once at the standard tier before any other
+                # classification (it is a ValidationException, which
+                # would otherwise surface as a non-retryable failure).
+                if (
+                    "serviceTier" in api_params
+                    and _service_tier.is_service_tier_unsupported_error(error_str)
+                ):
+                    _service_tier.mark_unsupported(self.model_id, api_params["serviceTier"])
+                    logger.info(
+                        f"BedrockProvider: {self.model_id} does not support service tier "
+                        f"{api_params['serviceTier']!r}; retrying at standard tier"
+                    )
+                    api_params.pop("serviceTier")
+                    try:
+                        response = await asyncio.wait_for(
+                            asyncio.get_event_loop().run_in_executor(
+                                _bedrock_connect_executor,
+                                lambda: self.bedrock.invoke_model_with_response_stream(**api_params),
+                            ),
+                            timeout=connect_timeout,
+                        )
+                        break
+                    except Exception as retry_e:
+                        error_str = str(retry_e) or f"{type(retry_e).__name__}"
+
                 # Augment the error with a remediation hint for the data-retention gate.
                 if "data retention mode" in error_str and "not available for this model" in error_str:
                     error_str += (
-                        " — This model requires the Bedrock account-level data retention mode "
-                        "set to 'provider_data_share'. Restart Ziya with this model selected "
+                        " — This model requires a Bedrock account-level data retention mode "
+                        "of 'aws_review' or higher (the legacy 'provider_data_share' also "
+                        "qualifies, ranking above it). Restart Ziya with this model selected "
                         "to apply the setting automatically."
                     )
 
@@ -278,6 +312,7 @@ class BedrockProvider(LLMProvider):
                                 alt_params = {
                                     "modelId": alt_endpoint.model_id,
                                     "body": json.dumps(body),
+                                    **_service_tier.invoke_kwargs(alt_endpoint.model_id),
                                 }
                                 response = await asyncio.wait_for(
                                     asyncio.get_event_loop().run_in_executor(
@@ -305,28 +340,43 @@ class BedrockProvider(LLMProvider):
         if response is None:
             yield ErrorEvent(message="No response after retries", error_type=ErrorType.UNKNOWN)
             return
+        if "serviceTier" in api_params:
+            # A silently ignored tier would look like a discount that never
+            # arrives; log what the service says it actually used.
+            logger.info(
+                f"BedrockProvider: {self.model_id} service tier requested="
+                f"{api_params['serviceTier']} resolved="
+                f"{_service_tier.resolved_tier_from_response(response) or 'unknown'}"
+            )
 
         # Parse the boto3 stream into normalized events.
-        # Track how many we actually produce: an empty 200 stream (zero
-        # events, no exception) is the signature of a Bedrock-side empty
-        # completion — observed intermittently on opus4.8 — which otherwise
-        # surfaces as a silent "no output" bubble. Surface it with the
-        # RequestId so it is visible and attributable to the service.
+        # A 200 stream that ends without a terminal event (StreamEnd from
+        # message_stop, or an ErrorEvent) is a Bedrock-side empty completion
+        # — observed intermittently on opus4.8 and fable-5.  Counting raw
+        # events is not sufficient: a stream that emits one ProcessingEvent
+        # heartbeat and then closes carries no content and no stop_reason,
+        # yet previously passed this guard and surfaced downstream as a
+        # silent stop_reason=None turn end.  Surface it with the RequestId
+        # so it is visible, attributable to the service, and retried.
         _parsed_events = 0
+        _terminated = False
         async for event in self._parse_stream(response, config):
             _parsed_events += 1
+            if isinstance(event, (StreamEnd, ErrorEvent)):
+                _terminated = True
             yield event
 
-        if _parsed_events == 0:
+        if not _terminated:
             _req_id = ""
             try:
                 _req_id = (response.get("ResponseMetadata", {}) or {}).get("RequestId", "")
             except (AttributeError, TypeError, KeyError):
                 pass  # Response metadata not available
             logger.warning(
-                "BedrockProvider: empty event stream (0 events, HTTP 200) for "
-                "model=%s region=%s RequestId=%s — Bedrock returned no content.",
-                self.model_id, self._region, _req_id or "?",
+                "BedrockProvider: stream ended without message_stop (%d non-terminal "
+                "events, HTTP 200) for model=%s region=%s RequestId=%s — "
+                "Bedrock returned no content.",
+                _parsed_events, self.model_id, self._region, _req_id or "?",
             )
             yield ErrorEvent(
                 message=f"Bedrock returned an empty response (RequestId={_req_id or 'unknown'}).",
