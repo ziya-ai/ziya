@@ -59,7 +59,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   // Pending composer injections keyed by conversation id — a resume/branch
   // pickup message targeting a conversation we haven't finished switching
   // to is stashed here and applied after the switch (post draft-restore).
-  const pendingInjectRef = useRef<Map<string, string>>(new Map());
+  const pendingInjectRef = useRef<Map<string, { text: string; preserveExisting?: boolean }>>(new Map());
   // Conversation the current editor text was composed against. Set on the
   // first keystroke of a draft, re-pointed when the draft-swap effect loads
   // another conversation's draft, cleared when the editor empties. handleSend
@@ -319,9 +319,20 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       const pendingInject = pendingInjectRef.current.get(currentConversationId);
       if (pendingInject != null) {
         pendingInjectRef.current.delete(currentConversationId);
-        editorRef.current.textContent = pendingInject;
+        const savedDraft = draftsRef.current.get(currentConversationId);
+        if (pendingInject.preserveExisting && savedDraft && savedDraft.trim()) {
+          // Returned text (a held message handed back) must not delete the
+          // draft the user left here.  Restore the draft first, then append.
+          editorRef.current.innerHTML = savedDraft;
+          const existing = editorRef.current.textContent || '';
+          editorRef.current.textContent = existing
+            ? `${existing}\n\n${pendingInject.text}`
+            : pendingInject.text;
+        } else {
+          editorRef.current.textContent = pendingInject.text;
+        }
         editorRef.current.focus();
-        setInputValue(pendingInject);
+        setInputValue(editorRef.current.textContent || '');
       } else {
         const savedDraft = draftsRef.current.get(currentConversationId);
         editorRef.current.innerHTML = savedDraft || '';
@@ -349,12 +360,25 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
       if (!detail?.conversationId || typeof detail.text !== 'string') return;
       if (detail.conversationId === currentConversationId) {
         if (editorRef.current) {
-          editorRef.current.textContent = detail.text;
+          const existing = editorRef.current.textContent || '';
+          editorRef.current.textContent = (detail.preserveExisting && existing.trim())
+            ? `${existing}\n\n${detail.text}`
+            : detail.text;
           editorRef.current.focus();
+          setInputValue(editorRef.current.textContent || '');
+        } else {
+          setInputValue(detail.text);
         }
-        setInputValue(detail.text);
       } else {
-        pendingInjectRef.current.set(detail.conversationId, detail.text);
+        // Merge rather than overwrite: two holds for the same absent
+        // conversation must not silently discard the first one's text.
+        const prior = pendingInjectRef.current.get(detail.conversationId);
+        const merged = (prior && detail.preserveExisting)
+          ? `${prior.text}\n\n${detail.text}`
+          : detail.text;
+        pendingInjectRef.current.set(detail.conversationId, {
+          text: merged, preserveExisting: detail.preserveExisting,
+        });
       }
     };
     document.addEventListener(COMPOSER_INJECT_EVENT, handleInject as unknown as EventListener);

@@ -1,4 +1,5 @@
 import { Conversation, ConversationFolder, SearchResult, MessageMatch, SearchOptions } from './types';
+import { stripToShell } from './conversationShell';
 import { v4 as uuidv4 } from 'uuid';
 import { purgeExpiredConversations } from './retentionPurge';
 import { message } from 'antd';
@@ -1134,20 +1135,6 @@ class ConversationDB implements DB {
         // merge patches messages onto local entries) don't poison the cache
         // for subsequent reads.  The clone is cheap because shells already
         // have message bodies stripped.
-        const stripToShell = (conv: any): Conversation | null => {
-            if (!conv?.id || typeof conv.id !== 'string' || !Array.isArray(conv.messages)) return null;
-            const stripMessage = (m: any) => m ? ({
-                id: m.id, role: m.role, content: '', _timestamp: m._timestamp,
-            }) : m;
-            const firstMsg = conv.messages.length > 0 ? stripMessage(conv.messages[0]) : null;
-            const lastMsg = conv.messages.length > 1 ? stripMessage(conv.messages[conv.messages.length - 1]) : null;
-            return {
-                ...conv,
-                messages: firstMsg ? (lastMsg ? [firstMsg, lastMsg] : [firstMsg]) : [],
-                _isShell: true,
-                _fullMessageCount: conv.messages?.length || 0,
-            } as Conversation;
-        };
 
         const cacheNow = Date.now();
         const ttlExpired = cacheNow - this.shellCacheTs >= ConversationDB.SHELL_CACHE_TTL_MS;

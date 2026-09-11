@@ -532,6 +532,41 @@ export function selectHydrationTargets(
     return { targets, deferred: eligible.filter(id => !chosen.has(id)) };
 }
 
+// ---------------------------------------------------------------------------
+// Deletion-pass trust gate
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether the server's chat list is trustworthy enough to delete against.
+ *
+ * syncWithServer treats any local conversation absent from the server list as
+ * deleted elsewhere.  Its per-conversation guards (active chat, 60s grace,
+ * previously-seen-on-server) all presume the LIST is sound — and `listChats`
+ * returns [] on a non-2xx response, which makes every previously-seen
+ * conversation look deleted at once.  One 500 empties the sidebar.
+ *
+ * An empty list is credible only when we never knew the server to hold
+ * anything: that is a genuinely empty project, where the pass is a no-op
+ * anyway.  A shrunken-but-non-empty list is NOT suppressed — a real
+ * cross-instance delete must still propagate.
+ *
+ * Known limit: this catches the empty case, which is the one an error path
+ * actually produces (listChats either parses the full list or throws). A
+ * server that returned a genuine subset would still over-delete.
+ */
+export function shouldRunDeletionPass(
+    serverChatCount: number,
+    locallyKnownServerIdCount: number,
+): boolean {
+    // A non-finite or negative count is a mis-shaped response, not evidence
+    // that the server has chats; fall through to the suspicion branch.
+    if (Number.isFinite(serverChatCount) && serverChatCount > 0) return true;
+    // Cannot tell how many ids we have seen -> assume we have seen some, so
+    // an empty list stays suspect.
+    if (!Number.isFinite(locallyKnownServerIdCount)) return false;
+    return locallyKnownServerIdCount === 0;
+}
+
 export interface CrossTabMergeCtx {
     /**
      * True when THIS tab is actively streaming into the conversation.

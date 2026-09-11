@@ -178,10 +178,16 @@ describe('recoverShellMessages', () => {
         expect(out).toEqual({ action: 'hold', reason: 'unreachable' });
     });
 
-    it('holds when the server returns no record', async () => {
+    it('reports a TERMINAL absence when the server has no such chat', async () => {
+        // null from the dep is the server's AUTHORITATIVE "no such chat" (a
+        // 404), which no amount of retrying can change.  That is a different
+        // fact from the throw above, where the question could not be asked at
+        // all.  Both hold the message, but only 'unreachable' is worth
+        // repeating: reporting a 404 as unreachable sent the user round a
+        // reopen-and-retry loop that failed identically every time.
         const deps = makeDeps({ idb: null, server: null });
         const out = await recoverShellMessages('c1', 'p1', 2, deps);
-        expect(out).toEqual({ action: 'hold', reason: 'unreachable' });
+        expect(out).toEqual({ action: 'hold', reason: 'gone' });
     });
 
     it('holds when the server record carries no messages array', async () => {
