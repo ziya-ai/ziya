@@ -47,9 +47,12 @@ class MemoryUpdateRequest(BaseModel):
 async def get_memory_status():
     """Overview: counts by layer and status, pending proposal count."""
     from app.storage.memory import get_memory_storage
+    from app.storage.proposals import get_proposals_store
     store = get_memory_storage()
     counts = store.count()
-    pending = len(store.list_proposals())
+    # The probationary store is the queue the lifecycle engine drains;
+    # the legacy proposals.json is a stale user-facing remnant.
+    pending = len(get_proposals_store().list_open())
     return {**counts, "pending_proposals": pending}
 
 
@@ -222,6 +225,17 @@ async def get_review():
     return get_review_summary(store)
 
 
+@router.get("/api/v1/memory/feedback/stats")
+async def get_feedback_stats():
+    """Best-cosine distribution of the retrieval 'used' signal vs. its threshold.
+
+    Use this to calibrate ZIYA_MEMORY_USE_THRESHOLD: a p90 far below the
+    threshold means the signal never fires; a p50 above it means it is noise.
+    """
+    from app.memory.feedback import feedback_stats_summary
+    return feedback_stats_summary()
+
+
 @router.post("/api/v1/memory/maintenance")
 async def run_maintenance():
     """Trigger a full maintenance pass: cell division + cross-links for all nodes."""
@@ -323,8 +337,12 @@ async def embedding_status():
     cache = get_embedding_cache()
     total = len(memories)
     cached = cache.count
+    missing = len(cache.missing_ids([m.id for m in memories]))
+    # Vectors for proposals, deleted, or archived memories.  Large values
+    # here mean the semantic search leg is being diluted.
+    non_active = cached - (total - missing)
     return {"enabled": True, "provider": "bedrock_titan", "total": total,
-            "embedded": cached, "missing": total - cached}
+            "embedded": cached, "missing": missing, "non_active_vectors": non_active}
 
 
 # -- Mind-Map ----------------------------------------------------------------
