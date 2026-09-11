@@ -435,12 +435,15 @@ class DocumentExportRequest(BaseModel):
     ``<project>/.ziya/documents/``) or inline ``markdown`` (front-matter +
     body).  Front-matter drives layout/margins/metadata; see
     ``app/utils/document_ir.py`` for the IR contract.
+
+    ``includeFooter`` defaults to True, matching the other export routes;
+    pass ``false`` explicitly to omit the per-page footer.
     """
 
     name: Optional[str] = None
     markdown: Optional[str] = None
     title: Optional[str] = None
-    include_footer: bool = Field(default=False, alias="includeFooter")
+    include_footer: bool = Field(default=True, alias="includeFooter")
 
     model_config = ConfigDict(populate_by_name=True)
 

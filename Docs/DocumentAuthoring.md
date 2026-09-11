@@ -59,7 +59,9 @@ curl -X POST localhost:6969/api/export/document \
 ```
 
 Optional body fields: `title` (overrides front-matter), `includeFooter`
-(default false — work products don't carry the transcript footer).
+(default **true**, matching the other export routes — the per-page footer
+with logo, version and model is always drawn unless you pass
+`"includeFooter": false`).
 
 The PDF gets:
 - A **nested outline** (bookmarks) generated from the h1–h4 heading tree.

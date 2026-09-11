@@ -276,8 +276,39 @@ def test_export_document_pdf_seam(tmp_path, monkeypatch):
     assert call['payload']['kind'] == 'document'
     assert call['payload']['layout'] == 'report'
     assert len(call['payload']['sections']) == 2
-    # No footer unless requested (work product, not transcript).
+    # The footer is drawn in the page margin (footer_template), never
+    # appended to the body payload.
     assert 'footerHtml' not in call['payload']
+    # Footer is ON by default, matching the other export routes.
+    assert call['footer_template'], 'default export must carry the per-page footer'
+
+
+def test_export_document_pdf_footer_opt_out(monkeypatch):
+    """include_footer=False is the only way to drop the footer."""
+    import app.services.pdf_exporter as pe
+    fake = _FakeSession()
+
+    async def fake_get_session(port=6969):
+        return fake
+
+    monkeypatch.setattr(pe, 'get_render_session', fake_get_session)
+    asyncio.run(pe.export_document_pdf(
+        markdown='# Solo\n\nbody', include_footer=False,
+    ))
+    assert fake.calls[0]['footer_template'] is None
+
+
+def test_document_export_request_footer_default_matches_other_routes():
+    """POST /api/export/document must default includeFooter the same way the
+    conversation/PDF routes do.  A False default here silently dropped the
+    footer from every document export that did not name the flag."""
+    from app.routes.export_routes import DocumentExportRequest, PdfExportRequest
+    doc_req = DocumentExportRequest(name='report.md')
+    pdf_req = PdfExportRequest(messages=[])
+    assert doc_req.include_footer is True
+    assert doc_req.include_footer == pdf_req.include_footer
+    # Explicit opt-out via the camelCase alias the skill documents.
+    assert DocumentExportRequest(name='r.md', includeFooter=False).include_footer is False
 
 
 def test_export_document_pdf_requires_source():
