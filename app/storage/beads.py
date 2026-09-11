@@ -90,15 +90,17 @@ def _get_conversation_id(conversation_id: Optional[str] = None) -> Optional[str]
         return None
 
 
-# Bead statuses that count as "open" for the sidebar indicator: a thread the
-# user could still return to.  active + parked (per request); completed /
-# abandoned are done.  An active bead is just "the current thread", so any
-# conversation with a live tree shows at least 1.
-_OPEN_BEAD_STATUSES = frozenset({"active", "parked"})
+# Bead statuses that count as "open" for the sidebar indicator: threads
+# waiting for the user to come back to them — parked only.  An active bead is
+# just "the current thread" (every live tree has one), so counting it lit the
+# indicator on every conversation with beads and disagreed with the
+# in-conversation chip, which reports parked.  Both surfaces now share this
+# definition; completed / abandoned are done.
+_OPEN_BEAD_STATUSES = frozenset({"parked"})
 
 
 def count_open_beads(raw_beads) -> int:
-    """Count beads in an open (active or parked) state.
+    """Count beads in an open (parked) state.
 
     Accepts the raw ``_beads`` list off a chat record (list of dicts) or a
     list of Bead objects; tolerant of None / non-list (-> 0) so the summary

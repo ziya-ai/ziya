@@ -5,7 +5,7 @@ primitive shell, and their propagation through the chat-summary path.
 Covers:
   - WorkItem model: factories, scope discriminator, status machine
   - count_open_work_items: open-state counting, tolerant input handling
-  - count_open_beads: active+parked counting, tolerant input handling
+  - count_open_beads: parked-only counting, tolerant input handling
   - _get_conversation_id REGRESSION GUARD: must NOT be a no-op (a misapplied
     diff once spliced count_open_beads into its body, severing bead
     persistence — this guard goes green only when that is repaired)
@@ -101,15 +101,19 @@ class TestCountOpenWorkItems:
 
 class TestCountOpenBeads:
 
-    def test_counts_active_and_parked(self):
+    def test_counts_parked_only(self):
+        # The sidebar indicator is "threads waiting for you": parked only.
+        # An active bead is just the current thread (every live tree has
+        # one), so counting it lit amber on every conversation with beads
+        # and diverged from the in-conversation chip, which shows parked.
         beads = [
             {"status": "active"}, {"status": "parked"}, {"status": "parked"},
             {"status": "completed"}, {"status": "abandoned"},
         ]
-        assert count_open_beads(beads) == 3   # active + 2 parked
+        assert count_open_beads(beads) == 2   # 2 parked; active not counted
 
-    def test_active_only(self):
-        assert count_open_beads([{"status": "active"}]) == 1
+    def test_active_only_is_zero(self):
+        assert count_open_beads([{"status": "active"}]) == 0
 
     def test_completed_abandoned_not_counted(self):
         assert count_open_beads([{"status": "completed"}, {"status": "abandoned"}]) == 0
@@ -126,7 +130,7 @@ class TestCountOpenBeads:
             Bead(content="b", status="parked"),
             Bead(content="c", status="completed"),
         ]
-        assert count_open_beads(beads) == 2
+        assert count_open_beads(beads) == 1   # parked only
 
 
 # ── count_open_beads_for_conversation (fallback-aware) ───────────────
@@ -141,7 +145,7 @@ class TestCountOpenBeadsForConversation:
 
     def test_reads_record_when_record_has_beads(self):
         from app.storage.beads import count_open_beads_for_conversation
-        rec = {"id": "c1", "_beads": [{"status": "active"}, {"status": "parked"}]}
+        rec = {"id": "c1", "_beads": [{"status": "parked"}, {"status": "parked"}]}
         # Record present → counted directly, fallback never consulted.
         assert count_open_beads_for_conversation(rec, "c1") == 2
 
@@ -150,7 +154,7 @@ class TestCountOpenBeadsForConversation:
         # momentarily exist, the record is authoritative.  A non-empty _beads
         # must short-circuit before _load_fallback is ever called.
         from app.storage import beads as beads_mod
-        rec = {"id": "c1", "_beads": [{"status": "active"}]}
+        rec = {"id": "c1", "_beads": [{"status": "parked"}]}
         with patch.object(beads_mod, "_load_fallback") as mock_fb:
             assert beads_mod.count_open_beads_for_conversation(rec, "c1") == 1
             mock_fb.assert_not_called()
@@ -161,7 +165,7 @@ class TestCountOpenBeadsForConversation:
         from app.storage import beads as beads_mod
         rec = {"id": "c1"}  # no _beads key
         with patch.object(beads_mod, "_load_fallback",
-                          return_value=[{"status": "active"}, {"status": "parked"}]):
+                          return_value=[{"status": "parked"}, {"status": "parked"}]):
             assert beads_mod.count_open_beads_for_conversation(rec, "c1") == 2
 
     def test_empty_record_beads_still_consults_fallback(self):
@@ -258,7 +262,7 @@ class TestListSummariesPopulatesCounts:
             {"id": "b3", "status": "completed", "content": "z"},
         ])
         summary = next(s for s in storage.list_summaries() if s.id == "c1")
-        assert summary.openBeadCount == 2          # active + parked
+        assert summary.openBeadCount == 1          # parked only; active is the current thread
         assert summary.openWorkItemCount == 0      # shell: no _work_items
 
     def test_no_beads_is_zero(self, storage):
@@ -314,5 +318,5 @@ class TestGlobalSummariesPopulateCounts:
             ziya_home, exclude_project_id="requesting-proj"
         )
         g1 = next(s for s in results if s.id == "g1")
-        assert g1.openBeadCount == 2
+        assert g1.openBeadCount == 1   # parked only
         assert g1.openWorkItemCount == 0

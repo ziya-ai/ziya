@@ -10,6 +10,7 @@ import { Popover, Button, Empty, message, Tooltip, Spin } from 'antd';
 import { BranchesOutlined } from '@ant-design/icons';
 import { useTheme } from '../context/ThemeContext';
 import { useStreamingContext } from '../context/StreamingContext';
+import { useChatContext } from '../context/ChatContext';
 import { useBranchFromBead } from '../hooks/useBranchFromBead';
 import * as beadApi from '../api/beadApi';
 import type { BeadItem, BeadTreeResponse } from '../api/beadApi';
@@ -150,6 +151,7 @@ const BeadNode: React.FC<{
 const BeadTree: React.FC<BeadTreeProps> = ({ conversationId, onResume }) => {
   const { isDarkMode } = useTheme();
   const { streamingConversations } = useStreamingContext();
+  const { setConversations } = useChatContext();
   const branchFromBead = useBranchFromBead();
   const [tree, setTree] = useState<BeadTreeResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -162,12 +164,27 @@ const BeadTree: React.FC<BeadTreeProps> = ({ conversationId, onResume }) => {
     try {
       const data = await beadApi.getBeadTree(conversationId);
       setTree(data);
+      // Feed the sidebar.  Its openBeadCount is otherwise refreshed only by
+      // the 30s server poll, which is suppressed for the whole of any
+      // streaming turn — and bead changes are made by the model mid-turn.
+      // We hold the authoritative tree right now, so overlay the parked
+      // count (the same definition the server summary uses) onto this
+      // conversation.  Return the same array when nothing changes so the
+      // sidebar's memoized tree doesn't re-render on every load.
+      const parked = data.parked_count ?? 0;
+      setConversations(prev => {
+        const idx = prev.findIndex(c => c.id === conversationId);
+        if (idx === -1 || (prev[idx].openBeadCount ?? 0) === parked) return prev;
+        const next = prev.slice();
+        next[idx] = { ...prev[idx], openBeadCount: parked };
+        return next;
+      });
     } catch (e) {
       console.debug('Bead tree load failed:', e);
     } finally {
       setLoading(false);
     }
-  }, [conversationId]);
+  }, [conversationId, setConversations]);
 
   useEffect(() => {
     if (open) loadBeads();
@@ -224,8 +241,11 @@ const BeadTree: React.FC<BeadTreeProps> = ({ conversationId, onResume }) => {
     return null;
   }
 
-  // Visual state: empty | active-only | has-parked
-  const visualState = parkedCount > 0 ? 'parked' : (beadCount > 0 ? 'active' : 'empty');
+  // Visual state: has-parked (amber) | active-only (green) | empty (beads
+  // exist but all are completed/abandoned — dim, still openable to review
+  // the history).  Amber + parked count is the same signal the sidebar
+  // shows, so the two indicators agree.
+  const visualState = parkedCount > 0 ? 'parked' : (activeCount > 0 ? 'active' : 'empty');
   const indicatorColor = {
     parked: '#f59e0b',     // amber when threads are pending
     active: '#10b981',     // green when actively tracking
@@ -244,9 +264,9 @@ const BeadTree: React.FC<BeadTreeProps> = ({ conversationId, onResume }) => {
 
   const tooltipText = (() => {
     if (loading) return 'Loading bead tree…';
-    if (beadCount === 0) return 'Bead tracking online — no threads yet';
     if (parkedCount > 0) return `${parkedCount} parked thread${parkedCount !== 1 ? 's' : ''} (${beadCount} total)`;
-    return `${activeCount} active, ${completedCount} completed`;
+    if (activeCount > 0) return `${activeCount} active, ${completedCount} completed`;
+    return `All ${completedCount} thread${completedCount !== 1 ? 's' : ''} completed`;
   })();
 
   const content = (
@@ -351,7 +371,10 @@ const BeadTree: React.FC<BeadTreeProps> = ({ conversationId, onResume }) => {
           gap: 4,
         }}>
           <BranchesOutlined style={{ fontSize: 13 }} />
-          {beadCount > 0 ? (parkedCount > 0 ? parkedCount : beadCount) : ''}
+          {/* Number follows the color: parked when amber, active when
+              green, completed when dimmed.  Never the total — completed
+              beads inflating a green count is what read as "3 closed". */}
+          {parkedCount > 0 ? parkedCount : (activeCount > 0 ? activeCount : completedCount)}
         </span>
       </Tooltip>
     </Popover>
