@@ -45,6 +45,21 @@ class AuthProvider(ABC):
     def get_credential_help_message(self, error_context: Optional[str] = None) -> str:
         """Return help text for credential issues."""
         pass
+
+    def get_first_run_setup_help(self) -> Optional[str]:
+        """AWS setup guidance for a FIRST RUN with no credentials at all.
+
+        Distinct from get_credential_help_message(), which assumes credentials
+        exist but are expired or invalid ("run mwinit"). On a brand-new machine
+        there is nothing to refresh, so that text is actively misleading: the
+        user has to create a profile before anything can be refreshed.
+
+        Return None (the default) to use the generic "aws configure" text.
+        A returned string REPLACES the AWS Bedrock body of
+        app.utils.provider_detection.build_setup_help(); it is indented for
+        display there, so return unindented lines.
+        """
+        return None
     
     def is_auth_error(self, error_str: str) -> bool:
         """Detect if error string indicates authentication failure."""
@@ -106,8 +121,25 @@ class ConfigProvider(ABC):
         Return None (default) to allow all endpoints.
         Return ['bedrock'] to restrict to Bedrock only.
         When multiple providers declare restrictions, the intersection is used.
+
+        Local endpoints (``local``, ``local-<runtime>``) whose server is on
+        the loopback interface are exempt while allows_loopback_local() is
+        True; list a local id here only to permit a server on another host.
         """
         return None
+
+    def allows_loopback_local(self) -> bool:
+        """
+        Whether local endpoints may be used against a server on this machine
+        even when get_allowed_endpoints() omits them.
+
+        Default True: an inference server on the loopback interface sends no
+        source off the machine, so an allowlist that exists to control where
+        code is sent has nothing to protect against. Return False to make
+        local endpoints subject to the allowlist unconditionally. When
+        multiple providers are active, any False wins.
+        """
+        return True
 
     def should_capture_audit_context(self) -> bool:
         """Whether tool-audit entries should include a co-presence context
@@ -328,6 +360,29 @@ class DataRetentionProvider(ABC):
 
     def should_apply(self) -> bool:
         """Return True if this retention policy should be applied."""
+        return True
+
+
+class RatePlanProvider(ABC):
+    """
+    Supplies the RatePlan used to turn list prices into effective prices.
+
+    The open core ships PublicPlan / OverridePlan / ZeroPlan /
+    DiscountTablePlan (app/cost/rate_plans.py).  A closed plugin typically
+    returns a DiscountTablePlan populated with a proprietary table.  The
+    highest-priority provider whose ``should_apply()`` is true wins; when
+    none applies, the ``plan`` object in ~/.ziya/pricing.json is used, then
+    PublicPlan.
+    """
+    provider_id: str = "unknown"
+    priority: int = 0
+
+    @abstractmethod
+    def get_rate_plan(self):
+        """Return an app.cost.rate_plans.RatePlan instance."""
+        pass
+
+    def should_apply(self) -> bool:
         return True
 
 

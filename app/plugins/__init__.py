@@ -28,6 +28,7 @@ _tool_enhancement_providers = []
 _encryption_providers = []
 _export_providers = []
 _extraction_pattern_providers = []
+_rate_plan_providers = []
 _initialized = False
 
 def register_auth_provider(provider):
@@ -117,6 +118,16 @@ def register_service_model_provider(provider):
     _service_model_providers.append(provider)
     logger.debug(f"Registered service model provider: {getattr(provider, 'provider_id', 'unknown')}")
 
+def register_rate_plan_provider(provider):
+    """Register a rate plan provider (cost accounting).
+
+    The highest-priority provider whose ``should_apply()`` is true supplies
+    the RatePlan used to price usage; see app/cost/rate_plans.py.
+    """
+    _rate_plan_providers.append(provider)
+    _rate_plan_providers.sort(key=lambda p: getattr(p, 'priority', 0), reverse=True)
+    logger.debug(f"Registered rate plan provider: {getattr(provider, 'provider_id', 'unknown')}")
+
 def get_all_config_providers() -> List:
     """Get all registered config providers (regardless of should_apply)."""
     return _config_providers.copy()
@@ -191,6 +202,35 @@ def get_active_auth_provider():
     # Return lowest priority (default) provider
     return _auth_providers[-1] if _auth_providers else None
 
+def get_first_run_setup_help() -> Optional[str]:
+    """First-run AWS setup guidance from the highest-priority auth provider.
+
+    Deliberately does NOT go through get_active_auth_provider(): that resolves
+    via detect_environment(), which for an enterprise provider can depend on
+    finding credentials (the Amazon provider falls back to an STS identity
+    call). This is the NO-credentials path, so credential-dependent detection
+    is exactly what cannot be trusted here -- an enterprise build would hand
+    back community "aws configure" advice on precisely the machines that need
+    its own guidance.
+
+    Providers are consulted in priority order. The community default returns
+    None, so this is None unless an enterprise plugin supplies text.
+    """
+    for provider in _auth_providers:
+        if not hasattr(provider, 'get_first_run_setup_help'):
+            continue
+        try:
+            text = provider.get_first_run_setup_help()
+        except Exception as e:
+            logger.warning(
+                f"Error getting first-run setup help from "
+                f"{getattr(provider, 'provider_id', '?')}: {e}"
+            )
+            continue
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+    return None
+
 def get_active_config_providers() -> List:
     """Get all config providers that should be applied."""
     active = []
@@ -208,6 +248,12 @@ def get_allowed_endpoints() -> Optional[List[str]]:
 
     Returns the intersection of all provider restrictions.
     Returns None if no provider declares a restriction (all endpoints allowed).
+
+    Local endpoints whose server is on the loopback interface are added to a
+    restricted list unless an active provider returns False from
+    allows_loopback_local(): the allowlist controls where source is sent, and
+    a loopback server sends it nowhere. A server on another host stays subject
+    to the list.
     """
     restrictions = []
     for provider in get_active_config_providers():
@@ -225,7 +271,35 @@ def get_allowed_endpoints() -> Optional[List[str]]:
     result = set(restrictions[0])
     for r in restrictions[1:]:
         result &= set(r)
+    result |= _loopback_local_endpoints()
     return sorted(result)
+
+
+def _loopback_local_endpoints() -> set:
+    """Local endpoint ids exempt from the allowlist: every one whose server
+    is on this host, provided no active provider forbids it. Fails closed."""
+    for provider in get_active_config_providers():
+        try:
+            if hasattr(provider, 'allows_loopback_local') \
+                    and not provider.allows_loopback_local():
+                return set()
+        except Exception as e:
+            logger.warning(
+                f"Error checking allows_loopback_local on "
+                f"{getattr(provider, 'provider_id', '?')}: {e}"
+            )
+            return set()
+    try:
+        from app.utils.local_models import (
+            scan_local_servers, local_endpoint_is_loopback, LOCAL_ALIAS,
+        )
+        exempt = {s.endpoint_id for s in scan_local_servers() if s.is_loopback}
+        if exempt or local_endpoint_is_loopback(LOCAL_ALIAS):
+            exempt.add(LOCAL_ALIAS)
+        return exempt
+    except Exception as e:
+        logger.warning(f"Could not determine local server hosts: {e}")
+        return set()
 
 def get_max_approval_ttl() -> Optional[int]:
     """
@@ -324,6 +398,10 @@ def get_tool_validator_providers() -> List:
 def get_data_retention_providers() -> List:
     """Get all registered data retention providers."""
     return _data_retention_providers.copy()
+
+def get_rate_plan_providers() -> List:
+    """Get all registered rate plan providers sorted by priority."""
+    return _rate_plan_providers.copy()
 
 def get_service_model_providers() -> List:
     """Get all registered service model providers sorted by priority."""

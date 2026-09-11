@@ -56,9 +56,22 @@ class MyAuthProvider(AuthProvider):
     def get_credential_help_message(self, error_context=None) -> str:
         """Human-readable instructions for refreshing credentials."""
         return "Run: my-org-login --profile default"
+
+    def get_first_run_setup_help(self) -> str | None:
+        """Setup instructions for a first run with NO credentials at all.
+
+        Optional. Return None (the default) for the generic AWS text.
+        """
+        return "Run: my-org-login --create-profile"
 ```
 
 Multiple auth providers can be registered. They are checked in priority order; the first whose `detect_environment()` returns `True` becomes active.
+
+#### `get_first_run_setup_help()`
+
+`get_credential_help_message()` answers "your credentials expired"; this answers "you have no credentials yet", which is a different instruction — on a fresh machine there is no profile to refresh. When any registered auth provider returns text, it replaces the AWS body of the first-run credential message (`app/utils/provider_detection.build_setup_help()`); otherwise the generic `aws configure` guidance is used.
+
+Unlike the other methods this is resolved in **priority order without calling `detect_environment()`**, because that detection can itself depend on finding credentials — the case this text exists for.
 
 ---
 
@@ -100,13 +113,25 @@ When one or more active `ConfigProvider` implementations return a non-None list 
 
 This is how enterprise deployments that want to restrict users to Bedrock hide the Google/Gemini and other endpoints.
 
+#### The `local` endpoint and loopback
+
+The allowlist controls where source code is *sent*. An inference server on the loopback interface (`localhost`, `127.0.0.0/8`, `::1`) sends it nowhere, so every local endpoint whose server is on the machine itself (`local-ollama`, `local-dwarfstar`, … — one per running server — plus the `local` alias) is added to a restricted list automatically: a `["bedrock"]` policy resolves to `["bedrock", "local", "local-dwarfstar"]` with DwarfStar running. A local server on any other host (a LAN inference box added via `ZIYA_LOCAL_MODEL_URL`) is a remote destination and stays subject to the list; name its endpoint id in `get_allowed_endpoints()` to permit it. Detection fails closed: an unparseable or hostless URL is not loopback.
+
+To make `local` subject to the allowlist unconditionally — a deployment that forbids unvetted model weights, not only unvetted destinations — override `allows_loopback_local()` to return `False`. When several providers are active, any `False` wins. The default (and the behaviour of a provider written before the hook existed) is `True`.
+
+```python
+    def allows_loopback_local(self) -> bool:
+        return False   # loopback servers are restricted like any other endpoint
+```
+
 #### Startup Enforcement
 
-The endpoint policy is enforced at three levels:
+The endpoint policy is enforced at four levels:
 
 1. **`--help`** — only allowed endpoints appear in the help text.
 2. **Startup** — if `--endpoint` or `ZIYA_ENDPOINT` specifies a restricted endpoint, Ziya exits with a clear error before any model initialization.
 3. **Runtime** — the model picker API and set-model API only return/accept models from allowed endpoints.
+4. **First-run guidance** — the "no credentials found" message lists only permitted endpoints, so a Bedrock-only deployment never tells a user to set `ANTHROPIC_API_KEY`, and credential auto-selection will not switch to a restricted endpoint.
 
 #### Developer Override
 
