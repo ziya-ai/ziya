@@ -17,6 +17,7 @@ import {
 } from '@ant-design/icons';
 import { useProject } from '../../context/ProjectContext';
 import { useChatContext } from '../../context/ChatContext';
+import { shouldSeedTitleFromTaskCard } from '../../utils/conversationTitle';
 import type { TaskCard, Block, TaskScope } from '../../types/task_card';
 import type { TaskRun } from '../../types/task_run';
 import { useTaskRunStream } from '../../hooks/useTaskRunStream';
@@ -148,8 +149,10 @@ export const TaskCardsLibrary: React.FC<Props> = ({
   visible, onClose, chatId, anchorMessageId, initialCardId,
 }) => {
   const { currentProject, updateProject } = useProject();
-  const { addRunningTaskConversation, startNewChat, loadConversation } =
-    useChatContext();
+  const {
+    addRunningTaskConversation, startNewChat, loadConversation,
+    conversations, setConversations,
+  } = useChatContext();
   const projectId = currentProject?.id ?? '';
 
   // Deck-level (project-wide) Task Card permissions baseline — merged
@@ -549,8 +552,37 @@ export const TaskCardsLibrary: React.FC<Props> = ({
     // Skipped when staged: claiming a running task with no run behind it
     // leaves a gear the reconciler has no terminal state to clear.
     if (!staged) addRunningTaskConversation(targetChatId);
+    // A card bound into a conversation that has no dialog yet should take
+    // the card's name rather than stay at the "New Conversation"
+    // placeholder: title derivation fires only on the first HUMAN message
+    // (see conversationTitle.ts), which a conversation whose first content
+    // is a task tile never receives.  Applies to both run and staged binds
+    // into the CURRENT conversation; the two "new" paths already seed
+    // draft.name via startNewChat, so the guard is a no-op there.  Rename
+    // through the unified metadata mutation path (the sidebar-rename
+    // contract) so the title persists and is not reverted by the next
+    // sync.  Best-effort: a rename failure must not fail a bind that
+    // already succeeded.
+    const target = conversations.find(c => c.id === targetChatId);
+    if (target && shouldSeedTitleFromTaskCard(target) && (draft.name || '').trim()) {
+      try {
+        const { mutateConversationMeta } = await import('../../utils/conversationMutations');
+        const result = await mutateConversationMeta(
+          targetChatId, { title: draft.name },
+          { projectId, fallback: target },
+        );
+        if (result.ok) {
+          setConversations(prev => prev.map(c =>
+            c.id === targetChatId
+              ? { ...c, title: draft.name, _version: result.conversation?._version }
+              : c));
+        }
+      } catch (e) {
+        console.warn('TaskCardsLibrary: could not seed conversation title from card name:', e);
+      }
+    }
     onClose();
-  }, [projectId, draft, addRunningTaskConversation, onClose]);
+  }, [projectId, draft, conversations, setConversations, addRunningTaskConversation, onClose]);
 
   // Unsigned escalation on the card about to be launched.  Read from
   // scopeMap, which the open editor keeps current via
@@ -803,6 +835,13 @@ export const TaskCardsLibrary: React.FC<Props> = ({
           <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {c.name || 'Untitled'}
           </span>
+        </div>
+        {/* Badges share the metadata line, not the name line.  In the
+            name row they were the only unshrinkable items, so three
+            badges on a 260px sidebar left the name ellipsized to a few
+            characters — the one thing the row exists to show.  Wrapping
+            here lets a narrow sidebar grow the row instead. */}
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 4, marginTop: 3 }}>
           {(() => {
             // Escalation/signature badge: only for cards whose blocks
             // request shell/write escalation. Red when any block is
@@ -870,8 +909,7 @@ export const TaskCardsLibrary: React.FC<Props> = ({
               </>
             );
           })()}
-        </div>
-        <div style={{ fontSize: 11, opacity: 0.6 }}>
+        <span style={{ fontSize: 11, opacity: 0.6 }}>
           {c.root.block_type}
           {c.is_template ? ' · template' : ''}
           {/* Distinguish "saved but never launched" from "has history".
@@ -882,6 +920,7 @@ export const TaskCardsLibrary: React.FC<Props> = ({
             ? ` · ${c.run_count} run${c.run_count === 1 ? '' : 's'}`
             : ' · never run'}
           {isProposed(c) ? ' · from chat' : ''}
+        </span>
         </div>
       </div>
       <Dropdown menu={cardMenuItems(c)} trigger={['click']} placement="bottomRight">
@@ -1070,6 +1109,7 @@ export const TaskCardsLibrary: React.FC<Props> = ({
                   onChange={setDraft}
                   projectId={projectId}
                   onScopeStatusChange={handleScopeStatusChange}
+                  layout="outline"
                 />
               </div>
               {/* Run history for this card.  Above the editor rather than
