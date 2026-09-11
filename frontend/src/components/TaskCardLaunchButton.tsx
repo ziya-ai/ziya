@@ -133,6 +133,11 @@ function makeDraftCard(spec: TaskCardCreate): TaskCard {
     updated_at: now,
     last_run_at: null,
     run_count: 0,
+    // Synthetic preview card, never persisted.  Mirrors a freshly-created
+    // card, which the backend stamps v1 (TaskCard.version defaults to 1);
+    // version is only read for executed-vs-current drift, which a draft
+    // with no run has none of.
+    version: 1,
   };
 }
 
@@ -151,11 +156,19 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
   const [showPreview, setShowPreview] = useState(false);
   const [previewCard, setPreviewCard] = useState<TaskCard | null>(null);
   const [saving, setSaving] = useState(false);
-  // Set once the proposal has been persisted via "Save to deck".  A later
+  // Set once the proposal has been persisted — by "Save to deck", by the
+  // Sign path (which stores it as an unlisted DRAFT), or by Start.  A later
   // Start must UPDATE this card rather than creating a second one:
   // otherwise the user signs the saved copy and runs an unsigned twin,
   // and the run is still clamped to the floor with no visible reason.
   const [savedCardId, setSavedCardId] = useState<string | null>(null);
+  // Whether that persisted card is still a DRAFT — stored, so its blocks
+  // have ids an approval can key on, but absent from every deck listing.
+  // Signing needed persisted ids; it never needed a deck entry, and
+  // conflating the two made "sign this proposal" mean "file it".
+  const [savedDraft, setSavedDraft] = useState(false);
+  // Sign click in flight: create-if-needed, then the by-id status fetch.
+  const [preparing, setPreparing] = useState(false);
   // Escalation as reported for the spec as parsed from the message.
   const [specScope, setSpecScope] = useState<CardScopeStatus | null>(null);
   // Escalation as reported for the card currently open in the preview
@@ -213,7 +226,10 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
   // One label, two render sites.  Written twice, these diverged: the notice
   // kept saying "Save to deck" after the button had relabelled to "Update
   // in deck", naming a control that was no longer on screen.
-  const saveLabel = savedCardId ? 'Update in deck' : 'Save to deck';
+  // A draft is persisted but NOT in the deck, so it still reads "Save to
+  // deck": offering "Update in deck" for a card the deck never listed would
+  // name a place the user cannot find it.
+  const saveLabel = savedCardId && !savedDraft ? 'Update in deck' : 'Save to deck';
 
   // Ask the server whether this spec escalates.  Server-side because the
   // floor subtraction (a write inside `.ziya/` is NOT an escalation; the
@@ -297,37 +313,75 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
     return spec;
   }, [previewCard, spec]);
 
-  // Persist without launching.  This is also the ONLY route to signing a
-  // proposal: approvals key on persisted block ids, which do not exist
-  // until TaskCardStorage.create assigns them.
+  // Persist the spec — create on the first call, update thereafter.
+  //
+  // ``asDraft`` carries the only distinction that matters here.  Signing
+  // requires persisted block ids (approvals key on them, and ids do not
+  // exist until TaskCardStorage.create assigns them) but it does NOT
+  // require a deck entry — so the Sign path stores the card as a DRAFT:
+  // signable, runnable, and hidden from every deck listing.  A non-draft
+  // call PROMOTES an existing draft; nothing here demotes a deck card.
+  const ensureCard = useCallback(async (
+    toSave: TaskCardCreate, asDraft: boolean,
+  ): Promise<string | null> => {
+    if (!currentProject?.id) return null;
+    const tags = toSave.tags?.includes(PROPOSED_TAG)
+      ? toSave.tags
+      : [...(toSave.tags ?? []), PROPOSED_TAG];
+    if (savedCardId) {
+      await taskCardApi.update(currentProject.id, savedCardId, {
+        name: toSave.name, description: toSave.description,
+        root: toSave.root, scope: toSave.scope, tags,
+        // Left unset when asDraft: TaskCardUpdate is partial, so omitting
+        // the field preserves whatever the card already is.
+        ...(asDraft ? {} : { draft: false }),
+      });
+      if (!asDraft) setSavedDraft(false);
+      return savedCardId;
+    }
+    const card = await taskCardApi.create(
+      currentProject.id, { ...toSave, tags, draft: asDraft });
+    setSavedCardId(card.id);
+    setSavedDraft(asDraft);
+    // If the preview modal is open its draft now has a real id — switch
+    // it over so the editor reads by-id signature status from here on.
+    setPreviewCard(pc => (pc ? { ...pc, id: card.id } : pc));
+    return card.id;
+  }, [currentProject?.id, savedCardId]);
+
+  // Make the proposal signable without filing it in the deck.  The by-id
+  // status fetch is load-bearing, not cosmetic: it mints the runnable
+  // signCommand AND stages the decrypted scope the out-of-process signer
+  // needs to recompute the hash.
+  const handleSignPrep = useCallback(async () => {
+    const toSave = currentSpec();
+    if (!toSave || !currentProject?.id) return;
+    setPreparing(true);
+    try {
+      const cardId = await ensureCard(toSave, true);
+      if (cardId) {
+        setSavedScope(await taskCardApi.scopeStatus(currentProject.id, cardId));
+      }
+    } catch (e) {
+      message.error(`Could not prepare signing: ${String(e)}`);
+    } finally {
+      setPreparing(false);
+    }
+  }, [currentSpec, currentProject?.id, ensureCard]);
+
+  // Persist INTO the deck.  Promotes the draft in place rather than
+  // creating a second copy: a fresh create assigns fresh block ids, which
+  // would strand a signature already obtained against the draft.
   const handleSaveToDeck = useCallback(async () => {
     const toSave = currentSpec();
     if (!toSave || !currentProject?.id) return;
     setSaving(true);
     try {
-      const tags = toSave.tags?.includes(PROPOSED_TAG)
-        ? toSave.tags
-        : [...(toSave.tags ?? []), PROPOSED_TAG];
-      let cardId = savedCardId;
-      if (savedCardId) {
-        await taskCardApi.update(currentProject.id, savedCardId, {
-          name: toSave.name, description: toSave.description,
-          root: toSave.root, scope: toSave.scope, tags,
-        });
-        message.success('Card updated in deck');
-      } else {
-        const card = await taskCardApi.create(currentProject.id, { ...toSave, tags });
-        cardId = card.id;
-        setSavedCardId(card.id);
-        // If the preview modal is open its draft now has a real id — switch
-        // it over so the editor reads by-id signature status from here on.
-        setPreviewCard(pc => (pc ? { ...pc, id: card.id } : pc));
-        message.success('Saved to deck');
-      }
-      // Now that block ids exist, get the real per-block status: this both
-      // yields the runnable sign commands shown below the panel and stages
-      // the scope the signer reads.  Advisory — a failure here must not
-      // present the save as failed, it only means no command is displayed.
+      const wasInDeck = !!savedCardId && !savedDraft;
+      const cardId = await ensureCard(toSave, false);
+      message.success(wasInDeck ? 'Card updated in deck' : 'Saved to deck');
+      // Advisory — a failure here must not present the save as failed; it
+      // only means no sign command is displayed.
       if (cardId) {
         try {
           setSavedScope(await taskCardApi.scopeStatus(currentProject.id, cardId));
@@ -340,7 +394,7 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
     } finally {
       setSaving(false);
     }
-  }, [currentSpec, currentProject?.id, savedCardId]);
+  }, [currentSpec, currentProject?.id, savedCardId, savedDraft, ensureCard]);
 
   const handleLaunch = useCallback(async () => {
     if (!spec || !currentProject?.id || !currentConversationId) return;
@@ -351,21 +405,19 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
       // otherwise launch the originally parsed spec unchanged.
       const toCreate = currentSpec();
       if (!toCreate) return;
-      // Reuse the card if it was already saved to the deck.  Creating a
-      // second one here would strand any signature the user just obtained
-      // on the first: approvals key on block id, and a fresh create
-      // assigns fresh ids, so the run would silently clamp to the floor.
-      const card = savedCardId
-        ? await taskCardApi.update(currentProject.id, savedCardId, {
-            name: toCreate.name, description: toCreate.description,
-            root: toCreate.root, scope: toCreate.scope, tags: toCreate.tags,
-          })
-        : await taskCardApi.create(currentProject.id, toCreate);
-      // Remember it either way, so a retry after a binding failure does
-      // not leave a second copy behind.
-      setSavedCardId(card.id);
+      // Reuse the card if one already exists — the deck copy, or the
+      // unlisted draft the Sign path created.  A second create here would
+      // strand any signature just obtained on the first: approvals key on
+      // block id, and a fresh create assigns fresh ids, so the run would
+      // silently clamp to the floor.
+      //
+      // A launch that CREATES the card creates it as a draft: running a
+      // proposal is not the same as filing it, and the run stays reachable
+      // through its binding in this chat.  "Save to deck" promotes it.
+      const cardId = await ensureCard(toCreate, true);
+      if (!cardId) return;
       const resp = await createBinding(currentProject.id, currentConversationId, {
-        card_id: card.id,
+        card_id: cardId,
         anchor_message_id: effectiveMessageId,
       });
       setLaunched(true);
@@ -386,7 +438,7 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
     } finally {
       setLaunching(false);
     }
-  }, [spec, currentSpec, savedCardId, currentProject?.id, currentConversationId, effectiveMessageId, addRunningTaskConversation]);
+  }, [spec, currentSpec, ensureCard, currentProject?.id, currentConversationId, effectiveMessageId, addRunningTaskConversation]);
 
   // Direct run of a card with unsigned escalation is not refused — the run
   // is still useful, and authorize_scope clamps the escalating blocks to
@@ -440,7 +492,7 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
             The run will start, but those tasks are clamped to the default
             floor — so anything depending on the extra permissions fails
             partway through instead of up front. To sign first, cancel and
-            use <strong>{saveLabel}</strong> — the exact{' '}
+            use <strong>Sign…</strong> — the exact{' '}
             <code>ziya-approve</code> command then appears in this panel.
           </p>
         </div>
@@ -448,7 +500,7 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
       onOk: () => { void handleLaunch(); },
     });
   }, [activeScope, savedCardId, currentProject?.id, currentSpec,
-      refreshSavedScope, handleLaunch, saveLabel]);
+      refreshSavedScope, handleLaunch]);
 
   if (!spec) return null;
 
@@ -480,9 +532,23 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
         <Button size="small" onClick={openPreview} disabled={launching || launched}>
           Preview
         </Button>
-        <Tooltip title={savedCardId
+        {/* Signing needs persisted block ids, not a deck entry.  This
+            stores the card as an unlisted DRAFT and reads its by-id
+            status, which is what mints the ziya-approve command below.
+            Hidden once a command exists — at that point the panel is
+            already showing what this button would produce. */}
+        {needsSigning && !commandScope && (
+          <Tooltip title="Persist just enough to sign this card's permissions — it does NOT go into your Task Cards deck">
+            <Button size="small" loading={preparing}
+              onClick={() => void handleSignPrep()}
+              disabled={preparing || launching || launched || !currentProject?.id}>
+              Sign…
+            </Button>
+          </Tooltip>
+        )}
+        <Tooltip title={savedCardId && !savedDraft
           ? 'Update this card in the Task Cards deck'
-          : 'Save to the Task Cards deck without running it — required before its permissions can be signed'}>
+          : 'Save to the Task Cards deck without running it — signing does not require this'}>
           <Button size="small" icon={<SaveOutlined />} loading={saving}
             onClick={handleSaveToDeck}
             disabled={saving || launching || !currentProject?.id}>
@@ -570,9 +636,10 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
               </>
             ) : (
               <div style={{ marginTop: 8 }}>
-                Use <strong>{saveLabel}</strong> to save it to the deck — the
-                exact <code>ziya-approve</code> command appears here once the
-                card has ids to sign against.
+                Press <strong>Sign…</strong> for the exact{' '}
+                <code>ziya-approve</code> command. That stores the card
+                privately so its blocks have ids to sign against — it does
+                not add it to your deck.
               </div>
             )}
 
@@ -603,7 +670,7 @@ export const TaskCardLaunchButton: React.FC<Props> = ({ messageContent, messageI
           <Button key="cancel" onClick={() => setShowPreview(false)}>Close</Button>,
           <Button key="save" icon={<SaveOutlined />} loading={saving}
             onClick={handleSaveToDeck} disabled={saving || launching}>
-            {savedCardId ? 'Update in deck' : 'Save to deck'}
+            {saveLabel}
           </Button>,
           <Button key="launch" type="primary" icon={<PlayCircleOutlined />}
             onClick={handleStart} disabled={launching || launched}>
