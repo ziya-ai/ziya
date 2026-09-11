@@ -36,3 +36,25 @@ export function shouldDeriveTitleFromMessage(
 export function deriveTitleFromContent(content: string, maxLength: number): string {
     return content.slice(0, maxLength) + (content.length > maxLength ? '...' : '');
 }
+
+/**
+ * True when a task-card launch into `conversation` should seed the
+ * conversation's title from the card's name: the title is still a
+ * placeholder and no human dialog exists yet.  A conversation whose first
+ * content is a task run never receives the human message that
+ * `shouldDeriveTitleFromMessage` keys on, so without this seed it would
+ * stay "New Conversation" forever.  Shell records (content-stripped
+ * sidebar entries) are excluded: their empty message list would
+ * masquerade as "no dialog" while the real conversation has content.
+ */
+export function shouldSeedTitleFromTaskCard(
+    conversation: {
+        title?: string;
+        messages?: ReadonlyArray<{ role: string }>;
+        _isShell?: boolean;
+    } | undefined | null,
+): boolean {
+    if (!conversation || conversation._isShell) return false;
+    if (!PLACEHOLDER_TITLES.has(conversation.title ?? '')) return false;
+    return !(conversation.messages ?? []).some(m => m.role === 'human');
+}
