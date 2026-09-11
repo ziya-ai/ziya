@@ -28,6 +28,7 @@
 import {
     resolveNetworkSpec,
     resolveNetworkStyle,
+    resolveNetworkColors,
     findGraphContainer,
     networkDiagramPlugin,
     NETWORK_LIGHT_BG,
@@ -200,6 +201,30 @@ describe('D-213 — the plural `styles` dialect and `nodeStyle` alias are read',
             const r = makeRecorder();
             networkDiagramPlugin.render(document.createElement('div'), r.d3, w4_14, dark);
             expect(valuesFor(r.records, 'fill')).toContain('#2e6eaa');
+        }
+    });
+
+    // ── D-194 (theme:light): the plural-dialect labelColor must survive the read
+    // AND be theme-reconciled to a legible label in BOTH themes ────────────────
+    // The plural `styles.default.labelColor` (#7e7e7e = 4.06:1 on both surfaces,
+    // below the 4.5 text floor) was silently dropped pre-fix (render read only
+    // `resolved.style`), so labels fell to plugin defaults — the light-canvas
+    // ghost-text symptom (worst measured 1.61:1). With resolveNetworkStyle the
+    // author colour is READ, then resolveNetworkColors reconciles it per theme:
+    // light -> #656565 (5.83:1 vs #ffffff), dark -> #989898 (5.71:1 vs #1f1f1f).
+    it('D-194: the plural labelColor is read and reconciled legible in BOTH themes', () => {
+        const resolved = resolveNetworkSpec(w4_14);
+        const style = resolveNetworkStyle(resolved);
+        // DIRECTION: pre-fix `style` would be {} (plural form unread) and the
+        // authored #7e7e7e never reaches resolveNetworkColors.
+        expect(style.labelColor).toBe('#7e7e7e');
+
+        for (const dark of [false, true]) {
+            const colors = resolveNetworkColors(dark, style);
+            // The label derives from the AUTHOR colour, not the plugin default.
+            expect(colors.labelColor).not.toBe(dark ? '#e0e0e0' : '#333333');
+            // …and it clears the 4.5:1 text floor against the surface it is drawn on.
+            expect(contrastRatio(colors.labelColor, colors.effectiveBg)).toBeGreaterThanOrEqual(4.5);
         }
     });
 });
