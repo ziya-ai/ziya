@@ -140,9 +140,14 @@ describe('D-083 style parsing (no phantom nodes/containers)', () => {
     const def = ['outer {', '  inner {', '    leaf: Leaf', '  }', '}'].join('\n');
     const { containers, nodes } = new D2Parser().parse(def);
     const byId = new Map(containers.map((c: any) => [c.id, c]));
-    expect(byId.get('inner').parent).toBe('outer');
+    // D-105: containers and nodes are keyed by full dotted path, so the nested
+    // container is `outer.inner` and the leaf's originalId is its full path.
+    expect(byId.get('outer.inner').parent).toBe('outer');
     expect(byId.get('outer').parent).toBeNull();
-    expect(nodes.find((n: any) => n.originalId === 'leaf').container).toBe('inner');
+    const leaf = nodes.find((n: any) => n.originalId === 'outer.inner.leaf');
+    expect(leaf).toBeDefined();
+    expect(leaf.label).toBe('Leaf');
+    expect(leaf.container).toBe('outer.inner');
   });
 });
 

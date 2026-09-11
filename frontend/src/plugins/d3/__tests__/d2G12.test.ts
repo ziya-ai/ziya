@@ -203,7 +203,9 @@ describe('D-081 container bounds from member nodes (no Infinity)', () => {
     const def = ['outer {', '  inner {', '    leaf: Leaf', '  }', '}'].join('\n');
     const { containers } = new D2Parser().parse(def);
     const byId = new Map(containers.map((c: any) => [c.id, c]));
-    expect(byId.get('inner').parent).toBe('outer');
+    // D-105: containers are keyed by their full dotted path (`outer.inner`),
+    // so two containers may each own an `inner`. Parent pointers unchanged.
+    expect(byId.get('outer.inner').parent).toBe('outer');
     expect(byId.get('outer').parent).toBeNull();
   });
 });

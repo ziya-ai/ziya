@@ -2,6 +2,8 @@ import { D3RenderPlugin } from '../../types/d3';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 import { escapeHtml } from '../../utils/htmlSanitize';
+import { calculateContrastRatio, hslStringToRgb, hexToRgb } from '../../utils/colorUtils';
+import { namedColorToHex } from './chartTheme';
 
 export interface D2Spec {
     type: 'd2';
@@ -205,6 +207,83 @@ export function d2ThemeColors(isDarkMode: boolean): D2ThemeColors {
         edge: isDarkMode ? '#9aa4b2' : '#666666',
         text: isDarkMode ? '#ffffff' : '#000000',
     };
+}
+
+// D-045: resolve an author colour value to an {r,g,b} triple so its contrast can
+// be reasoned about. Handles #rgb / #rrggbb / #rrggbbaa, rgb()/rgba(),
+// hsl()/hsla() and bare CSS colour names (via the shared table in chartTheme).
+// Returns null when the value is not resolvable to a concrete colour (token /
+// currentColor / unknown name), in which case the caller falls back to the
+// theme text colour rather than guessing. Alpha is handled separately by
+// d2ColorAlpha; this returns the nominal (un-composited) channels.
+export function d2ResolveFillRgb(v: any): { r: number; g: number; b: number } | null {
+    if (typeof v !== 'string') return null;
+    const s = v.trim();
+    if (!s) return null;
+    if (s[0] === '#') {
+        const h = s.slice(1);
+        if (/^[0-9a-f]{3}$/i.test(h)) {
+            return hexToRgb('#' + h.split('').map(c => c + c).join(''));
+        }
+        if (/^[0-9a-f]{6}$/i.test(h) || /^[0-9a-f]{8}$/i.test(h)) {
+            return hexToRgb('#' + h.slice(0, 6));
+        }
+        return null;
+    }
+    const rgb = s.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+    if (rgb) return { r: +rgb[1], g: +rgb[2], b: +rgb[3] };
+    if (/^hsla?\(/i.test(s)) return hslStringToRgb(s);
+    const named = namedColorToHex(s);
+    return named ? hexToRgb(named) : null;
+}
+
+// D-045: parse the alpha channel of a colour value (0..1). Opaque (1) when the
+// value carries no alpha or is unparseable. Handles the 4th component of
+// rgba()/hsla() and the trailing byte of #rrggbbaa.
+export function d2ColorAlpha(v: any): number {
+    if (typeof v !== 'string') return 1;
+    const s = v.trim();
+    const fn = s.match(/^(?:rgba|hsla)\([^)]*,\s*([\d.]+)\s*\)$/i);
+    if (fn) {
+        const a = parseFloat(fn[1]);
+        return isNaN(a) ? 1 : Math.max(0, Math.min(1, a));
+    }
+    const hex8 = s.match(/^#([0-9a-f]{8})$/i);
+    if (hex8) return parseInt(hex8[1].slice(6), 16) / 255;
+    return 1;
+}
+
+// D-045: choose the node LABEL colour by WCAG contrast against the RESOLVED node
+// fill, not by the theme constant. When no explicit font-color/color is supplied
+// the old code returned the theme text (#ffffff in dark), so white text drowned
+// on the light-ish fills models emit (papayawhip 1.13:1, cyan 1.25:1,
+// cornflowerblue 2.97:1, magenta 3.14:1, #4287f5 3.49:1, steelblue 4.11:1 — all
+// below the 4.5 floor); symmetrically a dark author fill (navy) would fail LIGHT
+// with black text. A semi-transparent fill is composited over the page
+// background first, since that is what the label actually sits on. We then pick
+// whichever of #000000 / #ffffff yields the higher contrast against the
+// effective colour (a true WCAG-optimal choice — a fixed luminance-0.5 threshold
+// mispicks white on midtones like cornflowerblue). The choice resolves from the
+// SAME fill in either theme, so it is a per-fill resolution, not a constant swap,
+// and cannot repair dark by breaking light. Only when the fill cannot be
+// resolved do we fall back to the theme text colour (prior behaviour preserved).
+export function d2ReadableTextOn(fill: any, pageBg: string, themeFallback: string): string {
+    const rgb = d2ResolveFillRgb(fill);
+    if (!rgb) return themeFallback;
+    let eff = rgb;
+    const a = d2ColorAlpha(fill);
+    if (a < 1) {
+        const bg = d2ResolveFillRgb(pageBg) || { r: 255, g: 255, b: 255 };
+        eff = {
+            r: Math.round(rgb.r * a + bg.r * (1 - a)),
+            g: Math.round(rgb.g * a + bg.g * (1 - a)),
+            b: Math.round(rgb.b * a + bg.b * (1 - a)),
+        };
+    }
+    const hex = '#' + [eff.r, eff.g, eff.b]
+        .map(n => Math.max(0, Math.min(255, n)).toString(16).padStart(2, '0')).join('');
+    return calculateContrastRatio('#000000', hex) >= calculateContrastRatio('#ffffff', hex)
+        ? '#000000' : '#ffffff';
 }
 
 export const D2_FONT_SIZE = 12;
@@ -442,6 +521,51 @@ export function d2CanvasSize(nodes: any[]): { width: number; height: number; vie
     return { width, height, viewBox: `0 0 ${width} ${height}` };
 }
 
+// Canvas size that also encloses the CONTAINER rectangles, not just the member
+// nodes (D-076). A container's dashed rect is drawn `pad` (+ a per-nesting-level
+// inset, D-089) OUTSIDE its member nodes, and its group label sits at the rect's
+// top-left corner. When ELK places the topmost/leftmost member near the origin,
+// that pad pushes the OUTER container's rect (and its label) into negative
+// coordinates — with the old fixed `0 0 W H` viewBox they were clipped straight
+// off the top-left edge, so the region/az1 boxes looked "overbounded off-canvas"
+// and their labels garbled. Here the viewBox origin is shifted to the true
+// top-left of node ∪ container extents (with a small margin) so nothing is
+// clipped. With no containers (or containers that stay within the node bounds)
+// the result is byte-identical to d2CanvasSize: origin stays 0,0.
+export function d2CanvasBounds(
+    nodes: any[],
+    containers: Array<{ id: string; parent?: string | null; children?: string[] }> = [],
+    pad: number = 20
+): { width: number; height: number; viewBox: string } {
+    if (!containers || containers.length === 0) return d2CanvasSize(nodes);
+
+    let minX = 0;
+    let minY = 0;
+    let maxX = nodes.length ? Math.max(...nodes.map(n => n.x + n.width)) : 0;
+    let maxY = nodes.length ? Math.max(...nodes.map(n => n.y + n.height)) : 0;
+    if (nodes.length) {
+        minX = Math.min(minX, Math.min(...nodes.map(n => n.x)));
+        minY = Math.min(minY, Math.min(...nodes.map(n => n.y)));
+    }
+
+    for (const c of containers) {
+        const b = d2ContainerBounds(c as any, nodes, containers as any, pad);
+        if (!b) continue;
+        minX = Math.min(minX, b.x);
+        minY = Math.min(minY, b.y);
+        maxX = Math.max(maxX, b.x + b.width);
+        maxY = Math.max(maxY, b.y + b.height);
+    }
+
+    // A margin on the near side ONLY when a rect actually crossed the origin, so
+    // the no-negative case keeps origin 0,0 (unchanged for existing specs).
+    const originX = minX < 0 ? Math.floor(minX) - 10 : 0;
+    const originY = minY < 0 ? Math.floor(minY) - 10 : 0;
+    const width = Math.max(800, (maxX - originX) + 100);
+    const height = Math.max(400, (maxY - originY) + 100);
+    return { width, height, viewBox: `${originX} ${originY} ${width} ${height}` };
+}
+
 export function stripD2Quotes(v: string): string {
     const s = String(v ?? '').trim();
     if (s.length >= 2 && ((s[0] === '"' && s[s.length - 1] === '"') || (s[0] === "'" && s[s.length - 1] === "'"))) {
@@ -603,6 +727,89 @@ export function normalizeD2SmartQuotes(s: string): string {
         .replace(/[\u2018\u2019\u201A\u201B\u2032\u2035]/g, "'");
 }
 
+// Strip a wrapping markdown code fence (```d2 ... ```) that a model frequently
+// leaves around a definition. Only the fence marker lines are removed; the
+// enclosed content is untouched. Previously the ```` ```d2 ```` / closing
+// ```` ``` ```` lines fell through to the bare-node-id branch of parseLine and
+// became phantom boxes labelled with the backtick run, and the first real
+// node's label was lost (D-060). Conservative: removes at most one leading
+// fence line and one trailing fence line, and only when the line is a fence.
+export function stripD2CodeFence(def: string): string {
+    const lines = String(def ?? '').split('\n');
+    let start = 0;
+    while (start < lines.length && lines[start].trim() === '') start++;
+    if (start < lines.length && /^```/.test(lines[start].trim())) {
+        lines.splice(start, 1);
+    }
+    let end = lines.length - 1;
+    while (end >= 0 && lines[end].trim() === '') end--;
+    if (end >= 0 && lines[end].trim() === '```') {
+        lines.splice(end, 1);
+    }
+    return lines.join('\n');
+}
+
+// Fold a D2 markdown / text block string (`note: |md ... |`, also `|tex|` and
+// `|latex|`) into a single plain-text node line. D2 delimits a block string
+// with an opening `|<lang>` and a lone `|` on its own line; the enclosed lines
+// are markdown, not D2. Previously the enclosed `## Heading` / `Runs in **x**`
+// lines leaked into the parser: a `#` heading was eaten by the comment stripper
+// while the prose line and the closing `|` became phantom bare-id nodes, and
+// the `note:` line itself kept the raw `|md` as its label (D-061). Here the
+// block is collapsed to `note: <flattened markdown>` so it renders as one
+// labelled node. A keyless block survives as a standalone node so its text is
+// not silently dropped. Pure; returns a new string.
+export function stripD2BlockStrings(def: string): string {
+    const src = String(def ?? '').split('\n');
+    const out: string[] = [];
+    const flatten = (lines: string[]): string =>
+        lines
+            .map(l => l.replace(/^\s*#+\s*/, '').replace(/[*_`>]/g, '').trim())
+            .filter(Boolean)
+            .join(' ')
+            .replace(/\s+/g, ' ')
+            .trim();
+    for (let i = 0; i < src.length; i++) {
+        const line = src[i];
+        const open = line.match(/^(\s*)(?:([^:|{}]+?)\s*:\s*)?\|\s*(md|tex|latex|txt)\b(.*)$/);
+        if (!open) { out.push(line); continue; }
+        const indent = open[1];
+        const key = (open[2] || '').trim();
+        const inlineRest = open[4];
+        const inlineClose = inlineRest.indexOf('|');
+        let content: string[];
+        if (inlineClose >= 0) {
+            // Opening and closing `|` on the same physical line.
+            content = [inlineRest.slice(0, inlineClose)];
+        } else {
+            const buf: string[] = [];
+            if (inlineRest.trim()) buf.push(inlineRest);
+            let j = i + 1;
+            let closed = false;
+            for (; j < src.length; j++) {
+                if (src[j].trim() === '|') { closed = true; break; }
+                buf.push(src[j]);
+            }
+            if (!closed) {
+                // Unterminated block: emit the opener verbatim and let the rest
+                // parse normally rather than swallowing the tail of the input.
+                out.push(line);
+                continue;
+            }
+            content = buf;
+            i = j; // skip past the closing `|`
+        }
+        const flat = flatten(content);
+        if (key) {
+            out.push(`${indent}${key}: ${flat || key}`);
+        } else if (flat) {
+            out.push(`${indent}${flat}`);
+        }
+        // An empty keyless block is dropped entirely.
+    }
+    return out.join('\n');
+}
+
 // True when the definition is Mermaid flowchart source mis-typed as d2 rather
 // than D2 syntax. Mermaid uses bracket/brace/stadium node labels (`A[Web
 // Server]`, `B{API Gateway}`, `C[(Database)]`) and multi-dash / dotted / thick
@@ -648,6 +855,232 @@ export function d2ResolveSvgSize(
     };
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// D-105: labelled containers, scoped node paths, hierarchical ELK layout
+// ─────────────────────────────────────────────────────────────────────────
+//
+// Standard d2 writes a container as `vpc: VPC { web: Web; db: DB; web -> db }`.
+// The parser treated EVERY `id: Label {` block as a leaf-node attribute body
+// (the D-097 fix), so the children were swallowed as attributes, the container
+// never existed, and the inner edge leaked to two phantom top-level nodes.
+// Independently, nodes were keyed by their SHORT id (`resolvePath` kept only
+// the last dotted segment), so two containers could not both own a `web`, and
+// ELK laid the graph out flat with containers drawn as bounding boxes of
+// wherever their members happened to land — so two containers' rects
+// interleaved.
+//
+// Fix, in three parts:
+//   1. d2BodyIsContainer — a look-ahead classifier: a block whose body declares
+//      a child shape / connection / sub-block is a container; a body holding
+//      only reserved attribute keys is a leaf; sql_table / class bodies are
+//      rows, never children (D-082 preserved).
+//   2. Nodes and containers are keyed by their FULL dotted path, resolved
+//      against the enclosing scope (`_` climbs one level, an unknown first
+//      segment falls back to the root), so `client -> vpc.web` reaches the
+//      child and `east.web` / `west.web` are distinct nodes.
+//   3. buildElkHierarchy nests member nodes inside compound ELK nodes with
+//      elk.hierarchyHandling=INCLUDE_CHILDREN so a container's members are laid
+//      out together; flattenElkResult converts the nested result back to the
+//      absolute-coordinate leaf list the renderer expects. Diagrams with no
+//      containers take the unchanged flat path.
+
+/** Keys that are node ATTRIBUTES inside an `id: Label { ... }` body, never child shapes. */
+export const D2_RESERVED_BODY_KEYS = new Set<string>([
+    'shape', 'label', 'style', 'width', 'height', 'near', 'tooltip', 'link', 'icon',
+    'constraint', 'class', 'classes', 'direction', 'top', 'left',
+    'grid-rows', 'grid-columns', 'grid-gap', 'vertical-gap', 'horizontal-gap',
+    'source-arrowhead', 'target-arrowhead', 'vars',
+    // Bare style keys are tolerated in a body (older sloppy input wrote
+    // `fill: red` without the `style.` prefix); they are attributes, not children.
+    'fill', 'stroke', 'stroke-width', 'stroke-dash', 'opacity', 'font-size', 'font-color',
+    'font', 'bold', 'italic', 'underline', 'text-transform', 'shadow', 'multiple', '3d',
+    'double-border', 'border-radius', 'fill-pattern', 'animated', 'filled',
+]);
+
+/**
+ * Decide whether the block opened at `lines[openIdx]` (a line ending in `{`) is
+ * a CONTAINER (its direct body declares children) or a LEAF node body (only
+ * attributes). Depth-aware: nested blocks are skipped, so only the direct body
+ * is inspected. A body that sets `shape: sql_table` / `shape: class` is always
+ * a leaf — its `name: type` rows are columns, not children.
+ */
+export function d2BodyIsContainer(lines: string[], openIdx: number): boolean {
+    if (!Array.isArray(lines) || openIdx < 0 || openIdx >= lines.length) return false;
+    const body: string[] = [];
+    let depth = 0;
+    for (let i = openIdx; i < lines.length; i++) {
+        const line = (lines[i] || '').trim();
+        if (i === openIdx) { depth = 1; continue; }
+        if (line === '}') { depth--; if (depth <= 0) break; continue; }
+        if (depth === 1) body.push(line);
+        if (line.endsWith('{')) depth++;
+    }
+    if (body.some(l => /^shape\s*:\s*(sql_table|class)\b/i.test(l))) return false;
+
+    const isReservedKey = (key: string): boolean => {
+        const first = key.split('.')[0].trim();
+        return D2_RESERVED_BODY_KEYS.has(first) || key.endsWith('.style');
+    };
+    for (const raw of body) {
+        // Sub-block head: `style {`, `x.style {`, `classes {` are attribute
+        // blocks; any other head (`inner: I {`, `inner {`) is a child.
+        if (raw.endsWith('{')) {
+            let head = raw.slice(0, -1).trim();
+            if (head.endsWith(':')) head = head.slice(0, -1).trim();
+            const c = head.indexOf(':');
+            const key = (c >= 0 ? head.slice(0, c) : head).trim();
+            if (isReservedKey(key)) continue;
+            return true;
+        }
+        // Inline `{ ... }` on the same line (`style { fill: red }`,
+        // `a: A {shape: circle}`) is keyed by what precedes the brace.
+        const l = raw.replace(/\s*\{[^{}]*\}\s*$/, '').trim();
+        const conn = l.search(/(<->|->|<-)/);
+        const colon = l.indexOf(':');
+        if (conn >= 0 && (colon < 0 || conn < colon)) return true; // a connection
+        if (colon < 0) {
+            if (!l) continue;
+            if (isReservedKey(l)) continue;      // `style` alone (inline block)
+            return true;                          // bare child id
+        }
+        if (isReservedKey(l.slice(0, colon).trim())) continue;
+        return true;                              // `child: Label`
+    }
+    return false;
+}
+
+/** Parent of a dotted path (`cloud.vpc` -> `cloud`; `vpc` -> null). */
+export function d2ParentPath(p: string | null | undefined): string | null {
+    if (!p) return null;
+    const i = p.lastIndexOf('.');
+    return i < 0 ? null : p.slice(0, i);
+}
+/** Join a scope path and a (possibly dotted) id. */
+export function d2JoinPath(scope: string | null, id: string): string {
+    return scope ? `${scope}.${id}` : id;
+}
+/** Last dotted segment (`cloud.vpc.web` -> `web`). */
+export function d2LastSegment(p: string): string {
+    const i = p.lastIndexOf('.');
+    return i < 0 ? p : p.slice(i + 1);
+}
+
+const d2NormalizeId = (id: string): string => id.replace(/[^a-zA-Z0-9]/g, '_');
+
+/** Headroom reserved at the top of a compound node so the container label clears its members. */
+export const D2_CONTAINER_ELK_PADDING = '[top=44,left=20,bottom=20,right=20]';
+
+/**
+ * Build a hierarchical ELK graph: one compound node per container (nested per
+ * `parent`), member nodes as its children, edges attached at the lowest common
+ * ancestor container of their endpoints (root when they span containers).
+ */
+export function buildElkHierarchy(nodes: any[], edges: any[], containers: any[], options: any = {}): any {
+    const root: any = {
+        id: 'root',
+        layoutOptions: {
+            'elk.algorithm': options.algorithm || 'layered',
+            'elk.direction': options.direction || 'DOWN',
+            'elk.hierarchyHandling': 'INCLUDE_CHILDREN',
+            'elk.spacing.nodeNode': options.nodeSpacing || '50',
+            'elk.layered.spacing.nodeNodeBetweenLayers': options.layerSpacing || '50',
+            'elk.spacing.edgeNode': '30',
+            'elk.spacing.edgeEdge': '15',
+            'elk.layered.crossingMinimization.strategy': 'LAYER_SWEEP',
+            'elk.layered.nodePlacement.strategy': 'BRANDES_KOEPF',
+            'elk.layered.cycleBreaking.strategy': 'GREEDY',
+        },
+        children: [],
+        edges: [],
+    };
+
+    const compound = new Map<string, any>();
+    for (const c of containers || []) {
+        compound.set(c.id, {
+            id: d2NormalizeId(c.id),
+            children: [],
+            edges: [],
+            layoutOptions: {
+                'elk.padding': D2_CONTAINER_ELK_PADDING,
+                'elk.nodeSize.constraints': 'MINIMUM_SIZE',
+                'elk.nodeSize.minimum': '(120,60)',
+            },
+        });
+    }
+    for (const c of containers || []) {
+        const el = compound.get(c.id);
+        const parent = c.parent ? compound.get(c.parent) : undefined;
+        (parent ? parent.children : root.children).push(el);
+    }
+
+    for (const node of nodes) {
+        const box = d2NodeBoxSize(node);
+        const el = {
+            id: node.id,
+            width: box.width,
+            height: box.height,
+            labels: buildElkNodeLabels(node),
+            layoutOptions: {
+                // Inside a compound node ELK's NODE_LABELS constraint resolves a
+                // dimensionless label to a 0x0 node (the flat path gets away with
+                // it; INCLUDE_CHILDREN does not), so leaves overlap and the
+                // compound collapses. Pin every leaf to its measured box instead.
+                'elk.nodeSize.constraints': 'MINIMUM_SIZE',
+                'elk.nodeSize.minimum': `(${box.width},${box.height})`,
+            },
+        };
+        const parent = node.container ? compound.get(node.container) : undefined;
+        (parent ? parent.children : root.children).push(el);
+    }
+
+    const containerOf = new Map<string, string | null>(nodes.map(n => [n.id, n.container || null]));
+    const lca = (a: string | null, b: string | null): string | null => {
+        const pa = a ? a.split('.') : [];
+        const pb = b ? b.split('.') : [];
+        let i = 0;
+        while (i < pa.length && i < pb.length && pa[i] === pb[i]) i++;
+        return i ? pa.slice(0, i).join('.') : null;
+    };
+    edges.forEach((edge, i) => {
+        const el = {
+            id: `e${i}_${edge.source}_${edge.target}`,
+            sources: [edge.source],
+            targets: [edge.target],
+            labels: edge.label ? [{ text: edge.label, layoutOptions: { 'elk.edgeLabels.placement': 'CENTER' } }] : [],
+            layoutOptions: { 'elk.edge.type': edge.bidirectional ? 'UNDIRECTED' : 'DIRECTED' },
+        };
+        const anc = lca(containerOf.get(edge.source) ?? null, containerOf.get(edge.target) ?? null);
+        const host = anc && compound.has(anc) ? compound.get(anc) : root;
+        host.edges.push(el);
+    });
+    return root;
+}
+
+/**
+ * Flatten a laid-out hierarchical ELK graph to the absolute-coordinate leaf
+ * list the renderer consumes. Compound (container) nodes contribute their
+ * offset to their children and are not themselves returned.
+ */
+export function flattenElkResult(laid: any, nodes: any[]): any[] {
+    const byId = new Map<string, any>(nodes.map(n => [n.id, n]));
+    const out: any[] = [];
+    const walk = (el: any, ox: number, oy: number) => {
+        for (const ch of el?.children || []) {
+            const x = ox + (ch.x || 0);
+            const y = oy + (ch.y || 0);
+            if (Array.isArray(ch.children) && ch.children.length > 0) { walk(ch, x, y); continue; }
+            const orig = byId.get(ch.id);
+            if (!orig) continue; // an empty compound node, not a leaf
+            // Never mask a zero-size result with a magic number: fall back to the
+            // node's own measured box so the drawn rect matches what ELK spaced.
+            const box = d2NodeBoxSize(orig);
+            out.push({ ...orig, x, y, width: ch.width || box.width, height: ch.height || box.height });
+        }
+    };
+    walk(laid, 0, 0);
+    return out;
+}
+
 type D2Frame =
     | { kind: 'container'; id: string }
     | { kind: 'node'; id: string }
@@ -681,6 +1114,12 @@ export class D2Parser {
     parse(definition: string) {
         this.reset();
 
+        // Strip a wrapping ```d2 markdown fence (D-060) and fold `|md ... |`
+        // block strings into a single labelled node (D-061) BEFORE the smart-
+        // quote fold / comment strip, so the block's markdown lines never reach
+        // the per-line parser as phantom nodes.
+        definition = stripD2BlockStrings(stripD2CodeFence(definition));
+
         // Fold typographic/smart quotes to ASCII up front (D-101) so a curly
         // label behaves exactly like the ASCII form for delimiter stripping.
         definition = normalizeD2SmartQuotes(definition);
@@ -696,14 +1135,19 @@ export class D2Parser {
         for (const raw of definition.split('\n')) {
             const stripped = stripInlineComment(raw).trim();
             if (!stripped || stripped.startsWith('#')) continue;
+            // Defensive: any stray markdown fence marker that survives
+            // stripD2CodeFence (e.g. an interior fence) is never D2 (D-060).
+            if (stripped.startsWith('```')) continue;
             for (const stmt of splitD2Statements(stripped)) {
                 const t = stmt.trim();
                 if (t && !t.startsWith('#')) lines.push(t);
             }
         }
 
-        for (const line of lines) {
-            this.parseLine(line);
+        // The index is threaded through so a block head can look ahead at its
+        // body to decide container-vs-leaf (D-105).
+        for (let i = 0; i < lines.length; i++) {
+            this.parseLine(lines[i], lines, i);
         }
 
         return {
@@ -729,10 +1173,10 @@ export class D2Parser {
         return this.frames[this.frames.length - 1];
     }
 
-    private parseLine(line: string) {
+    private parseLine(line: string, lines: string[] = [], lineIdx: number = -1) {
         // Block start / end.
         if (line.endsWith('{')) {
-            this.openBlock(line.slice(0, -1).trim());
+            this.openBlock(line.slice(0, -1).trim(), lines, lineIdx);
             return;
         }
         if (line === '}') {
@@ -808,11 +1252,11 @@ export class D2Parser {
 
         // Bare node id (no colon).
         if (line.length > 0) {
-            this.ensureNode(line);
+            this.ensureNode(this.resolvePath(line));
         }
     }
 
-    private openBlock(headRaw: string) {
+    private openBlock(headRaw: string, lines: string[] = [], lineIdx: number = -1) {
         let head = headRaw;
         let trailingColon = false;
         if (head.endsWith(':')) { head = head.slice(0, -1).trim(); trailingColon = true; }
@@ -848,56 +1292,96 @@ export class D2Parser {
         // `X.style { }` block.
         const dotStyle = head.match(/^(.+)\.style$/);
         if (dotStyle) {
-            const id = dotStyle[1].trim();
+            const id = this.resolvePath(dotStyle[1].trim());
             this.ensureNode(id);
             this.frames.push({ kind: 'style', targetKind: 'node', targetId: id });
             return;
         }
 
-        // `id: Label {` -> node with a body block (the body typically holds a
-        // nested `style { }`).
+        // `id: Label {` — a CONTAINER when its body declares children (this is
+        // the standard d2 container form: `vpc: VPC { web: Web; web -> db }`),
+        // otherwise a leaf node with an attribute body (the body typically holds
+        // `shape:` / `style.*` / a nested `style { }`) — D-097 preserved. The
+        // old code took every such block as a leaf body, swallowing the
+        // children as attributes and never creating the container (D-105).
         if (head.includes(':')) {
             const idx = head.indexOf(':');
-            const nodeId = head.slice(0, idx).trim();
+            const rawId = head.slice(0, idx).trim();
             const label = head.slice(idx + 1).trim();
-            this.upsertNode(nodeId, label || nodeId);
-            this.frames.push({ kind: 'node', id: nodeId });
+            const fullId = this.resolvePath(rawId);
+            if (d2BodyIsContainer(lines, lineIdx)) {
+                this.openContainer(fullId, label || null);
+                return;
+            }
+            this.upsertNode(fullId, label || rawId);
+            this.frames.push({ kind: 'node', id: fullId });
             return;
         }
 
-        // `X: {` (trailing-colon head, no inline label) is a NODE body with the
-        // default label, NOT a container — this is how a
-        // `users: { shape: sql_table ... }` table node is written. The old code
-        // stripped the ':' and treated it as a container, shredding the body's
-        // attribute lines into phantom column nodes and leaving the table
-        // anonymous (D-082). Class/style/labelled-node blocks are handled above,
-        // so this only fires for a real node body. A plain `X {` (no colon)
-        // remains a container.
-        if (trailingColon && head && !head.includes(':')) {
-            this.upsertNode(head, this.nodes.get(head)?.label || head);
-            this.frames.push({ kind: 'node', id: head });
+        // `X: {` (trailing-colon head, no inline label). A NODE body with the
+        // default label when the body is attributes only — this is how a
+        // `users: { shape: sql_table ... }` table node is written (D-082); the
+        // old code stripped the ':' and treated it as a container, shredding
+        // the body's attribute lines into phantom column nodes and leaving the
+        // table anonymous. A body that declares children is a container (the
+        // `vpc: { web: Web }` d2 form), promoting any earlier `vpc: Label` leaf.
+        if (trailingColon && head) {
+            const fullId = this.resolvePath(head);
+            if (d2BodyIsContainer(lines, lineIdx)) {
+                this.openContainer(fullId, null);
+                return;
+            }
+            this.upsertNode(fullId, this.nodes.get(fullId)?.label || head);
+            this.frames.push({ kind: 'node', id: fullId });
             return;
         }
 
-        // Plain container (unchanged behaviour: nested containers keep parent
-        // pointers).
-        const parent = this.currentContainerId();
-        if (!this.containers.has(head)) {
-            this.containers.set(head, {
-                id: head,
-                label: head,
-                type: 'container',
-                children: [],
-                parent
-            });
+        // Plain `X {` container (nested containers keep parent pointers).
+        this.openContainer(this.resolvePath(head), null);
+    }
+
+    private openContainer(fullId: string, label: string | null) {
+        this.ensureContainer(fullId, label);
+        this.frames.push({ kind: 'container', id: fullId });
+    }
+
+    // Create (or re-label) the container at `fullId`, creating any missing
+    // ancestor containers on demand (`vpc.web: X` with no prior `vpc`). A leaf
+    // node declared earlier under the same path (`vpc: My VPC` followed by
+    // `vpc: { ... }`) is PROMOTED: the container inherits its label and the
+    // node is removed so it is not also drawn as a box.
+    private ensureContainer(fullId: string, label: string | null): any {
+        const parent = d2ParentPath(fullId);
+        if (parent) this.ensureContainer(parent, null);
+
+        const leaf = this.nodes.get(fullId);
+        if (leaf) {
+            if (!label) label = leaf.label;
+            this.nodes.delete(fullId);
+            const pc = parent ? this.containers.get(parent) : null;
+            if (pc) pc.children = pc.children.filter((c: string) => c !== fullId);
         }
-        this.frames.push({ kind: 'container', id: head });
+
+        const existing = this.containers.get(fullId);
+        if (existing) {
+            if (label) existing.label = label;
+            return existing;
+        }
+        const c = {
+            id: fullId,
+            label: label || d2LastSegment(fullId),
+            type: 'container',
+            children: [] as string[],
+            parent
+        };
+        this.containers.set(fullId, c);
+        return c;
     }
 
     private tryParseDottedStyle(line: string): boolean {
         const m = line.match(/^(.+?)\.style\.([A-Za-z0-9_-]+)\s*:\s*(.+)$/);
         if (!m) return false;
-        const nodeId = m[1].trim();
+        const nodeId = this.resolvePath(m[1].trim());
         const key = m[2].trim();
         const val = stripD2Quotes(m[3]);
         this.setNodeStyle(nodeId, key, val);
@@ -970,30 +1454,46 @@ export class D2Parser {
         node.attrs[key] = val;
     }
 
+    // `nodeId` is a FULL path (already resolved). A style on a container path
+    // lands on the container record rather than resurrecting a leaf node.
     private setNodeStyle(nodeId: string, key: string, val: string) {
         this.ensureNode(nodeId);
-        const node = this.nodes.get(nodeId);
-        node.style = node.style || {};
-        node.style[key] = val;
+        const target = this.nodes.get(nodeId) ?? this.containers.get(nodeId);
+        if (!target) return;
+        target.style = target.style || {};
+        target.style[key] = val;
     }
 
-    private upsertNode(nodeId: string, label: string) {
+    // All of upsertNode / createNode / ensureNode take a FULL dotted path; the
+    // caller resolves user-written ids via resolvePath. A node's container is
+    // derived from its path (not from the parse scope), so `client -> vpc.web`
+    // written at the top level still files `web` under `vpc` (D-105).
+    private upsertNode(nodeId: string, label: string): any {
+        if (this.containers.has(nodeId)) {
+            // `vpc: Label` after `vpc { ... }` re-labels the container; it is
+            // never drawn a second time as a leaf.
+            if (label) this.containers.get(nodeId).label = label;
+            return null;
+        }
         const existing = this.nodes.get(nodeId);
         if (existing) {
             if (label) existing.label = label;
             return existing;
         }
+        return this.createNode(nodeId, label);
+    }
+
+    private createNode(fullId: string, label: string): any {
+        const parent = d2ParentPath(fullId);
+        if (parent) this.ensureContainer(parent, null);
         const node = {
-            id: this.normalizeNodeId(nodeId),
-            label: label || nodeId,
-            originalId: nodeId,
-            container: this.currentContainerId()
+            id: this.normalizeNodeId(fullId),
+            label: label || d2LastSegment(fullId),
+            originalId: fullId,
+            container: parent
         };
-        this.nodes.set(nodeId, node);
-        const cid = this.currentContainerId();
-        if (cid && this.containers.has(cid)) {
-            this.containers.get(cid).children.push(nodeId);
-        }
+        this.nodes.set(fullId, node);
+        if (parent) this.containers.get(parent).children.push(fullId);
         return node;
     }
 
@@ -1016,8 +1516,18 @@ export class D2Parser {
         // every connection in the chain (matching d2's chained-label
         // semantics). Splitting on the first ':' keeps `a -> b: x` -> label 'x'
         // and two nodes a,b (D-078 regression guard).
-        let label = '';
+        // A trailing inline attribute block belongs to the connection, not the
+        // visible label: `... : reads {near: top-center}` -> label 'reads', and
+        // a label-less `a -> b {near: top}` keeps endpoint 'b'. It is stripped
+        // from the tail endpoint BEFORE the ': label' split so the `:` INSIDE
+        // `{near: ...}` is not mistaken for the label separator; previously the
+        // whole `{near: ...}` leaked into the rendered edge label (D-061).
+        const stripInlineAttrs = (s: string): string =>
+            s.replace(/\s*\{[^{}]*\}\s*$/, '').trim();
         const lastIdx = parts.length - 1;
+        parts[lastIdx] = stripInlineAttrs(parts[lastIdx]);
+
+        let label = '';
         const colonIdx = parts[lastIdx].indexOf(':');
         if (colonIdx >= 0) {
             label = parts[lastIdx].slice(colonIdx + 1).trim();
@@ -1027,7 +1537,7 @@ export class D2Parser {
         const endpoints: string[] = [];
         const connectors: string[] = [];
         for (let i = 0; i < parts.length; i++) {
-            if (i % 2 === 0) endpoints.push(parts[i].trim());
+            if (i % 2 === 0) endpoints.push(stripInlineAttrs(parts[i].trim()));
             else connectors.push(parts[i]);
         }
 
@@ -1038,7 +1548,7 @@ export class D2Parser {
         }
 
         // Ensure every node in the chain exists.
-        const resolved = endpoints.map(e => this.resolvePath(e));
+        const resolved = endpoints.map(e => this.resolvePath(e, true));
         for (const id of resolved) this.ensureNode(id);
 
         for (let i = 0; i < connectors.length; i++) {
@@ -1058,7 +1568,7 @@ export class D2Parser {
         if (parts.length >= 2) {
             const nodeId = parts[0].trim();
             const label = parts.slice(1).join(':').trim();
-            this.upsertNode(nodeId, label || nodeId);
+            this.upsertNode(this.resolvePath(nodeId), label || nodeId);
         }
     }
 
@@ -1069,11 +1579,13 @@ export class D2Parser {
         if (!match) {
             return;
         }
-        const nodeId = match[1].trim();
+        const rawId = match[1].trim();
+        const nodeId = this.resolvePath(rawId);
         const label = match[2].trim();
         const propsStr = match[3].trim();
 
-        const node = this.upsertNode(nodeId, label || (this.nodes.get(nodeId)?.label) || nodeId);
+        const node = this.upsertNode(nodeId, label || (this.nodes.get(nodeId)?.label) || rawId);
+        if (!node) return; // `vpc: VPC {class: x}` on an existing container: label applied above
 
         const props = this.parseProperties(propsStr);
 
@@ -1118,26 +1630,66 @@ export class D2Parser {
         return props;
     }
 
-    private resolvePath(path: string): string {
-        // Handle dotted paths like container.node
-        if (path.includes('.')) {
-            const parts = path.split('.');
-            // For now, just use the last part as the node ID
-            // In a full implementation, you'd handle the hierarchy properly
-            return parts[parts.length - 1];
+    // Resolve a user-written id to its FULL dotted path against the enclosing
+    // container scope (D-105). The old version kept only the last dotted
+    // segment, so `east.web` and `west.web` collapsed into one node and
+    // `client -> vpc.web` could not reach a scoped child.
+    //   - a bare id is scoped:            `web` inside vpc      -> vpc.web
+    //   - `_` climbs one scope per hop:   `_.shared` inside vpc -> shared
+    //   - a dotted path is RELATIVE when its first segment exists in the
+    //     current scope, ABSOLUTE when it exists at the root, else relative
+    //     (created under the scope, as d2 does).
+    //   - for a connection ENDPOINT only (`fallbackShort`), a bare id that does
+    //     not exist in the current scope but names exactly one node anywhere
+    //     resolves to that node. Model-written d2 routinely says
+    //     `node1 -> node2` at the top level for nodes declared inside a
+    //     container; strict d2 would spawn two phantom root nodes (the old flat
+    //     namespace made this work by accident, so it is preserved on purpose).
+    //     An ambiguous short name falls back to d2 semantics.
+    private resolvePath(path: string, fallbackShort: boolean = false): string {
+        let p = path.trim();
+        let scope = this.currentContainerId();
+        while (p === '_' || p.startsWith('_.')) {
+            scope = d2ParentPath(scope);
+            p = p === '_' ? '' : p.slice(2);
         }
-        return path;
+        if (!p) return scope || '';
+        // `users.org_id` where `users` is a sql_table / class LEAF names a
+        // column, not a child shape: the reference collapses to the table so
+        // an FK edge joins the two tables (and the table is never promoted
+        // into a container by the dotted path).
+        const collapseIntoTable = (full: string): string => {
+            const segs = full.split('.');
+            for (let n = 1; n < segs.length; n++) {
+                const prefix = segs.slice(0, n).join('.');
+                const leaf = this.nodes.get(prefix);
+                if (leaf && (leaf.shape === 'sql_table' || leaf.shape === 'class')) return prefix;
+            }
+            return full;
+        };
+        if (!p.includes('.')) {
+            const scoped = d2JoinPath(scope, p);
+            if (fallbackShort && !this.nodes.has(scoped) && !this.containers.has(scoped)) {
+                const hits: string[] = [];
+                for (const k of this.nodes.keys()) if (d2LastSegment(k) === p) hits.push(k);
+                for (const k of this.containers.keys()) if (d2LastSegment(k) === p) hits.push(k);
+                if (hits.length === 1) return hits[0];
+            }
+            return scoped;
+        }
+        if (!scope) return collapseIntoTable(p);
+        const first = p.split('.')[0];
+        const rel = d2JoinPath(scope, first);
+        if (this.containers.has(rel) || this.nodes.has(rel)) return collapseIntoTable(d2JoinPath(scope, p));
+        if (this.containers.has(first) || this.nodes.has(first)) return collapseIntoTable(p);
+        return d2JoinPath(scope, p);
     }
 
+    // `nodeId` is a FULL path. A path that names a container is left alone
+    // (an edge to a container is legal; it must not spawn a leaf box).
     private ensureNode(nodeId: string) {
-        if (!this.nodes.has(nodeId)) {
-            this.nodes.set(nodeId, {
-                id: this.normalizeNodeId(nodeId),
-                label: nodeId,
-                originalId: nodeId,
-                container: this.currentContainerId()
-            });
-        }
+        if (!nodeId || this.containers.has(nodeId) || this.nodes.has(nodeId)) return;
+        this.createNode(nodeId, d2LastSegment(nodeId));
     }
 
     private normalizeNodeId(id: string): string {
@@ -1156,12 +1708,29 @@ class ELKLayoutEngine {
         }
     }
 
-    async layout(nodes: any[], edges: any[], options: any = {}) {
+    async layout(nodes: any[], edges: any[], options: any = {}, containers: any[] = []) {
         if (nodes.length === 0) {
             return { nodes: [], edges: [] };
         }
 
         await this.initialize();
+
+        // Containers present: lay the graph out HIERARCHICALLY so each
+        // container's members are clustered inside a compound node instead of
+        // scattered across the flat layout and boxed after the fact (D-105).
+        // No containers -> the unchanged flat path below.
+        if (containers && containers.length > 0) {
+            try {
+                const graph = buildElkHierarchy(nodes, edges, containers, options);
+                const laid = await this.elk.layout(graph);
+                const flat = flattenElkResult(laid, nodes);
+                if (flat.length === nodes.length) return { nodes: flat, edges };
+                console.warn('ELK hierarchical layout dropped nodes, falling back to simple layout');
+            } catch (error) {
+                console.warn('ELK hierarchical layout failed, falling back to simple layout:', error);
+            }
+            return this.simpleGridLayout(nodes, edges);
+        }
         
         // Create ELK graph structure
         const elkGraph = {
@@ -1377,7 +1946,15 @@ export const d2Plugin: D3RenderPlugin = {
                 layerSpacing: '80'
             };
 
-            const layoutResult = await layoutEngine.layout(nodes, edges, layoutOptions);
+            const layoutResult = await layoutEngine.layout(nodes, edges, layoutOptions, containers);
+
+            // An edge whose endpoint is a container (or is otherwise absent
+            // from the laid-out leaves) must not be drawn to the origin — the
+            // renderer looks endpoints up by node id (D-105).
+            const laidIds = new Set(layoutResult.nodes.map((n: any) => n.id));
+            layoutResult.edges = layoutResult.edges.filter(
+                (e: any) => laidIds.has(e.source) && laidIds.has(e.target)
+            );
 
             // Grow sql_table boxes to fit their column rows regardless of the
             // size the layout engine returned, so columns are never drawn
@@ -1395,7 +1972,12 @@ export const d2Plugin: D3RenderPlugin = {
             // viewBox on large graphs (D-086); the auto-expand / overflow:visible
             // container scrolls rather than shrinking the content.
             container.innerHTML = '';
-        const canvas = d2CanvasSize(layoutResult.nodes);
+        // Enclose the container rectangles (drawn `pad`+nesting-inset OUTSIDE
+        // their members) and their top-left labels, not just the nodes, so an
+        // outer container near the origin is no longer clipped off the top-left
+        // edge with its label garbled (D-076). No containers -> identical to
+        // d2CanvasSize (origin stays 0,0).
+        const canvas = d2CanvasBounds(layoutResult.nodes, containers);
         // Honour an explicit requested size (render_diagram width/height plumbed
         // onto the spec) by scaling the content to that box via the viewBox,
         // rather than silently truncating rows or downscaling text (D-092).
@@ -1425,7 +2007,14 @@ export const d2Plugin: D3RenderPlugin = {
     const nodeStrokeWidth = (d: any) => (d.style && d.style['stroke-width']) ? d.style['stroke-width'] : 2;
     const nodeTextFill = (d: any) => {
         const c = d.style && (d.style['font-color'] || d.style.color);
-        return isUsableD2Color(c) ? c : colors.text;
+        // An explicit author text colour is honoured verbatim (D-083). With no
+        // explicit colour, choose by WCAG contrast against the RESOLVED node
+        // fill instead of the theme constant, so a light author fill in dark
+        // (or a dark author fill in light) gets a legible label (D-045). For an
+        // unstyled node nodeFill(d) is the theme node colour, whose optimal
+        // text equals colors.text, so unstyled nodes are byte-identical.
+        if (isUsableD2Color(c)) return c;
+        return d2ReadableTextOn(nodeFill(d), isDarkMode ? D2_DARK_BG : D2_LIGHT_BG, colors.text);
     };
 
             // Render containers first (as background rectangles). Bounds are
