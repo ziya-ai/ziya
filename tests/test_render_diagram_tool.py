@@ -150,7 +150,10 @@ class TestRenderDiagramToolUnit:
 
         with patch(
             "app.services.diagram_renderer.get_diagram_renderer",
-            side_effect=ImportError("No module named 'playwright'"),
+            side_effect=ImportError(
+                "Headless diagram rendering is unavailable: missing Chromium. "
+                "Run: ziya-install-extras --browser"
+            ),
         ):
             tool = RenderDiagramTool()
             result = await tool.execute(
@@ -158,8 +161,11 @@ class TestRenderDiagramToolUnit:
                 definition="graph LR\n  A-->B",
             )
 
+        # The tool passes DiagramRenderer.create's message through verbatim
+        # (it names the missing piece and the installer) instead of replacing
+        # it with a hard-coded recipe.
         text = result["content"][0]["text"]
-        assert "Playwright" in text
+        assert "ziya-install-extras --browser" in text
 
     @pytest.mark.asyncio
     async def test_optional_params_passed_to_renderer(self):
@@ -228,6 +234,14 @@ class TestBuiltinRegistration:
     def test_diagram_render_enabled_by_default(self):
         from app.mcp.builtin_tools import BUILTIN_TOOL_CATEGORIES
         assert BUILTIN_TOOL_CATEGORIES["diagram_render"]["enabled_by_default"] is True
+
+    @pytest.fixture(autouse=True)
+    def _browser_present(self, monkeypatch):
+        # Registration is gated on Playwright + a Chromium build (see
+        # tests/test_render_tool_gating.py for the gate itself). These tests
+        # are about what is registered WHEN the gate is open, so open it.
+        import app.services.diagram_renderer as dr
+        monkeypatch.setattr(dr, "_playwright_available", True)
 
     def test_get_diagram_render_tools_returns_tool(self):
         from app.mcp.builtin_tools import get_diagram_render_tools

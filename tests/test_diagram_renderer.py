@@ -50,7 +50,9 @@ class TestDiagramRendererImportGuard:
         # Pretend playwright is not installed
         mod._playwright_available = False
 
-        with pytest.raises(ImportError, match="Playwright is required"):
+        # The message must name what is missing AND the one command that
+        # installs it -- the raw two-step recipe is retired.
+        with pytest.raises(ImportError, match="Playwright.*ziya-install-extras"):
             await mod.DiagramRenderer.create()
 
         # Reset
