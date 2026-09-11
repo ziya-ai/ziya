@@ -142,40 +142,51 @@ class MemorySearchTool(BaseMCPTool):
             results = store.list_memories(layer=layer, tags=tags)[:limit]
 
         if not results:
-            # Before giving up, check if any proposals match the query.
-            # A search hit on a proposal is strong evidence the knowledge
-            # is needed — auto-promote it to the active store.
-            promoted = []
+            # Before giving up, check the probationary store.  A search
+            # hit is evidence the knowledge is wanted, but not proof it
+            # is correct — so surface the match (labelled) and record a
+            # ``search_hit`` signal.  Promotion stays with the lifecycle
+            # engine, which promotes once the model both looked for the
+            # entry AND used it in a response (search_hit + response_match).
+            # The previous path substring-matched the legacy proposals.json
+            # and promoted straight to active, bypassing probation.
+            hits = []
             if query:
-                proposals = store.list_proposals()
-                q_lower = query.lower()
-                for p in proposals:
-                    content_match = q_lower in p.content.lower()
-                    tag_match = any(q_lower in t.lower() for t in (p.tags or []))
-                    if content_match or tag_match:
-                        mem = store.approve_proposal(p.id)
-                        if mem:
-                            promoted.append(mem)
-                            logger.info(f"🧠 Auto-promoted proposal {p.id} on search hit: {p.content[:60]}")
-                if promoted:
-                    # Return the promoted memories as results
+                try:
+                    from app.storage.memory import _tokenize
+                    from app.storage.proposals import get_proposals_store
+                    pstore = get_proposals_store()
+                    q_tokens = set(_tokenize(query))
+                    if q_tokens:
+                        for p in pstore.list_open():
+                            hay = set(_tokenize(p.get("content", "")))
+                            hay.update(t.lower() for t in (p.get("tags") or []))
+                            # Conservative: every query token must appear,
+                            # so a broad query does not dump the whole queue.
+                            if q_tokens <= hay:
+                                hits.append(p)
+                                pstore.record_signal(p["id"], name="search_hit",
+                                                     value={"query": query[:80]})
+                                if len(hits) >= limit:
+                                    break
+                except Exception as e:
+                    logger.debug(f"Probationary search fallback failed: {e}")
+                if hits:
                     formatted = []
-                    for mem in promoted:
-                        entry = f"[{mem.id}] ({mem.layer}) {mem.content}"
-                        if mem.status == "contested":
-                            entry = f"[{mem.id}] ({mem.layer}) [contested] {mem.content}"
-                        elif mem.tags:
-                            entry += f"  tags: {', '.join(mem.tags)}"
+                    for p in hits:
+                        entry = (f"[{p['id']}] ({p.get('layer', 'domain_context')}) "
+                                 f"[probationary — unverified] {p.get('content', '')}")
+                        if p.get("tags"):
+                            entry += f"  tags: {', '.join(p['tags'])}"
                         formatted.append(entry)
-                    try:
-                        from app.memory.feedback import record_load
-                        record_load(_conversation_id, [m.id for m in promoted])
-                    except Exception as fb_err:
-                        logger.debug(f"record_load (auto-promoted) failed: {fb_err}")
                     return {
-                        "content": "\n\n".join(formatted),
-                        "count": len(promoted),
-                        "auto_promoted": len(promoted),
+                        "content": (
+                            "No active memories matched, but these probationary "
+                            "proposals do.  Treat as unverified; they promote "
+                            "automatically if used.\n\n" + "\n\n".join(formatted)
+                        ),
+                        "count": len(hits),
+                        "probationary": len(hits),
                     }
 
             # Out-of-domain detection with escalation hint
