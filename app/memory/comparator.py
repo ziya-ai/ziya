@@ -223,3 +223,68 @@ async def compare_memory(
     except Exception as e:
         logger.warning(f"Memory comparison failed (fail-open → ADD): {e}")
         return {"action": "ADD"}
+
+
+# ── Contradiction detection for probationary proposals ─────────────
+# A contradiction is SEMANTICALLY NEAR-IDENTICAL to the statement it
+# contradicts ("the threshold is 0.75" vs "the threshold was lowered to
+# 0.60" embed almost identically), so the embedding-similarity dedup path
+# in extractor.deduplicate cannot tell a restatement from a reversal.
+# Left to itself it corroborated the superseded proposal and discarded
+# the correction -- the inverse of what should happen.  This call is the
+# arbiter: AGREES keeps the corroborate-and-drop behaviour, CONTRADICTS
+# records the ``contradicted`` signal that
+# lifecycle._is_fast_track_eligible consults, and lets the correction
+# through as its own proposal.
+CONTRADICTION_PROMPT = """\
+You compare a NEW fact against a PENDING fact that says something very similar.
+
+Decide which relation holds:
+- AGREES: the new fact restates, rephrases, or adds detail consistent with the pending fact.
+- CONTRADICTS: the new fact asserts something INCOMPATIBLE with the pending fact -- a \
+different value for the same attribute, an opposite state, a reversal, or an explicit \
+correction or supersession.
+
+Rules:
+- Different numeric values, units, names, or opposite booleans for the SAME attribute are CONTRADICTS.
+- Wording differences with the same substance are AGREES.
+- Extra detail that does not conflict is AGREES.
+- If you are unsure, answer AGREES.
+
+Respond with ONLY {"relation": "AGREES"} or {"relation": "CONTRADICTS"}. No explanation."""
+
+
+async def classify_proposal_relation(
+    candidate: Dict[str, Any],
+    proposal: Dict[str, Any],
+) -> str:
+    """Return ``"CONTRADICTS"`` or ``"AGREES"`` for a candidate vs a pending proposal.
+
+    Fails open to ``"AGREES"`` on any error -- model outage, malformed
+    output, unknown label.  That is exactly the pre-existing
+    corroborate-and-drop behaviour, so a failure degrades to the old
+    semantics and can never manufacture a spurious promotion veto.
+    """
+    user_msg = (
+        f"PENDING FACT:\n({proposal.get('layer', '?')}) {proposal.get('content', '')}\n\n"
+        f"NEW FACT:\n({candidate.get('layer', '?')}) {candidate.get('content', '')}"
+    )
+    try:
+        from app.services.model_resolver import call_service_model
+        raw = await call_service_model(
+            category="memory_comparison",
+            system_prompt=CONTRADICTION_PROMPT,
+            user_message=user_msg,
+            max_tokens=60,
+            temperature=0.0,
+        )
+        raw = (raw or "").strip()
+        # Strip a markdown code fence if the model wrapped its JSON in one.
+        _fence = "\u0060\u0060\u0060"
+        if raw.startswith(_fence):
+            raw = raw.split("\n", 1)[-1].rsplit(_fence, 1)[0]
+        relation = str(json.loads(raw).get("relation", "AGREES")).upper()
+        return "CONTRADICTS" if relation == "CONTRADICTS" else "AGREES"
+    except Exception as e:
+        logger.warning(f"Contradiction classify failed (fail-open → AGREES): {e}")
+        return "AGREES"

@@ -61,11 +61,18 @@ def run_post_save_maintenance(memory_id: str) -> Dict[str, any]:
     store = get_memory_storage()
 
     results: Dict[str, any] = {"placed": None, "divided": [], "cross_linked": [],
-                                "linked": [], "enriched": []}
+                                "linked": [], "enriched": [], "repaired": None}
 
     memory = store.get(memory_id)
     if not memory:
         return results
+
+    # 0. Referential integrity: drop refs to deleted memories, prune
+    #    ghost-only nodes, place strays.  Cheap when the store is clean.
+    try:
+        results["repaired"] = store.repair_mindmap()
+    except Exception as e:
+        logger.debug(f"Mind-map repair failed (non-fatal): {e}")
 
     # 1. Auto-place into best mind-map node
     placed = store.place_memory_in_mindmap(memory)
@@ -360,6 +367,11 @@ def maybe_divide_node(store, node_id: str) -> List[str]:
     if not node or len(node.memory_refs) < CELL_DIVISION_THRESHOLD:
         return []
 
+    # §3.6 depth guard: only roots divide.  A child dividing would create a
+    # grandchild, violating the depth <= 2 invariant.
+    if node.parent is not None:
+        return []
+
     # Load all memories in this node
     memories = []
     for mid in node.memory_refs:
@@ -394,8 +406,14 @@ def maybe_divide_node(store, node_id: str) -> List[str]:
     candidates.sort(key=lambda x: len(x[1]), reverse=True)
     best_tag, best_mids = candidates[0]
 
-    # Don't split if the cluster IS the entire node (nothing would remain)
-    if len(best_mids) >= len(memories) - 1:
+    # §3.6 occupancy guard: the new child must hold at least
+    # max(CELL_DIVISION_MIN_CLUSTER, MIN_NODE_OCCUPANCY) memories, AND the
+    # parent must retain at least MIN_NODE_OCCUPANCY after the split — never
+    # split in a way that leaves either side under-occupied.
+    from app.memory.organizer import MIN_NODE_OCCUPANCY
+    if len(best_mids) < max(CELL_DIVISION_MIN_CLUSTER, MIN_NODE_OCCUPANCY):
+        return []
+    if len(memories) - len(best_mids) < MIN_NODE_OCCUPANCY:
         return []
 
     # Create child node
