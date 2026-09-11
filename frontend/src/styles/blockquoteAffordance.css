@@ -1,0 +1,42 @@
+/* D-015: visual affordance for blockquotes inside chat messages.
+ *
+ * index.css styles `.message .message-content blockquote` only with
+ * `white-space: normal` (a clipboard-serialization reset); it draws NO left
+ * rule, background tint, muted colour or italic. As a result a quoted block is
+ * indistinguishable from an indented paragraph, nested quotes are cued only by
+ * deeper indent, and — because no boundary stroke is drawn at all — the 3:1
+ * graphical-boundary floor is unmeetable by construction.
+ *
+ * These rules add ONLY the missing affordance: a left rule plus a muted text
+ * colour, resolved per theme so contrast holds on BOTH message backgrounds
+ * (light `.message.ai` = #f0f0f0, dark `.message.ai` = #262626). Every property
+ * set here (border-left, padding-left, margin, color) is left unset by
+ * index.css's blockquote rule, so there is no competing declaration; the
+ * theme-scoped selectors also out-specify index.css's `.message
+ * .message-content blockquote`, so cascade order is irrelevant.
+ *
+ * Measured WCAG contrast ratios:
+ *   light  text  #57606a on #f0f0f0 = 5.61:1  (>= 4.5 body text)
+ *   light  rule  #6a737d on #f0f0f0 = 4.23:1  (>= 3.0 graphical boundary)
+ *   dark   text  #c9d1d9 on #262626 = 9.80:1  (>= 4.5 body text)
+ *   dark   rule  #8b949e on #262626 = 4.92:1  (>= 3.0 graphical boundary)
+ */
+
+body:not(.dark) .message .message-content blockquote {
+  border-left: 4px solid #6a737d;
+  padding-left: 12px;
+  margin-left: 0;
+  color: #57606a;
+}
+
+.dark .message .message-content blockquote {
+  border-left: 4px solid #8b949e;
+  padding-left: 12px;
+  margin-left: 0;
+  color: #c9d1d9;
+}
+
+/* Nested quotes: the inner rule stays visible against the outer's indent. */
+.message .message-content blockquote blockquote {
+  margin-top: 6px;
+}
