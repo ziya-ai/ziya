@@ -8,7 +8,7 @@
  */
 
 import { hexToRgb } from '../../utils/colorUtils';
-import { contrastRatio, ensureReadableFill, CHART_DARK_BG } from './chartTheme';
+import { contrastRatio, ensureReadableFill, CHART_DARK_BG, CHART_LIGHT_BG } from './chartTheme';
 import { escapeSequenceMessageSemicolons } from './mermaidSequenceSemicolons';
 import { flattenNestedClassGenerics } from './mermaidClassGenerics';
 import { escapeClassDiagramLabelSemicolons } from './mermaidClassSemicolons';
@@ -834,8 +834,19 @@ function readableTextForFill(fill: { r: number; g: number; b: number }): string 
  * text colour resolve to RGB AND their contrast is below `floor`, the text
  * colour is overridden to the black/white that reads best on the fill.
  * Theme-INDEPENDENT (the fill is author-fixed) and deliberately narrow.
+ *
+ * D-298 / D-159: `floor` defaults to the WCAG 4.5:1 floor for normal text, NOT
+ * an arbitrary 2.0. The earlier 2.0 default let any pair in the 2.0-4.5 band
+ * pass unfixed — e.g. `fill:tomato,color:white` = 2.95:1 (w4-07) and
+ * `fill:hsl(120,60%,45%),color:#fff` = 2.62:1 (w4-06) — labels the headless
+ * renderer flags as illegible. At 4.5 those flip to the best mono text on the
+ * fill (tomato -> #000000 = 7.13:1; that green -> #000000 = 8.01:1), while a
+ * pair already clearing 4.5 (lightgoldenrodyellow/black = 19.67:1) is untouched.
+ * The repair maximises contrast with black/white, so raising the floor can only
+ * improve legibility, never reduce it; theme-invariant because the fill is
+ * author-fixed.
  */
-export function remediateStyleFillTextContrast(definition: string, floor = 2.0): string {
+export function remediateStyleFillTextContrast(definition: string, floor = 4.5): string {
   return definition
     .split('\n')
     .map((line) => {
@@ -851,6 +862,116 @@ export function remediateStyleFillTextContrast(definition: string, floor = 2.0):
       return line.replace(/((?:^|[,\s])color:\s*)[^,;\s]+/i, `$1${fixed}`);
     })
     .join('\n');
+}
+
+/**
+ * G-632224 / D-295: keep node/cluster/block box borders AND edge strokes visible
+ * against the theme canvas. An author `style`/`init` palette can set a box fill
+ * AND its border to values that both match the page surface — w3-08
+ * `style a fill:#f5f5f5,stroke:#dddddd` (1.09:1 / 1.36:1 on the light canvas)
+ * and `style e fill:#1a1a1a,stroke:#000000` (1.04:1 / 1.26:1 on the dark canvas)
+ * lose one box outline PER THEME — or an `%%{init}%%` palette that forces
+ * `#ffffff` node fills + `#f8f8f8` lines regardless of theme (w3-13), which
+ * leaves every shape/edge at 1.0-1.06:1 on the light surface. The pre-existing
+ * text-contrast guards (`remediateStyleFillTextContrast`,
+ * `remediateInitThemeVariableContrast`) only reconcile fill-vs-TEXT, never
+ * fill/stroke-vs-CANVAS, and the whole visibility pass is skipped for any
+ * definition that carries an explicit `color:` (w3-08) — so a surface-matching
+ * border is never nudged.
+ *
+ * The repair is THEME-RESOLVED, not a hardcoded constant swap: the replacement
+ * outline is chosen from the theme the renderer was given — light canvas ->
+ * `#333333` (12.63:1 on #ffffff), dark canvas -> `#e6e6e6` (13.36:1 on #1e1e1e)
+ * — so it always lands on the matching surface at strong contrast in BOTH
+ * themes. It is applied ONLY where the shape has actually dissolved: a box only
+ * when BOTH its fill and its stroke blend into the canvas below `floor`, an edge
+ * only when its own stroke blends. A box/edge already visible in the current
+ * theme is left byte-for-byte unchanged — which is why w3-08 box `a`
+ * (light-matching) is repainted in light yet untouched in dark, and box `e`
+ * (dark-matching) is repainted in dark yet untouched in light. Returns the count
+ * of shapes repainted.
+ */
+export function ensureShapeBordersAgainstCanvas(
+  svg: Element,
+  isDarkMode: boolean,
+  floor = 1.6,
+): number {
+  const canvasHex = isDarkMode ? CHART_DARK_BG : CHART_LIGHT_BG;
+  const canvasRgb = resolveStyleColorToRgb(canvasHex);
+  if (!canvasRgb) return 0;
+  const outline = isDarkMode ? '#e6e6e6' : '#333333';
+
+  const readPaint = (el: Element, prop: string): string | null => {
+    const styleAttr = el.getAttribute('style') || '';
+    const m = styleAttr.match(new RegExp(prop + '\\s*:\\s*([^;!]+)', 'i'));
+    if (m) return m[1].trim();
+    const attr = el.getAttribute(prop);
+    if (attr) return attr.trim();
+    // Mermaid frequently applies theme fills/lines through the SVG's embedded
+    // <style> rather than inline; the stylesheet is live by post-render, so
+    // getComputedStyle resolves it in the real (headless) renderer.
+    try {
+      if (typeof window !== 'undefined' && window.getComputedStyle) {
+        const c = (window.getComputedStyle(el as any) as any)[prop];
+        if (c && c !== 'none') return String(c).trim();
+      }
+    } catch {
+      /* jsdom / non-DOM: fall through */
+    }
+    return null;
+  };
+
+  // A paint "blends" when it is absent/none/a paint-server ref, or resolves to a
+  // colour whose contrast against the canvas is below the floor. An unresolvable
+  // named/theme token is treated as NOT blending (assume mermaid picked a
+  // visible value) so we never repaint a shape we cannot actually measure.
+  const blendsIntoCanvas = (paint: string | null): boolean => {
+    if (!paint || paint === 'none' || paint.indexOf('url(') !== -1) return true;
+    const rgb = resolveStyleColorToRgb(paint);
+    if (!rgb) return false;
+    return contrastRatioRgb(rgb, canvasRgb) < floor;
+  };
+
+  const forceStroke = (el: Element) => {
+    const styleAttr = (el.getAttribute('style') || '')
+      .replace(/stroke\s*:[^;]*;?/gi, '')
+      .replace(/stroke-width\s*:[^;]*;?/gi, '')
+      .replace(/^;+|;+$/g, '');
+    const prefix = styleAttr ? styleAttr.replace(/;?$/, ';') : '';
+    el.setAttribute('style', `${prefix}stroke:${outline} !important;stroke-width:1.5px !important;`);
+    el.setAttribute('stroke', outline);
+  };
+
+  let fixed = 0;
+
+  // Node / cluster / block boxes: repaint the border only when BOTH the fill and
+  // the existing stroke have dissolved into the canvas (the box is invisible).
+  svg
+    .querySelectorAll(
+      '.node rect, .node circle, .node polygon, .node path, .cluster rect, .clusters rect, .block rect, g.blocks rect, rect.node-bkg',
+    )
+    .forEach((box) => {
+      const fill = readPaint(box, 'fill');
+      const stroke = readPaint(box, 'stroke');
+      if (blendsIntoCanvas(fill) && blendsIntoCanvas(stroke)) {
+        forceStroke(box);
+        fixed++;
+      }
+    });
+
+  // Edge / link strokes: an edge carries no meaningful fill, so repaint when its
+  // own stroke blends into the canvas.
+  svg
+    .querySelectorAll('.edgePath path, .flowchart-link, path.path, .edge path, .relation')
+    .forEach((edge) => {
+      const stroke = readPaint(edge, 'stroke');
+      if (stroke !== null && blendsIntoCanvas(stroke)) {
+        forceStroke(edge);
+        fixed++;
+      }
+    });
+
+  return fixed;
 }
 
 /**
@@ -889,7 +1010,18 @@ export function quoteBracketLabelsWithParens(definition: string): string {
         /([A-Za-z0-9_]+)\[(?!\[|\()([^\]\n]*)\]/g,
         (match, id: string, content: string) => {
           if (!/[()]/.test(content)) return match;          // no parens: leave alone
-          if (/^\s*".*"\s*$/.test(content)) return match;   // already quoted: idempotent
+          // Already quoted: idempotent. Only the OPENING quote is required.
+          // The content group stops at the first ']', so a quoted label that
+          // itself contains ']' -- e.g. ac["get() -> ['bedrock']"] -- is
+          // captured TRUNCATED: it starts with a quote but does not end with
+          // one. Requiring a closing quote therefore failed to recognise that
+          // label as author-quoted; this pass then escaped the author's own
+          // opening quote into #quot; and closed the label early, emitting
+          // ac["#quot;get() -> ['bedrock'"]"], which mermaid rejects with
+          // "got 'STR'" and returns an empty SVG. The quote-consolidator pass
+          // below hit the same truncation and was already changed to test only
+          // the opening quote; this pass was missed.
+          if (/^\s*"/.test(content)) return match;
           const escaped = content.replace(/"/g, '#quot;');
           return `${id}["${escaped}"]`;
         },
@@ -1122,7 +1254,10 @@ export function initMermaidEnhancer(): void {
 
   // G-09 / D-158: override a style/classDef text `color:` that lands illegibly
   // on its own `fill:`. Runs after rgb()->hex (780). Only fires when both
-  // colours resolve AND their measured contrast is below 2.0. Theme-independent.
+  // colours resolve AND their measured contrast is below the WCAG 4.5:1 text
+  // floor (D-298/D-159: raised from 2.0 so a 2.0-4.5 pair such as tomato/white
+  // 2.95:1 or hsl-green/#fff 2.62:1 is repaired, not left illegible).
+  // Theme-independent.
   registerPreprocessor(
     (definition: string): string => remediateStyleFillTextContrast(definition),
     { name: 'style-fill-text-contrast-guard', priority: 770, diagramTypes: ['flowchart', 'graph'] },
@@ -1695,25 +1830,19 @@ export function initMermaidEnhancer(): void {
     diagramTypes: ['sequencediagram']
   });
 
-  // Fix sequence diagram break statements (invalid syntax)
+  // D-290 (w3-06, w3-06b): `break … end` is VALID modern mermaid sequence
+  // syntax. This pass used to strip the opening `break <label>` line with
+  // `.replace(/^(\s*)break\s+.*$/gm, '')`, which orphaned the block's matching
+  // `end` and left the fragment unparseable — mermaid then returned an empty
+  // SVG (HTTP 500 "empty SVG returned"), killing an otherwise-legal diagram.
+  // Bisected: w3-06b is a `break` block alone and failed identically. The
+  // keyword is handled natively downstream, so the correct fix is to pass the
+  // definition through untouched; the pass is kept registered (no-op) so its
+  // priority slot and ordering are preserved for the surrounding sequence
+  // preprocessors.
   registerPreprocessor(
-    (definition: string, diagramType: string): string => {
-      if (!definition.trim().startsWith('sequenceDiagram')) {
-        return definition;
-      }
-
-      console.log('🔍 SEQUENCE-BREAK-FIX: Removing invalid break statements');
-
-      let result = definition;
-
-      // Remove break statements completely as they're not valid in Mermaid sequence diagrams
-      result = result.replace(/^(\s*)break\s+.*$/gm, '');
-
-      // Clean up any resulting empty lines
-      result = result.replace(/\n\s*\n\s*\n/g, '\n\n');
-
-      console.log('🔍 SEQUENCE-BREAK-FIX: Processing complete');
-      return result;
+    (definition: string, _diagramType: string): string => {
+      return definition;
     }, {
     name: 'sequence-break-fix',
     priority: 500,
@@ -2061,24 +2190,14 @@ export function initMermaidEnhancer(): void {
 
       console.log('🔍 LINKSTYLE-FIX: Checking for invalid linkStyle references');
 
-      // Count the actual number of links in the definition
-      const linkPatterns = [
-        /-->/g,           // solid arrows
-        /---/g,           // solid lines  
-        /-\.->/g,         // dashed arrows
-        /--[xo]>/g,       // arrows with markers
-        /->>|-->>|<--|<<-/g  // other arrow types
-      ];
-
-      // More comprehensive approach: find all arrow-like patterns
-      const allArrowPattern = /(-->|---|-.->|--[xo]>|->>|-->>|<--|<<-)/g;
-      const arrowMatches = definition.match(allArrowPattern);
-      const totalLinks = arrowMatches ? arrowMatches.length : 0;
+      // D-155: count ALL flowchart link operators, including the directional
+      // variants the old alternation missed. `linkStyle N` indexes mermaid's
+      // FULL edge list (0-based), so undercounting silently strips a valid,
+      // higher-index override — exactly the "linkStyle stroke override dropped"
+      // signature (mermaid-w1-15 uses ==>, --x, --o without a trailing '>').
+      const totalLinks = countFlowchartLinks(definition);
 
       console.log('🔍 LINKSTYLE-FIX: Found', totalLinks, 'links in definition');
-      if (arrowMatches) {
-        console.log('🔍 LINKSTYLE-FIX: Arrow types found:', arrowMatches);
-      }
 
       // Process linkStyle commands and remove invalid ones
       const lines = definition.split('\n');
@@ -2481,8 +2600,16 @@ export function initMermaidEnhancer(): void {
       // never valid Mermaid, so this cannot corrupt correctly-authored specs.
       definition = definition.replace(/\\+"/g, '#quot;');
 
-      // CRITICAL: Pre-scan for special shape syntax that must be preserved
-      const specialShapePattern = /(\w+)(\[\[|\(\(|\(\(\(|\(\[|\[\(|\{\{)/g;
+      // CRITICAL: Pre-scan for special shape syntax that must be preserved.
+      // D-289 (w1-01 `[/Parse request/]`, w3-05 `[/Trapezoid/]`): the
+      // parallelogram/trapezoid openers `[/` and `[\` were NOT listed, so a
+      // node like `Parse[/Parse request/]` fell through to the node-label pass
+      // below, whose `needsQuotes` test matches the `/` and rewrote it to
+      // `Parse["/Parse request/"]` — a plain quoted RECTANGLE whose label
+      // literally contains the shape delimiters. Registering `[/` and `[\`
+      // marks those nodes special so the shape token reaches mermaid intact
+      // (covers all four lean/trapezoid forms `[/…/]`,`[\…\]`,`[/…\]`,`[\…/]`).
+      const specialShapePattern = /(\w+)(\[\[|\(\(|\(\(\(|\(\[|\[\(|\{\{|\[\/|\[\\)/g;
       const specialNodes = new Set<string>();
       let match;
       while ((match = specialShapePattern.exec(definition)) !== null) {
@@ -2800,6 +2927,17 @@ export function initMermaidEnhancer(): void {
         return `${nodeId}[${content}]`;
       }
 
+      // D-289: leave parallelogram / trapezoid shape tokens intact. For a
+      // `[/…/]`, `[\…\]`, `[/…\]` or `[\…/]` node the content class above still
+      // captures the leading/trailing slash-or-backslash delimiter; because the
+      // `needsQuotes` test below matches `/`, quoting here would demote the node
+      // to a plain rectangle whose label leaks the delimiters (w1-01
+      // `Parse[/Parse request/]` -> `Parse["/Parse request/"]`). mermaid parses
+      // these shapes natively, so return the shape token unchanged.
+      if (open === '[' && /^[\/\\]/.test(content) && /[\/\\]$/.test(content)) {
+        return match;
+      }
+
       // Only add quotes if content has special chars AND isn't already quoted
       const needsQuotes = /[:<>\/\n&]|<br/.test(content);
       if (needsQuotes && !content.startsWith('"')) {
@@ -2986,6 +3124,87 @@ export function initMermaidEnhancer(): void {
     diagramTypes: ['xychart']
   });
 
+  // A dateFormat containing dayjs time-of-day tokens (H/h hours, m minutes,
+  // s seconds) marks a time-based gantt (e.g. `dateFormat HH:mm:ss`). Task
+  // fields in such charts legitimately contain colons ("04:20:00") and
+  // second-durations ("0s"), both of which the numeric gantt fixups below
+  // would corrupt — so those fixups gate themselves off for these charts.
+  const isTimeBasedGanttFormat = (ganttDef: string): boolean => {
+    const dfMatch = ganttDef.match(/^\s*dateFormat\s+(\S.*)$/m);
+    return !!dfMatch && /[Hhms]/.test(dfMatch[1]);
+  };
+
+  // Gantt task-label colon fix. Mermaid's gantt parser splits a task line at
+  // the FIRST colon: text before it is the label, text after it is the
+  // comma-separated task data. A colon inside the label ("Gap: launch to
+  // next cycle :done, gap, 2026-10-20, 163d") pushes the label remainder
+  // into the data list, parseData() sees four fields, falls through without
+  // setting startTime, and compileTask() throws
+  //   TypeError: Cannot read properties of undefined (reading 'type')
+  // which surfaces as an empty SVG. Substitute a fullwidth colon (U+FF1A)
+  // for every colon that precedes the real label/data separator.
+  //
+  // The separator is the first colon whose remainder is a plausible data
+  // section: it contains a comma, and after stripping leading tags the way
+  // getTaskTags does there are 1-3 fields left. A time value inside the data
+  // section ("10:30") can never win because the earlier, real separator is
+  // found first; a line with no comma-separated data ("Note: see the doc")
+  // has no separator and is left alone for later passes.
+  //
+  // Must run before every other gantt pass (they all use indexOf(':')).
+  const GANTT_TASK_TAGS = new Set(['active', 'done', 'crit', 'milestone', 'vert']);
+  const GANTT_DIRECTIVE_RE =
+    /^(?:%%|(?:gantt|title|dateFormat|axisFormat|tickInterval|todayMarker|excludes|includes|section|weekday|weekend|inclusiveEndDates|topAxis|displayMode|accTitle|accDescr)\b)/;
+  const ganttDataSectionIsPlausible = (remainder: string): boolean => {
+    if (!remainder.includes(',')) return false;
+    const fields = remainder.split(',').map(f => f.trim());
+    while (fields.length > 0 && GANTT_TASK_TAGS.has(fields[0].toLowerCase())) {
+      fields.shift();
+    }
+    return fields.length >= 1 && fields.length <= 3;
+  };
+  registerPreprocessor((def: string, type: string) => {
+    if (type.toLowerCase() !== 'gantt') {
+      return def;
+    }
+    const lines = def.split('\n');
+    let changed = false;
+    const out = lines.map(line => {
+      const trimmed = line.trim();
+      if (!trimmed || GANTT_DIRECTIVE_RE.test(trimmed)) {
+        return line;
+      }
+      const firstColon = trimmed.indexOf(':');
+      if (firstColon === -1) {
+        return line;
+      }
+      // Fast path: the first colon already yields a plausible data section,
+      // so the label is colon-free and nothing needs rewriting.
+      if (ganttDataSectionIsPlausible(trimmed.substring(firstColon + 1))) {
+        return line;
+      }
+      let sep = -1;
+      for (let i = trimmed.indexOf(':', firstColon + 1); i !== -1; i = trimmed.indexOf(':', i + 1)) {
+        if (ganttDataSectionIsPlausible(trimmed.substring(i + 1))) {
+          sep = i;
+          break;
+        }
+      }
+      if (sep === -1) {
+        return line;
+      }
+      const indent = line.substring(0, line.indexOf(trimmed));
+      const label = trimmed.substring(0, sep).replace(/:/g, '\uFF1A');
+      changed = true;
+      return indent + label + trimmed.substring(sep);
+    });
+    return changed ? out.join('\n') : def;
+  }, {
+    name: 'gantt-label-colon-fix',
+    priority: 135,
+    diagramTypes: ['gantt']
+  });
+
   // Gantt year-offset preprocessor: detect charts using bare year values
   // (e.g., `dateFormat YYYY` with tasks like `:done, 0100, 0250`) and offset
   // small years into a range that JavaScript's Date can handle correctly.
@@ -3090,6 +3309,17 @@ export function initMermaidEnhancer(): void {
     // Skip if already handled by the year-offset preprocessor
     if (def.includes('gantt-year-offset:')) {
       console.log('🔍 GANTT-FIX: Skipping — already processed by gantt-year-offset-fix');
+      return def;
+    }
+
+    // Time-of-day charts (dateFormat HH:mm:ss / HH:mm) are already valid
+    // mermaid: dayjs parses "04:20:06" against the format, defaulting the
+    // date to today. The heuristics below misread them — parseInt("04:20:00")
+    // yields 4, so a 2-field time task was classified "simple numeric" and
+    // rewritten to a 2024-01-01 date that HH:mm:ss cannot parse, collapsing
+    // every bar onto the today-marker on a years-wide axis. Leave them alone.
+    if (isTimeBasedGanttFormat(def)) {
+      console.log('🔍 GANTT-FIX: time-based dateFormat — chart is valid as-is, skipping');
       return def;
     }
 
@@ -3661,8 +3891,6 @@ export function initMermaidEnhancer(): void {
 
         // CRITICAL: Fix problematic 'else' statements
         if (inAltBlock && trimmed.startsWith('else ')) {
-          // For "else Stock available" or "else Some condition", convert to just "else"
-          console.log(`🔍 CRITICAL-SEQUENCE-FIX: Converting "${trimmed}" -> "else"`);
           const indentation = line.match(/^\s*/)?.[0] || '';
 
           if (hasBreakInCurrentBlock) {
@@ -3670,7 +3898,14 @@ export function initMermaidEnhancer(): void {
             console.log(`🔍 CRITICAL-SEQUENCE-FIX: Skipping else after break: "${trimmed}"`);
             continue;
           } else if (!hasElseInCurrentBlock) {
-            result.push(`${indentation}else`);
+            // D-149: `else <condition>` is VALID mermaid sequence syntax -- the
+            // trailing text is the branch's guard label and mermaid renders it
+            // in the else divider. An earlier version of this pass rewrote it to
+            // a bare `else`, silently DROPPING the second branch's condition
+            // (e.g. `else short` -> `else`), so the reader could no longer tell
+            // what the alternate path was conditioned on. Preserve the line as
+            // authored (label and indentation intact).
+            result.push(line);
             hasElseInCurrentBlock = true;
           } else {
             // Convert additional else to a note to preserve logic
@@ -3779,18 +4014,15 @@ export function initMermaidEnhancer(): void {
 
   // Add a preprocessor to fix Timeline diagram syntax issues
   registerPreprocessor((def: string, type: string) => {
-    if (!def.trim().startsWith('timeline')) {
-      // Also check after skipping directives
-      const stripped = def.replace(/^%%\{.*\}%%\s*/g, '').trim();
-      if (!stripped.startsWith('timeline')) {
+    // preprocessDefinition resolves the type (skipping %% directives) before
+    // dispatch, so the argument is authoritative; no prefix re-detection.
+    if (type.toLowerCase() !== 'timeline') {
       return def;
-      }
     }
 
     // Fix timeline diagram syntax issues
     let lines = def.split('\n');
     let result: string[] = [];
-    let inSection = false;
 
     for (let line of lines) {
       let trimmedLine = line.trim();
@@ -3815,20 +4047,35 @@ export function initMermaidEnhancer(): void {
       // Handle sections
       if (trimmedLine.startsWith('section ')) {
         result.push('    ' + trimmedLine);
-        inSection = true;
         continue;
       }
 
-      // Handle events within sections
-      if (inSection && trimmedLine.includes(' : ')) {
-        // Split on the FIRST " : " to separate period from event
-        const delimIndex = trimmedLine.indexOf(' : ');
-        const period = trimmedLine.substring(0, delimIndex);
-        const event = trimmedLine.substring(delimIndex);
-        // Sanitize colons in period text (e.g. timestamps "18:12:11")
-        // Replace colons with ratio symbol (∶) which is visually identical
+      // Handle "period : event [: event ...]" lines. These may appear at the
+      // top level as well as inside a section, so no section gate.
+      //
+      // Mermaid's timeline lexer defines both tokens as [^#:\n;]+ and an
+      // event as ":"\s followed by that. So the period/event boundary is the
+      // FIRST colon followed by whitespace (a leading space is optional:
+      // "2024: Event" is valid), and a colon NOT followed by whitespace
+      // (timestamps like "03:00") is INVALID anywhere on the line. Such
+      // colons are replaced with the ratio symbol (∶), which is visually
+      // identical. In the period every colon is replaced; in the event
+      // portion only colons not followed by whitespace, so the ": " separators
+      // between multiple events are preserved.
+      const delim = trimmedLine.match(/:\s/);
+      if (delim && delim.index !== undefined) {
+        const period = trimmedLine.substring(0, delim.index);
+        const event = trimmedLine.substring(delim.index);
         const safePeriod = period.replace(/:/g, '\u2236');
-        result.push('        ' + safePeriod + event);
+        const safeEvent = event.replace(/:(?!\s)/g, '\u2236');
+        result.push('        ' + safePeriod + safeEvent);
+        continue;
+      }
+
+      // A bare period with no event (e.g. a lone "03:00") still lexes its
+      // colon as INVALID, so sanitize every colon on the line.
+      if (trimmedLine.includes(':')) {
+        result.push('        ' + trimmedLine.replace(/:/g, '\u2236'));
         continue;
       }
 
@@ -3842,7 +4089,7 @@ export function initMermaidEnhancer(): void {
   }, {
     name: 'timeline-syntax-fix',
     priority: 120,
-    diagramTypes: ['*']
+    diagramTypes: ['timeline']
   });
 
   // Add a preprocessor to fix Gantt diagram date format issues
@@ -3858,7 +4105,13 @@ export function initMermaidEnhancer(): void {
     // Negative lookbehind prevents stripping the trailing 's' from task IDs
     // like `p2s` or `v1s` — without it, identifiers ending in <digit>s get
     // corrupted and any `after <id>` reference to them fails to resolve.
-    processedDef = processedDef.replace(/(?<![a-zA-Z])(\d+)s\b/g, '$1');
+    // Time-of-day charts are exempt: under `dateFormat HH:mm:ss` a trailing
+    // "0s"/"30s" is a legitimate seconds duration, and stripping the unit
+    // left a bare "0" that date-parses to the year 2000, stretching the axis
+    // domain out by decades.
+    if (!isTimeBasedGanttFormat(processedDef)) {
+      processedDef = processedDef.replace(/(?<![a-zA-Z])(\d+)s\b/g, '$1');
+    }
 
     // Ensure proper date format is set
     if (!processedDef.includes('dateFormat')) {
@@ -5129,6 +5382,48 @@ export function buildTimelineDarkThemeVariables(): Record<string, string> {
   return vars;
 }
 
+/**
+ * D-154 (mermaid-w1-03 dark): explicit DARK sequence-diagram NOTE colours.
+ *
+ * The dark `mermaid.initialize` themeVariables block set actor/loop/text
+ * colours but never `noteBkgColor` / `noteTextColor`, so a sequence note fell
+ * back to mermaid's dark-theme derived pair — a muted grey label on a slate
+ * note plate (~2.81:1 in mermaid-w1-03 dark), below the 4.5:1 text floor. We
+ * pin an opaque dark note plate with a near-white label, resolved for the DARK
+ * theme only (the light branch never merges these, so mermaid's light note —
+ * dark text on #fff5ad, 15.68:1 — is left byte-for-byte unchanged).
+ *
+ * Contrast (WCAG 2.x), verified with python3:
+ *   label #eceff4 on note fill #3b4252 = 8.73:1  (text floor 4.5 cleared)
+ *   note fill #3b4252 on dark page #1f1f1f       (plate boundary visible)
+ * Exported for unit testing.
+ */
+export function buildSequenceNoteDarkThemeVariables(): Record<string, string> {
+  return {
+    noteBkgColor: '#3b4252',
+    noteTextColor: '#eceff4',
+    noteBorderColor: '#88c0d0',
+  };
+}
+
+/**
+ * D-155: count every flowchart link operator so `linkStyle <n>` validation uses
+ * mermaid's TRUE 0-based edge count. The previous alternation only recognised
+ * `-->`, `---`, `-.->` and marker arrows that ended in `>` (`--x>`/`--o>`), so
+ * it missed thick links (`==>`, `===`, `==x`), marker links without the `>`
+ * (`--x`, `--o`), dotted variants of any length (`-.-`, `-..->`), invisible
+ * links (`~~~`) and bidirectional heads (`<-->`, `<==>`). Undercounting made
+ * the linkstyle-fix preprocessor strip any override whose index landed past the
+ * short count — the exact "linkStyle stroke override dropped" defect. One match
+ * per operator: an optional leading `<`, a dash/equals/dotted/tilde body, and an
+ * optional trailing arrowhead (`> x o`). Node text never contains these bodies,
+ * so it cannot produce false positives.
+ */
+export function countFlowchartLinks(definition: string): number {
+  const m = definition.match(/<?(?:-{2,}|={2,}|-\.+-|~{3,})[>xo]?/g);
+  return m ? m.length : 0;
+}
+
 /** A parsed `linkStyle` stroke override. */
 export interface LinkStyleStroke {
   /** Explicit edge indices, or 'default' for the catch-all linkStyle. */
@@ -5234,17 +5529,141 @@ export function moveGanttGridBehind(svg: Element): boolean {
 }
 
 /**
- * D-170 (secondary): a crit-task white label on the pure-red (#ff0000) crit fill
- * is 4.00:1 — just under the 4.5 text floor. Black on that same red is 5.25:1 in
- * BOTH themes (the crit fill is theme-independent), so recolour crit task text to
- * black. Guarded: only touches `.crit`-classed text, no-op otherwise.
+ * D-170 (secondary): a crit-task label's contrast depends on WHAT it sits on,
+ * which mermaid decides per bar:
+ *   - INSIDE-bar labels sit on the pure-red (#ff0000) crit fill. White is
+ *     4.00:1 (under the 4.5 floor); black is 5.25:1 on that red in BOTH themes
+ *     (the crit fill is theme-independent), so inside labels → black.
+ *   - OUTSIDE-bar labels (`taskTextOutsideRight/Left`) sit on the chart
+ *     BACKGROUND, not the red fill. Forcing black there is a bug: on the dark
+ *     canvas (#1e1e1e) black is 1.26:1 — invisible. Outside labels must resolve
+ *     from the theme: dark → #ffffff (16.67:1 on #1e1e1e), light → #000000
+ *     (21:1 on #ffffff).
+ * Guarded: only touches `.crit`-classed text, no-op otherwise.
  * Returns the number of text nodes recoloured.
  */
-export function recolorGanttCritLabels(svg: Element): number {
-  const texts = svg.querySelectorAll(
-    'text.taskText.crit, text.taskTextOutsideRight.crit, text.taskTextOutsideLeft.crit, .crit > text, text.crit'
-  );
+export function recolorGanttCritLabels(svg: Element, isDarkMode: boolean = false): number {
   let n = 0;
-  texts.forEach(t => { (t as unknown as SVGElement).style.setProperty('fill', '#000000', 'important'); n++; });
+  // Inside-bar crit labels sit on the red fill → black is legible in both themes.
+  const inside = svg.querySelectorAll('text.taskText.crit, .crit > text, text.crit');
+  inside.forEach(t => {
+    // Skip the outside variants (they also match `text.crit` via className scan
+    // in some engines); those are handled below against the background.
+    const cls = (t as Element).getAttribute('class') || '';
+    if (/taskTextOutside/.test(cls)) return;
+    (t as unknown as SVGElement).style.setProperty('fill', '#000000', 'important');
+    n++;
+  });
+  // Outside-bar crit labels sit on the chart background → resolve from the theme.
+  const outsideInk = isDarkMode ? '#ffffff' : '#000000';
+  const outside = svg.querySelectorAll('text.taskTextOutsideRight.crit, text.taskTextOutsideLeft.crit');
+  outside.forEach(t => {
+    (t as unknown as SVGElement).style.setProperty('fill', outsideInk, 'important');
+    n++;
+  });
   return n;
+}
+
+/**
+ * G-9c6f76 / D-294 (w3-11): spread quadrantChart data points that share
+ * (near-)identical coordinates so their markers and labels stop stacking into
+ * an unreadable smear.
+ *
+ * Mermaid's quadrant renderer places every point at its literal [x,y]. A spec
+ * with several points at one coordinate — e.g. five points at [0.5, 0.5], the
+ * quadrant-boundary intersection at the chart centre — renders all of them
+ * exactly on top of one another, so N circles and N labels overprint. That is a
+ * PLACEMENT collision, not a contrast problem: it is illegible in BOTH themes
+ * (the dark w3-11 failure), and no colour change can fix it. The theme/contrast
+ * side of D-294 (w1-13 quadrant point labels, w1-11 mindmap ribbons) is handled
+ * separately by buildMermaidLightThemeVariables + enhanceSVGVisibility; this
+ * pass only relocates colliding members and never touches any colour.
+ *
+ * Repair: cluster point groups whose centres are within a small proximity
+ * radius and fan each cluster's members onto a rosette around their shared
+ * centre, sized so adjacent circles clear one another. It is theme-independent
+ * (identical maths in light and dark) and a no-op for charts whose points are
+ * already distinct, so a well-placed quadrant chart is untouched.
+ *
+ * DOM shape (mermaid 11 quadrantRenderer, `dataPointGroup`):
+ *   `g.data-points > g.data-point`, each holding a `<circle cx cy r>` and a
+ *   `<text>` positioned by its own transform. Translating the whole
+ *   `g.data-point` moves the circle and its label together, preserving the
+ *   marker↔label relationship.
+ *
+ * @param svg   the rendered mermaid `<svg>` (or any ancestor of the points)
+ * @param opts.minSeparation  minimum centre-to-centre gap to guarantee between
+ *                            two members of a cluster (px, default 12)
+ * @returns the number of point groups that were moved.
+ */
+export function dodgeQuadrantPointCollisions(
+  svg: Element,
+  opts: { minSeparation?: number } = {}
+): number {
+  const groups = Array.from(svg.querySelectorAll('g.data-point'));
+  if (groups.length < 2) return 0;
+
+  interface Pt { g: Element; cx: number; cy: number; r: number; }
+  const pts: Pt[] = [];
+  for (const g of groups) {
+    const circle = g.querySelector('circle');
+    const cx = parseFloat(circle?.getAttribute('cx') || 'NaN');
+    const cy = parseFloat(circle?.getAttribute('cy') || 'NaN');
+    let r = parseFloat(circle?.getAttribute('r') || '5');
+    if (Number.isNaN(cx) || Number.isNaN(cy)) continue;
+    if (Number.isNaN(r) || r <= 0) r = 5;
+    pts.push({ g, cx, cy, r });
+  }
+  if (pts.length < 2) return 0;
+
+  const minSep = Math.max(opts.minSeparation ?? 12, 1);
+
+  // Union-find clustering by proximity: two points belong together when their
+  // centres are closer than (roughly) the room their markers need.
+  const n = pts.length;
+  const uf = Array.from({ length: n }, (_, i) => i);
+  const find = (i: number): number => (uf[i] === i ? i : (uf[i] = find(uf[i])));
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 1; j < n; j++) {
+      const dist = Math.hypot(pts[i].cx - pts[j].cx, pts[i].cy - pts[j].cy);
+      // Collide when centres are within the larger of the markers' radii sum or
+      // the requested minimum separation. A generous factor catches the near-
+      // coincident sub-pixel case (e.g. [0.501, 0.499] beside [0.5, 0.5]).
+      const collideDist = Math.max(pts[i].r + pts[j].r, minSep);
+      if (dist <= collideDist) uf[find(i)] = find(j);
+    }
+  }
+
+  const clusters = new Map<number, number[]>();
+  for (let i = 0; i < n; i++) {
+    const root = find(i);
+    const arr = clusters.get(root);
+    if (arr) arr.push(i); else clusters.set(root, [i]);
+  }
+
+  let moved = 0;
+  for (const members of clusters.values()) {
+    if (members.length < 2) continue;
+    const k = members.length;
+    // Shared centre = centroid of the colliding members (for exact overlaps this
+    // is just the common point).
+    const cxm = members.reduce((s, i) => s + pts[i].cx, 0) / k;
+    const cym = members.reduce((s, i) => s + pts[i].cy, 0) / k;
+    const rMax = Math.max(...members.map(i => pts[i].r));
+    // Ring radius R such that the chord between two adjacent members,
+    // 2*R*sin(pi/k), is at least the required separation (2*rMax so the circles
+    // do not overlap, and never below minSep so labels have room).
+    const wantGap = Math.max(2 * rMax, minSep);
+    const ring = Math.max(wantGap / (2 * Math.sin(Math.PI / k)), rMax * 1.6);
+    members.forEach((idx, order) => {
+      const angle = (2 * Math.PI * order) / k - Math.PI / 2; // first member at top
+      const dx = pts[idx].cx - cxm + ring * Math.cos(angle);
+      const dy = pts[idx].cy - cym + ring * Math.sin(angle);
+      const existing = (pts[idx].g.getAttribute('transform') || '').trim();
+      const translate = `translate(${dx.toFixed(3)}, ${dy.toFixed(3)})`;
+      pts[idx].g.setAttribute('transform', existing ? `${existing} ${translate}` : translate);
+      moved++;
+    });
+  }
+  return moved;
 }
