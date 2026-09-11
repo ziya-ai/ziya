@@ -116,3 +116,41 @@ describe('the classification lives in one place', () => {
     expect(attn.slice(0, 200)).not.toMatch(/cancelled/);
   });
 });
+
+describe('badges do not crowd the card name', () => {
+  // Isolate renderCardRow so the assertions cannot be satisfied by
+  // unrelated badge code elsewhere in the library.
+  const cardRow = () => {
+    const src = library();
+    const start = src.indexOf('const renderCardRow');
+    const end = src.indexOf('const statusTag', start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    return src.slice(start, end);
+  };
+
+  it('the name row contains the name and nothing badge-like', () => {
+    // The name span is the only shrinkable item in its flex row, so any
+    // Tag sharing that row wins the width contest and the name — the one
+    // thing the row exists to show — ellipsizes to a few characters.
+    const row = cardRow();
+    const nameRowStart = row.indexOf('fontWeight: 500');
+    const nameRowEnd = row.indexOf('</div>', nameRowStart);
+    const nameRow = row.slice(nameRowStart, nameRowEnd);
+    expect(nameRow).toMatch(/c\.name \|\| 'Untitled'/);
+    expect(nameRow).not.toMatch(/<Tag/);
+    expect(nameRow).not.toMatch(/scopeMap|lessonsMap|summarizeCardRuns/);
+  });
+
+  it('badges live on a wrapping second line with the metadata', () => {
+    const row = cardRow();
+    const badgeRow = row.slice(row.indexOf('flexWrap'));
+    expect(row).toMatch(/flexWrap: 'wrap'/);
+    // Positive pairing for the negative assertion above: the badges
+    // still render, they just moved.
+    expect(badgeRow).toMatch(/Unsigned · /);
+    expect(badgeRow).toMatch(/Running/);
+    expect(badgeRow).toMatch(/Attention/);
+    expect(badgeRow).toMatch(/never run/);
+  });
+});

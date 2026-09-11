@@ -214,6 +214,7 @@ export function blockLabel(b: Block): string {
     case 'schedule': return 'Schedule';
     case 'state': return 'State / givens';
     case 'call': return truncate(`Call: ${b.call_target || '(no target)'}`);
+    case 'ask': return truncate(`Ask: ${b.ask_question || 'human checkpoint'}`);
     default: return b.block_type;
   }
 }
@@ -328,4 +329,69 @@ export function findBlockInRun(
     if (found) return found;
   }
   return null;
+}
+
+/**
+ * Glyph per block status, shared by TaskRunMap and BlockOutline so the
+ * two renderers of the same run cannot show a block two different ways.
+ * `held` has its own entry: a `?? '○'` fallback painted the faulting
+ * block identically to a queued one, flattening the backend's held
+ * status back into "hasn't started yet".
+ */
+export const STATUS_GLYPHS: Record<string, string> = {
+  queued: '○', running: '●', done: '✓',
+  failed: '✗', cancelled: '◼', skipped: '⤼', held: '⏸',
+};
+
+export interface FoldedRow extends MapRow {
+  /** Some later row is nested under this one. */
+  hasChildren: boolean;
+  /** This row is collapsed and its descendants are omitted. */
+  collapsed: boolean;
+  /** How many rows a collapsed row is hiding (0 when expanded). */
+  hiddenCount: number;
+}
+
+/**
+ * Apply a set of collapsed block ids to a flattened row list.
+ *
+ * Operates on the FLAT list rather than re-walking the tree so it
+ * composes with flattenBlocks unchanged — including the invisible
+ * group rule (a group's children sit at the group's own depth) and the
+ * call-snapshot splice.  "Descendant" is therefore purely positional:
+ * every following row with a greater depth, until one at the same or
+ * a shallower depth.  Collapsing a leaf is a no-op rather than an
+ * error, so a stale id in the set (block deleted) is harmless.
+ */
+export function foldRows(
+  rows: MapRow[], collapsed: ReadonlySet<string>,
+): FoldedRow[] {
+  const out: FoldedRow[] = [];
+  let i = 0;
+  while (i < rows.length) {
+    const row = rows[i];
+    let end = i + 1;
+    while (end < rows.length && rows[end].depth > row.depth) end++;
+    const childCount = end - i - 1;
+    const isCollapsed = childCount > 0 && collapsed.has(row.block.id);
+    out.push({
+      ...row,
+      hasChildren: childCount > 0,
+      collapsed: isCollapsed,
+      hiddenCount: isCollapsed ? childCount : 0,
+    });
+    i = isCollapsed ? end : i + 1;
+  }
+  return out;
+}
+
+/**
+ * First row the outline can select: one whose block has a persisted id.
+ * A freshly created card's inner block may still have id '' until the
+ * server assigns one on save; selecting it would make every by-id tree
+ * edit ambiguous (the root group's id is also '' in that state), so the
+ * outline treats such rows as visible but not selectable.
+ */
+export function firstSelectableRow(rows: MapRow[]): MapRow | null {
+  return rows.find(r => r.block.id !== '') ?? null;
 }

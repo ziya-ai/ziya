@@ -381,6 +381,22 @@
 .tc-block-label-call { color: #f778ba; }
 .tc-block-body-call { padding: 10px 12px; }
 
+/* Ask = human checkpoint.  Amber, matching the 'awaiting_input' run
+   status and the '?' the tile shows while holding. */
+.tc-block-ask {
+  border-color: #d29922;
+  background: linear-gradient(180deg, rgba(210,153,34,0.06), transparent 30%);
+  box-shadow: inset 3px 0 0 #d29922;
+}
+.tc-block-ask > .tc-block-header {
+  background: rgba(210,153,34,0.08);
+  border-bottom-color: rgba(210,153,34,0.2);
+}
+.tc-block-label-ask { color: #d29922; }
+.tc-block-body-ask { padding: 10px 12px; }
+.tc-ask-field { margin-top: 8px; }
+.tc-ask-field__label { display: block; font-size: 11px; opacity: 0.7; margin-bottom: 3px; }
+
 .tc-call-row {
   display: flex; align-items: center; gap: 6px;
 }
@@ -675,6 +691,7 @@ body:not(.dark) .tc-block-label-schedule,
 body:not(.dark) .tc-chip-file { color: #1a7f37; }
 body:not(.dark) .tc-block-label-state { color: #0f766e; }
 body:not(.dark) .tc-block-label-call { color: #bf3989; }
+body:not(.dark) .tc-block-label-ask { color: #8a5a00; }
 body:not(.dark) .tc-chip-skill { color: #8250df; }
 body:not(.dark) .tc-model-warn { color: #9a6700; }
 body:not(.dark) .tc-scope-approval-reason { color: #8a5a00; }
@@ -782,3 +799,75 @@ body:not(.dark) .tc-chip { background: rgba(0,0,0,0.05); }
 }
 .tc-lesson-diff-after { background: rgba(46, 160, 67, 0.12); }
 .tc-lesson-diff-empty { font-size: 11px; opacity: 0.5; font-style: italic; }
+
+/* ---- Block outline: the deck's collapsible spine ---------------------
+   Two-column canvas: outline left, single-block definition pane right.
+   The outline column is fixed-width, so folding, selecting, or swapping
+   what the pane shows never moves a row. */
+.tc-card-canvas--outline { display: flex; align-items: flex-start; gap: 10px; }
+.tc-outline-col { flex: 0 0 240px; min-width: 0; }
+.tc-outline {
+  max-height: 60vh; overflow-y: auto; padding: 4px 0; font-size: 12px;
+  border: 1px solid var(--tc-card-border, #30363d); border-radius: 4px;
+}
+.tc-outline--empty { padding: 10px; color: var(--tc-muted, #7d8590); font-style: italic; }
+.tc-outline__row {
+  display: flex; align-items: center; gap: 4px;
+  height: 24px; padding-right: 8px; cursor: pointer; user-select: none;
+  color: var(--tc-fg, #ddd);
+}
+.tc-outline__row:hover { background: var(--tc-chip-bg, rgba(128, 128, 128, 0.08)); }
+.tc-outline__row--selected {
+  background: rgba(31, 111, 235, 0.16);
+  box-shadow: inset 3px 0 0 var(--tc-accent, #58a6ff);
+}
+.tc-outline__row:focus-visible { outline: 2px solid var(--tc-accent, #58a6ff); outline-offset: -2px; }
+
+/* Gutter.  Caret and glyph are ALWAYS rendered at these widths, in both
+   modes, on leaf and container rows alike — the label starts at the same
+   x on every row.  visibility (not display) hides a leaf's caret so it
+   keeps its box. */
+.tc-outline__caret {
+  flex: none; width: 14px; height: 18px; padding: 0; border: 0; background: none;
+  color: var(--tc-muted, #7d8590); font-size: 11px; line-height: 18px; cursor: pointer;
+}
+.tc-outline__caret--leaf { visibility: hidden; cursor: default; }
+.tc-outline__caret:hover:not(:disabled) { color: var(--tc-fg, #ddd); }
+.tc-outline__glyph { flex: none; width: 14px; text-align: center; font-weight: 700; }
+.tc-outline__glyph--done { color: #3fb950; }
+.tc-outline__glyph--failed { color: #f85149; }
+.tc-outline__glyph--running { color: #58a6ff; }
+.tc-outline__glyph--queued, .tc-outline__glyph--skipped { color: #7d8590; }
+.tc-outline__glyph--cancelled { color: #d29922; }
+.tc-outline__glyph--held { color: #8957e5; }
+
+.tc-outline__emoji { flex: none; }
+.tc-outline__label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc-outline__row--running .tc-outline__label { font-weight: 600; }
+.tc-outline__row--queued .tc-outline__label { opacity: 0.6; }
+.tc-outline__row--skipped .tc-outline__label { opacity: 0.45; text-decoration: line-through; }
+.tc-outline__row--called .tc-outline__label { opacity: 0.8; }
+.tc-outline__tag, .tc-outline__hidden {
+  margin-left: auto; flex: none; font-size: 10px; font-style: italic;
+  color: var(--tc-muted, #7d8590);
+}
+
+/* Top-level add.  The card root is an invisible group with no row of
+   its own, so without this nothing could be appended at the top level
+   in outline layout. */
+.tc-outline__add {
+  display: flex; align-items: center; gap: 6px; margin: 6px 2px 0;
+  font-size: 11px; color: var(--tc-muted, #7d8590);
+}
+.tc-outline__add select {
+  font-size: 11px; background: transparent; color: inherit;
+  border: 1px solid var(--tc-card-border, #30363d); border-radius: 3px;
+}
+
+.tc-outline-pane { flex: 1; min-width: 0; }
+.tc-outline-pane__empty {
+  padding: 20px; color: var(--tc-muted, #7d8590); font-style: italic;
+}
+/* The pane edits one block; its editor should not also draw the
+   card-level chrome the tree layout relies on for nesting depth. */
+.tc-outline-pane > * > .tc-block { margin-left: 0; }

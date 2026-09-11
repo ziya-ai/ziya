@@ -35,7 +35,7 @@ const DropZone: React.FC<{ parentId: string; beforeId: string | null }> = ({
   );
 };
 
-const ADD_KINDS: BlockType[] = ['task', 'state', 'repeat', 'parallel', 'until', 'schedule'];
+const ADD_KINDS: BlockType[] = ['task', 'state', 'ask', 'repeat', 'parallel', 'until', 'schedule'];
 
 interface Props {
   parentId: string;

@@ -27,7 +27,7 @@ import type { TaskRun } from '../../types/task_run';
 import type { LiveTaskState } from '../../hooks/useTaskRunStream';
 import {
   flattenBlocks, resolveBlockStatus, isLoopBlock, buildDots,
-  blockEmoji, blockLabel, dotCountLabel,
+  blockEmoji, blockLabel, dotCountLabel, STATUS_GLYPHS,
 } from './runMapModel';
 import { deriveHoldChain, positionOf, holdLabel } from './holdChain';
 
@@ -61,16 +61,6 @@ interface Props {
    */
   resumingBlockId?: string | null;
 }
-
-const STATUS_GLYPHS: Record<string, string> = {
-  queued: '○', running: '●', done: '✓',
-  failed: '✗', cancelled: '◼', skipped: '⤼',
-  // Held needs its own glyph: without an entry the `?? '○'` fallback
-  // below painted the faulting block identically to a queued one, so the
-  // backend's new 'held' block status was flattened straight back into
-  // "hasn't started yet" -- the exact confusion it was added to remove.
-  held: '⏸',
-};
 
 /**
  * Suffix labelling a row's position relative to an infrastructure hold.
