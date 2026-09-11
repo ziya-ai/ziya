@@ -9,7 +9,9 @@ from typing import List, Optional, Dict, Any
 
 from ..models.task_card import Artifact
 from ..models.task_binding import TaskBinding
-from ..models.task_run import TaskRun, IterationSummary, IterationStatus
+from ..models.task_run import (
+    TaskRun, IterationSummary, IterationStatus, TERMINAL_RUN_STATUSES,
+)
 from ..storage.projects import ProjectStorage
 from ..storage.task_bindings import TaskBindingStorage
 from ..storage.task_runs import TaskRunStorage
@@ -170,7 +172,12 @@ async def cancel_task_run(project_id: str, run_id: str):
     run = storage.get(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Task run not found")
-    if run.status in ("done", "failed", "cancelled"):
+    # Shared definition rather than a local tuple: this guard previously
+    # omitted ``partial`` and ``held``, so such a run fell through to the
+    # force-cancel path below and had its status OVERWRITTEN — a held run
+    # came back reading ``cancelled`` while still carrying the
+    # ``held_reason`` that stopped it.
+    if run.status in TERMINAL_RUN_STATUSES:
         # Idempotent: already terminal, return unchanged.
         return run
     # Live executor: standard soft-cancel path.
@@ -211,7 +218,7 @@ async def pause_task_run(project_id: str, run_id: str):
     run = storage.get(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Task run not found")
-    if run.status in ("done", "failed", "cancelled"):
+    if run.status in TERMINAL_RUN_STATUSES:
         return run  # terminal — nothing to pause
     return storage.request_pause(run_id)
 
@@ -227,7 +234,7 @@ async def resume_task_run(project_id: str, run_id: str):
     run = storage.get(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Task run not found")
-    if run.status in ("done", "failed", "cancelled"):
+    if run.status in TERMINAL_RUN_STATUSES:
         return run
     return storage.request_resume(run_id)
 
@@ -329,7 +336,7 @@ async def step_task_run(project_id: str, run_id: str, count: int = 1):
     run = storage.get(run_id)
     if not run:
         raise HTTPException(status_code=404, detail="Task run not found")
-    if run.status in ("done", "failed", "cancelled"):
+    if run.status in TERMINAL_RUN_STATUSES:
         return run  # terminal — nothing to step
     if count < 1:
         raise HTTPException(
@@ -714,6 +721,7 @@ async def resume_run_from_block(
         source_conversation_id=run.source_conversation_id,
         parameter_overrides=dict(run.parameter_overrides or {}),
         resume_root=root_block,
+        resume_card_version=(run.card_snapshot or {}).get("version"),
         resume_from_block_id=resume_point,
         resume_artifacts=resume_artifacts,
         # Reached THROUGH these Calls rather than replaying them whole.
@@ -956,6 +964,7 @@ async def resume_run_from_iteration(
         source_conversation_id=run.source_conversation_id,
         parameter_overrides=dict(run.parameter_overrides or {}),
         resume_root=root_block,
+        resume_card_version=(run.card_snapshot or {}).get("version"),
         # The LOOP is the block-level resume point: blocks before it
         # replay, and the loop itself executes — starting at ``start``.
         resume_from_block_id=block_id,
