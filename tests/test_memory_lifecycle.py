@@ -187,7 +187,8 @@ class TestRunLifecyclePass:
         with patch("app.storage.proposals.get_proposals_store", return_value=proposals):
             result = await run_lifecycle_pass()
 
-        assert result == {"scanned": 0, "promoted": 0, "archived": 0, "noop": 0}
+        assert result == {"scanned": 0, "promoted": 0, "archived": 0,
+                          "noop": 0, "pruned": 0, "evicted": 0}
 
     @pytest.mark.asyncio
     async def test_promotes_corroborated_and_used_proposal(self, tmp_path):
