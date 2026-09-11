@@ -485,6 +485,34 @@
 
 .tc-tile__body { padding: 10px 12px; }
 
+/* Ask checkpoint answer panel.  Amber to match the 'awaiting_input'
+   status; sits at the top of the body because a holding run is stopped
+   until it is answered. */
+.tc-ask-panel {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(210,153,34,0.4);
+  border-radius: 6px;
+  background: rgba(210,153,34,0.08);
+}
+.tc-ask-panel__q {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.tc-ask-panel__icon {
+  flex: 0 0 auto;
+  font-weight: 700;
+  color: #d29922;
+}
+.tc-ask-panel__question { font-size: 13px; line-height: 1.45; }
+.tc-ask-panel__choices { display: flex; flex-wrap: wrap; gap: 6px; }
+.tc-ask-panel__actions { display: flex; gap: 8px; margin-top: 8px; }
+.tc-ask-panel__text { font-size: 13px; }
+body:not(.dark) .tc-ask-panel { background: rgba(210,153,34,0.1); }
+body:not(.dark) .tc-ask-panel__icon { color: #8a5a00; }
+
 /* State variables surfaced live on the running card (2c).  Prose
    context is ambient and intentionally not shown — only formal
    named variables earn visibility, scaling with their formality. */
