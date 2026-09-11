@@ -4,24 +4,31 @@ import { applyHeightFloor, applySizing, isCompositeSpec, resolveAutosize, resolv
 import {
   MAX_AXIS_LABEL_LIMIT,
   applySharedAxisDefaults,
+  axisLabelLimitCap,
   deduplicateLegendDomains,
+  sinkSecondaryChannels,
   synthesizeColorLegend,
 } from './vegaLayerDefaults';
-import { isFacetedSpec } from './vegaFacetLayout';
+import { computeTextOverflow, growPadding } from './vegaTextOverflow';
+import { hoistFacetColumns, sinkFacetCellSize, isFacetedSpec } from './vegaFacetLayout';
 import { applyFacetCellWidth, calibrateFacetView } from './vegaFacetFit';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
+import { RENDERER_ENVELOPE_KEYS } from '../../utils/pluginDimensions';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 import { getZoomScript } from '../../utils/popupScriptUtils';
-import { collectDeclaredParamNames, dropDanglingParamConditions } from './vegaLiteParamGuard';
+import { collectDeclaredParamNames, dropDanglingParamConditions, neutralizeFacetedSelectionParams } from './vegaLiteParamGuard';
 import {
   tolerantParseVegaSpec,
   hoistMarkEncoding,
   validateColorSchemes,
   normalizeBareArrayData,
+  inferEncodingTypes,
   reconcileThemeColors,
   enhanceArcChartsWithTextLabels,
   sanitizeResolveScale,
   applyCategoricalPaletteFix,
+  sanitizeThemeTokens,
+  fixBogusColorNameValues,
 } from './vegaRecovery';
 
 // SSRF hardening (PenPal #83, CWE-918). A Vega-Lite spec's `data.url`
@@ -79,6 +86,10 @@ export interface VegaLiteSpec {
   encoding?: any;
   width?: number | string;
   height?: number;
+  // Width of the LIVE container D3Renderer will attach this render into.
+  // The plugin renders into a detached div, so this is the only pre-render
+  // knowledge of the eventual width; width-dependent caps use it as a hint.
+  containerWidth?: number;
   [key: string]: any; // Allow other Vega-Lite properties
 }
 
@@ -297,6 +308,141 @@ export function estimateLegendCardinality(data: any, fieldName?: string): number
 // Vega's built-in default symbol legend cap. Legends above this are silently
 // truncated unless symbolLimit is overridden.
 export const VEGA_DEFAULT_SYMBOL_LIMIT = 30;
+
+// ── D-313: legend labelLimit that preserves distinguishing characters ───────
+// Vega truncates legend labels from the TAIL with an ellipsis. When entries
+// share a long prefix and differ only in a suffix (e.g. "category-name-00" ..
+// "category-name-49"), a tight labelLimit clips exactly the distinguishing
+// digits, so many distinct series collapse to one identical visible label
+// ("category-name-…"). The colour encoding then stops being injective — the
+// legend can no longer say which series is which. This computes a labelLimit
+// (in px) wide enough to show past the longest common prefix; when the concrete
+// label strings are not known (generated/transform-derived data) it falls back
+// to a generous default rather than the old collision-prone 80px.
+export const LEGEND_LABEL_CHAR_PX = 6;             // ~char advance at legend fontSize
+export const LEGEND_LABEL_LIMIT_MAX_PX = 260;      // ceiling so labels never run away
+export const LEGEND_LABEL_LIMIT_FALLBACK_PX = 160; // used when label strings unknown
+
+export function longestCommonPrefixLen(strings: string[]): number {
+  if (!strings || strings.length === 0) return 0;
+  let prefix = strings[0];
+  for (let i = 1; i < strings.length && prefix.length > 0; i++) {
+    const s = strings[i];
+    let j = 0;
+    const max = Math.min(prefix.length, s.length);
+    while (j < max && prefix[j] === s[j]) j++;
+    prefix = prefix.slice(0, j);
+  }
+  return prefix.length;
+}
+
+export function computeLegendLabelLimit(
+  values: Array<string | number | null | undefined>,
+  fallbackPx: number = LEGEND_LABEL_LIMIT_FALLBACK_PX,
+): number {
+  const strs = Array.from(new Set(
+    (values || [])
+      .filter((v) => v !== null && v !== undefined)
+      .map((v) => String(v)),
+  ));
+  // < 2 distinct labels: nothing to disambiguate, but still avoid the old tight
+  // 80px clip — use the generous fallback so prefixed labels are not truncated.
+  if (strs.length < 2) return fallbackPx;
+  const prefix = longestCommonPrefixLen(strs);
+  const maxLen = strs.reduce((m, s) => Math.max(m, s.length), 0);
+  // Must show the shared prefix PLUS enough diverging characters to tell the
+  // entries apart; a few chars past the divergence point is sufficient.
+  const needChars = Math.min(maxLen, prefix + 6);
+  const px = Math.ceil(needChars * LEGEND_LABEL_CHAR_PX);
+  return Math.min(Math.max(px, fallbackPx), LEGEND_LABEL_LIMIT_MAX_PX);
+}
+
+// ── D-262: declutter dense text-mark layers (overplot with no collision pass) ─
+// A text-mark layer emits one label per datum at full opacity with no built-in
+// collision avoidance, so at high count (~150 labels over 150 points) labels in
+// dense regions overprint into unreadable composites, and adding data only
+// worsens it. Vega/Vega-Lite has no static text-mark declutter, so this injects
+// a graceful fallback: keep every Nth label (a uniform sample) via a window
+// row_number + filter, where N is chosen so the surviving labels fit a readable
+// density. The point/data marks are untouched — every datum is still plotted;
+// only the LABELS are thinned, which is the standard dashboard behaviour when
+// labels would otherwise collide. Returns the number of layers decluttered.
+export const TEXT_MARK_DECLUTTER_MIN = 60; // below this, overplot is tolerable
+export const TEXT_MARK_DECLUTTER_IDX = '__declutterIdx';
+
+export function computeTextMarkReadableCap(height?: number): number {
+  const h = typeof height === 'number' && height > 0 ? height : 400;
+  // ~one label per 12px of height, clamped to a sane band.
+  return Math.max(20, Math.min(60, Math.round(h / 12)));
+}
+
+function isDataLabelTextMark(node: any): boolean {
+  const t = node?.mark?.type ?? node?.mark;
+  if (t !== 'text') return false;
+  // Only thin marks that label DATA (a text field), never fixed annotations
+  // (mark text bound to a constant datum/value).
+  return !!node?.encoding?.text?.field;
+}
+
+function alreadyDecluttered(node: any): boolean {
+  return Array.isArray(node?.transform) && node.transform.some(
+    (t: any) => Array.isArray(t?.window) && t.window.some(
+      (w: any) => w?.as === TEXT_MARK_DECLUTTER_IDX,
+    ),
+  );
+}
+
+function applyDeclutterToNode(node: any, dataObj: any, cap: number): boolean {
+  if (!isDataLabelTextMark(node) || alreadyDecluttered(node)) return false;
+  const count = estimateLegendCardinality(dataObj) || 0;
+  if (count <= TEXT_MARK_DECLUTTER_MIN || count <= cap) return false;
+  const stride = Math.ceil(count / cap);
+  if (stride <= 1) return false;
+  const transforms = Array.isArray(node.transform) ? node.transform : [];
+  transforms.push({ window: [{ op: 'row_number', as: TEXT_MARK_DECLUTTER_IDX }] });
+  transforms.push({ filter: `(datum.${TEXT_MARK_DECLUTTER_IDX} % ${stride}) === 1` });
+  node.transform = transforms;
+  return true;
+}
+
+export function declutterDenseTextMarks(spec: any): number {
+  if (!spec || typeof spec !== 'object') return 0;
+  const cap = computeTextMarkReadableCap(spec.height);
+  let changed = 0;
+  // Top-level single text mark.
+  if (spec.mark) {
+    if (applyDeclutterToNode(spec, spec.data || {}, cap)) changed++;
+  }
+  // Layered text marks (the common data-label-over-points case).
+  if (Array.isArray(spec.layer)) {
+    for (const layer of spec.layer) {
+      const dataObj = layer.data || spec.data || {};
+      if (applyDeclutterToNode(layer, dataObj, cap)) changed++;
+    }
+  }
+  return changed;
+}
+
+// ── D-263: redundant colour-legend suppression (author-legend-safe) ─────────
+// When the colour field duplicates an axis field the legend is redundant and is
+// hidden. But this must NOT fire when the author EXPLICITLY configured a legend
+// (an object like {orient:"top"}, or an explicit null/false): that is a
+// deliberate request and silently nulling it drops the legend the author asked
+// for. Only `legend === undefined` (author said nothing) is suppressed.
+// Returns true when the legend was hidden. Mutates encoding.color.
+export function hideRedundantColorLegend(encoding: any): boolean {
+  if (!encoding || !encoding.color || typeof encoding.color !== 'object') return false;
+  const colorField = encoding.color.field;
+  if (!colorField) return false;
+  const xField = encoding.x?.field;
+  const yField = encoding.y?.field;
+  if (colorField !== xField && colorField !== yField) return false;
+  if (encoding.color.legend === undefined) {
+    encoding.color.legend = null;
+    return true;
+  }
+  return false;
+}
 
 // ── G-53 / D-269: temporal axis tick-count normalisation ───────────────────
 // A temporal x/y axis with no timeUnit/tickCount lets Vega pick nice ticks that
@@ -1568,28 +1714,15 @@ export const vegaLitePlugin: D3RenderPlugin = {
         });
       }
 
-      // Fix 1.92: Remove redundant color legends when categorical field is already on an axis
+      // Fix 1.92 / D-263: Remove redundant color legends when the categorical
+      // field is already on an axis — but preserve an explicitly authored
+      // legend. Delegates to the exported, unit-tested hideRedundantColorLegend.
       const removeRedundantColorLegends = (encoding: any) => {
-        if (!encoding || !encoding.color) return;
-
-        const colorField = encoding.color.field;
-        if (!colorField) return;
-
-        // Check if the color field is the same as x or y axis field
-        const xField = encoding.x?.field;
-        const yField = encoding.y?.field;
-
-        // If color field matches an axis field (or is the categorical field in a bar chart), hide the legend
-        if (colorField === xField || colorField === yField) {
-          console.log(`🔧 LEGEND-REMOVE-FIX: Color field "${colorField}" is redundant with axis, hiding legend`);
-
-          if (!encoding.color.legend) {
-            encoding.color.legend = null;
-          } else if (typeof encoding.color.legend === 'object') {
-            encoding.color.legend = null;
-          } else {
-            encoding.color.legend = null;
-          }
+        if (hideRedundantColorLegend(encoding)) {
+          console.log(`🔧 LEGEND-REMOVE-FIX: Color field "${encoding.color.field}" is redundant with axis, hiding legend`);
+        } else if (encoding?.color?.field && encoding.color.legend !== undefined &&
+          (encoding.color.field === encoding.x?.field || encoding.color.field === encoding.y?.field)) {
+          console.log(`🔧 LEGEND-REMOVE-FIX: Color field "${encoding.color.field}" is redundant with axis, but an explicit legend was authored — preserving it`);
         }
       };
 
@@ -2787,7 +2920,9 @@ export const vegaLitePlugin: D3RenderPlugin = {
     } else {
       // Use the spec object directly, but remove our custom properties
       parsedSpec = { ...spec };
-      ['type', 'isStreaming', 'forceRender', 'definition', 'isMarkdownBlockClosed'].forEach(prop => delete parsedSpec[prop]);
+      // Everything D3Renderer adds to the envelope, so none of it reaches
+      // vega-embed (an unknown top-level key draws a validation warning).
+      RENDERER_ENVELOPE_KEYS.forEach(prop => delete parsedSpec[prop]);
     }
 
     // Sanitize and apply all chart fixes in one place
@@ -2796,9 +2931,20 @@ export const vegaLitePlugin: D3RenderPlugin = {
     fixedSpec = hoistMarkEncoding(fixedSpec);
     // D-256: a bare-array `data:[...]` -> `data:{values:[...]}` (skips Vega v5).
     fixedSpec = normalizeBareArrayData(fixedSpec);
+    // D-243: an encoding field with NO `type` defaults to nominal — a numeric
+    // measure then draws as discrete bands / equal-height bars. Infer
+    // quantitative for numeric fields and temporal for ISO-date fields from the
+    // (now-normalised) data; non-numeric/non-date fields keep Vega's nominal
+    // default. Runs after normalizeBareArrayData so data.values is populated.
+    inferEncodingTypes(fixedSpec);
     // D-255: drop an unknown scale.scheme name (else the render collapses to a
     // blank canvas). Hex schemes are left for the arc fixer below.
     validateColorSchemes(fixedSpec);
+    // D-016: strip theme directives / `$design-token` colour strings the
+    // runtime cannot resolve (a bogus top-level `theme`, an unknown
+    // usermeta.embedOptions.theme that would override the renderer's own theme,
+    // and '$surface'/'$textPrimary'-style colours) so the active theme applies.
+    fixedSpec = sanitizeThemeTokens(fixedSpec);
     fixedSpec = fixRectChartsWithFixedY(fixedSpec);
     fixedSpec = fixChartsWithMissingYAfterTransforms(fixedSpec);
     fixedSpec = fixInvalidColorSchemeInArcs(fixedSpec);
@@ -3146,6 +3292,16 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // driven to 0px while the total layout overflows its container. So the
       // value is clamped to a generous ceiling instead of dropped, which keeps
       // realistic labels intact while bounding the pathological case.
+      //
+      // The ceiling is width-aware: at the 400px detached-container floor it
+      // is the legacy MAX_AXIS_LABEL_LIMIT, but when D3Renderer has told us
+      // the real container width a wider chart may keep a longer label
+      // (see axisLabelLimitCap for the bounds).
+      const labelLimitCap = axisLabelLimitCap(
+        typeof spec.containerWidth === 'number' && spec.containerWidth > 0
+          ? spec.containerWidth - 40
+          : 0,
+      );
 
       const clampAxisLabelLimits = (view: any): void => {
         if (!view || typeof view !== 'object') return;
@@ -3154,12 +3310,12 @@ export const vegaLitePlugin: D3RenderPlugin = {
           ['x', 'y'].forEach(channel => {
             const axis = view.encoding[channel]?.axis;
             if (axis && typeof axis.labelLimit === 'number' &&
-                (axis.labelLimit <= 0 || axis.labelLimit > MAX_AXIS_LABEL_LIMIT)) {
+                (axis.labelLimit <= 0 || axis.labelLimit > labelLimitCap)) {
               console.log(
                 `🔧 VEGA-POST-PROCESS: Clamped ${channel} axis labelLimit ` +
-                `${axis.labelLimit} to ${MAX_AXIS_LABEL_LIMIT}`
+                `${axis.labelLimit} to ${labelLimitCap}`
               );
-              axis.labelLimit = MAX_AXIS_LABEL_LIMIT;
+              axis.labelLimit = labelLimitCap;
             }
           });
         }
@@ -3171,6 +3327,15 @@ export const vegaLitePlugin: D3RenderPlugin = {
       };
 
       clampAxisLabelLimits(vegaSpec);
+
+      // A shared x2/y2 inherited by a text/point layer is dropped with a
+      // warning on every render. Move it onto the layers that can use it.
+      {
+        const sunk = sinkSecondaryChannels(vegaSpec);
+        if (sunk.length) {
+          console.log(`🔧 VEGA-POST-PROCESS: Sank shared secondary channels to layers: ${sunk.join(', ')}`);
+        }
+      }
 
       // Fix layered charts with mismatched y-axis scales and missing legends
       if (vegaSpec.layer && Array.isArray(vegaSpec.layer) && vegaSpec.layer.length > 1) {
@@ -3270,20 +3435,15 @@ export const vegaLitePlugin: D3RenderPlugin = {
           : `🔧 VEGA-POST-PROCESS: Skipped legend synthesis (${legendResult.skipped})`
       );
 
-      // Fix invalid color names like "#green"
-      try {
-        let specStringForColorFix = JSON.stringify(vegaSpec);
-        // Fix colors with # prefix that should be plain color names
-        specStringForColorFix = specStringForColorFix.replace(/"#(green|red|orange|blue|yellow|purple|black|white|gray|grey|cyan|magenta|pink|brown|violet|indigo|gold|silver)"/gi, '"$1"');
-        // Fix invalid color names that aren't real CSS colors
-        specStringForColorFix = specStringForColorFix.replace(/"rainbow"/gi, '"#ff6b6b"');
-        specStringForColorFix = specStringForColorFix.replace(/"gradient"/gi, '"#4ecdc4"');
-        specStringForColorFix = specStringForColorFix.replace(/"multicolor"/gi, '"#45b7d1"');
-        vegaSpec = JSON.parse(specStringForColorFix);
-        console.log('🔧 VEGA-POST-PROCESS: Applied color fixes to spec');
-      } catch (e) {
-        console.warn("Could not apply color fix to Vega-Lite spec", e);
-      }
+      // Fix invalid color-NAME string VALUES ("#green", "rainbow", "gradient",
+      // "multicolor"). D-319: this was an inline string-replace that renamed
+      // EVERY "gradient" token, including the KEY of a legitimate gradient-fill
+      // object ({"gradient":"linear",...} -> {"#4ecdc4":"linear",...}), so the
+      // gradient did not survive preprocessing and the mark rendered with no
+      // fill (w3-07). fixBogusColorNameValues anchors the palette-name
+      // substitutions to a VALUE position, leaving gradient objects intact.
+      vegaSpec = fixBogusColorNameValues(vegaSpec);
+      console.log('🔧 VEGA-POST-PROCESS: Applied color-name value fixes to spec');
 
       // Validate the spec before rendering
       if (!vegaSpec || typeof vegaSpec !== 'object') {
@@ -4708,6 +4868,33 @@ export const vegaLitePlugin: D3RenderPlugin = {
         console.log("New spec:", JSON.stringify(vegaSpec, null, 2));
       }
 
+      // A wrapped facet's grid `columns` is honoured by Vega-Lite ONLY at the
+      // operator top level. The encoding.facet -> operator rewrite above moves
+      // the facet field def verbatim, burying `columns` at spec.facet.columns
+      // where the compiler ignores it — collapsing an N-column wrap into one
+      // compressed single row (D-234). Lift it to the top level. No-op unless a
+      // buried positive columns is present, so non-wrapped/operator specs are
+      // untouched.
+      if (hoistFacetColumns(vegaSpec)) {
+        console.log(`🔧 VEGA-FACET: hoisted wrapped-facet columns to top level (${vegaSpec.columns})`);
+      }
+
+      // A facet OPERATOR reads its per-cell width/height from the INNER `spec`;
+      // a width/height on the operator top level is ignored and the cell falls
+      // back to Vega-Lite's 300x300 default. The encoding.facet -> operator
+      // rewrite above leaves the authored top-level width/height at the top
+      // level, so the authored cell (e.g. 110x80) inflated to 300px and a
+      // wrapped high-cell grid grew tall enough to be clipped by the capture
+      // window (D-255 regression / D-312). Mirror the authored cell size down
+      // to the inner spec where the operator honours it. No-op unless the
+      // operator form is present with a usable top-level dimension.
+      if (sinkFacetCellSize(vegaSpec)) {
+        console.log(
+          `🔧 VEGA-FACET: mirrored authored cell size to inner spec ` +
+          `(w=${vegaSpec.spec?.width}, h=${vegaSpec.spec?.height})`
+        );
+      }
+
       // Pre-render legend optimization - configure legends to wrap based on estimated size
       const optimizeLegendLayout = (spec: any) => {
         const chartHeight = spec.height || 400;
@@ -4745,12 +4932,19 @@ export const vegaLitePlugin: D3RenderPlugin = {
           const fieldName = encoding[channel].field;
           const dataArr = Array.isArray(dataObj?.values) ? dataObj.values : [];
           const uniqueCount = countUniqueValues(fieldName, dataArr);
+          // D-313: derive a labelLimit that preserves the distinguishing part of
+          // prefixed labels. When the raw rows carry the field we compute it from
+          // the actual label strings; for generated/transform-derived data the
+          // strings are unknown, so computeLegendLabelLimit falls back to a
+          // generous width instead of the old tight 80px that collapsed distinct
+          // series to an identical visible prefix.
+          const labelLimit = computeLegendLabelLimit(dataArr.map((r: any) => r?.[fieldName]));
 
           const applyWrapping = (count: number) => {
             const neededColumns = Math.ceil(count / maxItemsPerColumn);
             const columns = Math.min(neededColumns, 3); // Cap at 3 columns to prevent horizontal overflow
 
-            console.log(`Applying legend wrapping to ${channel} field "${fieldName}": ${count} items -> ${columns} columns`);
+            console.log(`Applying legend wrapping to ${channel} field "${fieldName}": ${count} items -> ${columns} columns (labelLimit=${labelLimit})`);
 
             if (!encoding[channel].legend) {
               encoding[channel].legend = {};
@@ -4760,7 +4954,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
               ...encoding[channel].legend,
               columns: columns,
               symbolLimit: 0, // lift Vega's default 30-entry cap so nothing is dropped
-              labelLimit: 80, // Shorter labels to fit multiple columns
+              labelLimit: labelLimit, // D-313: wide enough to keep distinguishing suffixes
               titleLimit: 100,
               orient: 'bottom', // Move to bottom to avoid vertical overflow
               offset: 5,
@@ -4810,6 +5004,14 @@ export const vegaLitePlugin: D3RenderPlugin = {
 
       // Apply legend optimization before rendering
       optimizeLegendLayout(vegaSpec);
+
+      // D-262: thin dense text-mark layers so labels don't overprint into
+      // unreadable composites. Data/point marks are untouched — only the labels
+      // are uniformly sampled down to a readable density. Theme-independent.
+      const decluttered = declutterDenseTextMarks(vegaSpec);
+      if (decluttered > 0) {
+        console.log(`🔧 VEGA-POST-PROCESS: Decluttered ${decluttered} dense text-mark layer(s) to reduce label overplot`);
+      }
 
       // Generic fix for specifications that have conflicting width/height with container
       if (vegaSpec.width === 0 || vegaSpec.height === 0) {
@@ -4975,6 +5177,21 @@ export const vegaLitePlugin: D3RenderPlugin = {
         }
       }
 
+      // D-314: a point/interval SELECTION param on a FACETED spec is fanned
+      // out per facet cell, and the per-cell selection signals + legend
+      // bindings compile to a dataflow that grows with the cell count and
+      // exceeds the render timeout in both themes. A headless screenshot
+      // cannot use hover/click anyway, so refuse the fan-out: drop the
+      // selection param(s) and resolve their encoding conditions to the
+      // matched (selected-state) branch. Non-faceted interactive specs and
+      // non-selection (variable) params are untouched.
+      {
+        const { removedParams, resolvedConditions } = neutralizeFacetedSelectionParams(finalSpec);
+        if (removedParams > 0) {
+          console.warn(`🔧 VEGA-PARAM-GUARD: Neutralized ${removedParams} selection param(s) on a faceted spec (resolved ${resolvedConditions} condition(s)) to avoid a per-cell dataflow explosion`);
+        }
+      }
+
       // WORKAROUND: Remove $schema as it can cause parser issues in some Vega versions
       const embedSpec = { ...finalSpec };
       // Vega v5 specs must keep $schema so vega-embed selects the Vega runtime.
@@ -5059,6 +5276,58 @@ export const vegaLitePlugin: D3RenderPlugin = {
           };
           requestAnimationFrame(retry);
         }
+      }
+
+      // Data labels (text marks) anchored near the end of a scale extend past
+      // the plot by their own pixel length, and under fit-x anything past the
+      // SVG edge is clipped. Vega does not lay out mark extents, so measure
+      // after render and feed the overrun back as view padding: with
+      // `contains: 'padding'` that shrinks the plot area and pulls the anchor
+      // inward. The anchor moves by less than the padding grows (it sits at a
+      // fraction of the plot width), so iterate a few times rather than solve.
+      //
+      // Only role-mark text is measured — axis labels, titles and legends are
+      // laid out by Vega itself. Must wait for attach: a detached SVG reports
+      // zero rects, which computeTextOverflow treats as "nothing to do".
+      if (result.view) {
+        const view = result.view;
+        const fitTextMarks = async (): Promise<void> => {
+          const el: HTMLElement | null = typeof view.container === 'function'
+            ? view.container() : null;
+          const svgEl = el?.querySelector('svg');
+          if (!svgEl) return;
+          for (let pass = 0; pass < 3; pass++) {
+            const rects = Array.from(
+              svgEl.querySelectorAll('g.mark-text.role-mark text'),
+            ).map(t => t.getBoundingClientRect());
+            const overflow = computeTextOverflow(rects, svgEl.getBoundingClientRect());
+            if (!overflow.right && !overflow.left) return;
+            try {
+              const padding = growPadding(view.padding(), overflow);
+              console.log(
+                `🔧 VEGA-POST-RENDER: text marks overflow by ` +
+                `${overflow.right}px right / ${overflow.left}px left; padding -> ` +
+                JSON.stringify(padding),
+              );
+              view.padding(padding);
+              await view.runAsync();
+            } catch (e) {
+              console.warn('Vega-Lite: could not grow padding for clipped labels', e);
+              return;
+            }
+          }
+        };
+        let fitAttempts = 0;
+        const whenAttached = () => {
+          const el: HTMLElement | null = typeof view.container === 'function'
+            ? view.container() : null;
+          if (!el || !el.isConnected || !el.clientWidth) {
+            if (++fitAttempts <= 20) requestAnimationFrame(whenAttached);
+            return;
+          }
+          void fitTextMarks();
+        };
+        requestAnimationFrame(whenAttached);
       }
 
       // A faceted spec's width is a PER-CELL width, and the width vegaSizing
