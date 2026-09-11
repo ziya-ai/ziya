@@ -3,10 +3,11 @@ import { useTheme } from '../context/ThemeContext';
 import { Spin, Modal } from 'antd';
 import { D3RenderPlugin } from '../types/d3';
 import { findPluginForSpec, loadPlugin, getAvailablePlugins } from '../plugins/d3/registry';
-import { isDiagramDefinitionComplete } from '../utils/diagramUtils';
+import { isDiagramDefinitionComplete, stripToolCallArtifacts } from '../utils/diagramUtils';
 import { ContainerSizingManager } from '../utils/containerSizing';
 import { isSafari } from '../utils/browserUtils';
 import { parseD3Spec } from '../utils/d3SpecParser';
+import { pluginDimensionProps, resolveContainerDimensions } from '../utils/pluginDimensions';
 
 type RenderType = 'auto' | 'vega-lite' | 'd3';
 
@@ -127,6 +128,15 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     const [hasSuccessfulRender, setHasSuccessfulRender] = useState<boolean>(false);
     const [renderedContentHeight, setRenderedContentHeight] = useState<number | null>(null);
     const isDarkModeRef = useRef<boolean>(isDarkMode);
+    // initializeVisualization is a useCallback with EMPTY deps (see its
+    // definition below), so every prop it closes over is frozen at first
+    // mount.  These refs let it read the LIVE streaming flags instead --
+    // without which a diagram that first mounts with a partial body mid-stream
+    // (every music spec, and any diagram spanning more than one throttled
+    // display update) is re-evaluated forever against that stale partial and
+    // only renders when the parent remounts it at end of stream.
+    const isStreamingRef = useRef<boolean>(isStreaming);
+    const isMarkdownBlockClosedRef = useRef<boolean>(isMarkdownBlockClosed);
 
     // Generate a stable cache key for this spec
     const cacheKey = useMemo(() => {
@@ -146,6 +156,12 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
 
     // Store the spec in a ref to avoid unnecessary re-renders
     useEffect(() => { lastSpecRef.current = spec; }, [spec]);
+
+    // Keep the streaming flags in refs too — same reason as isStreamingRef.
+    useEffect(() => { isStreamingRef.current = isStreaming; }, [isStreaming]);
+    useEffect(() => {
+        isMarkdownBlockClosedRef.current = isMarkdownBlockClosed;
+    }, [isMarkdownBlockClosed]);
 
     // Keep isDarkMode ref in sync
     useEffect(() => {
@@ -339,6 +355,22 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
     const initializeVisualization = useCallback(async (forceRender = false): Promise<void> => {
         if (!mounted.current) return;
 
+        // This callback has EMPTY deps (see its closing `}, []` below), so
+        // spec / isStreaming / isMarkdownBlockClosed and the cacheKey derived
+        // from them are FROZEN at first mount.  Read the live values the
+        // effects above keep in sync, shadowing the stale closure bindings for
+        // the rest of the function.  Without this, a diagram that first mounts
+        // mid-stream with a partial body (every music spec; any diagram
+        // spanning more than one 5fps display update) keeps being re-evaluated
+        // against that partial and only renders when the parent remounts it at
+        // end of stream.
+        let spec = lastSpecRef.current;
+        const isStreaming = isStreamingRef.current;
+        const isMarkdownBlockClosed = isMarkdownBlockClosedRef.current;
+        const cacheKey = typeof spec === 'string'
+            ? spec
+            : (spec && spec.definition ? spec.definition : JSON.stringify(spec));
+
         // Check global cache to avoid duplicate work across component instances
         const cacheEntry = globalRenderCache.get(cacheKey);
         const wasCachedRecently = cacheEntry && (Date.now() - cacheEntry.timestamp) < 5000;
@@ -414,6 +446,10 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 }
             }
 
+            // Collects the reason any plugin chunk failed to import, so that a
+            // load failure below is not reported as "no compatible plugin",
+            // which sends diagnosis to the diagram definition instead.
+            const loadDiagnostics = { loadFailures: [] as string[] };
             isLoadingPluginRef.current = true;
             console.log('🔧 D3RENDERER: Loading plugin for spec:', spec.type);
             const PLUGIN_LOAD_TIMEOUT_MS = 15000;
@@ -427,7 +463,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 // up, with pageerrors=[] because nothing ever threw: the
                 // plugin chunk import simply never completed.
                 loadedPlugin = await Promise.race([
-                    findPluginForSpec(spec),
+                    findPluginForSpec(spec, loadDiagnostics),
                     new Promise<undefined>((_, reject) => setTimeout(
                         () => reject(new Error(
                             'Timed out loading a renderer plugin for "'
@@ -464,8 +500,19 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     .map((p) => p.name.replace(/-(renderer|diagram)$/, ''))
                     .sort()
                     .join(', ');
-                setErrorDetails([msg, `Registered renderers: ${registered}`,
-                    'A registered renderer can still decline a spec whose shape it does not recognise.']);
+                const details = [msg, `Registered renderers: ${registered}`];
+                if (loadDiagnostics.loadFailures.length > 0) {
+                    // A chunk that never imported arrives here as an absent
+                    // plugin, identical to a decline.  Name it, otherwise the
+                    // message contradicts itself: it lists the renderer as
+                    // registered while claiming none was compatible.
+                    details.push('Renderer chunks that FAILED TO LOAD (likely cause): '
+                        + loadDiagnostics.loadFailures.join('; '));
+                    details.push('Reload the page to re-fetch the renderer chunk.');
+                } else {
+                    details.push('A registered renderer can still decline a spec whose shape it does not recognise.');
+                }
+                setErrorDetails(details);
                 setIsLoading(false);
                 return;
             }
@@ -571,6 +618,20 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 }
             }
 
+            // Strip tool-call / function-call sentinel tags that leaked from the
+            // model into the fenced diagram body (e.g. a trailing parameter/invoke
+            // close pair). Runs BEFORE the completeness check below -- which reads
+            // parsed.definition -- so trailing cruft cannot make a graphviz/mermaid
+            // body look unbalanced and stall rendering. Only specific sentinel tag
+            // NAMES are removed, never a generic bracketed tag, so the XML-based
+            // drawio definition survives. Clone rather than mutate the caller's spec.
+            if (parsed && typeof parsed.definition === 'string') {
+                const cleanedDefinition = stripToolCallArtifacts(parsed.definition);
+                if (cleanedDefinition !== parsed.definition) {
+                    parsed = { ...parsed, definition: cleanedDefinition };
+                }
+            }
+
             // If we have a parsed spec, determine if it's complete enough to render
             if (parsed) {
                 const specType = parsed.type || '';
@@ -665,12 +726,23 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 // Also check if container will contain error content
                 const willHaveError = renderError !== null;
 
-                container.style.width = isFlexible ? '100%' : `${width}px`;
-                container.style.height = (needsDynamicHeight || willHaveError) ? 'auto' : `${height}px`;
+                // D-001: an explicit spec canvas overrides the flexible default so
+                // the requested width/height is laid out (and captured) instead of
+                // being clamped to the sizingConfig default. Null for a spec that
+                // omits dimensions or a 'fixed' plugin -> existing behaviour.
+                const explicitContainerDims = resolveContainerDimensions(parsed, sizingConfig?.sizingStrategy);
+                container.style.width = explicitContainerDims
+                    ? explicitContainerDims.width
+                    : (isFlexible ? '100%' : `${width}px`);
+                container.style.height = (needsDynamicHeight || willHaveError)
+                    ? 'auto'
+                    : (explicitContainerDims ? explicitContainerDims.height : `${height}px`);
                 container.style.minHeight = configMinHeight != null ? `${configMinHeight}px` : 'unset';
-                container.style.maxHeight = (needsDynamicHeight || willHaveError) ? 'none' : 'unset';
+                container.style.maxHeight = (needsDynamicHeight || willHaveError || explicitContainerDims) ? 'none' : 'unset';
                 container.style.position = 'relative';
-                container.style.overflow = (needsOverflowVisible || willHaveError) ? 'visible' : 'hidden';
+                container.style.overflow = (needsOverflowVisible || willHaveError)
+                    ? 'visible'
+                    : (explicitContainerDims ? 'auto' : 'hidden');
 
                 // Create temporary container for safe rendering
                 const tempContainer = document.createElement('div');
@@ -709,11 +781,22 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                         console.log('🔧 D3RENDERER: Calling plugin.render for:', currentPlugin.name);
 
                         // Add timeout for plugin render to prevent infinite hang
+                        // D-001: an explicit numeric spec.width/height WINS over
+                        // the component's container-derived props (which the old
+                        // code overwrote them with, silently discarding a
+                        // requested canvas). No-op when the spec omits dimensions.
+                        // A plugin that ownsSpecDimensions gets neither key: its
+                        // spec's width/height are document properties.
+                        const pluginDims = pluginDimensionProps(currentPlugin, sanitizedParsed, width, height);
                         const renderPromise = Promise.race([
                             currentPlugin.render(tempContainer, currentD3, {
                                 ...sanitizedParsed,
-                                width: width || 600,
-                                height: height || 400,
+                                ...pluginDims,
+                                // tempContainer is detached until this render
+                                // resolves, so the plugin cannot measure its
+                                // eventual width; the live container can be.
+                                // Width-dependent caps (axis labelLimit) use it.
+                                containerWidth: container.clientWidth || undefined,
                                 isStreaming: isStreaming,
                                 isMarkdownBlockClosed: isMarkdownBlockClosed,
                                 forceRender: forceRender,
@@ -726,6 +809,14 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                         console.log('🔧 D3RENDERER: Awaiting plugin render...');
                         await renderPromise;
                         console.log('🔧 D3RENDERER: Plugin render completed');
+
+                        // Plugins holding resources React cannot see (WebGL
+                        // contexts, observers) expose a teardown on the container.
+                        // Run it with the other cleanups on re-render and unmount.
+                        const vizCleanup = (tempContainer as any).__vizCleanup;
+                        if (typeof vizCleanup === 'function') {
+                            cleanupFunctionsRef.current.push(vizCleanup);
+                        }
 
                         renderSuccessful = true;
                     } else {
@@ -938,6 +1029,23 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     overflow: plugin.sizingConfig.needsOverflowVisible ? 'visible' : (baseStyles.overflow || 'auto')
                 };
             } else if (plugin.sizingConfig.sizingStrategy === 'responsive') {
+                // D-001: an explicit spec canvas (e.g. 220x2400, 3600x2600) must
+                // survive the responsive default (width 100%, fixed 400px height,
+                // overflow hidden) that otherwise crops it to ~600x400. When the
+                // spec asked for a size, adopt it on the container and lift the
+                // width cap / enable scroll so the whole canvas is laid out and
+                // captured. A spec without explicit dims is untouched (null).
+                const explicit = resolveContainerDimensions(spec, 'responsive');
+                if (explicit) {
+                    return {
+                        ...baseStyles,
+                        width: explicit.width,
+                        height: explicit.height,
+                        maxWidth: 'none',
+                        maxHeight: 'none',
+                        overflow: baseStyles.overflow || 'auto'
+                    };
+                }
                 return {
                     ...baseStyles,
                     width: '100%',
@@ -960,7 +1068,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             height: 'auto',
             overflow: 'auto'
         };
-    }, [plugin, height]);
+    }, [plugin, height, spec]);
     const outerContainerStyle: CSSProperties = {
         position: 'relative',
         width: '100%',
