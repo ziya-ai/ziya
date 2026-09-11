@@ -225,3 +225,74 @@ def test_groups_non_global_not_surfaced(home):
     _write_groups(cdir, [("a", None, False), ("b", "a", False)])
     out = gi.collect_global_groups(home, exclude_project_id="O")
     assert out == []
+
+
+# -- group record owned by a DIFFERENT project than the chat ----------
+#
+# A global folder is visible in every project, so a chat created while
+# viewing project B legitimately carries a groupId whose group RECORD
+# lives in project A's _groups.json.  Resolving group globalness against
+# only the chat's own project therefore missed those chats: they never
+# surfaced cross-project, and the shared folder read as short by exactly
+# the chats that had no own isGlobal flag.  Observed in the field as a
+# global conversation "disappearing" on project switch.
+
+def test_summary_group_owned_by_other_project_surfaces(home):
+    # Group record lives in OWNER; the chat file lives in HOLDER.
+    owner = _project(home, "OWNER")
+    holder = _project(home, "HOLDER")
+    _write_groups(owner, [("shared", None, True)])
+    _write_groups(holder, [("local", None, False)])
+    _write_chat(holder, "c1", is_global=False, group_id="shared")
+
+    out = gi.collect_global_chat_summaries(home, exclude_project_id="OWNER")
+    assert [s.id for s in out] == ["c1"]
+
+
+def test_full_group_owned_by_other_project_surfaces(home):
+    owner = _project(home, "OWNER")
+    holder = _project(home, "HOLDER")
+    _write_groups(owner, [("shared", None, True)])
+    _write_chat(holder, "c1", is_global=False, group_id="shared")
+
+    out = gi.collect_global_chats(home, exclude_project_id="OWNER")
+    assert [c.id for c in out] == ["c1"]
+
+
+def test_foreign_group_inheritance_chain_resolves(home):
+    # Only the ROOT is flagged; the chat sits in a non-global CHILD whose
+    # global-ness is inherited — and both records live in another project.
+    owner = _project(home, "OWNER")
+    holder = _project(home, "HOLDER")
+    _write_groups(owner, [("root", None, True), ("child", "root", False)])
+    _write_chat(holder, "c1", is_global=False, group_id="child")
+
+    out = gi.collect_global_chat_summaries(home, exclude_project_id="OWNER")
+    assert [s.id for s in out] == ["c1"]
+
+
+def test_non_global_foreign_group_still_not_surfaced(home):
+    # Negative control: cross-project resolution must not make EVERY
+    # foreign group global — only effectively-global ones.
+    owner = _project(home, "OWNER")
+    holder = _project(home, "HOLDER")
+    _write_groups(owner, [("plain", None, False)])
+    _write_chat(holder, "c1", is_global=False, group_id="plain")
+
+    assert gi.collect_global_chat_summaries(home, exclude_project_id="OWNER") == []
+    assert gi.collect_global_chats(home, exclude_project_id="OWNER") == []
+
+
+def test_all_effective_global_group_ids_unions_projects(home):
+    a = _project(home, "A")
+    b = _project(home, "B")
+    _write_groups(a, [("ga", None, True), ("ga_child", "ga", False)])
+    _write_groups(b, [("gb", None, True), ("gb_plain", None, False)])
+
+    assert gi._all_effective_global_group_ids(home) == frozenset(
+        {"ga", "ga_child", "gb"}
+    )
+
+
+def test_all_effective_global_group_ids_no_projects_dir(tmp_path):
+    assert gi._all_effective_global_group_ids(tmp_path) == frozenset()
