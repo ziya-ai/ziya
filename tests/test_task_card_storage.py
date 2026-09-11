@@ -139,6 +139,85 @@ class TestDuplicate:
         assert clone.root.repeat_count == original.root.repeat_count
         assert len(clone.root.body) == len(original.root.body)
 
+    def test_duplicate_rewrites_sibling_references_to_the_new_ids(self, storage):
+        """The remint is correct (see the test above) but it used to leave
+        every ``sibling("old-id")`` in the clone pointing at a block that
+        exists only in the ORIGINAL.  At run time the reference rendered
+        empty and a for_each fan-out ran zero iterations; the launch
+        validator now catches it, but a duplicate should not need
+        catching."""
+        from app.utils.task_card_validation import validate_card_tree
+        root = Block(block_type="group", id="g", name="Pipeline", body=[
+            Block(block_type="task", id="plan", name="Plan",
+                  instructions="emit the roster"),
+            Block(block_type="repeat", id="fan", name="Fan out",
+                  repeat_mode="for_each",
+                  repeat_for_each_source='{{sibling("plan").outputs.roster.docs}}',
+                  body=[Block(block_type="task", id="one", name="One",
+                              instructions="audit {{item}} per {{sibling(\'plan\')}}")]),
+        ])
+        original = storage.create(TaskCardCreate(name="Original", root=root))
+        # Positive control: the original resolves cleanly.
+        assert validate_card_tree(original.root).errors == []
+
+        clone = storage.duplicate(original.id)
+        new_plan_id = clone.root.body[0].id
+        assert new_plan_id != "plan"
+        fan = clone.root.body[1]
+        assert fan.repeat_for_each_source == (
+            f'{{{{sibling("{new_plan_id}").outputs.roster.docs}}}}'
+        )
+        # Nested field, single-quoted reference: quote style preserved.
+        assert fan.body[0].instructions == (
+            f"audit {{{{item}}}} per {{{{sibling('{new_plan_id}')}}}}"
+        )
+        # The outermost surface: the clone is launchable as-is.
+        assert validate_card_tree(clone.root).errors == []
+        # The original is untouched.
+        reread = storage.get(original.id)
+        assert reread.root.body[1].repeat_for_each_source == (
+            '{{sibling("plan").outputs.roster.docs}}'
+        )
+
+    def test_duplicate_leaves_references_to_foreign_ids_alone(self, storage):
+        """A reference to a block that is not in this tree (a calling
+        card's block, shared via the run registry) must survive the
+        remint verbatim rather than being rewritten or dropped."""
+        root = Block(block_type="task", id="t", name="T",
+                     instructions='see {{sibling("caller-block")}}')
+        card = storage.create(TaskCardCreate(name="C", root=root))
+        clone = storage.duplicate(card.id)
+        assert clone.root.instructions == 'see {{sibling("caller-block")}}'
+
+    def test_plain_save_does_not_rewrite_references(self, storage):
+        """Fill-only id assignment (create/update without force) records
+        no remap, so explicit references are never touched — the id
+        contract the skill text promises authors."""
+        root = Block(block_type="group", id="", name="G", body=[
+            Block(block_type="task", id="plan", name="P", instructions="x"),
+            Block(block_type="task", id="", name="Q",
+                  instructions='{{sibling("plan")}}'),
+        ])
+        card = storage.create(TaskCardCreate(name="S", root=root))
+        assert card.root.body[0].id == "plan"
+        assert card.root.body[1].id  # filled in
+        assert card.root.body[1].instructions == '{{sibling("plan")}}'
+
+    def test_storage_and_validator_sibling_regexes_agree(self):
+        """Both modules recognise a reference independently; if they
+        drift, the validator would accept a form the rewrite skips (or
+        vice versa) and a duplicate would dangle again."""
+        from app.storage import task_cards as st
+        from app.utils import task_card_validation as va
+        samples = [
+            'sibling("a-1")', "sibling('a-1')", 'sibling( "a-1" )',
+            '{{sibling("a-1").outputs.x}}', 'sibling(a-1)', 'sibling("")',
+        ]
+        for s in samples:
+            got_st = [m.group(2) for m in st._SIBLING_REF_RE.finditer(s)]
+            got_va = [m.group(1) for m in va._SIBLING_REF_RE.finditer(s)]
+            assert got_st == got_va, s
+
     def test_duplicate_as_template(self, storage):
         card = storage.create(TaskCardCreate(name="Task", root=_simple_task()))
         t = storage.duplicate(card.id, as_template=True)
