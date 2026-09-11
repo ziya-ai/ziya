@@ -17,6 +17,7 @@ import { useProject } from '../context/ProjectContext';
 import { hydrateConversationMessages } from '../utils/conversationHydration';
 import { useResolvedModelPin } from '../hooks/useResolvedModelPin';
 import type { Message } from '../utils/types';
+import { resolveThinkingMarkersInMessages } from '../utils/thinkingBlocks';
 
 const { Text, Paragraph } = Typography;
 
@@ -65,7 +66,7 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
             description: 'Public paste service with markdown support'
         }
     ]);
-    const { currentConversationId: activeConversationId, currentMessages: activeMessages } = useActiveChat();
+    const { currentConversationId: activeConversationId, currentMessages: activeMessages, reasoningContentMap } = useActiveChat();
     const { currentProject } = useProject();
     // Conversation-pinned model (conversation → folder → project) so the PDF
     // footer names the model that actually answered, not the server default.
@@ -135,6 +136,18 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
         return rounds;
     }, [currentMessages]);
 
+    // Thinking blocks are held in the browser-only reasoningContentMap; a
+    // message's content carries just a positional marker.  Every export
+    // route sends content to the server, which cannot resolve the markers
+    // and would emit them literally.  Resolve here, to the same <details>
+    // shape the exporter uses for legacy thinking fences, so the
+    // includeCollapsed filter below (and the server's) governs them too.
+    // A conversation loaded from IDB has no live blocks; its markers drop.
+    const exportMessages = React.useMemo(
+        () => resolveThinkingMarkersInMessages(currentMessages, reasoningContentMap),
+        [currentMessages, reasoningContentMap],
+    );
+
     /**
      * Apply scope & content filters to the raw message list.
      *
@@ -144,7 +157,7 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
      *    <details>…</details> blocks (tool output, reasoning steps, etc.)
      */
     const filteredMessages = React.useMemo(() => {
-        let msgs = [...currentMessages];
+        let msgs = [...exportMessages];
 
         // Scope to last N rounds (a "round" = one human + following assistant msgs)
         if (roundLimit !== null && roundLimit > 0) {
@@ -175,7 +188,7 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
         }
 
         return msgs;
-    }, [currentMessages, roundLimit, includeHuman, includeCollapsed]);
+    }, [exportMessages, roundLimit, includeHuman, includeCollapsed]);
 
     const handlePdfExport = async () => {
         setIsPdfExporting(true);
@@ -201,7 +214,7 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
                 body: JSON.stringify({
                     conversation_id: currentConversationId,
                     project_id: currentProject?.id,
-                    messages: currentMessages,
+                    messages: exportMessages,
                     title: 'Ziya Session Transcript',
                     // Pinned model, so the export footer/metadata name it.
                     model: resolveFor(currentConversationId)?.model,
@@ -313,7 +326,7 @@ const ExportConversationModal: React.FC<ExportConversationModalProps> = ({ visib
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         conversation_id: currentConversationId,
-                        messages: currentMessages,
+                        messages: exportMessages,
                         format: 'html',
                         target,
                         // Route mode filters in the /print page (single source
