@@ -131,9 +131,41 @@ def test_locator_js_targets_the_requested_role_class():
 
 def test_dom_probe_reports_the_silent_failure_modes():
     js = cs.build_dom_probe(["W"], "assistant")
-    for signal in ("katex_error", "math_fallback", "leaked_math_marker",
-                   "is_lazy_placeholder", "has_chat_chrome"):
+    for signal in ("katex_error", "katex_error_color", "math_fallback",
+                   "leaked_math_marker", "is_lazy_placeholder",
+                   "has_chat_chrome"):
         assert signal in js
+
+
+def test_dom_probe_counts_error_coloured_tokens_not_just_error_spans():
+    """KaTeX has TWO failure shapes and the probe must see both.
+
+    An unsupported ENVIRONMENT aborts the parse and emits
+    ``<span class="katex-error">``.  A single unresolvable TOKEN -- a markdown
+    ``\\*`` that leaked into math mode being the case that reached a user -- is
+    recovered from per token: NO error span is emitted, only
+    ``style="color:<errorColor>"`` on the glyph.  Counting error spans alone
+    therefore reported a clean render for visibly red math.
+    """
+    js = cs.build_dom_probe(["W"], "assistant")
+    # The colour must be the one KaTeX is configured to paint with, and it must
+    # be searched for in the inline style attribute (the visible HTML copy).
+    assert cs.KATEX_ERROR_COLOR in js
+    assert f'[style*="{cs.KATEX_ERROR_COLOR}"]' in js
+    # Scoped to math so unrelated inline styling elsewhere in a message cannot
+    # be miscounted as a KaTeX failure.
+    assert f'.katex [style*="{cs.KATEX_ERROR_COLOR}"]' in js
+    # Only the OUTERMOST node of a nested coloured run is counted: KaTeX wraps
+    # each bad token in a coloured parent, so an unfiltered count doubles.
+    assert "parentElement" in js and "closest(" in js
+
+
+def test_error_colour_constant_is_a_hex_colour():
+    """The constant is duplicated from mathSanitizer.js because Python cannot
+    import JS; tests/test_math_sanitizer_parity.py holds the two in agreement."""
+    import re
+
+    assert re.fullmatch(r"#[0-9a-fA-F]{6}", cs.KATEX_ERROR_COLOR)
 
 
 # -- seeding seam ---------------------------------------------------------

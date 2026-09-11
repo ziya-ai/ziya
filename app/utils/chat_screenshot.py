@@ -193,20 +193,66 @@ def build_rendered_predicate(locators: list[str], role: str,
     }}"""
 
 
+#: The colour KaTeX paints an unresolvable token in under ``throwOnError:
+#: false``.  Must equal ``KATEX_ERROR_COLOR`` in
+#: ``frontend/src/utils/mathSanitizer.js``, which is the source of truth for the
+#: browser's render options; the two are held in agreement by
+#: tests/test_math_sanitizer_parity.py because Python cannot import the JS.
+KATEX_ERROR_COLOR = '#cc0000'
+
+#: The dark-theme counterpart to ``KATEX_ERROR_COLOR``.  The live browser
+#: render resolves KaTeX's ``errorColor`` from the active theme (see
+#: ``katexRenderOptions`` in ``frontend/src/utils/mathSanitizer.js``): the light
+#: red (#cc0000) is only ~2.8:1 on the dark chat surfaces, so a failed token is
+#: painted in this lighter red instead.  The DOM probe must therefore count
+#: error-coloured nodes for EITHER colour, or it silently under-reports failed
+#: math in dark mode.  Held in agreement with the JS constant by
+#: tests/test_math_sanitizer_parity.py (Python cannot import JS).
+KATEX_ERROR_COLOR_DARK = '#ff6b6b'
+
+
 def build_dom_probe(locators: list[str], role: str) -> str:
     """Structural facts about the rendered message.
 
     Reported alongside the image so a caller has machine-checkable evidence
-    next to the pixels: a leaked ``MATH_INLINE`` marker or a ``.katex-error``
-    is unambiguous in the DOM and easy to miss by eye at small font sizes.
+    next to the pixels: a leaked ``MATH_INLINE`` marker or a failed KaTeX
+    render is unambiguous in the DOM and easy to miss by eye at small font
+    sizes.
+
+    KaTeX has TWO failure shapes under ``throwOnError: false`` and the probe
+    must count both, because either one alone reports a clean render for
+    visibly red math:
+
+      * a whole-expression failure (an unsupported ENVIRONMENT, e.g.
+        ``\\begin{multline}``) aborts the parse and emits a
+        ``<span class="katex-error">``;
+      * a single unresolvable TOKEN (e.g. a markdown ``\\*`` that leaked into
+        a math span) is recovered from PER TOKEN -- no ``katex-error`` span is
+        emitted at all, only ``style="color:<errorColor>"`` on the offending
+        glyph.
+
+    ``katex_error_color`` therefore counts error-coloured nodes inside a
+    ``.katex`` subtree, keeping only the OUTERMOST of a nested run so the
+    number is the count of bad tokens rather than of spans (KaTeX wraps each
+    one in a coloured parent).  The MathML accessibility copy carries the
+    colour as ``mathcolor``, not ``style``, so it is excluded by construction
+    and a token is not double-counted.
     """
+    light = KATEX_ERROR_COLOR
+    dark = KATEX_ERROR_COLOR_DARK
     return f"""() => {{
         const el = {build_locator_js(locators, role)};
         if (!el) return {{missing: true}};
         const t = el.innerText || '';
+        const errColoured = Array.from(
+            el.querySelectorAll('.katex [style*="{light}"], .katex [style*="{dark}"]')
+        ).filter(n => !(n.parentElement
+                        && (n.parentElement.closest('[style*="{light}"]')
+                            || n.parentElement.closest('[style*="{dark}"]'))));
         return {{
             katex: el.querySelectorAll('.katex').length,
             katex_error: el.querySelectorAll('.katex-error').length,
+            katex_error_color: errColoured.length,
             math_fallback: el.querySelectorAll('.math-fallback').length,
             code_blocks: el.querySelectorAll('pre').length,
             tables: el.querySelectorAll('table').length,

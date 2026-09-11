@@ -149,3 +149,95 @@ def test_math_export_never_hard_fails_without_katex(monkeypatch):
     assert "mc^2" in html or "mc<sup>2</sup>" in html or "E = mc" in html
     # no KaTeX markup when the renderer is unavailable
     assert 'class="katex' not in html
+
+
+# ---------------------------------------------------------------------------
+# Corrections the exporter could not previously apply.
+#
+# Normalization used to be reimplemented (partially) in Python here, so the
+# exporter and the browser disagreed. It now runs inside the Node program via
+# the SHARED module frontend/src/utils/mathSanitizer.js, which the browser also
+# imports. The structural half of that contract lives in
+# tests/test_math_sanitizer_parity.py; these tests assert the CONSEQUENCE in
+# exported HTML.
+#
+# ``errorColor`` — not ``katex-error`` — is the marker throughout. KaTeX 0.16.x
+# recovers from a single unresolvable TOKEN per token and emits no error span at
+# all, so asserting on the class passes while the glyph is visibly red.
+# ---------------------------------------------------------------------------
+
+_ERROR_COLOR = "#cc0000"
+
+_LEAKED_STAR_MATH = "$$s^\\* - c^\\* = t_{\\text{dead}} + (d_A - d_B)$$\n"
+
+#: Each of these rendered cleanly in the browser but exported with red glyphs.
+_PREVIOUSLY_DIVERGENT_DOCS = {
+    "leaked markdown star": _LEAKED_STAR_MATH,
+    "text underscore": "$$\\text{ct_id_field} = 1$$\n",
+    "multline environment": "$$\\begin{multline} a + b \\\\ + c \\end{multline}$$\n",
+}
+
+
+def _assert_no_error_glyphs(html: str, label: str) -> None:
+    assert "<math" in html, f"{label}: expression did not render at all"
+    assert _ERROR_COLOR not in html, f"{label}: painted in errorColor"
+    assert f'mathcolor="{_ERROR_COLOR}"' not in html, f"{label}: MathML error colour"
+
+
+def test_render_math_batch_routes_through_the_shared_sanitizer():
+    """The seam: ``_render_math_batch`` must sanitize, so no caller has to
+    remember to. Uses the leaked ``\\*`` because it is the case KaTeX recovers
+    from silently."""
+    import pytest
+
+    from app.utils import conversation_exporter as ce
+
+    if not _katex_available():
+        pytest.skip("KaTeX/node/sanitizer unavailable")
+    (rendered,) = ce._render_math_batch([{"tex": "s^\\* - c^\\*", "display": True}])
+    assert rendered is not None, "expression must still render"
+    assert _ERROR_COLOR not in rendered
+    assert "\\*" not in rendered
+
+
+def test_render_math_batch_preserves_legitimate_latex_escapes():
+    """Negative control: a broad "strip backslashes" fix would pass the test
+    above and break real LaTeX. Each of these must still typeset."""
+    import pytest
+
+    from app.utils import conversation_exporter as ce
+
+    if not _katex_available():
+        pytest.skip("KaTeX/node/sanitizer unavailable")
+    # \\* here is a KaTeX line break, not a leaked markdown escape.
+    exprs = [
+        "\\begin{gathered} a \\\\* b \\end{gathered}",
+        "\\frac{a}{b} \\cdot c^2",
+        "\\text{a\\_b}",
+        "50\\%",
+    ]
+    rendered = ce._render_math_batch([{"tex": e, "display": True} for e in exprs])
+    for expr, out in zip(exprs, rendered):
+        assert out is not None, f"{expr!r} failed to render"
+        assert _ERROR_COLOR not in out, f"{expr!r} painted in errorColor"
+
+
+def test_previously_divergent_math_exports_without_error_glyphs():
+    """End to end, for every correction the exporter used to lack."""
+    import pytest
+
+    if not _katex_available():
+        pytest.skip("KaTeX/node/sanitizer unavailable")
+    for label, doc in _PREVIOUSLY_DIVERGENT_DOCS.items():
+        _assert_no_error_glyphs(_export_html(doc), label)
+
+
+def test_leaked_star_does_not_survive_as_literal_text():
+    """Beyond the colour: the ``\\*`` token itself must be gone, not merely
+    painted a different colour."""
+    import pytest
+
+    if not _katex_available():
+        pytest.skip("KaTeX/node/sanitizer unavailable")
+    html = _export_html(_LEAKED_STAR_MATH)
+    assert "\\*" not in html, "literal \\* survived into the export"
