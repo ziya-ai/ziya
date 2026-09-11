@@ -33,6 +33,7 @@ Design:
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
@@ -70,17 +71,31 @@ _LABILE_RETRIEVAL_MS = 3_600_000      # 1 hour
 _LABILE_USED_MS      = 14_400_000     # 4 hours
 
 
-# Window tokenization config.  Approximate character-based windowing
-# rather than real tokenization -- we don't need precise alignment,
-# just enough chunks for max-pooling to find the relevant section.
-_WINDOW_CHARS = 800   # ~200 tokens
-_WINDOW_STRIDE = 400  # 50% overlap so phrase boundaries don't bisect signal
+# Window config.  Approximate character-based windowing rather than real
+# tokenization -- we don't need precise alignment, just enough chunks for
+# max-pooling to find the relevant section.
+#
+# Windows are fact-scale on purpose.  Stored memories average ~300 chars;
+# comparing one against an 800-char window meant the paraphrase that would
+# match it was diluted by ~500 chars of unrelated text in the same window,
+# and on the live store the signal fired on 2 of 29 loaded memories.  A
+# window the size of the thing it is compared against is the cheapest
+# structural fix; the count cap bounds embedding calls on long responses
+# by widening the stride rather than truncating the text.
+_WINDOW_CHARS = 300
+_WINDOW_STRIDE = 150  # 50% overlap so phrase boundaries don't bisect signal
+_MAX_WINDOWS = 80
 
-# Cosine threshold for "used".  Tuned conservative: at this level,
-# unrelated text rarely scores above; on-topic paraphrase reliably does.
-# Tunable per-memory in the future based on layer (e.g. lexicon needs
-# higher threshold than domain_context).
+# Cosine threshold for "used".  0.55 was set by intuition, not data; the
+# stats rows written by _record_feedback_stats (surfaced at
+# /api/v1/memory/feedback/stats) exist so it can be set from the observed
+# best-cosine distribution.  Override with ZIYA_MEMORY_USE_THRESHOLD; the
+# override is read at call time so it takes effect without a restart.
 _USE_THRESHOLD = 0.55
+
+# Rolling calibration log: one row per (loaded memory, response) scoring.
+# Bounded so an active install cannot grow it without limit.
+FEEDBACK_STATS_MAX_ROWS = 2000
 
 # Importance bump applied when a memory is detected as "used".
 _USE_IMPORTANCE_DELTA = 0.05
@@ -182,11 +197,108 @@ def clear_conversation(conversation_id: str) -> None:
     _loaded_per_conversation.pop(conversation_id, None)
 
 
+def _resolve_use_threshold(explicit: Optional[float] = None) -> float:
+    """Explicit argument > ZIYA_MEMORY_USE_THRESHOLD env > module default."""
+    if explicit is not None:
+        return float(explicit)
+    try:
+        from app.config.env_registry import ziya_env
+        val = ziya_env("ZIYA_MEMORY_USE_THRESHOLD", default=_USE_THRESHOLD)
+        return float(val) if val is not None else _USE_THRESHOLD
+    except Exception:
+        return _USE_THRESHOLD
+
+
+def _stats_file():
+    from app.utils.paths import get_ziya_home
+    return get_ziya_home() / "memory" / "feedback_stats.jsonl"
+
+
+def _record_feedback_stats(rows: List[Dict[str, Any]]) -> None:
+    """Append calibration rows; keep only the newest FEEDBACK_STATS_MAX_ROWS.
+
+    Plain JSONL, not ALE-encrypted: rows hold ids and scores, never
+    memory content.  Best-effort -- never raises into the feedback path.
+    """
+    if not rows:
+        return
+    try:
+        path = _stats_file()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        ts = int(time.time() * 1000)
+        existing: List[str] = []
+        if path.exists():
+            existing = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+        new_lines = [json.dumps({"ts": ts, **r}, ensure_ascii=False) for r in rows]
+        kept = (existing + new_lines)[-FEEDBACK_STATS_MAX_ROWS:]
+        tmp = path.with_suffix(".jsonl.tmp")
+        tmp.write_text("\n".join(kept) + "\n", encoding="utf-8")
+        tmp.replace(path)
+    except Exception as e:
+        logger.debug(f"Feedback stats write skipped (non-fatal): {e}")
+
+
+def load_feedback_stats() -> List[Dict[str, Any]]:
+    """Return the rolling calibration rows, oldest first."""
+    try:
+        path = _stats_file()
+        if not path.exists():
+            return []
+        out = []
+        for ln in path.read_text(encoding="utf-8").splitlines():
+            if ln.strip():
+                try:
+                    out.append(json.loads(ln))
+                except json.JSONDecodeError:
+                    continue
+        return out
+    except Exception as e:
+        logger.debug(f"Feedback stats read failed: {e}")
+        return []
+
+
+def feedback_stats_summary() -> Dict[str, Any]:
+    """Percentiles of best-cosine and the hit rate at the current threshold.
+
+    This is the number the threshold should be set from: if p90 sits well
+    below the threshold the signal is dead; if p50 sits above it the
+    signal is noise.
+    """
+    rows = load_feedback_stats()
+    threshold = _resolve_use_threshold()
+
+    def _block(rs: List[Dict[str, Any]]) -> Dict[str, Any]:
+        cos = sorted(float(r.get("best_cos", 0.0)) for r in rs)
+        if not cos:
+            return {"count": 0, "used": 0, "hit_rate": 0.0}
+        arr = np.array(cos)
+        used = sum(1 for r in rs if r.get("used"))
+        return {
+            "count": len(cos), "used": used, "hit_rate": used / len(cos),
+            "p10": float(np.percentile(arr, 10)), "p50": float(np.percentile(arr, 50)),
+            "p90": float(np.percentile(arr, 90)), "max": float(arr.max()),
+        }
+
+    kinds = sorted({r.get("kind", "memory") for r in rows})
+    return {
+        "threshold": threshold,
+        **_block(rows),
+        "by_kind": {k: _block([r for r in rows if r.get("kind", "memory") == k]) for k in kinds},
+    }
+
+
 def _windowize(text: str, size: int = _WINDOW_CHARS,
                stride: int = _WINDOW_STRIDE) -> List[str]:
-    """Slice text into overlapping windows suitable for max-pool scoring."""
+    """Slice text into overlapping windows suitable for max-pool scoring.
+
+    Window count is capped at _MAX_WINDOWS by widening the stride (not by
+    truncating), so a very long response still has its tail scored.
+    """
     if not text or len(text) <= size:
         return [text] if text else []
+    needed = (len(text) - size) // stride + 2
+    if needed > _MAX_WINDOWS:
+        stride = max(stride, -(-(len(text) - size) // (_MAX_WINDOWS - 1)))
     windows = []
     i = 0
     while i < len(text):
@@ -207,7 +319,7 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
 async def apply_feedback(
     conversation_id: Optional[str],
     response_text: str,
-    use_threshold: float = _USE_THRESHOLD,
+    use_threshold: Optional[float] = None,
 ) -> Dict[str, int]:
     """Score loaded memories against the assistant's response and update
     lifecycle counters.  Idempotent for a given conversation -- after
@@ -215,6 +327,7 @@ async def apply_feedback(
 
     Returns counts: {"loaded": N, "used": M, "errors": K}.
     """
+    use_threshold = _resolve_use_threshold(use_threshold)
     if not conversation_id:
         return {"loaded": 0, "used": 0, "errors": 0}
 
@@ -274,12 +387,17 @@ async def apply_feedback(
 
     # Score each loaded memory against best-matching window.
     used_ids: Set[str] = set()
+    stats_rows: List[Dict[str, Any]] = []
     for mid in loaded:
         mem_vec = cache.get(mid)
         if mem_vec is None:
             continue
         best = max((_cosine(mem_vec, wv) for wv in window_vecs), default=0.0)
-        if best >= use_threshold:
+        used = best >= use_threshold
+        stats_rows.append({"memory_id": mid, "best_cos": round(best, 4), "used": used,
+                           "kind": "memory", "threshold": use_threshold,
+                           "n_windows": len(window_vecs)})
+        if used:
             used_ids.add(mid)
             logger.debug(f"Feedback: memory {mid[:8]} used (cos={best:.3f})")
 
@@ -289,7 +407,8 @@ async def apply_feedback(
     # Score open proposals too — the response may be independently
     # consistent with a probationary entry, which is corroboration
     # signal even if no one explicitly loaded it.
-    proposal_signals = _score_open_proposals(window_vecs, use_threshold)
+    proposal_signals = _score_open_proposals(window_vecs, use_threshold, stats_rows)
+    _record_feedback_stats(stats_rows)
 
     clear_conversation(conversation_id)
 
@@ -307,7 +426,8 @@ async def apply_feedback(
 
 
 def _score_open_proposals(window_vecs: List[np.ndarray],
-                          use_threshold: float) -> int:
+                          use_threshold: float,
+                          stats_rows: Optional[List[Dict[str, Any]]] = None) -> int:
     """Score open proposals against response windows; record signals.
 
     Returns the number of proposals that received a 'response_match' signal.
@@ -332,7 +452,12 @@ def _score_open_proposals(window_vecs: List[np.ndarray],
         if prop_vec is None:
             continue
         best = max((_cosine(prop_vec, wv) for wv in window_vecs), default=0.0)
-        if best >= use_threshold:
+        used = best >= use_threshold
+        if stats_rows is not None:
+            stats_rows.append({"memory_id": pid, "best_cos": round(best, 4), "used": used,
+                               "kind": "proposal", "threshold": use_threshold,
+                               "n_windows": len(window_vecs)})
+        if used:
             store.record_signal(pid, name="response_match",
                                 value={"score": round(best, 3)})
             signaled += 1
