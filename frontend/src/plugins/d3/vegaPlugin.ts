@@ -2,7 +2,7 @@ import { type EmbedOptions } from 'vega-embed';
 import { D3RenderPlugin } from '../../types/d3';
 import { getZoomScript } from '../../utils/popupScriptUtils';
 import { sanitizeVegaSpec } from './vegaGraphSanitizer';
-import { tolerantParseVegaSpec, KNOWN_VEGA_SCHEMES } from './vegaRecovery';
+import { tolerantParseVegaSpec, KNOWN_VEGA_SCHEMES, reconcileThemeColors } from './vegaRecovery';
 import { classifyColor, isDarkBackground } from './chartTheme';
 
 /**
@@ -16,23 +16,43 @@ import { classifyColor, isDarkBackground } from './chartTheme';
  * the Vega transform/mark catalogue — without touching vegaLitePlugin.ts.
  */
 
+/**
+ * (D-277 / D-273 / D-229) Single source of truth for the "Vega-LITE body wearing
+ * a Vega envelope" discriminator.
+ *
+ * A full Vega spec drives its scenegraph from a `marks` ARRAY; a Vega-Lite spec
+ * uses a SINGULAR `mark` together with `encoding` and NO `marks` array. Models
+ * routinely emit the latter under a Vega `$schema`/`type:'vega'` (vega-w4-07:
+ * `$schema .../vega/v5.json`, singular `mark:'bar'`, object-form `data.values`,
+ * `encoding`). If the Vega runtime is handed such a body it finds no
+ * marks[]/scales and paints a SILENT BLANK canvas (no error), which the harness
+ * reports as a successful render.
+ *
+ * This predicate lets BOTH decision sites agree without drifting:
+ *   - isVegaSpec() returns false for an UNWRAPPED body so vega-lite-renderer
+ *     (priority 8) claims and renders it;
+ *   - render() detects the WRAPPED body ({type:'vega', definition:{…}}), which
+ *     canHandle claims here, and compiles it with vega-embed's 'vega-lite' mode.
+ * Structural + theme-independent. PURE + exported for unit testing.
+ */
+export function isVegaLiteBody(spec: any): boolean {
+  return !!(
+    spec && typeof spec === 'object' &&
+    spec.mark && !Array.isArray(spec.mark) &&
+    spec.encoding && typeof spec.encoding === 'object' &&
+    !Array.isArray(spec.marks)
+  );
+}
+
 // Detect a full-Vega spec (as opposed to Vega-Lite or other diagram types).
 const isVegaSpec = (spec: any): boolean => {
   if (!spec || typeof spec !== 'object') return false;
 
-  // (D-273) Vega-Lite BODY defers to the Vega-Lite plugin even when a
-  // `$schema` substring or explicit marker says "vega". A full Vega spec drives
-  // its scenegraph from a `marks` ARRAY; a Vega-Lite spec uses a SINGULAR
-  // `mark` together with `encoding`. If we see the Vega-Lite discriminator and
-  // NO `marks` array, this plugin must NOT claim it — otherwise the Vega
-  // runtime is handed a body with no marks/scales and paints a SILENT BLANK
-  // CANVAS (vega-w4-07). Returning false lets vega-lite-renderer (priority 8)
-  // claim and render it correctly.
-  if (
-    spec.mark && !Array.isArray(spec.mark) &&
-    spec.encoding && typeof spec.encoding === 'object' &&
-    !Array.isArray(spec.marks)
-  ) {
+  // (D-273/D-277) A Vega-Lite BODY defers to the Vega-Lite plugin even when a
+  // `$schema` substring or explicit marker says "vega": if this plugin claimed
+  // it, the Vega runtime would paint a SILENT BLANK CANVAS (vega-w4-07).
+  // Returning false lets vega-lite-renderer (priority 8) claim and render it.
+  if (isVegaLiteBody(spec)) {
     return false;
   }
 
@@ -230,8 +250,20 @@ export function sanitizeVegaSchemes(spec: any): number {
     if (!node || typeof node !== 'object') return;
     if (Array.isArray(node)) { node.forEach(walk); return; }
     // Full-Vega form: scales[].range.scheme. Vega-Lite form: <channel>.scale.scheme.
-    if (node.range && typeof node.range === 'object') dropIfUnknown(node.range);
-    if (node.scale && typeof node.scale === 'object') dropIfUnknown(node.scale);
+    if (node.range && typeof node.range === 'object' && !Array.isArray(node.range)) {
+      dropIfUnknown(node.range);
+      // Dropping the scheme can leave `range:{}` — an EMPTY range object, which
+      // is ITSELF a fatal Vega error ("Undefined data set name: undefined")
+      // that merely swaps one blank canvas for another. Remove the emptied
+      // container so the scale falls back to Vega's DEFAULT categorical scheme
+      // (a visible, coloured chart) — the intended recovery for vega-w4-14's
+      // bespoke `{scheme:'ziyaDark'}`.
+      if (Object.keys(node.range).length === 0) delete node.range;
+    }
+    if (node.scale && typeof node.scale === 'object' && !Array.isArray(node.scale)) {
+      dropIfUnknown(node.scale);
+      if (Object.keys(node.scale).length === 0) delete node.scale;
+    }
     for (const k in node) {
       if (Object.prototype.hasOwnProperty.call(node, k)) walk(node[k]);
     }
@@ -323,6 +355,167 @@ export function extendRecycledOrdinalSchemes(spec: any): number {
 }
 
 /**
+ * (D-248) Reconcile a HARDCODED monochrome text-label fill against the
+ * categorical fill it actually sits on.
+ *
+ * A `text` mark whose fill is a constant near-white or near-black `value`, drawn
+ * on top of a sibling mark that fills from a categorical colour SCALE, is
+ * illegible over the fills that clash with the label: white labels vanish on the
+ * light cells of tableau10/category10 (white on #edc949 = 1.16:1, on #ff9da7 =
+ * 1.42:1), black labels vanish on the dark ones. The native-Vega path never
+ * reconciled a label colour against the per-datum fill beneath it (the sibling
+ * of the chartTheme.ts contrast guard the d3 chart engines already use).
+ *
+ * Rewrite that constant fill to a per-datum Vega expression that picks black or
+ * white by WCAG `contrast()` against the ACTUAL scale colour under each label
+ * (`contrast` and `scale` are Vega expression built-ins). Because it takes the
+ * higher-contrast of black/white, the chosen label clears >= 4.58:1 against ANY
+ * fill (the black/white crossover minimum) - readable on every cell in BOTH
+ * themes, since the categorical fills are theme-independent.
+ *
+ * Gated hard so it can only ever help:
+ *   - the text mark's fill is a constant near-white/near-black hex/keyword,
+ *   - a SIBLING mark in the same marks[] scope shares the text mark's
+ *     `from.data` and fills from `{scale:<s>, field:<f>}` (a real categorical
+ *     backdrop), with `<f>` a plain field string.
+ * Standalone text (titles, totals, un-backed annotations) is never touched.
+ * PURE + exported for unit testing. Returns the number of labels rewritten.
+ */
+export function isMonochromeLabelValue(v: any): boolean {
+  if (typeof v !== 'string') return false;
+  const s = v.trim().toLowerCase();
+  return s === '#fff' || s === '#ffffff' || s === 'white'
+    || s === '#000' || s === '#000000' || s === 'black';
+}
+
+export function reconcileVegaTextLabelContrast(spec: any): number {
+  let rewritten = 0;
+  const ENC_PHASES = ['enter', 'update'];
+  const walk = (marks: any): void => {
+    if (!Array.isArray(marks)) return;
+    // Map from.data name -> {scale, field} of a categorical-scale-filled mark.
+    const backdrop: Record<string, { scale: string; field: string }> = {};
+    for (const m of marks) {
+      if (!m || typeof m !== 'object' || m.type === 'text' || !m.encode) continue;
+      const dataName = m.from && typeof m.from === 'object' ? m.from.data : undefined;
+      if (typeof dataName !== 'string') continue;
+      for (const phase of ENC_PHASES) {
+        const f = m.encode[phase] && m.encode[phase].fill;
+        if (f && typeof f === 'object' && typeof f.scale === 'string' && typeof f.field === 'string') {
+          backdrop[dataName] = { scale: f.scale, field: f.field };
+          break;
+        }
+      }
+    }
+    for (const m of marks) {
+      if (!m || typeof m !== 'object') continue;
+      if (m.type === 'text' && m.encode && typeof m.encode === 'object') {
+        const dataName = m.from && typeof m.from === 'object' ? m.from.data : undefined;
+        const bd = typeof dataName === 'string' ? backdrop[dataName] : undefined;
+        if (bd) {
+          for (const phase of ENC_PHASES) {
+            const holder = m.encode[phase];
+            const f = holder && holder.fill;
+            if (f && typeof f === 'object' && !Array.isArray(f) && isMonochromeLabelValue(f.value)) {
+              const cell = `scale('${bd.scale}', datum['${bd.field}'])`;
+              holder.fill = {
+                signal: `contrast('#ffffff', ${cell}) >= contrast('#000000', ${cell}) ? '#ffffff' : '#000000'`,
+              };
+              rewritten += 1;
+            }
+          }
+        }
+      }
+      if (Array.isArray(m.marks)) walk(m.marks);
+    }
+  };
+  if (spec && typeof spec === 'object') walk(spec.marks);
+  return rewritten;
+}
+
+/**
+ * (D-268) Suppress an ILLEGIBLE data-bound text-label layer.
+ *
+ * Band/heatmap specs frequently pair a data mark (rect/symbol) with a
+ * co-indexed `{type:'text', from.data}` label mark. Axis ticks are auto-thinned
+ * by the `config.axis.labelOverlap` default (D-280/D-281), but DATA-BOUND text
+ * marks receive NO decimation, NO labelOverlap and no warning — so 400 value
+ * labels at ~2.25px pitch (vega-w2-01) or 6000 in-cell labels at ~3px
+ * (vega-w2-11) pile into an unreadable texture that also obscures the marks
+ * beneath. At these densities no per-label thinning survives (even keeping every
+ * Nth leaves sub-pixel type), so the correct decluttering is to HIDE the whole
+ * label layer — the bars/cells, axes and legend still render as a real chart.
+ *
+ * The bound row count is knowable statically for the two shapes that produce it:
+ * an inline `values` array (its length) and a `sequence` transform (its
+ * derivable count). When that count exceeds `maxLegibleLabels` — a hard ceiling
+ * on how many text labels can EVER be individually legible in a normal content
+ * column, regardless of layout — the text mark's `opacity` is set to 0. Every
+ * other spec (a text mark with no resolvable count, or a modest labelled bar
+ * chart) is left byte-for-byte unchanged, so this can only ever declutter an
+ * already-illegible layer. Theme-independent (opacity, not colour). PURE +
+ * exported for unit testing. Returns the number of label layers suppressed.
+ */
+export function estimateVegaDataRowCount(dataDef: any): number | null {
+  if (!dataDef || typeof dataDef !== 'object') return null;
+  if (Array.isArray(dataDef.values)) return dataDef.values.length;
+  if (Array.isArray(dataDef.transform)) {
+    for (const t of dataDef.transform) {
+      if (
+        t && typeof t === 'object' && t.type === 'sequence' &&
+        typeof t.start === 'number' && typeof t.stop === 'number'
+      ) {
+        const step = typeof t.step === 'number' && t.step !== 0 ? t.step : 1;
+        const n = Math.ceil((t.stop - t.start) / step);
+        if (n > 0) return n;
+      }
+    }
+  }
+  return null;
+}
+
+export function thinDenseDataBoundTextMarks(spec: any, maxLegibleLabels = 150): number {
+  if (!spec || typeof spec !== 'object' || !Array.isArray(spec.marks)) return 0;
+  const counts: Record<string, number> = {};
+  if (Array.isArray(spec.data)) {
+    for (const d of spec.data) {
+      if (d && typeof d.name === 'string' && d.name) {
+        const n = estimateVegaDataRowCount(d);
+        if (n != null) counts[d.name] = n;
+      }
+    }
+  }
+  let suppressed = 0;
+  const walk = (marks: any): void => {
+    if (!Array.isArray(marks)) return;
+    for (const m of marks) {
+      if (!m || typeof m !== 'object') continue;
+      if (
+        m.type === 'text' &&
+        m.from && typeof m.from === 'object' && typeof m.from.data === 'string'
+      ) {
+        const n = counts[m.from.data];
+        if (typeof n === 'number' && n > maxLegibleLabels) {
+          if (!m.encode || typeof m.encode !== 'object' || Array.isArray(m.encode)) m.encode = {};
+          // Target the phase that actually paints (`update`, else `enter`),
+          // creating `update` when neither is present. normalizeVegaEncodeLifecycle
+          // runs first, so a bare-channel encode is already wrapped by now.
+          let phase: any;
+          if (m.encode.update && typeof m.encode.update === 'object') phase = m.encode.update;
+          else if (m.encode.enter && typeof m.encode.enter === 'object') phase = m.encode.enter;
+          else { m.encode.update = {}; phase = m.encode.update; }
+          phase.opacity = { value: 0 };
+          suppressed += 1;
+        }
+      }
+      if (Array.isArray(m.marks)) walk(m.marks);
+    }
+  };
+  walk(spec.marks);
+  return suppressed;
+}
+
+/**
  * (D-273) Rewrite the two mechanical Vega v2 dialect shapes to their v3+ form
  * so a v2-authored spec renders instead of dying with an internal
  * "Cannot read properties of undefined" TypeError that names neither field:
@@ -347,6 +540,27 @@ export function rewriteVegaV2Dialect(spec: any): any {
     }
   }
 
+  // v2 positional `ordinal` scales ARE the v3+ band/point scales: a v2 ordinal
+  // scale with `points:false` is a band scale and `points:true` a point scale
+  // (the split arrived in v3). `points` is not a valid key on ANY v3+ scale, so
+  // its presence is an unambiguous v2 marker — convert the type and drop it. A
+  // genuine v3+ ordinal (colour) scale never carries `points`, so a modern spec
+  // is byte-for-byte unchanged. Without this a v2 ordinal positional scale
+  // survives as a pure DISCRETE ordinal whose bandwidth is 0, so `band`-driven
+  // rect widths collapse to zero-width (invisible) bars — vega-w4-10 rendered 3
+  // zero-width rects after only the properties/axes rewrites.
+  if (Array.isArray(spec.scales)) {
+    for (const sc of spec.scales) {
+      if (
+        sc && typeof sc === 'object' && sc.type === 'ordinal' &&
+        Object.prototype.hasOwnProperty.call(sc, 'points')
+      ) {
+        sc.type = sc.points ? 'point' : 'band';
+        delete sc.points;
+      }
+    }
+  }
+
   // v2 marks describe their visual properties under `properties`; v3+ use
   // `encode`. Recurse so nested group-mark children are rewritten too.
   const walkMarks = (marks: any): void => {
@@ -356,6 +570,22 @@ export function rewriteVegaV2Dialect(spec: any): any {
       if (m.properties && typeof m.properties === 'object' && !m.encode) {
         m.encode = m.properties;
         delete m.properties;
+      }
+      // v2 `band:true` (a BOOLEAN) on a positional channel means "one full
+      // band"; v3+ expects a numeric multiplier and treats a non-number as no
+      // band (width 0). Coerce the strict boolean `true` to `1` so a
+      // band-scaled rect receives full bandwidth. A numeric `band` is left
+      // untouched, so a modern spec is unchanged.
+      if (m.encode && typeof m.encode === 'object' && !Array.isArray(m.encode)) {
+        for (const set of Object.values(m.encode)) {
+          if (set && typeof set === 'object') {
+            for (const ch of Object.values(set as any)) {
+              if (ch && typeof ch === 'object' && (ch as any).band === true) {
+                (ch as any).band = 1;
+              }
+            }
+          }
+        }
       }
       if (Array.isArray(m.marks)) walkMarks(m.marks);
     }
@@ -411,6 +641,31 @@ export function reconcileVegaThemeBackground(spec: any, isDarkMode: boolean): an
   if (isDarkMode && spec.background !== undefined && isLightColor(spec.background)) {
     delete spec.background;
   }
+  return spec;
+}
+
+/**
+ * (D-227) Apply the shared theme-colour reconciliation (background polarity +
+ * invisible guide-colour nudge + themed text-mark default) that vega-embed's
+ * named 'dark' theme does NOT perform for AUTHORED guide colours, on the NATIVE
+ * Vega render path.
+ *
+ * The native path previously imported only tolerantParseVegaSpec +
+ * KNOWN_VEGA_SCHEMES, so an authored axis/legend `labelColor`/`gridColor`/
+ * `tickColor`/`domainColor`/`titleColor` reached the runtime verbatim and, on
+ * the dark panel (#333), a near-black authored guide colour was invisible while
+ * the marks survived. reconcileThemeColors resolves the effective canvas from
+ * the ACTIVE theme and nudges ONLY a guide colour measuring < 3:1 on that canvas
+ * up to a themed readable value; a guide colour that already clears the floor is
+ * left untouched, so LIGHT-mode specs whose guides are already legible are
+ * unchanged (no light-theme regression). Thin exported wrapper so the wiring is
+ * unit-testable without a DOM/vega-embed instance; the try/catch keeps
+ * reconciliation from ever breaking a render. Mutates and returns spec.
+ */
+export function reconcileVegaGuideColors(spec: any, isDarkMode: boolean): any {
+  try {
+    reconcileThemeColors(spec, isDarkMode);
+  } catch { /* theme-colour reconciliation must never itself break a render */ }
   return spec;
 }
 
@@ -599,6 +854,69 @@ export function applyVegaMinimalDefaults(spec: any): any {
   return spec;
 }
 
+// Positional geometry channels grouped by the axis whose extent they define.
+const VEGA_GEOM_AXES: Record<'x' | 'y', string[]> = {
+  x: ['x', 'x2', 'xc', 'width'],
+  y: ['y', 'y2', 'yc', 'height'],
+};
+
+/**
+ * (D-270) Coalesce a mark's SPLIT positional geometry across encode phases.
+ *
+ * A rect/area/bar whose extent along an axis is authored with its DRIVING bound
+ * in `update` (e.g. `y` bound to a data field) and its BASELINE bound only in
+ * `enter` (e.g. `y2:{value:0}`) renders with NO extent under the v6 runtime:
+ * the item's geometry is recomputed from the channels present in the painting
+ * (`update`) phase, and with only one bound of the pair the rect collapses and
+ * is not drawn. vega-w1-14 exhibited exactly this — bars absent while the axes,
+ * gridlines, threshold rule and (correctly-rewritten) caption all rendered —
+ * which earlier triage misattributed to the let()/method-call expression
+ * rewrites (those are correct; a constant-fill repro with the same split still
+ * dropped every bar). Authoring a reactive `y` in `update` beside a static `y2`
+ * baseline in `enter` is a common, valid Vega pattern, so it must be supported.
+ *
+ * Fix: for each positional axis (X = x/x2/xc/width, Y = y/y2/yc/height), when
+ * `update` drives AT LEAST ONE channel of that axis, mirror any channel of the
+ * SAME axis that lives ONLY in `enter` into `update`. `enter` runs first with
+ * the same value, so duplicating it forward is semantically inert; a channel
+ * already present in `update` is never overwritten (a reactive update value is
+ * preserved). The painting phase then holds the complete geometry pair and the
+ * mark draws.
+ *
+ * No-op for: a mark with no `update`; an `update` that touches no positional
+ * channel of a given axis (the common "geometry in `enter` + reactive fill in
+ * `update`" shape is left byte-for-byte unchanged); or an `update` that already
+ * defines the axis fully. PURE + exported for unit testing.
+ */
+export function coalesceVegaSplitGeometry(spec: any): any {
+  if (!spec || typeof spec !== 'object') return spec;
+  const walk = (marks: any): void => {
+    if (!Array.isArray(marks)) return;
+    for (const m of marks) {
+      if (!m || typeof m !== 'object') continue;
+      const enc = m.encode;
+      if (
+        enc && typeof enc === 'object' && !Array.isArray(enc) &&
+        enc.enter && typeof enc.enter === 'object' && !Array.isArray(enc.enter) &&
+        enc.update && typeof enc.update === 'object' && !Array.isArray(enc.update)
+      ) {
+        for (const chans of Object.values(VEGA_GEOM_AXES)) {
+          const updateDrivesAxis = chans.some((c) => c in enc.update);
+          if (!updateDrivesAxis) continue;
+          for (const c of chans) {
+            if (c in enc.enter && !(c in enc.update)) {
+              enc.update[c] = enc.enter[c];
+            }
+          }
+        }
+      }
+      if (Array.isArray(m.marks)) walk(m.marks);
+    }
+  };
+  walk(spec.marks);
+  return spec;
+}
+
 /**
  * Decide which marks to keep when rendering a Vega spec.
  *
@@ -747,9 +1065,16 @@ export function renderVegaErrorPlaceholder(
  *
  * PURE + exported for unit testing (no DOM / no vega-embed instance required).
  */
-export function buildVegaEmbedOptions(isDarkMode: boolean): EmbedOptions {
+export function buildVegaEmbedOptions(
+  isDarkMode: boolean,
+  mode: 'vega' | 'vega-lite' = 'vega',
+): EmbedOptions {
   const opts: EmbedOptions = {
-    mode: 'vega' as const,
+    // (D-229) A Vega-LITE body delivered under a Vega envelope/$schema is
+    // compiled with vega-embed's Vega-Lite mode; an explicit `mode` overrides
+    // the spec's (misleading) $schema, so a mark-less VL body no longer reaches
+    // the Vega runtime as a silent blank canvas.
+    mode,
     actions: false,
     theme: isDarkMode ? 'dark' : undefined,
     renderer: 'svg',
@@ -799,17 +1124,34 @@ export function computeReTickDimensions(
   authoredW: number,
   authoredH: number,
   containerW: number,
-  opts?: { minLegibleWidth?: number; maxLegibleWidth?: number; fallbackWidth?: number },
+  opts?: {
+    minLegibleWidth?: number;
+    maxLegibleWidth?: number;
+    fallbackWidth?: number;
+    minLegibleShortAxis?: number;
+  },
 ): { width: number; height: number } | null {
   const minW = opts?.minLegibleWidth ?? 200;
   const maxW = opts?.maxLegibleWidth ?? 1600;
   const fallbackW = opts?.fallbackWidth ?? 700;
+  // (D-221) Short-axis legibility floor. The re-tick preserves the authored
+  // aspect ratio, so an extreme-WIDE canvas (vega-w2-07 2400×90, ~26:1)
+  // re-ticks to a ~700×26 strip whose axis labels/title stay sub-legible even
+  // AFTER the re-tick — the "no text floor" gap this cluster is named for.
+  // When the SHORT axis of the re-tick target falls below the floor, lift it so
+  // Vega RE-LAYS OUT the chart at a legible size (a taller re-layout, not a
+  // pixel stretch). targetW is already clamped to >= minLegibleWidth (>= the
+  // floor), so only the derived height can fall below it — a wide/large canvas
+  // whose re-tick height already clears the floor (w2-10 3600×2600 → 506) and a
+  // tall canvas (w2-08 110×1600, short axis = width) are left EXACTLY as before.
+  const minShort = opts?.minLegibleShortAxis ?? 160;
   if (!(authoredW > 0) || !(authoredH > 0)) return null;
   // Normal authored width → leave untouched (no re-tick, no regression).
   if (authoredW >= minW && authoredW <= maxW) return null;
   const target = containerW > 0 ? containerW : fallbackW;
   const targetW = Math.min(maxW, Math.max(minW, Math.round(target)));
-  const targetH = Math.max(1, Math.round(authoredH * (targetW / authoredW)));
+  let targetH = Math.max(1, Math.round(authoredH * (targetW / authoredW)));
+  if (targetH < minShort) targetH = minShort;
   return { width: targetW, height: targetH };
 }
 
@@ -928,14 +1270,32 @@ export const vegaPlugin: D3RenderPlugin = {
       vegaSpec = rest;
     }
 
+    // (D-229) A Vega-LITE body delivered under a Vega envelope
+    // ({type:'vega', definition:{…}}) or a Vega $schema: a SINGULAR `mark` +
+    // `encoding` and NO `marks[]` array. isVegaSpec already recognises this
+    // shape and declines an UNWRAPPED VL body so vega-lite-renderer claims it —
+    // but the WRAPPER form reaches this plugin via canHandle's
+    // `type==='vega' && definition` short-circuit and is claimed HERE, and
+    // vega-lite-renderer would not claim the wrapper either, so deferral is
+    // impossible. Feeding a mark-less body to the Vega runtime paints a silent
+    // blank canvas (vega-w4-07). Detect it and compile with vega-embed's
+    // Vega-Lite mode below (mode overrides the misleading $schema).
+    // (D-229/D-277) Same discriminator isVegaSpec() uses to DECLINE an unwrapped
+    // VL body, applied here to the WRAPPED body canHandle claimed, so the two
+    // sites cannot drift. A match compiles below in vega-embed's 'vega-lite'
+    // mode (mode overrides the misleading $schema).
+    const vlBody = isVegaLiteBody(vegaSpec);
+
     // Normalise schema — any older Vega schema (v2..v5) must point to v6 to
     // match the installed runtime. (D-273) Widened from a v5-only test to "any
     // /vega/ schema that isn't already v6" so a v2 dialect spec no longer keeps
     // a stale schema URL that trips a version mismatch before the mechanical
-    // v2→v3 rewrites below can help it.
-    if (!vegaSpec.$schema || (typeof vegaSpec.$schema === 'string' &&
+    // v2→v3 rewrites below can help it. (D-229) Skipped for a Vega-Lite body —
+    // its schema must NOT be rewritten to a Vega URL; it is compiled in
+    // Vega-Lite mode where the (unchanged) $schema is inert.
+    if (!vlBody && (!vegaSpec.$schema || (typeof vegaSpec.$schema === 'string' &&
         vegaSpec.$schema.includes('/vega/') &&
-        !vegaSpec.$schema.includes('vega-lite') && !vegaSpec.$schema.includes('v6'))) {
+        !vegaSpec.$schema.includes('vega-lite') && !vegaSpec.$schema.includes('v6')))) {
       vegaSpec.$schema = 'https://vega.github.io/schema/vega/v6.json';
     }
     // (D-273) Rewrite the mechanical Vega v2 dialect shapes (marks.properties →
@@ -951,11 +1311,40 @@ export const vegaPlugin: D3RenderPlugin = {
     vegaSpec = normalizeVegaEncodeLifecycle(vegaSpec);
     vegaSpec = applyVegaMinimalDefaults(vegaSpec);
 
+    // (D-270) Coalesce split positional geometry so a mark whose driving bound
+    // lives in `update` and its baseline only in `enter` (a valid, common
+    // authoring shape) keeps a COMPLETE geometry pair in the painting phase.
+    // Without this the v6 runtime recomputes the item's extent from the update
+    // phase alone and, seeing one bound, collapses the mark to nothing
+    // (vega-w1-14: bars dropped). No-op for a mark whose update touches no
+    // positional channel (geometry-in-enter + reactive-fill-in-update).
+    vegaSpec = coalesceVegaSplitGeometry(vegaSpec);
+
     // (D-287) In dark mode, drop a *light* authored top-level background so the
     // dark theme's own dark panel applies and its whitened guides regain
     // contrast (a light bg + dark-theme-whitened guides = white-on-white). Light
     // mode and dark-on-dark are untouched.
     vegaSpec = reconcileVegaThemeBackground(vegaSpec, isDarkMode);
+
+    // (D-227) Run the SAME theme-colour reconciliation the Vega-Lite plugin
+    // applies, on the NATIVE Vega path. Until now vegaPlugin imported only
+    // tolerantParseVegaSpec + KNOWN_VEGA_SCHEMES, so authored GUIDE colours
+    // (axis/legend labelColor / gridColor / tickColor / domainColor / titleColor)
+    // reached the runtime unadapted: on the dark panel #333 a near-black
+    // authored guide colour is invisible — vega-w4-12 labelColor rgb(70,70,70)
+    // =1.34:1 and gridColor rgba(0,0,0,.12)=1.66:1, vega-w4-13 labelColor
+    // dimgray=2.30:1 — so whole axes/gridlines vanish while the marks survive.
+    // reconcileThemeColors resolves the effective canvas from the ACTIVE theme
+    // and nudges ONLY a guide colour that actually measures < 3:1 on that canvas
+    // up to a themed readable value (#e8e8e8 on the dark card = 10.31:1); a guide
+    // colour that already clears the floor is left verbatim, so LIGHT mode (where
+    // these same colours measure 9.44 / 21.0 / 5.49:1 on white) is byte-for-byte
+    // unchanged and there is no light-theme regression. It also drops a
+    // wrong-polarity background (the both-directions superset of D-287's
+    // dark-only drop) and sets a themed config.text default. Wrapped so
+    // reconciliation can never itself break a render. No-op for a spec with no
+    // sub-floor guide colours.
+    vegaSpec = reconcileVegaGuideColors(vegaSpec, isDarkMode);
 
     // (Issue 34) Sanitize degenerate graph/geometry data BEFORE the runtime
     // touches it: drop force-`link` links whose endpoint doesn't resolve to a
@@ -986,6 +1375,27 @@ export const vegaPlugin: D3RenderPlugin = {
     try {
       extendRecycledOrdinalSchemes(vegaSpec);
     } catch { /* palette extension must never itself break a render */ }
+
+    // (D-248) Reconcile a hardcoded monochrome text-label fill against the
+    // categorical fill beneath it, so labels (e.g. a treemap's per-cell names)
+    // stay legible on both the light and dark cells of a categorical scheme in
+    // BOTH themes instead of a constant white/black that vanishes on the clashing
+    // half. Runs AFTER extendRecycledOrdinalSchemes so the label expression reads
+    // the final (explicit) scale colours. No-op for un-backed / non-constant
+    // labels.
+    try {
+      reconcileVegaTextLabelContrast(vegaSpec);
+    } catch { /* label reconciliation must never itself break a render */ }
+
+    // (D-268) Suppress a data-bound text-label layer whose bound row count
+    // (inline `values` length or a `sequence` transform's derivable count)
+    // exceeds what can EVER be legibly placed in a content column — 400 value
+    // labels at ~2.25px pitch (w2-01), 6000 in-cell labels at ~3px (w2-11) —
+    // where the labels are pure illegible texture over the marks. No-op for a
+    // modest labelled chart or a text mark with no resolvable count.
+    try {
+      thinDenseDataBoundTextMarks(vegaSpec);
+    } catch { /* label thinning must never itself break a render */ }
 
     container.innerHTML = '';
     container.style.position = 'relative';
@@ -1054,7 +1464,12 @@ export const vegaPlugin: D3RenderPlugin = {
     // (D-286) Dark branch injects a readable default text-mark fill so raw
     // {type:'text'} annotation marks (which vega-embed's 'dark' theme never
     // restyles) are visible on the dark panel instead of default-black 1.66:1.
-    const embedOptions: EmbedOptions = buildVegaEmbedOptions(isDarkMode);
+    // (D-229) Compile a Vega-Lite body in Vega-Lite mode; every other spec
+    // keeps the Vega runtime path unchanged.
+    const embedOptions: EmbedOptions = buildVegaEmbedOptions(
+      isDarkMode,
+      vlBody ? 'vega-lite' : 'vega',
+    );
 
     const result = await Promise.race([
       vegaEmbed(renderDiv, vegaSpec, embedOptions),
