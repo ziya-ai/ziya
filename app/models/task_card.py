@@ -83,6 +83,15 @@ class TaskScope(BaseModel):
     # Only meaningful alongside model_name/model_id_override — combining
     # model_tier with an endpoint override still resolves portably.
     model_endpoint: Optional[str] = None
+    # Bedrock service tier for this task's model calls.  A Task Card run
+    # requests the discounted ``flex`` tier for everything by default
+    # (``ZIYA_TASK_SERVICE_TIER``); this pins one subtree differently —
+    # ``default`` (standard latency, standard billing) for a gating task
+    # the rest of the run waits on, ``priority`` for something
+    # latency-critical, or ``flex`` to opt a task back in when the run
+    # has the tier disabled.  Ignored by providers that have no tiers.
+    # Merge rule: last non-null wins (most specific), like model_tier.
+    service_tier: Optional[Literal["flex", "default", "priority"]] = None
     # Per-task shell command grants.  Each entry is either a literal
     # first-token match (e.g. "pytest" grants any pytest invocation)
     # or, with a "re:" prefix, a regex against the full command line
@@ -139,7 +148,8 @@ def merge_scopes(*scopes: "Optional[TaskScope]") -> "Optional[TaskScope]":
         grant the outer layer made.
       - ``cwd``: last non-null value wins (most specific).
       - ``model_tier`` / ``model_name`` / ``model_id_override`` /
-        ``model_endpoint``: last non-null value wins (most specific),
+        ``model_endpoint`` / ``service_tier``: last non-null value wins
+        (most specific),
         same rule as ``cwd`` — a task runs on exactly one model, so a
         leaf's own choice overrides an ancestor's, but an ancestor's
         choice still applies to sibling leaves that set nothing.
@@ -157,6 +167,7 @@ def merge_scopes(*scopes: "Optional[TaskScope]") -> "Optional[TaskScope]":
     model_name: Optional[str] = None
     model_id_override: Optional[str] = None
     model_endpoint: Optional[str] = None
+    service_tier: Optional[str] = None
     for s in present:
         for entry in s.paths or []:
             key = entry.path
@@ -197,6 +208,8 @@ def merge_scopes(*scopes: "Optional[TaskScope]") -> "Optional[TaskScope]":
             model_id_override = s.model_id_override
         if getattr(s, "model_endpoint", None):
             model_endpoint = s.model_endpoint
+        if getattr(s, "service_tier", None):
+            service_tier = s.service_tier
     return TaskScope(
         paths=list(paths_by_key.values()),
         cwd=cwd, tools=tools, skills=skills,
@@ -204,6 +217,7 @@ def merge_scopes(*scopes: "Optional[TaskScope]") -> "Optional[TaskScope]":
         shell_timeout_secs=shell_timeout_secs,
         model_tier=model_tier, model_name=model_name,
         model_id_override=model_id_override, model_endpoint=model_endpoint,
+        service_tier=service_tier,
     )
 
 
@@ -495,11 +509,25 @@ class TaskCard(BaseModel):
     scope: Optional[TaskScope] = None
     tags: List[str] = []
     is_template: bool = False
+    # Unlisted card.  It exists only so its blocks have persisted ids that a
+    # signed approval can key on — signing has always needed ids, it never
+    # needed a deck entry.  Filtered out of every listing (see
+    # TaskCardStorage.list) until an explicit save promotes it.
+    draft: bool = False
     source: str = "custom"  # custom | builtin | project
     created_at: int = 0
     updated_at: int = 0
     last_run_at: Optional[int] = None
     run_count: int = 0
+    # Monotonic definition version.  Bumped by TaskCardStorage.update ONLY
+    # when the block tree or scope actually changes — not on metadata-only
+    # edits (name/description/tags) and not on run bookkeeping
+    # (record_run).  Stamped into TaskRun.card_snapshot at launch so a run
+    # tile can show which version it executed against the deck card's
+    # current version, making post-edit drift legible.  A scope change
+    # that invalidates signing is therefore always a version increment.
+    # Defaults to 1 so cards written before this field load as v1.
+    version: int = 1
 
 
 # ── CRUD models ───────────────────────────────────────────
@@ -512,6 +540,9 @@ class TaskCardCreate(BaseModel):
     scope: Optional[TaskScope] = None
     tags: List[str] = []
     is_template: bool = False
+    # Create unlisted: lets the proposal panel mint signable block ids
+    # without putting the card in the user's deck (see TaskCard.draft).
+    draft: bool = False
 
 
 class TaskCardUpdate(BaseModel):
@@ -522,6 +553,9 @@ class TaskCardUpdate(BaseModel):
     scope: Optional[TaskScope] = None
     tags: Optional[List[str]] = None
     is_template: Optional[bool] = None
+    # Promotion in practice — the UI only ever sets this to False.  Partial,
+    # so an update that omits it leaves the card as it was.
+    draft: Optional[bool] = None
 
 
 class TaskCardRun(BaseModel):
