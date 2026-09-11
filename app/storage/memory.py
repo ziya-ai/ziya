@@ -308,6 +308,14 @@ class MemoryStorage:
         self._save_memories(memories)
         logger.info(f"🗑️ Memory deleted: {memory_id}")
 
+        # Keep mindmap.json consistent: a node advertising a ref to a
+        # deleted memory inflates the system-prompt counts and makes
+        # memory_expand return nothing for a domain that claims content.
+        try:
+            self._detach_from_mindmap(memory_id)
+        except Exception as e:
+            logger.warning(f"Mind-map detach failed for {memory_id}: {e}")
+
         # Remove embedding from cache
         try:
             from app.services.embedding_service import remove_embedding
@@ -353,7 +361,12 @@ class MemoryStorage:
                 )
                 semantic_ranked = []  # fall through to keyword path
             else:
-                semantic_ranked = semantic_search(query, top_k=limit * 2)
+                # The cache also holds vectors for proposals and for
+                # memories that have since been deleted or archived.
+                # Restrict ranking to the ids this search can return so
+                # top_k is not consumed by rows that get filtered below.
+                semantic_ranked = semantic_search(
+                    query, top_k=limit * 2, include_ids=set(active_ids))
         except Exception as e:
             logger.debug(f"Semantic search unavailable: {e}")
 
@@ -385,6 +398,30 @@ class MemoryStorage:
                     math.log(n_docs / doc_freq.get(qt, 1)) + 1.0
                     for qt in q_tokens if qt in content_tokens
                 )
+                # iter-5 [H13 retrievability]: a snake_case identifier such as
+                # ``run_post_conversation_extraction`` survives _tokenize as ONE
+                # opaque token (underscores are the only separator _tokenize
+                # keeps), so a natural-language query ("post conversation
+                # extraction") token-matches none of them and the memory that
+                # actually NAMES the queried entity scores 0 on word_score and
+                # never surfaces top-3.  Expand each underscore-compound content
+                # token into its parts and award PARTIAL (half-IDF) credit when a
+                # query token matches only via a part.  Purely ADDITIVE: it can
+                # only RAISE the score of a memory that names the queried entity
+                # via a compound identifier — it never removes an existing full
+                # match nor touches memories whose content has no compound token,
+                # so ranking of non-compound content is unchanged.
+                content_subtokens = {
+                    part
+                    for tok in content_tokens if "_" in tok
+                    for part in tok.split("_")
+                    if len(part) > 2 and part not in content_tokens
+                }
+                subtoken_score = sum(
+                    0.5 * (math.log(n_docs / doc_freq.get(qt, 1)) + 1.0)
+                    for qt in q_tokens
+                    if qt not in content_tokens and qt in content_subtokens
+                ) if content_subtokens else 0.0
                 tag_score = sum(
                     3.0 for qt in q_tokens
                     if any(qt == tag or qt in tag for tag in mem_tags)
@@ -392,7 +429,8 @@ class MemoryStorage:
                 phrase_score = 5.0 if q_lower in content_lower else 0.0
                 layer_score = 1.0 if q_lower in m.get("layer", "") else 0.0
 
-                raw_score = word_score + tag_score + phrase_score + layer_score
+                raw_score = (word_score + subtoken_score + tag_score
+                             + phrase_score + layer_score)
                 if raw_score <= 0:
                     continue
 
@@ -626,6 +664,140 @@ class MemoryStorage:
             self.save(memory)
             return best_id
         return None
+
+    def _detach_from_mindmap(self, memory_id: str) -> int:
+        """Remove ``memory_id`` from every node's memory_refs.
+
+        Returns the number of nodes touched.  A memory may be referenced
+        by more than one node (cross-placement), so all nodes are swept.
+        """
+        nodes = self._load_mindmap()
+        touched = 0
+        for n in nodes.values():
+            refs = n.get("memory_refs", [])
+            if memory_id in refs:
+                n["memory_refs"] = [r for r in refs if r != memory_id]
+                touched += 1
+        if touched:
+            self._save_mindmap(nodes)
+        return touched
+
+    def repair_mindmap(self) -> Dict[str, int]:
+        """Restore the invariant  ``memory_refs ⊆ active memory ids``.
+
+        Four idempotent passes:
+          1. drop refs to memories that are deleted or not active;
+          1b. merge root nodes whose handles are the same domain
+              (case/whitespace-insensitive) into one node;
+          2. place active memories that no node references (before
+             pruning, so a tag-matching empty node receives them);
+          3. prune nodes with no refs and no children, repeating until
+             stable so a subtree that only ever referenced deleted
+             memories disappears root and all.
+        """
+        result = {"dangling_refs_removed": 0, "empty_nodes_removed": 0,
+                  "placed": 0, "roots_merged": 0}
+        nodes = self._load_mindmap()
+        if not nodes:
+            return result
+        active_rows = [m for m in self._load_memories()
+                       if m.get("status", "active") == "active"]
+        active_ids = {m.get("id") for m in active_rows}
+
+        # 1. Dangling refs (and children entries pointing at missing nodes).
+        for n in nodes.values():
+            refs = n.get("memory_refs", [])
+            kept = [r for r in refs if r in active_ids]
+            result["dangling_refs_removed"] += len(refs) - len(kept)
+            n["memory_refs"] = kept
+            n["children"] = [c for c in n.get("children", []) if c in nodes]
+        self._save_mindmap(nodes)
+
+        # 1b. Duplicate roots.
+        result["roots_merged"] = self._merge_duplicate_roots(nodes)
+        self._save_mindmap(nodes)
+
+        # 2. Place unplaced active memories.
+        placed_ids = {r for n in nodes.values() for r in n.get("memory_refs", [])}
+        for row in active_rows:
+            if row.get("id") not in placed_ids:
+                if self.place_memory_in_mindmap(Memory(**row)):
+                    result["placed"] += 1
+
+        # 3. Prune empty leaves until stable.
+        nodes = self._load_mindmap()
+        while True:
+            empty = [nid for nid, n in nodes.items()
+                     if not n.get("memory_refs") and not n.get("children")]
+            if not empty:
+                break
+            for nid in empty:
+                parent = nodes[nid].get("parent")
+                if parent in nodes:
+                    nodes[parent]["children"] = [
+                        c for c in nodes[parent].get("children", []) if c != nid]
+                del nodes[nid]
+            result["empty_nodes_removed"] += len(empty)
+        if result["empty_nodes_removed"]:
+            self._save_mindmap(nodes)
+        return result
+
+    @staticmethod
+    def _normalize_handle(handle: str) -> str:
+        return " ".join((handle or "").lower().split())
+
+    def _merge_duplicate_roots(self, nodes: Dict[str, dict]) -> int:
+        """Fold roots sharing a normalized handle into one.  Mutates ``nodes``
+        in place (caller saves).  Returns the number of roots absorbed.
+
+        Survivor: the root whose id does not carry a ``_N`` suffix if one
+        exists, else the first by id.  Refs, tags, children and cross_links
+        are unioned; access stats take the max; children are reparented;
+        memories whose ``scope.domain_node`` pointed at an absorbed root are
+        re-pointed at the survivor.
+        """
+        groups: Dict[str, List[str]] = {}
+        for nid, n in nodes.items():
+            if n.get("parent") is None:
+                groups.setdefault(self._normalize_handle(n.get("handle")), []).append(nid)
+
+        absorbed_to_survivor: Dict[str, str] = {}
+        for _, ids in groups.items():
+            if len(ids) < 2:
+                continue
+            ids.sort()
+            unsuffixed = [i for i in ids if not re.search(r"_\d+$", i)]
+            survivor_id = unsuffixed[0] if unsuffixed else ids[0]
+            surv = nodes[survivor_id]
+            for nid in ids:
+                if nid == survivor_id:
+                    continue
+                other = nodes[nid]
+                for key in ("memory_refs", "tags", "children", "cross_links"):
+                    merged = list(dict.fromkeys(surv.get(key, []) + other.get(key, [])))
+                    surv[key] = [x for x in merged if x != survivor_id]
+                for child in other.get("children", []):
+                    if child in nodes:
+                        nodes[child]["parent"] = survivor_id
+                surv["access_count"] = max(surv.get("access_count", 0),
+                                           other.get("access_count", 0))
+                surv["last_accessed"] = max(surv.get("last_accessed", ""),
+                                            other.get("last_accessed", ""))
+                absorbed_to_survivor[nid] = survivor_id
+                del nodes[nid]
+
+        if absorbed_to_survivor:
+            # Re-point memory scopes at the survivor.
+            memories = self._load_memories()
+            changed = []
+            for row in memories:
+                dn = (row.get("scope") or {}).get("domain_node")
+                if dn in absorbed_to_survivor:
+                    row["scope"]["domain_node"] = absorbed_to_survivor[dn]
+                    changed.append(row)
+            if changed:
+                self._save_memories(memories)
+        return len(absorbed_to_survivor)
     # -- Profile -------------------------------------------------------------
 
     def get_profile(self) -> MemoryProfile:

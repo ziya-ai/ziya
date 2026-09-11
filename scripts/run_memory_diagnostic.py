@@ -130,11 +130,11 @@ def _wrap_call_service_model(real_fn):
 
 def _wrap_extract_memories(real_fn):
     async def wrapped(stripped_conversation, existing_memories,
-                      project_name=None, project_path=None):
+                      project_name=None, project_path=None, hints=None):
         window_idx = len(TRACE["windows"])
         result = await real_fn(stripped_conversation, existing_memories,
                                project_name=project_name,
-                               project_path=project_path)
+                               project_path=project_path, hints=hints)
         TRACE["windows"].append({
             "window_index": window_idx,
             "stripped_chars": len(stripped_conversation),
@@ -201,7 +201,7 @@ def _diagnose_gate_rejection(content: str, tags: List[str]) -> str:
     matching reason -- if multiple gates would fire, only the first is
     reported (which matches the actual gate's short-circuit behavior).
     """
-    from app.utils.memory_extractor import (
+    from app.memory.extractor import (
         MIN_CONTENT_CHARS, MAX_CONTENT_CHARS,
         _DANGLING_REF_RE, _CODE_ARTIFACT_RE, _FILE_REF_RE,
         _CSS_PATTERN_RE, _REFACTORING_RE, _CODE_DESCRIPTION_RE, _CAREER_RE,
@@ -253,8 +253,8 @@ def _wrap_compare_memory(real_fn):
 async def run_diagnostic(chat_id_or_substring: str, output_dir: Path) -> int:
     _bootstrap_plugins()
 
-    from app.utils.memory_eval import iter_random_conversations
-    from app.utils.memory_extractor import (
+    from app.memory.eval import iter_random_conversations
+    from app.memory.extractor import (
         run_post_conversation_extraction,
         _count_salience_hits,
     )
@@ -332,8 +332,8 @@ async def run_diagnostic(chat_id_or_substring: str, output_dir: Path) -> int:
 
     # Wrap the seams
     from app.services import model_resolver
-    from app.utils import memory_extractor
-    from app.utils import memory_comparator
+    from app.memory import extractor as memory_extractor
+    from app.memory import comparator as memory_comparator
 
     real_call = model_resolver.call_service_model
     real_extract = memory_extractor.extract_memories
@@ -341,8 +341,25 @@ async def run_diagnostic(chat_id_or_substring: str, output_dir: Path) -> int:
     real_compare = memory_comparator.compare_memory
 
     t0 = time.time()
+    # Sandbox the activity counter so the diagnostic never writes the real
+    # ~/.ziya/memory/activity_counter.json.  extractor._next_activity_count
+    # increments a real file on every extraction run (unpatched, this leaked
+    # a real-store write during diagnosis); lifecycle.current_activity_count
+    # only reads it.  Both are redirected to an in-process counter here.
+    import itertools as _itertools
+    _sandbox_counter = _itertools.count(1)
+    _sandbox_counter_val = {"n": 0}
+    def _sandbox_next_activity_count():
+        _sandbox_counter_val["n"] = next(_sandbox_counter)
+        return _sandbox_counter_val["n"]
+    def _sandbox_current_activity_count():
+        return _sandbox_counter_val["n"]
     try:
-        with patch("app.storage.proposals.get_proposals_store",
+        with patch("app.memory.extractor._next_activity_count",
+                   side_effect=_sandbox_next_activity_count), \
+             patch("app.memory.lifecycle.current_activity_count",
+                   side_effect=_sandbox_current_activity_count), \
+             patch("app.storage.proposals.get_proposals_store",
                    return_value=sandbox_proposals), \
              patch("app.storage.memory.get_memory_storage",
                    return_value=sandbox_memory), \
@@ -352,11 +369,11 @@ async def run_diagnostic(chat_id_or_substring: str, output_dir: Path) -> int:
                    return_value=True), \
              patch("app.services.model_resolver.call_service_model",
                    side_effect=_wrap_call_service_model(real_call)), \
-             patch("app.utils.memory_extractor.extract_memories",
+             patch("app.memory.extractor.extract_memories",
                    side_effect=_wrap_extract_memories(real_extract)), \
-             patch("app.utils.memory_extractor.quality_gate",
+             patch("app.memory.extractor.quality_gate",
                    side_effect=_wrap_quality_gate(real_quality)), \
-             patch("app.utils.memory_comparator.compare_memory",
+             patch("app.memory.comparator.compare_memory",
                    side_effect=_wrap_compare_memory(real_compare)):
             result = await run_post_conversation_extraction(
                 messages, conversation_id=chat.chat_id,
