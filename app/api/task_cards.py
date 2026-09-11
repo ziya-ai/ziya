@@ -49,9 +49,15 @@ def _get_storage(project_id: str) -> TaskCardStorage:
 async def list_task_cards(
     project_id: str,
     templates_only: bool = Query(False),
+    include_drafts: bool = Query(False),
 ):
-    """List all task cards in a project, optionally templates only."""
-    return _get_storage(project_id).list(templates_only=templates_only)
+    """List task cards in a project, optionally templates only.
+
+    Drafts are excluded by default — see TaskCardStorage.list.  Signing a
+    draft goes through the by-id scope-status endpoint unchanged.
+    """
+    return _get_storage(project_id).list(
+        templates_only=templates_only, include_drafts=include_drafts)
 
 
 @router.get("/lessons-summary")
@@ -506,6 +512,7 @@ async def _launch_run_for_card(
     resume_iteration_artifacts: dict = None,
     resume_iteration_summaries: list = None,
     resume_call_chain: list = None,
+    resume_card_version: int = None,
 ) -> TaskRun:
     """Shared helper: validates the card, creates a TaskRun, seeds
     block_states, and schedules the background executor task.
@@ -642,6 +649,11 @@ async def _launch_run_for_card(
     run = run_storage.create(TaskRunCreate(
         card_id=card_id,
         source_conversation_id=source_conversation_id,
+        # Every caller of this helper is a user action (the /launch and
+        # binding endpoints, resume-from-block, /goal resume), so the run
+        # has a live HITL channel.  Explicit rather than relying on the
+        # default, so the contrast with the scheduler's headless is legible.
+        launch_context="interactive",
         # Recorded on the run alongside card_snapshot so the run is
         # reproducible from its own record.  ExecutionContext.overrides
         # (seeded below) is in-memory only and outranks State blocks, so
@@ -732,6 +744,17 @@ async def _launch_run_for_card(
         run_storage.set_card_snapshot(run.id, {
             "name": card.name,
             "description": card.description,
+            # For a RESUME, ``root_block`` is the source run's snapshot
+            # tree, so the honest version is the source's — carried in via
+            # ``resume_card_version`` — not the live card's, which may have
+            # moved on since.  A fresh launch executes the live card, so
+            # ``card.version`` is exact.  ``None`` only when a pre-
+            # versioning source run is resumed: that tree's version is
+            # genuinely unrecorded, and inventing one would misattribute.
+            "version": (
+                resume_card_version if resume_root is not None
+                else getattr(card, "version", 1)
+            ),
             # ``root_block``, not ``card.root``: a resumed run must
             # snapshot the tree it actually executes (the source run's
             # snapshot), or its own block_states would be keyed by ids
