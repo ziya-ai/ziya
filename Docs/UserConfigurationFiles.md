@@ -50,7 +50,7 @@ startup stage it reached, so you can tell whose problem it is:
 
 | Stage | Meaning |
 |---|---|
-| `config` | A client exists but connection was never attempted. |
+| `config` | A client exists but connection was never attempted — either nothing has started it yet, or its configuration could not be prepared (see below). |
 | `preflight` | The command or script does not exist on this machine. No process was started, which is why the Logs tab has nothing to show. |
 | `spawn` | The process was launched but died before the MCP handshake. The Logs tab has its stderr and exit code. |
 | `handshake` | The server answered `initialize` but stalled while listing its tools, resources, or prompts. |
@@ -63,6 +63,24 @@ of the modal explains why, naming the offending key and its line number.
 A `preflight` failure shows a card naming what was searched and how to install
 the missing launcher. Because nothing was spawned, an empty Logs tab is the
 expected result rather than a sign that log capture is broken.
+
+A `spawn` failure whose launcher could not find the runtime it needs is named
+directly: a wrapper script that runs `node`, `python3`, `uvx` and so on exits
+immediately with code 127, and the card reports the missing runtime and how to
+install it. This is common with launchers that are themselves present — the
+command exists, so preflight passes; the interpreter it goes on to run does not.
+
+A malformed entry — a null or non-object `env`, a bad `auth` block — is
+contained to itself. It appears at stage `config` with the error that stopped
+it, and every other server still starts. Two nulls are tolerated rather than
+fatal: a null `env` is ignored with a warning, and a null `args` means no
+arguments (any other non-array value is still coerced to a single string
+argument, which is rarely what was intended).
+
+A registry install that cannot start is reported as a failure and its config
+entry is removed, so a server you were told was installed always has a reason
+if it isn't working. Install the dependency named in the error and install it
+again; downloaded files are kept, so the retry is fast.
 
 After installing a missing command, click **Reload Config** to re-check —
 cached per-server details are discarded so you see the fresh result.
@@ -83,4 +101,16 @@ Restricts or extends the models available in the model picker.
 
 Project templates and the default-template preference for new projects. See
 [Project Templates](ProjectTemplates.md).
+
+## `~/.ziya/pricing.json`
+
+Your own model prices and rate plan for cost accounting — internal transfer
+prices, negotiated rates, prices for models newer than the built-in table.
+Entries here win over the shipped catalog. See
+[Cost Accounting](CostAccounting.md).
+
+## `~/.ziya/usage.db`
+
+Not configuration — the usage ledger (SQLite) that cost accounting reads
+and writes. Safe to delete; you lose history, nothing else.
 

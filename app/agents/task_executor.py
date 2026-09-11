@@ -26,7 +26,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from ..models.task_card import Block, Artifact
 
@@ -59,6 +59,56 @@ class TaskInfraError(TaskExecutorError):
         super().__init__(message)
         self.infra_kind = infra_kind
         self.block_id = block_id
+
+
+def _read_launch_context(storage: Any, run_id: Optional[str]) -> str:
+    """Best-effort read of a run's ``launch_context``; defaults interactive.
+
+    A missing storage/run_id (unit tests, direct calls outside a run) or any
+    read failure yields ``"interactive"`` — the safe default that preserves
+    the long-standing clamp-and-continue behaviour and grants no escalation
+    either way.  A read failure must never escalate a headless hold onto an
+    interactive run or vice versa; when in doubt, behave as interactive.
+    """
+    if storage is None or not run_id:
+        return "interactive"
+    try:
+        run = storage.get(run_id)
+        return getattr(run, "launch_context", "interactive") or "interactive"
+    except Exception as e:  # noqa: BLE001
+        logger.debug("launch_context read failed: %s", e)
+        return "interactive"
+
+
+def enforce_unsigned_escalation_policy(
+    launch_context: str, block_name: str, block_id: str,
+) -> None:
+    """Decide whether a run may CONTINUE after an unsigned escalation.
+
+    Called only once ``authorize_scope`` has already floored the scope (an
+    escalation was requested but no signed approval matched).  The floor is
+    applied by the caller regardless; this decides continuation:
+
+      * interactive — return (clamp-and-continue).  A user launched the run
+        and the frontend launch gate surfaces the signing need; running at
+        the floor is the acceptable, long-standing behaviour.
+      * headless (scheduler cron/trigger) — raise ``TaskInfraError`` with
+        ``infra_kind="scope_unsigned"``.  No one is watching to sign
+        mid-run, so shipping a silently-neutered run nobody asked for is
+        worse than stopping.  The kind is truthy but deliberately NOT in
+        ``INFRA_ERROR_KINDS``, so the run is HELD (resumable once the card
+        is signed out of band) but never auto-retried — a retry without a
+        signature would only re-clamp and hold again.
+    """
+    if launch_context == "headless":
+        raise TaskInfraError(
+            f"Task {block_name!r} requests a scope escalation that is not "
+            f"signed, and this run is headless (no interactive channel to "
+            f"approve it mid-run). Sign the card with ziya-approve, then "
+            f"resume the run.",
+            infra_kind="scope_unsigned",
+            block_id=block_id or "",
+        )
 
 
 def _validate_task_block(block: Block) -> None:
@@ -377,6 +427,18 @@ async def execute_task_block(
         from app.utils.scope_approvals import authorize_scope
         _authz = authorize_scope(block.id, scope)
         if _authz is not scope:
+            # authorize_scope returns the SAME object when the scope is
+            # authorized or carries no escalation, and a NEW floored view
+            # only for an unsigned escalation — so identity-difference here
+            # means "a real escalation was requested and is unsigned".
+            # Whether the run may then RUN clamped depends on how it was
+            # launched: an interactive run clamps-and-continues (the gate
+            # surfaces signing), a headless run holds rather than shipping
+            # a neutered run silently.  See enforce_unsigned_escalation_policy.
+            enforce_unsigned_escalation_policy(
+                _read_launch_context(_hb_storage, run_id),
+                block.name or "", block.id or "",
+            )
             logger.warning(
                 f"🔒 TASK_EXEC: scope escalation for block {block.id!r} "
                 f"({block.name!r}) is not authorized — running at default floor"
@@ -390,6 +452,7 @@ async def execute_task_block(
     scope_model_name = (getattr(scope, "model_name", None) if scope else None)
     scope_model_id_override = (getattr(scope, "model_id_override", None) if scope else None)
     scope_model_endpoint = (getattr(scope, "model_endpoint", None) if scope else None)
+    scope_service_tier = (getattr(scope, "service_tier", None) if scope else None)
 
     # Resolve an effective project root for this task.  ``scope.cwd``
     # is interpreted relative to the caller's project_root and must
@@ -669,6 +732,7 @@ async def execute_task_block(
         set_task_readable_paths, reset_task_readable_paths,
         set_task_shell_commands, reset_task_shell_commands,
         get_task_iteration_context,
+        set_usage_attribution, reset_usage_attribution,
     )
     writable_grant: List[dict] = []
     readable_grant: List[dict] = []
@@ -715,6 +779,11 @@ async def execute_task_block(
         readable_grant.append({"path": blackboard_dir, "is_dir": True})
     scope_token = set_task_writable_paths(writable_grant or None)
     read_token = set_task_readable_paths(readable_grant or None)
+    # Cost-ledger attribution: rows written during this task body carry
+    # source=task plus run/block ids (app/cost/meter.py).
+    usage_attr_token = set_usage_attribution(
+        {"source": "task", "run_id": run_id, "block_id": block.id}
+    )
     # Per-task shell command grants (Slice B).  Stored on the scope as
     # a list of strings; bare strings are literal first-token grants,
     # ``re:`` prefix turns the rest into a regex against the full
@@ -734,6 +803,22 @@ async def execute_task_block(
     shell_timeout_token = set_task_shell_timeout(
         getattr(scope, "shell_timeout_secs", None)
     )
+    # Per-task Bedrock service tier.  The run root sets the default for
+    # every call in the run (block_executor.execute_block); a task's
+    # scope may pin this one task differently.  "default" means the
+    # standard tier, which providers express by sending no tier at all
+    # — so it becomes None here, not the string.  Only set when the
+    # scope asks, so an unscoped task inherits the run-level value.
+    from ..context import set_task_service_tier, reset_task_service_tier
+    service_tier_token = None
+    if scope_service_tier:
+        _tier_value = None if scope_service_tier == "default" else scope_service_tier
+        service_tier_token = set_task_service_tier(_tier_value)
+        decisions.append(f"scope: service tier = {scope_service_tier!r}")
+        logger.info(
+            f"📋 TASK_EXEC: {block.name!r} service tier pinned to "
+            f"{scope_service_tier!r} (run default overridden)"
+        )
     # Open the output-artifact collector for this task, alongside the
     # permission grants and reset in the same ``finally``.  The
     # emit_artifact builtin appends ArtifactPart-shaped dicts here;
@@ -1032,10 +1117,13 @@ async def execute_task_block(
                     block_id=block.id or "",
                 )
     finally:
+        reset_usage_attribution(usage_attr_token)
         reset_task_writable_paths(scope_token)
         reset_task_readable_paths(read_token)
         reset_task_shell_commands(shell_token)
         reset_task_shell_timeout(shell_timeout_token)
+        if service_tier_token is not None:
+            reset_task_service_tier(service_tier_token)
         # Drain declared outputs in the same finally that resets the
         # grants, so the collector can never leak across task
         # boundaries even on error paths.
