@@ -1,7 +1,7 @@
 import { D3RenderPlugin } from '../../types/d3';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
-import { enhanceSVGVisibility, isLightBackground } from '../../utils/colorUtils';
+import { enhanceSVGVisibility, isLightBackground, calculateContrastRatio } from '../../utils/colorUtils';
 import { zoomIn, zoomOut, resetZoom, storeOriginalViewBox } from '../../utils/zoomUtils';
 import { downloadSvg } from '../../utils/svgUtils';
 import { escapeHtml } from '../../utils/htmlSanitize';
@@ -31,7 +31,27 @@ import { getZoomScript, getDownloadSvgScript } from '../../utils/popupScriptUtil
  * text is still enhanced (D-133/D-136/D-137 machinery), and the shared enhancer
  * is unchanged for every other engine.
  */
-export const GRAPHVIZ_ENHANCER_SKIP_SELECTORS = ['g.edge text'];
+// D-284: a cluster label on an UNFILLED cluster (style not `filled`) floats
+// directly over the panel with no fill sibling. The shared enhancer's
+// findElementBackground finds no cluster background shape (the border polygon
+// is fill="none") and its background sampling is unreliable for such a floating
+// label — the same failure class as the edge-label misfire (D-125) — so it
+// could strand the (correctly white) cluster label. As with edge labels, we
+// tell the enhancer to leave cluster-label text alone and instead guarantee its
+// legibility with the plugin's own per-theme logic (the fill-gated dark loop
+// plus retintStrandedClusterLabels below).
+export const GRAPHVIZ_ENHANCER_SKIP_SELECTORS = ['g.edge text', 'g.cluster text'];
+
+/**
+ * Matches a DOT graph header — the opening `(strict )?(di)?graph NAME {` — used
+ * to anchor the theme-attribute injection. D-286: the optional `strict` prefix
+ * MUST be admitted, else `strict graph` / `strict digraph` specs bypass theme
+ * injection entirely (no bgcolor=transparent, no node/edge/graph defaults),
+ * leaving viz.js's stock white root polygon and black node peripheries. Case-
+ * insensitive; NOT global, so it is safe to reuse for both `.match()` and a
+ * single `.replace()` of the opening.
+ */
+export const GRAPHVIZ_GRAPH_HEADER_RE = /^(\s*(?:strict\s+)?(?:di)?graph\s+[^{]*{)/i;
 
 export interface GraphvizSpec {
     type: 'graphviz';
@@ -141,6 +161,20 @@ export const GRAPHVIZ_PT_TO_PX = 96 / 72;
 export const GRAPHVIZ_MIN_FONT_SCALE = 0.5;
 
 /**
+ * D-119 (node-label-subpixel-at-high-density): the smallest label size, in CSS
+ * px, that is still legible in a headless capture. The 0.5 default floor above
+ * presumes the plugin's ~16px injected base font (0.5 * 16 = 8px = this floor).
+ * A graph whose AUTHORED font is smaller than the default — e.g. a 120-node
+ * `circo` ring with `fontsize=8` (~10.7px) — dissolves at that fixed scale
+ * because 0.5 * 10.7 ~= 5.3px, well under 8px, so its labels antialias to
+ * sub-pixel mush (worst in dark: white glyphs on a mid-tone fill vanish
+ * entirely). When the natural min font size is known, the floor is raised so
+ * the SMALLEST label stays at or above this many px (scroll at a legible scale
+ * instead of shrinking the text away). See `planGraphvizViewport`.
+ */
+export const GRAPHVIZ_MIN_LEGIBLE_FONT_PX = 8;
+
+/**
  * A graph is only UPSCALED when it is at most ~2/3 of the container width
  * (fitScale >= 1.5). Between 2/3 and full width the render is already
  * comfortable and is left exactly as-is, so ordinary diagrams are untouched.
@@ -176,9 +210,31 @@ export function planGraphvizViewport(
     naturalWpx: number,
     naturalHpx: number,
     containerWpx: number,
-    opts: { minFontScale?: number; upscaleMinFitScale?: number; maxUpscale?: number } = {}
+    opts: {
+        minFontScale?: number;
+        upscaleMinFitScale?: number;
+        maxUpscale?: number;
+        /** Natural (unscaled) size in CSS px of the SMALLEST label in the graph.
+         *  When known, the shrink floor is raised so this label stays legible;
+         *  omit for the historic behaviour (floor presumes a ~16px base). */
+        naturalMinFontPx?: number;
+    } = {}
 ): GraphvizViewportPlan {
-    const minFontScale = opts.minFontScale ?? GRAPHVIZ_MIN_FONT_SCALE;
+    const baseMinFontScale = opts.minFontScale ?? GRAPHVIZ_MIN_FONT_SCALE;
+    // D-119: the fixed 0.5 floor presumes the ~16px injected base font, so a
+    // graph whose authored font is smaller (e.g. `fontsize=8` -> ~10.7px)
+    // dissolves — 0.5 * 10.7px ~= 5.3px, under the 8px legibility floor. When
+    // the natural min font size is known, raise the floor to whatever scale
+    // keeps the SMALLEST label >= GRAPHVIZ_MIN_LEGIBLE_FONT_PX, so a dense
+    // small-font graph scrolls at a legible scale rather than shrinking its
+    // labels into sub-pixel mush. Never LOWER below the safe default (a
+    // large-font graph keeps 0.5) and never exceed 1 (a graph already at/under
+    // the floor is not shrunk at all).
+    const nf = opts.naturalMinFontPx;
+    const minFontScale =
+        typeof nf === 'number' && Number.isFinite(nf) && nf > 0
+            ? Math.min(1, Math.max(baseMinFontScale, GRAPHVIZ_MIN_LEGIBLE_FONT_PX / nf))
+            : baseMinFontScale;
     const upscaleMin = opts.upscaleMinFitScale ?? GRAPHVIZ_UPSCALE_MIN_FITSCALE;
     const maxUpscale = opts.maxUpscale ?? GRAPHVIZ_MAX_UPSCALE;
 
@@ -217,6 +273,28 @@ export function planGraphvizViewport(
 
     // Comfortably-sized graph: leave exactly as-is (no unrelated-output change).
     return { mode: 'natural', svgWidthPx: naturalWpx, effectiveScale: 1, scroll: false };
+}
+
+/**
+ * D-119: smallest label font size (CSS px) among a set of `<text>` font-size
+ * strings. Viz.js emits each label's size as a `font-size="8.00"` attribute (or
+ * `12px` when the plugin injects a default). Pure and side-effect-free so the
+ * font-floor logic is unit-testable without a live SVG: pass the raw font-size
+ * strings, get back the minimum positive px value, or 0 when none is parseable
+ * (caller then omits `naturalMinFontPx`, preserving the historic 0.5 floor).
+ */
+export function readGraphvizMinFontPx(fontSizeStrings: Array<string | null | undefined>): number {
+    let min = 0;
+    for (const s of fontSizeStrings) {
+        if (!s) continue;
+        const m = String(s).match(/-?[0-9]*\.?[0-9]+/);
+        if (!m) continue;
+        const n = parseFloat(m[0]);
+        if (Number.isFinite(n) && n > 0) {
+            min = min === 0 ? n : Math.min(min, n);
+        }
+    }
+    return min;
 }
 
 /**
@@ -343,6 +421,26 @@ export function normalizeGraphvizSingleQuotes(input: string): string {
     return input.replace(/=\s*'([^'\n]*)'/g, (_m, v) => `="${v}"`);
 }
 
+/** Quote an UNQUOTED MULTIWORD attribute value (`label=Build Step`). Legal DOT
+ *  requires any value containing whitespace to be quoted, so an unquoted
+ *  multiword value is a hard parse error — Viz.js aborts at the second word
+ *  (`syntax error ... near 'Step'`) which, with no synchronous error channel,
+ *  surfaced only as the 30s watchdog timeout (D-125, spec graphviz-w4-15: the
+ *  unquoted label rode in on an unwrapped JSON envelope). Fires only on a
+ *  `name = word word...` run terminated by `,`, `;` or `]`; a single-word value
+ *  (`shape=box`, `rankdir=LR`) and an already-quoted value are left untouched.
+ *  Runs on string-masked input so label text and existing quoted values are
+ *  never matched. Pure and idempotent. */
+export function normalizeGraphvizUnquotedMultiwordValues(input: string): string {
+    if (typeof input !== 'string' || input.length === 0) return input;
+    const { masked, tokens } = maskDotStrings(input);
+    const out = masked.replace(
+        /(=\s*)([A-Za-z_][\w.#-]*(?:[ \t]+[A-Za-z_][\w.#-]*)+)(?=\s*[,;\]])/g,
+        (_m, eq: string, val: string) => `${eq}"${val.replace(/[ \t]+/g, ' ').trim()}"`,
+    );
+    return unmaskDotStrings(out, tokens);
+}
+
 /** Reconcile the edge operator with the graph keyword: a `digraph` must use
  *  `->`, an undirected `graph` must use `--`. A mismatch is a hard parse error
  *  in Viz.js. Runs on string-masked input so label text is never rewritten. */
@@ -426,10 +524,80 @@ export function normalizeGraphvizSetlinewidth(input: string): string {
     });
 }
 
+/** Mask HTML-like labels (`label=<...>`, nesting allowed) into the same token
+ *  stream used by maskDotStrings, so identifier rewrites never touch them. */
+function maskDotHtmlLabels(s: string, tokens: string[]): string {
+    let out = '';
+    let i = 0;
+    while (i < s.length) {
+        const m = /=\s*</.exec(s.slice(i));
+        if (!m) { out += s.slice(i); break; }
+        const start = i + m.index + m[0].length - 1; // index of the opening '<'
+        out += s.slice(i, start);
+        let depth = 0;
+        let j = start;
+        for (; j < s.length; j++) {
+            if (s[j] === '<') depth++;
+            else if (s[j] === '>') { depth--; if (depth === 0) { j++; break; } }
+        }
+        tokens.push(s.slice(start, j));
+        out += `\u0000${tokens.length - 1}\u0000`;
+        i = j;
+    }
+    return out;
+}
+
+const DOT_KEYWORD_RE = /^(?:node|edge|graph|digraph|subgraph|strict)$/i;
+
+/**
+ * Quote bare node IDs that collide with a DOT keyword. Keywords are
+ * case-insensitive, so `EDGE [label=...]` lexes as an edge attr_stmt with an
+ * illegal body and Viz.js aborts with `syntax error ... near 'EDGE'`. A node ID
+ * is recognised when the identifier is an operand of an edge operator
+ * (`-> EDGE`, `EDGE ->`), or when a non-lowercase spelling (`Node`, `EDGE`)
+ * starts a node_stmt — attr_stmt keywords are conventionally lowercase. Every
+ * occurrence of that exact spelling is then quoted (`"EDGE"`), except a
+ * lowercase spelling immediately followed by `[`, which stays an attr_stmt.
+ * `a -> subgraph x {...}` is legal DOT and left alone. Runs on string- and
+ * HTML-label-masked input; pure and idempotent.
+ */
+export function quoteGraphvizKeywordNodeIds(input: string): string {
+    if (typeof input !== 'string' || input.length === 0) return input;
+    if (!/\b(?:node|edge|graph|digraph|subgraph|strict)\b/i.test(input)) return input;
+    const { masked: strMasked, tokens } = maskDotStrings(input);
+    let masked = maskDotHtmlLabels(strMasked, tokens);
+
+    const spellings = new Set<string>();
+    const idRe = /[A-Za-z_][A-Za-z_0-9]*/g;
+    let m: RegExpExecArray | null;
+    while ((m = idRe.exec(masked)) !== null) {
+        const w = m[0];
+        if (!DOT_KEYWORD_RE.test(w)) continue;
+        const before = masked.slice(0, m.index).replace(/\s+$/, '');
+        const after = masked.slice(m.index + w.length).replace(/^\s+/, '');
+        const afterEdgeOp = /(?:->|--)$/.test(before);
+        const beforeEdgeOp = /^(?:->|--)/.test(after);
+        if (afterEdgeOp && /^subgraph$/i.test(w) && /^(?:[A-Za-z_]\w*\s*)?\{/.test(after)) continue;
+        if (afterEdgeOp || beforeEdgeOp) { spellings.add(w); continue; }
+        if (w !== w.toLowerCase() && /^(?:\[|;|\}|$)/.test(after)) spellings.add(w);
+    }
+    if (spellings.size === 0) return input;
+
+    for (const w of spellings) {
+        const re = new RegExp(`(?<![\\w"\\u0000])${w}(?![\\w"\\u0000])`, 'g');
+        masked = masked.replace(re, (mm, off: number, str: string) => {
+            if (w === w.toLowerCase() && /^\s*\[/.test(str.slice(off + w.length))) return mm;
+            return `"${w}"`;
+        });
+    }
+    return unmaskDotStrings(masked, tokens);
+}
+
 /**
  * Full lexical recovery pipeline (D-127). Ordered so masking is correct:
  * fence/envelope -> smart quotes -> single-quote attrs -> setlinewidth ->
- * dialect -> node groups -> brace balance. Idempotent; a no-op on clean DOT.
+ * dialect -> keyword node ids -> node groups -> brace balance. Idempotent; a
+ * no-op on clean DOT.
  */
 export function repairGraphvizSource(input: string): string {
     if (typeof input !== 'string' || input.length === 0) return input;
@@ -438,8 +606,10 @@ export function repairGraphvizSource(input: string): string {
     out = unwrapGraphvizJsonEnvelope(out);
     out = normalizeGraphvizSmartQuotes(out);
     out = normalizeGraphvizSingleQuotes(out);
+    out = normalizeGraphvizUnquotedMultiwordValues(out);
     out = normalizeGraphvizSetlinewidth(out);
     out = repairGraphvizEdgeDialect(out);
+    out = quoteGraphvizKeywordNodeIds(out);
     out = repairGraphvizNodeGroups(out);
     out = balanceGraphvizBraces(out);
     return out;
@@ -868,13 +1038,21 @@ export const graphvizPlugin: D3RenderPlugin = {
             
             console.log('themedDot before theme application:', themedDot.substring(0, 100));
 
-            // Only add theme attributes if the graph has a proper structure
-            if (processedDefinition.match(/^(\s*(?:di)?graph\s+[^{]*{)/)) {
+            // Only add theme attributes if the graph has a proper structure.
+            // D-286: admit an optional leading `strict` keyword. `strict graph`
+            // / `strict digraph` headers were NOT matched by the previous
+            // ^(\s*(?:di)?graph...) regex, so theme injection (bgcolor,
+            // node/edge/graph defaults) was skipped entirely for strict graphs.
+            // The consequence: viz.js kept the root fill=white (a spurious frame
+            // in light; in dark it darkened to a lighter box the palette was not
+            // tuned against, ~1.56:1) and node peripheries kept stock black
+            // strokes. Allowing `strict` restores the full DOT-side theming.
+            if (GRAPHVIZ_GRAPH_HEADER_RE.test(processedDefinition)) {
                 // Set default text color based on page mode
                 const defaultTextColor = isDarkMode ? '#ffffff' : '#000000';
 
                 themedDot = processedDefinition.replace(
-                    /^(\s*(?:di)?graph\s+[^{]*{)/,
+                    GRAPHVIZ_GRAPH_HEADER_RE,
                     `$1
                     bgcolor="transparent";
                     node [color="${colors.nodeBorder}", style="filled", fillcolor="${colors.nodeFill}", penwidth=1.5];
@@ -926,7 +1104,43 @@ export const graphvizPlugin: D3RenderPlugin = {
                                 // Store the fact that we changed this color
                                 el.setAttribute('data-original-fill', originalFill);
                                 el.setAttribute('data-darkened', 'true');
+                            } else if (isEffectivelyTransparentFill(originalFill)) {
+                                // D-284: an unfilled cluster (style not 'filled')
+                                // has no fill to darken, so its authored/default
+                                // black label was left on the ~#1e1e1e panel at
+                                // 1.26:1. Rescue the cluster's own <text> against
+                                // the panel exactly as an unfilled node's text
+                                // (same panel-rescue predicate); node text and the
+                                // cyan cluster border are themed elsewhere.
+                                retintUnfilledNodeTextForDark(el);
+                            } else {
+                                // D-283 / graphviz-w3-10: a MID-luminance solid
+                                // cluster fill (e.g. #989898, sRGB lum 0.314 <
+                                // isLightBackground's 0.4 gate) is judged "already
+                                // dark" and KEPT, so neither branch above runs and
+                                // the authored #ffffff label is stranded on it at
+                                // 2.885:1. The fill is unchanged, so re-tint the
+                                // paired label against that very fill (black on
+                                // #989898 = 7.28:1); a label already clearing the
+                                // floor is left as-is.
+                                retintTextForKeptFill(el, originalFill, isDarkMode ? '#ffffff' : '#000000');
                             }
+                        } else {
+                            // D-053 / graphviz-w2-05: the dark branch above never runs in
+                            // LIGHT, so a cluster whose authored border colour equals (or
+                            // barely contrasts with) its own fill -- e.g. color=lightgrey
+                            // on a lightgrey fill (1.0:1) -- has an invisible border and 12
+                            // nested clusters collapse into one flat box. Mirror the dark
+                            // re-stroke: re-stroke with the themed border when the current
+                            // stroke fails the 3:1 graphical floor against the cluster fill.
+                            restrokeInvisibleClusterBorder(el, colors.clusterBorder);
+                            // D-283 / graphviz-w3-10 (light): the same mid-luminance
+                            // kept fill strands its authored #ffffff label at 2.885:1
+                            // on the LIGHT canvas too (this fill is never darkened in
+                            // either theme). Re-tint the paired label against the fill
+                            // so both themes clear the floor; measured against the fill
+                            // itself, so the choice is identical in both themes.
+                            retintTextForKeptFill(el, originalFill, isDarkMode ? '#ffffff' : '#000000');
                         }
                     }
                 }
@@ -937,8 +1151,35 @@ export const graphvizPlugin: D3RenderPlugin = {
                 const el = elements[i];
 
                 if (el.tagName === 'ellipse' || el.tagName === 'polygon') {
+                    // D-285: the ROOT graph-background polygon (a direct child of
+                    // <g class="graph">, carrying an authored bgcolor) is NOT a
+                    // node, but this loop has no parent-class guard, so a
+                    // hardcoded light canvas (bgcolor="#ffffff") was darkened like
+                    // a node fill to a MID-grey slab (#666666, only 2.90:1 vs the
+                    // #1e1e1e panel). The fixed dark palette is tuned for the
+                    // panel, so on that slab pink edges (#f72585 -> 1.52:1) and
+                    // arrowheads fell under the 3:1 stroke floor. The plugin's
+                    // dark model is "graph sits on the panel" (it injects
+                    // bgcolor=transparent), so an authored LIGHT graph background
+                    // should collapse to the panel, not become a grey box. Make
+                    // it transparent in dark so the palette holds: pink edges
+                    // reach 4.41:1 and cyan borders 8.67:1 on the panel. Dark-only
+                    // (light keeps its authored white canvas, which is correct on
+                    // the light page and already verified). The graph label keeps
+                    // its injected white fontcolor (16.67:1 on the panel).
+                    if (neutralizeGraphBackgroundForDark(el, isDarkMode)) {
+                        continue; // neutralized to the panel; do not darken to a slab
+                    }
                     // Node shapes
-                    if (el.getAttribute('fill') !== 'none') {
+                    // D-124: fill="none" has no fill to darken, and a near-
+                    // transparent alpha fill (e.g. #ffffff00) composites over the
+                    // panel the same way -- neither carries a solid fill whose
+                    // darkening would trigger the label re-theme, and
+                    // isLightBackground ignores the 8-digit hex so the solid path
+                    // would leave the authored black text stranded on the dark
+                    // panel (1.26:1). Treat both as "unfilled" and route them to
+                    // the panel text-rescue instead.
+                    if (!isEffectivelyTransparentFill(el.getAttribute('fill'))) {
                         // Store the original fill color before we modify it
                         const originalFill = el.getAttribute('fill');
                         if (originalFill) {
@@ -979,11 +1220,25 @@ export const graphvizPlugin: D3RenderPlugin = {
                                 // to fills WE darkened, applied uniformly so siblings
                                 // sharing a default get the same treatment.
                                 retintNodeLabelForFill(el, darkColor);
+                            } else if (originalFill) {
+                                // D-283 / graphviz-w3-10: a MID-luminance solid
+                                // node fill (under isLightBackground's 0.4 gate)
+                                // is kept verbatim, so the branch above never
+                                // re-themes its label; re-tint the paired text
+                                // against the kept fill so an authored light-on-
+                                // mid label is not stranded below the text floor.
+                                retintTextForKeptFill(el, originalFill, isDarkMode ? '#ffffff' : '#000000');
                             }
 
                             // Set border color
                             el.setAttribute('stroke', colors.nodeBorder);
-                            el.setAttribute('stroke-width', '1.5');
+                            // D-280: preserve an authored penwidth (surfaced as the
+                            // laid-out stroke-width, e.g. setlinewidth(4)->penwidth=4
+                            // ->stroke-width="4") instead of flattening every node to
+                            // a constant 1.5 in dark, which erased the Thick/Thin
+                            // distinction the graph encodes. Supply the dark default
+                            // only when no width was laid out.
+                            preserveAuthoredStrokeWidth(el, '1.5');
                         }
                     } else if (isDarkMode) {
                         // D-137: an unfilled node (fill="none") has NO fill to
@@ -1010,6 +1265,27 @@ export const graphvizPlugin: D3RenderPlugin = {
                 });
                 console.log(`✅ Graphviz visibility enhanced:`, result);
             }, 300);
+
+            // D-053 / graphviz-w1-09: the shared enhancer SKIPS all edge-label
+            // <text> (GRAPHVIZ_ENHANCER_SKIP_SELECTORS) to avoid the D-125
+            // arrowhead-as-background misfire. That also stops it rescuing an
+            // AUTHORED dark edge fontcolor stranded on the dark panel. An edge
+            // label floats over the PAGE, so re-theme -- against the effective
+            // page background, not a sibling shape -- only a label that fails the
+            // text floor; theme-correct / injected labels clear it and are kept.
+            retintStrandedEdgeLabels(element, isDarkMode);
+
+            // D-284: rescue an UNFILLED cluster's label. The fill-gated dark loop
+            // above only re-themes a cluster label when it FINDS the cluster's
+            // border <polygon> and classifies it; an enhancer that now skips
+            // cluster text (see GRAPHVIZ_ENHANCER_SKIP_SELECTORS) will not touch
+            // it either. This sweep guarantees a cluster label that floats on the
+            // panel (its cluster carries no solid fill) is legible, resolved
+            // against the effective page background in whatever theme was
+            // rendered (white on the #1e1e1e panel = 16.67:1; black on the light
+            // page = 21:1). Filled clusters are left to the fill loop, which
+            // measures the label against the actual fill.
+            retintStrandedClusterLabels(element, isDarkMode);
             
             // Apply edge and path styling
             for (let i = 0; i < elements.length; i++) {
@@ -1020,7 +1296,9 @@ export const graphvizPlugin: D3RenderPlugin = {
                     if (!el.getAttribute('fill') || el.getAttribute('fill') === 'none') {
                         // Make sure edges are visible with high contrast color
                         el.setAttribute('stroke', colors.edgeColor);
-                        el.setAttribute('stroke-width', '1.5');
+                        // D-280: keep an authored edge penwidth instead of
+                        // clobbering it to a constant width in dark.
+                        preserveAuthoredStrokeWidth(el, '1.5');
                     }
                 } else if (el.tagName === 'polygon' && el.classList.contains('arrow')) {
                     // This is an arrowhead
@@ -1069,7 +1347,35 @@ export const graphvizPlugin: D3RenderPlugin = {
                     }
                     svgEl.setAttribute('preserveAspectRatio', 'xMidYMid meet');
                     const containerW = container.clientWidth || 1280;
-                    const plan = planGraphvizViewport(nat.w, nat.h, containerW);
+                    // D-119: measure the smallest label's natural font size so
+                    // the shrink floor keeps small-authored-font dense graphs
+                    // (e.g. a 120-node `circo` ring at fontsize=8) legible
+                    // instead of dissolving their labels below ~8px.
+                    let naturalMinFontPx = 0;
+                    try {
+                        const fontStrings: Array<string | null> = [];
+                        svgEl.querySelectorAll('text').forEach((t) => {
+                            const attr = t.getAttribute('font-size');
+                            if (attr) {
+                                fontStrings.push(attr);
+                            } else {
+                                try {
+                                    fontStrings.push(window.getComputedStyle(t).fontSize);
+                                } catch {
+                                    /* jsdom / no layout: attribute path suffices */
+                                }
+                            }
+                        });
+                        naturalMinFontPx = readGraphvizMinFontPx(fontStrings);
+                    } catch {
+                        naturalMinFontPx = 0;
+                    }
+                    const plan = planGraphvizViewport(
+                        nat.w,
+                        nat.h,
+                        containerW,
+                        naturalMinFontPx > 0 ? { naturalMinFontPx } : {}
+                    );
                     // Make the SVG fluid: drop the fixed pt width/height and drive
                     // size via CSS so preserveAspectRatio scales the content.
                     svgEl.removeAttribute('width');
@@ -1409,6 +1715,43 @@ export function darkModeNodeFill(originalFill: string): string {
 }
 
 /**
+ * Whether a fill paints effectively nothing over the panel — an explicit
+ * none/transparent, an empty value, or a hex/rgba/hsla colour whose alpha is
+ * below ~50% (e.g. #ffffff00). Such a "fill" cannot be darkened into a legible
+ * background, so a node/cluster carrying it must have its LABEL rescued against
+ * the panel instead (D-124 / D-284). A 6-digit hex or any opaque colour returns
+ * false and is treated as a solid fill.
+ */
+export function isEffectivelyTransparentFill(fill: string | null): boolean {
+    if (!fill) return true;
+    const f = fill.trim().toLowerCase();
+    if (f === '' || f === 'none' || f === 'transparent') return true;
+    // #rrggbbaa — alpha in the trailing byte
+    const hex8 = f.match(/^#([0-9a-f]{6})([0-9a-f]{2})$/);
+    if (hex8) return parseInt(hex8[2], 16) < 128;
+    // #rgba shorthand — alpha in the trailing nibble
+    const hex4 = f.match(/^#([0-9a-f]{3})([0-9a-f])$/);
+    if (hex4) return parseInt(hex4[2] + hex4[2], 16) < 128;
+    // rgba()/hsla() carrying an explicit alpha as the last argument
+    const fn = f.match(/^(?:rgba|hsla)\([^)]*,\s*([\d.]+)\s*\)$/);
+    if (fn) return parseFloat(fn[1]) < 0.5;
+    return false;
+}
+
+/**
+ * Preserve an authored / laid-out stroke-width instead of clobbering it to a
+ * constant (D-280). Graphviz surfaces `penwidth` as the SVG stroke-width, so a
+ * `setlinewidth(4)->penwidth=4` node arrives as stroke-width="4"; the dark
+ * restroke must keep that so Thick/Thin nodes stay distinguishable. Apply the
+ * supplied dark default only when no width was laid out.
+ */
+export function preserveAuthoredStrokeWidth(el: Element, fallback: string): void {
+    const existing = el.getAttribute('stroke-width');
+    if (existing !== null && existing.trim() !== '') return;
+    el.setAttribute('stroke-width', fallback);
+}
+
+/**
  * Choose a label colour readable on `fillHex` (D-133). White text on a dark
  * fill, black text on a light fill — decided by perceived brightness, so the
  * choice tracks the ACTUAL fill rather than the raw isDarkMode flag.
@@ -1475,6 +1818,52 @@ export function retintUnfilledNodeTextForDark(shapeEl: Element): void {
     }
 }
 
+/**
+ * Re-tint the paired <text> of a shape whose SOLID fill was KEPT (neither
+ * darkened as a light fill, nor routed to the panel-rescue as transparent)
+ * (D-283 / graphviz-w3-10).
+ *
+ * The dark cluster/node loops gate their label re-theme on `isLightBackground`
+ * (a 0.4-luminance cutoff) or `isEffectivelyTransparentFill`. A MID-luminance
+ * solid fill — e.g. the depth-4 nested-cluster fill `#989898` (sRGB luminance
+ * 0.314, UNDER 0.4) — is judged "already dark" and kept verbatim, so its branch
+ * never runs and the authored `#ffffff` label is stranded on it at 2.885:1
+ * (below the 4.5 text floor) while the sibling lighter fills darken and re-tint
+ * correctly. Because the fill is unchanged, the correct backdrop for the text is
+ * that very fill in WHATEVER theme was rendered; this measures the paired text
+ * against it and, only when it fails the floor, repaints it with the genuinely
+ * max-contrast of black/white (for `#989898`: black 7.28:1 vs white 2.885:1 ->
+ * black, readable on both light and dark canvases since the fill is identical in
+ * both). A label already clearing the floor is left untouched (a deliberate,
+ * readable author choice is preserved). Returns the count re-tinted.
+ */
+export function retintTextForKeptFill(
+    shapeEl: Element,
+    fillHex: string,
+    defaultTextColor: string,
+    floor: number = 4.5
+): number {
+    const group = shapeEl.parentElement;
+    if (!group) return 0;
+    // Genuinely max-contrast choice for this fill (the tuned heuristic can pick
+    // the LOWER-contrast option on a mid-tone grey), correct on either theme.
+    const best = calculateContrastRatio('#000000', fillHex) >= calculateContrastRatio('#ffffff', fillHex)
+        ? '#000000'
+        : '#ffffff';
+    const texts = group.getElementsByTagName('text');
+    let fixed = 0;
+    for (let i = 0; i < texts.length; i++) {
+        // Graphviz emits `fontcolor` as the text `fill`; a label with none
+        // inherits the graph default the plugin injected (defaultTextColor).
+        const cur = texts[i].getAttribute('fill') || defaultTextColor;
+        if (calculateContrastRatio(cur, fillHex) < floor) {
+            texts[i].setAttribute('fill', best);
+            fixed++;
+        }
+    }
+    return fixed;
+}
+
 // Helper function to calculate brightness of a color (needed for getDarkVersionOfColor compatibility)
 function getBrightness(color: string): number {
     // Convert hex or named colors to RGB
@@ -1511,4 +1900,136 @@ function getBrightness(color: string): number {
     // Calculate perceived brightness using the formula:
     // (0.299*R + 0.587*G + 0.114*B)
     return (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+}
+
+
+/**
+ * Effective LIGHT page background the graphviz SVG composites over.
+ */
+export const GRAPHVIZ_LIGHT_PAGE_BG = '#ffffff';
+
+/**
+ * Neutralize an authored LIGHT graph background in dark mode (D-285 /
+ * graphviz-w3-15). The ROOT graph-background <polygon> (a direct child of
+ * <g class="graph">) carries an authored `bgcolor`. The dark node loop has no
+ * parent-class guard, so a hardcoded light canvas (`bgcolor="#ffffff"`) was
+ * darkened like a node fill to a MID-grey slab (#666666, only 2.90:1 vs the
+ * #1e1e1e panel). The fixed dark palette is tuned for the panel, so on that slab
+ * the pink edge colour (#f72585) collapsed to 1.52:1 and arrowheads to ~1.7:1,
+ * under the 3:1 stroke floor. The plugin's dark model is "graph sits on the
+ * panel" (it injects bgcolor=transparent), so a hardcoded light graph background
+ * should collapse to the panel, not become a grey box: painting it transparent
+ * lets the palette hold (pink edges reach 4.41:1, cyan borders 8.67:1, the
+ * white graph label 16.67:1 — all on the panel). LIGHT is untouched (the
+ * authored white canvas is correct on the light page). A `none`/transparent or
+ * an already-dark authored background returns false (left as-is). Returns true
+ * when it neutralized the polygon (the caller then skips the darken step).
+ */
+export function neutralizeGraphBackgroundForDark(el: Element, isDarkMode: boolean): boolean {
+    if (!isDarkMode) return false;
+    if (el.tagName !== 'polygon') return false;
+    const parent = el.parentElement;
+    if (!parent || parent.getAttribute('class') !== 'graph') return false;
+    const fill = el.getAttribute('fill');
+    if (!fill || fill === 'none' || !isLightBackground(fill)) return false;
+    el.setAttribute('data-original-fill', fill);
+    el.setAttribute('fill', 'transparent');
+    el.setAttribute('data-graph-bg-neutralized', 'true');
+    return true;
+}
+
+/**
+ * Re-stroke a cluster polygon whose border is invisible against its own fill
+ * (D-053 / graphviz-w2-05). The dark loop re-strokes light cluster fills, but
+ * the LIGHT path historically left an authored color==fill cluster border-less.
+ * Re-strokes with `clusterBorder` when the effective stroke is identical to the
+ * fill or fails the 3:1 graphical floor against it; a cluster with a legible
+ * authored border is left untouched. Returns whether a re-stroke was applied.
+ */
+export function restrokeInvisibleClusterBorder(polygonEl: Element, clusterBorder: string): boolean {
+    const fill = polygonEl.getAttribute('fill');
+    if (!fill || fill === 'none') return false;
+    const curStroke = polygonEl.getAttribute('stroke');
+    const effectiveStroke = (curStroke && curStroke !== 'none') ? curStroke : fill;
+    const identical = effectiveStroke.trim().toLowerCase() === fill.trim().toLowerCase();
+    if (identical || calculateContrastRatio(effectiveStroke, fill) < 3) {
+        polygonEl.setAttribute('stroke', clusterBorder);
+        if (!polygonEl.getAttribute('stroke-width')) polygonEl.setAttribute('stroke-width', '1');
+        polygonEl.setAttribute('data-restroked-light', 'true');
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Re-theme an AUTHORED edge fontcolor that is stranded (below the 4.5:1 text
+ * floor) against the effective page background (D-053 / graphviz-w1-09). The
+ * enhancer skips all edge-label text (D-125) to avoid the arrowhead-as-
+ * background misfire, which also stopped it rescuing a dark authored edge
+ * fontcolor on the dark panel. Edge labels float over the PAGE, so the correct
+ * background is the page -- not a sibling arrowhead. Theme-correct / injected
+ * labels clear the floor and are left untouched. Returns the count re-themed.
+ */
+export function retintStrandedEdgeLabels(root: Element, isDarkMode: boolean): number {
+    const bg = isDarkMode ? GRAPHVIZ_DARK_PANEL_BG : GRAPHVIZ_LIGHT_PAGE_BG;
+    const fallback = isDarkMode ? '#ffffff' : '#000000';
+    let fixed = 0;
+    const texts = root.querySelectorAll('g.edge text');
+    texts.forEach((t) => {
+        let cur = t.getAttribute('fill');
+        if (!cur) {
+            try { cur = (window.getComputedStyle(t as Element).fill) || fallback; }
+            catch { cur = fallback; }
+        }
+        if (!cur) cur = fallback;
+        if (calculateContrastRatio(cur, bg) < 4.5) {
+            t.setAttribute('fill', readableTextColorFor(bg));
+            fixed++;
+        }
+    });
+    return fixed;
+}
+
+/**
+ * Rescue the label of an UNFILLED cluster against the effective page background
+ * (D-284 / graphviz-w3-07). A cluster with no solid fill (`style` not `filled`,
+ * so its border <polygon> is fill="none") has its label floating directly on
+ * the panel; the fill-gated dark loop only re-themes a cluster label when it
+ * darkens or classifies the cluster's fill, and the shared enhancer now skips
+ * cluster text, so an authored/default BLACK label could remain stranded on the
+ * ~#1e1e1e panel (1.26:1). This sweep is scoped to clusters whose every child
+ * polygon is effectively transparent — a FILLED cluster's label sits on the
+ * fill and is handled by the fill loop, so it is left untouched. Only a label
+ * that fails the 4.5:1 text floor is repainted, to a colour readable on the
+ * effective background in whatever theme was rendered (white on the panel =
+ * 16.67:1; black on the light page = 21:1). Returns the count re-themed.
+ */
+export function retintStrandedClusterLabels(root: Element, isDarkMode: boolean): number {
+    const bg = isDarkMode ? GRAPHVIZ_DARK_PANEL_BG : GRAPHVIZ_LIGHT_PAGE_BG;
+    const fallback = isDarkMode ? '#ffffff' : '#000000';
+    let fixed = 0;
+    const clusters = root.querySelectorAll('g.cluster');
+    clusters.forEach((cluster) => {
+        // A cluster is "unfilled" when it carries no solid background polygon.
+        const polys = cluster.querySelectorAll('polygon');
+        let hasSolidFill = false;
+        polys.forEach((p) => {
+            if (!isEffectivelyTransparentFill(p.getAttribute('fill'))) hasSolidFill = true;
+        });
+        if (hasSolidFill) return; // filled cluster -> handled by the fill loop
+        const texts = cluster.querySelectorAll('text');
+        texts.forEach((t) => {
+            let cur = t.getAttribute('fill');
+            if (!cur) {
+                try { cur = (window.getComputedStyle(t as Element).fill) || fallback; }
+                catch { cur = fallback; }
+            }
+            if (!cur) cur = fallback;
+            if (calculateContrastRatio(cur, bg) < 4.5) {
+                t.setAttribute('fill', readableTextColorFor(bg));
+                fixed++;
+            }
+        });
+    });
+    return fixed;
 }
