@@ -782,6 +782,26 @@ async def _initialize_memory_background():
                     logger.info(f"🧠 Memory startup: embedded {count} memories")
                 else:
                     logger.debug(f"🧠 Memory startup: all {len(memories)} memories have embeddings")
+
+                # Open proposals are embedded only at add() time, so any
+                # proposal created while the provider was unavailable has
+                # no vector -- and is invisible to corroboration, the
+                # contradiction arbiter and redundancy archival, all of
+                # which look proposals up by prop_* id in this cache.
+                try:
+                    from app.storage.proposals import get_proposals_store
+                    opens = get_proposals_store().list_open()
+                    open_missing = set(cache.missing_ids([p["id"] for p in opens]))
+                    if open_missing:
+                        logger.info(
+                            f"🧠 Memory startup: {len(open_missing)}/{len(opens)} "
+                            f"open proposals need embedding backfill"
+                        )
+                        n = await backfill_embeddings(
+                            [(p["id"], p["content"]) for p in opens if p["id"] in open_missing])
+                        logger.info(f"🧠 Memory startup: embedded {n} proposals")
+                except Exception as pe:
+                    logger.debug(f"🧠 Memory startup: proposal backfill skipped: {pe}")
         except Exception as e:
             logger.debug(f"🧠 Memory startup: embedding backfill skipped: {e}")
 
@@ -935,11 +955,23 @@ def _check_and_print_completion_banner():
             # Print prominent completion banner
             print("\n" + "=" * 80)
             print("✅ INITIALIZATION COMPLETE - All systems ready")
+            # Optional features a fresh install lacks, and the one command that
+            # adds them.  Printed here, not buried in per-tool log lines, because
+            # a new user's first diagram request is where the gaps surface.
+            try:
+                from app.utils.optional_features import missing_feature_lines
+                _missing = missing_feature_lines()
+            except Exception:  # noqa: BLE001 -- a banner must never block startup
+                _missing = []
+            if _missing:
+                print("ℹ️  Optional features not installed:")
+                for _line in _missing:
+                    print(_line)
             print("=" * 80 + "\n")
 
 app = FastAPI(
     title="Ziya API",
-    description="API for Ziya, a code assistant powered by LLMs",
+    description="API for Ziya, an AI workbench powered by LLMs",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -1469,6 +1501,9 @@ app.include_router(token_router)
 
 from app.routes.debug_routes import router as debug_router
 app.include_router(debug_router)
+
+from app.routes.usage_routes import router as usage_router
+app.include_router(usage_router)
 
 from app.routes.diff_routes import router as diff_router
 app.include_router(diff_router)

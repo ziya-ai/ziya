@@ -73,6 +73,17 @@ _task_shell_timeout: contextvars.ContextVar[Optional[int]] = contextvars.Context
     'task_shell_timeout', default=None
 )
 
+# Bedrock service tier requested for every model call made while a Task
+# Card run is active ("flex" by default — the discounted, higher-latency
+# tier AWS prices for batch-like agentic work).  Set once at the run root
+# by ``block_executor.execute_block`` and read by the Bedrock providers
+# when they assemble a request; interactive chat never sets it, so
+# nothing outside a run is affected.  None means "send no tier" and the
+# request is billed at the standard tier.
+_task_service_tier: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
+    'task_service_tier', default=None
+)
+
 
 # Per-task iteration context.  Set by ``block_executor`` while a body
 # runs inside a Repeat / Until iteration so streaming events emitted
@@ -84,6 +95,15 @@ _task_shell_timeout: contextvars.ContextVar[Optional[int]] = contextvars.Context
 # Carries ``{"block_id": str, "index": int}`` or None.
 _task_iteration_context: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
     'task_iteration_context', default=None
+)
+
+# Cost-accounting attribution for the usage ledger (app/cost/meter.py).
+# Carries ``{"source": "task"|"cli"|..., "run_id": str|None,
+# "block_id": str|None}``.  Set by task_executor for the duration of a
+# task body and by the CLI at startup; interactive chat never sets it and
+# is attributed as source=chat by default.
+_usage_attribution: contextvars.ContextVar[Optional[dict]] = contextvars.ContextVar(
+    'usage_attribution', default=None
 )
 
 
@@ -213,6 +233,24 @@ def get_task_shell_timeout() -> Optional[int]:
     """Return the active task shell-timeout grant, or None if not set."""
     return _task_shell_timeout.get()
 
+
+def set_task_service_tier(tier: Optional[str]) -> contextvars.Token:
+    """Set the Bedrock service tier for the active task run; returns a reset token.
+
+    Pass ``None`` to send no tier (standard billing).
+    """
+    return _task_service_tier.set(tier)
+
+
+def reset_task_service_tier(token: contextvars.Token) -> None:
+    """Restore the previous task service tier using ``token``."""
+    _task_service_tier.reset(token)
+
+
+def get_task_service_tier() -> Optional[str]:
+    """Return the service tier the active task run requests, or None."""
+    return _task_service_tier.get()
+
 def set_task_iteration_context(
     block_id: Optional[str], index: Optional[int],
 ) -> contextvars.Token:
@@ -243,3 +281,18 @@ def get_task_iteration_context() -> Optional[dict]:
 def get_conversation_id_or_none() -> Optional[str]:
     """Get the request-scoped conversation ID, or None if not set."""
     return _request_conversation_id.get()
+
+
+def set_usage_attribution(attribution: Optional[dict]) -> contextvars.Token:
+    """Set ledger attribution for calls made in this context.  Returns a
+    token for :func:`reset_usage_attribution`."""
+    return _usage_attribution.set(attribution)
+
+
+def reset_usage_attribution(token: contextvars.Token) -> None:
+    _usage_attribution.reset(token)
+
+
+def get_usage_attribution() -> Optional[dict]:
+    """Return ``{'source', 'run_id', 'block_id'}`` if set, else None."""
+    return _usage_attribution.get()
