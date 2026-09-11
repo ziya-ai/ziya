@@ -36,6 +36,9 @@ _HIGH_TRUST_TOOLS = {
 # External-content tools: output is fetched from the network / third parties
 # and is the primary indirect-prompt-injection surface.
 _LOW_TRUST_TOOLS = {
+    # Terminal output captured from a (possibly remote, possibly
+    # compromised) host: third-party content, not the user's own words.
+    "shadow_read",
     "ReadInternalWebsites",
     "InternalSearch",
     "InternalCodeSearch",
