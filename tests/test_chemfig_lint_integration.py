@@ -58,7 +58,7 @@ def captured(monkeypatch):
     monkeypatch.setattr(LatexRenderer, "probe",
                         lambda self, refresh=False: _full_capability())
 
-    def fake_compile(self, document, target, cap):
+    def fake_compile(self, document, target, cap, **kwargs):  # min_passes etc.
         seen["document"] = document
         return RenderResult(ok=True, content=b"stub", fmt=target)
 

@@ -350,6 +350,21 @@ def _autofix(body: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
     # doing it first keeps both passes reasoning about the same text.
     body, quote_fixes = _strip_numeric_quotes(body)
 
+    # Insert missing statement-terminating semicolons (D-005, circuitikz-w4-09).
+    # A circuitikz \draw/\node path is terminated by ';' exactly as a TikZ one,
+    # so the same brace/math/comment-aware inserter serves both engines -- reuse
+    # it rather than duplicate the scanner.  Advisory and byte-identical on any
+    # body that already terminates its statements.
+    semi_fixes: tuple[str, ...] = ()
+    try:
+        from app.utils.tikz_lint import _insert_missing_semicolons
+
+        body, semi_fixes = _insert_missing_semicolons(body)
+    except Exception:                      # pragma: no cover - defensive
+        logger.exception("circuitikz semicolon insertion failed; body unchanged")
+        semi_fixes = ()
+    quote_fixes = tuple(quote_fixes) + tuple(semi_fixes)
+
     # (value_core_start, value_core_end) spans in the ORIGINAL body to wrap.
     wraps: list[tuple[int, int]] = []
 
