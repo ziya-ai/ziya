@@ -135,6 +135,53 @@ def _detect_dependency_mismatch(log_text: str) -> Optional[str]:
     return None
 
 
+# A launcher that exits 127 could not exec the runtime it needs. The configured
+# command itself exists in this case (an internal-toolbox shim, a symlink to a
+# compiled dispatcher, or a small shell wrapper), so NO static check of that
+# path can see the interpreter it will exec — the shell's own error text is the
+# only reliable evidence, and it is parsed rather than guessed.
+_MISSING_RUNTIME_MARKERS = (
+    "not found", "no such file or directory", "cannot execute",
+)
+# Longest-first so "python3" is not reported as "python".
+_RUNTIME_NAMES = (
+    "python3", "python", "node", "npx", "deno", "bunx", "bun",
+    "uvx", "uv", "ruby", "java", "perl", "php",
+)
+
+
+def _detect_missing_runtime(log_text: str) -> Optional[str]:
+    """Return the runtime name a server's launcher could not find, else None."""
+    for line in log_text.lower().splitlines():
+        if not any(marker in line for marker in _MISSING_RUNTIME_MARKERS):
+            continue
+        for name in _RUNTIME_NAMES:
+            if any(p in line for p in (f"exec: {name}:", f" {name}: ",
+                                       f"'{name}'", f'"{name}"')):
+                return name
+    return None
+
+
+def _missing_runtime_failure(runtime: str, exit_code: Optional[int]) -> Dict[str, Any]:
+    """Build the structured, user-facing record for an absent runtime."""
+    try:
+        from app.mcp.manager import _install_hint_for_command
+        hint = _install_hint_for_command(runtime)
+    except Exception:  # noqa: BLE001 — a hint must never break error reporting
+        hint = f"Install '{runtime}' and make sure it is on Ziya's PATH."
+    suffix = f" (exit code {exit_code})" if exit_code is not None else ""
+    return {
+        "code": "runtime_not_found",
+        "summary": f"Required runtime not installed: {runtime}",
+        "detail": (
+            f"This server's launcher tried to run '{runtime}' and could not "
+            f"find it, so the process exited immediately{suffix} and "
+            f"provided no tools."
+        ),
+        "hint": hint,
+    }
+
+
 def _resolve_relative_script(script: str, trusted_roots: List[str]) -> Optional[str]:
     """Resolve a relative ``.py`` MCP server script against trusted roots only.
 
@@ -220,6 +267,12 @@ class MCPClient:
         # or reconnect. It stays in the manager's client map purely so its
         # diagnostic is retrievable.
         self.preflight_failure: Optional[Dict[str, Any]] = None
+        # Set when the process DID spawn but died before the handshake for a
+        # diagnosable reason (currently: a runtime its launcher could not
+        # exec). Deliberately distinct from preflight_failure, which
+        # permanently blocks connect — this must not block the reconnect that
+        # will succeed once the user installs the missing runtime.
+        self.startup_failure: Optional[Dict[str, Any]] = None
         self._last_successful_call = time.time()
         self._last_reconnect_attempt = 0  # Rate limit reconnections
         
@@ -522,6 +575,19 @@ class MCPClient:
                         dep_hint = _detect_dependency_mismatch(log_text)
                         if dep_hint:
                             logger.error(f"  Hint: {dep_hint}")
+                        # Newline-joined, not space-joined: the runtime match is
+                        # per-line, so collapsing the buffer would let a marker
+                        # on one line pair with a name on another.
+                        runtime_text = "\n".join(self.logs[-10:])
+                        missing_runtime = _detect_missing_runtime(runtime_text)
+                        if missing_runtime:
+                            self.startup_failure = _missing_runtime_failure(
+                                missing_runtime, self.process.returncode
+                            )
+                            logger.error(
+                                f"  {self.startup_failure['summary']} — "
+                                f"{self.startup_failure['hint']}"
+                            )
                         auth_indicators = ['FETCH_ERROR', 'authentication', 'login', 'unauthorized', '401', '403']
                         
                         if any(indicator in log_text for indicator in auth_indicators):

@@ -1346,6 +1346,7 @@ async def get_mcp_server_details(server_name: str):
             "logs": client.logs if hasattr(client, 'logs') else [],
             "startup_stage": getattr(client, "startup_stage", None),
             "preflight_failure": getattr(client, "preflight_failure", None),
+            "startup_failure": getattr(client, "startup_failure", None),
         }
     except HTTPException:
         # Deliberate status codes (404 for unknown/uninitialized) must reach the
@@ -1796,8 +1797,21 @@ async def install_registry_service(request: InstallServiceRequest):
             provider_id=request.provider_id
         )
         
+        # A failed install must not answer 200. The frontend keys off the HTTP
+        # status, so returning an error dict with 200 is what made a server
+        # that never started look installed — registry description shown, zero
+        # tools, no reason given.
+        if result.get('status') == 'error':
+            message = result.get('error') or 'Installation failed'
+            for extra in ('detail', 'hint'):
+                if result.get(extra):
+                    message = f"{message}\n\n{result[extra]}"
+            raise HTTPException(status_code=400, detail=message)
+
         return result
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error installing service: {e}")
         raise HTTPException(status_code=500, detail=str(e))
