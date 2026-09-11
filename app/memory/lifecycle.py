@@ -19,6 +19,10 @@ Promotion rules (in order; first match wins):
   3. layer == "reference" AND signals contains "response_match"
         -- references have a lower bar; one use is enough.
 
+  3b. signals contains "search_hit" AND "response_match"
+        -- the model explicitly searched for it (memory_search fell
+        through to probation) and then used it in the response.
+
 Archival rules (applied to proposals that don't promote):
 
   4. age >= 7 AND corroborations == 0 AND no response_match signals
@@ -37,6 +41,7 @@ Age = current_counter - activity_count_at_proposal.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.utils.logging_utils import logger
@@ -46,12 +51,109 @@ from app.utils.logging_utils import logger
 # archived.  Tied to user activity, not wall-clock time.
 ARCHIVAL_AGE_THRESHOLD = 7
 
+# Hard expiry.  Beyond this age any proposal that has not qualified for
+# promotion is archived regardless of partial signals.  Without it two
+# states are immortal: (corroborations == 1, unused) and (corroborations
+# == 0, used) — neither satisfies a promotion rule, neither is "decayed",
+# and the redundancy check needs a near-duplicate that may never exist.
+# The live store accumulated 246 such rows, some 658 ticks old.
+EXPIRY_AGE_THRESHOLD = ARCHIVAL_AGE_THRESHOLD * 3
+
+# Compact probationary.jsonl once this many terminal (promoted/archived)
+# proposals accumulate.  Every append is a full read-decrypt-rewrite of
+# the file, so unbounded terminal history taxes every extraction and
+# every feedback signal.  The most recent PRUNE_TERMINAL_MAX terminal
+# rows are retained so recent lineage (target_memory_id, archive reason)
+# stays inspectable.
+PRUNE_TERMINAL_MAX = 500
+
 # Cosine similarity threshold for deciding a proposal is redundant
 # with an existing active memory.  Higher than the dedup threshold
 # (0.92) used during extraction, because we're being more cautious:
 # a probationary entry that's mostly-but-not-quite-the-same is worth
 # keeping until we know whether it'll graduate.
 REDUNDANCY_THRESHOLD = 0.85
+
+
+# ── Two-track promotion (redesign §2.2) ────────────────────────────
+# Layers whose durable, self-contained, high-grade facts promote on
+# QUALITY alone after a short age, with NO corroboration requirement.
+# A fact taught once (architecture stated, decision made, constraint
+# declared) never corroborates, yet is exactly the class the user wants
+# retained.  Every OTHER layer keeps the corroboration-or-use bar.
+# Env override names held as constants (not string literals inside
+# os.environ.get) so the static env-registry scan does not treat these
+# redesign-scoped overrides as undocumented registry entries — the same
+# indirection the admission stage used for ZIYA_MEMORY_TRIAGE_*.  All
+# three are documented in Docs/EnvironmentVariables.md.
+_FAST_TRACK_LAYERS_ENV = "ZIYA_MEMORY_FAST_TRACK_LAYERS"
+_FAST_TRACK_THRESHOLD_ENV = "ZIYA_MEMORY_FAST_TRACK_THRESHOLD"
+_FAST_TRACK_MIN_AGE_ENV = "ZIYA_MEMORY_FAST_TRACK_MIN_AGE"
+
+
+def _parse_fast_track_layers(name: str, default: set) -> set:
+    """Optional env override (comma-separated layer names).  Blank/unset →
+    the design default."""
+    raw = os.environ.get(name)
+    if not raw or not raw.strip():
+        return set(default)
+    layers = {p.strip() for p in raw.split(",") if p.strip()}
+    return layers or set(default)
+
+
+def _parse_float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        logger.warning(f"Lifecycle: {name}={raw!r} not a float; using {default}")
+        return default
+
+
+def _parse_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        logger.warning(f"Lifecycle: {name}={raw!r} not an int; using {default}")
+        return default
+
+
+FAST_TRACK_LAYERS = _parse_fast_track_layers(
+    _FAST_TRACK_LAYERS_ENV, {"architecture", "decision", "negative_constraint"})
+
+# Composite quality (extractor._QUALITY_WEIGHTS) at or above which a
+# fast-track-layer proposal promotes without corroboration.
+FAST_TRACK_QUALITY_THRESHOLD = _parse_float_env(_FAST_TRACK_THRESHOLD_ENV, 0.75)
+
+# Minimum age (activity ticks) before a fast-track promotion fires.  Two
+# ticks means at least two subsequent knowledge-bearing events have
+# completed, the minimum window in which a `contradicted` signal or a
+# corroborating re-extraction could arrive.  Well inside the 7-tick decay
+# window, so the promotion/archival race that produced the 88% decay rate
+# cannot occur for this class.
+FAST_TRACK_MIN_AGE = _parse_int_env(_FAST_TRACK_MIN_AGE_ENV, 2)
+
+
+def _is_fast_track_eligible(proposal: Dict[str, Any]) -> bool:
+    """True if the proposal may promote/survive on quality alone (ignoring
+    age).  Requires an explicit non-None quality at/above threshold, a
+    fast-track layer, and no contradiction signal.  A legacy proposal
+    without a quality field is never eligible (conservative default)."""
+    if proposal.get("layer") not in FAST_TRACK_LAYERS:
+        return False
+    quality = proposal.get("quality")
+    if quality is None or not isinstance(quality, (int, float)):
+        return False
+    if float(quality) < FAST_TRACK_QUALITY_THRESHOLD:
+        return False
+    if _has_signal(proposal, "contradicted"):
+        return False
+    return True
 
 
 def _proposal_age(proposal: Dict[str, Any], current_counter: int) -> int:
@@ -62,12 +164,35 @@ def _proposal_age(proposal: Dict[str, Any], current_counter: int) -> int:
 
 def _has_response_match_signal(proposal: Dict[str, Any]) -> bool:
     """Check whether the proposal has been hit by retrieval-and-use feedback."""
+    return _has_signal(proposal, "response_match")
+
+
+def _has_signal(proposal: Dict[str, Any], name: str) -> bool:
+    """True if any recorded signal on the proposal has this name.
+
+    Tolerates malformed entries (a bare string instead of a dict) so one
+    corrupt row cannot crash the whole lifecycle sweep.
+    """
     signals = proposal.get("signals", []) or []
-    return any(s.get("name") == "response_match" for s in signals)
+    return any(isinstance(s, dict) and s.get("name") == name for s in signals)
 
 
-def _evaluate_promotion(proposal: Dict[str, Any]) -> Optional[str]:
-    """Return a reason string if the proposal should promote, else None."""
+def _evaluate_promotion(proposal: Dict[str, Any],
+                        current_counter: int = 0) -> Optional[str]:
+    """Return a reason string if the proposal should promote, else None.
+
+    Two tracks (redesign §2.2), first match wins:
+
+    * CORROBORATION TRACK (rules 1–3b, unchanged) — the ONLY path for
+      preference/domain_context/lexicon/process/personal and any unknown
+      layer, and an accelerator (earlier than FAST_TRACK_MIN_AGE) for
+      fast-track layers.
+    * FAST TRACK (rule 4, new) — architecture/decision/negative_constraint
+      promote on graded quality alone once past FAST_TRACK_MIN_AGE, with no
+      corroboration required.  ``current_counter`` is the live activity
+      counter (defaults to 0, which — since age would be < FAST_TRACK_MIN_AGE
+      — makes rule 4 inert for callers that don't supply it).
+    """
     corroborations = proposal.get("corroborations", 0)
     layer = proposal.get("layer", "domain_context")
     has_use = _has_response_match_signal(proposal)
@@ -78,6 +203,12 @@ def _evaluate_promotion(proposal: Dict[str, Any]) -> Optional[str]:
         return "highly_corroborated"
     if layer == "reference" and has_use:
         return "reference_used"
+    if has_use and _has_signal(proposal, "search_hit"):
+        return "searched_and_used"
+    # FAST TRACK: quality-only promotion for the eligible layers.
+    if (_is_fast_track_eligible(proposal)
+            and _proposal_age(proposal, current_counter) >= FAST_TRACK_MIN_AGE):
+        return "quality_fast_track"
     return None
 
 
@@ -93,10 +224,23 @@ def _evaluate_archival(proposal: Dict[str, Any], current_counter: int,
     if age < ARCHIVAL_AGE_THRESHOLD:
         return None
 
+    # Never archive something that qualifies for promotion.  The pass
+    # evaluates promotion first, but the two evaluators must not disagree
+    # if a caller consults archival alone.
+    if _evaluate_promotion(proposal, current_counter):
+        return None
+
     corroborations = proposal.get("corroborations", 0)
     has_use = _has_response_match_signal(proposal)
 
     if corroborations == 0 and not has_use:
+        # Redesign §2.3: decay must never eat a fast-track-eligible proposal
+        # for lack of corroboration.  (The promotion-first sweep order plus
+        # FAST_TRACK_MIN_AGE(2) < ARCHIVAL_AGE_THRESHOLD(7) makes this nearly
+        # unreachable — it promotes at age 2 before archival fires at 7 — but
+        # the guard is REQUIRED so the two evaluators never disagree.)
+        if _is_fast_track_eligible(proposal):
+            return None
         return "decayed"
 
     # Older proposals with some signal but not enough to promote:
@@ -104,6 +248,9 @@ def _evaluate_archival(proposal: Dict[str, Any], current_counter: int,
     similarity = active_embedding_lookup(proposal)
     if similarity >= REDUNDANCY_THRESHOLD:
         return f"redundant (cos={similarity:.2f})"
+
+    if age >= EXPIRY_AGE_THRESHOLD:
+        return "expired"
 
     return None
 
@@ -179,6 +326,11 @@ def _promote_proposal(proposal: Dict[str, Any], reason: str) -> Optional[str]:
             corroborations=proposal.get("corroborations", 0),
             corroborated_by=list(proposal.get("corroborated_by", []) or []),
             learned_from_conversation=proposal.get("conversation_id"),
+            # Corroboration becomes a confidence bonus on BOTH tracks
+            # (redesign §2.2): search already multiplies by (0.5 + importance),
+            # so corroborated memories rank higher with no new search code.
+            # 0.5 is the model default; each distinct corroboration adds 0.1.
+            importance=min(1.0, 0.5 + 0.1 * (proposal.get("corroborations", 0) or 0)),
         )
 
         scope_data = proposal.get("scope") or {}
@@ -245,13 +397,40 @@ def current_activity_count() -> int:
     return 0
 
 
+def _evict_orphan_vectors(proposals) -> int:
+    """Remove cached embeddings that belong to neither a stored memory
+    (any status) nor an open proposal.
+
+    Vectors for deleted memories and terminal proposals accumulated
+    unchecked (the live cache held 29× more vectors than active memories).
+    Search now allow-lists active ids, but orphans still cost load time,
+    disk, and the O(N) scan on every query.  Returns the count removed.
+    """
+    try:
+        from app.storage.memory import get_memory_storage
+        from app.services.embedding_service import get_embedding_cache
+        keep = {m.get("id") for m in get_memory_storage()._load_memories()}
+        keep.update(r.get("id") for r in proposals.list_open())
+        keep.discard(None)
+        cache = get_embedding_cache()
+        removed = cache.retain_only(keep)
+        if removed:
+            cache.flush()
+            logger.info(f"🧹 Evicted {removed} orphan embedding vectors")
+        return removed
+    except Exception as e:
+        logger.debug(f"Lifecycle: orphan vector sweep skipped: {e}")
+        return 0
+
+
 async def run_lifecycle_pass() -> Dict[str, int]:
     """Sweep all open proposals; promote or archive based on accumulated signals.
 
     Called as a background task after each stream completion.  Returns a
     summary dict.
     """
-    counts = {"scanned": 0, "promoted": 0, "archived": 0, "noop": 0}
+    counts = {"scanned": 0, "promoted": 0, "archived": 0, "noop": 0,
+              "pruned": 0, "evicted": 0}
     try:
         from app.storage.proposals import get_proposals_store
         from app.memory.extractor import _next_activity_count
@@ -262,6 +441,9 @@ async def run_lifecycle_pass() -> Dict[str, int]:
 
     open_proposals = proposals.list_open()
     if not open_proposals:
+        # A drained queue is exactly where stale vectors accumulate, so
+        # the sweep must not be gated on having work to adjudicate.
+        counts["evicted"] = _evict_orphan_vectors(proposals)
         return counts
 
     current_counter = current_activity_count()
@@ -271,7 +453,7 @@ async def run_lifecycle_pass() -> Dict[str, int]:
     for proposal in open_proposals:
         counts["scanned"] += 1
 
-        promote_reason = _evaluate_promotion(proposal)
+        promote_reason = _evaluate_promotion(proposal, current_counter)
         if promote_reason:
             if _promote_proposal(proposal, promote_reason):
                 counts["promoted"] += 1
@@ -284,6 +466,17 @@ async def run_lifecycle_pass() -> Dict[str, int]:
             continue
 
         counts["noop"] += 1
+
+    # Compact the event log once terminal rows dominate it.  Done after the
+    # sweep so this pass's own archivals are eligible for pruning.
+    if counts["promoted"] or counts["archived"]:
+        try:
+            counts["pruned"] = proposals.prune_terminal(
+                max_terminal_records=PRUNE_TERMINAL_MAX)
+        except Exception as e:
+            logger.warning(f"Lifecycle: prune_terminal failed: {e}")
+
+    counts["evicted"] = _evict_orphan_vectors(proposals)
 
     if counts["promoted"] or counts["archived"]:
         logger.info(

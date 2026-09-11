@@ -169,6 +169,15 @@ class MemoryProposal(BaseModel):
                     "was created.  Used to age out unpromoted proposals.",
     )
     corroborations: int = Field(default=0)
+    # ── Graded quality (redesign §2.1) ─────────────────────────────
+    # Assigned at proposal time by quality_gate from the extraction
+    # model's self-grades, clamped by the structural evidence.  Drives
+    # the two-track promotion in lifecycle.py: fast-track layers promote
+    # on quality alone above a threshold.  None == not graded (legacy
+    # rows, reference proposals) → never fast-tracks; behaves exactly as
+    # before.  extra="allow" means old rows deserialize unchanged.
+    quality: Optional[float] = None
+    quality_components: Optional[Dict[str, float]] = None
     scope: MemoryScope = Field(default_factory=MemoryScope)
     learned_from_message: Optional[str] = None
     reference: Optional[MemoryReference] = Field(default=None)
