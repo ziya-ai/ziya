@@ -18,12 +18,35 @@ import {
 import { loadPrismLanguage, type PrismStatic } from '../utils/prismLoader';
 import { useTheme } from '../context/ThemeContext';
 import { sanitizeModelHtml, sanitizeMathMl } from '../utils/domSanitize';
+import { remediateInlineStyleContrast } from '../utils/inlineStyleContrast';
+import { coalesceInlineHtmlTokens } from '../utils/inlineHtmlCoalesce';
 import { detectFileOperationSyntax, renderFileOperationSafely } from '../utils/fileOperationParser';
 import { FileOperationRenderer } from './FileOperationRenderer';
 import { parseMockupFence } from '../utils/mockupFence';
+import { blockquoteTheme } from '../utils/blockquoteTheme';
+import { repairNearMissTableSeparator } from '../utils/tableSeparatorRepair';
 import { FailedHunkList } from './FailedHunkList';
 import { isDebugLoggingEnabled, debugLog } from '../utils/logUtils';
 import 'katex/dist/katex.min.css';
+// D-014: horizontal-overflow affordances for markdown sub-surfaces (long code
+// lines, unbreakable prose/inline-code tokens, wide tables). index.css styles
+// .message .message-content but sets no overflow/wrap affordance; this adds the
+// missing, theme-independent rules. See styles/messageContentOverflow.css.
+import '../styles/messageContentOverflow.css';
+// D-015: visual affordance (left rule + muted, theme-resolved colour) for
+// blockquotes inside chat messages. index.css gives blockquotes no boundary
+// stroke at all, so quoted text is indistinguishable from an indented
+// paragraph. See styles/blockquoteAffordance.css.
+import '../styles/blockquoteAffordance.css';
+// The LaTeX normalisation and KaTeX options live in a dependency-free
+// CommonJS module because the HTML exporter's Node subprocess requires the
+// same file (see app/utils/conversation_exporter.py).  Sharing the file is
+// what keeps an exported document byte-identical to what was on screen.
+import {
+    sanitizeMathForKatex,
+    KATEX_RENDER_OPTIONS,
+    katexRenderOptions,
+} from '../utils/mathSanitizer';
 import {
     restartStreamWithEnhancedContext,
     applyDiff,
@@ -37,6 +60,8 @@ import { useSendPayload } from '../hooks/useSendPayload';
 import { useStreamingContext } from '../context/StreamingContext';
 import { parseD3Spec } from '../utils/d3SpecParser';
 import { escapeNestedBacktickFences, stripBareProseFences, matchFenceOpen, applyOutsideFences, applyOutsideCodeSpans, splitJsonSpecTrailingContent, upgradeNestedFences, repairAtomicFenceRuns, repairGluedFenceOpeners, isPreformattedTextToken, isFenceClosed } from './fenceScanner';
+import { convertLatexDelimiterDialects } from '../utils/latexDelimiterDialects';
+import { convertMarkdownDialects } from '../utils/markdownDialects';
 import {
     processInlineMath,
     createMathPlaceholderStore,
@@ -45,6 +70,8 @@ import {
     MATH_INLINE_MARKER_PREFIX,
     MATH_INLINE_MARKER_SPLIT_RE,
 } from '../utils/inlineMathClassifier';
+import { protectThinkingMath, restoreThinkingMath, hasThinkingMathMarkers } from '../utils/thinkingMath';
+import { THINKING_MARKED_OPTIONS } from '../utils/thinkingHtml';
 import { applyMusicDarkTheme, VALID_DURATION_BASES, MIN_OCTAVE, MAX_OCTAVE } from '../utils/d3Plugins/musicPlugin';
 
 /**
@@ -291,16 +318,27 @@ const ThinkingBlock: React.FC<{ children: React.ReactNode; isDarkMode: boolean; 
     const isString = typeof children === 'string';
 
     useEffect(() => {
-        if (isString) {
+        if (!isString) return;
+        let cancelled = false;
+        const parse = async () => {
             // Unescape any escaped backticks before parsing
             const unescapedContent = (children as string).replace(/\\`\\`\\`/g, '```');
-            const result = marked.parse(unescapedContent, { breaks: true, gfm: true });
-            if (typeof result === 'string') {
-                setHtmlContent(result);
-            } else {
-                result.then(setHtmlContent);
-            }
-        }
+            // Lift math spans out before the markdown parser sees them.  This
+            // component bypasses MarkdownRenderer's preprocessing, so without
+            // this pass reasoning content rendered `$...$` as literal text.
+            const { source, displayMath } = protectThinkingMath(unescapedContent);
+            // walkTokens neutralises raw HTML tokens: unknown tags (a model
+            // reasoning in DrawIO XML, say) are escaped so they read as
+            // literal markup and stay stable between partial and complete
+            // states while streaming, instead of flashing in and out of the
+            // DOM on every delta.  See utils/thinkingHtml.ts.
+            const result = marked.parse(source, THINKING_MARKED_OPTIONS);
+            const parsed = typeof result === 'string' ? result : await result;
+            const withMath = await renderThinkingMathHtml(parsed, displayMath);
+            if (!cancelled) setHtmlContent(withMath);
+        };
+        parse();
+        return () => { cancelled = true; };
     }, [children, isString]);
 
     // Apply Prism syntax highlighting to code blocks after HTML is rendered
@@ -4693,6 +4731,15 @@ const LiveThinkingBlock: React.FC<{ turnId: string; index: number; isDarkMode: b
     });
 
 const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeApply: boolean, isDarkMode: boolean, isSubRender: boolean = false, isStreaming: boolean = false, onOpenShellConfig?: () => void, forcedSuperseded: boolean = false): React.ReactNode => {
+    // D-018: marked's inline lexer splits a styled inline element
+    // (<span style="...">chip</span>) into three tokens — a dangling opening-tag
+    // html token, the text, and a closing-tag html token — which the html case
+    // below would render as an EMPTY styled box plus unstyled sibling text.
+    // Stitch such runs back into one balanced inline html token first so the
+    // style stays attached to its text. No-op (same array reference) for token
+    // lists that contain no dangling inline HTML opener.
+    tokens = coalesceInlineHtmlTokens(tokens as any) as (Tokens.Generic | TokenWithText)[];
+
     const shouldLog = isDebugLoggingEnabled() &&
         (Date.now() - lastLogTimestamp > 10000);
 
@@ -5598,10 +5645,16 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         'div', 'span', 'p', 'br', 'hr', 'strong', 'em', 'b', 'i', 'u', 's',
                         'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'button',
                         'ul', 'ol', 'li', 'dl', 'dt', 'dd',
-                        'table', 'thead', 'tbody', 'tr', 'th', 'td',
+                        'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'caption',
                         'a', 'img', 'video', 'audio',
                         'blockquote', 'pre', 'code',
-                        'details', 'summary',
+                        'details', 'summary', 'section',
+                        // D-017 (w3-05/w3-06): these inline semantic tags are already on the
+                        // DOMPurify (sanitizeModelHtml) allowlist, so the security boundary
+                        // accepts them — but this pre-gate omitted them, dumping any fragment
+                        // containing them as LITERAL angle-bracket text (H<sub>2</sub>O,
+                        // <kbd>, <mark>, <abbr>, <small>, ...). Keep the two allowlists in sync.
+                        'sub', 'sup', 'kbd', 'mark', 'abbr', 'small', 'samp', 'var', 'ins',
                         'math', 'mi', 'mo', 'mn', 'mrow', 'mfrac', 'msup', 'msub', 'msubsup', 'msqrt', 'mroot',
                         'thinking-data'
 
@@ -5695,8 +5748,19 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                             return <span key={sk}>{htmlContent}</span>;
                         }
 
-                        // All tags are known safe HTML tags - render as HTML
-                        return <div key={sk} dangerouslySetInnerHTML={{ __html: sanitizeInlineHtml(htmlContent) }} />;
+                        // All tags are known safe HTML tags - render as HTML.
+                        // D-019: author-hardcoded inline-style colours are not
+                        // theme-aware; remediate any that fail the contrast floor
+                        // against the active theme surface before rendering.
+                        const remediatedHtml = remediateInlineStyleContrast(sanitizeInlineHtml(htmlContent), isDarkMode);
+                        // D-018: a run reassembled from a torn-apart inline styled
+                        // span (coalesceInlineHtmlTokens) must render INLINE so the
+                        // chip keeps its fill+text and adjacent chips flow together;
+                        // a block <div> would stack them and break inline context.
+                        if ((tokenWithText as any)._coalescedInline) {
+                            return <span key={sk} dangerouslySetInnerHTML={{ __html: remediatedHtml }} />;
+                        }
+                        return <div key={sk} dangerouslySetInnerHTML={{ __html: remediatedHtml }} />;
                     }
 
                     // Render as text content to avoid HTML parsing issues with angle brackets
@@ -5827,8 +5891,21 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     return <Tag key={sk}>{renderTokens(headingToken.tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, onOpenShellConfig)}</Tag>;
                 case 'hr':
                     return <hr key={sk} />;
-                case 'blockquote':
-                    return <blockquote key={sk}>{renderTokens((token as Tokens.Blockquote).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, onOpenShellConfig)}</blockquote>;
+                case 'blockquote': {
+                    // D-011: give the blockquote a visible boundary (left rule +
+                    // muted colour + faint fill) resolved FROM the active theme,
+                    // so quoted text is distinct from an indented paragraph and
+                    // the 3:1 graphical-boundary floor is met on both surfaces.
+                    const bq = blockquoteTheme(isDarkMode);
+                    return <blockquote key={sk} style={{
+                        borderLeft: `4px solid ${bq.borderColor}`,
+                        color: bq.textColor,
+                        background: bq.background,
+                        margin: '0.6em 0',
+                        padding: '0.4em 0.9em',
+                        borderRadius: '3px',
+                    }}>{renderTokens((token as Tokens.Blockquote).tokens || [], enableCodeApply, isDarkMode, isSubRender, isStreaming, onOpenShellConfig)}</blockquote>;
+                }
                 case 'space': // Usually ignored
                     return null;
 
@@ -6056,49 +6133,91 @@ function _installMathCopyListener() {
     });
 }
 
-/**
- * Alias unsupported-but-standard amsmath environments to their closest
- * KaTeX-supported equivalent.
- *
- * The bundled KaTeX implements gather/gathered/align/aligned/split/cases/
- * array/matrix... but NOT the amsmath `multline`/`multlined` environments.
- * A legitimate $$\begin{multline}...\end{multline}$$ therefore surfaces a red
- * KaTeX error (throwOnError:false paints the source in red — a defect). This
- * rewrites the environment NAME (a fixed capability gap in the bundled KaTeX),
- * never prose or any spec's literal text, and returns natively-supported
- * environments (gather/aligned/split/...) byte-unchanged.
- *
- * multline's only distinguishing feature — the last line flush-right — cannot
- * be expressed in KaTeX; `gathered` centers every line, the closest typeset
- * form and strictly better than a red error. The multline-only alignment
- * hints \shoveright{...}/\shoveleft{...} would still error under `gathered`,
- * so the command token is dropped while its braced argument survives as a
- * plain group (brace nesting is irrelevant — only the command name is
- * removed).
- */
-const UNSUPPORTED_MATH_ENV_ALIASES: Record<string, string> = {
-    'multline': 'gathered',
-    'multline*': 'gathered',
-    'multlined': 'gathered',
+// Re-exported so existing importers (and the suites that pin these
+// transforms) keep a stable entry point while the implementation lives in the
+// module shared with the exporter.  Adding a correction to the shared module
+// reaches the browser AND the exporter; adding one here would not.
+export {
+    sanitizeMathForKatex,
+    KATEX_RENDER_OPTIONS,
+    normalizeMarkdownEscapesInMath,
+    normalizeUnsupportedMathEnvironments,
+    escapeUnderscoresInTextCommands,
+    normalizeSemicolonSpacing,
+    KATEX_ERROR_COLOR,
+} from '../utils/mathSanitizer';
+
+// KaTeX for the paths that produce an HTML string instead of mounting
+// MathRenderer (a thinking block injects its body as HTML, so it cannot host a
+// React child).  Cached at module scope so expand/collapse does not re-import.
+let _katexModulePromise: Promise<any> | null = null;
+const loadKatexModule = (): Promise<any> => {
+    if (!_katexModulePromise) {
+        _katexModulePromise = import('katex')
+            .then(async mod => {
+                // mhchem mutates the KaTeX singleton, so it must load after it.
+                try {
+                    await import('katex/contrib/mhchem');
+                } catch (e) {
+                    console.warn('mhchem extension unavailable; \\ce{} will not render', e);
+                }
+                return mod;
+            })
+            .catch(error => {
+                console.warn('Failed to load KaTeX:', error);
+                return null;
+            });
+    }
+    return _katexModulePromise;
 };
 
-export function normalizeUnsupportedMathEnvironments(math: string): string {
-    let out = math.replace(
-        /\\(begin|end)\{([^}]+)\}/g,
-        (whole, beginEnd, envName) => {
-            const alias = UNSUPPORTED_MATH_ENV_ALIASES[envName];
-            return alias ? `\\${beginEnd}{${alias}}` : whole;
-        },
-    );
-    out = out.replace(/\\shove(?:right|left)\s*(?=\{)/g, '');
-    return out;
-}
+const escapeHtmlText = (text: string): string =>
+    text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+/**
+ * Render the markers left by protectThinkingMath into KaTeX HTML.
+ *
+ * If KaTeX is unavailable, or a span fails to parse, the marker is restored to
+ * its literal dollar-delimited form: a visible fallback beats leaking opaque
+ * base64 into the reasoning body.
+ */
+const renderThinkingMathHtml = async (html: string, displayMath: string[]): Promise<string> => {
+    if (!hasThinkingMathMarkers(html, displayMath)) return html;
+    const katexModule = await loadKatexModule();
+    // Not a React component, so useTheme() is unavailable here; read the theme
+    // straight off the DOM.  ThemeContext toggles `dark` on document.body, and
+    // the headless chat renderer applies the same class, so this is a reliable
+    // theme signal for the KaTeX errorColor on both paths (D-052/D-017).
+    const isDarkMode = typeof document !== 'undefined'
+        && document.body.classList.contains('dark');
+    return restoreThinkingMath(html, displayMath, (latex, displayMode) => {
+        const literal = () => {
+            const delim = displayMode ? '$$' : '$';
+            return `${delim}${escapeHtmlText(latex)}${delim}`;
+        };
+        if (!katexModule) return literal();
+        try {
+            return katexModule.renderToString(sanitizeMathForKatex(latex), {
+                displayMode,
+                ...katexRenderOptions(isDarkMode),
+            });
+        } catch (error) {
+            console.debug('KaTeX rendering error in thinking block (handled):', error);
+            return literal();
+        }
+    });
+};
 
 // Math rendering component
 const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, displayMode }) => {
     const [katex, setKatex] = useState<any>(null);
     const [isLoading, setIsLoading] = useState(true);
     const mathRef = useRef<HTMLDivElement | HTMLSpanElement>(null);
+    // The KaTeX errorColor must resolve from the active theme: #cc0000 is
+    // illegible on the dark chat surface (2.8:1), so a failed math token would
+    // vanish in dark mode.  katexRenderOptions(isDarkMode) picks the readable
+    // per-theme red (D-052/D-017).
+    const { isDarkMode } = useTheme();
 
     useEffect(() => {
         const loadKatex = async () => {
@@ -6141,34 +6260,11 @@ const MathRenderer: React.FC<{ math: string; displayMode: boolean }> = ({ math, 
     }
 
     try {
-        // KaTeX treats bare underscores inside \text{} as subscript operators,
-        // which causes a parse error.  Escape them so identifiers like
-        // \text{ct_id_field} render correctly.
-        let sanitized = math.replace(
-            /\\(text|texttt|textbf|textit|textrm|textsf|textmd|mathrm|operatorname)\{([^}]*)\}/g,
-            (_match, cmd, content) => {
-                const escaped = content.replace(/(?<!\\)_/g, '\\_');
-                return `\\${cmd}{${escaped}}`;
-            }
-        );
-        // LLMs sometimes write '; \command' (literal semicolons as visual spacing)
-        // instead of '\; \command' (LaTeX thick space).  Correct bare semicolons
-        // that immediately precede a backslash command.
-        sanitized = sanitized.replace(/(?<!\\);\s*(\\[a-zA-Z])/g, (_m, cmd) => `\\; ${cmd}`);
-
-        // Alias amsmath environments the bundled KaTeX cannot parse
-        // (multline/multlined) to their closest supported form; see the
-        // helper's doc comment.  Pinned by unsupportedMathEnvAlias.test.ts.
-        sanitized = normalizeUnsupportedMathEnvironments(sanitized);
+        const sanitized = sanitizeMathForKatex(math);
 
         const html = katex.renderToString(sanitized, {
             displayMode,
-            throwOnError: false,
-            strict: false,
-            errorColor: '#cc0000',
-            macros: {
-                "\\f": "#1f(#2)"
-            }
+            ...katexRenderOptions(isDarkMode),
         });
 
         // Create accessible label for screen readers
@@ -6711,6 +6807,14 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     // uses matchFenceOpen, which rejects backtick-in-info-string openers.
     processedMarkdown = stripBareProseFences(processedMarkdown);
 
+    // G-CHAT-RECOVERY / D-022 (chat-message-w4-12): pad a near-miss GFM table
+    // delimiter row that is one or more columns short of its header so marked
+    // recognises the table instead of dropping it to a paragraph (which the
+    // CommonMark breaks:false lexing then collapses into one-line "pipe soup").
+    // Applied outside code fences; only APPENDS `---` cells, so a valid table
+    // and any non-table content pass through byte-for-byte unchanged.
+    processedMarkdown = applyOutsideFences(processedMarkdown, (s) => repairNearMissTableSeparator(s));
+
     // Pre-process tool calls to handle both <n> and <name> formats
     const toolCallMatch = parseToolCall(processedMarkdown);
     if (toolCallMatch) {
@@ -6777,6 +6881,25 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     // markdown, not displayed as a literal code block.
     processedMarkdown = processedMarkdown.replace(
         /```markdown\s*\n([\s\S]*?)\n\s*```/g, '\n\n$1\n\n');
+    // Normalise the LaTeX bracket/paren math dialects to the dollar dialects
+    // the pipeline below understands (D-017 w3-07). KaTeX auto-render treats
+    // \[ ... \] as display math and \( ... \) as inline math, but this
+    // renderer only recognised $$...$$, $...$, and ```math/```latex fences —
+    // so \(..\)/\[..\] leaked their LaTeX source verbatim. Convert them to
+    // the $$/$ forms BEFORE the extraction passes, OUTSIDE fenced code blocks
+    // and inline code spans (a literal "\[" written in code must survive), and
+    // BEFORE the "[" ReDoS guards further down so no stray bracket remains for
+    // them to escape. A backslash-escaped delimiter (\\[, \\() is left alone
+    // so a "\\" line break followed by a bracket is not misread as an opener.
+    processedMarkdown = applyOutsideFences(processedMarkdown, part =>
+        applyOutsideCodeSpans(part, convertLatexDelimiterDialects));
+    // D-017 (w3-05/w3-06): normalise less-travelled markdown dialects — footnotes,
+    // definition lists, and blank-line-split raw <details> blocks — into raw HTML
+    // the existing raw-HTML token path renders through DOMPurify. Done OUTSIDE
+    // fenced code (so a literal [^1]/": " line/<details> in code survives) and
+    // BEFORE the "[" ReDoS guards below (footnote syntax contains "[").
+    processedMarkdown = applyOutsideFences(processedMarkdown, part =>
+        applyOutsideCodeSpans(part, convertMarkdownDialects));
     // Split by code fences first so we don't replace $$ inside them.
     // Odd-indexed segments are code blocks; only process even segments.
     {
