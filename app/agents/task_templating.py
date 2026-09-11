@@ -86,6 +86,11 @@ class IterationBindings:
     # ANY block that has completed in this run (unlike previous_sibling,
     # which is only the immediate prior block in the same sequence).
     sibling_artifacts: Dict[str, Artifact] = field(default_factory=dict)
+    # The run this block executes under, attached by the block executor.
+    # Resolves {{run.id}} (full id) and {{run.short}} (first 8 chars), so
+    # a task can stamp evidence it writes with the run that produced it —
+    # the ledger scripts need this to append rather than overwrite.
+    run_id: Optional[str] = None
 
 
 def _part_name(part: Any) -> str:
@@ -356,6 +361,16 @@ def _resolve(name: str, bindings: IterationBindings) -> Optional[str]:
         return str(bindings.index) if not rest else None
     if head == "item":
         return _render_item(bindings.item, rest)
+    if head == "run":
+        # {{run.id}} / {{run.short}}.  Empty (not None) when no run is
+        # attached — a direct call outside a run — so the placeholder is
+        # consumed rather than handed to the model as literal braces.
+        rid = bindings.run_id or ""
+        if rest == ["id"]:
+            return rid
+        if rest == ["short"]:
+            return rid[:8]
+        return None
     if head == "previous":
         if bindings.previous is None:
             return ""
