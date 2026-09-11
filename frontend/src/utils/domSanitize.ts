@@ -66,8 +66,9 @@ const INLINE_CONFIG = {
     // Inline + block rich text the model legitimately produces in markdown.
     ALLOWED_TAGS: [
         'a', 'b', 'i', 'em', 'strong', 'u', 's', 'del', 'ins', 'mark',
+        'abbr', 'small',
         'code', 'pre', 'kbd', 'samp', 'var', 'sub', 'sup', 'br', 'hr',
-        'span', 'div', 'p', 'blockquote',
+        'span', 'div', 'p', 'blockquote', 'section',
         'ul', 'ol', 'li', 'dl', 'dt', 'dd',
         'table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'caption',
         'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
