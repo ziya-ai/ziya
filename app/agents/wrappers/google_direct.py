@@ -40,8 +40,16 @@ class DirectGoogleModel:
         function_declarations = []
         for tool in tools:
             try:
-                # Ensure schema is a dict
-                schema = tool.args_schema.schema() if tool.args_schema else {"type": "object", "properties": {}}
+                # Prefer the compacted schema published in metadata (see
+                # DirectMCPTool / SecureMCPTool); fall back to args_schema
+                # for plain LangChain tools.
+                schema = None
+                if hasattr(tool, "metadata") and isinstance(tool.metadata, dict):
+                    schema = tool.metadata.get("input_schema")
+                if schema is None and tool.args_schema:
+                    schema = tool.args_schema.model_json_schema()
+                if schema is None:
+                    schema = {"type": "object", "properties": {}}
                 if not isinstance(schema, dict):
                     schema = schema.dict()
 
