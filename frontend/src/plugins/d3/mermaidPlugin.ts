@@ -1,11 +1,36 @@
 import { D3RenderPlugin } from '../../types/d3';
-import initMermaidSupport, { enhancePacketDarkMode, buildTimelineDarkThemeVariables, reapplyLinkStyleStrokes, moveGanttGridBehind, recolorGanttCritLabels } from './mermaidEnhancer';
+import initMermaidSupport, { enhancePacketDarkMode, buildTimelineDarkThemeVariables, buildSequenceNoteDarkThemeVariables, reapplyLinkStyleStrokes, moveGanttGridBehind, recolorGanttCritLabels, ensureShapeBordersAgainstCanvas, dodgeQuadrantPointCollisions } from './mermaidEnhancer';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 import { rerouteSkipEdges, shouldRerouteEdges } from './mermaidEdgeRerouter';
 import { getZoomScript, getDownloadSvgScript } from '../../utils/popupScriptUtils';
-import { hexToRgb, enhanceSVGVisibility } from '../../utils/colorUtils';
+import { hexToRgb, enhanceSVGVisibility, calculateContrastRatio } from '../../utils/colorUtils';
 import { escapeHtml } from '../../utils/htmlSanitize';
+
+/**
+ * D-293 / G-787b57 (mermaid-w1-06): the dark-theme post-render recolour pass
+ * repaints every `defs marker path` with the theme line colour, forcing BOTH
+ * `stroke` and `fill`. Solid arrowhead triangles need that (they are filled and
+ * must stay visible), but ER crow's-foot / cardinality markers are drawn HOLLOW
+ * (`fill:none`, stroked outline). Blanket-filling a hollow marker turns it into
+ * a solid teal blob that occludes the entity border and hides the cardinality
+ * glyph. This resolves the marker's colours: the stroke is always the theme
+ * line colour (so the marker stays legible on the canvas), but the fill is only
+ * overridden when the marker was actually filled — a hollow marker keeps
+ * `fill:none` and its glyph reads through. `lineColor` clears contrast on both
+ * canvases (#88c0d0 on #2e3440 = 6.24:1 dark; #333333 on #ffffff = 12.63:1
+ * light). The equivalent guard is inlined into the injected `applyMermaidTheme`
+ * template below; this exported helper documents and locks the intended
+ * behaviour under test.
+ */
+export function resolveMermaidMarkerColors(
+  currentFill: string | null | undefined,
+  lineColor: string,
+): { stroke: string; fill: string | null } {
+  const cf = (currentFill || '').trim().toLowerCase();
+  const hollow = cf === 'none' || cf === 'transparent' || cf === '';
+  return { stroke: lineColor, fill: hollow ? null : lineColor };
+}
 
 // ---------------------------------------------------------------------------
 // D-159 (G-79): pie-slice / legend-swatch palette contrast.
@@ -59,7 +84,424 @@ export function buildPieThemeVariables(isDarkMode: boolean): Record<string, stri
     vars.pieStrokeWidth = '2px';
     vars.pieOuterStrokeColor = isDarkMode ? '#e6e6e6' : '#333333';
     vars.pieOuterStrokeWidth = '2px';
+    // G-14a672 / D-152: pie TEXT colours resolved from the active theme.
+    // The dark path uses mermaid theme 'dark', whose base derives a LIGHT pie
+    // legend/section/title text colour, so dark legends read. The light path
+    // uses theme 'default', whose pieLegendTextColor default is near-white — so
+    // at scale the 60-row legend rendered white-on-white (only ~3 of 60 labels
+    // visible; the shared textColor override does NOT reach the pie* text keys).
+    // Pin all three pie text keys per-theme so the legend/section/title colour
+    // is resolved from the theme the renderer was given, not a stray default:
+    //   light  #1a1a1a on #ffffff = 17.4:1   (text floor 4.5:1)
+    //   dark   #eceff4 on #1f1f1f = 14.3:1
+    // The dark value matches the existing 'dark' base, so dark is unchanged.
+    const pieTextColor = isDarkMode ? '#eceff4' : '#1a1a1a';
+    vars.pieLegendTextColor = pieTextColor;
+    vars.pieSectionTextColor = pieTextColor;
+    vars.pieTitleTextColor = pieTextColor;
     return vars;
+}
+
+// ---------------------------------------------------------------------------
+// G-baa164 / D-157 (mermaid-w2-15): pie PALETTE RECYCLING at scale.
+//
+// mermaid's pie theme exposes only pie1..pie12, so a chart with >12 slices
+// drives its d3 ordinal scale past its range and RECYCLES the 12 fills (a
+// 60-slice chart repeats each colour 5x). buildPieThemeVariables makes those 12
+// canvas-aware but cannot make 60 categories individually identifiable — a fixed
+// vendor limit no themeVariable can lift. Post-render we instead assign every
+// slice (and its legend swatch) its OWN colour from an evenly-spaced hue ramp,
+// with the lightness solved per hue so each fill clears the >=3:1 canvas floor
+// on the theme background it was rendered against (light #ffffff / dark #1f1f1f).
+// Only fires beyond the 12-entry limit, so a normal pie keeps the curated
+// PIE_PALETTE_* untouched. Deterministic (attribute-only) and idempotent.
+// ---------------------------------------------------------------------------
+export const PIE_RECYCLE_THRESHOLD = 12;
+
+function hslToHex(h: number, s: number, l: number): string {
+    // h in [0,360), s/l in [0,1]
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const hp = h / 60;
+    const x = c * (1 - Math.abs((hp % 2) - 1));
+    let r = 0, g = 0, b = 0;
+    if (hp < 1) { r = c; g = x; }
+    else if (hp < 2) { r = x; g = c; }
+    else if (hp < 3) { g = c; b = x; }
+    else if (hp < 4) { g = x; b = c; }
+    else if (hp < 5) { r = x; b = c; }
+    else { r = c; b = x; }
+    const m = l - c / 2;
+    const to = (v: number) => Math.round((v + m) * 255).toString(16).padStart(2, '0');
+    return `#${to(r)}${to(g)}${to(b)}`;
+}
+
+/**
+ * Pick a fill for `hue` that clears `floor`:1 contrast against `bg`. Contrast is
+ * monotonic in HSL lightness at fixed hue/sat (darker => more contrast on a
+ * light bg, lighter => more on a dark bg), so we scan lightness from the
+ * background-appropriate end and return the first vivid value that clears the
+ * floor. Guarantees a legible, saturated fill for any hue on either canvas.
+ */
+export function pieRampColor(hue: number, isDarkMode: boolean, tier = 0, floor = 3.0): string {
+    const bg = isDarkMode ? '#1f1f1f' : '#ffffff';
+    const sat = 0.62;
+    // THREE lightness tiers give a SECOND distinguishing axis on top of hue, so
+    // two slices that happen to land near each other in hue still separate by
+    // tone. On light we want darker fills (lower L); on dark, lighter (higher L).
+    // Each tier scans its own band first, then falls through to a shared tail
+    // that always reaches the floor, so every (hue, tier) pair clears `floor`:1.
+    const tierBands = isDarkMode
+        ? [[0.70, 0.66], [0.58, 0.54], [0.80, 0.76]]
+        : [[0.32, 0.36], [0.44, 0.48], [0.24, 0.20]];
+    const tail = isDarkMode ? [0.50, 0.46, 0.42] : [0.28, 0.20, 0.16];
+    const steps = [...tierBands[((tier % 3) + 3) % 3], ...tail];
+    for (const l of steps) {
+        const hex = hslToHex(((hue % 360) + 360) % 360, sat, l);
+        if (calculateContrastRatio(hex, bg) >= floor) return hex;
+    }
+    // Fallback: extreme lightness that always clears the floor.
+    return hslToHex(((hue % 360) + 360) % 360, sat, isDarkMode ? 0.82 : 0.14);
+}
+
+export interface PieRecolorResult { recolored: number; sliceCount: number; }
+
+// Golden-angle hue spacing: consecutive slices land ~137.5deg apart on the hue
+// wheel (maximally separated), instead of the old monotonic (i*360/n) ramp whose
+// adjacent wedges differed by only 360/n deg (6deg at 60 slices) and read as one
+// colour. This is the standard technique for making a long sequence of
+// categorical colours mutually distinguishable.
+const PIE_GOLDEN_ANGLE = 137.508;
+
+export function recolorPieSlicesAtScale(svgElement: Element, isDarkMode: boolean): PieRecolorResult {
+    const out: PieRecolorResult = { recolored: 0, sliceCount: 0 };
+    const slices = svgElement.querySelectorAll('path.pieCircle');
+    out.sliceCount = slices.length;
+    if (slices.length <= PIE_RECYCLE_THRESHOLD) return out; // curated palette suffices
+    const n = slices.length;
+    const colors: string[] = [];
+    for (let i = 0; i < n; i++) colors.push(pieRampColor((i * PIE_GOLDEN_ANGLE) % 360, isDarkMode, i % 3));
+    slices.forEach((slice, i) => {
+        (slice as HTMLElement).setAttribute('fill', colors[i]);
+        (slice as unknown as SVGElement).style.setProperty('fill', colors[i], 'important');
+        out.recolored++;
+    });
+    // Match the legend swatches (one rect per slice, in data order) so the key
+    // stays in sync with the wedges.
+    const swatches = svgElement.querySelectorAll('g.legend rect');
+    swatches.forEach((rect, i) => {
+        if (i < colors.length) {
+            (rect as HTMLElement).setAttribute('fill', colors[i]);
+            (rect as unknown as SVGElement).style.setProperty('fill', colors[i], 'important');
+        }
+    });
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// G-14a672 / D-152: pie STRUCTURE at scale (distinct from the D-159 palette).
+//
+// The vendored (upstream) mermaid pie renderer sizes the <svg> to the pie
+// square only; it then stacks one legend row per data point down a single
+// column starting at the pie's vertical centre. Past ~two dozen slices that
+// column is far taller than the square viewBox, so the legend is clipped to
+// whichever rows happen to fall inside the centred box (the classic
+// "only rows 20-39 of 60 are visible, cut mid-row" symptom) and the title,
+// laid out just above the pie, is squeezed against / occluded by the legend.
+// Separately, every slice emits a percentage <text> at the wedge centroid;
+// at 60 slices those converge on the hub into an illegible ink-blob.
+//
+// This is a layout defect in code we do not own, so we repair it with a
+// post-render pass on the emitted SVG (the same pattern used for gantt grid
+// z-order and edge rerouting) rather than special-casing the spec:
+//   (1) enlarge the viewBox to the UNION of the pie box, the full legend
+//       column and the title, so nothing is clipped regardless of slice count;
+//   (2) once the per-slice labels are dense enough to collide, drop them — the
+//       value is still carried by the legend (pie showData) and by the wedge
+//       geometry, so no information is lost, only the overlap.
+// A small pie (<= threshold, legend fits the square) is untouched: no label is
+// removed and the union never exceeds the existing box, so this is a no-op.
+// Exported for unit testing.
+// ---------------------------------------------------------------------------
+export const PIE_LABEL_COLLISION_THRESHOLD = 24;
+
+// ---------------------------------------------------------------------------
+// D-287 / D-145 (oversize-canvas-content-clipped/shrunk-labels-subpixel):
+// Mermaid's layout engine over-allocates the viewBox — sometimes far WIDER,
+// sometimes far TALLER than the rendered content — leaving a large empty band.
+// When that SVG is scaled to fit the capture container, the real content
+// collapses to a sub-pixel sliver (labels ~2px). Trimming the viewBox to the
+// content bounding box (plus a small pad) reclaims the dead space.
+//
+// The pre-fix gate only fired when WIDTH could be reclaimed, so the DOMINANT
+// mermaid case — a tight-width but grossly-oversize-HEIGHT canvas, with the
+// diagram sitting in the top ~15-25% and empty space below — was never
+// trimmed, and the content was shrunk on capture. This helper reclaims EITHER
+// axis. Pure and exported for unit testing.
+// ---------------------------------------------------------------------------
+export interface ViewBoxTrimResult {
+    shouldTrim: boolean;
+    newViewBox: string | null;
+    reclaimedWidthPct: number;
+    reclaimedHeightPct: number;
+}
+
+export function computeViewBoxTrim(
+    viewBox: string | null,
+    bbox: { x: number; y: number; width: number; height: number } | null | undefined,
+    pad = 16,
+    threshold = 0.9,
+): ViewBoxTrimResult {
+    const none: ViewBoxTrimResult = {
+        shouldTrim: false, newViewBox: null,
+        reclaimedWidthPct: 0, reclaimedHeightPct: 0,
+    };
+    if (!viewBox || !bbox || !(bbox.width > 0) || !(bbox.height > 0)) return none;
+    const parts = viewBox.split(/\s+/).map(Number);
+    if (parts.length < 4 || parts.some((n) => Number.isNaN(n))) return none;
+    const oldW = parts[2];
+    const oldH = parts[3];
+    const trimmedW = bbox.width + pad * 2;
+    const trimmedH = bbox.height + pad * 2;
+    // Reclaim if EITHER axis would shrink by more than (1 - threshold).
+    const reclaimW = oldW > 0 && trimmedW < oldW * threshold;
+    const reclaimH = oldH > 0 && trimmedH < oldH * threshold;
+    const shouldTrim = reclaimW || reclaimH;
+    const newViewBox = `${bbox.x - pad} ${bbox.y - pad} ${trimmedW} ${trimmedH}`;
+    return {
+        shouldTrim,
+        newViewBox: shouldTrim ? newViewBox : null,
+        reclaimedWidthPct: oldW > 0 ? (1 - trimmedW / oldW) * 100 : 0,
+        reclaimedHeightPct: oldH > 0 ? (1 - trimmedH / oldH) * 100 : 0,
+    };
+}
+
+export interface PieLayoutFixResult {
+    isPie: boolean;
+    sliceCount: number;
+    labelsRemoved: number;
+    viewBoxExpanded: boolean;
+    newViewBox?: string;
+}
+
+function pieParseTranslate(transform: string | null): { x: number; y: number } | null {
+    if (!transform) return null;
+    const m = transform.match(/translate\(\s*(-?[\d.]+)[ ,]+(-?[\d.]+)\s*\)/);
+    if (!m) {
+        const single = transform.match(/translate\(\s*(-?[\d.]+)\s*\)/);
+        if (single) return { x: parseFloat(single[1]), y: 0 };
+        return null;
+    }
+    return { x: parseFloat(m[1]), y: parseFloat(m[2]) };
+}
+
+function pieNum(v: string | null | undefined, fallback: number): number {
+    if (v == null) return fallback;
+    const n = parseFloat(v);
+    return isNaN(n) ? fallback : n;
+}
+
+/**
+ * Sum the translate() of an element and every ancestor <g> up to (not
+ * including) the <svg>. Mermaid places each legend row inside a group that is
+ * itself translated to the pie centre, so a legend row's own transform is in
+ * the centred group's LOCAL space; to compare it against the root viewBox we
+ * must add that ancestor offset. Non-translate transforms are ignored (mermaid
+ * pie uses only translate for these groups).
+ */
+function pieAbsoluteTranslate(el: Element, root: Element): { x: number; y: number } {
+    let x = 0;
+    let y = 0;
+    let node: Element | null = el;
+    while (node && node !== root) {
+        const t = pieParseTranslate(node.getAttribute('transform'));
+        if (t) { x += t.x; y += t.y; }
+        node = node.parentElement;
+    }
+    return { x, y };
+}
+
+/**
+ * Repair the upstream pie renderer's at-scale legend clipping, title
+ * occlusion and slice-label collision. Operates purely on emitted SVG
+ * attributes/geometry (no getBBox), so it is deterministic under jsdom and
+ * in the headless renderer alike. Idempotent.
+ */
+export function fixPieLayoutAtScale(svgElement: Element): PieLayoutFixResult {
+    const result: PieLayoutFixResult = {
+        isPie: false, sliceCount: 0, labelsRemoved: 0, viewBoxExpanded: false,
+    };
+
+    const slices = svgElement.querySelectorAll('path.pieCircle');
+    const legendItems = svgElement.querySelectorAll('g.legend');
+    const titleEl = svgElement.querySelector('.pieTitleText');
+    if (slices.length === 0 && legendItems.length === 0 && !titleEl) {
+        return result; // not a pie chart
+    }
+    result.isPie = true;
+    result.sliceCount = slices.length || legendItems.length;
+
+    // (1) Anti-collision: past the density threshold the centroid percentage
+    // labels overlap into an illegible mass. Remove them; the legend + wedge
+    // geometry still convey each slice.
+    if (result.sliceCount > PIE_LABEL_COLLISION_THRESHOLD) {
+        svgElement.querySelectorAll('text.slice').forEach((l) => {
+            l.parentNode?.removeChild(l);
+            result.labelsRemoved++;
+        });
+    }
+
+    // (2) Enclose the full legend column in the viewBox so no row is clipped.
+    // The legend column, not the title, is what overflows. CRUCIAL: mermaid's
+    // upstream pie renderer (default legend position) lays the column out
+    // VERTICALLY CENTRED on the pie hub — legend row `t` is placed at local y
+    // `t*E - E*n/2` inside the group that is translated to the pie centre — yet
+    // it then sizes the viewBox as `minX 0 w <pieHeight>` (origin at 0, height
+    // the pie square only). So at scale the column runs from a large NEGATIVE
+    // y (above the box top) to a large positive y (below the box bottom), and
+    // only the middle band of rows falls inside the centred box (the observed
+    // "rows 20-39 of 60" truncation). Growing only downward — the previous
+    // behaviour — reveals the bottom rows but leaves the ~n/2 rows above minY
+    // still clipped. We therefore grow the box to the legend's real
+    // (ancestor-accumulated) extent in ALL FOUR directions: move the origin
+    // up/left as needed and extend right/bottom. Never shrink — a small pie
+    // whose legend already fits the box is a no-op.
+    const vb = svgElement.getAttribute('viewBox');
+    if (vb) {
+        const parts = vb.split(/[\s,]+/).map(Number).filter((n) => !isNaN(n));
+        if (parts.length === 4) {
+            const [minX, minY, w, h] = parts;
+            const curRight = minX + w;
+            const curBottom = minY + h;
+            const pad = 8;
+            let needLeft = minX;
+            let needTop = minY;
+            let needRight = curRight;
+            let needBottom = curBottom;
+            // Overflow is decided from the RAW (unpadded) row extent so a legend
+            // that already fits the box is a true no-op; the pad is added only
+            // to the grown box, never used to manufacture a 1-row overflow.
+            let overflow = false;
+
+            legendItems.forEach((g) => {
+                const t = pieAbsoluteTranslate(g, svgElement);
+                const rect = g.querySelector('rect');
+                const rw = pieNum(rect?.getAttribute('width'), 18);
+                const rh = pieNum(rect?.getAttribute('height'), 18);
+                const txt = g.querySelector('text');
+                // estimate legend-label width so a long label is not clipped on the right
+                const textW = (txt?.textContent?.length ?? 0) * 7 + rw + 8;
+                const rawLeft = t.x;
+                const rawTop = t.y;
+                const rawRight = t.x + Math.max(rw, textW);
+                const rawBottom = t.y + Math.max(rh, 14);
+                if (
+                    rawLeft < minX || rawTop < minY ||
+                    rawRight > curRight || rawBottom > curBottom
+                ) {
+                    overflow = true;
+                }
+                if (rawLeft - pad < needLeft) needLeft = rawLeft - pad;
+                if (rawTop - pad < needTop) needTop = rawTop - pad;
+                if (rawRight + pad > needRight) needRight = rawRight + pad;
+                if (rawBottom + pad > needBottom) needBottom = rawBottom + pad;
+            });
+
+            // Only rewrite if a legend row actually overflows the current box on
+            // any side (grow to the legend column; never shrink).
+            if (overflow) {
+                const nMinX = Math.min(minX, needLeft);
+                const nMinY = Math.min(minY, needTop);
+                const nW = needRight - nMinX;
+                const nH = needBottom - nMinY;
+                const newVB = `${nMinX} ${nMinY} ${nW} ${nH}`;
+                svgElement.setAttribute('viewBox', newVB);
+                // Keep explicit width/height in step so a fixed size attr cannot
+                // re-clip the enlarged legend column.
+                if (svgElement.getAttribute('height') != null) {
+                    svgElement.setAttribute('height', String(nH));
+                }
+                if (svgElement.getAttribute('width') != null) {
+                    svgElement.setAttribute('width', String(nW));
+                }
+                result.viewBoxExpanded = true;
+                result.newViewBox = newVB;
+            }
+        }
+    }
+
+    return result;
+}
+
+/**
+ * G-0daf08 / D-153: canvas-aware LIGHT-theme themeVariables for the mermaid
+ * diagram types whose stock `default` palette is placed without reference to
+ * the WHITE render canvas. The dark branch of `mermaid.initialize` carries an
+ * extensive high-contrast override; the light branch historically carried ONLY
+ * `buildPieThemeVariables(false)`, so mermaid's default palette produced
+ * illegible output on white:
+ *   - quadrantChart white point labels on near-white quadrants (~1.04:1, w1-13)
+ *   - journey white task labels on pale-yellow bands (~1.02:1, w1-09)
+ *   - gitGraph pale yellow/green branch strokes on white (~1.07:1, w1-10)
+ *   - mindmap pale link ribbons (~1.05:1, w1-11)
+ *
+ * This block ONLY sets text/label colours and the diagram-type-specific
+ * palettes (quadrant*, journey task text, git0..git7 + labels, lineColor). It
+ * deliberately does NOT touch node backgrounds (mainBkg/nodeBkg/clusterBkg),
+ * so flowchart/class/state/sequence diagrams — whose default light contrast is
+ * already fine — render byte-for-byte as before.
+ *
+ * Every colour is verified against the white canvas (#ffffff) with WCAG:
+ *   text fills #1a1a1a = 17.40:1, #333333 = 12.63:1 (well above 4.5:1);
+ *   git strokes #1f77b4 4.82, #d62728 5.02, #2e7d32 5.13, #9467bd 4.26,
+ *   #c55a11 4.33, #0e7490 5.36, #b5179e 5.86, #495057 8.18 (all > 3:1 for a
+ *   graphical stroke), each branch label using the black/white that reads best
+ *   on its own branch colour (>= 4.5:1). Exported for unit testing.
+ */
+export function buildMermaidLightThemeVariables(): Record<string, any> {
+    return {
+        // Generic text / lines — dark on the white canvas.
+        textColor: '#1a1a1a',
+        lineColor: '#333333',          // mindmap ribbons + generic edges
+        titleColor: '#1a1a1a',
+        labelColor: '#1a1a1a',
+
+        // Journey: task labels defaulted to white on pale-yellow bands.
+        taskTextColor: '#1a1a1a',
+        taskTextDarkColor: '#1a1a1a',
+        taskTextLightColor: '#1a1a1a',
+        taskTextOutsideColor: '#1a1a1a',
+        actorTextColor: '#1a1a1a',
+
+        // quadrantChart: point labels + quadrant titles/axes defaulted to white.
+        quadrantPointTextFill: '#1a1a1a',
+        quadrant1TextFill: '#1a1a1a',
+        quadrant2TextFill: '#1a1a1a',
+        quadrant3TextFill: '#1a1a1a',
+        quadrant4TextFill: '#1a1a1a',
+        quadrantXAxisTextFill: '#333333',
+        quadrantYAxisTextFill: '#333333',
+        quadrantTitleFill: '#1a1a1a',
+
+        // gitGraph: pale default branch palette -> saturated, white-legible.
+        git0: '#1f77b4', git1: '#d62728', git2: '#2e7d32', git3: '#9467bd',
+        git4: '#c55a11', git5: '#0e7490', git6: '#b5179e', git7: '#495057',
+        gitBranchLabel0: '#ffffff', gitBranchLabel1: '#ffffff',
+        gitBranchLabel2: '#ffffff', gitBranchLabel3: '#000000',
+        gitBranchLabel4: '#000000', gitBranchLabel5: '#ffffff',
+        gitBranchLabel6: '#ffffff', gitBranchLabel7: '#ffffff',
+        tagLabelColor: '#1a1a1a',
+
+        // xychart-beta: default plotColorPalette leads with pale #ECECFF, so the
+        // first bar series is near-white on white (~1.15:1, w1-14). Override ONLY
+        // plotColorPalette with the white-legible palette (bar #1f77b4 4.82:1,
+        // line #d62728 5.02:1 on #ffffff — graphical > 3:1); every other xyChart
+        // subkey (axis/title/background) is omitted so mermaid falls back to its
+        // primaryTextColor/background defaults, which are already dark-on-white.
+        xyChart: {
+            plotColorPalette:
+                '#1f77b4,#d62728,#2e7d32,#9467bd,#c55a11,#0e7490,#b5179e,#495057',
+        },
+    };
 }
 
 // Add mermaid to window for TypeScript
@@ -496,7 +938,7 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                 altSectionBkgColor: '#434c5e',
                 gridColor: '#eceff4',
                 todayLineColor: '#88c0d0'
-            }, diagramType === 'timeline' ? buildTimelineDarkThemeVariables() : {}, buildPieThemeVariables(true)) : buildPieThemeVariables(false)),
+            }, diagramType === 'timeline' ? buildTimelineDarkThemeVariables() : {}, buildSequenceNoteDarkThemeVariables(), buildPieThemeVariables(true)) : Object.assign({}, buildMermaidLightThemeVariables(), buildPieThemeVariables(false))),
             flowchart: {
                 htmlLabels: true,
                 curve: 'basis',
@@ -649,16 +1091,14 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             const svgG = svgElement as unknown as SVGGraphicsElement;
             const bbox = svgG.getBBox();
             const vb = svgElement.getAttribute('viewBox');
-            if (vb && bbox.width > 0 && bbox.height > 0) {
-                const pad = 16;
-                const newVB = `${bbox.x - pad} ${bbox.y - pad} ${bbox.width + pad * 2} ${bbox.height + pad * 2}`;
-                const [, , oldW] = vb.split(/\s+/).map(Number);
-                const trimmedW = bbox.width + pad * 2;
-                // Only trim if we'd reclaim at least 10% of the width
-                if (oldW > 0 && trimmedW < oldW * 0.9) {
-                    svgElement.setAttribute('viewBox', newVB);
-                    console.log(`📐 VIEWBOX-TRIM: ${vb} → ${newVB} (reclaimed ${((1 - trimmedW / oldW) * 100).toFixed(0)}% width)`);
-                }
+            // D-287/D-145: reclaim excess viewBox on EITHER axis (width OR
+            // height). Mermaid over-allocates height as often as width; the
+            // old width-only gate left the oversize-height canvas untrimmed,
+            // shrinking real content to a sub-pixel sliver on capture.
+            const trim = computeViewBoxTrim(vb, bbox);
+            if (trim.shouldTrim && trim.newViewBox) {
+                svgElement.setAttribute('viewBox', trim.newViewBox);
+                console.log(`📐 VIEWBOX-TRIM: ${vb} → ${trim.newViewBox} (reclaimed ${trim.reclaimedWidthPct.toFixed(0)}% width, ${trim.reclaimedHeightPct.toFixed(0)}% height)`);
             }
         } catch (e) {
             console.warn('VIEWBOX-TRIM: Could not read SVG bounding box:', e);
@@ -673,7 +1113,13 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
         if (shouldEnhanceMermaidVisibility(rawDefinition)) {
             const runVisibilityFix = (phase: string) => {
                 console.log(`🎨 VISIBILITY-FIX (${phase}): Starting universal enhancement`);
-                const result = enhanceSVGVisibility(svgElement, isDarkMode, { debug: true });
+                // D-154: mermaid renders text on arbitrary node/note/section
+                // fills, so text needs the WCAG 4.5:1 floor rather than the 3:1
+                // graphic floor — a mid-tone fill (mindmap ROOT circle w1-11,
+                // sequence NOTE plate w1-03) can otherwise leave a ~3.1:1 label
+                // that clears 3.0 and is never remediated. Only mermaid opts in;
+                // drawio/graphviz keep the 3.0 default.
+                const result = enhanceSVGVisibility(svgElement, isDarkMode, { debug: true, textMinContrast: 4.5 });
                 console.log(`🎨 VISIBILITY-FIX (${phase}): Complete`);
 
                 console.group('🎨 MERMAID-CONTRAST: Visibility Enhancement Results');
@@ -698,6 +1144,23 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             console.log('🎨 VISIBILITY-FIX: Skipping post-processing - diagram has explicit color styles');
         }
 
+        // POST-RENDER (G-9c6f76 / D-294, w3-11): fan out quadrantChart data
+        // points that mermaid placed at (near-)identical coordinates so their
+        // markers and labels stop stacking into an unreadable smear (e.g. five
+        // points at the [0.5,0.5] centre). Placement-only and theme-independent,
+        // so it runs regardless of the contrast-enhancement opt-in and cannot be
+        // undone by a re-render (idempotent: distinct points are never moved).
+        if (diagramType === 'quadrantchart' || diagramType === 'quadrant') {
+            const runDodge = (phase: string) => {
+                try {
+                    const n = dodgeQuadrantPointCollisions(svgElement);
+                    if (n) console.log(`📍 QUADRANT-DODGE (${phase}): separated ${n} colliding point(s)`);
+                } catch (e) { console.warn('QUADRANT-DODGE failed:', e); }
+            };
+            runDodge('immediate');
+            setTimeout(() => runDodge('delayed'), 520);
+        }
+
         // POST-RENDER (D-161 / G-40): re-apply explicit `linkStyle` edge strokes.
         // In dark, the visibility pass repaints every edge with the theme
         // lineColor, silently discarding deliberately colour-coded edges. Run
@@ -715,6 +1178,26 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             setTimeout(reapplyLinks, 650);
         }
 
+        // POST-RENDER (G-632224 / D-295): keep node/block box borders and edge
+        // strokes visible against the theme canvas when an author style/init
+        // palette sets a fill+border (or forces #fff fills + #f8f8f8 lines) that
+        // matches the surface. Runs for BOTH themes and INDEPENDENTLY of
+        // shouldEnhanceMermaidVisibility — a definition with an explicit `color:`
+        // (w3-08) skips the universal visibility pass, so this is the only pass
+        // that reaches its dissolved borders. Theme-resolved outline
+        // (#333333 on light 12.63:1, #e6e6e6 on dark 13.36:1); only repaints a
+        // shape that has actually dissolved into the canvas.
+        if (diagramType === 'flowchart' || diagramType === 'graph' || diagramType === 'block') {
+            const fixBorders = () => {
+                try {
+                    const n = ensureShapeBordersAgainstCanvas(svgElement, isDarkMode);
+                    if (n) console.log(`🖼️ BOX-BORDER-CANVAS: repainted ${n} dissolved border/edge stroke(s)`);
+                } catch (e) { console.warn('BOX-BORDER-CANVAS failed:', e); }
+            };
+            fixBorders();
+            setTimeout(fixBorders, 650);
+        }
+
         // POST-RENDER (D-170 / G-40): ensure gantt date gridlines paint BEHIND the
         // task bars (mermaid can emit the grid group after the bars, slicing them),
         // and recolour under-contrast crit-task labels to black (both themes).
@@ -724,7 +1207,7 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                     if (moveGanttGridBehind(svgElement)) {
                         console.log('📊 GANTT-GRID-ZORDER: moved date gridlines behind task bars');
                     }
-                    recolorGanttCritLabels(svgElement);
+                    recolorGanttCritLabels(svgElement, isDarkMode);
                 } catch (e) { console.warn('GANTT-GRID-ZORDER failed:', e); }
             };
             fixGantt();
@@ -778,6 +1261,28 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                 }
                 console.log(`📅 GANTT-YEAR-FIX: Fixed ${fixed} axis labels`);
             }, 300);
+        }
+
+        // POST-RENDER (G-14a672 / D-152): repair the upstream pie renderer's
+        // at-scale legend clipping, title occlusion and slice-label collision.
+        // Runs AFTER the viewBox-trim (which only ever shrinks) and BEFORE
+        // responsive scaling, so scaling operates on the corrected viewBox.
+        if (diagramType === 'pie') {
+            // D-157: eliminate palette recycling past mermaid's 12-entry pie
+            // limit by giving each slice its own canvas-aware colour BEFORE the
+            // layout fix runs.
+            try {
+                const rc = recolorPieSlicesAtScale(svgElement, isDarkMode);
+                if (rc.recolored > 0) {
+                    console.log(`🥧 PIE-RECOLOR: ${rc.recolored}/${rc.sliceCount} slices given distinct canvas-aware fills`);
+                }
+            } catch (e) { console.warn('PIE-RECOLOR failed:', e); }
+            try {
+                const r = fixPieLayoutAtScale(svgElement);
+                if (r.isPie && (r.viewBoxExpanded || r.labelsRemoved)) {
+                    console.log(`🥧 PIE-LAYOUT-FIX: slices=${r.sliceCount} labelsRemoved=${r.labelsRemoved} viewBox=${r.newViewBox ?? 'unchanged'}`);
+                }
+            } catch (e) { console.warn('PIE-LAYOUT-FIX failed:', e); }
         }
 
         // Apply unified responsive scaling for all browsers
@@ -1028,8 +1533,23 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                                 el.style.setProperty('stroke', colors.lineColor, 'important');
                             });
                             svgEl.querySelectorAll('defs marker path').forEach(function(el) {
+                                // D-293/w1-06: crow's-foot / cardinality markers are drawn hollow
+                                // (fill:none) — blanket-filling them with the theme line colour turns
+                                // them into solid blobs that occlude the entity border and hide the
+                                // cardinality glyph. Recolour a marker's FILL only when it was actually
+                                // filled (solid arrowheads); always recolour the stroke so the marker
+                                // stays visible. Keeps hollow markers hollow.
+                                // D-156/D-293: an ER crow's-foot / cardinality marker whose
+                                // hollowness comes from a CSS rule has NO inline fill attribute, so
+                                // curFill reads back EMPTY here. Treat empty/absent fill as hollow
+                                // too (matching resolveMermaidMarkerColors) so we never fabricate a
+                                // solid teal fill that occludes the entity border. Only a marker that
+                                // is ACTUALLY filled is recoloured.
+                                var curFill = (el.getAttribute('fill') || el.style.getPropertyValue('fill') || '').trim().toLowerCase();
                                 el.style.setProperty('stroke', colors.lineColor, 'important');
-                                el.style.setProperty('fill', colors.lineColor, 'important');
+                                if (curFill !== 'none' && curFill !== 'transparent' && curFill !== '') {
+                                    el.style.setProperty('fill', colors.lineColor, 'important');
+                                }
                             });
 
                             // Edge label backgrounds
