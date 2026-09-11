@@ -126,6 +126,7 @@ async def list_task_bindings(project_id: str, chat_id: str) -> List[TaskBinding]
 
     if bindings:
         run_storage = TaskRunStorage(run_dir)
+        from app.utils.run_status_index import open_ask_block
         for b in bindings:
             # Stamp the project the binding actually lives in (TaskBinding
             # has extra="allow", same channel as run_status) so the client
@@ -144,6 +145,15 @@ async def list_task_bindings(project_id: str, chat_id: str) -> List[TaskBinding]
                         # own single-attempt lineage rather than null.
                         b.root_run_id = run.root_run_id or run.id
                         b.attempt = run.attempt or 1
+                        # Whether the run still waits on a human answer,
+                        # independent of ``run_status``.  After a server
+                        # restart an unanswered Ask is reconciled to
+                        # ``held`` with the question kept on the record;
+                        # without this bit the sidebar would read that as
+                        # an infrastructure fault and tell the user to fix
+                        # the environment when it needs an answer.  Same
+                        # rule as the status index (``open_ask_block``).
+                        b.has_open_ask = open_ask_block(run) is not None
                 except Exception as e:
                     logger.debug(f"Binding {b.id[:8]}: run status lookup failed: {e}")
     return bindings

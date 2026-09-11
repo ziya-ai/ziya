@@ -37,6 +37,15 @@ export interface TaskBinding {
   root_run_id?: string | null;
   /** 1-based position in the lineage.  Absent is treated as 1. */
   attempt?: number;
+  /**
+   * Server-enriched: the bound run still has an Ask open that nobody has
+   * answered, whatever ``run_status`` says.  Needed because a restart
+   * reconciles an unanswered ``awaiting_input`` run to ``held`` while
+   * keeping the question; the sidebar uses this to show "waiting on you"
+   * rather than an infrastructure hold for such a run.  Absent for
+   * staged bindings and from servers predating the field (read as false).
+   */
+  has_open_ask?: boolean;
   /** Which project the binding actually lives in (cross-project globals). */
   project_id?: string;
 }

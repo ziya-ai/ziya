@@ -26,9 +26,79 @@ import pytest
 from app.utils.run_status_index import (
     KNOWN_STATUSES, LIVE_STATUSES, RunStatusIndexCache,
     build_status_index, cache_for, clear_all_caches,
-    collapse_to_newest_attempt, has_live_runs, invalidate_for,
-    summarize_run,
+    collapse_to_newest_attempt, display_status, has_live_runs,
+    invalidate_for, open_ask_block, summarize_run,
 )
+
+
+class TestOpenAskAndDisplayStatus:
+    """A held run whose Ask is still open must read as 'awaiting_input'.
+
+    ``reconcile_stale_runs`` flips an unanswered ``awaiting_input`` run to
+    ``held`` across a restart and keeps ``pending_ask``.  Counting that
+    under 'held' told the sidebar to say "fix the environment" for a run
+    that needs an answer.  The answer must ALSO be taken into account:
+    ``record_ask_answer`` leaves ``pending_ask`` in place on a held run,
+    so pending_ask alone would keep asking after the user has answered.
+    """
+
+    PENDING = {"block_id": "ask-1", "question": "Ship it?", "choices": []}
+
+    def test_open_ask_needs_a_pending_block(self):
+        assert open_ask_block({"id": "r", "status": "held"}) is None
+        assert open_ask_block({"id": "r", "status": "held",
+                               "pending_ask": {}}) is None
+
+    def test_open_ask_is_the_pending_block_when_unanswered(self):
+        assert open_ask_block({"pending_ask": self.PENDING}) == "ask-1"
+
+    def test_an_answered_ask_is_not_open(self):
+        run = {"pending_ask": self.PENDING,
+               "ask_answers": {"ask-1": {"decision": "approve"}}}
+        assert open_ask_block(run) is None
+
+    def test_an_answer_for_a_different_block_leaves_it_open(self):
+        run = {"pending_ask": self.PENDING,
+               "ask_answers": {"ask-0": {"decision": "approve"}}}
+        assert open_ask_block(run) == "ask-1"
+
+    def test_held_with_open_ask_displays_as_awaiting_input(self):
+        assert display_status("held", True) == "awaiting_input"
+
+    def test_a_genuine_infrastructure_hold_stays_held(self):
+        assert display_status("held", False) == "held"
+
+    @pytest.mark.parametrize("status", [
+        s for s in KNOWN_STATUSES if s != "held"])
+    def test_only_held_is_remapped(self, status):
+        # Positive control on the same rule: a status that already says
+        # what it means must not be rewritten even with an open ask.
+        assert display_status(status, True) == status
+
+    def test_summary_carries_the_display_status(self):
+        held_open = {"id": "r1", "status": "held", "source_conversation_id": "c1",
+                     "pending_ask": self.PENDING}
+        held_answered = {"id": "r2", "status": "held", "source_conversation_id": "c1",
+                         "pending_ask": self.PENDING,
+                         "ask_answers": {"ask-1": {"decision": "approve"}}}
+        held_infra = {"id": "r3", "status": "held", "source_conversation_id": "c1"}
+        assert summarize_run(held_open).status == "awaiting_input"
+        assert summarize_run(held_answered).status == "held"
+        assert summarize_run(held_infra).status == "held"
+
+    def test_the_index_counts_a_restart_survivor_as_waiting(self):
+        # The outermost surface: the {status: count} the sidebar renders.
+        index = build_status_index([
+            {"id": "r1", "status": "held", "source_conversation_id": "c1",
+             "pending_ask": self.PENDING},
+            {"id": "r2", "status": "held", "source_conversation_id": "c1"},
+        ])
+        assert index["c1"] == {"awaiting_input": 1, "held": 1}
+
+    def test_awaiting_input_is_a_known_status(self):
+        # It was missing from the tuple that documents "every status a run
+        # can hold"; the client's vocabulary has carried it for some time.
+        assert "awaiting_input" in KNOWN_STATUSES
 
 
 class _Run:

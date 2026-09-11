@@ -63,8 +63,60 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 # than dropped, so the client can decide what to do with it.
 KNOWN_STATUSES: Tuple[str, ...] = (
     "queued", "running", "paused", "held",
-    "done", "partial", "failed", "cancelled",
+    "done", "partial", "failed", "cancelled", "awaiting_input",
 )
+
+
+def open_ask_block(run: Any) -> Optional[str]:
+    """The block id of an Ask this run is still waiting on, or None.
+
+    "Still waiting" means ``pending_ask`` is set AND ``ask_answers`` has no
+    entry for its block.  The second half matters on the held path:
+    ``record_ask_answer`` does not clear ``pending_ask`` (the executor's
+    ``close_ask`` does, when the resumed run reaches the block), so a held
+    run that has been answered but not yet resumed still carries the
+    question.  Reporting that as "waiting on you" would keep asking for an
+    answer already given.
+
+    Accepts a model or a dict, like ``summarize_run``.  Shared by the
+    binding enrichment and the status index so the open chat and the
+    sidebar's closed-chat rows cannot disagree about which runs are
+    waiting on a person.
+    """
+    def field(name: str) -> Any:
+        if isinstance(run, dict):
+            return run.get(name)
+        return getattr(run, name, None)
+
+    pending = field("pending_ask") or {}
+    if not isinstance(pending, dict):
+        return None
+    block_id = pending.get("block_id")
+    if not block_id:
+        return None
+    answers = field("ask_answers") or {}
+    if isinstance(answers, dict) and block_id in answers:
+        return None
+    return str(block_id)
+
+
+def display_status(status: str, has_open_ask: bool) -> str:
+    """Status as the SIDEBAR should read it.
+
+    ``reconcile_stale_runs`` turns an ``awaiting_input`` run into ``held``
+    across a server restart, keeping the question on the record.  For the
+    run object that is right -- there is no executor behind it -- but for
+    the reader it inverts the message: "held" says fix the environment,
+    when what is wanted is an answer.  So a held run with an open Ask is
+    displayed as ``awaiting_input``.  Every other status passes through;
+    in particular a genuine infrastructure hold (no open Ask) stays
+    ``held``.  Mirrored client-side by ``displayStatus`` in
+    frontend/.../runStatusVocabulary.ts, which applies the same rule to
+    the open chat's bindings.
+    """
+    if status == "held" and has_open_ask:
+        return "awaiting_input"
+    return status
 
 # Statuses that can still change without a user acting.  Drives whether the
 # client keeps polling.  ``held`` is excluded on purpose: it is terminal for
@@ -117,7 +169,12 @@ def summarize_run(run: Any) -> Optional[_Summary]:
         attempt = int(field("attempt") or 1)
     except (TypeError, ValueError):
         attempt = 1
-    return _Summary(str(status), field("source_conversation_id"),
+    # The summary carries the DISPLAY status: the index exists only to feed
+    # the sidebar, and doing the mapping here means a cached summary is
+    # already in the shape the client renders.  An answer or a reconcile
+    # rewrites the run file, so the per-file cache re-reads it.
+    shown = display_status(str(status), open_ask_block(run) is not None)
+    return _Summary(shown, field("source_conversation_id"),
                     str(lineage), attempt)
 
 
