@@ -190,8 +190,11 @@ describe('D-158: illegible fill/text pair in style/classDef is remediated', () =
       '  classDef n3 fill:whitesmoke,stroke:gainsboro,color:snow\n' +
       '  class A n1\n  class B n2\n  class C n3';
 
-    // Direction: the authored n3 pair is genuinely broken.
+    // Direction: BOTH the n3 (whitesmoke/snow 1.05:1) and n1 (tomato/white
+    // 2.95:1) authored pairs are broken against the WCAG 4.5:1 text floor. n1
+    // in the 2.0-4.5 band is the D-298/D-159 case the old 2.0 floor left as-is.
     expect(contrastOf('whitesmoke', 'snow')).toBeLessThan(2.0);
+    expect(contrastOf('tomato', 'white')).toBeLessThan(4.5);
 
     const out = preprocessDefinition(raw, 'flowchart');
 
@@ -201,9 +204,16 @@ describe('D-158: illegible fill/text pair in style/classDef is remediated', () =
     const textColor = n3.match(/color:([^,;\s]+)/)![1];
     expect(contrastOf('whitesmoke', textColor)).toBeGreaterThanOrEqual(4.5);
 
-    // Legible author pairs are left byte-for-byte unchanged (no regression):
-    // tomato/white = 2.95:1 and lightgoldenrodyellow/black = 19.67:1.
-    expect(out).toContain('classDef n1 fill:tomato,stroke:rebeccapurple,color:white');
+    // D-298/D-159: n1 tomato/white (2.95:1) is now repaired to black
+    // (tomato/#000000 = 7.13:1), legible on the author-fixed fill in BOTH
+    // themes. The FAIL-without-fix direction: on the old 2.0 floor this line
+    // was returned unchanged as `color:white`.
+    expect(out).toMatch(/classDef n1 fill:tomato,stroke:rebeccapurple,color:#000000/);
+    const n1 = out.match(/classDef n1[^\n]*/)![0];
+    expect(contrastOf('tomato', n1.match(/color:([^,;\s]+)/)![1])).toBeGreaterThanOrEqual(4.5);
+
+    // A pair already clearing 4.5 is left byte-for-byte unchanged (no regression):
+    // lightgoldenrodyellow/black = 19.67:1.
     expect(out).toContain('classDef n2 fill:lightgoldenrodyellow,stroke:darkslategray,color:black');
   });
 
