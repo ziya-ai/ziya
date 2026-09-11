@@ -36,7 +36,12 @@ def _factory_dispatch_endpoints() -> set[str]:
     """Endpoints create_provider actually branches on (``endpoint == "x"``)."""
     from app.providers import factory
     src = inspect.getsource(factory.create_provider)
-    return set(re.findall(r'endpoint\s*==\s*[\'"]([a-z_]+)[\'"]', src))
+    found = set(re.findall(r'endpoint\s*==\s*[\'"]([a-z_]+)[\'"]', src))
+    # local-<runtime> ids (one per running server) are dispatched by
+    # is_local_endpoint(); the registry lists them under the "local" alias.
+    if "is_local_endpoint(endpoint)" in src:
+        found.add("local")
+    return found
 
 
 # ── The core contract: the registry matches the dispatch ────────

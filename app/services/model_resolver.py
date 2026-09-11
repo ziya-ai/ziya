@@ -166,6 +166,18 @@ def resolve_service_model(
     # client (e.g. POSTing 'us.amazon.nova-lite-v1:0' to api.meta.ai), which
     # fails on every service call. The endpoint and the model ID have to come
     # from the same table.
+    from app.utils.local_models import is_local_endpoint
+    if is_local_endpoint(endpoint):
+        # local-<runtime> ids are registered at runtime, after this module's
+        # table was built; read the live default for that server. A local
+        # install has one model per server, so service calls share it.
+        from app.utils.local_models import register_local_endpoints, resolve_local_alias
+        from app.config.models_config import DEFAULT_SERVICE_MODELS
+        register_local_endpoints()
+        ep = resolve_local_alias(endpoint)
+        mid = DEFAULT_SERVICE_MODELS.get(ep)
+        if mid:
+            return {"endpoint": ep, "model_id": mid, "region": env_region}
     resolved_endpoint = endpoint if endpoint in _ENDPOINT_DEFAULTS else "bedrock"
     ep_defaults = _ENDPOINT_DEFAULTS[resolved_endpoint]
     cat_defaults = ep_defaults.get(category, ep_defaults.get("default", {}))
@@ -196,7 +208,9 @@ async def call_service_model(
         return await _call_bedrock(config, system_prompt, user_message, max_tokens, temperature)
     elif ep == "google":
         return await _call_google(config, system_prompt, user_message, max_tokens, temperature)
-    elif ep in ("openai", "anthropic", "zai", "meta"):
+    elif ep in ("openai", "anthropic", "zai", "meta", "local"):
+        return await _call_openai_compatible(config, system_prompt, user_message, max_tokens, temperature)
+    elif ep.startswith("local-"):
         return await _call_openai_compatible(config, system_prompt, user_message, max_tokens, temperature)
     else:
         logger.warning(f"ServiceModelResolver: unknown endpoint '{ep}', falling back to bedrock")
@@ -245,15 +259,32 @@ async def _call_bedrock(config, system_prompt, user_message, max_tokens, tempera
     if "temperature" not in unsupported:
         inference_config["temperature"] = temperature
 
+    # Inside a Task Card run, request the discounted Flex tier (see
+    # app.utils.service_tier).  Empty outside a run or once this model
+    # has rejected the tier in this process.
+    from app.utils import service_tier as _service_tier
+    tier_kwargs = _service_tier.converse_kwargs(config["model_id"])
+
     # Run synchronous boto3 call in a thread to avoid blocking the event loop.
     # Without this, background memory extraction starves all other coroutines.
-    response = await asyncio.to_thread(
-        client.converse,
-        modelId=config["model_id"],
-        system=[{"text": system_prompt}],
-        messages=[{"role": "user", "content": [{"text": user_message}]}],
-        inferenceConfig=inference_config,
-    )
+    async def _converse(extra):
+        return await asyncio.to_thread(
+            client.converse,
+            modelId=config["model_id"],
+            system=[{"text": system_prompt}],
+            messages=[{"role": "user", "content": [{"text": user_message}]}],
+            inferenceConfig=inference_config,
+            **extra,
+        )
+
+    try:
+        response = await _converse(tier_kwargs)
+    except Exception as e:
+        if not (tier_kwargs and _service_tier.is_service_tier_unsupported_error(str(e))):
+            raise
+        # Tier rejection is per model: remember it and retry once at standard.
+        _service_tier.mark_unsupported(config["model_id"], tier_kwargs["serviceTier"]["type"])
+        response = await _converse({})
     return _extract_converse_text(response)
 
 
@@ -284,6 +315,7 @@ async def _call_google(config, system_prompt, user_message, max_tokens, temperat
 
 async def _call_openai_compatible(config, system_prompt, user_message, max_tokens, temperature) -> str:
     """Call via OpenAI-compatible API (works for OpenAI and Anthropic direct)."""
+    extra_kwargs: Dict[str, Any] = {}
     try:
         import asyncio
         from openai import OpenAI
@@ -302,6 +334,21 @@ async def _call_openai_compatible(config, system_prompt, user_message, max_token
                 api_key=resolve_credential("meta"),
                 base_url=os.environ.get("META_BASE_URL", "https://api.meta.ai/v1"),
             )
+        elif str(config.get("endpoint", "")).startswith("local"):
+            from app.utils.local_models import (
+                local_endpoint_base_url, resolve_local_alias,
+                LOCAL_PLACEHOLDER_API_KEY, discover_and_apply,
+            )
+            ep = resolve_local_alias(config["endpoint"])
+            client = OpenAI(
+                api_key=LOCAL_PLACEHOLDER_API_KEY,
+                base_url=local_endpoint_base_url(ep),
+            )
+            discover_and_apply(config["model_id"], endpoint=ep)
+            from app.config.models_config import MODEL_CONFIGS
+            envelope = MODEL_CONFIGS.get(ep, {}).get(config["model_id"], {}).get("request_extra_body")
+            if isinstance(envelope, dict):
+                extra_kwargs["extra_body"] = envelope
         else:
             client = OpenAI()  # Uses OPENAI_API_KEY / ANTHROPIC_API_KEY from env
         response = await asyncio.to_thread(
@@ -313,6 +360,7 @@ async def _call_openai_compatible(config, system_prompt, user_message, max_token
             ],
             max_tokens=max_tokens,
             temperature=temperature,
+            **extra_kwargs,
         )
         return response.choices[0].message.content or ""
     except ImportError:
