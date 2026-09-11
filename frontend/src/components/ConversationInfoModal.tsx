@@ -11,13 +11,28 @@
  * conversation isn't persisted yet.
  */
 import React, { useEffect, useState } from 'react';
-import { Modal, Descriptions, Spin, Tag, Typography } from 'antd';
+import { Modal, Descriptions, Spin, Tag, Typography, Button, Table, Alert, Collapse, Switch } from 'antd';
 import type { Conversation } from '../utils/types';
 import { db } from '../utils/db';
 import { hydrateConversationMessages } from '../utils/conversationHydration';
 import { computeConversationStats, formatBytes } from '../utils/conversationInfo';
 
 const { Text } = Typography;
+
+interface ContextDebugIteration {
+    iteration: number;
+    timestamp: number;
+    fresh_tokens: number;
+    cache_read_tokens: number;
+    cache_write_tokens: number;
+    total_input_tokens: number;
+    effective_limit: number | null;
+    pct_of_limit: number | null;
+    message_count: number | null;
+    note: string | null;
+    is_estimated: boolean;
+    is_failure: boolean;
+}
 
 interface Props {
     visible: boolean;
@@ -47,6 +62,15 @@ const ConversationInfoModal: React.FC<Props> = ({
     // Set when hydration could not reach the server for a shell/absent record,
     // so the stats shown may be incomplete.  Surfaced in the render.
     const [hydrationError, setHydrationError] = useState(false);
+    // "Submitted context" debug panel: provider-reported per-iteration
+    // input token usage for this conversation's recent turns.  Loaded on
+    // demand via fetchContextDebug below.
+    const [contextDebug, setContextDebug] = useState<ContextDebugIteration[] | null>(null);
+    const [contextDebugLoading, setContextDebugLoading] = useState(false);
+    const [contextDebugError, setContextDebugError] = useState<string | null>(null);
+    // Backend detailed-capture flag (char counts + disk snapshots); null
+    // until the first Load reports it.
+    const [detailedCapture, setDetailedCapture] = useState<boolean | null>(null);
 
     useEffect(() => {
         if (!visible || !conversationId) return;
@@ -81,6 +105,52 @@ const ConversationInfoModal: React.FC<Props> = ({
         })();
         return () => { cancelled = true; };
     }, [visible, conversationId, projectId, conversation]);
+
+    // Reset the debug panel whenever the modal targets a different
+    // conversation so stale data from a previous chat can't linger.
+    useEffect(() => {
+        setContextDebug(null);
+        setContextDebugError(null);
+    }, [conversationId]);
+
+    const fetchContextDebug = async () => {
+        const pid = full?.projectId || (conversation as any)?.projectId || projectId;
+        if (!conversationId || !pid) return;
+        setContextDebugLoading(true);
+        setContextDebugError(null);
+        try {
+            const resp = await fetch(
+                '/api/v1/projects/' + encodeURIComponent(pid) + '/chats/' + encodeURIComponent(conversationId) + '/context-debug'
+            );
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const data = await resp.json();
+            setContextDebug(data.iterations || []);
+            setDetailedCapture(data.detailed_capture_enabled ?? null);
+        } catch (e: any) {
+            setContextDebugError(e?.message || 'Failed to load');
+        } finally {
+            setContextDebugLoading(false);
+        }
+    };
+
+    // Toggle the backend's detailed-capture tier (payload char counts +
+    // per-iteration crash-surviving disk snapshots).  The cheap in-memory
+    // token tier is always on regardless.
+    const toggleDetailedCapture = async (enabled: boolean) => {
+        setDetailedCapture(enabled); // optimistic — reverted on failure
+        try {
+            const resp = await fetch('/api/v1/context-debug/config', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled }),
+            });
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const data = await resp.json();
+            setDetailedCapture(data.enabled ?? enabled);
+        } catch {
+            setDetailedCapture(!enabled);
+        }
+    };
 
     // Prefer the persisted full record for stats (in-state may be a shell);
     // fall back to the in-state conversation for a not-yet-synced chat.
@@ -164,7 +234,7 @@ const ConversationInfoModal: React.FC<Props> = ({
                         <Descriptions.Item label="Display mode">{meta.displayMode}</Descriptions.Item>
                     )}
                     {typeof meta?.openBeadCount === 'number' && meta.openBeadCount > 0 && (
-                        <Descriptions.Item label="Open beads">{meta.openBeadCount}</Descriptions.Item>
+                        <Descriptions.Item label="Parked beads">{meta.openBeadCount}</Descriptions.Item>
                     )}
                     {meta?.branchedFrom && (
                         <Descriptions.Item label="Branched from">
@@ -179,6 +249,108 @@ const ConversationInfoModal: React.FC<Props> = ({
                     )}
                 </Descriptions>
             )}
+            <Collapse
+                style={{ marginTop: 12 }}
+                items={[{
+                    key: 'context-debug',
+                    label: 'Submitted context (debug)',
+                    children: (
+                        <div>
+                            <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
+                                Actual per-iteration input tokens reported by the model provider
+                                for this conversation's recent turns. This can be far larger than
+                                the message stats above: a turn's tool-calling loop accumulates
+                                tool results that are never saved to the chat record once the
+                                turn ends.
+                            </Text>
+                            <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
+                                Rows marked <Tag color="red" style={{ marginLeft: 2, marginRight: 2 }}>failed (est.)</Tag>
+                                are calls that were rejected before any provider usage event arrived (e.g. a
+                                "prompt is too long" error) — their token count is a rough char-based
+                                estimate, never the provider's real number, because none exists for a
+                                call that never streamed.
+                            </Text>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                                <Button size="small" loading={contextDebugLoading} onClick={fetchContextDebug}>
+                                    {contextDebug ? 'Refresh' : 'Load'}
+                                </Button>
+                                {detailedCapture !== null && (
+                                    <span style={{ fontSize: 12 }}>
+                                        <Switch
+                                            size="small"
+                                            checked={detailedCapture}
+                                            onChange={toggleDetailedCapture}
+                                        />{' '}
+                                        Detailed capture (payload char counts + crash-surviving disk snapshots)
+                                    </span>
+                                )}
+                            </div>
+                            {contextDebugError && (
+                                <Alert style={{ marginTop: 8 }} type="error" showIcon
+                                    message={'Failed to load: ' + contextDebugError} />
+                            )}
+                            {contextDebug && contextDebug.length === 0 && !contextDebugError && (
+                                <Alert style={{ marginTop: 8 }} type="info" showIcon
+                                    message="No iterations recorded for this conversation yet (nothing sent since the server last started, or no turn has run)." />
+                            )}
+                            {contextDebug && contextDebug.length > 0 && (
+                                <Table
+                                    style={{ marginTop: 8 }}
+                                    size="small"
+                                    pagination={false}
+                                    rowKey={(r: ContextDebugIteration) => r.iteration + '-' + r.timestamp}
+                                    dataSource={contextDebug}
+                                    rowClassName={(r: ContextDebugIteration) => r.is_failure ? 'context-debug-failure-row' : ''}
+                                    columns={[
+                                        { title: 'Iter', dataIndex: 'iteration', width: 50 },
+                                        {
+                                            title: 'Time', dataIndex: 'timestamp', width: 90,
+                                            render: (t: number) => t ? new Date(t * 1000).toLocaleTimeString() : '—',
+                                        },
+                                        {
+                                            title: 'Fresh', dataIndex: 'fresh_tokens',
+                                            render: (n: number) => (n ?? 0).toLocaleString(),
+                                        },
+                                        {
+                                            title: 'Cached', dataIndex: 'cache_read_tokens',
+                                            render: (n: number) => (n ?? 0).toLocaleString(),
+                                        },
+                                        {
+                                            title: 'Total input', dataIndex: 'total_input_tokens',
+                                            render: (n: number, r: ContextDebugIteration) => (
+                                                <span>
+                                                    <Text strong>{(n ?? 0).toLocaleString()}</Text>
+                                                    {r.is_estimated && (
+                                                        <Tag color={r.is_failure ? 'red' : 'default'} style={{ marginLeft: 6 }}>
+                                                            {r.is_failure ? 'failed (est.)' : 'est.'}
+                                                        </Tag>
+                                                    )}
+                                                </span>
+                                            ),
+                                        },
+                                        { title: 'Note', dataIndex: 'note', render: (n: string | null) => n || '—' },
+                                        {
+                                            title: '% of limit', dataIndex: 'pct_of_limit',
+                                            render: (p: number | null) => p == null ? '—' : (
+                                                <Tag color={p >= 95 ? 'red' : p >= 80 ? 'orange' : 'green'}>{p}%</Tag>
+                                            ),
+                                        },
+                                        {
+                                            title: 'Msgs', dataIndex: 'message_count',
+                                            render: (n: number | null) => n ?? '—',
+                                        },
+                                    ]}
+                                />
+                            )}
+                            <style>{`
+                                .context-debug-failure-row td {
+                                    background-color: rgba(255, 77, 79, 0.06) !important;
+                                }
+                            `}</style>
+                        </div>
+                    ),
+                }]}
+            />
         </Modal>
     );
 };

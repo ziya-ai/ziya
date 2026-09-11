@@ -9,11 +9,13 @@ import { v4 as uuidv4 } from "uuid";
 import { db } from '../utils/db';
 import * as syncMerge from '../utils/syncMerge';
 import { detectIncompleteResponse } from '../utils/responseUtils';
+import { importWithRetry } from '../utils/lazyWithRetry';
 // `uiMessage` alias for scopes where a local `message` parameter shadows the
 // antd export (addMessageToConversation takes a Message argument named
 // `message`).  One import statement, to satisfy no-duplicate-imports.
 import { message, message as uiMessage } from 'antd';
-import { recoverShellMessages, isKnownCompleteShell } from '../utils/shellRecovery';
+import { recoverShellMessages, isKnownCompleteShell, partitionHeldMessages, composerTextFromHeld } from '../utils/shellRecovery';
+import { dispatchComposerInject } from '../utils/composerInject';
 import { useTheme } from './ThemeContext';
 import { useConfig } from './ConfigContext';
 import { useProject } from './ProjectContext';
@@ -212,6 +214,12 @@ export function ChatProvider({ children }: ChatProviderProps) {
     // under another conversation's target (the cross-project content leak).
     const currentMessagesOwnerRef = useRef<string>('');
     const currentConversationRef = useRef<string>('');
+    // The conversation the user EXPLICITLY navigated to (loadConversation),
+    // as opposed to one the project-switch preload selected passively. Reset
+    // when a switch begins; consulted when the switch's server sync commits
+    // so a click made while the sync was still running is never undone by
+    // the sync's own relocation logic.
+    const userSelectedConversationRef = useRef<string | null>(null);
     const conversationIdRestored = useRef(false);
 
     // ── Per-project conversation ID persistence ─────────────────────
@@ -299,6 +307,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
     const messageUpdateCount = useRef(0);
     const conversationsRef = useRef(conversations);
     const streamingConversationsRef = useRef(streamingConversations);
+    // Latest syncWithServer closure, published by the sync effect below so
+    // the stream-end effect can trigger an immediate poll.  Null while no
+    // sync effect is mounted (pre-init, ephemeral mode, between projects).
+    const syncWithServerRef = useRef<(() => Promise<void>) | null>(null);
+    // Edge detector for streaming → idle; sized so a plain size compare
+    // works without retaining the previous Set.
+    const prevStreamingCountRef = useRef<number>(0);
 
     const removedStreamingIds = useRef<Set<string>>(new Set());
     // Epoch counter — bumped on every project-switch effect firing.  Stale
@@ -1160,7 +1175,16 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     const pid = (existingConversation as any).projectId || currentProject?.id;
                     recoverShellMessages(conversationId, pid, localCount, {
                         getIdbRecord: (id) => db.getConversation(id),
-                        getServerChat: (p, id) => syncApi.getChat(p, id),
+                        // getChat collapses 404 and 5xx to null, which recovery
+                        // would read as proven absence.  getChatResult keeps
+                        // them apart: null ONLY for an authoritative 404, throw
+                        // for anything the server failed to answer.
+                        getServerChat: async (p, id) => {
+                            const r = await syncApi.getChatResult(p, id);
+                            if (r.ok) return r.chat;
+                            if (r.kind === 'absent') return null;
+                            throw new Error(`getChat failed with status ${r.status}`);
+                        },
                     }).then(outcome => {
                         if (outcome.action === 'hold') {
                             // These messages exist NOWHERE else — not in IDB,
@@ -1168,13 +1192,40 @@ export function ChatProvider({ children }: ChatProviderProps) {
                             // possibly-truncated array is not a safe fallback:
                             // the push filter treats a fresher local _version as
                             // authoritative, so a 3-message local record would
-                            // overwrite a 37-message server record.  Hold them
-                            // and say so; a later send retries the recovery.
+                            // overwrite a 37-message server record.
+                            //
+                            // Holding alone still costs the user their text:
+                            // handleSend cleared the composer before this
+                            // promise resolved.  Hand human text BACK to the
+                            // composer and release it from the queue, so the
+                            // text has exactly one owner and cannot be sent
+                            // twice; keep everything else queued, since a
+                            // streamed assistant turn has no composer to
+                            // return to and exists nowhere else.
+                            const held = queue.get(conversationId) ?? [];
+                            const { returnToComposer, keepQueued } = partitionHeldMessages(held);
+                            if (keepQueued.length > 0) queue.set(conversationId, keepQueued);
+                            else queue.delete(conversationId);
+                            const returnedText = composerTextFromHeld(returnToComposer);
+                            if (returnedText) {
+                                dispatchComposerInject(conversationId, returnedText,
+                                    { preserveExisting: true });
+                            }
                             console.error(
                                 `🚨 SHELL_GUARD: recovery unavailable for ${conversationId.substring(0, 8)} ` +
-                                `(${outcome.reason}) — ${(queue.get(conversationId) ?? []).length} message(s) held`
+                                `(${outcome.reason}) — returned ${returnToComposer.length} to composer, ` +
+                                `${keepQueued.length} still queued`
                             );
-                            uiMessage.error('Could not load the full conversation history — this message was not saved. Reopen the conversation and try again.');
+                            // A terminal 'gone' must not ask for a retry that
+                            // cannot succeed; the text has to offer a move that
+                            // actually works — and when the text was handed
+                            // back, say where it went rather than "not saved".
+                            const where = returnedText
+                                ? 'Your message was not sent and has been put back in the composer.'
+                                : 'This message was not saved.';
+                            uiMessage.error(outcome.reason === 'gone'
+                                ? `This conversation's full history is no longer on the server. ${where} ${returnedText ? 'Copy it into' : 'Start'} a new conversation.`
+                                : `Could not load the full conversation history. ${where} ${returnedText ? 'Try sending again.' : 'Reopen the conversation and try again.'}`);
                             return;
                         }
                         const toApply = queue.get(conversationId) ?? [];
@@ -1692,6 +1743,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
     const loadConversation = useCallback(async (conversationId: string) => {
         setIsLoadingConversation(true);
+
+        // Every caller of loadConversation is an explicit user action, so this
+        // is where "the user chose this one" is recorded.
+        userSelectedConversationRef.current = conversationId;
 
         const convEntry = conversationsRef.current.find(c => c.id === conversationId);
 
@@ -2218,7 +2273,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // them never reached the server until the next periodic sync's
             // push side, leaving a window where a server-side _version bump
             // would revert the move (same mechanism as the rename bug).
-            const { mutateConversationMeta } = await import('../utils/conversationMutations');
+            const { mutateConversationMeta } = await importWithRetry(() => import('../utils/conversationMutations'));
             const result = await mutateConversationMeta(
                 conversationId,
                 { folderId, lastAccessedAt: newVersion },
@@ -2598,11 +2653,19 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
         initializeWithRecovery();
 
-        const request = indexedDB.open('ZiyaDB');
-        request.onerror = (event) => {
-            const error = (event.target as IDBOpenDBRequest).error?.message || 'Unknown IndexedDB error';
-            setDbError(error);
-        };
+        // Surface IDB-level failures via the db module's own init promise
+        // instead of a raw indexedDB.open('ZiyaDB') probe.  The raw probe
+        // hardcoded the root DB name (wrong after a recovery promotion to
+        // ZiyaDB_r1…), its unversioned open CREATED an empty zero-store
+        // database when none existed — exactly the store-less DB that makes
+        // a later transaction('conversations') throw NotFoundError — and it
+        // never closed the connection, which can block deleteDatabase() and
+        // version upgrades in the recovery paths.
+        if (!isEphemeralMode) {
+            db.init().catch(err => {
+                setDbError(err?.message || 'Unknown IndexedDB error');
+            });
+        }
     }, [initializeWithRecovery, isEphemeralMode]);
 
     // Fix 3: Synchronous clear on project switch.
@@ -2789,6 +2852,10 @@ export function ChatProvider({ children }: ChatProviderProps) {
 
             if (isActualProjectSwitch) {
                 setIsProjectSwitching(true);
+                // A selection made in the outgoing project must not pin the
+                // incoming project's sync to a conversation that isn't there.
+                // Anything the user clicks from here on belongs to this switch.
+                userSelectedConversationRef.current = null;
                 console.log('🔄 PROJECT_SWITCH: Set isProjectSwitching = true for', projectId);
             }
 
@@ -2822,8 +2889,21 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     } catch {
                         shells = [];
                     }
+                    // Effective-global resolution must use the FULL folder set
+                    // from IndexedDB, not the folders React state: the
+                    // PROJECT_CLEAR layout effect empties that state before
+                    // this effect runs, so a conversation that is global only
+                    // by folder inheritance read as non-global here, was
+                    // dropped from the switch preload, and then lost selection
+                    // to an unrelated project-local conversation below.
+                    let idbFolders: ConversationFolder[];
+                    try {
+                        idbFolders = await db.getFolders();
+                    } catch {
+                        idbFolders = [];
+                    }
                     const projectShells = shells.filter(
-                        (c: any) => (c.projectId === projectId || conversationIsEffectivelyGlobal(c, folders)) && c.isActive !== false
+                        (c: any) => (c.projectId === projectId || conversationIsEffectivelyGlobal(c, idbFolders)) && c.isActive !== false
                     );
 
                     // If the user has switched to yet another project while
@@ -2853,7 +2933,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     const curId = currentConversationRef.current;
                     const curShell = curId ? projectShells.find(c => c.id === curId) : undefined;
                     const curIsGlobal = !!curShell &&
-                        (curShell.isGlobal || conversationIsEffectivelyGlobal(curShell, folders));
+                        (curShell.isGlobal || conversationIsEffectivelyGlobal(curShell, idbFolders));
                     if (curIsGlobal) {
                         activeId = curId;
                     } else if (savedExists) {
@@ -3009,7 +3089,20 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     }
                     serverSyncedForProject.current = projectId;
 
-                    const localProjectConvs = allConversations.filter((c: any) => c.projectId === projectId || conversationIsEffectivelyGlobal(c, folders));
+                    // Effective-global resolution needs the FULL folder set
+                    // from IndexedDB.  The folders React state is emptied by
+                    // the PROJECT_CLEAR layout effect before this effect runs,
+                    // so a conversation that is global only by folder
+                    // inheritance would be filtered out of the very project
+                    // switch that is supposed to carry it along.
+                    let idbFolders: ConversationFolder[];
+                    try {
+                        idbFolders = await db.getFolders();
+                    } catch {
+                        idbFolders = [];
+                    }
+
+                    const localProjectConvs = allConversations.filter((c: any) => c.projectId === projectId || conversationIsEffectivelyGlobal(c, idbFolders));
 
                     // 2b. Detect conversations that need full fetch:
                     //     - Server-only (new from another instance)
@@ -3129,10 +3222,24 @@ export function ChatProvider({ children }: ChatProviderProps) {
                     const SYNC_GRACE_PERIOD_MS = 60_000; // 60 seconds
                     const now = Date.now();
                     const serverIdSet = new Set(serverChats.map((sc: any) => sc.id));
+                    // An empty server list makes EVERY previously-seen
+                    // conversation look deleted at once.  listChats returns []
+                    // on a non-2xx, so a single 500 would empty the sidebar
+                    // (transient — IDB is untouched — but indistinguishable
+                    // from data loss from where the user sits).  Gate the pass
+                    // on the list being credible; the per-conversation guards
+                    // below are unchanged and still apply.
+                    const runDeletionPass = syncMerge.shouldRunDeletionPass(
+                        serverChats.length, knownServerConversationIds.current.size);
+                    if (!runDeletionPass) {
+                        console.warn('📡 SERVER_SYNC: server returned 0 chats but '
+                            + `${knownServerConversationIds.current.size} were previously known — `
+                            + 'treating the list as unreliable and skipping the deletion pass');
+                    }
                     const deletedIds: string[] = [];
                     for (let i = mergedProjectConvs.length - 1; i >= 0; i--) {
                         const conv = mergedProjectConvs[i];
-                        if (conv.isActive !== false && !serverIdSet.has(conv.id)) {
+                        if (runDeletionPass && conv.isActive !== false && !serverIdSet.has(conv.id)) {
                             // Never splice the conversation the user is actively
                             // viewing — even if it aged out of the grace period
                             // (e.g. composing a long message for >60s).  Removing
@@ -3750,14 +3857,28 @@ export function ChatProvider({ children }: ChatProviderProps) {
                         // actually clicked into for the current project.
                         if (isStale()) return;
                         const currentId = currentConversationRef.current;
+                        // The user clicked a conversation after this switch began
+                        // (the list becomes interactive at the IDB preload, well
+                        // before the server sync lands). Honour that click
+                        // unconditionally — do not re-derive "belongs to project"
+                        // from the merged record, whose projectId may be missing
+                        // on legacy data or absent if the server did not return it.
+                        const userPinned = !!currentId && userSelectedConversationRef.current === currentId;
+                        if (userPinned) {
+                            console.log(`🔄 PROJECT_SWITCH: Keeping user-selected conversation ${currentId.substring(0, 8)}`);
+                        }
                         const currentConv = mergedProjectConvs.find(c => c.id === currentId);
+                        // Effective-global: own flag OR inherited from a global
+                        // folder.  The raw isGlobal test relocated away from a
+                        // conversation that is shared via its parent folder.
                         const belongsToNewProject = currentConv &&
-                            (currentConv.isGlobal || currentConv.projectId === projectId);
+                            (conversationIsEffectivelyGlobal(currentConv, idbFolders)
+                                || currentConv.projectId === projectId);
 
                         // The preload already selected a conversation for this project.
                         // Only override if what's currently selected still doesn't belong
                         // to the new project (can happen if the preload found no shells).
-                        if (!belongsToNewProject || !currentId) {
+                        if (!userPinned && (!belongsToNewProject || !currentId)) {
                             // Try to restore the saved conversation for this project
                             const savedId = loadProjectConversationId(projectId);
                             const savedExists = savedId && mergedProjectConvs.some(c => c.id === savedId);
@@ -3931,12 +4052,34 @@ export function ChatProvider({ children }: ChatProviderProps) {
             }
         };
         syncWithServer();
+        syncWithServerRef.current = syncWithServer;
 
         // Poll every 30 seconds to pick up changes from other browser instances
         const intervalId = setInterval(syncWithServer, 30_000);
 
-        return () => clearInterval(intervalId);
+        return () => {
+            clearInterval(intervalId);
+            syncWithServerRef.current = null;
+        };
     }, [isInitialized, currentProject?.id, isEphemeralMode]);
+
+    // Re-sync the moment streaming ends.  syncWithServer bails out while any
+    // conversation in this tab is streaming (this tab's state is authoritative
+    // mid-turn), so server-derived sidebar signals — the bead count above all,
+    // which the MODEL changes mid-turn via bead_create/bead_complete — went
+    // stale for up to a full 30s interval after every turn.  Declared after
+    // the effect that mirrors streamingConversations into its ref: effects
+    // run in declaration order, so by the time this fires the sync's own
+    // "still streaming" guard sees size 0.
+    useEffect(() => {
+        const wasStreaming = prevStreamingCountRef.current > 0;
+        prevStreamingCountRef.current = streamingConversations.size;
+        if (wasStreaming && streamingConversations.size === 0) {
+            syncWithServerRef.current?.()?.catch(err => {
+                console.debug('📡 SERVER_SYNC: stream-end sync failed (non-fatal):', err);
+            });
+        }
+    }, [streamingConversations]);
 
     // GC empty "New Conversation" nodes older than 1 hour
     useEffect(() => {
