@@ -1,4 +1,5 @@
 import { D3RenderPlugin } from '../../types/d3';
+import { importWithRetry } from '../../utils/lazyWithRetry';
 
 // Plugin metadata for registration (lightweight)
 interface PluginMetadata {
@@ -109,6 +110,17 @@ const pluginMetadata: PluginMetadata[] = [
 // Cache for loaded plugins
 const loadedPlugins = new Map<string, D3RenderPlugin>();
 
+// Why a named plugin's chunk failed to load, keyed by plugin name.  Kept
+// separate from loadedPlugins so a failure is reportable rather than merely an
+// absent entry -- an absent entry is indistinguishable from "the plugin
+// declined this spec" at the findPluginForSpec call site below.
+const pluginLoadFailures = new Map<string, string>();
+
+/** Reason the named plugin last failed to load, if it did. */
+export function getPluginLoadFailure(name: string): string | undefined {
+  return pluginLoadFailures.get(name);
+}
+
 /**
  * Dynamically load a plugin by name
  */
@@ -126,11 +138,31 @@ export async function loadPlugin(name: string): Promise<D3RenderPlugin | undefin
   }
 
   try {
-    const plugin = await metadata.loader();
+    // Route the chunk import through the same stale-build recovery every
+    // other lazy import in the app uses (index.tsx, App.tsx, ChatContext).
+    // This was the one dynamic-import site that opted out: after a rebuild
+    // the content-hashed chunk this loader names is gone, the fetch 404s as
+    // a ChunkLoadError, and webpack marks the chunk dead in its JSONP
+    // registry so no later attempt re-requests it -- which surfaced as
+    // "no compatible plugin found", blaming the diagram definition.
+    const plugin = await importWithRetry(() => metadata.loader());
+    if (!plugin) {
+      // The module resolved but its named export was undefined (circular
+      // import, or a renamed export).  Caching that poisons the entry for the
+      // rest of the session: the cache is probed with has(), not a truthiness
+      // test, so every later call short-circuits to undefined and the diagram
+      // stays unrenderable until a full page reload.  It was also silent.
+      const why = 'module loaded but its plugin export was undefined';
+      console.error(`Failed to load plugin ${name}: ${why}`);
+      pluginLoadFailures.set(name, why);
+      return undefined;
+    }
+    pluginLoadFailures.delete(name);
     loadedPlugins.set(name, plugin);
     return plugin;
-  } catch (error) {
+  } catch (error: any) {
     console.error(`Failed to load plugin ${name}:`, error);
+    pluginLoadFailures.set(name, error?.message || String(error));
     return undefined;
   }
 }
@@ -185,14 +217,25 @@ export const getPluginByName = async (name: string): Promise<D3RenderPlugin | un
 /**
  * Find and load the best plugin for a given spec
  */
-export async function findPluginForSpec(spec: any): Promise<D3RenderPlugin | undefined> {
+ export async function findPluginForSpec(
+   spec: any,
+   diagnostics?: { loadFailures: string[] },
+ ): Promise<D3RenderPlugin | undefined> {
   // Sort metadata by priority
   const sortedMetadata = [...pluginMetadata].sort((a, b) => b.priority - a.priority);
 
   // Try each plugin in priority order
   for (const metadata of sortedMetadata) {
     const plugin = await loadPlugin(metadata.name);
-    if (!plugin) continue;
+     if (!plugin) {
+       // A plugin whose chunk failed to import is indistinguishable from one
+       // that declined the spec once this returns undefined, and the caller
+       // then blames the definition.  Report the load failure instead.
+       diagnostics?.loadFailures.push(
+         `${metadata.name}: ${pluginLoadFailures.get(metadata.name) || 'chunk did not load'}`,
+       );
+       continue;
+     }
     // canHandle runs against EVERY spec, not only the ones it accepts:
     // the walk routes a vega-lite spec through basic-chart, vega and
     // plotly first. An unguarded throw rejected the whole search,

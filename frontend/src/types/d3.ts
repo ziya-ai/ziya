@@ -20,6 +20,18 @@ export interface D3RenderPlugin {
     name: string;
     priority: number;  // Higher number = higher priority
     sizingConfig?: PluginSizingConfig;  // Optional sizing configuration
+    /**
+     * The spec passed to render() IS the document the plugin renders
+     * (a Vega-Lite spec), not an envelope around one. Its `width` and
+     * `height` are document properties with their own semantics
+     * (`width: 'container'`, an absent height meaning "derive one"), so
+     * D3Renderer must not write its container-derived width/height onto
+     * them. Renderer geometry is delivered under `containerWidth` instead.
+     *
+     * Plugins that leave this unset get the legacy behaviour: an absent
+     * spec width/height is filled from the renderer's props (600x400).
+     */
+    ownsSpecDimensions?: boolean;
     canHandle: (spec: any) => boolean;
     isDefinitionComplete?: (definition: string) => boolean;  // Optional method to check if a diagram definition is complete
     render: (container: HTMLElement, d3: any, spec: any, isDarkMode: boolean) => void | (() => void) | Promise<void | (() => void)>;

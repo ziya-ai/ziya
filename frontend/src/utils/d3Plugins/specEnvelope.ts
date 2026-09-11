@@ -34,3 +34,36 @@ export function extractDefinition(rawSpec: any): any {
         ? rawSpec.definition
         : rawSpec;
 }
+
+/**
+ * Streaming guard for the wrappers that claim their spec by TYPE.
+ *
+ * A wrapper whose `canHandle` keys on `spec.type` is selected on the FIRST
+ * streaming chunk, so `render()` runs against a truncated body and paints an
+ * error card straight into the container -- once per chunk, until the fence
+ * closes.  That card bypasses D3Renderer's own error suppression, which gates
+ * only the renderError STATE it owns (`renderError && !isStreaming`), so the
+ * user watches a red card flicker where every other diagram type shows
+ * nothing.  The `isDefinitionComplete` hook that was meant to prevent this is
+ * consulted by D3Renderer ONLY for a bare string spec, and a markdown fence
+ * always arrives as an object envelope -- hence the guard lives here.
+ *
+ * Returns true when the body is still arriving AND has not yet parsed: skip
+ * the render silently and retry on the next chunk.
+ *
+ * A body that PARSES but is invalid is deliberately NOT deferred.  That error
+ * is real, and deferring it would hide it permanently: D3Renderer skips the
+ * post-stream re-render when the definition text is unchanged (its spec hash
+ * excludes the streaming flags), so the final frame would stay blank.
+ */
+export function isStreamingIncomplete(
+    rawSpec: any,
+    isComplete: (definition: string) => boolean,
+): boolean {
+    if (!rawSpec || typeof rawSpec !== 'object') return false;
+    if (rawSpec.isStreaming !== true) return false;
+    const definition = extractDefinition(rawSpec);
+    // An object definition was parsed upstream; there is nothing to wait for.
+    if (typeof definition !== 'string') return false;
+    return !isComplete(definition);
+}
