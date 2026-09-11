@@ -171,6 +171,53 @@ export function computeJointFitPlan(
  *  downscale a very tall graph (D-145). Moderate graphs grow naturally below it. */
 export const JOINT_MAX_RENDER_HEIGHT = 2000;
 
+// ---------------------------------------------------------------------------
+// Grid fallback for a DirectedGraph.layout throw at scale (G-27 / D-030 / D-111).
+//
+// @joint/layout-directed-graph's DirectedGraph.layout throws
+// `TypeError: Cannot read properties of undefined (reading 'x')` out of
+// DirectedGraph.fromGraphLib for very large graphs (empirically fine at ~80
+// nodes, throws by ~131 — joint-w2-02) even with NO malformed cells. The render
+// loop caught the throw but did nothing afterwards, so every auto-layout element
+// stayed at its default {x:0,y:0} and the whole graph collapsed into one
+// illegible pile of overlapping nodes. This lays the elements out in a
+// deterministic near-square reading-order grid (columns = ceil(sqrt(n))) whose
+// uniform cell pitch is sized to the LARGEST node in each axis, so no two boxes
+// overlap regardless of size variance. Pure + deterministic (identical light and
+// dark geometry) so it is unit-testable, and it only runs on the degraded path —
+// a successful layout is untouched.
+// ---------------------------------------------------------------------------
+export interface JointGridCell { id: string; width: number; height: number; }
+export interface JointGridPlacement { id: string; x: number; y: number; }
+
+export function computeGridFallbackPositions(
+    cells: JointGridCell[],
+    gap: number = 40,
+): JointGridPlacement[] {
+    if (!Array.isArray(cells) || cells.length === 0) return [];
+    const n = cells.length;
+    const cols = Math.max(1, Math.ceil(Math.sqrt(n)));
+    // Uniform cell pitch sized to the largest node in each axis (+ gap) so a
+    // mixed-size graph never overlaps a large neighbour.
+    let maxW = 0, maxH = 0;
+    for (const c of cells) {
+        const w = (c && typeof c.width === 'number' && c.width > 0) ? c.width : 120;
+        const h = (c && typeof c.height === 'number' && c.height > 0) ? c.height : 60;
+        if (w > maxW) maxW = w;
+        if (h > maxH) maxH = h;
+    }
+    const g = (typeof gap === 'number' && gap >= 0) ? gap : 40;
+    const pitchX = maxW + g;
+    const pitchY = maxH + g;
+    const out: JointGridPlacement[] = [];
+    for (let i = 0; i < n; i++) {
+        const col = i % cols;
+        const row = Math.floor(i / cols);
+        out.push({ id: cells[i].id, x: col * pitchX, y: row * pitchY });
+    }
+    return out;
+}
+
 export interface JointSpec {
     type: 'joint' | 'jointjs' | 'diagram';
     isStreaming?: boolean;
@@ -400,7 +447,7 @@ const createEnhancedRectElement = (elementSpec: JointElement, theme: 'light' | '
                 filter: theme === 'dark' ? 'drop-shadow(2px 2px 4px rgba(0,0,0,0.5))' : 'drop-shadow(2px 2px 4px rgba(0,0,0,0.2))'
             },
             label: {
-                text: fitJointLabel(text, (size as any)?.width, 14),
+                text: fitJointLabel(text, (size as any)?.width, 14, (size as any)?.height),
                 fill: readableJointLabelFill(theme === 'dark' ? '#4c566a' : '#ffffff'),
                 fontSize: 14,
                 fontFamily: 'Arial, sans-serif',
@@ -436,7 +483,7 @@ const createEnhancedCircleElement = (elementSpec: JointElement, theme: 'light' |
                 filter: theme === 'dark' ? 'drop-shadow(2px 2px 6px rgba(0,0,0,0.4))' : 'drop-shadow(2px 2px 6px rgba(0,0,0,0.2))'
             },
             label: {
-                text: fitJointLabel(text, (size as any)?.width, 13),
+                text: fitJointLabel(text, (size as any)?.width, 13, (size as any)?.height),
                 fill: readableJointLabelFill(theme === 'dark' ? '#5e81ac' : '#3498db'),
                 fontSize: 13,
                 fontFamily: 'Arial, sans-serif',
@@ -472,7 +519,7 @@ const createEnhancedEllipseElement = (elementSpec: JointElement, theme: 'light' 
                 filter: theme === 'dark' ? 'drop-shadow(2px 2px 4px rgba(0,0,0,0.5))' : 'drop-shadow(2px 2px 4px rgba(0,0,0,0.2))'
             },
             label: {
-                text: fitJointLabel(text, (size as any)?.width, 13),
+                text: fitJointLabel(text, (size as any)?.width, 13, (size as any)?.height),
                 fill: readableJointLabelFill(theme === 'dark' ? '#bf616a' : '#e74c3c'),
                 fontSize: 13,
                 fontFamily: 'Arial, sans-serif',
@@ -509,7 +556,7 @@ const createEnhancedDiamondElement = (elementSpec: JointElement, theme: 'light' 
                 filter: theme === 'dark' ? 'drop-shadow(2px 2px 4px rgba(0,0,0,0.5))' : 'drop-shadow(2px 2px 4px rgba(0,0,0,0.2))'
             },
             label: {
-                text: fitJointLabel(text, (size as any)?.width, 12),
+                text: fitJointLabel(text, (size as any)?.width, 12, (size as any)?.height),
                 fill: readableJointLabelFill(theme === 'dark' ? '#ebcb8b' : '#f39c12'),
                 fontSize: 12,
                 fontFamily: 'Arial, sans-serif',
@@ -545,7 +592,7 @@ const createHexagonElement = (elementSpec: JointElement, theme: 'light' | 'dark'
                 filter: 'drop-shadow(2px 2px 4px rgba(0,0,0,0.3))'
             },
             label: {
-                text: fitJointLabel(text, (size as any)?.width, 12),
+                text: fitJointLabel(text, (size as any)?.width, 12, (size as any)?.height),
                 fill: readableJointLabelFill(theme === 'dark' ? '#a3be8c' : '#27ae60'),
                 fontSize: 12,
                 fontFamily: 'Arial, sans-serif',
@@ -1604,10 +1651,14 @@ const createEnhancedLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
         // otherwise makes findRoute() throw `unknown router: "[object Object]"` during the
         // shared link view-flush, poisoning EVERY link and the auto-layout -> blank canvas.
         router: sanitizeRouter(linkSpec.router, 'normal', { padding: 20 }),
-        connectionStrategy: (end, view, magnet, coords) => {
-            // Use the center of the element as connection point
-            return view.model.getBBox().center();
-        },
+        // D-131: a per-link `connectionStrategy` returning getBBox().center() forced
+        // BOTH endpoints onto the element bbox centre. `connectionStrategy` is a
+        // dia.Paper option — inert on a link MODEL at best, and at worst (any version
+        // that honours it) it collapses every route onto the centre-to-centre line and
+        // defeats the orthogonal/manhattan/metro router the spec asked for, so all
+        // links render as straight segments regardless of `router`. Removed: the
+        // modelCenter anchor + boundary connectionPoint on source/target already
+        // terminate the link at the node edge, and the router now routes freely.
         connector: sanitizeConnector(linkSpec.connector, 'rounded', { radius: 15 }),
         vertices: linkSpec.vertices || [],
         defaultRouter: { name: 'normal' },
@@ -1703,10 +1754,14 @@ const createLink = (linkSpec: JointLink, theme: 'light' | 'dark') => {
         target: targetConfig,
         // Normalize router/connector to a KNOWN JointJS name (graphics-stress Issue 29).
         router: sanitizeRouter(linkSpec.router, 'normal', { padding: 10 }),
-        connectionStrategy: (end, view, magnet, coords) => {
-            // Use the center of the element as connection point
-            return view.model.getBBox().center();
-        },
+        // D-131: a per-link `connectionStrategy` returning getBBox().center() forced
+        // BOTH endpoints onto the element bbox centre. `connectionStrategy` is a
+        // dia.Paper option — inert on a link MODEL at best, and at worst (any version
+        // that honours it) it collapses every route onto the centre-to-centre line and
+        // defeats the orthogonal/manhattan/metro router the spec asked for, so all
+        // links render as straight segments regardless of `router`. Removed: the
+        // modelCenter anchor + boundary connectionPoint on source/target already
+        // terminate the link at the node edge, and the router now routes freely.
         connector: sanitizeConnector(linkSpec.connector, 'rounded', { radius: 15 }),
         vertices: linkSpec.vertices || [],
         attrs: {
@@ -1784,6 +1839,20 @@ const VALID_JOINT_THEMES = new Set(['light', 'dark', 'auto']);
 export const isValidJointTheme = (t: any): boolean =>
     typeof t === 'string' && VALID_JOINT_THEMES.has(t);
 
+// D-116/D-156: resolve the render theme that every `theme === 'dark'` ternary reads.
+// Only the literal 'light'/'dark' pass through; 'auto', undefined AND any bogus token
+// ('nord-dark') fall back to the caller's render theme (isDarkMode) instead of leaking
+// through and flipping every ternary to its light branch under dark mode (which painted
+// a near-white paper slab inside a genuinely dark page). Behaviour-identical extraction
+// of the inline render-site resolution, exported so both themes can be asserted in tests.
+export const resolveJointRenderTheme = (
+    specTheme: any,
+    isDarkMode: boolean
+): 'light' | 'dark' =>
+    (specTheme === 'light' || specTheme === 'dark')
+        ? specTheme
+        : (isDarkMode ? 'dark' : 'light');
+
 // D-141: locate the first object (within maxDepth levels) that owns an elements/cells
 // array, so a one-level-deeper wrapper ({graph:{cells:[...]}}, {data:{elements:[...]}},
 // {diagram:{...}}, {spec:{...}}) is recovered instead of falling through to the
@@ -1840,9 +1909,19 @@ export const jointContrastRatio = (a: string, b: string): number => {
  *  Falls back to the light candidate for an unparseable (non 6-digit-hex) fill. */
 export const readableJointLabelFill = (bodyFill: string): string => {
     if (!/^#?[0-9a-fA-F]{6}$/.test((bodyFill || '').trim())) return JOINT_LABEL_LIGHT;
-    return jointContrastRatio(bodyFill, JOINT_LABEL_DARK) >=
+    // Pick the higher-contrast aesthetic near-tone against the ACTUAL fill.
+    const near = jointContrastRatio(bodyFill, JOINT_LABEL_DARK) >=
         jointContrastRatio(bodyFill, JOINT_LABEL_LIGHT)
         ? JOINT_LABEL_DARK : JOINT_LABEL_LIGHT;
+    if (jointContrastRatio(bodyFill, near) >= 4.5) return near;
+    // D-138: a few default-palette fills are mid-toned enough that neither
+    // softened near-tone clears the 4.5 text floor (dark-theme circle #5e81ac
+    // best-label 4.46, ellipse #bf616a 4.39). Escalate to the MATCHING pure tone
+    // — still chosen by the fill's own luminance (not a blind constant swap),
+    // just the extreme rather than the softened variant — which does clear it in
+    // BOTH themes (worst-case best-label ratio rises 4.39 -> 5.13). Fills that
+    // already pass keep their softer near-tone, so ordinary output is unchanged.
+    return near === JOINT_LABEL_DARK ? '#000000' : '#ffffff';
 };
 
 // D-146: no textWrap/ellipsis exists, so a long label overruns the node/canvas and is
@@ -1850,11 +1929,21 @@ export const readableJointLabelFill = (bodyFill: string): string => {
 // bisect the glyphs). Headless has no text metrics, so estimate glyph advance (~0.6em
 // for the bold sans stack) and ellipsis-truncate to the node width.
 export const JOINT_LABEL_ELLIPSIS = '\u2026';
-export const fitJointLabel = (text: any, nodeWidth: number, fontSize: number): string => {
+export const fitJointLabel = (text: any, nodeWidth: number, fontSize: number, nodeHeight?: number): string => {
     const s = (text === undefined || text === null) ? '' : String(text);
     if (!s) return s;
     const w = (typeof nodeWidth === 'number' && nodeWidth > 0) ? nodeWidth : 120;
     const fs = (typeof fontSize === 'number' && fontSize > 0) ? fontSize : 13;
+    // D-130: reconcile the label against the node HEIGHT as well as its width. A
+    // width-only fit still leaves a label whose single line of glyphs is TALLER than
+    // an undersized node (joint-w2-13: 14px bold label in a 10px-tall node), so the
+    // node's own top/bottom stroke bisects the glyphs at contrast ratio 1.00. When
+    // the node cannot vertically contain even one line at this font size (needs the
+    // glyph box ~fontSize plus a little inset inside the ~2px stroke), drop the label
+    // entirely rather than paint a struck-through smear — the node still renders as a
+    // clean marker. Nodes tall enough to hold the line keep their (width-fitted) text,
+    // and callers that pass no height (legacy 3-arg calls) are unaffected.
+    if (typeof nodeHeight === 'number' && nodeHeight > 0 && nodeHeight < fs + 2) return '';
     const padding = 12;                       // ~6px inset each side
     const avgChar = fs * 0.6;                 // mean glyph advance for the bold sans stack
     const cap = Math.max(3, Math.floor((w - padding) / avgChar));
@@ -2346,10 +2435,7 @@ export const jointPlugin: D3RenderPlugin = {
             // undefined AND any bogus token ('nord-dark') fall back to the caller's
             // render theme instead of leaking through and flipping every
             // `theme === 'dark'` ternary to its light branch under dark mode.
-            const theme: 'light' | 'dark' =
-                (spec.theme === 'light' || spec.theme === 'dark')
-                    ? spec.theme
-                    : (isDarkMode ? 'dark' : 'light');
+            const theme: 'light' | 'dark' = resolveJointRenderTheme(spec.theme, isDarkMode);
 
             // Calculate container dimensions - walk up to find a rendered parent with actual dimensions
             const parentContainer = container.parentElement;
@@ -2676,6 +2762,33 @@ export const jointPlugin: D3RenderPlugin = {
                     console.log('DirectedGraph layout applied successfully');
                 } catch (layoutError) {
                     console.warn('Auto-layout failed, using manual positioning:', layoutError);
+                    // D-030 / D-111: DirectedGraph.layout throws at scale (~131 nodes)
+                    // leaving every auto-layout element at its default {0,0} — one
+                    // illegible pile. Reposition them in a deterministic non-overlapping
+                    // reading-order grid so the graph degrades to a legible matrix. Only
+                    // runs on this degraded path; a successful layout is never touched.
+                    try {
+                        const cells: JointGridCell[] = jointElements.map(el => {
+                            const s = (typeof (el as any).size === 'function')
+                                ? (el as any).size() : undefined;
+                            return {
+                                id: String((el as any).id),
+                                width: (s && s.width) || 120,
+                                height: (s && s.height) || 60,
+                            };
+                        });
+                        const placements = computeGridFallbackPositions(cells);
+                        const byId = new Map(placements.map(p => [p.id, p]));
+                        jointElements.forEach(el => {
+                            const p = byId.get(String((el as any).id));
+                            if (p && typeof (el as any).position === 'function') {
+                                (el as any).position(p.x, p.y);
+                            }
+                        });
+                        console.log('joint: applied grid fallback positions to', placements.length, 'elements');
+                    } catch (gridErr) {
+                        console.warn('joint: grid fallback positioning failed', gridErr);
+                    }
                 }
             }
 
