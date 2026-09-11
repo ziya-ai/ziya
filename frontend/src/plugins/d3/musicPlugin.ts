@@ -6,8 +6,54 @@
  * See utils/d3Plugins/musicPlugin.ts for the shared rendering core.
  */
 import { D3RenderPlugin } from '../../types/d3';
-import { isMusicSpec, resolveMusicSpec, renderMusicSpec, type MusicSpec } from '../../utils/d3Plugins/musicPlugin';
+import {
+  isMusicSpec, resolveMusicSpec, renderMusicSpec, degenerateMusicBody, type MusicSpec,
+} from '../../utils/d3Plugins/musicPlugin';
 import { escapeXml } from '../../utils/d3Plugins/packetPlugin';
+
+/**
+ * Draw a titled, empty staff for a well-formed but ZERO-CONTENT music spec
+ * (D-145, music-w3-09: a title with empty `measures`/`notes`/`staves`).  Such
+ * a spec is not renderable by the VexFlow core, but leaving it UNCLAIMED made
+ * the orchestrator retry to its ~30s no-plugin timeout with zero output -- a
+ * total loss.  A bare titled staff converts that hang into an immediate, clean
+ * render in both themes.  Pure DOM (no VexFlow) so it cannot itself hang.
+ *
+ * Colours resolve from the theme the renderer was given, not a constant: the
+ * staff line and text are chosen to clear WCAG on each background
+ * (light #6b7280 line 4.83:1 / #333333 text 12.63:1 on #ffffff; dark #8b949e
+ * line 5.42:1 / #e0e0e0 text 12.63:1 on #1e1e1e -- both clear the 3:1 boundary
+ * and 4.5:1 text floors on their own theme's background).
+ */
+function renderEmptyMusicStaff(container: HTMLElement, body: any, isDarkMode: boolean): void {
+  const title = typeof body?.title === 'string' ? body.title.trim() : '';
+  const textFill = isDarkMode ? '#e0e0e0' : '#333333';
+  const lineStroke = isDarkMode ? '#8b949e' : '#6b7280';
+  const width = 480;
+  const height = 132;
+  const left = 40;
+  const right = width - 40;
+  const staffTop = 56;
+  const lineGap = 8;
+  const lines = [0, 1, 2, 3, 4]
+    .map((i) => `<line x1="${left}" y1="${staffTop + i * lineGap}" x2="${right}" `
+      + `y2="${staffTop + i * lineGap}" stroke="${lineStroke}" stroke-width="1" />`)
+    .join('');
+  const titleText = title
+    ? `<text x="${width / 2}" y="30" text-anchor="middle" font-family="serif" `
+      + `font-size="16" fill="${textFill}">${escapeXml(title)}</text>`
+    : '';
+  container.innerHTML = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}"
+         viewBox="0 0 ${width} ${height}" role="img"
+         aria-label="empty music score${title ? `: ${escapeXml(title)}` : ''}">
+      ${titleText}
+      ${lines}
+      <text x="${width / 2}" y="${staffTop + 4 * lineGap + 28}" text-anchor="middle"
+            font-family="sans-serif" font-size="12" fill="${textFill}">(empty score)</text>
+    </svg>
+  `;
+}
 
 function renderError(container: HTMLElement, message: string, rawSpec: any, isDarkMode: boolean): void {
   const specStr = typeof rawSpec === 'string' ? rawSpec
@@ -74,6 +120,15 @@ async function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode:
   // duplicating that assumption rejects valid multi-staff specs even once
   // canHandle has admitted them.
   if (!isMusicSpec(spec)) {
+    // D-145: a well-formed but ZERO-CONTENT music spec (title + empty
+    // measures/notes/staves) is not renderable by the VexFlow core, but the
+    // plugin claims it (see canHandle) so it does not fall through to the
+    // orchestrator's ~30s no-plugin timeout.  Draw a titled blank staff.
+    const emptyBody = degenerateMusicBody(rawSpec);
+    if (emptyBody) {
+      renderEmptyMusicStaff(container, emptyBody, isDarkMode);
+      return;
+    }
     renderError(
       container,
       'Requires a "notes" array with at least one note, or a "staves" list whose staves have notes',
@@ -110,7 +165,11 @@ export const musicPlugin: D3RenderPlugin = {
     // fails the type gate and the plugin is never selected -> 30s timeout.
     // resolveMusicSpec lifts the parsed body and stamps type:'music' ONLY when
     // it actually carries music content, so non-music specs are not hijacked.
-    return isMusicSpec(resolveMusicSpec(spec));
+    // D-145: also claim a well-formed but zero-content music-shaped wrapper
+    // (empty notes/measures/staves) so render() can draw a titled blank staff
+    // instead of leaving it unclaimed -> ~30s no-plugin timeout.  A non-music
+    // body (no music structural keys) is not matched, so this never hijacks.
+    return isMusicSpec(resolveMusicSpec(spec)) || degenerateMusicBody(spec) !== null;
   },
   isDefinitionComplete: (definition: string): boolean => {
     // Mirror canHandle: the definition body carries no `type`, so stamp it via
