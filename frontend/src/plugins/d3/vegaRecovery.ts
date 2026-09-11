@@ -41,6 +41,38 @@ export function normalizeSmartQuotes(s: string): string {
 }
 
 /**
+ * D-016: a model with a JS-authoring reflex separates top-level properties with
+ * semicolons instead of commas (`"mark": "bar";`) and/or leaves a trailing `;`
+ * after the closing brace (vega-lite-w4-08). A semicolon is INVALID JSON/JSON5
+ * in every position, so a single stray `;` defeats even the tolerant JSON5
+ * parse and the spec hangs unclaimed. Rewrite every `;` that sits OUTSIDE a
+ * string literal to a comma; the outermost-object slice then discards the now
+ * dangling trailing comma. Semicolons inside string values (labels, titles) are
+ * preserved. Returns the input unchanged when it contains no bare semicolon, so
+ * a valid spec is never perturbed. PURE + exported for unit testing.
+ */
+export function normalizeSemicolonSeparators(s: string): string {
+  if (typeof s !== 'string' || s.indexOf(';') < 0) return s;
+  let out = '';
+  let inString = false;
+  let quote = '';
+  let escaped = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      out += ch;
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\') { escaped = true; continue; }
+      if (ch === quote) inString = false;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { inString = true; quote = ch; out += ch; continue; }
+    out += ch === ';' ? ',' : ch;
+  }
+  return out;
+}
+
+/**
  * Slice a string down to its outermost {...} object, discarding any prose
  * lead-in before the first '{' and any trailing tail after the last '}'
  * (e.g. a stray ';' or explanatory sentence). No-op if no braces are found.
@@ -53,11 +85,61 @@ export function sliceToOutermostObject(s: string): string {
 }
 
 /**
+ * A generation cut off at its output ceiling typically ends with every
+ * character it emitted intact but with the outer brackets never written — e.g.
+ * a `vconcat` spec whose final `]}` is missing, which JSON5 reports as an
+ * "invalid end of input" at exactly length+1. When the ONLY fault is unwritten
+ * closers, the end of the fence implies them: return the text with the
+ * outstanding `}`/`]` appended in the correct order.
+ *
+ * Deliberately conservative — returns null (no guess) when the text is already
+ * balanced, when a bracket MISMATCHES its opener (real corruption, not
+ * truncation), when it ends inside an unterminated string, or when there is no
+ * object to close at all. Brackets inside string literals are not counted.
+ */
+export function closeUnbalancedBrackets(s: string): string | null {
+  if (typeof s !== 'string') return null;
+  const start = s.indexOf('{');
+  if (start < 0) return null;
+  const body = s.slice(start);
+
+  const expected: string[] = [];
+  let inString = false;
+  let quote = '';
+  let escaped = false;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (inString) {
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\') { escaped = true; continue; }
+      if (ch === quote) inString = false;
+      continue;
+    }
+    if (ch === '"' || ch === "'") { inString = true; quote = ch; continue; }
+    if (ch === '{') expected.push('}');
+    else if (ch === '[') expected.push(']');
+    else if (ch === '}' || ch === ']') {
+      if (expected.pop() !== ch) return null; // mismatched — do not guess
+    }
+  }
+  // Nothing outstanding, or cut mid-string: not a closer-only truncation.
+  if (inString || expected.length === 0) return null;
+
+  // A truncation often lands just after a separator; a dangling comma would
+  // defeat even JSON5 and carries no content of its own.
+  let repaired = body.replace(/,\s*$/, '');
+  for (let i = expected.length - 1; i >= 0; i--) repaired += expected[i];
+  return repaired;
+}
+
+/**
  * Parse a candidate Vega-Lite spec string tolerantly. Order of attempts:
  *   1. strict JSON on the fence-stripped, smart-quote-normalised text
  *   2. strict JSON on the outermost {...} slice (drops prose / trailing ';')
  *   3. JSON5 on the slice, then on the whole (trailing commas, unquoted keys,
  *      single quotes, comments)
+ *   4. the bracket-closed text, when the sole fault is closers the end of the
+ *      fence implies (see closeUnbalancedBrackets)
  * Throws the last error (a SyntaxError) if every attempt fails, so the caller's
  * existing try/catch can surface the styled error panel.
  */
@@ -77,6 +159,33 @@ export function tolerantParseVegaSpec(raw: string): any {
   try {
     return JSON5.parse(sliced);
   } catch (_) { /* fall through */ }
+
+  // D-016: semicolons used as statement separators (a JS-authoring reflex) are
+  // invalid JSON/JSON5 in every position and defeat all attempts above. Rewrite
+  // the bare (out-of-string) semicolons to commas, re-slice to drop any now
+  // dangling trailing comma, and retry strict then JSON5. Only runs when a bare
+  // ';' is actually present, so a valid spec never reaches this branch.
+  const desemied = normalizeSemicolonSeparators(normalized);
+  if (desemied !== normalized) {
+    const dsliced = sliceToOutermostObject(desemied);
+    try {
+      return JSON.parse(dsliced);
+    } catch (_) { /* fall through */ }
+    try {
+      return JSON5.parse(dsliced);
+    } catch (_) { /* fall through */ }
+  }
+
+  // Truncated at the output ceiling: supply the closers the fence implies.
+  const closed = closeUnbalancedBrackets(normalized);
+  if (closed) {
+    try {
+      return JSON.parse(closed);
+    } catch (_) { /* fall through */ }
+    try {
+      return JSON5.parse(closed);
+    } catch (_) { /* fall through */ }
+  }
   // Last attempt on the un-sliced text; let this one throw on failure.
   return JSON5.parse(normalized);
 }
@@ -163,6 +272,85 @@ export function validateColorSchemes(spec: any): number {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// D-016: unresolvable theme directives + design-token colour strings
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * The vega-embed theme registry (vega-themes) keys. An `embedOptions.theme`
+ * that is NOT one of these is unknown to the runtime; kept in sync with
+ * node_modules/vega-themes. Compared case-sensitively (theme keys are lower).
+ */
+export const KNOWN_VEGA_EMBED_THEMES = new Set<string>([
+  'carbong10', 'carbong90', 'carbong100', 'carbonwhite', 'dark', 'excel',
+  'fivethirtyeight', 'ggplot2', 'googlecharts', 'latimes', 'powerbi',
+  'quartz', 'urbaninstitute', 'vox',
+]);
+
+// Keys whose value is a colour. A `$design-token` string here (e.g.
+// '$surface', '$textPrimary') is not a colour the runtime can resolve: it lands
+// as a literal invalid fill (rendered black/absent), so the theme's own colour
+// never applies. Deleting it lets the active theme default fill the slot.
+const COLOR_VALUED_KEYS = new Set<string>([
+  'background', 'fill', 'color', 'stroke',
+  'fillColor', 'strokeColor',
+  'labelColor', 'titleColor', 'tickColor', 'domainColor', 'gridColor',
+  'labelColour', 'titleColour',
+]);
+
+/**
+ * D-016: neutralise theme directives and colour strings a model emits that the
+ * Vega / vega-embed runtime cannot resolve, so the renderer's OWN theme applies
+ * instead of a broken/ignored one (vega-lite-w4-15):
+ *   1. a top-level `theme` key — Vega-Lite has no such property; it is inert at
+ *      compile but signals a mis-transcribed embedOptions, so drop it.
+ *   2. an `usermeta.embedOptions.theme` naming a theme NOT in the registry —
+ *      vega-embed merges usermeta.embedOptions OVER the caller's options, so an
+ *      unknown name silently overrides (and discards) the renderer's chosen
+ *      theme. Drop only the unknown name; a valid author theme is preserved.
+ *   3. any colour-position value that is a `$design-token` string (unresolvable
+ *      → invalid fill). Delete it so the theme default colour is used.
+ * Conservative: only `$`-prefixed colour strings and an UNKNOWN theme are
+ * removed; every resolvable colour and valid theme is left untouched. Mutates +
+ * returns the spec. PURE + exported for unit testing.
+ */
+export function sanitizeThemeTokens(spec: any): any {
+  if (!spec || typeof spec !== 'object') return spec;
+
+  // (1) top-level `theme` key (not a Vega-Lite property).
+  if (typeof spec.theme === 'string') {
+    delete spec.theme;
+  }
+
+  // (2) unknown usermeta.embedOptions.theme override.
+  const embedOpts = spec.usermeta && typeof spec.usermeta === 'object'
+    ? spec.usermeta.embedOptions
+    : null;
+  if (embedOpts && typeof embedOpts === 'object' && typeof embedOpts.theme === 'string') {
+    if (!KNOWN_VEGA_EMBED_THEMES.has(embedOpts.theme)) {
+      delete embedOpts.theme;
+    }
+  }
+
+  // (3) `$design-token` colour strings in colour-valued keys.
+  const walk = (node: any): void => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(walk); return; }
+    for (const k in node) {
+      if (!Object.prototype.hasOwnProperty.call(node, k)) continue;
+      const v = node[k];
+      if (typeof v === 'string' && v.charAt(0) === '$' && COLOR_VALUED_KEYS.has(k)) {
+        delete node[k];
+      } else if (v && typeof v === 'object') {
+        walk(v);
+      }
+    }
+  };
+  walk(spec);
+
+  return spec;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // D-256: bare-array data normalisation
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -201,6 +389,82 @@ export function normalizeBareArrayData(spec: any): any {
   };
   walk(spec);
   return spec;
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// D-243: missing encoding-type inference
+// ─────────────────────────────────────────────────────────────────────────
+
+// A leading ISO-8601 date/datetime, e.g. "2024", "2024-05", "2024-05-01",
+// "2024-05-01T09:30". Deliberately conservative: a plain integer like "700"
+// is NOT matched (it has no separator), so a numeric string never mis-infers
+// as temporal.
+const ISO_DATE_LIKE_RE = /^\d{4}-\d{2}(-\d{2})?([T ]\d{2}:\d{2})?/;
+
+function fieldValuesLookTemporal(vals: any[]): boolean {
+  if (!vals.length) return false;
+  if (!vals.every(v => typeof v === 'string')) return false;
+  return vals.every(v => ISO_DATE_LIKE_RE.test(v) && !Number.isNaN(Date.parse(v)));
+}
+
+/**
+ * D-243: when an encoding channel names a `field` but omits `type`, Vega-Lite
+ * defaults the field to NOMINAL — so a numeric measure (e.g. `pop`) is drawn as
+ * discrete bands with equal-height bars, destroying the quantitative comparison
+ * the author intended (vega-lite-w4-07). Infer the type from the actual data:
+ * an all-numeric field becomes `quantitative`, an all-ISO-date field becomes
+ * `temporal`. A non-numeric / non-date field is LEFT UNTOUCHED — Vega-Lite's
+ * own nominal default is already correct there, so this is a strict no-op
+ * except where the default is demonstrably wrong. Channels that already carry a
+ * `type`, or an `aggregate`/`bin`/`timeUnit` (which imply their own type), or
+ * whose field is absent from the data, are never modified. Native Vega specs
+ * (`marks[]` / a `/vega/` schema) are skipped entirely. Returns the number of
+ * types filled in. Mutates the spec. PURE + exported for unit testing.
+ */
+export function inferEncodingTypes(spec: any): number {
+  if (!spec || typeof spec !== 'object') return 0;
+  const sch = typeof spec.$schema === 'string' ? spec.$schema : '';
+  const isVega5 = (sch.includes('/vega/') && !sch.includes('/vega-lite/')) || Array.isArray(spec.marks);
+  if (isVega5) return 0;
+
+  let filled = 0;
+
+  const inferForEncoding = (encoding: any, data: any): void => {
+    if (!encoding || typeof encoding !== 'object') return;
+    const rows = data && Array.isArray(data.values) ? data.values : [];
+    for (const ch in encoding) {
+      if (!Object.prototype.hasOwnProperty.call(encoding, ch)) continue;
+      const enc = encoding[ch];
+      if (!enc || typeof enc !== 'object' || Array.isArray(enc)) continue;
+      // Already typed, or carries a transform that dictates its own type.
+      if (enc.type || enc.aggregate || enc.bin || enc.timeUnit) continue;
+      if (typeof enc.field !== 'string') continue;
+      const vals = rows
+        .map((r: any) => (r && typeof r === 'object' ? r[enc.field] : undefined))
+        .filter((v: any) => v !== undefined && v !== null);
+      if (!vals.length) continue; // no evidence — leave Vega's default in place
+      if (vals.every((v: any) => typeof v === 'number' && Number.isFinite(v))) {
+        enc.type = 'quantitative';
+        filled += 1;
+      } else if (fieldValuesLookTemporal(vals)) {
+        enc.type = 'temporal';
+        filled += 1;
+      }
+      // else: nominal default is already correct → leave untouched.
+    }
+  };
+
+  const walk = (node: any, inheritedData: any): void => {
+    if (!node || typeof node !== 'object' || Array.isArray(node)) return;
+    const data = node.data || inheritedData;
+    if (node.encoding) inferForEncoding(node.encoding, data);
+    for (const key of ['layer', 'vconcat', 'hconcat', 'concat']) {
+      if (Array.isArray(node[key])) node[key].forEach((c: any) => walk(c, data));
+    }
+    if (node.spec) walk(node.spec, data);
+  };
+  walk(spec, spec.data);
+  return filled;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -332,6 +596,37 @@ export function reconcileThemeColors(spec: any, isDarkMode: boolean): any {
   };
   walk(spec);
 
+  // D-317: an AUTHORED text-MARK colour (mark.color / mark.fill on a text mark,
+  // or a text layer's encoding.color.value) is honoured verbatim by Vega and is
+  // NOT in GUIDE_COLOR_KEYS, so a value legible in one theme (e.g. #333333 ink
+  // authored for a white card) becomes invisible on the opposite theme's canvas
+  // (#333333 on the #333 dark card = 1.00:1). Measure text-mark ink against the
+  // effective canvas and nudge to the readable value only when it is sub-3:1.
+  reconcileTextMarkColors(spec, bg, readable);
+
+  // D-319: reconcileThemeColors never touched MARK FILLS. A pale authored fill
+  // near the canvas luminance vanishes (bar fill #f4f4f4 on white), an
+  // all-pastel scale.range dissolves on white, and a gradient stop sitting at
+  // canvas luminance disappears. Nudge measurably-invisible (<3:1) solid fills
+  // and gradient stops toward the readable side (hue-preserving), and replace a
+  // fully-invisible categorical range with the theme's saturated palette.
+  reconcileMarkFillsVsCanvas(spec, bg, darkCanvas);
+
+  // D-318: in a layered arc/pie spec the TOP-LEVEL encoding.color channel is
+  // shared to every layer, so a text-label layer that declares no colour of its
+  // own inherits the SERIES colour and is drawn in the very slice colour it sits
+  // on (invisible), or in the series colour on the canvas (low-contrast in one
+  // theme). Break that inheritance: pin an explicit canvas-readable ink on
+  // inheriting text layers so labels are never painted with their slice's fill.
+  reconcileInheritedArcLabelColors(spec, darkCanvas);
+
+  // D-318 (field-driven sub-case): value labels drawn INSIDE bars whose ink AND
+  // fill are both data-driven literal colours (color.field, scale:null) can be
+  // near-isoluminant with the very bar they sit on. That contrast is against the
+  // MARK, not the canvas, so none of the reconcilers above see it. Reconcile
+  // each row's text colour against its own fill colour (theme-independent).
+  reconcileFieldDrivenTextOnFill(spec);
+
   // D-259: the boxplot composite mark's whisker/cap RULES keep a near-black
   // stroke that Vega's dark theme does not adapt (#000 on the #333 dark card =
   // 1.66:1). Theme those sub-mark strokes from the active canvas when the
@@ -343,6 +638,242 @@ export function reconcileThemeColors(spec: any, isDarkMode: boolean): any {
   return spec;
 }
 
+/** true when a colour string resolves and is invisible (< 3:1) on `bg`. */
+function isInvisibleOn(color: unknown, bg: [number, number, number]): boolean {
+  if (typeof color !== 'string') return false;
+  const rgb = resolveColorToRgb(color);
+  return !!rgb && contrastRatio(rgb, bg) < 3;
+}
+
+/** Serialise [r,g,b] (0-255) to #rrggbb. */
+function rgbToHex([r, g, b]: [number, number, number]): string {
+  const h = (v: number) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+  return `#${h(r)}${h(g)}${h(b)}`;
+}
+
+/**
+ * D-319: nudge an invisible fill toward the readable side of the canvas while
+ * preserving its hue direction — blend toward WHITE on a dark canvas, toward
+ * BLACK on a light one, in 10% steps until the WCAG floor (3:1) is cleared or
+ * the endpoint is reached. Keeps the mark visible without collapsing it onto a
+ * single ink constant (a pale blue stays bluish, just darker/lighter).
+ */
+export function nudgeFillForContrast(hex: string, bg: [number, number, number], darkCanvas: boolean): string {
+  const base = resolveColorToRgb(hex);
+  if (!base) return hex;
+  const target = darkCanvas ? 255 : 0;
+  let cur: [number, number, number] = [base[0], base[1], base[2]];
+  for (let f = 0.1; f <= 1.0001 && contrastRatio(cur, bg) < 3; f += 0.1) {
+    cur = [
+      base[0] + (target - base[0]) * f,
+      base[1] + (target - base[1]) * f,
+      base[2] + (target - base[2]) * f,
+    ];
+  }
+  return rgbToHex(cur);
+}
+
+/**
+ * D-317: reconcile AUTHORED text-mark ink against the effective canvas. Only a
+ * measurably invisible (< 3:1) colour is touched, so a deliberately legible
+ * author ink is preserved on BOTH themes (a #333 label stays #333 on a white
+ * card and only becomes readable light ink once the canvas is dark). Walks the
+ * spec tree (layer/concat/facet) and covers mark.color, mark.fill and a text
+ * layer's encoding.color.value. Mutates spec.
+ */
+export function reconcileTextMarkColors(spec: any, bg: [number, number, number], readable: string): any {
+  const visit = (node: any): void => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(visit); return; }
+    const markType = typeof node.mark === 'string' ? node.mark : node.mark?.type;
+    if (markType === 'text' && node.mark && typeof node.mark === 'object') {
+      for (const key of ['color', 'fill']) {
+        if (isInvisibleOn(node.mark[key], bg)) node.mark[key] = readable;
+      }
+    }
+    if (markType === 'text' && node.encoding?.color && typeof node.encoding.color === 'object') {
+      if (isInvisibleOn(node.encoding.color.value, bg)) node.encoding.color.value = readable;
+    }
+    for (const k of ['layer', 'vconcat', 'hconcat', 'concat']) {
+      if (Array.isArray(node[k])) node[k].forEach(visit);
+    }
+    if (node.spec) visit(node.spec);
+  };
+  visit(spec);
+  return spec;
+}
+
+/**
+ * D-319: reconcile MARK FILLS that vanish into the canvas. For every non-text
+ * mark:
+ *   - a solid string fill/color invisible (< 3:1) on the canvas is nudged
+ *     hue-preserving to the readable side;
+ *   - gradient stops that sit at canvas luminance are nudged the same way;
+ *   - a categorical encoding.color.scale.range whose entries are ALL invisible
+ *     is swapped for the theme's saturated palette prefix (a genuinely
+ *     unusable palette on this canvas, not a legible author choice).
+ * Legible fills, and a range with even one visible entry, are untouched — so a
+ * correct chart on either theme is never recoloured. Mutates spec.
+ */
+export function reconcileMarkFillsVsCanvas(spec: any, bg: [number, number, number], darkCanvas: boolean): any {
+  const nudge = (hex: string) => nudgeFillForContrast(hex, bg, darkCanvas);
+  const visit = (node: any): void => {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { node.forEach(visit); return; }
+    const markType = typeof node.mark === 'string' ? node.mark : node.mark?.type;
+    if (markType && markType !== 'text' && node.mark && typeof node.mark === 'object') {
+      for (const key of ['fill', 'color']) {
+        const c = node.mark[key];
+        if (typeof c === 'string') {
+          if (isInvisibleOn(c, bg)) node.mark[key] = nudge(c);
+        } else if (c && typeof c === 'object' && Array.isArray(c.stops)) {
+          for (const st of c.stops) {
+            if (st && isInvisibleOn(st.color, bg)) st.color = nudge(st.color);
+          }
+        }
+      }
+    }
+    const range = node.encoding?.color?.scale?.range;
+    if (Array.isArray(range) && range.length > 0 && range.every((x: any) => isInvisibleOn(x, bg))) {
+      node.encoding.color.scale.range = SATURATED_CATEGORY_10.slice(0, Math.min(range.length, SATURATED_CATEGORY_10.length));
+    }
+    for (const k of ['layer', 'vconcat', 'hconcat', 'concat']) {
+      if (Array.isArray(node[k])) node[k].forEach(visit);
+    }
+    if (node.spec) visit(node.spec);
+  };
+  visit(spec);
+  return spec;
+}
+
+/**
+ * D-318: in a top-level LAYERED arc/pie spec, the shared `encoding.color`
+ * channel is applied to every layer, so a text-label layer that declares no
+ * colour of its own inherits the SERIES colour scale — the label is then drawn
+ * in the exact colour of the slice it sits on (invisible) or in the series
+ * colour against the canvas (low-contrast on one theme). Pin an explicit
+ * canvas-readable ink (as encoding.color.value) on any text layer that would
+ * otherwise inherit the shared colour channel, so labels are never painted with
+ * their own slice's fill. Only fires when (a) the spec is layered, (b) an arc
+ * layer is present, (c) a shared field/value colour channel exists, and (d) the
+ * text layer has no colour of its own — an authored per-label colour is kept.
+ * Mutates spec.
+ */
+export function reconcileInheritedArcLabelColors(spec: any, darkCanvas: boolean): any {
+  if (!spec || typeof spec !== 'object' || !Array.isArray(spec.layer)) return spec;
+  const shared = spec.encoding?.color;
+  const sharedIsChannel = shared && typeof shared === 'object' && (shared.field !== undefined || shared.value !== undefined);
+  if (!sharedIsChannel) return spec;
+  const hasArc = spec.layer.some((l: any) => (typeof l?.mark === 'string' ? l.mark : l?.mark?.type) === 'arc');
+  if (!hasArc) return spec;
+  const readable = darkCanvas ? '#f0f0f0' : '#222222';
+  for (const layer of spec.layer) {
+    const markType = typeof layer?.mark === 'string' ? layer.mark : layer?.mark?.type;
+    if (markType !== 'text') continue;
+    const own = layer.encoding?.color;
+    const ownIsChannel = own && typeof own === 'object' && (own.field !== undefined || own.value !== undefined);
+    if (ownIsChannel) continue; // author pinned a label colour — respect it
+    layer.encoding = layer.encoding && typeof layer.encoding === 'object' ? layer.encoding : {};
+    layer.encoding.color = { value: readable };
+  }
+  return spec;
+}
+
+/**
+ * D-318 (text-on-mark-contrast-not-reconciled, field-driven sub-case): a text
+ * layer draws value labels INSIDE a filled mark, and BOTH the fill and the text
+ * ink are DATA-DRIVEN literal colours (`encoding.color.field` with `scale:null`,
+ * or an omitted scale over a field whose values are all colour strings). Vega
+ * honours those hex values verbatim, so a row whose text colour is
+ * near-isoluminant with its own bar fill (e.g. #222 label on a #1b2a41 bar, or
+ * #fff label on a #f7f7f2 bar) is unreadable — and, crucially, the contrast is
+ * against the MARK the label sits on, NOT the canvas, so the theme-vs-canvas
+ * reconcilers never see it. For each shared data row, measure the text colour
+ * against the fill colour of the SAME row; when it is sub-3:1, repaint that
+ * row's text value with pure black or white — whichever maximises contrast on
+ * that fill. Theme-independent (the label sits on the mark, not the page), and
+ * only invisible combinations are touched, so a legibly-authored on-bar label
+ * is preserved on both themes. Mutates + returns the spec.
+ */
+export function reconcileFieldDrivenTextOnFill(spec: any): any {
+  if (!spec || typeof spec !== 'object' || !Array.isArray(spec.layer)) return spec;
+  const values = spec.data?.values;
+  if (!Array.isArray(values) || values.length === 0) return spec;
+
+  // A colour encoding carries LITERAL colours (not a category→palette map) when
+  // scale is explicitly null, or scale is absent and every value of the field
+  // resolves to a colour. A real categorical field ("dark-1", "Alpha") fails
+  // the all-colours test and is skipped, so this never hijacks a scaled channel.
+  const literalColorField = (layer: any): string | null => {
+    const col = layer?.encoding?.color;
+    if (!col || typeof col !== 'object' || typeof col.field !== 'string') return null;
+    if (col.scale !== null && col.scale !== undefined) return null;
+    const f = col.field;
+    const seen = values
+      .map((r: any) => (r && typeof r === 'object' ? r[f] : undefined))
+      .filter((v: any) => v !== undefined && v !== null);
+    if (seen.length === 0) return null;
+    return seen.every((v: any) => typeof v === 'string' && resolveColorToRgb(v)) ? f : null;
+  };
+
+  let textField: string | null = null;
+  let fillField: string | null = null;
+  for (const layer of spec.layer) {
+    const markType = typeof layer?.mark === 'string' ? layer.mark : layer?.mark?.type;
+    const f = literalColorField(layer);
+    if (!f) continue;
+    if (markType === 'text') { if (!textField) textField = f; }
+    else if (!fillField) { fillField = f; }
+  }
+  if (!textField || !fillField || textField === fillField) return spec;
+
+  const WHITE: [number, number, number] = [255, 255, 255];
+  const BLACK: [number, number, number] = [0, 0, 0];
+  for (const row of values) {
+    if (!row || typeof row !== 'object') continue;
+    const tRgb = typeof row[textField] === 'string' ? resolveColorToRgb(row[textField]) : null;
+    const fRgb = typeof row[fillField] === 'string' ? resolveColorToRgb(row[fillField]) : null;
+    if (!tRgb || !fRgb) continue;
+    if (contrastRatio(tRgb, fRgb) < 3) {
+      row[textField] = contrastRatio(WHITE, fRgb) >= contrastRatio(BLACK, fRgb) ? '#ffffff' : '#000000';
+    }
+  }
+  return spec;
+}
+
+/**
+ * D-319 (authored-fill-vanishes-into-canvas, gradient sub-case): a model emits
+ * bogus colour-NAME string VALUES ("rainbow", "gradient", "multicolor",
+ * "#green") that Vega cannot resolve; the original inline fix serialised the
+ * spec and replaced every occurrence of those tokens, which ALSO renamed the
+ * object KEY of a legitimate gradient fill — `{"gradient":"linear",...}` became
+ * `{"#4ecdc4":"linear",...}`, a fill object with no `gradient` key, so the mark
+ * rendered with NO fill and vanished (w3-07, both themes). Restricting the
+ * name→colour substitution to a VALUE position (immediately after a `:`) leaves
+ * object keys — and therefore valid gradient objects — intact. Colour-name
+ * *values* like `"fill":"gradient"` are still corrected. Mutates via a
+ * round-trip; on parse failure the original spec is returned unchanged.
+ */
+export function fixBogusColorNameValues(spec: any): any {
+  if (!spec || typeof spec !== 'object') return spec;
+  let s = JSON.stringify(spec);
+  // "#green" → "green": a hashed CSS colour name is only ever a value.
+  s = s.replace(
+    /"#(green|red|orange|blue|yellow|purple|black|white|gray|grey|cyan|magenta|pink|brown|violet|indigo|gold|silver)"/gi,
+    '"$1"',
+  );
+  // Bogus palette-name VALUES → concrete colours. Anchored to a `:` so a
+  // same-spelled object key (notably a gradient fill's "gradient" key) is safe.
+  s = s.replace(/:\s*"rainbow"/gi, ':"#ff6b6b"');
+  s = s.replace(/:\s*"gradient"/gi, ':"#4ecdc4"');
+  s = s.replace(/:\s*"multicolor"/gi, ':"#45b7d1"');
+  try {
+    return JSON.parse(s);
+  } catch {
+    return spec;
+  }
+}
+
 /**
  * D-258: drop an authored `background` whose polarity is opposite to the active
  * theme so the theme's own surface shows through. Only fires when the colour is
@@ -350,16 +881,37 @@ export function reconcileThemeColors(spec: any, isDarkMode: boolean): any {
  * dark card under light theme); a background close to the theme surface, an
  * unresolvable value, or `transparent`/`null` is left untouched. Mutates spec.
  */
+// True when `background` is a resolvable colour of the WRONG polarity for the
+// active theme (a light card under the dark theme, or a dark card under the
+// light theme). Only measurable colours are judged; an unresolvable value is
+// left alone.
+function isWrongPolarityBackground(background: any, isDarkMode: boolean): boolean {
+  const rgb = typeof background === 'string' ? resolveColorToRgb(background) : null;
+  if (!rgb) return false;
+  const bgIsLight = relLuminance(rgb) >= 0.5;
+  return (isDarkMode && bgIsLight) || (!isDarkMode && !bgIsLight);
+}
+
 export function reconcileBackground(spec: any, isDarkMode: boolean): any {
   if (!spec || typeof spec !== 'object') return spec;
-  const rgb = typeof spec.background === 'string' ? resolveColorToRgb(spec.background) : null;
-  if (!rgb) return spec;
-  const lum = relLuminance(rgb);
-  const bgIsLight = lum >= 0.5;
   // Wrong polarity: light background while the theme is dark, or dark
-  // background while the theme is light.
-  if ((isDarkMode && bgIsLight) || (!isDarkMode && !bgIsLight)) {
+  // background while the theme is light. Drop it so the theme's own surface
+  // applies and the guide-colour walk measures against the real canvas.
+  if (isWrongPolarityBackground(spec.background, isDarkMode)) {
     delete spec.background;
+  }
+  // D-316 (config-background-polarity-unreconciled): Vega honours
+  // `config.background` as the canvas fill exactly like a top-level
+  // `background`, but the original reconcile only inspected the top level. A
+  // spec that pins BOTH (w3-08 sets `background:"#fff"` AND
+  // `config.background:"#fff"`) therefore kept a light canvas under the dark
+  // theme even after the top-level drop, which collapsed the dark theme's
+  // white guide titles onto white (titleColor #fff on #fff = 1.00:1). Drop a
+  // wrong-polarity config.background the same way; a matching-polarity one is
+  // left untouched, so a correct spec on either theme is never altered.
+  if (spec.config && typeof spec.config === 'object' &&
+      isWrongPolarityBackground(spec.config.background, isDarkMode)) {
+    delete spec.config.background;
   }
   return spec;
 }
@@ -397,10 +949,22 @@ export function themeBoxplotStrokes(spec: any, readable: string, darkCanvas: boo
  * dropping it collapses the second series onto the first axis' domain. The
  * hang the blanket delete guarded against was the faceted/repeated `spec.spec`
  * case, which is still stripped. Mutates spec.
+ *
+ * Concat specs (`vconcat`/`hconcat`/`concat`) are preserved for the same
+ * reason as `layer`: concat panels share scales by default, so an explicit
+ * domain in one panel silently swallows another panel's categories — the
+ * marks render with an undefined fill and vanish. `resolve.scale.*
+ * = "independent"` is the only correction for that, and it is not part of
+ * the faceted `spec.spec` hang this function guards against.
  */
 export function sanitizeResolveScale(spec: any): any {
   if (!spec || typeof spec !== 'object') return spec;
-  if (spec.resolve && spec.resolve.scale && !Array.isArray(spec.layer)) {
+  const isComposite =
+    Array.isArray(spec.layer) ||
+    Array.isArray(spec.vconcat) ||
+    Array.isArray(spec.hconcat) ||
+    Array.isArray(spec.concat);
+  if (spec.resolve && spec.resolve.scale && !isComposite) {
     delete spec.resolve;
   }
   if (spec.spec && spec.spec.resolve && spec.spec.resolve.scale) {
@@ -523,6 +1087,21 @@ export const SATURATED_CATEGORY_10: string[] = [
   '#eeca3b', '#b279a2', '#ff9da6', '#9d755d', '#bab0ac',
 ];
 
+/**
+ * The vega-embed 'excel' theme's `range.category` (the LIGHT theme base), IN
+ * EXACT ORDER. Kept in sync with node_modules/vega-themes so that an extended
+ * palette whose PREFIX is this array is byte-for-byte identical to the shipped
+ * light theme for any ordinal domain that fits inside 10 (domain[i] → base[i]
+ * is exactly what the theme produces). Used by applyCategoricalPaletteFix to
+ * extend the range for a categorical channel whose cardinality is unknowable
+ * statically (data-driven sequence/transform/url) without recolouring a
+ * genuine ≤10-series light spec (D-265).
+ */
+export const EXCEL_CATEGORY_10: string[] = [
+  '#4572a7', '#aa4643', '#8aa453', '#71598e', '#4598ae',
+  '#d98445', '#94aace', '#d09393', '#b9cc98', '#a99cbc',
+];
+
 /** HSL (h∈[0,360), s,l∈[0,1]) → #rrggbb. */
 export function hslToHex(h: number, s: number, l: number): string {
   h = ((h % 360) + 360) % 360;
@@ -572,21 +1151,58 @@ export function generateCategoricalPalette(n: number, darkCanvas: boolean): stri
 }
 
 /**
+ * A data-driven categorical colour field (produced by a `data.sequence`
+ * generator or a `transform` calculate) has no distinct value we can count
+ * statically — analyzeCategoricalColor reports cardinality 0 for it. This
+ * returns an UPPER BOUND on that cardinality from the data object: the row
+ * count of inline `data.values`, or the length of a `data.sequence`. Distinct
+ * colour values can never exceed the row count, so a palette sized to this
+ * bound is guaranteed injective. Returns 0 when no bound is derivable (e.g.
+ * data.url). PURE + exported for unit testing.
+ */
+export function estimateDataDrivenCardinality(data: any): number {
+  if (!data || typeof data !== 'object') return 0;
+  const vals = (data as any).values;
+  if (Array.isArray(vals)) return vals.length;
+  const seq = (data as any).sequence;
+  if (seq && typeof seq.start === 'number' && typeof seq.stop === 'number') {
+    const step = typeof seq.step === 'number' && seq.step !== 0 ? seq.step : 1;
+    const n = Math.ceil((seq.stop - seq.start) / step);
+    return n > 0 ? n : 0;
+  }
+  return 0;
+}
+
+/**
+ * Largest data-driven upper-bound estimate we TRUST as a palette size. Above
+ * this the sequence is so long that its row count massively overshoots the
+ * likely distinct-series count (e.g. a 2000-row sequence rendering 20 series),
+ * so sizing to it would emit a needlessly huge range; we fall back to the
+ * fixed CATEGORY_EXTEND_TARGET instead, whose golden-angle prefix already
+ * stays injective for the common ≤40-series case. Bounds are only used when
+ * they land in (CATEGORY_EXTEND_TARGET, MAX_ESTIMATED_CATEGORY] — i.e. a
+ * modest generator like `sequence{stop:50}` that genuinely needs >40 colours.
+ */
+export const MAX_ESTIMATED_CATEGORY = 64;
+
+/**
  * Inspect a spec's colour encoding. Returns whether it is a CATEGORICAL colour
  * channel (nominal/ordinal, or an untyped non-quantitative field), whether the
  * author has already pinned an explicit colour scale (range/scheme), the
  * distinct-value cardinality when knowable (explicit scale.domain length else a
- * distinct count over inline data rows, else 0), and the effective mark
- * opacity. Scans the top-level encoding and, if absent there, the first layer
- * that carries a colour channel.
+ * distinct count over inline data rows, else 0), an UPPER-BOUND estimate for
+ * the data-driven (unknowable) case, and the effective mark opacity. Scans the
+ * top-level encoding and, if absent there, the first layer that carries a
+ * colour channel.
  */
 export function analyzeCategoricalColor(spec: any): {
   isCategorical: boolean;
   hasExplicitColors: boolean;
   cardinality: number;
+  estimatedCardinality: number;
   opacity: number;
 } {
-  const none = { isCategorical: false, hasExplicitColors: false, cardinality: 0, opacity: 1 };
+  const none = { isCategorical: false, hasExplicitColors: false, cardinality: 0, estimatedCardinality: 0, opacity: 1 };
   if (!spec || typeof spec !== 'object') return none;
 
   // Locate the colour channel and the data rows that back it.
@@ -624,6 +1240,10 @@ export function analyzeCategoricalColor(spec: any): {
   // Cardinality: explicit domain length wins; else distinct field values in
   // inline data rows (top-level or the colour channel's own view).
   let cardinality = 0;
+  const dataObj =
+    (container?.data && typeof container.data === 'object' && container.data) ||
+    (spec.data && typeof spec.data === 'object' && spec.data) ||
+    null;
   if (scale && Array.isArray(scale.domain)) {
     cardinality = scale.domain.length;
   } else if (typeof color.field === 'string') {
@@ -642,6 +1262,13 @@ export function analyzeCategoricalColor(spec: any): {
     }
   }
 
+  // Upper bound for the data-driven (unknowable) case: distinct colour values
+  // can never exceed the backing row/sequence count, so a palette sized to
+  // this stays injective. When a direct distinct count is available it is the
+  // exact figure and wins.
+  const estimatedCardinality =
+    cardinality > 0 ? cardinality : estimateDataDrivenCardinality(dataObj);
+
   // Effective mark opacity: explicit mark.opacity, else an opacity encoding
   // value, else 1.
   let opacity = 1;
@@ -652,7 +1279,7 @@ export function analyzeCategoricalColor(spec: any): {
     opacity = enc.opacity.value;
   }
 
-  return { isCategorical, hasExplicitColors, cardinality, opacity };
+  return { isCategorical, hasExplicitColors, cardinality, estimatedCardinality, opacity };
 }
 
 /** Low-opacity threshold below which the muted excel range dissolves. */
@@ -670,6 +1297,55 @@ export const CATEGORY_LOW_OPACITY = 0.6;
  * colour channel. Mutates spec.config and returns the palette applied, else
  * null.
  */
+/** How far an unknown-cardinality categorical range is extended (matches the
+ *  full-Vega native path's cap in vegaPlugin.buildExtendedCategoricalPalette). */
+export const CATEGORY_EXTEND_TARGET = 40;
+
+/**
+ * Extend a base categorical palette to `target` entries by appending
+ * canvas-biased hues after the base colours. The base PREFIX is left
+ * untouched, so rendering is byte-for-byte identical for any ordinal domain
+ * that fits inside `base`; only larger domains — which would otherwise recycle
+ * — receive the generated tail.
+ *
+ * D-253 (regression): the tail was previously grown by GOLDEN-ANGLE
+ * accumulation (hue += 137.508°). That keeps a healthy min-separation up to a
+ * ~30-entry tail, but past it the accumulated hues start landing near earlier
+ * ones — at a 40-entry tail (target 50, vega-lite-w2-12) two generated colours
+ * fall ~10 RGB units apart, reading as the SAME swatch: a perceptual recycle
+ * even though every hex is unique. Specs needing ≤40 total (w2-11/13) stayed
+ * clear, which is why only w2-12 regressed.
+ *
+ * The tail is now spaced EVENLY over the known tail count (hue step
+ * 360/tailCount), which is deterministic and never clusters — a 40-entry tail
+ * gets a uniform 9° gap versus golden-angle's ~4.7° worst case — with a
+ * three-tier lightness/saturation rotation (mirroring generateCategoricalPalette)
+ * so hues that wrap back near each other still separate by lightness. The tail
+ * is injective and stays perceptually separable for the full modest-cardinality
+ * range (up to MAX_ESTIMATED_CATEGORY). PURE + exported for unit testing.
+ */
+export function extendCategoricalPalette(
+  base: string[],
+  target: number,
+  darkCanvas: boolean,
+): string[] {
+  const out = base.slice();
+  const total = Math.max(base.length, Math.floor(target));
+  const tailCount = total - out.length;
+  if (tailCount <= 0) return out;
+  // Three tiers rotate lightness/saturation so evenly-spaced hues that come
+  // back near each other after a full wrap still separate by lightness.
+  const L = darkCanvas ? [0.62, 0.72, 0.54] : [0.45, 0.34, 0.55];
+  const S = darkCanvas ? [0.70, 0.85, 0.62] : [0.72, 0.88, 0.60];
+  for (let i = 0; i < tailCount; i++) {
+    // Even hue spacing over the tail: uniform 360/tailCount gap, no clustering.
+    const hue = (20 + (i * 360) / tailCount) % 360;
+    const t = i % 3;
+    out.push(hslToHex(hue, S[t], L[t]));
+  }
+  return out;
+}
+
 export function applyCategoricalPaletteFix(spec: any, isDarkMode: boolean): string[] | null {
   if (!spec || typeof spec !== 'object') return null;
   // Respect an author-supplied category range.
@@ -682,6 +1358,36 @@ export function applyCategoricalPaletteFix(spec: any, isDarkMode: boolean): stri
   if (info.cardinality > SATURATED_CATEGORY_10.length) {
     // D-265 — palette too short to be injective in EITHER theme.
     palette = generateCategoricalPalette(info.cardinality, isDarkMode);
+  } else if (info.cardinality === 0) {
+    // D-265 (data-driven) — the colour field is produced by a sequence /
+    // transform / data.url, so its cardinality is UNKNOWABLE statically and
+    // the 10-entry theme range would silently recycle for >10 series (the
+    // vega-lite-w2-04/11/12/13 case). Mirror the full-Vega native path
+    // (extendRecycledOrdinalSchemes): inject a range that BEGINS with the
+    // active theme's own 10 colours — byte-identical output for any ≤10-series
+    // spec — and stays injective up to CATEGORY_EXTEND_TARGET beyond it. A
+    // low-opacity light canvas also needs the saturated base (D-260), so the
+    // prefix follows the same theme-resolved choice used below.
+    const base =
+      (!isDarkMode && info.opacity < CATEGORY_LOW_OPACITY)
+        ? SATURATED_CATEGORY_10
+        : isDarkMode
+          ? SATURATED_CATEGORY_10
+          : EXCEL_CATEGORY_10;
+    // D-253: a fixed 40-entry extend recycles once the data-driven domain
+    // exceeds 40 (e.g. vega-lite-w2-12's 50-slot sequence). When the backing
+    // data gives a MODEST upper bound above 40 (≤ MAX_ESTIMATED_CATEGORY), the
+    // distinct count cannot exceed it, so size the palette to that bound and
+    // stay injective. A huge sequence (2000/1200 rows for ~20/30 real series)
+    // would only bloat the range, so keep the CATEGORY_EXTEND_TARGET default
+    // there — its golden-angle prefix already covers the common ≤40-series case
+    // and preserves the theme's first-10 colours byte-for-byte.
+    const est = info.estimatedCardinality;
+    const target =
+      est > CATEGORY_EXTEND_TARGET && est <= MAX_ESTIMATED_CATEGORY
+        ? est
+        : CATEGORY_EXTEND_TARGET;
+    palette = extendCategoricalPalette(base, target, isDarkMode);
   } else if (!isDarkMode && info.opacity < CATEGORY_LOW_OPACITY) {
     // D-260 — the muted light range dissolves at low opacity; dark is already
     // fine (saturated tableau10 fallback), so this branch is light-only.
