@@ -87,6 +87,18 @@ PROVIDER_CREDENTIALS: Tuple[ProviderCredential, ...] = (
         "meta", ("META_API_KEY", "MODEL_API_KEY"), "Meta (Muse Spark)", "...",
         autoselectable=False,
     ),
+    ProviderCredential(
+        # Local inference has no key. Phase 0 (design/local-models.md) treats
+        # the server URL as the "credential" so this registry's detection,
+        # setup-help and auto-select surfaces all cover it; phase 1 replaces
+        # this with a reachability probe of the default URL so a machine
+        # running Ollama needs no variable at all. --endpoint local already
+        # works with no variable set (the default URL is used).
+        "local", ("ZIYA_LOCAL_MODEL_URL",),
+        "Local (Ollama / DwarfStar / LM Studio / llama.cpp)", "http://localhost:11434",
+        note="Servers on ports 11434, 8000, 1234, 8080 are found automatically; "
+             "set the URL only for another port or host.",
+    ),
 )
 
 _BY_ENDPOINT: Dict[str, ProviderCredential] = {
@@ -182,6 +194,18 @@ def detect_available_providers() -> Dict[str, bool]:
         result[p.endpoint] = any(
             (os.environ.get(v) or "").strip() for v in p.keys
         )
+    # Local servers have no credential; reachability is the fact. Every
+    # scanned server is a live endpoint (local-<runtime>) and the alias is
+    # available when any exists. The scan is memoised per process (a miss is
+    # retried after 30s), so this stays cheap on the /api/endpoints path.
+    try:
+        from app.utils.local_models import scan_local_servers, LOCAL_ALIAS
+        servers = scan_local_servers()
+        result[LOCAL_ALIAS] = bool(servers) or result.get(LOCAL_ALIAS, False)
+        for s in servers:
+            result[s.endpoint_id] = True
+    except Exception as e:  # never let discovery break credential detection
+        logger.debug(f"local server scan skipped: {e}")
     return result
 
 
@@ -221,10 +245,48 @@ def missing_credential_hint(endpoint: str) -> Optional[str]:
         return None
     if endpoint == "bedrock":
         return "Run 'aws configure' or set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY"
+    from app.utils.local_models import is_local_endpoint
+    if is_local_endpoint(endpoint):
+        return ("Start a local server (Ollama, DwarfStar ds4-server, LM Studio, "
+                "llama-server) or set ZIYA_LOCAL_MODEL_URL")
     p = _BY_ENDPOINT.get(endpoint)
     if not p:
         return None
     return f"Set {p.canonical_key}"
+
+
+def _permitted_endpoints() -> Optional[List[str]]:
+    """Enterprise endpoint allowlist, or None when unrestricted.
+
+    Mirrors app.utils.model_override._permitted_endpoints. Community builds
+    have no config provider declaring a restriction, so this is None and
+    every function below behaves exactly as before.
+
+    Without this, an enterprise build restricted to Bedrock still advertised
+    Anthropic/OpenAI/Google/z.ai/Meta in its first-run credential message --
+    telling a user to configure a provider that app.main would then refuse
+    with exit(1) -- and could silently auto-select one of them.
+    """
+    if os.environ.get("ZIYA_ALLOW_ALL_ENDPOINTS") == "1":
+        return None
+    try:
+        from app.plugins import get_allowed_endpoints
+        return get_allowed_endpoints()
+    except (ImportError, RuntimeError, OSError):
+        return None
+
+
+def _auth_provider_setup_help() -> Optional[str]:
+    """First-run AWS guidance from an enterprise auth plugin, or None.
+
+    Community builds register only DefaultAuthProvider, which returns None,
+    so the generic instructions below are unchanged there.
+    """
+    try:
+        from app.plugins import get_first_run_setup_help
+        return get_first_run_setup_help()
+    except (ImportError, RuntimeError, OSError):
+        return None
 
 
 def maybe_autoselect_endpoint(
@@ -250,10 +312,12 @@ def maybe_autoselect_endpoint(
     # Only providers marked autoselectable are eligible. meta is excluded:
     # its contributor tier trains on submitted prompts and completions, and
     # Ziya sends source code, so it is opt-in by explicit name only.
+    permitted = _permitted_endpoints()
     detected = [
         ep for ep, ok in available.items()
         if ok and ep != "bedrock" and _BY_ENDPOINT.get(ep, None) is not None
         and _BY_ENDPOINT[ep].autoselectable
+        and (permitted is None or ep in permitted)
     ]
     if len(detected) == 1:
         return detected[0]
@@ -270,51 +334,105 @@ def announce_autoselect(chosen: str) -> None:
 def build_setup_help(include_profile_hint: bool = True) -> str:
     """Return the comprehensive first-run credential setup message.
 
-    Lists every registered provider, the env var each needs, and — for AWS —
-    the ``profile`` shortcut plus any profiles already configured.
+    Lists every provider the deployment is PERMITTED to use, the env var each
+    needs, and — for AWS — the ``profile`` shortcut plus any profiles
+    already configured.
 
     Generated from PROVIDER_CREDENTIALS rather than hand-written, so a new
     endpoint cannot be added without appearing here. The old hardcoded list
     had already gone stale: it omitted zai and meta entirely.
+
+    Filtered by the enterprise endpoint allowlist so a Bedrock-only build does
+    not instruct the user to set ANTHROPIC_API_KEY / OPENAI_API_KEY etc. --
+    endpoints app.main refuses with exit(1). Community builds are
+    unrestricted, so the full menu is unchanged there.
     """
-    lines = [
-        "⚠️  No AI provider credentials found.",
-        "",
-        "Ziya needs credentials for at least one of these providers. Set the matching",
-        "environment variable (or use --endpoint to pick the provider):",
-        "",
-    ]
-    width = max(len(p.label) for p in PROVIDER_CREDENTIALS)
-    for p in PROVIDER_CREDENTIALS:
+    permitted = _permitted_endpoints()
+
+    def _allowed(endpoint: str) -> bool:
+        return permitted is None or endpoint in permitted
+
+    providers = [p for p in PROVIDER_CREDENTIALS if _allowed(p.endpoint)]
+    bedrock_allowed = _allowed("bedrock")
+
+    if not providers and not bedrock_allowed:
+        # An empty allowlist (e.g. a mis-set allowed_endpoints, or a
+        # non-empty intersection of disjoint policies) leaves nothing to
+        # advise. Say that rather than emitting a header with no body.
+        return (
+            "⚠️  No AI provider credentials found, and your enterprise policy\n"
+            "permits no inference endpoints. Contact the owner of your Ziya\n"
+            "configuration (allowed_endpoints)."
+        )
+
+    if not providers:
+        # Bedrock-only policy: a menu of one is not a menu.
+        lines = [
+            "⚠️  No AWS credentials found.",
+            "",
+            "Ziya is restricted to AWS Bedrock by your configuration. Set up AWS",
+            "credentials:",
+            "",
+        ]
+    else:
+        lines = [
+            "⚠️  No AI provider credentials found.",
+            "",
+            "Ziya needs credentials for at least one of these providers. Set the matching",
+            "environment variable (or use --endpoint to pick the provider):",
+            "",
+        ]
+
+    labels = [p.label for p in providers]
+    if bedrock_allowed:
+        labels.append("AWS Bedrock")
+    width = max(len(label) for label in labels)
+
+    for p in providers:
         lines.append(
             f"  • {p.label.ljust(width)} : export {p.canonical_key}={p.example}"
             f"   (--endpoint {p.endpoint})"
         )
         if p.note:
             lines.append(f"    {' ' * width}   {p.note}")
-    lines += [
-        f"  • {'AWS Bedrock'.ljust(width)} (default):",
-        "        aws configure                       # set up credentials, or",
-        "        export AWS_ACCESS_KEY_ID=...  AWS_SECRET_ACCESS_KEY=...",
-    ]
 
-    if include_profile_hint:
-        profiles = available_aws_profiles()
-        if profiles:
-            shown = ", ".join(profiles[:8])
-            lines.append(
-                f"        ziya --profile <name>               # use an existing "
-                f"AWS profile ({shown})"
-            )
+    if bedrock_allowed:
+        default_tag = " (default)" if providers else ""
+        lines.append(f"  • {'AWS Bedrock'.ljust(width)}{default_tag}:")
+
+        # An enterprise auth plugin can replace the generic AWS instructions
+        # with the ones that actually work in its environment (e.g. Midway +
+        # ada profile creation). "aws configure" is not merely unhelpful for
+        # such a deployment -- it cannot produce working Bedrock credentials
+        # there. None in community builds, so the generic text is unchanged.
+        provider_help = _auth_provider_setup_help()
+        if provider_help:
+            for line in provider_help.splitlines():
+                lines.append(f"        {line}" if line.strip() else "")
         else:
-            lines.append(
-                "        ziya --profile <name>               # use a named AWS "
-                "profile (aws sso login --profile <name>)"
-            )
+            lines += [
+                "        aws configure                       # set up credentials, or",
+                "        export AWS_ACCESS_KEY_ID=...  AWS_SECRET_ACCESS_KEY=...",
+            ]
+
+            if include_profile_hint:
+                profiles = available_aws_profiles()
+                if profiles:
+                    shown = ", ".join(profiles[:8])
+                    lines.append(
+                        f"        ziya --profile <name>               # use an existing "
+                        f"AWS profile ({shown})"
+                    )
+                else:
+                    lines.append(
+                        "        ziya --profile <name>               # use a named AWS "
+                        "profile (aws sso login --profile <name>)"
+                    )
 
     lines.append("")
-    lines.append(
-        "Ziya will auto-select a provider if exactly one of the above is "
-        "configured."
-    )
+    if providers:
+        lines.append(
+            "Ziya will auto-select a provider if exactly one of the above is "
+            "configured."
+        )
     return "\n".join(lines)

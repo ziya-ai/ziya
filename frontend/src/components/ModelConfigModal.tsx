@@ -13,6 +13,8 @@ export interface ModelInfo {
 /** An endpoint this install is permitted to use (from /api/endpoints). */
 export interface EndpointInfo {
   id: string;
+  /** Display name when the id is not self-explanatory (local-dwarfstar → "Local · DwarfStar (:8000)"). */
+  label?: string | null;
   /** Model alias to select when switching to this endpoint. */
   default_model?: string | null;
   model_count?: number;
@@ -556,7 +558,7 @@ export const ModelConfigModal: React.FC<ModelConfigModalProps> = ({
                   // working, and a stale snapshot must not lock the user out
                   // of their own current selection.
                   disabled: unavailable && ep.id !== endpoint,
-                  label: `${ep.id}${suffix}`,
+                  label: `${ep.label || ep.id}${suffix}`,
                   value: ep.id,
                 };
               })}

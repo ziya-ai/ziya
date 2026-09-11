@@ -48,15 +48,27 @@ class TestDefaultResolution:
             assert "haiku" in config["model_id"].lower() or "claude" in config["model_id"].lower()
 
     def test_local_default(self):
-        """'local' has no service-model table, so it falls back to Bedrock
-        COMPLETELY — endpoint AND model_id from the same table.
+        """'local' is a real endpoint with its own service-model table
+        (design/local-models.md phase 0), so service calls stay on the local
+        server — endpoint AND model_id from the SAME table.
 
-        Previously asserted endpoint=='local' while model_id came from
-        Bedrock's table; that pairing POSTs a Bedrock model ID to whatever
-        client the endpoint selects. See the matching test in
-        tests/test_service_model_resolver.py.
+        Before the endpoint existed this asserted the complete fallback to
+        Bedrock. The invariant that matters is unchanged either way: the
+        endpoint and the model ID must come from one table, never a Bedrock
+        model ID POSTed to a non-Bedrock client (the bug the earlier version
+        of this test caught).
         """
+        from app.config.models_config import DEFAULT_SERVICE_MODELS
         with patch.dict(os.environ, {"ZIYA_ENDPOINT": "local"}, clear=False):
+            config = resolve_service_model("default")
+            assert config["endpoint"] == "local"
+            assert config["model_id"] == DEFAULT_SERVICE_MODELS["local"]
+
+    def test_truly_unknown_endpoint_falls_back_to_bedrock_completely(self):
+        """An endpoint with no service-model table falls back to Bedrock for
+        BOTH endpoint and model_id — the pairing invariant test_local_default
+        used to guard, now on an endpoint that really has no table."""
+        with patch.dict(os.environ, {"ZIYA_ENDPOINT": "no-such-endpoint"}, clear=False):
             config = resolve_service_model("default")
             assert config["endpoint"] == "bedrock"
             assert config["model_id"]

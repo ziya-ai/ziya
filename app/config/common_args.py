@@ -7,6 +7,7 @@ def add_common_arguments(parser):
     """Add common arguments that are shared between all Ziya clients (server, CLI, etc.)."""
     # Import config for centralized defaults
     import os
+    import sys
     import app.config.models_config as config
     
     # File/path related arguments
@@ -20,9 +21,17 @@ def add_common_arguments(parser):
                         help='Only include specified paths (comma-separated)')
     
     # Model and endpoint configuration
-    # Initialize plugins early to get enterprise endpoint policy for --help
-    endpoint_help_choices = 'bedrock, google, openai, anthropic, zai, meta'
-    if os.environ.get('ZIYA_ALLOW_ALL_ENDPOINTS') != '1':
+    # The enterprise endpoint list is only needed to render --help text, so
+    # the plugin system is initialized here ONLY when help was requested.
+    # Doing it unconditionally ran plugin init before --profile/--region had
+    # been parsed, let alone applied by setup_environment(); an edition whose
+    # register() imports app.server then built a Bedrock client at import
+    # time with no profile set, producing a spurious "profile 'default' could
+    # not be found" banner on every startup. Endpoint POLICY is still
+    # enforced after setup_environment() in app/main.py.
+    endpoint_help_choices = 'bedrock, google, openai, anthropic, zai, meta, local'
+    wants_help = '-h' in sys.argv[1:] or '--help' in sys.argv[1:]
+    if wants_help and os.environ.get('ZIYA_ALLOW_ALL_ENDPOINTS') != '1':
         try:
             from app.plugins import initialize as _init_plugins, get_allowed_endpoints
             _init_plugins()

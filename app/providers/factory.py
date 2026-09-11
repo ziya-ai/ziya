@@ -23,6 +23,7 @@ from app.utils.logging_utils import logger
 # endpoints (fable5/mythos5 → 200 null pre-0.7.3.0; zai/openrouter → 500).
 _SUPPORTED_ENDPOINTS = frozenset({
     "bedrock", "anthropic", "openai", "openrouter", "google", "zai", "meta",
+    "local",
 })
 
 
@@ -44,7 +45,10 @@ def is_endpoint_supported(
     whose routability depends on model capabilities — not just the endpoint
     name — can refine this without changing the call sites.
     """
-    return endpoint in _SUPPORTED_ENDPOINTS
+    if endpoint in _SUPPORTED_ENDPOINTS:
+        return True
+    from app.utils.local_models import is_local_endpoint
+    return is_local_endpoint(endpoint)  # local-<runtime>, one per running server
 
 
 def create_provider(
@@ -208,7 +212,35 @@ def create_provider(
             base_url=os.getenv("META_BASE_URL", "https://api.meta.ai/v1"),
         )
 
+    from app.utils.local_models import is_local_endpoint
+    if endpoint == "local" or is_local_endpoint(endpoint):
+        # Ollama / DwarfStar / LM Studio / llama-server all speak OpenAI chat
+        # completions,
+        # so like zai and meta this needs no provider of its own. The server
+        # ignores the key, but the SDK will not construct a client without
+        # one, hence the placeholder. See design/local-models.md.
+        from app.providers.openai_direct import OpenAIDirectProvider
+        from app.utils.local_models import (
+            local_endpoint_base_url, resolve_local_alias,
+            LOCAL_PLACEHOLDER_API_KEY, discover_and_apply,
+        )
+        # Resolve the alias to the concrete server, ask it about this model
+        # (memoised) and read the live entry, so the provider sends
+        # options.num_ctx / reports the real window even if the caller passed
+        # a stale copy.
+        endpoint = resolve_local_alias(endpoint)
+        discover_and_apply(model_id, endpoint=endpoint)
+        from app.config.models_config import MODEL_CONFIGS
+        live_config = MODEL_CONFIGS.get(endpoint, {}).get(model_id)
+        effective_config = {**model_config, **(live_config or {})}
+        return OpenAIDirectProvider(
+            model_id=model_id,
+            model_config=effective_config,
+            api_key=api_key or LOCAL_PLACEHOLDER_API_KEY,
+            base_url=local_endpoint_base_url(endpoint),
+        )
+
     raise ValueError(
         f"No LLMProvider registered for endpoint '{endpoint}'. "
-        f"Supported: bedrock, anthropic, openai, openrouter, google, zai, meta"
+        f"Supported: bedrock, anthropic, openai, openrouter, google, zai, meta, local"
     )

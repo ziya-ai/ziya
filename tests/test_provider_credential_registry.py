@@ -25,8 +25,11 @@ from app.utils import provider_detection as pd
 
 
 def _config_endpoints() -> set[str]:
+    """Static endpoints. local-<runtime> ids are registered at runtime, one
+    per running server; their "credential" is reachability, so they are
+    outside the env-var registry by design (see local_models.py)."""
     from app.config import models_config as c
-    return set(c.MODEL_CONFIGS)
+    return {e for e in c.MODEL_CONFIGS if not e.startswith("local-")}
 
 
 # ── The core contract ─────────────────────────────────────────────

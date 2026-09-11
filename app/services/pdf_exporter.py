@@ -461,7 +461,7 @@ def _synthesize_outline(clean_pdf: bytes, mapping: List[Dict[str, Any]]) -> byte
 # ---------------------------------------------------------------------------
 #
 # Chromium's ``page.pdf()`` copies the page's ``<title>`` (the injected app
-# shell — 'Ziya - Code Assistant') into /Title, leaves /Creator as 'Chromium',
+# shell — 'Ziya - AI Workbench') into /Title, leaves /Creator as 'Chromium',
 # and sets NO /Author or /Subject.  A file manager, PDF library, or assistive
 # tech then mislabels the document.  We stamp conversation-specific Info-dict
 # fields with a pypdf post-pass in the SAME clone-and-write cycle as the QUAL-01
@@ -469,8 +469,12 @@ def _synthesize_outline(clean_pdf: bytes, mapping: List[Dict[str, Any]]) -> byte
 #
 # Chromium's default /Title values (case-insensitive) that must be REPLACED by
 # the conversation title rather than trusted.
+#
+# Includes the current app-shell <title> plus historical values, so PDFs
+# captured by older builds are still recognised as carrying the shell title.
 _CHROMIUM_DEFAULT_TITLES = {
-    "", "about:blank", "untitled", "chromium", "ziya - code assistant",
+    "", "about:blank", "untitled", "chromium",
+    "ziya - ai workbench", "ziya - code assistant",
     "ziya conversation export", "ziya session transcript",
 }
 _METADATA_CREATOR = "Ziya PDF Exporter"
@@ -563,7 +567,7 @@ _PROVIDER_DISPLAY_NAMES = {
     "anthropic": "Anthropic",
     "zai": "z.ai",
     "meta": "Meta",
-    "ollama": "Ollama",
+    "local": "Local",
 }
 
 # A non-empty header template is REQUIRED to suppress Chromium's default
@@ -1305,7 +1309,7 @@ async def export_document_pdf(
     version: str = "0.3.8",
     model: str = "unknown",
     provider: str = "unknown",
-    include_footer: bool = False,
+    include_footer: bool = True,
     server_port: int = 6969,
     timeout_ms: int = 60_000,
 ) -> Tuple[bytes, Dict[str, Any]]:
@@ -1319,8 +1323,8 @@ async def export_document_pdf(
     directives split the body into per-page sections.  The PDF outline is the
     document's HEADING tree (``outline_mode="headings"``), not a message list.
 
-    ``include_footer`` defaults to False: a work product should not carry the
-    transcript's "exported from Ziya" footer unless explicitly requested.
+    ``include_footer`` defaults to True, matching the conversation export;
+    callers pass False explicitly to omit the per-page footer.
 
     Raises ImportError (Playwright absent), FileNotFoundError / ValueError
     (bad ``name``), mirroring export_conversation_pdf's error surface.
