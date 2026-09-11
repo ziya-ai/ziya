@@ -26,12 +26,14 @@ from app.providers.base import (
     StreamEnd,
     StreamEvent,
     TextDelta,
+    ThinkingBlock,
     ThinkingDelta,
     ToolUseEnd,
     ToolUseInput,
     ToolUseStart,
     UsageEvent,
 )
+from app.providers.text_tool_calls import TextToolCallSniffer
 from app.utils.logging_utils import get_mode_aware_logger
 
 logger = get_mode_aware_logger(__name__)
@@ -94,10 +96,14 @@ class OpenAIDirectProvider(LLMProvider):
 
         for retry_attempt in range(max_retries + 1):
             content_yielded = False
+            tool_use_started = False
+            resumable = False  # see ErrorEvent.resumable
             try:
                 async for event in self._do_stream(request_kwargs):
                     if isinstance(event, (TextDelta, ThinkingDelta, ToolUseStart)):
                         content_yielded = True
+                    if isinstance(event, ToolUseStart):
+                        tool_use_started = True
                     yield event
                 return
             except Exception as e:
@@ -117,6 +123,8 @@ class OpenAIDirectProvider(LLMProvider):
                         f"content was yielded — refusing duplicate-producing retry"
                     )
                     retryable = False
+                    # Recoverable one layer up (see ErrorEvent.resumable).
+                    resumable = not tool_use_started
                 if retryable and retry_attempt < max_retries:
                     delay = base_delay * (2 ** retry_attempt)
                     logger.warning(
@@ -130,6 +138,7 @@ class OpenAIDirectProvider(LLMProvider):
                     message=error_str,
                     error_type=classified,
                     retryable=False,
+                    resumable=resumable,
                 )
                 return
 
@@ -137,11 +146,19 @@ class OpenAIDirectProvider(LLMProvider):
         self,
         text: str,
         tool_uses: List[Dict[str, Any]],
+        thinking_blocks: Optional[List[Dict[str, Any]]] = None,
+        reasoning_content: Optional[str] = None,
+        **_ignored: Any,
     ) -> Dict[str, Any]:
         msg: Dict[str, Any] = {
             "role": "assistant",
             "content": text.rstrip() if text.strip() else None,
         }
+        # Echo the reasoning back on the assistant turn when the model wants
+        # it (DeepSeek/ds4 require it with tools present; GLM benefits). Off
+        # unless model_config opts in, so OpenAI-direct payloads are unchanged.
+        if reasoning_content and self.model_config.get("replay_reasoning_content"):
+            msg["reasoning_content"] = reasoning_content
         if tool_uses:
             msg["tool_calls"] = [
                 {
@@ -187,6 +204,7 @@ class OpenAIDirectProvider(LLMProvider):
             "cache_control": False,
             "extended_context": False,
             "adaptive_thinking": False,
+            "reasoning_content_replay": self.model_config.get("replay_reasoning_content", False),
         }.get(feature_name, False))
 
     @property
@@ -261,6 +279,11 @@ class OpenAIDirectProvider(LLMProvider):
                 passthrough["tool_calls"] = msg["tool_calls"]
             if msg.get("tool_call_id"):
                 passthrough["tool_call_id"] = msg["tool_call_id"]
+            # Reasoning replayed on a prior assistant turn (set by
+            # build_assistant_message) rides straight through to the server
+            # so it matches the KV prefix instead of forcing a re-render.
+            if msg.get("reasoning_content"):
+                passthrough["reasoning_content"] = msg["reasoning_content"]
             # A tool message with no id is unsendable; the API rejects the whole
             # request. Degrade it to a user message so the result still reaches
             # the model instead of failing the turn.
@@ -318,6 +341,13 @@ class OpenAIDirectProvider(LLMProvider):
         # `supports_reasoning_effort`.  New compatible vendors are added by
         # config alone, not by editing this provider.
         extra_body: Dict[str, Any] = {}
+        # Unconditional vendor envelope declared on the model entry, e.g. the
+        # local endpoint's {"options": {"num_ctx": N}} so Ollama allocates the
+        # context window Ziya budgets against. Applied first so the reasoning
+        # envelope and the caller's config.extra_body take precedence.
+        declared = self.model_config.get("request_extra_body")
+        if isinstance(declared, dict):
+            extra_body.update(declared)
         if config.thinking and config.thinking.enabled:
             envelope = self.model_config.get("reasoning_request")
             if isinstance(envelope, dict):
@@ -350,6 +380,22 @@ class OpenAIDirectProvider(LLMProvider):
         active_tool_calls: Dict[int, Dict[str, Any]] = {}
         latest_usage = None
         final_stop_reason = "end_turn"
+        # Accumulated chain-of-thought for replay onto the assistant turn.
+        # Collected only when the model opts in; emitted once at stream end.
+        reasoning_parts: List[str] = []
+        # Ollama forwards a tool call the model wrote without its template's
+        # <tool_call> wrapper as plain delta.content (observed live:
+        # qwen2.5-coder:7b). Servers that parse their own templates (ds4,
+        # vLLM, OpenAI) never do this, so the recovery is opt-in per model:
+        # local_models.apply_discovery sets the flag for Ollama-served
+        # models; a ~/.ziya/models.json entry may set it by hand. With the
+        # flag off the sniffer is a pure passthrough. See text_tool_calls.py.
+        offered = [
+            t.get("function", {}).get("name")
+            for t in request_kwargs.get("tools", []) or []
+        ] if self.model_config.get("recover_text_tool_calls") else []
+        sniffer = TextToolCallSniffer(offered)
+        max_tool_index = -1
 
         stream = await self.client.chat.completions.create(**request_kwargs)
 
@@ -382,13 +428,17 @@ class OpenAIDirectProvider(LLMProvider):
                 reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
                 if reasoning:
                     yield ThinkingDelta(content=reasoning)
+                    if self.model_config.get("replay_reasoning_content"):
+                        reasoning_parts.append(reasoning)
 
             if delta and delta.content:
-                yield TextDelta(content=delta.content)
+                for event in sniffer.feed(delta.content):
+                    yield event
 
             if delta and delta.tool_calls:
                 for tc in delta.tool_calls:
                     idx = tc.index
+                    max_tool_index = max(max_tool_index, idx)
                     if idx not in active_tool_calls:
                         active_tool_calls[idx] = {"id": "", "name": "", "arguments": ""}
                     entry = active_tool_calls[idx]
@@ -419,6 +469,21 @@ class OpenAIDirectProvider(LLMProvider):
                 # drop token telemetry.
                 final_stop_reason = choice.finish_reason
 
+        # Anything the sniffer is still holding is either a tool call written
+        # as text (emitted as tool events, and the turn becomes a tool turn
+        # so the orchestrator loops back with the result) or plain text that
+        # happened to start like one (released unchanged).
+        recovered, final_stop_reason = sniffer.finish(
+            final_stop_reason, first_index=max_tool_index + 1,
+        )
+        for event in recovered:
+            if isinstance(event, ToolUseEnd):
+                logger.info(
+                    f"OpenAIDirectProvider: recovered tool call '{event.name}' "
+                    f"written as text by {self.model_id}"
+                )
+            yield event
+
         # Stream drained — emit usage (if any) BEFORE StreamEnd so the
         # orchestrator's _handle_usage_event records it. Covers OpenAI
         # (trailing choiceless usage chunk) and OpenAI-compatible endpoints
@@ -443,6 +508,14 @@ class OpenAIDirectProvider(LLMProvider):
                 output_tokens=getattr(u, "completion_tokens", 0),
                 cache_read_tokens=getattr(details, "cached_tokens", 0) if details else 0,
                 thinking_tokens=reasoning_tokens,
+            )
+        # Carrier for history replay: the reasoning already streamed to the UI
+        # as ThinkingDelta; this one block hands the whole string to the
+        # orchestrator to store on the assistant turn. block_type marks it as
+        # a flat OpenAI-compatible string, NOT a signed Anthropic block.
+        if reasoning_parts:
+            yield ThinkingBlock(
+                block_type="reasoning_content", content="".join(reasoning_parts),
             )
         yield StreamEnd(stop_reason=final_stop_reason)
 
