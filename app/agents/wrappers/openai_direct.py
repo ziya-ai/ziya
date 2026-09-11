@@ -30,10 +30,14 @@ class DirectOpenAIModel:
         max_output_tokens: int = 16384,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
+        extra_body: Optional[Dict[str, Any]] = None,
     ):
         self.model_name = model_name
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
+        # Vendor-specific request params sent on every call (model_config
+        # "request_extra_body"), e.g. Ollama's options.num_ctx.
+        self.extra_body: Dict[str, Any] = dict(extra_body or {})
         self.mcp_manager = get_mcp_manager()
 
         try:
@@ -197,6 +201,8 @@ class DirectOpenAIModel:
             if openai_tools:
                 request_kwargs["tools"] = openai_tools
                 request_kwargs["tool_choice"] = "auto"
+            if self.extra_body:
+                request_kwargs["extra_body"] = dict(self.extra_body)
 
             logger.info(f"OpenAI stream request: model={self.model_name}, msgs={len(history)}, max_tokens={effective_max}, est_input={estimated_input}")
 

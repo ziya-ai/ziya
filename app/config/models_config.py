@@ -7,15 +7,20 @@ It should be importable without triggering any side effects or initializations.
 import os
 import json
 
+from app.utils.local_models import build_local_model_configs, local_model_name
+
 # Model configuration
 DEFAULT_ENDPOINT = "bedrock"
 DEFAULT_MODELS = {
-    "bedrock": "sonnet5",
+    "bedrock": "opus4.8",
     "google": "gemini-3.1-pro",
     "openai": "gpt-5.5",
     "anthropic": "claude-sonnet-5",
     "zai": "glm-5.2",
-    "meta": "muse-spark-1.2"
+    "meta": "muse-spark-1.2",
+    # Phase 0 of design/local-models.md: the one model named by
+    # ZIYA_LOCAL_MODEL. Phase 1 discovers the list from the running server.
+    "local": local_model_name(),
 }
 
 # Model aliases — short names that resolve to canonical model keys.
@@ -150,6 +155,7 @@ DEFAULT_SERVICE_MODELS = {
     "openai": "gpt-5.5-mini",
     "anthropic": "claude-haiku-4-5-20251001",
     "zai": "glm-4.6",
+    "local": local_model_name(),
 }
 
 # Category-specific overrides.  Memory extraction needs a model that
@@ -396,6 +402,10 @@ MODEL_FAMILIES = {
         "reasoning_request": {"thinking": {"type": "enabled"}},
         "thinking_effort_default": "high",
         "supported_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
+        # GLM streams reasoning on delta.reasoning_content and accepts it
+        # echoed back on assistant history; replaying it lets z.ai match the
+        # KV prefix across a tool round-trip instead of re-rendering the turn.
+        "replay_reasoning_content": True,
         "token_limit": 1000000
     },
     "meta-muse": {
@@ -444,6 +454,22 @@ MODEL_FAMILIES = {
         "native_function_calling": True,
         "supports_vision": True,
         "token_limit": 272000
+    },
+    "local": {
+        # Local OpenAI-compatible servers (Ollama, LM Studio, llama-server).
+        # Served by OpenAIDirectProvider with base_url from
+        # ZIYA_LOCAL_MODEL_URL. Capabilities beyond tool calling are NOT
+        # declared at family level: they vary per model and, until phase 1
+        # reads them from the runtime, are set per entry (or overridden via
+        # ~/.ziya/models.json "local").
+        "supported_parameters": ["temperature", "top_p", "max_tokens"],
+        "parameter_ranges": {
+            "temperature": {"min": 0.0, "max": 2.0, "default": 0.3},
+            "top_p": {"min": 0.0, "max": 1.0, "default": 0.9},
+            "max_tokens": {"min": 1, "max": 32768, "default": 4096}
+        },
+        "native_function_calling": True,
+        "token_limit": 8192
     },
 }
 
@@ -510,6 +536,17 @@ ENDPOINT_DEFAULTS = {
             "temperature": {"min": 0.0, "max": 2.0, "default": 0.3},
             "top_p": {"min": 0.0, "max": 1.0, "default": 1.0},
             "max_tokens": {"min": 1, "max": 131072, "default": 4096}
+        }
+    },
+    "local": {
+        "token_limit": 8192,
+        "max_output_tokens": 4096,
+        "default_max_output_tokens": 4096,
+        "supported_parameters": ["temperature", "top_p", "max_tokens"],
+        "parameter_ranges": {
+            "temperature": {"min": 0.0, "max": 2.0, "default": 0.3},
+            "top_p": {"min": 0.0, "max": 1.0, "default": 0.9},
+            "max_tokens": {"min": 1, "max": 32768, "default": 4096}
         }
     },
 }
@@ -790,6 +827,11 @@ MODEL_CONFIGS = {
             "supports_context_caching": True,
         },
         "haiku-4.5": {
+            # Owns the bedrock 'small' rung so portable tiers resolve to
+            # Claude here as they do on the anthropic endpoint. Nova models
+            # are deliberately untagged: they cannot handle the full tool
+            # surface (malformed toolUse under ~270 schemas).
+            "tier": "small",
             "model_id": {
                 "us": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
                 "global": "global.anthropic.claude-haiku-4-5-20251001-v1:0"
@@ -810,7 +852,6 @@ MODEL_CONFIGS = {
             "family": "nova-pro"  # Use nova-pro family which includes top_k
         },
         "nova-lite": {
-            "tier": "small",
             "model_id": {
                 "us": "us.amazon.nova-lite-v1:0"
             },
@@ -818,7 +859,6 @@ MODEL_CONFIGS = {
             "supported_parameters": ["temperature", "top_p", "max_tokens"]  # Adding temperature back as supported
         },
         "nova-micro": {
-            "tier": "xsmall",
             "model_id": {
                 "us": "us.amazon.nova-micro-v1:0"
             },
@@ -1196,8 +1236,11 @@ MODEL_CONFIGS = {
             # switch every other model (Sonnet/Opus/etc.) shares. This is the
             # deconfliction fix: opting Fable 5 into provider_data_share no
             # longer touches the classic switch other users' sessions rely on.
-            # Mantle has no geo/global inference profiles for Fable 5 yet —
-            # a plain model_id string, single region, matching mythos5's shape.
+            # Mantle accepts ONLY this plain model_id — it 404s the us./global.
+            # inference-profile forms even though the classic Bedrock control
+            # plane lists those profiles as ACTIVE (verified live 2026-09-02).
+            # Control-plane listings are not authoritative for mantle
+            # availability; single region, matching mythos5's shape.
             "model_id": "anthropic.claude-fable-5",
             "available_regions": ["us-east-1"],
             "preferred_region": "us-east-1",
@@ -1226,6 +1269,47 @@ MODEL_CONFIGS = {
             # applies this automatically at startup via ensure_mantle_data_retention_mode
             # (app/main.py), which is independent of the classic bedrock-runtime switch.
             "requires_provider_data_share": True,
+        },
+        "fable5.1": {
+            # Fable 5.1 is served by CLASSIC bedrock-runtime, NOT mantle.
+            # Verified 2026-09-02: every mantle name variant 404s, while the
+            # us./global. CRIS profiles resolve on bedrock-runtime — a truly
+            # nonexistent id there returns "The provided model identifier is
+            # invalid", which these do NOT; they return a retention-mode
+            # ValidationException instead. Hence no endpoint_override, and the
+            # gate is the classic account switch rather than mantle's.
+            "model_id": {
+                "us": "us.anthropic.claude-fable-5-1",
+                "global": "global.anthropic.claude-fable-5-1"
+            },
+            # Only these two were invoke-probed. The control plane also lists
+            # the model in eu-west-1/ap-northeast-1, but a control-plane
+            # listing is not proof of invocability (see the fable5 note above).
+            "available_regions": ["us-east-1", "us-west-2"],
+            "preferred_region": "us-east-1",
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32000,
+            "max_iterations": 10,
+            "timeout_multiplier": 8,
+            "is_advanced_model": True,
+            "supports_max_input_tokens": True,
+            "supports_thinking": True,
+            "family": "claude",
+            "supports_context_caching": True,
+            "supports_adaptive_thinking": True,
+            "thinking_effort_default": "medium",
+            "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
+            "supports_vision": True,
+            "supports_assistant_prefill": False,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+            # Covered Model (Anthropic designation 2026-08-31): allowed_modes
+            # is ["aws_review", "provider_data_share"]. aws_review keeps content
+            # inside the AWS boundary for up to 30 days for AWS human review; it
+            # is NOT shared with the model provider. Deliberately untiered —
+            # moving bedrock's `frontier` tier here would make tier resolution
+            # depend on the classic switch being raisable.
+            "required_data_retention_mode": "aws_review",
         },
         "mythos5": {
             # Mythos 5 is in limited preview for cybersecurity/life sciences.
@@ -1685,8 +1769,29 @@ MODEL_CONFIGS = {
             "native_function_calling": True,
         },
         "claude-fable-5": {
-            "tier": "frontier",
+            # Tier tag moved to claude-fable-5-1 (2026-09-02); entry retained
+            # untiered so explicit --model claude-fable-5 keeps working.
             "model_id": "claude-fable-5",
+            "family": "claude",
+            "token_limit": 1000000,
+            "max_output_tokens": 128000,
+            "default_max_output_tokens": 32000,
+            "supports_vision": True,
+            "supports_thinking": True,
+            "supports_adaptive_thinking": True,
+            "native_function_calling": True,
+            "unsupported_parameters": ["temperature", "top_k", "top_p"],
+        },
+        "claude-fable-5-1": {
+            "tier": "frontier",
+            # Verified live 2026-09-01/02: listed and invocable on
+            # api.anthropic.com as claude-fable-5-1. NOT served by
+            # bedrock-mantle yet (every 5.1 name variant 404s there), which
+            # is why this lives on the anthropic endpoint only — see
+            # tests/test_fable_5_1_integration.py::test_bedrock_still_on_fable_5
+            # for the tripwire to flip when Mantle publishes it.
+            # Capability envelope mirrors claude-fable-5 (1M in / 128k out).
+            "model_id": "claude-fable-5-1",
             "family": "claude",
             "token_limit": 1000000,
             "max_output_tokens": 128000,
@@ -1788,6 +1893,9 @@ MODEL_CONFIGS = {
             "inline_schema_refs": True,
         },
     },
+    # Synthesized from ZIYA_LOCAL_MODEL (phase 0); ~/.ziya/models.json
+    # "local" entries merge on top via _load_user_model_config below.
+    "local": build_local_model_configs(),
 }
 
 # Environment variable mapping to config keys
@@ -2205,7 +2313,8 @@ _VALID_MODEL_CONFIG_KEYS = frozenset({
     "parameter_mappings", "parameter_ranges", "parent", "preferred_region",
     "preferred_regions", "preview", "region", "region_restricted",
     "region_router_class", "requires_provider_data_share",
-    "reasoning_request", "supports_reasoning_effort",
+    "required_data_retention_mode",
+    "reasoning_request", "replay_reasoning_content", "request_extra_body", "supports_reasoning_effort",
     "service_name", "stop_sequences", "supports_cache", "supported_efforts",
     "shares_data_for_training", "supported_parameters", "supports_adaptive_thinking",
     "supports_assistant_prefill", "supports_context_caching",
@@ -2223,7 +2332,7 @@ _VALID_FAMILY_KEYS = frozenset({
     "internal_parameters", "message_format", "native_function_calling",
     "parameter_mappings", "parameter_ranges", "parent", "preferred_region",
     "region", "stop_sequences", "supported_efforts",
-    "reasoning_request", "supports_reasoning_effort",
+    "reasoning_request", "replay_reasoning_content", "supports_reasoning_effort",
     "supported_parameters", "supports_adaptive_thinking",
     "supports_assistant_prefill", "supports_context_caching",
     "supports_extended_context", "supports_function_calling",
@@ -2232,6 +2341,28 @@ _VALID_FAMILY_KEYS = frozenset({
     "thinking_level", "token_limit", "unsupported_parameters",
     "wrapper_class",
 })
+
+
+def get_required_retention_mode(model_config: dict) -> str | None:
+    """The Bedrock data-retention mode a model requires, or None if unconstrained.
+
+    Two spellings are accepted. ``required_data_retention_mode`` is a mode
+    STRING and is preferred: AWS documents retention as an ordered scale
+    (none < default < aws_review < provider_data_share), so a model states the
+    minimum it needs and any more permissive account setting satisfies it.
+
+    ``requires_provider_data_share`` is the legacy boolean. It predates the
+    documented ordering and could only ever mean the single most permissive
+    mode, so it maps to 'provider_data_share'. Existing configs therefore keep
+    their exact behaviour, and because that mode ranks ABOVE aws_review it goes
+    on satisfying every Covered Model.
+    """
+    explicit = model_config.get("required_data_retention_mode")
+    if explicit:
+        return explicit
+    if model_config.get("requires_provider_data_share"):
+        return "provider_data_share"
+    return None
 
 
 def validate_model_configs() -> list[str]:

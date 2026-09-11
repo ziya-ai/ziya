@@ -91,7 +91,7 @@ _VARS: List[EnvVar] = [
 
     # ── Model / Endpoint ──────────────────────────────────────────────────
     EnvVar("ZIYA_ENDPOINT", str, "bedrock", EnvCategory.MODEL,
-           "Model provider: 'bedrock', 'google', 'openai', 'anthropic', 'zai', or 'meta'.",
+           "Model provider: 'bedrock', 'google', 'openai', 'anthropic', 'zai', 'meta', or 'local'.",
            cli_flag="--endpoint"),
     EnvVar("ZIYA_MODEL", str, None, EnvCategory.MODEL,
            "Model alias (e.g. 'sonnet4.0', 'gemini-3.1-pro').",
@@ -99,6 +99,19 @@ _VARS: List[EnvVar] = [
     EnvVar("ZIYA_MODEL_ID_OVERRIDE", str, None, EnvCategory.MODEL,
            "Override the resolved model ID directly (advanced).",
            cli_flag="--model-id"),
+    EnvVar("ZIYA_LOCAL_MODEL_URL", str, "http://localhost:11434", EnvCategory.MODEL,
+           "Base URL of a local OpenAI-compatible server for --endpoint local "
+           "(Ollama :11434, LM Studio :1234, llama-server :8080). '/v1' is added if missing."),
+    EnvVar("ZIYA_LOCAL_MODEL", str, "qwen2.5-coder:7b", EnvCategory.MODEL,
+           "Model name to request from the local server (as the server names it)."),
+    EnvVar("ZIYA_LOCAL_TOKEN_LIMIT", int, None, EnvCategory.MODEL,
+           "Optional CEILING on the local model's context window. By default Ziya "
+           "reads the model's full context length from the server and uses all of "
+           "it (sending Ollama options.num_ctx to match); set this only if the full "
+           "window's KV cache does not fit in memory."),
+    EnvVar("ZIYA_LOCAL_RUNTIME", str, None, EnvCategory.MODEL,
+           "Force the local runtime for metadata discovery: 'ollama' or 'lmstudio'. "
+           "Auto-detected when unset."),
 
     # ── Model Parameters ──────────────────────────────────────────────────
     EnvVar("ZIYA_TEMPERATURE", float, None, EnvCategory.MODEL_PARAMS,
@@ -191,7 +204,7 @@ _VARS: List[EnvVar] = [
            "Use direct Bedrock streaming (legacy toggle, largely superseded)."),
     EnvVar("ZIYA_ENABLE_NOVA_GROUNDING", bool, False, EnvCategory.FEATURES,
            "Enable the Nova Web Grounding tool for web search."),
-    EnvVar("ZIYA_ENABLE_MEMORY", bool, False, EnvCategory.FEATURES,
+    EnvVar("ZIYA_ENABLE_MEMORY", bool, True, EnvCategory.FEATURES,
            "Enable persistent cross-session memory.", cli_flag="--memory"),
     EnvVar("ZIYA_YOLO_MODE", bool, False, EnvCategory.FEATURES,
            "Auto-approve all file writes without confirmation.",
@@ -248,6 +261,10 @@ _VARS: List[EnvVar] = [
            "(90 aligns with the Amazon idle-conversation retention policy)."),
     EnvVar("ZIYA_MEMORY_INTERFERENCE_SIMILARITY", float, 0.85, EnvCategory.GROUNDING,
            "Min cosine similarity for two active memories to interfere."),
+    EnvVar("ZIYA_MEMORY_USE_THRESHOLD", float, 0.55, EnvCategory.GROUNDING,
+           "Min cosine between a loaded memory and any ~300-char response window "
+           "to count the memory as 'used' (drives importance and proposal "
+           "promotion).  Calibrate from GET /api/v1/memory/feedback/stats."),
     EnvVar("ZIYA_PDF_EMBEDDING_MODEL", str, "all-MiniLM-L6-v2", EnvCategory.GROUNDING,
            "Local sentence-transformer model for PDF search."),
     EnvVar("ZIYA_PDF_RAG_TOKEN_THRESHOLD", int, None, EnvCategory.GROUNDING,
