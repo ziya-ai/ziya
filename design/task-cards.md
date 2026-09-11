@@ -341,7 +341,30 @@ Inside a sequence:
 | Variable | Shape |
 |---|---|
 | `{{previous_sibling}}` | the immediately-prior sibling's Artifact |
-| `{{sibling("block-id")}}` | a named sibling's Artifact |
+| `{{sibling("block-id")}}` | a sibling's Artifact, looked up by block **id** |
+
+`sibling()` resolves against `ExecutionContext.artifact_registry`, which
+is keyed by `block.id` — never by `name`.  Ids are minted on save for
+blocks that lack one (`_assign_block_ids` is fill-only, so an explicit id
+survives), which means an author who wants to reference a block must set
+its id themselves.  A reference by name renders `""`, exactly like a
+reference to a block that has not completed yet, and the renderer cannot
+tell the two apart.  That indistinguishability is why the *reference*
+half of the template is checked statically at launch (see
+`task_card_validation._check_sibling_refs`): a `sibling("X")` where `X`
+is not an id in the tree is refused, and when `X` matches a block's name
+the finding quotes the id to use instead.  Self, ancestor and descendant
+references are refused too — none can have completed when the template
+renders.
+
+Because the contract is by-id, an operation that changes ids must carry
+the references with it.  `TaskCardStorage.duplicate` remints every
+block id (correctly — a shared id would let one card's scope approval
+authorize the other's block), and `create(force_new_ids=True)` returns
+the old→new map so `_rewrite_sibling_refs` can rewrite every
+`sibling("old")` in every string field of the clone.  Ids not in the map
+(a reference to a calling card's block) are left verbatim.  Fill-only
+saves record no map and rewrite nothing.
 
 Field access follows the Artifact schema: `{{previous.summary}}`,
 `{{previous.decisions}}`, and `{{previous.outputs.NAME}}` for a part
@@ -451,6 +474,28 @@ does NOT: it fails the Repeat block.  Falling back there ran the body
 wide fan-out over nothing — expensive, and it produced a run record
 that looked populated.  An empty resolved array (`[]`) is legitimate and
 yields zero iterations without failing.
+
+When a **precise** source fails, the failure message names the hop that
+missed rather than offering one remedy for every miss
+(`block_executor._diagnose_precise_miss`): no block with that id has
+completed (with the ids that have, and a reminder that `sibling()` takes
+an id, not a name); the block completed but emitted no part of that name
+(with the names it did emit); the part has no such key (with the keys it
+has); or the value is not an array.  Before this, every miss read
+"resolved to empty text … have the upstream task emit_artifact a data
+part", which on the measured case pointed at the one component that was
+already correct.
+
+#### Pre-run feedback for a model authoring a card
+
+The launch endpoint's validator is reachable before launch through two
+MCP tools, so an agent composing a card can correct it in the same turn
+instead of discovering the defect from a failed run: `task_card_validate`
+checks an unsaved `root` (or a saved `card_id`) and returns each finding
+with its block path and remedy; `task_card_write` returns the same
+findings after every save and says in its message whether launch would
+refuse the card.  The `task_cards` skill instructs the model to validate
+before emitting a `task-card` fence.
 
 ### Iteration result storage at scale
 

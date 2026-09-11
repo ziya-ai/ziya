@@ -7,15 +7,27 @@
  */
 
 import React from 'react';
-import type { TaskCard, Block, TaskScope } from '../../types/task_card';
+import type { TaskCard, Block, BlockType, TaskScope } from '../../types/task_card';
 import { BlockEditor } from './BlockEditor';
+import { BlockOutline } from './BlockOutline';
 import { BlockScopeButton } from './BlockScopeButton';
 import { SelfImproveSection } from './SelfImproveSection';
 import { TaskCardDragProvider } from './DragContext';
 import { taskCardApi, type CardScopeStatus } from '../../services/taskCardApi';
 import { CARD_SCOPE_REFRESH_EVENT } from './useCardSignatureStatus';
-import { makeGroupBlock } from '../../utils/taskCardBlocks';
+import {
+  makeGroupBlock, makeBlock, updateBlockById, removeBlockById, appendChildBlock,
+} from '../../utils/taskCardBlocks';
+import { flattenBlocks, firstSelectableRow } from './runMapModel';
 import './task-card-editor.css';
+
+// Types offered by the outline's top-level "add".  Group is excluded
+// because the outline renders groups chromeless (their children appear
+// at the group's depth), so an empty new group would be invisible;
+// schedule is excluded because it is a root-only trigger.
+const ADDABLE_TYPES: BlockType[] = [
+  'task', 'repeat', 'parallel', 'until', 'state', 'call', 'ask',
+];
 
 interface Props {
   card: TaskCard;
@@ -36,11 +48,17 @@ interface Props {
   // synthetic 'draft' id to /task-cards/draft/scope-status, took the 404
   // on every re-check, and showed no escalation warning at all.
   previewMode?: boolean;
+  // 'tree' (default) renders every block's editor, nested and expanded —
+  // the shape the chat proposal panel wants for a card you are reading
+  // once.  'outline' renders a foldable spine beside ONE block's editor,
+  // for the deck, where a card is revisited and edited rather than read
+  // top to bottom.  Same card, same editors; only the arrangement differs.
+  layout?: 'tree' | 'outline';
 }
 
 export const TaskCardEditor: React.FC<Props> = ({
   card, onChange, projectId, onSave, onLaunch, saving, onScopeStatusChange,
-  previewMode,
+  previewMode, layout = 'tree',
 }) => {
   // Escalation-approval status (ASR F-001). A saved card whose blocks request
   // shell/write escalation shows which blocks are unsigned and the exact
@@ -123,6 +141,34 @@ export const TaskCardEditor: React.FC<Props> = ({
   const setName = (name: string) => onChange({ ...card, name });
   const setDescription = (description: string) => onChange({ ...card, description });
   const setScope = (scope: TaskScope) => onChange({ ...card, scope });
+
+  // Outline layout state.  Local rather than on the card: which block is
+  // being looked at and which containers are folded are properties of
+  // this editing session, not of the card definition.
+  const [selectedId, setSelectedId] = React.useState<string | null>(null);
+  const [collapsed, setCollapsed] = React.useState<ReadonlySet<string>>(() => new Set());
+  const toggleCollapse = React.useCallback((id: string) => {
+    setCollapsed(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+  const outlineRows = React.useMemo(() => flattenBlocks(card.root), [card.root]);
+  // Resolve the selection against the CURRENT tree.  Falls back to the
+  // first selectable block when nothing is selected or the selected block
+  // was deleted: an empty pane beside a populated outline reads as broken.
+  const selectedBlock = React.useMemo<Block | null>(() => {
+    const hit = selectedId
+      ? outlineRows.find(r => r.block.id === selectedId)?.block
+      : undefined;
+    return hit ?? firstSelectableRow(outlineRows)?.block ?? null;
+  }, [outlineRows, selectedId]);
+  const addTopLevel = (type: BlockType) => {
+    const block = makeBlock(type);
+    setRoot(appendChildBlock(card.root, card.root.id, block));
+    setSelectedId(block.id);
+  };
 
   // The card root is always an invisible Group (a run-once sequence) so
   // the canvas presents an ordered drop list: a State can be added first
@@ -283,11 +329,65 @@ export const TaskCardEditor: React.FC<Props> = ({
           onChange={patch => setRoot({ ...card.root, ...patch })}
         />
       )}
-      <div className="tc-card-canvas">
-        <TaskCardDragProvider root={card.root} onRootChange={setRoot}>
-          <BlockEditor block={card.root} onChange={setRoot} isRoot />
-        </TaskCardDragProvider>
-      </div>
+      {layout === 'outline' ? (
+        <div className="tc-card-canvas tc-card-canvas--outline">
+          <div className="tc-outline-col">
+            <BlockOutline
+              root={card.root}
+              mode="edit"
+              selectedId={selectedBlock?.id ?? null}
+              onSelect={setSelectedId}
+              collapsed={collapsed}
+              onToggleCollapse={toggleCollapse}
+            />
+            <label className="tc-outline__add">
+              ⊕ add
+              <select
+                value=""
+                aria-label="Add a block at the top level"
+                onChange={e => {
+                  if (e.target.value) addTopLevel(e.target.value as BlockType);
+                }}
+              >
+                <option value="">block…</option>
+                {ADDABLE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </label>
+          </div>
+          <div className="tc-outline-pane">
+            {selectedBlock ? (
+              // The provider still wraps the whole root: a container
+              // block's own children drag within the pane exactly as they
+              // did in the tree layout, and the move applies to the root.
+              <TaskCardDragProvider root={card.root} onRootChange={setRoot}>
+                <BlockEditor
+                  // Remount on selection change so an editor's internal
+                  // state (open sections, drafts) never carries across
+                  // blocks.
+                  key={selectedBlock.id}
+                  block={selectedBlock}
+                  onChange={next =>
+                    setRoot(updateBlockById(card.root, selectedBlock.id, () => next))}
+                  onDelete={() => {
+                    const next = removeBlockById(card.root, selectedBlock.id);
+                    if (next) setRoot(next);
+                  }}
+                />
+              </TaskCardDragProvider>
+            ) : (
+              <div className="tc-outline-pane__empty">
+                No blocks yet — add one from the outline.
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="tc-card-canvas">
+          <TaskCardDragProvider root={card.root} onRootChange={setRoot}>
+            <BlockEditor block={card.root} onChange={setRoot} isRoot />
+          </TaskCardDragProvider>
+        </div>
+      )}
     </div>
   );
 };
