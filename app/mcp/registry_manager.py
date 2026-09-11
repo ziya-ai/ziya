@@ -151,18 +151,42 @@ class RegistryIntegrationManager:
             
             # Add to local configuration
             self._add_to_config(result.server_name, result.config_entries)
-            
-            # Restart MCP manager to pick up new service
+
+            # Connect it. This bool is NOT cosmetic: a server that fails to
+            # start contributes no tools, and it was previously discarded and
+            # 'success' returned regardless — the user got an entry in
+            # mcp_config.json, the registry description in the UI, zero tools,
+            # and no stated reason.
+            connected: Optional[bool] = None
             if self.mcp_manager.is_initialized:
-                await self.mcp_manager.restart_server(result.server_name, result.config_entries)
-            
+                connected = await self.mcp_manager.restart_server(
+                    result.server_name, result.config_entries
+                )
+
+            if connected is False:
+                # Describe BEFORE rolling back: the diagnosis lives on the
+                # client that rollback discards.
+                failure = self._describe_connect_failure(result.server_name)
+                self._rollback_failed_install(result.server_name)
+                logger.error(
+                    f"Install of {service_id} rolled back: {failure['error']}"
+                )
+                return {
+                    'status': 'error',
+                    'service_id': service_id,
+                    'server_name': result.server_name,
+                    'config_updated': False,
+                    **failure,
+                }
+
             return {
                 'status': 'success',
                 'service_id': result.service_id,
                 'server_name': result.server_name,
                 'provider': provider.identifier,
                 'installation_path': result.installation_path,
-                'config_updated': True
+                'config_updated': True,
+                'connected': connected
             }
             
         except Exception as e:
@@ -173,6 +197,62 @@ class RegistryIntegrationManager:
                 'error': str(e)
             }
     
+    def _describe_connect_failure(self, server_name: str) -> Dict[str, Any]:
+        """Turn a failed connection into an actionable, user-facing message.
+
+        Prefers the structured record the client produced (a runtime diagnosed
+        from the launcher's own stderr, or a preflight failure) and falls back
+        to the log tail, so the caller always has something more useful than
+        "restart failed".
+        """
+        client = getattr(self.mcp_manager, 'clients', {}).get(server_name)
+        record = ((getattr(client, 'startup_failure', None)
+                   or getattr(client, 'preflight_failure', None))
+                  if client else None)
+        log_tail = list(getattr(client, 'logs', []) or [])[-20:] if client else []
+        if record:
+            return {
+                'error': record.get('summary', 'Server failed to start'),
+                'detail': record.get('detail'),
+                'hint': record.get('hint'),
+                'failure_code': record.get('code'),
+                'logs': log_tail,
+            }
+        return {
+            'error': f"'{server_name}' was installed but failed to start",
+            'detail': (
+                'The server process did not complete the MCP handshake, so it '
+                'provides no tools. See the log tail for the reason.'
+            ),
+            'hint': None,
+            'failure_code': 'connect_failed',
+            'logs': log_tail,
+        }
+
+    def _rollback_failed_install(self, server_name: str) -> None:
+        """Remove a just-written server entry that could not be started.
+
+        Targeted on purpose: uninstall_service() restarts every MCP server and
+        deletes the installation directory, which is far too disruptive for an
+        install that never worked and which the user will retry once the
+        missing dependency is present. Downloaded files are left in place so
+        the retry is fast.
+        """
+        try:
+            config = self._load_current_config()
+            if config.get('mcpServers', {}).pop(server_name, None) is not None:
+                self._save_config(config)
+        except (OSError, ValueError) as e:
+            logger.error(f"Could not roll back config entry {server_name}: {e}")
+        # Clear the in-memory traces too, or the next status poll still reports
+        # a server the config no longer contains.
+        try:
+            self.mcp_manager.clients.pop(server_name, None)
+            self.mcp_manager.server_configs.pop(server_name, None)
+            self.mcp_manager.invalidate_tools_cache()
+        except (AttributeError, KeyError) as e:
+            logger.debug(f"No in-memory state to clear for {server_name}: {e}")
+
     def _add_to_config(self, server_name: str, config_entries: Dict[str, Any]) -> None:
         """Add configuration entries to mcp_config.json."""
         config = self._load_current_config()
