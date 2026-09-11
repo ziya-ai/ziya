@@ -57,6 +57,51 @@ RunStatus = Literal[
 ]
 
 
+# The live/terminal split, as two ENUMERATED sets.
+#
+# "Terminal" means the executor coroutine has unwound: there is nothing
+# left to signal, so cancel/pause/resume/step must be inert.  "Live"
+# means an executor still exists — including ``paused``, which is a
+# coroutine parked in ``block_executor._wait_if_paused`` waiting for its
+# flag to clear, NOT a finished run.
+#
+# These exist because five call sites each kept their own idea of
+# "terminal" and they disagreed: ``TaskRunStorage.update_status`` listed
+# all five terminal statuses while the four control endpoints in
+# app/api/task_runs.py listed only ``done/failed/cancelled``.  A
+# ``partial`` or ``held`` run therefore fell THROUGH those guards, and
+# cancel then took its "no live executor — force the terminal state"
+# path and overwrote the status: a held run came back reading
+# ``cancelled`` while still carrying the ``held_reason`` that actually
+# stopped it, losing the "resume this, it wasn't your card's fault"
+# signal entirely.
+#
+# Deliberately NOT derived from one another.  Defining TERMINAL as
+# "everything not LIVE" would auto-classify any future status and make
+# the partition test tautological — unable to fail, and therefore
+# unable to catch the one mistake worth catching: adding a member to
+# RunStatus and classifying it nowhere.  Enumerating both means the
+# partition test fails loudly at the single place that defines the split.
+LIVE_RUN_STATUSES: frozenset = frozenset({
+    "queued",
+    "running",
+    "paused",
+    # An executor coroutine is parked in the Ask wait-loop, polling for
+    # the answer; it resumes in place once one lands.  Live for the same
+    # reason ``paused`` is.  (A restart reconciles an unanswered Ask to
+    # ``held``, which is the terminal form of the same situation.)
+    "awaiting_input",
+})
+
+TERMINAL_RUN_STATUSES: frozenset = frozenset({
+    "done",
+    "partial",
+    "failed",
+    "cancelled",
+    "held",
+})
+
+
 # How a run came to exist.  ``initial`` is a plain launch; the rest are
 # user-driven continuations of an earlier attempt in the same lineage.
 # ``*_iteration`` are the mid-loop variants: the resume point is an
@@ -267,6 +312,20 @@ class TaskRunBlockState(BaseModel):
     history: List[SupersededBlockState] = Field(default_factory=list)
 
 
+# How a run was launched — the property the scope-authorization seam
+# (app/agents/task_executor.py::authorize_scope) reads to decide what to
+# do about an unsigned/stale escalation.  "interactive" runs have a live
+# HITL channel (a user launched them and can sign + resume), so an
+# unauthorized escalation clamps-and-continues as before and the frontend
+# gate handles signing.  "headless" runs (scheduler cron/trigger) have no
+# attached session, so a silent clamp would ship a neutered run nobody
+# asked for — they fail loudly instead.  A Call block creates no run of
+# its own, so a callee inherits its parent run's context automatically.
+# Defaults to "interactive": it preserves today's clamp-and-continue for
+# any legacy or unforeseen path and grants no escalation either way.
+LaunchContext = Literal["interactive", "headless"]
+
+
 class TaskRun(BaseModel):
     """One execution of a TaskCard's block tree."""
     model_config = {"extra": "allow"}
@@ -274,6 +333,10 @@ class TaskRun(BaseModel):
     id: str = ""
     card_id: str
     source_conversation_id: Optional[str] = None
+    # Set once at run creation; inherited by Call callees (they run inside
+    # this run).  See ``LaunchContext``.  Absent on pre-field runs, which
+    # load the "interactive" default — i.e. today's behaviour.
+    launch_context: LaunchContext = "interactive"
     status: RunStatus = "queued"
     started_at: Optional[float] = None
     completed_at: Optional[float] = None
@@ -492,6 +555,10 @@ class TaskRunCreate(BaseModel):
     """Internal — constructed by the launch endpoint, not user-facing."""
     card_id: str
     source_conversation_id: Optional[str] = None
+    # Launch context for the run being created; the scheduler passes
+    # "headless", every user-initiated path leaves the "interactive"
+    # default.  See ``LaunchContext`` and ``TaskRunStorage.create``.
+    launch_context: LaunchContext = "interactive"
     parameter_overrides: Dict[str, Any] = Field(default_factory=dict)
     # Lineage, supplied only by the resume path.  A plain launch leaves
     # these unset and storage.create() seeds root_run_id to the new

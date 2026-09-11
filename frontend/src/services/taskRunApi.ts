@@ -160,6 +160,39 @@ export async function resumeTaskRun(
 }
 
 /**
+ * Answer the Ask checkpoint a run is holding at (status
+ * 'awaiting_input').  Path matches app/api/task_runs.py
+ * ::answer_task_run_ask.
+ *
+ * ``decision`` is the control-flow verdict — 'approve' continues,
+ * 'reject' produces a failed artifact so the enclosing on_failure
+ * governs.  ``answer`` is the free-text (or chosen) value bound to the
+ * block's ask_variable and threaded into later blocks' context.  The
+ * server refuses to pre-answer a checkpoint the run has not reached and
+ * enforces first-answer-wins, so a double click cannot change a verdict
+ * already acted on.
+ */
+export async function answerTaskRunAsk(
+  projectId: string, runId: string, blockId: string,
+  body: { decision: 'approve' | 'reject'; answer?: string; answered_by?: string },
+): Promise<TaskRun> {
+  const res = await fetch(
+    `${runsBase(projectId)}/${encodeURIComponent(runId)}` +
+    `/ask/${encodeURIComponent(blockId)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...projectHeaders() },
+      body: JSON.stringify(body),
+    },
+  );
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`answerTaskRunAsk ${runId}/${blockId} failed: ${res.status} ${text}`);
+  }
+  return res.json();
+}
+
+/**
  * Advance a held run by ``count`` block boundaries, then hold again.
  *
  * Differs from resume in that ``pause_requested`` stays set, so the
