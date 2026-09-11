@@ -218,7 +218,7 @@ class TestBuilderSegmentsPassthrough:
 def _make_executor():
     """Minimal mock executor (mirrors tests/test_text_delta_processor.py)."""
     executor = MagicMock()
-    executor._normalize_fence_spacing.side_effect = lambda text, tracker: text
+    executor._normalize_fence_spacing.side_effect = lambda text, tracker, **kw: text
     executor._update_code_block_tracker.return_value = None
     executor._block_opening_buffer = ""
     optimizer = MagicMock()

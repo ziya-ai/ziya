@@ -88,10 +88,14 @@ class AnthropicDirectProvider(LLMProvider):
 
         for retry_attempt in range(max_retries + 1):
             content_yielded = False
+            tool_use_started = False
+            resumable = False  # see ErrorEvent.resumable
             try:
                 async for event in self._do_stream(request_kwargs):
                     if isinstance(event, (TextDelta, ThinkingDelta, ToolUseStart)):
                         content_yielded = True
+                    if isinstance(event, ToolUseStart):
+                        tool_use_started = True
                     yield event
                 return  # success
             except Exception as e:
@@ -112,6 +116,11 @@ class AnthropicDirectProvider(LLMProvider):
                         f"content was yielded — refusing duplicate-producing retry"
                     )
                     retryable = False
+                    # Recoverable one layer up: the orchestrator can rewind to
+                    # the last complete line and resume via prefill.  Withheld
+                    # once a tool_use block has started, since a text prefill
+                    # cannot finish a half-emitted tool call.
+                    resumable = not tool_use_started
 
                 if retryable and retry_attempt < max_retries:
                     if classified == ErrorType.THROTTLE:
@@ -129,6 +138,7 @@ class AnthropicDirectProvider(LLMProvider):
                     message=error_str,
                     error_type=classified,
                     retryable=False,
+                    resumable=resumable,
                 )
                 return
 
