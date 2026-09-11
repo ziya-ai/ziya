@@ -135,6 +135,32 @@ def _effective_global_group_ids(project_dir: Path) -> frozenset:
         return frozenset()
 
 
+def _all_effective_global_group_ids(ziya_home: Path) -> frozenset:
+    """Union of the effective-global group ids of EVERY project.
+
+    A global folder is visible in every project, so a chat created while
+    viewing project B legitimately carries a groupId whose group RECORD
+    lives in project A's _groups.json.  Resolving group globalness against
+    only the chat's OWN project therefore missed those chats: they never
+    surfaced cross-project, so the shared folder read as short by exactly
+    the member chats that carried no own isGlobal flag.
+
+    Group ids are unique, so unioning cannot make a non-global group in one
+    project appear global in another — only effectively-global ids are ever
+    added.  Each per-project lookup is mtime-cached, so the steady-state
+    cost of this call is one stat() per project.
+    """
+    projects_dir = ziya_home / "projects"
+    if not projects_dir.exists():
+        return frozenset()
+    acc = set()
+    for project_dir in projects_dir.iterdir():
+        if not project_dir.is_dir():
+            continue
+        acc |= _effective_global_group_ids(project_dir)
+    return frozenset(acc)
+
+
 def collect_global_chats(
     ziya_home: Path,
     exclude_project_id: str,
@@ -157,6 +183,9 @@ def collect_global_chats(
     t_read = 0.0
     t_parse = 0.0
     results: List[Chat] = []
+    # Group globalness is resolved across ALL projects — see
+    # _all_effective_global_group_ids for why the owning project is not enough.
+    all_eff_groups = _all_effective_global_group_ids(ziya_home)
     for project_dir in projects_dir.iterdir():
         if not project_dir.is_dir() or project_dir.name == exclude_project_id:
             continue
@@ -165,10 +194,10 @@ def collect_global_chats(
         if not chats_dir.exists():
             continue
 
-        # Group ids in THIS project that are effectively global (own flag or
-        # inherited from an ancestor folder).  A chat surfaces cross-project if
-        # its own isGlobal is set OR its groupId is in this set.
-        eff_groups = _effective_global_group_ids(project_dir)
+        # A chat surfaces cross-project if its own isGlobal is set OR its
+        # groupId names an effectively-global group in ANY project (own flag or
+        # inherited from an ancestor folder).
+        eff_groups = all_eff_groups
 
         for chat_file in chats_dir.glob("*.json"):
             if chat_file.name.startswith("_"):
@@ -262,6 +291,7 @@ def collect_global_chat_summaries(
     t_read = 0.0
     t_parse = 0.0
     results: List[ChatSummary] = []
+    all_eff_groups = _all_effective_global_group_ids(ziya_home)
     for project_dir in projects_dir.iterdir():
         if not project_dir.is_dir() or project_dir.name == exclude_project_id:
             continue
@@ -270,8 +300,9 @@ def collect_global_chat_summaries(
         if not chats_dir.exists():
             continue
 
-        # See collect_global_chats: own-global OR group-inherited-global.
-        eff_groups = _effective_global_group_ids(project_dir)
+        # See collect_global_chats: own-global OR group-inherited-global, with
+        # the group resolved in ANY project.
+        eff_groups = all_eff_groups
 
         for chat_file in chats_dir.glob("*.json"):
             if chat_file.name.startswith("_"):

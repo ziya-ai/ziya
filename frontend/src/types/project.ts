@@ -17,6 +17,8 @@ export interface ContextManagementSettings {
   auto_add_diff_files?: boolean;
   /** Per-file token cap for auto-added files (0 = no limit). Default 35000. */
   auto_add_token_limit?: number;
+  /** Aggregate token cap across ALL auto-added files combined (0 = no limit). Default 100000. */
+  auto_add_aggregate_budget?: number;
 }
 
 export interface ProjectSettings {
