@@ -46,7 +46,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     // (e.g., streamedContentMap changes during streaming won't trigger FolderTree re-renders)
     const { createFolder, currentFolderId, isProjectSwitching } = useConversationList();
     const { startNewChat } = useActiveChat();
-    const { isScanning, scanError } = useFolderContext();
+    const { isScanning, scanError, isSwitchingProject: isTreeSwitching } = useFolderContext();
     // Blank the panel as soon as either the project API call or the full sync is in progress
     const isSwitchingProject = isLoadingProject || isProjectSwitching;
     // Distinguish initial load from an actual switch for the spinner label.
@@ -57,6 +57,19 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
     const switchingLabel = isProjectSwitching
         ? 'Switching project…'
         : 'Loading…';
+    // isProjectSwitching is deliberately released as soon as the IDB preload
+    // commits, but FolderContext keeps its own switch window open until the
+    // first tree for the new project arrives — usually the slow part. In that
+    // gap only the Files tab (via MUIFileExplorer) said anything, so from the
+    // Chats tab a long switch looked finished. Surface it as a non-blocking
+    // banner rather than blanking tabs whose data is genuinely ready.
+    const treeStillSwitching = !isSwitchingProject && isTreeSwitching;
+    const treeSwitchBanner = treeStillSwitching ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', fontSize: 12, opacity: 0.75, flexShrink: 0, borderBottom: '1px solid rgba(128,128,128,0.25)' }}>
+            <Spin size="small" />
+            <span>Switching project… loading file tree</span>
+        </div>
+    ) : null;
     const [panelWidth, setPanelWidth] = useState<number>(300);
     const [modelDisplayName, setModelDisplayName] = useState<string>('');
 
@@ -298,6 +311,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                                     </div>
                                 ) : (
                                     <>
+                                        {treeSwitchBanner}
                                         <ActiveContextBar />
                                         <ContextsTab />
                                     </>
@@ -322,6 +336,7 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                                     </div>
                                 ) : (
                                     <>
+                                        {treeSwitchBanner}
                                         <ActiveContextBar />
                                         <MUIChatHistory />
                                     </>
@@ -348,9 +363,12 @@ export const FolderTree = React.memo(({ isPanelCollapsed }: FolderTreeProps) => 
                                         <span style={{ fontSize: 13 }}>{switchingLabel}</span>
                                     </div>
                                 ) : (
-                                    <Suspense fallback={<div style={{ display: 'flex', justifyContent: 'center', padding: 20 }}><Spin /></div>}>
-                                        <BacklogBrowser />
-                                    </Suspense>
+                                    <>
+                                        {treeSwitchBanner}
+                                        <Suspense fallback={<div style={{ display: 'flex', justifyContent: 'center', padding: 20 }}><Spin /></div>}>
+                                            <BacklogBrowser />
+                                        </Suspense>
+                                    </>
                                 )}
                             </div>
                         )
