@@ -1,0 +1,58 @@
+/* D-014: horizontal-overflow affordances for markdown sub-surfaces in chat
+ * messages.
+ *
+ * index.css styles `.message .message-content` (it sets `white-space:pre-wrap`
+ * on the container and resets block elements to `white-space:normal`) but it
+ * never sets any overflow or wrap-break affordance. As a result, content wider
+ * than the fixed-width message box is silently hard-clipped or overflows with
+ * no scrollbar and no wrap opportunity on several independent surfaces:
+ *   - a long unbreakable line inside a <pre> code block,
+ *   - a single unbreakable prose token (e.g. a long urn) in a <p>/<li>,
+ *   - the same in an inline <code> span,
+ *   - a wide markdown <table> whose columns run past the box edge.
+ *
+ * These rules add ONLY the missing affordances. Every property set here
+ * (overflow-wrap, word-break, overflow-x, and the table's display/max-width)
+ * is left unset by index.css, so there is no competing declaration and cascade
+ * order is irrelevant; the selectors carry the same `.message .message-content`
+ * specificity index.css uses. The behaviour is theme-independent — it is layout
+ * overflow handling, not colour — so it corrects both the light and dark
+ * surfaces identically.
+ */
+
+/* Prose and other block text: an unbreakable token must wrap to stay inside
+ * the message box rather than overflow past its right edge. */
+.message .message-content p,
+.message .message-content li,
+.message .message-content blockquote,
+.message .message-content h1, .message .message-content h2,
+.message .message-content h3, .message .message-content h4,
+.message .message-content h5, .message .message-content h6 {
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+/* Inline code (NOT code inside a <pre> block): a single unbreakable token such
+ * as a urn has no soft-wrap opportunity, so allow breaking anywhere. Scoped
+ * with :not(pre) > code so fenced code blocks keep their own handling below. */
+.message .message-content :not(pre) > code {
+  overflow-wrap: break-word;
+  word-break: break-all;
+}
+
+/* Code blocks: a long unbreakable line becomes horizontally scrollable within
+ * the box instead of being clipped with no affordance. */
+.message .message-content pre {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+/* Wide markdown tables: make the table its own horizontal scroll container so
+ * columns beyond the box edge are reachable via a scrollbar rather than clipped.
+ * `display:block` lets the element scroll while its rows/cells keep their
+ * natural (intrinsic) column widths. */
+.message .message-content table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
