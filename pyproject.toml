@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ziya"
-version = "0.8.7.0"
+version = "0.8.8.5"
 description = "Self-hosted AI workbench. Runs alongside your editor, not instead of it. The surface next to your editor where conversations, architecture work, diff review, and visual debugging happen."
 authors = ["Dan Cohn <chroma@gmail.com>",
            "Vishnu Krishnaprasad <vishnukool@gmail.com>"]
@@ -26,7 +26,7 @@ uvicorn = {extras = ["standard"], version = "^0.38.0"}
 fastapi = "^0.124.2"
 jinja2 = "^3.1.0"
 whatthepatch = "^1.0.6"
-packaging = "^24.0"
+packaging = ">=24.0,<27.0"
 requests = "^2.32.0"
 pydantic = "^2.10.0"
 tiktoken = {version = "^0.8.0", optional = true}
@@ -38,9 +38,16 @@ langchain-google-genai = "^2.0.0"
 httpx = "^0.28.1"  # Required by google-genai, overrides older version needed by mcp-server-fetch
 #langchain-core = "^0.4.0"
 langchain-aws = "^1.1.0"
+# Every OpenAI-compatible endpoint (openai, zai, meta, local) builds an
+# AsyncOpenAI client. It was never declared, so any install that did not
+# pull it transitively failed at first chat with "openai package is required".
+openai = "^1.50.0"
 langchain = "^1.0.0"
 langchain-community = "^0.4.1"
-torch = {version = "^2.8.0", optional = true}
+# sentence-transformers pulls torch itself.  torch was previously declared
+# directly (and numba alongside it) although nothing in app/ imports either;
+# `ziya[local]` installed ~2 GB that enabled nothing.
+sentence-transformers = {version = ">=3.0", optional = true}
 setuptools = ">=75.8.0"
 cssutils = "^2.11.0"
 html5lib = "^1.1"
@@ -58,7 +65,6 @@ pillow = "^11.0.0"
 starlette = ">=0.49.1"
 watchdog = "^6.0.0"
 urllib3 = "^2.5.0"
-numba = {version = ">=0.62.0", python = ">=3.10,<3.14", optional = true}
 transformers = {version = "^4.0.0", optional = true}
 fonttools = "^4.60.2"
 mcp = "^1.23.0"
@@ -66,8 +72,14 @@ uv = "^0.9.6"
 filelock = ">=3.20.1"
 prompt-toolkit = "^3.0.48"
 rich = "^14.0.0"
-croniter = "^3.0.0"
-playwright = {version = "^1.52.0", optional = true}
+croniter = ">=3.0.0,<7.0.0"
+# Hard deps, not extras: both are small pure-Python packages.  The heavy
+# parts pip cannot install -- the Chromium build, a TeX distribution -- are
+# handled by `ziya-install-extras`, which is why the package itself must
+# already be present for that command to have anything to drive.  scapy
+# only needs libpcap for LIVE capture; Ziya reads capture FILES.
+playwright = "^1.52.0"
+scapy = ">=2.6.2"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.3.3"
@@ -76,20 +88,20 @@ pytest-asyncio = ">=0.23,<1.0"
 pytest-playwright = {version = "^0.7.0", optional = true}
 psutil = "^7.2.2"
 
-[tool.poetry.group.pcap.dependencies]
-# Optional: Network packet analysis tools
-scapy = ">=2.6.2"
-
 [tool.poetry.extras]
-local = ["torch"]
+# `local` kept as an alias for anyone who typed it; it now installs the thing
+# that actually enables local (offline) PDF embedding search.
+local = ["sentence-transformers"]
+embeddings = ["sentence-transformers"]
 tokens = ["tiktoken"]
-all = ["torch", "tiktoken", "numba", "transformers"]
-render = ["playwright"]
+# render/pcap are no longer extras -- playwright and scapy are hard deps.
+all = ["tiktoken", "transformers", "sentence-transformers"]
 
 [tool.poetry.scripts]
 ziya = 'app.ziya_exec:ziya'
 ziya-cli = "app.cli:main"
 ziya-approve = "app.utils.ziya_approve:main"
+ziya-install-extras = "app.utils.install_extras:main"
 dev = 'app.ziya_exec:dev'
 finstall = "app.ziya_exec:frontend_install"
 fstart = "app.ziya_exec:frontend_start"
