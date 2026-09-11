@@ -201,6 +201,18 @@ For remote servers, authentication is handled via OAuth bearer tokens (`Authoriz
 
 Builtin tools (`app/mcp/tools/`) run directly in the server process without subprocesses. They follow the same `BaseMCPTool` interface and are registered via `builtin_tools.py`.
 
+### Tool Payload Cost ("tool tax")
+
+Every tool definition (name, description, JSON schema) is re-sent to the model on every request, so the tool set is a fixed per-turn token cost. Two passes keep it down:
+
+1. **Schema compaction** (`app/utils/tool_schema_compact.py`) — applied once where `DirectMCPTool` / `SecureMCPTool` publish `metadata["input_schema"]`, which every provider converter reads. Strips what Pydantic emits but no model needs: per-property `title`, the root `title`/`$schema`, the `anyOf: [X, null]` + `default: null` wrapper on Optional fields (collapsed to `X`), and, for builtins, the root `description` that merely echoes the class docstring. `type`, `required`, `enum`, `properties`, property descriptions and non-null defaults are preserved exactly, so grammar-constrained local servers see the same contract. ~16% of the builtin payload.
+
+2. **Session-signal gating** (`app/utils/tool_gating.py`) — in `StreamingToolExecutor._load_and_prepare_tools`, a builtin category that cannot succeed in the current request is dropped from the payload. Today that is exactly one category: `task_artifacts` outside a Task Card run (no artifact collector open — `emit_artifact`'s own description says it is only available inside one). A Task block's explicit `scope.tools` and the always-available floor (`task_tool_floor.py`) are never gated. `ZIYA_TOOL_GATING=0` restores the send-everything behaviour.
+
+   **Why only one gate.** The tool list is the *first* segment of the provider request prefix (tools → system → messages), and every prompt-cache breakpoint — system prompt, history, files — is downstream of it. Any change to the tool set therefore misses the entire cache for that turn, not just a segment. So a gate is only acceptable when its signal cannot change within a conversation. `in_task_run` qualifies (a collector is open for a whole run or not at all). Gates for `shadow` (a live `ziya shadow` session) and `pdf_rag` (a PDF indexed or mentioned) were built and then withdrawn: either can appear at any turn, and a user who positions files last in the prompt precisely so that adding a file costs only the file segment would instead pay for a full re-read of the conversation. The tokens saved (~1.6k) do not justify that. Their signal detectors remain in the module, along with per-conversation gate hysteresis (an opened gate never closes again in-process), so a future per-model tool profile can re-enable them for a small local model that would rather have the tokens than the cache.
+
+Measured on the 42 default builtins: ~13.1k tokens raw → ~11.0k compacted → ~10.1k compacted + gated (plain chat, 40 tools). Further reduction has to come from description prose (now ~55% of the payload) and per-model tool profiles, not from more gating.
+
 ### Tool Result Security
 
 Every tool result is cryptographically signed (HMAC-SHA256) by `MCPClient` before being returned. The streaming executor verifies the signature before displaying the result to the user or feeding it back to the model. Unverified results are rejected with a corrective error message.
@@ -442,6 +454,62 @@ All memories live in a single JSON file (`memories.json`).  Each entry has:
 - **status**: `active`, `pending`, `deprecated`, `archived`
 - **scope**: Optional project-path weighting
 
+### Extraction Pipeline
+
+New memories are produced automatically by a post-conversation pass
+(`app/memory/extractor.py:run_post_conversation_extraction`) and by explicit
+`/remember`. Work never auto-flows into durable memory — extraction produces
+*proposals*, and the user approves. The pass is a funnel tuned for the
+right amount of knowledge at the right granularity:
+
+1. **Model-based admission triage.** Conversations too short
+   (`MIN_HUMAN_TURNS`) are skipped, then a lightweight model **triage** call
+   (`app/memory/extractor.py`) decides whether the conversation carries
+   durable knowledge worth extracting. This replaces the former user-turn-only
+   regex salience gate, which skipped ~1 in 5 conversations outright (a fact
+   taught only in an assistant turn produced zero memories). The surviving
+   conversations are sliced into topic-coherent windows for extraction. Set
+   `ZIYA_MEMORY_TRIAGE_DISABLED=1` to fall back to the legacy regex gate.
+2. **Extraction with an atomicity contract.** The extraction prompt asks for
+   **one self-contained fact / decision / principle per memory, 1–3
+   sentences** — distinct durable facts are split, not fused into a
+   multi-fact blob, and only genuine paraphrases are collapsed. This is the
+   lever that keeps memories atomic and findable rather than "too specific
+   details in very few memories."
+3. **Structural quality gate** (`quality_gate`) drops candidates that are
+   transient/session-specific by structure (CSS/layout tweaks, bare code
+   identifiers, file-line references, refactoring chatter) or violate the
+   length bounds (`MIN_CONTENT_CHARS`..`MAX_CONTENT_CHARS`), so debug-session
+   trivia does not reach the store.
+4. **Dedup / corroboration** against existing knowledge (embedding-based when
+   available; keyword fallback otherwise) merges near-duplicates and bumps
+   corroboration counts instead of minting paraphrases.
+5. **Graded two-track probationary lifecycle** (`app/memory/lifecycle.py`).
+   Survivors enter a probationary queue keyed to an **activity counter**
+   (activity-based TTL, not wall-clock, so a vacation never silently archives
+   entries). Each proposal is graded at proposal time for **quality**
+   (durability 0.40 · atomicity 0.35 · self-containment 0.25, clamped by
+   structural checks). Promotion then follows two tracks: proposals in the
+   fast-track layers (`architecture`, `decision`, `negative_constraint`)
+   promote on **graded quality alone** — no corroboration — once past a short
+   minimum age, because a durable fact taught once never corroborates and used
+   to decay unread (~88% of proposals). All other layers keep the existing
+   corroboration-or-use bar; corroboration is a confidence bonus everywhere.
+   Decay still archives low-grade, contradicted, or non-fast-track proposals
+   after `ARCHIVAL_AGE_THRESHOLD` activity ticks. The fast-track layer set,
+   quality threshold, and minimum age are overridable via
+   `ZIYA_MEMORY_FAST_TRACK_LAYERS`, `ZIYA_MEMORY_FAST_TRACK_THRESHOLD`, and
+   `ZIYA_MEMORY_FAST_TRACK_MIN_AGE`.
+
+Retrieval is by keyword/tag/layer search (`MemoryStorage.search`), which
+sub-tokenises compound identifiers (e.g. `run_post_conversation_extraction`
+→ `run`/`post`/`conversation`/`extraction`) so a natural-language query
+matches the memory that names the entity, plus an optional mind-map walk.
+
+Quality is measured against a golden set with a 5-dimension rubric
+(coverage, precision, granularity, self-containment, retrievability) by
+`scripts/memory_quality_score.py`.
+
 ### Tools
 
 The model interacts with memory through six builtin MCP tools:
@@ -492,16 +560,21 @@ The frontend includes an interactive **Memory Browser** (`frontend/src/component
 | 🩺 Health | Stale memories (90+ days unaccessed), oversized mind-map nodes (12+ memories that should split), orphan memories (not linked to any node).  A status line shows when organize last ran, that organize is not time-scheduled (on-demand / startup / 15+ orphans), and the current orphan count vs the auto-trigger threshold.  "Organize Knowledge" triggers LLM-powered clustering and relation extraction; "Run Maintenance" triggers cell division and cross-link discovery (no LLM, non-destructive).  Both buttons show a spinner while running.  An embedding-coverage line (`Embeddings: N/M memories (P%)`) warns when memories are missing vectors — since embedding-centroid cross-linking can only see embedded memories — and surfaces a **Backfill Embeddings** button when coverage is partial. |
 ### Knowledge Organization
 
-The **memory organizer** (`app/utils/memory_organizer.py`) uses LLM calls to build
-mind-map structure from unorganized memories:
+The **memory organizer** (`app/memory/organizer.py`) uses LLM calls to build
+mind-map structure from unorganized memories, followed by a deterministic
+global consolidation pass that keeps the map from fragmenting:
 
-1. **Clustering** — Groups memories into thematic domains (e.g. "Network Architecture", "AI Tooling") via a service model call.  Batched for large corpora.
-2. **Placement** — Creates mind-map nodes for each domain and assigns memories to them.  Merges with existing domains when tag/handle overlap is sufficient.
-3. **Relation extraction** — Within each domain, identifies `supports`, `contradicts`, `elaborates`, and `depends_on` relationships between memories.
-4. **Cross-link discovery** — Connects domains in different branches by two algorithmic signals (no LLM): ≥2 shared tags, and member-memory embedding-centroid cosine similarity (≥`ZIYA_NODE_CROSS_LINK_SIMILARITY`, default 0.62).  The embedding signal catches semantically-related domains that share no literal tags — the common case, since clustering assigns mostly-distinct tags per domain.
-5. **Cell division** — Splits oversized nodes into focused children when a tag cluster reaches threshold.
+1. **Clustering** — Groups memories into thematic domains (e.g. "Network Architecture", "AI Tooling") via a service model call.  Batched for large corpora, but each batch is now placed against a **live** root inventory refreshed between batches (with a target-count hint), so two batches no longer mint parallel roots for the same domain.
+2. **Placement** — Creates mind-map nodes for each domain and assigns memories to them.  `_find_matching_node` merges with an existing domain on strong score OR sufficient handle/tag Jaccard overlap (plurals folded, generic words discounted), so near-duplicate domains fold together instead of spawning roots.
+3. **Global consolidation** (`consolidate_mindmap`, no LLM, deterministic) — runs on every `reorganize` after bootstrap and enforces the structural invariants: repair dangling refs and prune empty leaves, merge similar roots, fold low-occupancy nodes (children into parents, tiny roots into a sibling or a `domain_general` bucket) so **every node holds ≥ `MIN_NODE_OCCUPANCY` (2)** memories, cap the root count at `MAX_ROOTS` (24), and enforce a single parent per node. On the real store this collapsed a bloated **97-root / 119-node** map to **8 roots / 12 nodes** with zero empty nodes and depth ≤ 2.
+4. **Relation extraction** — Within each domain, identifies `supports`, `contradicts`, `elaborates`, and `depends_on` relationships between memories.
+5. **Cross-link discovery** — Connects domains in different branches by two algorithmic signals (no LLM): ≥2 shared tags, and member-memory embedding-centroid cosine similarity (≥`ZIYA_NODE_CROSS_LINK_SIMILARITY`, default 0.62).  The embedding signal catches semantically-related domains that share no literal tags — the common case, since clustering assigns mostly-distinct tags per domain.
+6. **Cell division** — Splits oversized nodes into focused children only when both halves would stay above `MIN_NODE_OCCUPANCY` and the node is a root (depth guard), so division never re-creates the fragmentation consolidation just removed.
 
-Auto-triggers when orphan memories exceed 15 (configurable via `AUTO_ORGANIZE_ORPHAN_THRESHOLD`).
+Auto-triggers (`should_auto_organize`) when orphan memories exceed 15
+(configurable via `AUTO_ORGANIZE_ORPHAN_THRESHOLD`), **or** when the map has
+exploded into far more roots than the memory count warrants, **or** when a
+large fraction of nodes are empty.
 
 In addition to the orphan auto-trigger, organize runs **periodically** via the
 internal system-job registry (see "Periodic System Jobs" below): the
@@ -693,7 +766,7 @@ Default lightweight models per endpoint:
 | google | `gemini-2.0-flash-lite` |
 | openai | `gpt-4.1-mini` |
 | anthropic | `claude-haiku-4-5-20251001` |
-| local | `llama3.2:3b` (via Ollama at `localhost:11434`) |
+| local | the `ZIYA_LOCAL_MODEL` model (default `qwen2.5-coder:7b`) via the server at `ZIYA_LOCAL_MODEL_URL` — a local install has one model, so service calls share it |
 
 **Configuration:**
 
@@ -702,4 +775,4 @@ Default lightweight models per endpoint:
 | `ZIYA_MEMORY_EXTRACTION_MODEL` | (per-endpoint) | Override extraction model |
 | `ZIYA_MEMORY_EXTRACTION_ENDPOINT` | (active endpoint) | Override extraction endpoint |
 | `ZIYA_MEMORY_EXTRACTION_REGION` | `us-east-1` | AWS region (Bedrock only) |
-| `ZIYA_LOCAL_MODEL_URL` | `http://localhost:11434/v1` | URL for local model API |
+| `ZIYA_LOCAL_MODEL_URL` | `http://localhost:11434` | Base URL of the local OpenAI-compatible server (`/v1` appended if missing) |

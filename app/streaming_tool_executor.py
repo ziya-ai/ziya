@@ -91,6 +91,105 @@ def get_global_usage_tracker() -> GlobalUsageTracker:
             _global_usage_tracker = GlobalUsageTracker()
         return _global_usage_tracker
 
+# String spellings a model may use for a JSON boolean. Anything outside both
+# sets is left as-is so the tool (or its schema validator) reports it, rather
+# than being silently read as False.
+_TRUE_STRINGS = frozenset({'true', '1', 'yes', 'y', 'on'})
+_FALSE_STRINGS = frozenset({'false', '0', 'no', 'n', 'off'})
+
+
+def _schema_expected_type(prop: dict) -> Optional[str]:
+    """The single non-null JSON type a property schema declares, or None.
+
+    Handles ``"type": "integer"``, ``"type": ["integer", "null"]`` and the
+    ``anyOf: [{type: X}, {type: null}]`` form Pydantic emits for Optional
+    fields. A genuine union of two concrete types yields None: there is no
+    one right coercion to apply.
+    """
+    t = prop.get('type')
+    if isinstance(t, str):
+        return t
+    members: list = []
+    if isinstance(t, list):
+        members = [m for m in t if isinstance(m, str) and m != 'null']
+    elif isinstance(prop.get('anyOf'), list):
+        members = [
+            m.get('type') for m in prop['anyOf']
+            if isinstance(m, dict) and m.get('type') not in (None, 'null')
+        ]
+    return members[0] if len(set(members)) == 1 else None
+
+
+def coerce_tool_args_to_schema(args: dict, schema: dict) -> dict:
+    """Return ``args`` with string-typed scalars coerced to the schema's type.
+
+    Weaker models routinely quote scalars ("nextThoughtNeeded": "false",
+    "thoughtNumber": "1") or JSON-encode an object argument as a string.
+    External MCP tools were already repaired at dispatch by
+    MCPManager._coerce_argument_types, but builtin (dynamic-loader) tools
+    receive their arguments verbatim, and the executor's own schema
+    validation ran on the raw values, so an enum of integers rejected "5".
+    This runs once, for every tool, before validation.
+
+    Only unambiguous repairs are made; a value that cannot be coerced is
+    returned unchanged so the real validation error surfaces. Keys the
+    schema does not describe pass through untouched.
+    """
+    if not args or not isinstance(args, dict) or not isinstance(schema, dict):
+        return args
+    properties = schema.get('properties')
+    if not isinstance(properties, dict):
+        return args
+    out = dict(args)
+    for key, value in args.items():
+        prop = properties.get(key)
+        if not isinstance(prop, dict):
+            continue
+        expected = _schema_expected_type(prop)
+        if expected is None:
+            continue
+        new = value
+        if isinstance(value, str):
+            s = value.strip()
+            if expected == 'boolean':
+                low = s.lower()
+                if low in _TRUE_STRINGS:
+                    new = True
+                elif low in _FALSE_STRINGS:
+                    new = False
+            elif expected == 'integer':
+                try:
+                    new = int(s)
+                except ValueError:
+                    try:
+                        f = float(s)
+                        if f.is_integer():
+                            new = int(f)
+                    except ValueError:
+                        pass
+            elif expected == 'number':
+                try:
+                    new = int(s) if '.' not in s and 'e' not in s.lower() else float(s)
+                except ValueError:
+                    pass
+            elif expected in ('object', 'array'):
+                try:
+                    parsed = json.loads(s)
+                except (json.JSONDecodeError, TypeError):
+                    parsed = None
+                if (expected == 'object' and isinstance(parsed, dict)) or \
+                        (expected == 'array' and isinstance(parsed, list)):
+                    new = parsed
+        elif expected == 'string' and isinstance(value, (int, float)) and not isinstance(value, bool):
+            new = str(value)
+        elif expected == 'integer' and isinstance(value, float) and value.is_integer():
+            new = int(value)
+        if new is not value:
+            logger.debug(f"🔧 ARG_COERCE: {key}={value!r} -> {new!r} per schema type '{expected}'")
+            out[key] = new
+    return out
+
+
 def validate_tool_args_against_schema(tool_name: str, args: dict, schema: dict) -> Optional[str]:
     """
     Validate tool arguments against the tool's input schema.
@@ -189,6 +288,9 @@ class StreamingToolExecutor:
         model_name = model_override or ziya_env("ZIYA_MODEL")
         self.model_config = ModelManager.get_model_config(endpoint, model_name)
         self.endpoint = endpoint
+        # Kept for the usage ledger: prices are keyed by billing endpoint +
+        # resolved model id + region (design/CostModel.md).
+        self.region = region
         
         # Use provided model_id or get from ModelManager (which handles region-specific IDs)
         if model_id:
@@ -1309,7 +1411,8 @@ class StreamingToolExecutor:
             iteration=iteration,
         )
 
-    async def _load_and_prepare_tools(self, extra_tools=None, tool_allowlist=None):
+    async def _load_and_prepare_tools(self, extra_tools=None, tool_allowlist=None,
+                                      messages=None, project_root=None, conversation_id=None):
         """Load MCP tools, convert schemas, deduplicate, and prepare for provider.
 
         ``tool_allowlist`` is an optional iterable of tool names (a Task
@@ -1320,6 +1423,12 @@ class StreamingToolExecutor:
         ``create_secure_mcp_tools()``; a caller-side filter (which is what
         task_executor did) was silently discarded, so every task ran with the
         full tool set while its prompt claimed otherwise.
+
+        ``messages`` / ``project_root`` feed session-signal gating
+        (app/utils/tool_gating.py): builtin categories that cannot succeed
+        in this request (emit_artifact outside a task run, shadow tools with
+        no live session, PDF tools with no PDF in play) are dropped from the
+        payload so they stop costing tokens every turn.
 
         Returns:
             tuple: (all_tools, bedrock_tools, builtin_tool_names, internal_tool_names, optional_only_tools)
@@ -1343,6 +1452,28 @@ class StreamingToolExecutor:
                 f"🔒 TOOL_SCOPE: task allowlist applied — "
                 f"{len(all_tools)}/{_before} tools exposed "
                 f"(requested: {sorted(tool_allowlist)})"
+            )
+
+        # Session-signal gating.  Runs after the scope allowlist so tools
+        # the task author named explicitly are protected via ``keep``.  The
+        # always-available floor is protected too: a non-empty allowlist
+        # only ever comes from the task executor, which unconditionally
+        # instructs the model to emit_artifact, so the floor must be in the
+        # payload regardless of what the gate signals say.
+        from app.utils.tool_gating import detect_session_signals, filter_tools_by_session
+        from app.utils.task_tool_floor import effective_tool_names
+        # conversation_id keys the gate hysteresis: an opened gate stays open
+        # for the conversation so the tool list (head of the cached prefix)
+        # never flips back and busts every cache breakpoint.
+        _signals = detect_session_signals(
+            messages=messages, project_root=project_root, conversation_id=conversation_id)
+        all_tools, _gated = filter_tools_by_session(
+            all_tools, _signals, keep=effective_tool_names(tool_allowlist) or None,
+        )
+        if _gated:
+            logger.info(
+                f"🚪 TOOL_GATING: dropped {len(_gated)} tool(s) for this request "
+                f"({_signals}): {sorted(_gated)}"
             )
         
         builtin_tool_names = {tool.name for tool in all_tools if isinstance(tool, DirectMCPTool)}
@@ -1638,6 +1769,15 @@ class StreamingToolExecutor:
             # Task Card deck run on a single recoverable hiccup.
             "modelStreamErrorException",
             "Model produced invalid sequence"])
+        # Subset of is_transient with its own, much smaller retry budget.
+        # A sampler glitch resolves on the first re-sample; the same
+        # malformed-toolUse failure recurring on consecutive attempts means
+        # the model cannot produce this tool surface at all (seen with Nova
+        # Lite under ~270 tool schemas), and burning the full transport
+        # backoff schedule on it only delays the inevitable failure.
+        is_model_output_glitch = (
+            "Model produced invalid sequence" in error_str
+            or "invalid sequence as part of ToolUse" in error_str)
         
         auth_provider = get_active_auth_provider()
         is_auth = (
@@ -1701,6 +1841,8 @@ class StreamingToolExecutor:
                 throttle_state['last_cache_efficiency'] = last_usage.cache_hit_rate
         
         throttle_state['retry_count'] += 1
+        if is_model_output_glitch:
+            throttle_state['model_output_retries'] += 1
         
         # Calculate backoff delay
         if is_read_timeout:
@@ -1724,11 +1866,25 @@ class StreamingToolExecutor:
         
         should_retry_internally = (
             (is_read_timeout or is_transient) and
-            throttle_state['retry_count'] <= throttle_state['max_retries']
+            throttle_state['retry_count'] <= throttle_state['max_retries'] and
+            (not is_model_output_glitch or
+             throttle_state['model_output_retries']
+             <= throttle_state['max_model_output_retries'])
         )
         
         # Determine error type for frontend
-        if is_transient:
+        if is_model_output_glitch:
+            error_type = 'transient_service_error'
+            if should_retry_internally:
+                retry_msg = (f"Model emitted a malformed tool call; re-sampling "
+                             f"(attempt {throttle_state['model_output_retries']}"
+                             f"/{throttle_state['max_model_output_retries']})...")
+            else:
+                retry_msg = ("Model repeatedly emitted malformed tool calls. This "
+                             "model likely cannot handle the current tool set; "
+                             "switch to a more capable model or reduce the "
+                             "number of enabled tools.")
+        elif is_transient:
             error_type = 'transient_service_error'
             retry_msg = f"AWS service temporarily unavailable after {len(tool_results)} tool execution(s). Retrying..."
         elif is_connection_error:
@@ -1787,6 +1943,21 @@ class StreamingToolExecutor:
         fresh = iteration_usage.input_tokens
         cached = iteration_usage.cache_read_tokens
 
+        # Model's effective input ceiling — needed both by the throttle-risk
+        # warning below and by the per-iteration token-budget warning and
+        # context-debug snapshot at the end of this method.
+        base_limit = self.model_config.get('token_limit', 200000) if self.model_config else 200000
+        effective_limit = (
+            self.model_config.get('extended_context_limit', base_limit)
+            if self.model_config and self.model_config.get('supports_extended_context')
+            else base_limit
+        )
+        # Bedrock reports cache-written tokens separately from input_tokens,
+        # so total_input undercounts a cache-creating call by exactly the
+        # written amount (mirrors the correction _record_calibration makes).
+        _cache_written = iteration_usage.cache_write_tokens
+        effective_input = (total_input + _cache_written) if _cache_written > 0 else total_input
+
         # --- Logging ---
         if iteration == 0:
             logger.debug("Usage from provider:")
@@ -1800,12 +1971,6 @@ class StreamingToolExecutor:
             logger.debug(f"✅ CACHE WORKING: {cached:,} tokens reused")
 
             # Warn when total tokens approach the model's context limit
-            base_limit = self.model_config.get('token_limit', 200000) if self.model_config else 200000
-            effective_limit = (
-                self.model_config.get('extended_context_limit', base_limit)
-                if self.model_config and self.model_config.get('supports_extended_context')
-                else base_limit
-            )
             throttle_warn_threshold = int(effective_limit * 0.8)
             if total_input > throttle_warn_threshold:
                 logger.warning(
@@ -1815,6 +1980,65 @@ class StreamingToolExecutor:
                 logger.warning(f"   Even though {cached:,} are cached (free),")
                 logger.warning("   they STILL count toward 'Too many tokens' rate limits")
                 logger.warning("   Consider reducing max_output_tokens on retries")
+
+        # --- Token-budget warning (every iteration) ---
+        # The iteration-count countdown in the main loop is a proxy: a
+        # single large tool result can jump the submitted context from 50k
+        # to 900k tokens without consuming iterations. This tracks the
+        # number that actually determines whether the NEXT provider call
+        # fails. throttle_state is the only state that survives into the
+        # next main-loop iteration, so both the pending message and the
+        # fired-tier record live there.
+        if effective_limit:
+            _pct = effective_input / effective_limit
+            _fired = throttle_state.setdefault('token_pct_fired', set())
+            _crossed = [p for p in (0.75, 0.90, 0.95) if _pct >= p and p not in _fired]
+            if _crossed:
+                _tier = max(_crossed)
+                _fired.update(_crossed)
+                _guidance = {
+                    0.75: "Consider wrapping up large reads and searches soon.",
+                    0.90: "Avoid opening new large file reads or searches this turn.",
+                    0.95: "Stop reading new content and summarize now — the next call risks exceeding the model's input limit.",
+                }[_tier]
+                throttle_state['token_budget_warning'] = (
+                    f"\n\n⚠️ **Context Size Notice:** This turn has submitted ~{effective_input:,} of "
+                    f"~{effective_limit:,} input tokens ({int(_pct * 100)}%). {_guidance}\n\n"
+                )
+                logger.warning(
+                    f"🔔 TOKEN_BUDGET_WARNING: {int(_pct * 100)}% of input limit "
+                    f"({effective_input:,}/{effective_limit:,}), staging model notice"
+                )
+
+        # --- Context-debug snapshot (every iteration) ---
+        # The token numbers are already in hand from the provider event, so
+        # the in-memory record is effectively free and always on.  Payload
+        # char counts scan the entire submitted conversation (megabytes at
+        # the sizes being debugged), so they run only when detailed capture
+        # is enabled — the same flag that turns on per-iteration disk
+        # persistence inside record_iteration.
+        try:
+            from app.utils.context_debug import is_enabled as _ctx_detail, record_iteration
+            _system_chars = None
+            _conv_chars = None
+            if _ctx_detail():
+                if isinstance(system_content, str):
+                    _system_chars = len(system_content)
+                elif isinstance(system_content, list):
+                    _system_chars = sum(len(b.get('text', '')) for b in system_content if isinstance(b, dict))
+                else:
+                    _system_chars = 0
+                _conv_chars = sum(len(str(m.get('content', ''))) for m in conversation)
+            record_iteration(
+                conversation_id, iteration,
+                fresh_tokens=fresh, cache_read_tokens=cached,
+                cache_write_tokens=_cache_written,
+                total_input_tokens=effective_input, effective_limit=effective_limit,
+                system_chars=_system_chars, conversation_chars=_conv_chars,
+                message_count=len(conversation),
+            )
+        except Exception as e:  # noqa: BLE001 - diagnostics must never break a turn
+            logger.debug(f"context_debug snapshot failed (non-fatal): {e}")
 
         # --- Accuracy tracking (iteration 0 only) ---
         if iteration == 0 and conversation_id:
@@ -2429,7 +2653,10 @@ class StreamingToolExecutor:
                 logger.warning(f"🔍 EXTENDED_CONTEXT: Could not set conversation_id: {e}")
         
         # Load and prepare tools
-        all_tools, bedrock_tools, builtin_tool_names, internal_tool_names, optional_only_tools = await self._load_and_prepare_tools(extra_tools)
+        all_tools, bedrock_tools, builtin_tool_names, internal_tool_names, optional_only_tools = await self._load_and_prepare_tools(
+            extra_tools, tool_allowlist=tool_allowlist,
+            messages=messages, project_root=project_root, conversation_id=conversation_id,
+        )
         from app.mcp.enhanced_tools import DirectMCPTool
         from app.mcp.manager import get_mcp_manager
         mcp_manager = get_mcp_manager()
@@ -2458,6 +2685,10 @@ class StreamingToolExecutor:
         throttle_state = {
             'retry_count': 0,
             'max_retries': 5,
+            # Separate budget for "Model produced invalid sequence" (see
+            # _classify_and_handle_error): one re-sample covers a glitch.
+            'model_output_retries': 0,
+            'max_model_output_retries': 1,
             'base_delay': 2,
             'last_cache_efficiency': 0.0,
             'cache_working': None,  # None=unknown, True=working, False=broken
@@ -2539,7 +2770,12 @@ class StreamingToolExecutor:
         # the response "complete". Biased toward granting an extra cycle so
         # announced-but-unexecuted intent ("Let me check X...") gets a chance
         # to actually run. Bounded to avoid infinite text-only loops when the
-        # model legitimately has nothing more to do.
+        # model legitimately has nothing more to do.  Reset whenever tools
+        # execute (see the tools_executed_this_iteration branch): the budget
+        # bounds CONSECUTIVE no-progress rounds, not the whole stream.  Without
+        # the reset, one empty-after-tools nudge spent early in a long tool
+        # loop left the recovery path closed for every later empty completion
+        # in that stream (observed live at iteration 48 of a 48-round run).
         textonly_grace_used = 0
 
         # Proportional budget notices already emitted this turn. Each tier
@@ -2847,6 +3083,18 @@ class StreamingToolExecutor:
                         f"({iteration}/{max_iterations}), notifying model"
                     )
             
+            # Token-budget warning staged by _handle_usage_event during the
+            # previous iteration's stream. Distinct from the iteration-count
+            # warning above: a single tool result can jump the submitted
+            # context from 50k to 900k tokens without consuming iterations,
+            # so this is the signal that actually predicts a "prompt is too
+            # long" failure on the next call.
+            _token_warning = throttle_state.pop('token_budget_warning', None)
+            if _token_warning:
+                warning_message = (
+                    (warning_message + _token_warning) if warning_message else _token_warning
+                )
+
             # Inject warning message into conversation if needed
             if warning_message:
                 yield track_yield({'type': 'text', 'content': warning_message})
@@ -2918,8 +3166,11 @@ class StreamingToolExecutor:
             commands_this_iteration = []  # Track commands executed in this specific iteration
             last_stop_reason = None  # Track whether model was cut off (max_tokens) or finished (end_turn)
             non_retryable_error_surfaced = False  # Provider yielded a fatal ErrorEvent (e.g. CONTEXT_LIMIT)
+            interrupted_resume_attempted = False  # At most one mid-stream resume per iteration
+            interrupted_stream_resumed = False  # A mid-stream fault was resumed and produced content
             empty_tool_calls_this_iteration = 0  # Track empty tool calls in this iteration
             thinking_text = ""  # Track thinking/reasoning content (DeepSeek R1)
+            reasoning_content_text = ""  # Flat OpenAI-compatible reasoning for history replay (ds4/DeepSeek, GLM)
             thinking_tag_opened = False  # Whether we've emitted the opening <thinking-data> tag
             # Completed signed thinking blocks from THIS iteration, echoed back
             # in the assistant turn so the model's reasoning survives the tool
@@ -2988,6 +3239,25 @@ class StreamingToolExecutor:
                 
                 # Track usage for this specific iteration
                 iteration_usage = IterationUsage()
+
+                # Usage ledger: write the estimate row now so a call that
+                # never returns usage (throttle, abort) still leaves an
+                # italic trace.  Replaced with provider-reported counts
+                # where iteration_usages is appended below.  chars/4 is a
+                # deliberately cheap pre-flight figure; its status flag
+                # says it is an estimate.
+                from app.cost.meter import open_iteration as _usage_open
+                # getattr: the executor is also built via __new__ in the
+                # stream-loop harnesses and by callers that set model_id
+                # directly, so endpoint/region may be absent.  The meter
+                # already coerces a missing provider to "unknown".
+                _usage_record_id = _usage_open(
+                    provider=getattr(self, 'endpoint', None),
+                    model_id=getattr(self, 'model_id', None),
+                    region=getattr(self, 'region', None),
+                    conversation_id=conversation_id, project_root=project_root,
+                    iteration=iteration, estimated_input_tokens=total_chars // 4,
+                    is_delegate=is_delegate)
                 
                 # Process this iteration's stream - collect ALL tool calls first
                 assistant_text = ""
@@ -3136,6 +3406,14 @@ class StreamingToolExecutor:
                                  'delta': {'type': 'thinking_delta',
                                            'thinking': stream_event.content}}
                     elif isinstance(stream_event, ThinkingBlock):
+                        if stream_event.block_type == 'reasoning_content':
+                            # Flat OpenAI-compatible reasoning (ds4/DeepSeek,
+                            # z.ai GLM) — NOT a signed Anthropic block. Kept in
+                            # its own accumulator and echoed as a top-level
+                            # reasoning_content string on the assistant turn,
+                            # never mixed into the content-block array below.
+                            reasoning_content_text += stream_event.content or ''
+                            continue
                         # Completed reasoning block — collected for passback,
                         # never turned into a display chunk (ThinkingDelta
                         # already streamed the visible text).  Kept in arrival
@@ -3161,6 +3439,69 @@ class StreamingToolExecutor:
                             # Raise so the outer except handler applies
                             # intelligent throttle backoff and retry logic
                             raise Exception(stream_event.message)
+                        elif (stream_event.resumable
+                              and assistant_text.strip()
+                              and not interrupted_resume_attempted):
+                            # A transient fault cut the stream short AFTER
+                            # partial text was emitted.  The provider cannot
+                            # retry — a from-scratch retry would append a
+                            # second full response to the text the consumer
+                            # already accumulated — but WE own that text, so
+                            # rewind to the last complete line and resume via
+                            # the same prefill machinery the unclosed-fence
+                            # continuation path uses.
+                            interrupted_resume_attempted = True
+                            logger.warning(
+                                f"🩹 RESUME_INTERRUPTED: "
+                                f"{stream_event.error_type.name} mid-stream after "
+                                f"{len(assistant_text)} chars — resuming from the "
+                                f"last complete line instead of ending the turn"
+                            )
+                            _r_lines = assistant_text.split('\n')
+                            if _r_lines and _r_lines[-1].strip():
+                                _r_lines = _r_lines[:-1]
+                            assistant_text = '\n'.join(_r_lines)
+                            yield track_yield({
+                                'type': 'continuation_rewind',
+                                'rewind_line': len(_r_lines),
+                                'timestamp': f"{int((time.time() - iteration_start_time) * 1000)}ms",
+                            })
+                            _resume_had_content = False
+                            async for _r_chunk in self._continue_incomplete_code_block(
+                                conversation, code_block_tracker, system_content,
+                                mcp_manager, iteration_start_time, assistant_text,
+                                resume_prompt=(
+                                    "Your previous response was cut off mid-stream "
+                                    "by a transient network or server fault — not "
+                                    "because you had finished. Continue from exactly"
+                                    " where the text above stops. Do not repeat, "
+                                    "restate, or summarize what is already there, "
+                                    "and do not start over; if it stopped "
+                                    "mid-sentence or mid-structure, pick up at that"
+                                    " exact point."
+                                ),
+                                strip_leading_fence=False,
+                            ):
+                                if _r_chunk.get('content'):
+                                    _resume_had_content = True
+                                    self._update_code_block_tracker(
+                                        _r_chunk['content'], code_block_tracker)
+                                    assistant_text += _r_chunk['content']
+                                yield _r_chunk
+                            if _resume_had_content:
+                                interrupted_stream_resumed = True
+                            else:
+                                # The resume bought nothing — surface the
+                                # original fault instead of silently
+                                # truncating the turn.
+                                logger.warning(
+                                    "🩹 RESUME_INTERRUPTED: resume produced no "
+                                    "content — surfacing original error"
+                                )
+                                non_retryable_error_surfaced = True
+                                yield {'type': 'error',
+                                       'content': stream_event.message}
+                            break
                         else:
                             # Non-retryable (e.g. CONTEXT_LIMIT) — surface to user
                             non_retryable_error_surfaced = True
@@ -3441,6 +3782,10 @@ class StreamingToolExecutor:
                             thinking_content = delta.get('thinking', '')
                             if thinking_content:
                                 thinking_tag_opened = True
+                                # Native channel confirmed for this iteration;
+                                # the inline tag scanner stands down (see
+                                # TextDeltaState.native_thinking_seen).
+                                _td_state.native_thinking_seen = True
                                 yield track_yield({
                                     'type': 'thinking',
                                     'content': thinking_content,
@@ -3584,6 +3929,10 @@ Please retry the tool call with complete, valid JSON parameters."""
                                         break
                                 
                                 if tool_schema:
+                                    # Repair quoted scalars / JSON-encoded objects
+                                    # BEFORE validation so an integer enum accepts
+                                    # "5" and builtin tools receive typed values.
+                                    args = coerce_tool_args_to_schema(args, tool_schema)
                                     validation_error = validate_tool_args_against_schema(
                                         tool_name, args, tool_schema
                                     )
@@ -3861,6 +4210,19 @@ Please retry the tool call with valid JSON. Ensure:
                         thinking_tag_opened = _ms_state.thinking_tag_opened
                         break
 
+                # An interrupted stream was resumed above and the resume
+                # produced content, so the turn's text is whole.  End here
+                # rather than falling through to the no-activity decider,
+                # whose empty-completion retry would re-send the request and
+                # duplicate the response.
+                if interrupted_stream_resumed:
+                    logger.info(
+                        f"🩹 RESUME_END: interrupted stream resumed "
+                        f"(iteration={iteration}, chars={len(assistant_text)})"
+                    )
+                    yield {'type': 'stream_end'}
+                    break
+
                 # A non-retryable provider error (e.g. a CONTEXT_LIMIT 400) was
                 # already surfaced to the user as an error chunk. Re-issuing
                 # the identical request can only fail identically, so do NOT
@@ -3886,6 +4248,10 @@ Please retry the tool call with valid JSON. Ensure:
                     cumulative_usage.cache_write_tokens += iteration_usage.cache_write_tokens
                     
                     iteration_usages.append(iteration_usage)
+                    # Usage ledger: estimate -> actual for this iteration.
+                    from app.cost.meter import close_iteration as _usage_close
+                    _usage_close(_usage_record_id, iteration_usage)
+
                     total_input = iteration_usage.input_tokens + iteration_usage.cache_read_tokens
                     fresh = iteration_usage.input_tokens
                     cached = iteration_usage.cache_read_tokens
@@ -4042,6 +4408,17 @@ Please retry the tool call with valid JSON. Ensure:
                                     _bidx, _text_segments[-1][1] + _seg)
                             else:
                                 _text_segments.append((_bidx, _seg))
+                    # Flat reasoning replay (OpenAI-compatible reasoning models).
+                    # Empty {} for every provider that does not advertise the
+                    # feature, so their build_assistant_message stays a 2-arg
+                    # call — this is the DeepSeek/GLM analogue of the signed
+                    # thinking_blocks passback above, not a replacement for it.
+                    _rc_kw = (
+                        {'reasoning_content': reasoning_content_text}
+                        if (reasoning_content_text
+                            and self.provider.supports_feature('reasoning_content_replay'))
+                        else {}
+                    )
                     if _tb_pass:
                         logger.debug(
                             "🧠 THINKING_PASSBACK: echoing %d block(s) in the "
@@ -4058,7 +4435,7 @@ Please retry the tool call with valid JSON. Ensure:
                         )
                         _assist_msg = self.provider.build_assistant_message(
                             assistant_text, tool_uses, thinking_blocks=_tb_pass,
-                            text_index=first_text_block_index, **_seg_kw)
+                            text_index=first_text_block_index, **_seg_kw, **_rc_kw)
                         # Attribution breadcrumb for any future "...cannot be
                         # modified" 400: the exact block layout that was sent.
                         logger.info(
@@ -4357,6 +4734,11 @@ Please retry the tool call with valid JSON. Ensure:
                     # narration-loop cap, so genuine intent→work→intent→work
                     # is unbounded while intent→intent→intent gives up.
                     tools_since_intent_continue = True
+                    # Same reset-on-progress for the text-only / empty-after-
+                    # tools grace budget.  A nudge that led to real tool work
+                    # was a successful recovery, not a strike against the
+                    # stream; the next empty completion gets a fresh cap.
+                    textonly_grace_used = 0
                     # Warn about consecutive empty tool calls but don't break
                     if consecutive_empty_tool_calls >= 5:
                         logger.warning(f"🔍 EMPTY_TOOL_WARNING: {consecutive_empty_tool_calls} consecutive empty tool calls detected")
@@ -4795,6 +5177,37 @@ Please retry the tool call with valid JSON. Ensure:
                 error_str = str(e)
                 logger.error(f"Error in stream_with_tools iteration {iteration}: {error_str}", exc_info=True)
                 
+                # A "prompt is too long" / context-limit rejection is raised
+                # synchronously by the provider client BEFORE any streaming
+                # begins, so no UsageEvent ever reaches _handle_usage_event
+                # and record_iteration() never fires for this attempt — the
+                # exact gap that left the debug panel empty for a retry that
+                # failed on token count while working fine for an ordinary
+                # successful turn. record_failure() is the dedicated,
+                # always-persisting fallback for precisely this case.
+                if conversation_id and (
+                    "prompt is too long" in error_str
+                    or "Input is too long" in error_str
+                    or "exceed context limit" in error_str
+                ):
+                    try:
+                        from app.utils.context_debug import record_failure
+                        _base_limit = self.model_config.get('token_limit', 200000) if self.model_config else 200000
+                        _eff_limit = (
+                            self.model_config.get('extended_context_limit', _base_limit)
+                            if self.model_config and self.model_config.get('supports_extended_context')
+                            else _base_limit
+                        )
+                        record_failure(
+                            conversation_id, iteration,
+                            error_message=error_str,
+                            system_content=system_content,
+                            conversation=conversation,
+                            effective_limit=_eff_limit,
+                        )
+                    except Exception as _dbg_e:  # noqa: BLE001 - diagnostics must never break error handling
+                        logger.debug(f"context_debug.record_failure call failed (non-fatal): {_dbg_e}")
+
                 # Classify error and determine handling strategy
                 error_info = self._classify_and_handle_error(
                     e, error_str, iteration, tool_results,
@@ -4965,26 +5378,14 @@ Please retry the tool call with valid JSON. Ensure:
         an open inline span. This is the inline sibling of the open_fence
         evidence used by the NO_PREFILL_BLOCK continuation branch.
 
-        Conservative by construction: paired ``` ``` ``` fenced regions are
-        removed first (their inner backticks are literal, not delimiters),
-        then the remaining single-backtick delimiters are counted. An ODD
-        count means the last span was opened but never closed.
+        Delegates to CommonMark-exact span pairing (a run of N backticks is
+        closed only by the next run of exactly N).  The previous odd/even
+        run count, after a lazy ``\\`\\`\\`.*?\\`\\`\\``` fence strip, mangled a
+        4-backtick span holding three literal backticks and reported a
+        completed answer as truncated -- see app/utils/inline_code_spans.py.
         """
-        if not text or '`' not in text:
-            return False
-        # Drop complete fenced blocks so their contents don't skew the count.
-        # Only balanced fences are stripped; this branch is gated on the
-        # fence tracker already reporting no open fence, so any residue is
-        # inline-level.
-        without_fences = re.sub(r'```.*?```', '', text, flags=re.DOTALL)
-        # Remove any dangling fence marker (defensive; should not occur when
-        # code_block_open is False) so it can't contribute stray backticks.
-        without_fences = without_fences.replace('```', '')
-        # Count runs of backticks; inline spans open and close with runs of
-        # equal length, so a well-formed span contributes an even number of
-        # runs. An odd number of runs means one delimiter is unmatched.
-        runs = re.findall(r'`+', without_fences)
-        return len(runs) % 2 == 1
+        from app.utils.inline_code_spans import ends_inside_code_span
+        return ends_inside_code_span(text)
 
     def _update_code_block_tracker(self, text: str, tracker: Dict[str, Any]) -> None:
         """Update code block tracking state based on text content."""
@@ -5165,7 +5566,8 @@ Please retry the tool call with valid JSON. Ensure:
     _FENCE_GLUED_RE = re.compile(r'([^\n])(`{3,}[a-zA-Z][\w-]*)(?=\s|$)')
     _FENCE_SINGLE_NL_RE = re.compile(r'(?<!\n)\n(`{3,}[a-zA-Z][\w-]*)(?=\s|$)')
 
-    def _normalize_fence_spacing(self, text: str, code_block_tracker: dict) -> str:
+    def _normalize_fence_spacing(self, text: str, code_block_tracker: dict, *,
+                                 preceding: str = '') -> str:
         """Ensure fenced code block openings are preceded by a blank line.
 
         Markdown renderers require a blank line before a fenced code block
@@ -5182,14 +5584,37 @@ Please retry the tool call with valid JSON. Ensure:
 
         Only *opening* fences (those carrying a language tag) are touched.
         Text inside an already-open code block is never modified.
+
+        Nor is text inside an inline code span.  A candidate preceded, in
+        the same paragraph, by a backtick run with no equal-length partner
+        is left alone: it is either the content of a span whose closer has
+        not streamed yet, or a span closed later in this chunk.  Inserting
+        a blank line there once turned the interior of ```` ```diff ````
+        into a real fence opener and wedged the tracker open.  ``preceding``
+        is the text already accumulated this iteration, so the check sees
+        a span opener that arrived in an earlier chunk.
         """
         if '`' not in text or code_block_tracker.get('in_block'):
             return text
 
+        from app.utils.inline_code_spans import has_unmatched_run, last_paragraph
+
+        prefix = last_paragraph(preceding) if preceding else ''
+
+        def _outside_span(m: re.Match, fence_group: int) -> bool:
+            return not has_unmatched_run(
+                last_paragraph(prefix + m.string[:m.start(fence_group)]))
+
         # Case 1: non-newline character directly before fence opening
-        normalized = self._FENCE_GLUED_RE.sub(r'\1\n\n\2', text)
+        normalized = self._FENCE_GLUED_RE.sub(
+            lambda m: (m.group(1) + '\n\n' + m.group(2))
+            if _outside_span(m, 2) else m.group(0),
+            text)
         # Case 2: single newline before fence opening (promote to blank line)
-        normalized = self._FENCE_SINGLE_NL_RE.sub(r'\n\n\1', normalized)
+        normalized = self._FENCE_SINGLE_NL_RE.sub(
+            lambda m: ('\n\n' + m.group(1))
+            if _outside_span(m, 1) else m.group(0),
+            normalized)
 
         if normalized != text:
             logger.debug(f"🔍 FENCE_NORMALIZE: Inserted blank line before code fence")
@@ -5203,9 +5628,18 @@ Please retry the tool call with valid JSON. Ensure:
         system_content: Optional[str],
         mcp_manager,
         start_time: float,
-        assistant_text: str
+        assistant_text: str,
+        resume_prompt: Optional[str] = None,
+        strip_leading_fence: bool = True,
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Continue an incomplete code block by making a new API call."""
+        """Continue an interrupted response by making a new API call.
+
+        The default wording targets an unclosed code fence.  Callers
+        recovering a stream that a transient fault cut short pass
+        ``resume_prompt`` to replace that wording, and
+        ``strip_leading_fence=False`` so a legitimate opening fence at the
+        start of the continuation is not mistaken for a redundant header.
+        """
         try:
             from app.providers.base import TextDelta, StreamEnd
 
@@ -5249,6 +5683,10 @@ Please retry the tool call with valid JSON. Ensure:
                     f"block, or a stray fence in narrative text), please say so and clarify "
                     f"what you actually meant — do not invent code to satisfy the format."
                 )
+            # A caller-supplied resume prompt (interrupted-stream recovery)
+            # replaces the fence-derived wording above.
+            if resume_prompt is not None:
+                continuation_prompt = resume_prompt
             
             continuation_conversation = conversation.copy()
             
@@ -5310,7 +5748,9 @@ Please retry the tool call with valid JSON. Ensure:
             }
             
             accumulated_start = ""
-            header_filtered = False
+            # Pre-marking the header as filtered skips the redundant-fence
+            # strip entirely, so non-fence resumes keep their first line.
+            header_filtered = not strip_leading_fence
             chunk_count = 0
             continuation_buffer = ""  # Buffer for continuation chunks
             
