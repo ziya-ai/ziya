@@ -342,11 +342,9 @@ class RenderDiagramTool(BaseMCPTool):
                 ],
             }
 
-        except ImportError:
-            return _error(
-                "Playwright is not installed. "
-                "Run: pip install playwright && playwright install chromium"
-            )
+        except ImportError as exc:
+            # DiagramRenderer.create names what is missing and the installer.
+            return _error(str(exc))
         except RuntimeError as exc:
             return _error(f"Render failed: {exc}")
         except Exception as exc:
@@ -404,6 +402,17 @@ class RenderDiagramTool(BaseMCPTool):
             )
         if dom.get("katex_error"):
             lines.append(f"KaTeX error spans: {dom['katex_error']}.")
+        if dom.get("katex_error_color"):
+            # KaTeX recovers from a single unresolvable TOKEN without emitting
+            # a katex-error span -- it only paints the glyph in errorColor.  A
+            # markdown escape that leaked into math mode (e.g. `x^\*`) shows up
+            # ONLY here, so reporting katex_error alone declared a clean render
+            # for visibly red math.
+            lines.append(
+                f"KaTeX error-coloured tokens: {dom['katex_error_color']} "
+                "(unresolvable command(s) rendered in red; the surrounding "
+                "expression typeset normally, so this is easy to miss by eye)."
+            )
         if dom.get("math_fallback"):
             lines.append(
                 f"Math fell back to monospace in {dom['math_fallback']} place(s)."

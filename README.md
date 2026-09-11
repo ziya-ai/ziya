@@ -132,6 +132,12 @@ cd /path/to/your/project
 ziya
 ```
 
+Two optional pieces are too large for pip — a Chromium build so the model can look at its own rendered diagrams (and for PDF export), and a TeX distribution for LaTeX diagrams (circuits, chemistry, pgfplots). One command prints the plan and installs both:
+
+```bash
+ziya-install-extras          # or --browser / --latex for just one; --dry-run to preview
+```
+
 Open [http://localhost:6969](http://localhost:6969). Or use the CLI:
 
 ```bash

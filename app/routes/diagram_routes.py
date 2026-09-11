@@ -71,11 +71,12 @@ async def render_diagram(request: DiagramRenderRequest) -> Response:
     try:
         from app.services.diagram_renderer import get_diagram_renderer
     except ImportError as exc:
+        from app.utils.optional_features import browser_hint
         raise HTTPException(
             status_code=501,
             detail=(
-                "Headless diagram rendering requires Playwright. "
-                "Install with: pip install playwright && playwright install chromium"
+                "Headless diagram rendering requires Playwright and its Chromium "
+                f"build. {browser_hint()}"
             ),
         ) from exc
 
@@ -99,10 +100,10 @@ async def render_diagram(request: DiagramRenderRequest) -> Response:
             spec,
             format=request.format,
         )
-    except ImportError:
+    except ImportError as exc:
         raise HTTPException(
             status_code=501,
-            detail="Playwright is not installed.  Run: pip install playwright && playwright install chromium",
+            detail=str(exc),  # names the missing piece and `ziya-install-extras --browser`
         )
     except RuntimeError as exc:
         logger.error("Diagram render failed: %s", exc)

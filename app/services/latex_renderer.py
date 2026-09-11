@@ -46,6 +46,7 @@ survive a naive terminate), and output size caps.
 """
 from __future__ import annotations
 
+import functools
 import hashlib
 import logging
 import os
@@ -63,8 +64,10 @@ from app.services.latex_profiles import (
     LatexProfile,
     TOOLCHAIN_TL_PACKAGES,
     charge_color_breaks_dvisvgm,
+    downgrade_interp_shading,
     get_profile,
     install_command,
+    requires_interp_shading,
     requires_position_marks,
 )
 from app.utils.latex_color import normalize_colors
@@ -84,6 +87,22 @@ PNG_DPI = 150
 #: producing a raster that blows MAX_OUTPUT_BYTES or the render budget.
 MIN_PNG_DPI = 12
 MAX_PNG_DPI = 600
+
+#: Glyph-legibility floor for the fit-INSIDE-a-box case (D-007,
+#: aspect-ratio-collapses-tick-labels).  When BOTH width and height are given
+#: the caller is expressing a bounding box, not an exact dimension, and
+#: fit-inside picks the tighter axis.  For an extreme-aspect drawing (a ~22:1
+#: wide axis of rotated \tiny labels) the tight axis forces a DPI so low that
+#: glyphs rasterise to 4-5px and no label is readable, even though the roomier
+#: axis has abundant unused resolution.  Below this floor the fit is treated as
+#: a crush and lifted to it (letting the constrained axis overflow the box --
+#: a legible raster the viewer can scroll beats an in-box illegible one), but
+#: NEVER above what the roomier axis itself allows, so a uniformly-small box
+#: stays a small thumbnail (the honoured downscale contract).  Comfortably
+#: below the 150 default (an in-box render is never inflated) and well above
+#: the 12 DPI non-zero floor.  Applies ONLY when both dimensions are supplied;
+#: a single-dimension request stays honoured literally (D-006 contract).
+MIN_LEGIBLE_DPI = 96
 
 #: Cap on LaTeX passes.  Position-mark documents need two; the cap exists
 #: because a pathological document can request a rerun indefinitely and each
@@ -125,6 +144,135 @@ _DENIED: tuple[tuple[re.Pattern, str], ...] = tuple(
 
 _SANDBOX_DENY_PATHS = ("/etc", "/private/etc", "/Users", "/var/root", "/root")
 
+
+# -- multi-tree TeX package backfill (D-215) --------------------------------
+#
+# A machine can carry several TeX Live installs side by side, e.g.
+# ``/usr/local/texlive/2023`` and ``/usr/local/texlive/2026basic``.  The active
+# one is whichever ``kpsewhich`` resolves to.  A trimmed "basic" scheme omits
+# packages that an older full tree still ships -- ``tikz-cd.sty`` is the concrete
+# case: absent from 2026basic, present in 2023 -- so the profile probe reports
+# the package missing and ``render()`` short-circuits with the install advisory
+# before any pdflatex runs, producing zero pixels for every tikz-cd spec in BOTH
+# themes.
+#
+# The fix does not require a network ``tlmgr install``.  For the specific
+# packages listed below, we locate their (narrow, package-specific) directories
+# in a co-installed fuller sibling tree -- or in an explicit
+# ``ZIYA_LATEX_EXTRA_TEXINPUTS`` override -- and prepend just those directories
+# to ``TEXINPUTS`` for BOTH the capability probe (``_kpsewhich``) and the
+# compile (``_run``).  A trailing empty ``TEXINPUTS`` element preserves the
+# compiled-in default search path, and because only the tikz-cd package
+# directories are added (not a whole foreign tree) nothing else is shadowed --
+# every package present in the active tree still resolves there unchanged.
+
+# probe filename -> directories (relative to a ``texmf-dist`` root) that, taken
+# together, satisfy the package.  ``tikz-cd`` needs BOTH its wrapper .sty
+# (tex/latex/tikz-cd) and its generic library dir (tex/generic/tikz-cd), or the
+# .sty would load but ``\usetikzlibrary{cd}`` would still abort the compile.
+_TEXINPUTS_BACKFILL: dict[str, tuple[str, ...]] = {
+    "tikz-cd.sty": (
+        "tex/latex/tikz-cd",
+        "tex/generic/tikz-cd",
+    ),
+}
+
+
+def _sibling_texmf_dist_roots() -> tuple[str, ...]:
+    """``texmf-dist`` roots of TeX Live editions OTHER than the active one.
+
+    Derives the TeX Live root from the resolved ``kpsewhich`` (or ``pdflatex``)
+    location -- ``<root>/<edition>/bin/<arch>/kpsewhich`` -- then globs sibling
+    editions under the same root, excluding the active edition.  Best-effort:
+    any error yields an empty tuple, so a single-tree or non-TeX-Live install
+    behaves exactly as before.
+    """
+    launcher = shutil.which("kpsewhich") or shutil.which("pdflatex")
+    if not launcher:
+        return ()
+    try:
+        real = Path(os.path.realpath(launcher))
+        # real == <edition>/bin/<arch>/kpsewhich
+        active_edition = real.parent.parent.parent
+        root = active_edition.parent
+        found: list[str] = []
+        for dist in sorted(root.glob("*/texmf-dist")):
+            if dist.parent == active_edition:
+                continue                          # active tree is already default
+            if dist.is_dir():
+                found.append(str(dist))
+        return tuple(found)
+    except (OSError, IndexError):
+        return ()
+
+
+@functools.lru_cache(maxsize=1)
+def _supplemental_texinputs() -> tuple[str, ...]:
+    """Package-specific directories to prepend to ``TEXINPUTS``, if any.
+
+    Two sources, in priority order:
+
+      1. ``ZIYA_LATEX_EXTRA_TEXINPUTS`` -- an ``os.pathsep``-separated operator
+         override of directories to expose verbatim (added if they exist).
+      2. Auto-discovery -- for each backfilled package that is ABSENT from the
+         active tree, the matching directories from the first sibling tree that
+         actually ships it (kept version-consistent by taking all of a package's
+         dirs from the same tree).
+
+    Memoised; call ``cache_clear()`` after changing the environment.  Returns an
+    empty tuple when there is nothing to backfill, so the common single-tree
+    install is untouched.
+    """
+    dirs: list[str] = []
+    seen: set[str] = set()
+
+    def _add(path: str) -> None:
+        if path and path not in seen and os.path.isdir(path):
+            seen.add(path)
+            dirs.append(path)
+
+    # 1. Explicit operator override (highest priority).
+    override = os.environ.get("ZIYA_LATEX_EXTRA_TEXINPUTS", "")
+    for p in override.split(os.pathsep):
+        _add(p.strip())
+
+    # 2. Auto-discovery of sibling-tree package dirs for missing packages.
+    roots = _sibling_texmf_dist_roots()
+    if roots:
+        for probe, reldirs in _TEXINPUTS_BACKFILL.items():
+            for root in roots:
+                sty_dir = os.path.join(root, *reldirs[0].split("/"))
+                if os.path.isfile(os.path.join(sty_dir, probe)):
+                    for rel in reldirs:
+                        _add(os.path.join(root, *rel.split("/")))
+                    break                         # first sibling with it wins
+
+    return tuple(dirs)
+
+
+def _augment_texinputs(env: dict) -> dict:
+    """Return ``env`` with supplemental package dirs prepended to ``TEXINPUTS``.
+
+    No-op (returns the same mapping) when there is nothing to backfill.  When
+    extras exist they are prepended (so the package-specific dir is found first)
+    and a trailing empty element is guaranteed so the compiled-in default search
+    path -- the active tree -- is still consulted.
+    """
+    extras = _supplemental_texinputs()
+    if not extras:
+        return env
+    out = dict(env)
+    parts = list(extras)
+    existing = out.get("TEXINPUTS", "")
+    if existing:
+        parts.append(existing)
+    joined = os.pathsep.join(parts)
+    if not joined.endswith(os.pathsep):
+        joined += os.pathsep          # trailing empty -> compiled-in defaults
+    out["TEXINPUTS"] = joined
+    return out
+
+
 # Recovery preprocessing (F-...): the wrapper shapes a model commonly emits
 # around a diagram body.  These are stripped BEFORE the security prescan so the
 # commonest legitimate outputs -- a full ``\documentclass`` document, a body
@@ -143,6 +291,53 @@ _PREAMBLE_LINE_RE = re.compile(
     r"^[ \t]*\\(?:documentclass|usepackage|RequirePackage|usetikzlibrary)\b[^\n]*\n",
     re.MULTILINE,
 )
+
+#: Picture-level environments the PROFILE supplies around the body (see
+#: latex_profiles ``wrap_env`` / ``_DRAWING_ENVS``).  When a model emits an
+#: orphan ``\end{<env>}`` for one of these with no matching ``\begin`` -- the
+#: off-by-one "close what I did not open" slip (D-005, circuitikz-w4-10) -- the
+#: profile then wraps the body in its own ``\begin/\end`` and the stray extra
+#: ``\end`` aborts with a mismatched-environment error.  Stripping the orphan
+#: trailing ``\end`` lets the wrap succeed.  A body that supplies BOTH its own
+#: ``\begin`` and ``\end`` is already passed through unwrapped by the profile,
+#: so it has balanced counts here and is left untouched.
+_PICTURE_ENVS: tuple[str, ...] = ("tikzpicture", "circuitikz", "tikzcd", "chemfig")
+
+#: A body-level ``\usetikzlibrary{...}`` request.  ``_sanitize_input`` strips
+#: such preamble lines, but the profile emits only its OWN libraries, so a
+#: shape from a stripped library (``\node[diamond]`` after a stripped
+#: ``\usetikzlibrary{shapes.geometric}``) is then an undefined key -- fatal
+#: (D-005, tikz-w4-10).  ``_extract_requested_libraries`` collects these names
+#: so ``render`` can merge them into the profile preamble.
+_USETIKZLIBRARY_RE = re.compile(r"\\usetikzlibrary\s*\{([^}]*)\}")
+
+#: Profiles whose preamble is TikZ-based and can therefore accept an extra
+#: ``\usetikzlibrary`` line merged in from a body request.
+_TIKZ_FAMILY: frozenset = frozenset(
+    {"tikz", "tikz-cd", "pgfplots", "circuitikz", "forest"})
+
+
+def _strip_orphan_picture_ends(text: str) -> str:
+    """Remove an orphan trailing ``\\end{<picture env>}`` (D-005).
+
+    For each picture-level environment the profile wraps, when the body carries
+    more ``\\end{env}`` than ``\\begin{env}`` (the model closed an environment
+    it did not open), the excess trailing ``\\end{env}`` tokens are removed so
+    the profile's own wrap is not left with a dangling extra ``\\end``.  Purely
+    subtractive and balanced-count-guarded: a body with matched begin/end (or
+    none at all) is returned byte-for-byte unchanged.
+    """
+    for env in _PICTURE_ENVS:
+        begins = re.findall(r"\\begin\s*\{" + env + r"\}", text)
+        ends = list(re.finditer(r"\\end\s*\{" + env + r"\}", text))
+        excess = len(ends) - len(begins)
+        if excess <= 0:
+            continue
+        # Remove the last ``excess`` \end{env} occurrences, right-to-left so the
+        # earlier match offsets stay valid.
+        for m in reversed(ends[-excess:]):
+            text = text[:m.start()] + text[m.end():]
+    return text
 
 
 @dataclass
@@ -258,6 +453,11 @@ class LatexRenderer:
             proc = subprocess.run(
                 ["kpsewhich", filename],
                 capture_output=True, text=True, timeout=10,
+                # D-215: consult sibling-tree package dirs so a package absent
+                # from the active tree (tikz-cd on a "basic" scheme) but present
+                # in an older sibling is found here too -- otherwise the probe
+                # declares it missing and render() short-circuits before compile.
+                env=_augment_texinputs(dict(os.environ)),
             )
             return proc.returncode == 0 and bool(proc.stdout.strip())
         except (subprocess.TimeoutExpired, OSError):
@@ -331,7 +531,30 @@ class LatexRenderer:
             # 3. Prepended preamble lines (no document environment).
             text = _PREAMBLE_LINE_RE.sub("", text).strip()
 
+        # 4. Orphan trailing ``\end{<picture env>}`` (the "close what I did not
+        #    open" off-by-one).  Removed so the profile's own wrap is not left
+        #    with a dangling extra ``\end`` (D-005).
+        text = _strip_orphan_picture_ends(text)
+
         return text or body
+
+    @staticmethod
+    def _extract_requested_libraries(body: str) -> tuple[str, ...]:
+        """TikZ libraries the body asks for via ``\\usetikzlibrary{...}``.
+
+        Scanned from the ORIGINAL body (before ``_sanitize_input`` strips the
+        preamble line) so the requested libraries can be merged into the
+        profile preamble instead of being silently dropped -- otherwise a shape
+        from that library (``\\node[diamond]``) is an undefined key and aborts
+        the compile (D-005, tikz-w4-10).  De-duplicated, order preserved.
+        """
+        libs: list[str] = []
+        for m in _USETIKZLIBRARY_RE.finditer(body):
+            for lib in m.group(1).split(","):
+                lib = lib.strip()
+                if lib and lib not in libs:
+                    libs.append(lib)
+        return tuple(libs)
 
     @staticmethod
     def prescan(body: str) -> Optional[str]:
@@ -377,6 +600,12 @@ class LatexRenderer:
                 ok=False, error_kind="internal",
                 error=f"no LaTeX profile for diagram type {diagram_type!r}",
             )
+
+        # Capture any body-level ``\usetikzlibrary{...}`` request BEFORE
+        # sanitisation strips it, so a TikZ-family profile can merge the
+        # requested libraries into its preamble (D-005, tikz-w4-10).  Scanned
+        # on the raw body; harmless (empty) for a body that requests none.
+        requested_libraries = self._extract_requested_libraries(body)
 
         # Recover common wrapper shapes (markdown fence, full document,
         # prepended preamble) BEFORE the security prescan, so a legitimate
@@ -456,11 +685,35 @@ class LatexRenderer:
             target = "png"
         if target == "svg" and not (cap.has_latex and cap.has_dvisvgm):
             target = "png"          # silently degrade rather than fail
+        # pgfplots shader=interp: the dvisvgm driver refuses it outright (a
+        # fatal "surface shading ... is NOT available", hence "No pages of
+        # output"), while pdflatex renders it.  Prefer the PNG path when the
+        # caller left the format open; when SVG is pinned or PNG is impossible,
+        # downgrade the shader and say so -- a flat surface beats no surface.
+        if profile.key == "pgfplots" and requires_interp_shading(body):
+            if target == "svg" and fmt == "auto" \
+                    and cap.has_pdflatex and cap.has_ghostscript:
+                logger.info(
+                    "pgfplots: forcing PNG, body uses shader=interp which the "
+                    "dvisvgm driver does not support",
+                )
+                target = "png"
+            elif target == "svg":
+                body, note = downgrade_interp_shading(body)
+                if note:
+                    lint_fixes = tuple(lint_fixes) + ("shader=interp -> shader=faceted",)
+                    lint_warnings = tuple(lint_warnings) + (note,)
         if target == "png" and not (cap.has_pdflatex and cap.has_ghostscript):
             return self._not_installed(profile, cap)
 
+        # Merge a body-requested \usetikzlibrary only into a TikZ-family
+        # preamble; other profiles ignore it (a stray library line without
+        # tikz loaded would itself fail).
+        extra_libraries = (
+            requested_libraries if profile.key in _TIKZ_FAMILY else ())
         document = profile.build_document(
-            body, standalone=cap.has_standalone, fmt=target, theme=theme)
+            body, standalone=cap.has_standalone, fmt=target, theme=theme,
+            extra_libraries=extra_libraries)
         # width/height only affect the PNG rasterisation resolution, not the
         # compiled document, so they must join the cache key or a second call
         # at a different requested size would be served the first size's PNG.
@@ -530,6 +783,27 @@ class LatexRenderer:
         except Exception:                  # pragma: no cover - defensive
             logger.exception("chemfig entity decode failed; body unchanged")
 
+        # Markdown-bold recovery (D-039, chemfig-w4-14).  A \chemname caption
+        # pasted from a markdown source keeps its ``**bold**`` markers; with
+        # nothing to convert them, chemfig typesets two literal asterisks around
+        # the word.  ``convert_markdown_bold`` (added under an earlier group but
+        # never wired into the pipeline -- it was only unit-tested, so the leak
+        # persisted) rewrites ``**text**`` to ``\textbf{text}``.  It is
+        # deliberately restricted to a run carrying no ring/branch/option/macro
+        # character, so the aromatic ring opener ``**6(...)`` can never match.
+        # Chemfig-scoped for the same reason as the entity decode: ``**`` has
+        # other meanings elsewhere.  Run after the entity decode so a caption
+        # carrying both is fully recovered.
+        try:
+            from app.utils.chemfig_lint import convert_markdown_bold
+
+            body, bold_fixes = convert_markdown_bold(body)
+            for note in bold_fixes:
+                logger.info("chemfig markdown bold: %s", note)
+            applied.extend(bold_fixes)
+        except Exception:                  # pragma: no cover - defensive
+            logger.exception("chemfig markdown bold failed; body unchanged")
+
         # Quoted-numeric recovery.  Model output frequently quotes a numeric
         # chemfig argument as if the source were JSON -- a ring size *"6"(, a
         # bond angle [:"30"], a setter dimension atom sep="2.4em".  Each is a
@@ -547,6 +821,22 @@ class LatexRenderer:
         except Exception:                  # pragma: no cover - defensive
             logger.exception("chemfig unquote failed; body unchanged")
 
+        # Stray statement-terminator ``;`` (D-005, chemfig-w4-12).  A model
+        # borrows the semicolon terminator from other diagram dialects
+        # (``\chemfig{C=O};``); chemfig has no such operator, so a top-level
+        # ``;`` typesets stray debris.  Drop the depth-0 ones; punctuation
+        # inside a caption/label brace is kept.  Run before the ring lint so
+        # its scan sees the cleaned body.
+        try:
+            from app.utils.chemfig_lint import strip_statement_terminators
+
+            body, semi_fixes = strip_statement_terminators(body)
+            for note in semi_fixes:
+                logger.info("chemfig semicolon strip: %s", note)
+            applied.extend(semi_fixes)
+        except Exception:                  # pragma: no cover - defensive
+            logger.exception("chemfig semicolon strip failed; body unchanged")
+
         # Deprecated-setter rewrite.  \setatomsep / \setbondoffset / \setdoublesep
         # and friends were removed from modern chemfig and are a FATAL
         # "Undefined control sequence" (which the log-parser then misattributes
@@ -561,6 +851,25 @@ class LatexRenderer:
             applied.extend(setter_fixes)
         except Exception:                  # pragma: no cover - defensive
             logger.exception("chemfig setter rewrite failed; body unchanged")
+
+        # Parameterised-submol argument syntax (D-030, chemfig-w3-08).  A model
+        # trained on LaTeX ``\newcommand{\f}[1]{..}`` writes the chemfig submol
+        # argument count as a bracket -- ``\definesubmol{arm}[1]{...#1...}`` --
+        # and passes the argument in a bracket too -- ``!{arm}[30]``.  chemfig
+        # wants a BARE digit count (``\definesubmol{arm}1{...}``) and a BRACE
+        # argument (``!{arm}{30}``); as written ``#1`` is never substituted and
+        # the literal ``#`` reaches pgfmath during an angle evaluation, a FATAL
+        # ``Unknown operator `#'``.  Rewrite both to chemfig's real syntax.  Run
+        # before the charge/ring passes so they see the substituted body.
+        try:
+            from app.utils.chemfig_lint import normalize_parameterised_submol
+
+            body, submol_fixes = normalize_parameterised_submol(body)
+            for note in submol_fixes:
+                logger.info("chemfig submol arg: %s", note)
+            applied.extend(submol_fixes)
+        except Exception:                  # pragma: no cover - defensive
+            logger.exception("chemfig submol arg fix failed; body unchanged")
 
         # \charge separator / math-mode repair.  Its failures are hard compile
         # errors whose messages name the wrong cause entirely, so repairing is
@@ -666,11 +975,15 @@ class LatexRenderer:
         needed = list(dict.fromkeys(n for n in needed if n))
 
         if not cap.has_pdflatex and not cap.has_latex:
+            # One command, not a distribution name and a package list the
+            # user has to assemble: the installer prints the plan and runs it.
             error = ("No TeX installation found.  LaTeX diagrams require a local "
-                     "TeX distribution (BasicTeX or TeX Live).")
+                     "TeX distribution (BasicTeX or TeX Live).  "
+                     "Run: ziya-install-extras --latex")
         else:
             error = ("The LaTeX renderer is installed but missing packages "
-                     f"required for {profile.key}.")
+                     f"required for {profile.key}.  Run: ziya-install-extras "
+                     "--latex (or the tlmgr line below)")
         return RenderResult(
             ok=False, error_kind="not_installed", error=error,
             install_hint=install_command(needed), missing_packages=tuple(needed),
@@ -745,6 +1058,18 @@ class LatexRenderer:
         ``dpi = target_px * 72 / natural_pt`` and the smaller (fit-inside)
         value wins, so the aspect ratio of the tight crop is preserved and
         neither dimension overshoots.  Clamped to [MIN_PNG_DPI, MAX_PNG_DPI].
+
+        Wide/tall-aspect crush (D-007): when BOTH dimensions are supplied the
+        request is a bounding box, and for an extreme-aspect drawing the tight
+        axis alone would force a fit-inside DPI so low that glyphs rasterise to
+        a few pixels (the ~22:1 axis of rotated \\tiny tick labels) while the
+        roomier axis has resolution to spare.  In that case the fit is lifted
+        to ``MIN_LEGIBLE_DPI`` -- capped at what the roomier axis itself allows
+        so a uniformly-small box stays a thumbnail -- and the constrained axis
+        is allowed to overflow the box (a legible raster the viewer can scroll
+        beats an in-box illegible one).  A SINGLE-dimension request is left
+        exactly as before (honoured literally, no legibility lift), preserving
+        the D-006 downscale contract; the no-request path is untouched.
         """
         if not width and not height:
             return float(PNG_DPI)
@@ -760,6 +1085,14 @@ class LatexRenderer:
         if not candidates:
             return float(PNG_DPI)
         dpi = min(candidates)
+        # Legibility floor only for a genuine bounding box (both axes given):
+        # rescue an extreme-aspect crush up to MIN_LEGIBLE_DPI, but never above
+        # the roomier axis's own limit, so a deliberately small box is honoured
+        # rather than inflated.  A single-dimension request keeps the literal
+        # downscale behaviour (D-006).
+        if width and width > 0 and height and height > 0:
+            floor = min(float(MIN_LEGIBLE_DPI), max(candidates))
+            dpi = max(dpi, floor)
         return max(float(MIN_PNG_DPI), min(float(MAX_PNG_DPI), dpi))
 
     def _compile(self, document: str, target: str, cap: Capability,
@@ -883,6 +1216,11 @@ class LatexRenderer:
             "SOURCE_DATE_EPOCH": "0",   # deterministic output -> cache hits
             "TEXMFVAR": str(cwd / ".texmf-var"),
         })
+        # D-215: prepend the sibling-tree package dirs the probe located (e.g.
+        # tikz-cd from an older tree) so the package is also resolvable at
+        # compile time; a trailing empty element keeps the active tree (defaults)
+        # in the search path, so nothing present is overridden.
+        env = _augment_texinputs(env)
 
         try:
             proc = subprocess.Popen(
@@ -964,6 +1302,22 @@ class LatexRenderer:
         #   \l__mhchem_cf_result_tl ...ipAfterAmount: \degree
         # Taking the first match reported "\l", which names nothing the user
         # wrote and sends them looking for a package that does not exist.
+        #
+        # Checked FIRST: an undefined chemfig INTERNAL (\CF_...) is never the
+        # user's typo.  Known instance: chemfig 1.81 dropped \CF_expafter while
+        # chemfig-lewis.tex still calls it (the profile preamble shims it; this
+        # is the fallback should the shim not be in effect).  The generic regex
+        # below cannot even match these names -- '_' is outside [A-Za-z@] -- so
+        # the user was told to look for a typo in a body that had none.
+        cf_internal = re.search(
+            r"! Undefined control sequence\.\s*\n[^\n]*?(\\CF_[A-Za-z_]+)\s*$",
+            log_text, re.MULTILINE)
+        if cf_internal:
+            return (f"chemfig internal macro {cf_internal.group(1)} is undefined. "
+                    "This is a chemfig package bug, not an error in the diagram: "
+                    "chemfig 1.81 (2026/09/01) removed this macro but its bundled "
+                    "chemfig-lewis.tex still uses it. Ziya normally supplies the "
+                    "missing definition; report this if you see it.")
         undefined = re.search(
             r"! Undefined control sequence\.\s*\n[^\n]*?(\\[A-Za-z@]+)\s*$",
             log_text, re.MULTILINE)

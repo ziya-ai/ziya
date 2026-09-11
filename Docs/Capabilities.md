@@ -90,7 +90,7 @@ retired or you switch endpoint.
 | `small` | Cheap | Nova Lite | Gemini Flash | GPT-5.5 Mini | Haiku 4.5 | GLM-4.6 |
 | `medium` | **Default** (average) | Sonnet 5 | Gemini 3.1 Pro | GPT-5.5 | Sonnet 5 | GLM-5.2 |
 | `large` | Most capable | Opus 4.8 | Gemini 3.1 Pro | GPT-5.5 Pro | Opus 4.8 | GLM-5.2 |
-| `frontier` | Cutting edge — rare, expensive | Fable 5 | Gemini 3.1 Pro | GPT-5.5 Pro | Fable 5 | GLM-5.2 |
+| `frontier` | Cutting edge — rare, expensive | Fable 5 | Gemini 3.1 Pro | GPT-5.5 Pro | Fable 5.1 | GLM-5.2 |
 
 Five rungs, cheapest → most capable. **`medium` is the center: the default,
 "average" model — the same one the top-level conversation uses (Sonnet 5 on
@@ -430,9 +430,9 @@ Diagrams can be rendered to PNG or SVG images server-side via the REST API, enab
 
 The headless renderer uses Playwright to drive a real Chromium instance through the same frontend rendering pipeline as the chat UI — including all post-render enhancers (edge rerouting, theme application, layout fixes). This guarantees pixel-perfect output.
 
-**Setup** (optional dependency):
+**Setup** (the Chromium build is a post-install step pip cannot run):
 ```bash
-pip install playwright && playwright install chromium
+ziya-install-extras --browser
 ```
 
 **API**:
@@ -580,7 +580,7 @@ to the user's print settings) but ensures a PDF is always available.
 
 | Symptom | Cause / Fix |
 |---|---|
-| "Server PDF renderer unavailable; used the browser print dialog" | Playwright/Chromium not installed server-side (`501`). Install with `pip install playwright && playwright install chromium`, then restart Ziya, to get the high-fidelity path. |
+| "Server PDF renderer unavailable; used the browser print dialog" | Playwright/Chromium not installed server-side (`501`). Run `ziya-install-extras --browser`, then restart Ziya, to get the high-fidelity path. |
 | PDF export errors with a non-501 status | A render error or a missing conversation. `404` = conversation id not found; `400` = no message source; `500` = a render failure (check the server log for the `/print` console/pageerror diagnostics the renderer captures). |
 | Export hangs / times out | The `/print` render never reached `data-render-status="complete"` (a very large conversation, or a diagram that never settled). The session has a bounded safety timeout; retry, and check the server log for stuck renders. |
 | Colors or diagrams missing after a frontend change | The `/print` route lives in the built bundle. After editing the print path or `frontend/src/styles/print.css`, rebuild: `cd frontend && npx craco build`. |
