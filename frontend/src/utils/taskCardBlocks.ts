@@ -176,6 +176,23 @@ export const makeGroupBlock = (name: string = 'Steps'): Block => ({
   body: [],
 });
 
+/**
+ * Ask = a human-in-the-loop checkpoint.  A leaf (no body), like State.
+ * The run holds here with status 'awaiting_input' until a human answers
+ * in the inline tile; approve continues, reject fails the block.  See
+ * app/agents/block_executor.py::_execute_ask.  ask_choices null means
+ * free text; ask_variable null means the answer is prose context only.
+ */
+export const makeAskBlock = (name: string = 'Checkpoint'): Block => ({
+  block_type: 'ask',
+  id: nextId('ask'),
+  name,
+  ask_question: '',
+  ask_variable: null,
+  ask_choices: null,
+  body: [],
+});
+
 export const makeBlock = (type: BlockType, name?: string): Block => {
   if (type === 'repeat') return makeRepeatBlock(name);
   if (type === 'parallel') return makeParallelBlock(name);
@@ -183,6 +200,7 @@ export const makeBlock = (type: BlockType, name?: string): Block => {
   if (type === 'schedule') return makeScheduleBlock(name);
   if (type === 'state') return makeStateBlock(name);
   if (type === 'group') return makeGroupBlock(name);
+  if (type === 'ask') return makeAskBlock(name);
   return makeTaskBlock(name);
 };
 
