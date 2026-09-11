@@ -32,7 +32,7 @@ def _pdf_with_chromium_defaults() -> bytes:
     writer = PdfWriter()
     writer.add_blank_page(width=595, height=842)
     writer.add_metadata({
-        "/Title": "Ziya - Code Assistant",
+        "/Title": "Ziya - AI Workbench",
         "/Creator": "Chromium",
         "/CreationDate": "D:20260101120000+00'00'",
     })
@@ -56,10 +56,14 @@ def test_build_metadata_rejects_app_shell_and_generic_titles():
     # fallback the driver emits must still SATISFY the audit check (whose own
     # default-title set is the authority for "looks like a default").
     from tests.export_fidelity.checks import _CHROMIUM_DEFAULT_TITLES as CHECK_DEFAULTS
-    for bad in ("Ziya - Code Assistant", "", None, "  ", "Ziya Session Transcript"):
+    # Both the current app-shell label and the historical one it replaced: PDFs
+    # captured by older builds still carry 'Ziya - Code Assistant' in /Title.
+    shell_titles = {"ziya - ai workbench", "ziya - code assistant"}
+    for bad in ("Ziya - AI Workbench", "Ziya - Code Assistant",
+                "", None, "  ", "Ziya Session Transcript"):
         md = PE._build_document_metadata(title=bad, model="m", provider="p")
-        # driver never echoes the incoming app-shell title verbatim
-        assert md["/Title"].lower() != "ziya - code assistant"
+        # driver never echoes an incoming app-shell title verbatim
+        assert md["/Title"].lower() not in shell_titles
         # and the emitted fallback passes the audit check's default-title gate
         assert md["/Title"].lower() not in CHECK_DEFAULTS
 
@@ -82,7 +86,7 @@ def test_apply_metadata_overrides_chromium_defaults_and_keeps_creation_date():
     before = _pdf_with_chromium_defaults()
     r0 = PdfReader(io.BytesIO(before))
     m0 = {str(k): str(v) for k, v in dict(r0.metadata).items()}
-    assert m0["/Title"] == "Ziya - Code Assistant"
+    assert m0["/Title"] == "Ziya - AI Workbench"
     assert m0["/Creator"] == "Chromium"
 
     md = PE._build_document_metadata(
@@ -108,3 +112,36 @@ def test_apply_metadata_never_raises_on_garbage_bytes():
     garbage = b"not a pdf"
     md = PE._build_document_metadata(title="X", model="m", provider="p")
     assert PE._apply_document_metadata(garbage, md) == garbage
+
+
+# ── seam: the browser tab label and the default-title guards stay in sync ────
+#
+# Chromium copies the app shell's <title> into /Title.  If the tab label is
+# renamed but the sentinel sets are not updated, every export silently ships
+# the shell title as the document title and both guards wave it through.  This
+# asserts the ACTUAL shipped label is covered by both sets.
+
+def _app_shell_title() -> str:
+    import re
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    html = (root / "frontend" / "public" / "index.html").read_text(encoding="utf-8")
+    m = re.search(r"<title>(.*?)</title>", html, re.I | re.S)
+    assert m, "no <title> found in frontend/public/index.html"
+    return m.group(1).strip()
+
+
+def test_app_shell_title_is_the_expected_label():
+    assert _app_shell_title() == "Ziya - AI Workbench"
+
+
+def test_app_shell_title_is_rejected_by_both_default_title_guards():
+    from tests.export_fidelity.checks import _CHROMIUM_DEFAULT_TITLES as CHECK_DEFAULTS
+    shell = _app_shell_title().lower()
+    assert shell in PE._CHROMIUM_DEFAULT_TITLES
+    assert shell in CHECK_DEFAULTS
+    # and the driver refuses to echo it into /Title
+    md = PE._build_document_metadata(
+        title=_app_shell_title(), model="m", provider="p")
+    assert md["/Title"].lower() != shell
+    assert md["/Title"].lower() not in CHECK_DEFAULTS

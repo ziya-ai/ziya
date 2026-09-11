@@ -785,7 +785,7 @@ def test_document_metadata_can_pass_and_fail():
     # FAIL: Chromium-style defaults — app-shell title, no author/subject,
     # Chromium creator.
     bad = C.check_document_metadata(_pdf_doc(_build_pdf(
-        title="Ziya - Code Assistant", author=None, subject=None,
+        title="Ziya - AI Workbench", author=None, subject=None,
         creator="Chromium")))
     assert not bad.passed
     assert not bad.measurements["has_title"]
