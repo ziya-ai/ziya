@@ -568,19 +568,58 @@ def get_chat(project_id: str, chat_id: str):
     # (own flag or inherited from an ancestor folder).
     ziya_home = get_ziya_home()
     from ..storage import chat_index
-    from ..storage.global_items import _effective_global_group_ids
+    from ..storage.global_items import _all_effective_global_group_ids
     found = chat_index.lookup(ziya_home, chat_id)
     if found is not None:
         owning_pid, owning_path = found
         if owning_pid != project_id:
             owning_chat = get_chat_storage(owning_pid).get(chat_id)
             if owning_chat is not None:
-                eff_groups = _effective_global_group_ids(owning_path.parent.parent)
+                # Group globalness is resolved across all projects: a global
+                # folder is visible everywhere, so a chat can sit in a group
+                # whose record lives in a different project than the chat file.
+                eff_groups = _all_effective_global_group_ids(ziya_home)
                 grp = getattr(owning_chat, "groupId", None)
                 if getattr(owning_chat, "isGlobal", False) or (grp is not None and grp in eff_groups):
                     return owning_chat
 
     raise HTTPException(status_code=404, detail="Chat not found")
+
+@router.get("/api/v1/projects/{project_id}/chats/{chat_id}/context-debug")
+def get_chat_context_debug(project_id: str, chat_id: str):
+    """Return recorded per-iteration input-token snapshots for a conversation.
+
+    Each entry is the PROVIDER's own reported usage for one agentic-loop
+    iteration — not an estimate — so it reflects context growth that happens
+    entirely within a turn (tool_use/tool_result accumulation) and is never
+    persisted to the chat record itself.  Returns an empty list when nothing
+    has been recorded for this conversation yet.
+
+    Deliberately does not validate that chat_id belongs to project_id: the
+    snapshot store is keyed only by conversation_id and holds only additive
+    diagnostics — there is nothing project-scoped to leak.
+    """
+    from ..utils.context_debug import get_history, is_enabled
+    return {
+        "conversation_id": chat_id,
+        "iterations": get_history(chat_id),
+        "detailed_capture_enabled": is_enabled(),
+    }
+
+@router.post("/api/v1/context-debug/config")
+def set_context_debug_config(body: dict):
+    """Toggle detailed context-debug capture (payload char counts +
+    per-iteration disk snapshots).  The always-on in-memory token tier is
+    unaffected.
+
+    Body: {"enabled": true|false}.  Persists across restarts; the
+    ZIYA_CONTEXT_DEBUG env var, when set, overrides the stored flag at
+    read time (but the stored flag is still updated).
+    """
+    from ..utils.context_debug import is_enabled, set_enabled
+    if "enabled" in body:
+        set_enabled(bool(body["enabled"]))
+    return {"enabled": is_enabled()}
 
 @router.post("/api/v1/projects/{project_id}/chats/bulk-get")
 def bulk_get_chats(project_id: str, body: dict):
