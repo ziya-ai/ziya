@@ -139,10 +139,14 @@ class OpenAIResponsesMantleProvider(LLMProvider):
 
         for retry_attempt in range(max_retries + 1):
             content_yielded = False
+            tool_use_started = False
+            resumable = False  # see ErrorEvent.resumable
             try:
                 async for event in self._do_stream(request_kwargs):
                     if isinstance(event, (TextDelta, ThinkingDelta, ToolUseStart)):
                         content_yielded = True
+                    if isinstance(event, ToolUseStart):
+                        tool_use_started = True
                     yield event
                 return
             except Exception as e:
@@ -161,6 +165,8 @@ class OpenAIResponsesMantleProvider(LLMProvider):
                         f"after content was yielded — refusing duplicate-producing retry"
                     )
                     retryable = False
+                    # Recoverable one layer up (see ErrorEvent.resumable).
+                    resumable = not tool_use_started
                 if retryable and retry_attempt < max_retries:
                     delay = base_delay * (2 ** retry_attempt)
                     logger.warning(
@@ -171,6 +177,7 @@ class OpenAIResponsesMantleProvider(LLMProvider):
                     continue
                 yield ErrorEvent(
                     message=error_str, error_type=classified, retryable=False,
+                    resumable=resumable,
                 )
                 return
 

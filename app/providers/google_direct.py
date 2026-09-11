@@ -211,10 +211,14 @@ class GoogleDirectProvider(LLMProvider):
         base_delay = 5
         for attempt in range(max_retries + 1):
             content_yielded = False
+            tool_use_started = False
+            resumable = False  # see ErrorEvent.resumable
             try:
                 async for event in self._do_stream(contents, gen_config):
                     if isinstance(event, (TextDelta, ThinkingDelta, ToolUseStart)):
                         content_yielded = True
+                    if isinstance(event, ToolUseStart):
+                        tool_use_started = True
                     yield event
                 return
             except Exception as e:
@@ -234,6 +238,8 @@ class GoogleDirectProvider(LLMProvider):
                         f"content was yielded — refusing duplicate-producing retry"
                     )
                     retryable = False
+                    # Recoverable one layer up (see ErrorEvent.resumable).
+                    resumable = not tool_use_started
                 if retryable and attempt < max_retries:
                     delay = base_delay * (2 ** attempt)
                     logger.warning(
@@ -242,7 +248,8 @@ class GoogleDirectProvider(LLMProvider):
                     )
                     await asyncio.sleep(delay)
                     continue
-                yield ErrorEvent(message=error_str, error_type=classified, retryable=False)
+                yield ErrorEvent(message=error_str, error_type=classified,
+                                 retryable=False, resumable=resumable)
                 return
 
     def build_assistant_message(
