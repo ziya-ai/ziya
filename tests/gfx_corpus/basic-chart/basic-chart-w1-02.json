@@ -1,0 +1,34 @@
+{
+ "type": "basic-chart",
+ "definition": {
+  "type": "bar",
+  "data": [
+   {
+    "label": "alpha",
+    "value": 30,
+    "color": "#d62728"
+   },
+   {
+    "label": "beta",
+    "value": 55,
+    "color": "#2ca02c"
+   },
+   {
+    "label": "gamma",
+    "value": 18,
+    "color": "#ff7f0e"
+   },
+   {
+    "label": "delta",
+    "value": 70,
+    "color": "#9467bd"
+   },
+   {
+    "label": "eps",
+    "value": 44,
+    "color": "#17becf"
+   }
+  ]
+ },
+ "intent": "bar chart with per-datum color override (d.color)"
+}

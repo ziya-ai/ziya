@@ -1,0 +1,5 @@
+{
+ "type": "network",
+ "definition": "{\n  \"nodes\": [\n    {\"id\": \"Client\", \"x\": 90,  \"y\": 200, \"size\": 16},\n    {\"id\": \"Edge\",   \"x\": 250, \"y\": 200, \"size\": 16},\n    {\"id\": \"App\",    \"x\": 410, \"y\": 200, \"size\": 16},\n    {\"id\": \"DB\",     \"x\": 560, \"y\": 200, \"size\": 16},\n  ],\n  \"links\": [\n    {\"source\": \"Client\", \"target\": \"Edge\"},\n    {\"source\": \"Edge\",   \"target\": \"App\"},\n    {\"source\": \"App\",    \"target\": \"DB\"},\n  ],\n  \"width\": 640,\n  \"height\": 380,\n  \"style\": {\"labelColor\": \"#7e7e7e\", \"fontSize\": 13, \"linkColor\": \"#7e7e7e\", \"linkOpacity\": 1},\n}",
+ "intent": "Trailing commas after the last array element AND the last object key - the single most common LLM JSON slip. Evident intent: 4-node chain. Recovery = strip and render."
+}

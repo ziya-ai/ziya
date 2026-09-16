@@ -1,0 +1,44 @@
+{
+ "type": "packet",
+ "definition": {
+  "type": "packet",
+  "title": "VLAN Tag (numeric strings)",
+  "bitWidth": "32",
+  "sections": [
+   {
+    "label": "802.1Q",
+    "rows": [
+     [
+      [
+       "TPID",
+       "16"
+      ],
+      [
+       "PCP",
+       "3"
+      ],
+      [
+       "DEI",
+       "1"
+      ],
+      [
+       "VID",
+       "12"
+      ]
+     ],
+     [
+      [
+       "Inner TPID",
+       "16"
+      ],
+      [
+       "Inner VID",
+       "16"
+      ]
+     ]
+    ]
+   }
+  ]
+ },
+ "intent": "Every numeric value emitted as a quoted string: bitWidth \"32\", bits \"16\"/\"3\"/\"1\"/\"12\""
+}

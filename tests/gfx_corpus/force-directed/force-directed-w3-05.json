@@ -1,0 +1,119 @@
+{
+ "type": "force-directed",
+ "definition": {
+  "type": "d3",
+  "layout": "force",
+  "data": {
+   "nodes": [
+    {
+     "id": "d0",
+     "label": "dialect 0",
+     "group": 0,
+     "size": 11
+    },
+    {
+     "id": "d1",
+     "label": "dialect 1",
+     "group": 1,
+     "size": 11
+    },
+    {
+     "id": "d2",
+     "label": "dialect 2",
+     "group": 2,
+     "size": 11
+    },
+    {
+     "id": "d3",
+     "label": "dialect 3",
+     "group": 3,
+     "size": 11
+    },
+    {
+     "id": "d4",
+     "label": "dialect 4",
+     "group": 0,
+     "size": 11
+    },
+    {
+     "id": "d5",
+     "label": "dialect 5",
+     "group": 1,
+     "size": 11
+    },
+    {
+     "id": "d6",
+     "label": "dialect 6",
+     "group": 2,
+     "size": 11
+    },
+    {
+     "id": "d7",
+     "label": "dialect 7",
+     "group": 3,
+     "size": 11
+    },
+    {
+     "id": "d8",
+     "label": "dialect 8",
+     "group": 0,
+     "size": 11
+    }
+   ],
+   "links": [
+    {
+     "source": "d0",
+     "target": "d1",
+     "value": 2
+    },
+    {
+     "source": "d1",
+     "target": "d3",
+     "value": 2
+    },
+    {
+     "source": "d2",
+     "target": "d5",
+     "value": 2
+    },
+    {
+     "source": "d3",
+     "target": "d7",
+     "value": 2
+    },
+    {
+     "source": "d4",
+     "target": "d0",
+     "value": 2
+    },
+    {
+     "source": "d5",
+     "target": "d2",
+     "value": 2
+    },
+    {
+     "source": "d6",
+     "target": "d4",
+     "value": 2
+    },
+    {
+     "source": "d7",
+     "target": "d6",
+     "value": 2
+    },
+    {
+     "source": "d8",
+     "target": "d8",
+     "value": 2
+    }
+   ]
+  },
+  "style": {
+   "fontSize": 12,
+   "linkOpacity": 0.85
+  },
+  "width": 700,
+  "height": 480
+ },
+ "intent": "INTERACTION: less-travelled dialect - type d3 + layout force + nodes/links nested under data + style block, all at once."
+}

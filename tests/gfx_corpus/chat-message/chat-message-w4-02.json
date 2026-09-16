@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "Same flow, tilde-fenced.\n\n~~~mermaid\nflowchart LR\n  A[Commit] --> B[Build]\n  B --> C[Deploy]\n~~~\n\nShould be identical to a backtick fence.\n",
+ "intent": "Tilde fence (~~~mermaid) — valid CommonMark alternative fence models occasionally use. Recovery = same routing as backticks."
+}

@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "strict graph FD {\n layout=fdp;\n nodesep=0.4; esep=0.2;\n node [shape=doublecircle peripheries=3 style=filled fillcolor=\"#e0e8ff\" fontcolor=\"#001040\"];\n { rank=same; r1; r2; r3; }\n hidden [style=invis];\n r1 -- r2 [constraint=false];\n r2 -- r3;\n r3 -- r1 [len=2.0];\n r1 -- hub;\n hub -- hidden;\n hub [peripheries=1 fillcolor=\"#ffd0d0\"];\n r1 -- r2;\n}",
+ "intent": "LESS-TRAVELLED DIALECT: strict undirected graph, fdp layout, rank=same subgraph, constraint=false, peripheries=3, nodesep/esep overrides, and an explicitly invisible node."
+}

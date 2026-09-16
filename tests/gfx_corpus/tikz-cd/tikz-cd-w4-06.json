@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\begin{tikzcd}[row sep=large, column sep=large,]\nA \\arrow[r, \"f\", ] \\arrow[d, \"g\"', ,] & B \\arrow[d, \"h\",] ; \\\\\nC \\arrow[r, \"k\"',] & D ;\n\\end{tikzcd}",
+ "intent": "Trailing commas in both the environment options and every arrow option list, plus stray semicolons at row ends. Recovery: tolerate empty key slots and drop the semicolons."
+}

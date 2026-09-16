@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "A \\arrow[r, hook, \"i\"] & B \\arrow[r, two heads, \"p\"] & C \\arrow[r, \"\\mu\", maps to] & D",
+ "intent": "arrow tip decorations: hook (mono), two heads (epi), maps to"
+}

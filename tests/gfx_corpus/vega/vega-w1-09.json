@@ -1,0 +1,169 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 420,
+  "height": 420,
+  "padding": 5,
+  "autosize": "none",
+  "data": [
+   {
+    "name": "tree",
+    "values": [
+     {
+      "id": "all"
+     },
+     {
+      "id": "read",
+      "parent": "all"
+     },
+     {
+      "id": "write",
+      "parent": "all"
+     },
+     {
+      "id": "get",
+      "parent": "read",
+      "n": 90
+     },
+     {
+      "id": "scan",
+      "parent": "read",
+      "n": 55
+     },
+     {
+      "id": "list",
+      "parent": "read",
+      "n": 30
+     },
+     {
+      "id": "put",
+      "parent": "write",
+      "n": 70
+     },
+     {
+      "id": "del",
+      "parent": "write",
+      "n": 25
+     },
+     {
+      "id": "upd",
+      "parent": "write",
+      "n": 44
+     }
+    ],
+    "transform": [
+     {
+      "type": "stratify",
+      "key": "id",
+      "parentKey": "parent"
+     },
+     {
+      "type": "pack",
+      "field": "n",
+      "sort": {
+       "field": "value"
+      },
+      "size": [
+       {
+        "signal": "width"
+       },
+       {
+        "signal": "height"
+       }
+      ],
+      "padding": 3
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "color",
+    "type": "ordinal",
+    "domain": {
+     "data": "tree",
+     "field": "depth"
+    },
+    "range": [
+     "#e8f0f7",
+     "#9dbfe0",
+     "#3b6f9e"
+    ]
+   }
+  ],
+  "marks": [
+   {
+    "type": "symbol",
+    "from": {
+     "data": "tree"
+    },
+    "encode": {
+     "enter": {
+      "shape": {
+       "value": "circle"
+      },
+      "stroke": {
+       "value": "#2c4a63"
+      },
+      "strokeWidth": {
+       "value": 1
+      }
+     },
+     "update": {
+      "x": {
+       "field": "x"
+      },
+      "y": {
+       "field": "y"
+      },
+      "size": {
+       "signal": "4 * datum.r * datum.r"
+      },
+      "fill": {
+       "scale": "color",
+       "field": "depth"
+      }
+     }
+    }
+   },
+   {
+    "type": "text",
+    "from": {
+     "data": "tree"
+    },
+    "encode": {
+     "enter": {
+      "align": {
+       "value": "center"
+      },
+      "baseline": {
+       "value": "middle"
+      },
+      "fontSize": {
+       "value": 12
+      },
+      "fontWeight": {
+       "value": "bold"
+      },
+      "fill": {
+       "value": "#10243a"
+      }
+     },
+     "update": {
+      "x": {
+       "field": "x"
+      },
+      "y": {
+       "field": "y"
+      },
+      "text": {
+       "signal": "datum.children ? '' : datum.id"
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "Circle-pack layout: stratify + pack transforms with radius-scaled symbol marks and leaf labels. Third of the hierarchy family the plugin docstring claims."
+}

@@ -1,0 +1,60 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "scatter",
+    "mode": "lines+markers",
+    "name": "alpha",
+    "x": [
+     1,
+     2,
+     3,
+     4
+    ],
+    "y": [
+     3,
+     7,
+     4,
+     9
+    ]
+   },
+   {
+    "type": "scatter",
+    "mode": "lines+markers",
+    "name": "beta",
+    "x": [
+     1,
+     2,
+     3,
+     4
+    ],
+    "y": [
+     5,
+     2,
+     8,
+     3
+    ]
+   }
+  ],
+  "layout": {
+   "width": 170,
+   "height": 120,
+   "title": {
+    "text": "Tiny figure"
+   },
+   "xaxis": {
+    "title": {
+     "text": "quarter"
+    }
+   },
+   "yaxis": {
+    "title": {
+     "text": "revenue"
+    }
+   },
+   "showlegend": true
+  }
+ },
+ "intent": "SCALE: explicit size FAR BELOW natural - width 170 x height 120 with title, both axis titles and a legend, against the plugin's t40/r20/b40/l60 margins and 400px min-height div."
+}

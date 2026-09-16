@@ -1,0 +1,63 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "150 text labels over points",
+  "data": {
+   "sequence": {
+    "start": 0,
+    "stop": 150,
+    "step": 1,
+    "as": "n"
+   }
+  },
+  "transform": [
+   {
+    "calculate": "50+45*sin(datum.n*2.399)",
+    "as": "x"
+   },
+   {
+    "calculate": "50+45*cos(datum.n*1.618)",
+    "as": "y"
+   },
+   {
+    "calculate": "'node-'+format(datum.n,'03d')",
+    "as": "lab"
+   }
+  ],
+  "height": 420,
+  "layer": [
+   {
+    "mark": {
+     "type": "point",
+     "size": 40,
+     "filled": true
+    }
+   },
+   {
+    "mark": {
+     "type": "text",
+     "dy": -9,
+     "fontSize": 9
+    },
+    "encoding": {
+     "text": {
+      "field": "lab",
+      "type": "nominal"
+     }
+    }
+   }
+  ],
+  "encoding": {
+   "x": {
+    "field": "x",
+    "type": "quantitative"
+   },
+   "y": {
+    "field": "y",
+    "type": "quantitative"
+   }
+  }
+ },
+ "intent": "SCALE: 150 text MARKS at fontSize 9 over 150 points - text-mark overplot plus the known unadapted text-mark colour at high count."
+}

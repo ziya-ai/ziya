@@ -1,0 +1,838 @@
+{
+ "schema": 1,
+ "engine": "drawio",
+ "specs": {
+  "drawio-w2-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.311844Z"
+    }
+   ]
+  },
+  "drawio-w2-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.314497Z"
+    }
+   ]
+  },
+  "drawio-w2-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.318199Z"
+    }
+   ]
+  },
+  "drawio-w2-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.322762Z"
+    }
+   ]
+  },
+  "drawio-w2-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.333328Z"
+    }
+   ]
+  },
+  "drawio-w4-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.336375Z"
+    }
+   ]
+  },
+  "drawio-w4-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.338899Z"
+    }
+   ]
+  },
+  "drawio-w4-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.342346Z"
+    }
+   ]
+  },
+  "drawio-w1-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-090",
+     "signature": "auto-layout-geometry-label-desync",
+     "at": "2026-09-15T08:56:12.563328Z"
+    }
+   ]
+  },
+  "drawio-w1-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-090",
+     "signature": "auto-layout-geometry-label-desync",
+     "at": "2026-09-15T08:56:12.567742Z"
+    },
+    {
+     "origin": "D-100",
+     "signature": "swimlane-fillopacity-crushes-label-contrast:dark",
+     "at": "2026-09-15T08:56:12.674215Z"
+    }
+   ]
+  },
+  "drawio-w1-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-090",
+     "signature": "auto-layout-geometry-label-desync",
+     "at": "2026-09-15T08:56:12.571532Z"
+    }
+   ]
+  },
+  "drawio-w1-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-090",
+     "signature": "auto-layout-geometry-label-desync",
+     "at": "2026-09-15T08:56:12.575592Z"
+    }
+   ]
+  },
+  "drawio-w1-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-090",
+     "signature": "auto-layout-geometry-label-desync",
+     "at": "2026-09-15T08:56:12.578853Z"
+    }
+   ]
+  },
+  "drawio-w1-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-090",
+     "signature": "auto-layout-geometry-label-desync",
+     "at": "2026-09-15T08:56:12.586040Z"
+    }
+   ]
+  },
+  "drawio-w1-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-090",
+     "signature": "auto-layout-geometry-label-desync",
+     "at": "2026-09-15T08:56:12.589353Z"
+    }
+   ]
+  },
+  "drawio-w1-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-091",
+     "signature": "custom-and-orthogonal-arrowheads-dropped",
+     "at": "2026-09-15T08:56:12.593519Z"
+    }
+   ]
+  },
+  "drawio-w1-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-091",
+     "signature": "custom-and-orthogonal-arrowheads-dropped",
+     "at": "2026-09-15T08:56:12.596123Z"
+    }
+   ]
+  },
+  "drawio-w1-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-091",
+     "signature": "custom-and-orthogonal-arrowheads-dropped",
+     "at": "2026-09-15T08:56:12.600299Z"
+    },
+    {
+     "origin": "D-100",
+     "signature": "swimlane-fillopacity-crushes-label-contrast:dark",
+     "at": "2026-09-15T08:56:12.680687Z"
+    }
+   ]
+  },
+  "drawio-w2-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-091",
+     "signature": "custom-and-orthogonal-arrowheads-dropped",
+     "at": "2026-09-15T08:56:12.604866Z"
+    },
+    {
+     "origin": "D-092",
+     "signature": "edge-routing-ignores-waypoints-crosses-vertices-and-bundles",
+     "at": "2026-09-15T08:56:12.619302Z"
+    }
+   ]
+  },
+  "drawio-w2-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-091",
+     "signature": "custom-and-orthogonal-arrowheads-dropped",
+     "at": "2026-09-15T08:56:12.609271Z"
+    }
+   ]
+  },
+  "drawio-w1-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-092",
+     "signature": "edge-routing-ignores-waypoints-crosses-vertices-and-bundles",
+     "at": "2026-09-15T08:56:12.612939Z"
+    },
+    {
+     "origin": "D-100",
+     "signature": "swimlane-fillopacity-crushes-label-contrast:dark",
+     "at": "2026-09-15T08:56:12.678347Z"
+    }
+   ]
+  },
+  "drawio-w1-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-092",
+     "signature": "edge-routing-ignores-waypoints-crosses-vertices-and-bundles",
+     "at": "2026-09-15T08:56:12.616394Z"
+    }
+   ]
+  },
+  "drawio-w2-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-094",
+     "signature": "width-only-fit-downscales-or-clips-content",
+     "at": "2026-09-15T08:56:12.622288Z"
+    }
+   ]
+  },
+  "drawio-w2-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-094",
+     "signature": "width-only-fit-downscales-or-clips-content",
+     "at": "2026-09-15T08:56:12.626838Z"
+    }
+   ]
+  },
+  "drawio-w2-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-094",
+     "signature": "width-only-fit-downscales-or-clips-content",
+     "at": "2026-09-15T08:56:12.630422Z"
+    }
+   ]
+  },
+  "drawio-w2-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-095",
+     "signature": "coordinate-sanitizer-window-destroys-neighbors",
+     "at": "2026-09-15T08:56:12.633769Z"
+    }
+   ]
+  },
+  "drawio-w2-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-095",
+     "signature": "coordinate-sanitizer-window-destroys-neighbors",
+     "at": "2026-09-15T08:56:12.637749Z"
+    }
+   ]
+  },
+  "drawio-w2-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-095",
+     "signature": "coordinate-sanitizer-window-destroys-neighbors",
+     "at": "2026-09-15T08:56:12.641145Z"
+    }
+   ]
+  },
+  "drawio-w2-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-096",
+     "signature": "labels-never-clipped-or-shortened-to-box",
+     "at": "2026-09-15T08:56:12.652491Z"
+    },
+    {
+     "origin": "D-101",
+     "signature": "label-stranded-on-dark-canvas-keeps-author-fontcolor:dark",
+     "at": "2026-09-15T08:56:12.683584Z"
+    }
+   ]
+  },
+  "drawio-w2-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-096",
+     "signature": "labels-never-clipped-or-shortened-to-box",
+     "at": "2026-09-15T08:56:12.655934Z"
+    }
+   ]
+  },
+  "drawio-w1-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-098",
+     "signature": "text-cell-gets-default-vertex-fill",
+     "at": "2026-09-15T08:56:12.663534Z"
+    },
+    {
+     "origin": "D-099",
+     "signature": "default-fill-vs-theme-fontcolor:dark",
+     "at": "2026-09-15T08:56:12.672061Z"
+    }
+   ]
+  },
+  "drawio-w1-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-099",
+     "signature": "default-fill-vs-theme-fontcolor:dark",
+     "at": "2026-09-15T08:56:12.668795Z"
+    }
+   ]
+  },
+  "drawio-w4-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-101",
+     "signature": "label-stranded-on-dark-canvas-keeps-author-fontcolor:dark",
+     "at": "2026-09-15T08:56:12.687710Z"
+    }
+   ]
+  },
+  "drawio-w4-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-101",
+     "signature": "label-stranded-on-dark-canvas-keeps-author-fontcolor:dark",
+     "at": "2026-09-15T08:56:12.690936Z"
+    }
+   ]
+  },
+  "drawio-w4-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-101",
+     "signature": "label-stranded-on-dark-canvas-keeps-author-fontcolor:dark",
+     "at": "2026-09-15T08:56:12.696066Z"
+    },
+    {
+     "origin": "D-106",
+     "signature": "silent-semantic-corruption-missing-field-and-style-split",
+     "at": "2026-09-15T08:56:12.742385Z"
+    }
+   ]
+  },
+  "drawio-w4-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-102",
+     "signature": "envelope-wrapper-hangs-30s-no-output",
+     "at": "2026-09-15T08:56:12.700022Z"
+    }
+   ]
+  },
+  "drawio-w4-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-102",
+     "signature": "envelope-wrapper-hangs-30s-no-output",
+     "at": "2026-09-15T08:56:12.703240Z"
+    }
+   ]
+  },
+  "drawio-w4-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-102",
+     "signature": "envelope-wrapper-hangs-30s-no-output",
+     "at": "2026-09-15T08:56:12.713561Z"
+    }
+   ]
+  },
+  "drawio-w4-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-103",
+     "signature": "bare-angle-brackets-in-value-unescaped",
+     "at": "2026-09-15T08:56:12.717933Z"
+    }
+   ]
+  },
+  "drawio-w4-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-104",
+     "signature": "quote-handling-regexes-double-quote-only",
+     "at": "2026-09-15T08:56:12.722193Z"
+    }
+   ]
+  },
+  "drawio-w4-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-104",
+     "signature": "quote-handling-regexes-double-quote-only",
+     "at": "2026-09-15T08:56:12.728039Z"
+    }
+   ]
+  },
+  "drawio-w4-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-105",
+     "signature": "color-parse-gaps-named-and-unparseable",
+     "at": "2026-09-15T08:56:12.732292Z"
+    }
+   ]
+  },
+  "drawio-w4-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-105",
+     "signature": "color-parse-gaps-named-and-unparseable",
+     "at": "2026-09-15T08:56:12.738512Z"
+    }
+   ]
+  },
+  "drawio-w4-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-106",
+     "signature": "silent-semantic-corruption-missing-field-and-style-split",
+     "at": "2026-09-15T08:56:12.746285Z"
+    }
+   ]
+  }
+ }
+}

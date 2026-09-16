@@ -1,0 +1,33 @@
+{
+ "type": "basic-chart",
+ "definition": {
+  "type": "bar",
+  "data": [
+   {
+    "label": "Jan",
+    "value": 42
+   },
+   {
+    "label": "Feb",
+    "value": 58
+   },
+   {
+    "label": "Mar",
+    "value": 31
+   },
+   {
+    "label": "Apr",
+    "value": 76
+   },
+   {
+    "label": "May",
+    "value": 64
+   },
+   {
+    "label": "Jun",
+    "value": 49
+   }
+  ]
+ },
+ "intent": "bar chart, 6 categories, plugin default steelblue fill; band x-axis + linear y-axis"
+}

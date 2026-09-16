@@ -1,0 +1,78 @@
+{
+ "type": "packet",
+ "definition": {
+  "type": "packet",
+  "title": "IPv4 Header (canonical 32-bit rows)",
+  "bitWidth": 32,
+  "sections": [
+   {
+    "label": "IPv4 Header",
+    "rows": [
+     [
+      [
+       "Version",
+       4
+      ],
+      [
+       "IHL",
+       4
+      ],
+      [
+       "DSCP",
+       6
+      ],
+      [
+       "ECN",
+       2
+      ],
+      [
+       "Total Length",
+       16
+      ]
+     ],
+     [
+      [
+       "Identification",
+       16
+      ],
+      [
+       "Flags",
+       3
+      ],
+      [
+       "Fragment Offset",
+       13
+      ]
+     ],
+     [
+      [
+       "TTL",
+       8
+      ],
+      [
+       "Protocol",
+       8
+      ],
+      [
+       "Header Checksum",
+       16
+      ]
+     ],
+     [
+      [
+       "Source Address",
+       32
+      ]
+     ],
+     [
+      [
+       "Destination Address",
+       32
+      ]
+     ]
+    ]
+   }
+  ]
+ },
+ "intent": "Canonical 32-bit RFC-style header: single section, tuple rows, exact 32-bit row fill"
+}

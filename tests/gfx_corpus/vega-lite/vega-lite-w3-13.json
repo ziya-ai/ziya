@@ -1,0 +1,182 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "data": {
+   "values": [
+    {
+     "c": "Alpha",
+     "v": 42,
+     "q": "Q1"
+    },
+    {
+     "c": "Beta",
+     "v": 58,
+     "q": "Q1"
+    },
+    {
+     "c": "Gamma",
+     "v": 31,
+     "q": "Q1"
+    },
+    {
+     "c": "Delta",
+     "v": 67,
+     "q": "Q1"
+    },
+    {
+     "c": "Epsilon",
+     "v": 50,
+     "q": "Q1"
+    },
+    {
+     "c": "Alpha",
+     "v": 42,
+     "q": "Q2"
+    },
+    {
+     "c": "Beta",
+     "v": 58,
+     "q": "Q2"
+    },
+    {
+     "c": "Gamma",
+     "v": 31,
+     "q": "Q2"
+    },
+    {
+     "c": "Delta",
+     "v": 67,
+     "q": "Q2"
+    },
+    {
+     "c": "Epsilon",
+     "v": 50,
+     "q": "Q2"
+    },
+    {
+     "c": "Alpha",
+     "v": 42,
+     "q": "Q3"
+    },
+    {
+     "c": "Beta",
+     "v": 58,
+     "q": "Q3"
+    },
+    {
+     "c": "Gamma",
+     "v": 31,
+     "q": "Q3"
+    },
+    {
+     "c": "Delta",
+     "v": 67,
+     "q": "Q3"
+    },
+    {
+     "c": "Epsilon",
+     "v": 50,
+     "q": "Q3"
+    },
+    {
+     "c": "Alpha",
+     "v": 42,
+     "q": "Q4"
+    },
+    {
+     "c": "Beta",
+     "v": 58,
+     "q": "Q4"
+    },
+    {
+     "c": "Gamma",
+     "v": 31,
+     "q": "Q4"
+    },
+    {
+     "c": "Delta",
+     "v": 67,
+     "q": "Q4"
+    },
+    {
+     "c": "Epsilon",
+     "v": 50,
+     "q": "Q4"
+    }
+   ]
+  },
+  "params": [
+   {
+    "name": "pick",
+    "select": {
+     "type": "point",
+     "fields": [
+      "c"
+     ]
+    },
+    "bind": "legend"
+   }
+  ],
+  "facet": {
+   "field": "q",
+   "type": "nominal",
+   "columns": 2
+  },
+  "spec": {
+   "width": 230,
+   "height": 150,
+   "layer": [
+    {
+     "mark": {
+      "type": "bar",
+      "tooltip": true
+     },
+     "encoding": {
+      "opacity": {
+       "condition": {
+        "param": "pick",
+        "value": 1
+       },
+       "value": 0.3
+      }
+     }
+    },
+    {
+     "mark": {
+      "type": "rule",
+      "strokeDash": [
+       4,
+       3
+      ]
+     },
+     "encoding": {
+      "y": {
+       "aggregate": "mean",
+       "field": "v",
+       "type": "quantitative"
+      }
+     }
+    }
+   ],
+   "encoding": {
+    "x": {
+     "field": "c",
+     "type": "nominal",
+     "sort": "-y",
+     "axis": {
+      "labelAngle": 0
+     }
+    },
+    "y": {
+     "field": "v",
+     "type": "quantitative"
+    },
+    "color": {
+     "field": "c",
+     "type": "nominal"
+    }
+   }
+  }
+ },
+ "intent": "FEATURE INTERACTION - FACET(columns:2) + LAYER + PARAM SELECTION + TOOLTIP + SORT, at a LOW cell count of 4 to test whether 'columns' is honoured when few cells are present."
+}

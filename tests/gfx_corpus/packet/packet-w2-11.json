@@ -1,0 +1,36 @@
+{
+ "type": "packet",
+ "definition": {
+  "title": "60-line section label",
+  "bitWidth": 32,
+  "sections": [
+   {
+    "label": "line0\nline1\nline2\nline3\nline4\nline5\nline6\nline7\nline8\nline9\nline10\nline11\nline12\nline13\nline14\nline15\nline16\nline17\nline18\nline19\nline20\nline21\nline22\nline23\nline24\nline25\nline26\nline27\nline28\nline29\nline30\nline31\nline32\nline33\nline34\nline35\nline36\nline37\nline38\nline39\nline40\nline41\nline42\nline43\nline44\nline45\nline46\nline47\nline48\nline49\nline50\nline51\nline52\nline53\nline54\nline55\nline56\nline57\nline58\nline59",
+    "color": "reserved",
+    "rows": [
+     {
+      "fields": [
+       [
+        "a",
+        16
+       ],
+       [
+        "b",
+        16
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "c",
+        32
+       ]
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "Deep multi-line label: 60 \\n-separated label lines against a 2-row section"
+}

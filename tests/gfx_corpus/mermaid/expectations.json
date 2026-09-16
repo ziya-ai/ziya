@@ -1,0 +1,1198 @@
+{
+ "schema": 1,
+ "engine": "mermaid",
+ "specs": {
+  "mermaid-w1-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.449871Z"
+    }
+   ],
+   "golden": {
+    "light": {
+     "hash": "c5d5b70dea2240193010e4cbf27409c878a361b0bbc4a25128c1a2e46c19ccd1",
+     "validated_at": "2026-09-16T06:25:27.830189Z"
+    },
+    "dark": {
+     "hash": "ef12df472806ed988d39e950d89e9b21cf973d9f4f6deafea1efd105f0fc20d0",
+     "validated_at": "2026-09-16T06:25:27.835664Z"
+    }
+   }
+  },
+  "mermaid-w1-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.452988Z"
+    }
+   ],
+   "golden": {
+    "light": {
+     "hash": "3fb1c8ca4cd0f43b23df605f5184bde83da2e392e72d81723c2714fee3890f60",
+     "validated_at": "2026-09-16T06:34:17.433202Z"
+    },
+    "dark": {
+     "hash": "42a1dfc28b80150e1b86b87ea29d09cdea30631a59c00ab8ad466990c8b3449a",
+     "validated_at": "2026-09-16T06:34:17.443054Z"
+    }
+   }
+  },
+  "mermaid-w2-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.456076Z"
+    },
+    {
+     "origin": "D-145",
+     "signature": "oversize-canvas-content-clipped-labels-subpixel",
+     "at": "2026-09-15T08:56:13.159978Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "c2531d10b4e5a45595886e8276f3ee1d38735e967a6d8ea4178c81b973807718",
+     "validated_at": "2026-09-16T06:48:56.751214Z"
+    }
+   }
+  },
+  "mermaid-w3-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.459683Z"
+    }
+   ]
+  },
+  "mermaid-w4-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.462690Z"
+    },
+    {
+     "origin": "D-158",
+     "signature": "missing-preprocessor-parse-hang",
+     "at": "2026-09-15T08:56:13.299277Z"
+    }
+   ]
+  },
+  "mermaid-w4-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.465601Z"
+    }
+   ]
+  },
+  "mermaid-w4-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.468712Z"
+    }
+   ]
+  },
+  "mermaid-w4-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.471462Z"
+    },
+    {
+     "origin": "D-158",
+     "signature": "missing-preprocessor-parse-hang",
+     "at": "2026-09-15T08:56:13.303785Z"
+    }
+   ]
+  },
+  "mermaid-w4-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.473939Z"
+    }
+   ]
+  },
+  "mermaid-w4-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.476521Z"
+    }
+   ]
+  },
+  "mermaid-w4-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.478919Z"
+    }
+   ]
+  },
+  "mermaid-w4-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.481317Z"
+    },
+    {
+     "origin": "D-159",
+     "signature": "recovery-colour-honoured-no-contrast-remediation",
+     "at": "2026-09-15T08:56:13.358653Z"
+    }
+   ]
+  },
+  "mermaid-w1-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-145",
+     "signature": "oversize-canvas-content-clipped-labels-subpixel",
+     "at": "2026-09-15T08:56:13.126248Z"
+    },
+    {
+     "origin": "D-291",
+     "signature": "sequence-alt-else-and-state-choice-semantics-dropped",
+     "at": "2026-09-15T08:56:14.966003Z"
+    }
+   ]
+  },
+  "mermaid-w2-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-145",
+     "signature": "oversize-canvas-content-clipped-labels-subpixel",
+     "at": "2026-09-15T08:56:13.132041Z"
+    },
+    {
+     "origin": "D-287",
+     "signature": "oversize-canvas-content-shrunk-labels-subpixel",
+     "at": "2026-09-15T08:56:14.852086Z"
+    }
+   ]
+  },
+  "mermaid-w2-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-145",
+     "signature": "oversize-canvas-content-clipped-labels-subpixel",
+     "at": "2026-09-15T08:56:13.137159Z"
+    },
+    {
+     "origin": "D-287",
+     "signature": "oversize-canvas-content-shrunk-labels-subpixel",
+     "at": "2026-09-15T08:56:14.855483Z"
+    }
+   ]
+  },
+  "mermaid-w2-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-145",
+     "signature": "oversize-canvas-content-clipped-labels-subpixel",
+     "at": "2026-09-15T08:56:13.143113Z"
+    },
+    {
+     "origin": "D-287",
+     "signature": "oversize-canvas-content-shrunk-labels-subpixel",
+     "at": "2026-09-15T08:56:14.858700Z"
+    }
+   ]
+  },
+  "mermaid-w2-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-145",
+     "signature": "oversize-canvas-content-clipped-labels-subpixel",
+     "at": "2026-09-15T08:56:13.153984Z"
+    },
+    {
+     "origin": "D-287",
+     "signature": "oversize-canvas-content-shrunk-labels-subpixel",
+     "at": "2026-09-15T08:56:14.869256Z"
+    }
+   ]
+  },
+  "mermaid-w2-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-145",
+     "signature": "oversize-canvas-content-clipped-labels-subpixel",
+     "at": "2026-09-15T08:56:13.164817Z"
+    },
+    {
+     "origin": "D-287",
+     "signature": "oversize-canvas-content-shrunk-labels-subpixel",
+     "at": "2026-09-15T08:56:14.873234Z"
+    }
+   ]
+  },
+  "mermaid-w2-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-145",
+     "signature": "oversize-canvas-content-clipped-labels-subpixel",
+     "at": "2026-09-15T08:56:13.170706Z"
+    },
+    {
+     "origin": "D-287",
+     "signature": "oversize-canvas-content-shrunk-labels-subpixel",
+     "at": "2026-09-15T08:56:14.878033Z"
+    }
+   ]
+  },
+  "mermaid-w2-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-145",
+     "signature": "oversize-canvas-content-clipped-labels-subpixel",
+     "at": "2026-09-15T08:56:13.178977Z"
+    },
+    {
+     "origin": "D-287",
+     "signature": "oversize-canvas-content-shrunk-labels-subpixel",
+     "at": "2026-09-15T08:56:14.881588Z"
+    }
+   ],
+   "golden": {
+    "light": {
+     "hash": "fbf620da987eee61ecbd5fdefb7e0232c935b2b95c43ada79be1f7aa8757d7e8",
+     "validated_at": "2026-09-16T06:48:58.558327Z"
+    },
+    "dark": {
+     "hash": "d0b4a323fb8f5b23c8f8484f629aadcb8a5258c9800e33049f2993243918be16",
+     "validated_at": "2026-09-16T06:48:58.571292Z"
+    }
+   }
+  },
+  "mermaid-w2-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-145",
+     "signature": "oversize-canvas-content-clipped-labels-subpixel",
+     "at": "2026-09-15T08:56:13.184219Z"
+    },
+    {
+     "origin": "D-287",
+     "signature": "oversize-canvas-content-shrunk-labels-subpixel",
+     "at": "2026-09-15T08:56:14.884540Z"
+    }
+   ]
+  },
+  "mermaid-w2-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-145",
+     "signature": "oversize-canvas-content-clipped-labels-subpixel",
+     "at": "2026-09-15T08:56:13.188350Z"
+    },
+    {
+     "origin": "D-287",
+     "signature": "oversize-canvas-content-shrunk-labels-subpixel",
+     "at": "2026-09-15T08:56:14.888376Z"
+    }
+   ]
+  },
+  "mermaid-w2-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-145",
+     "signature": "oversize-canvas-content-clipped-labels-subpixel",
+     "at": "2026-09-15T08:56:13.194853Z"
+    },
+    {
+     "origin": "D-287",
+     "signature": "oversize-canvas-content-shrunk-labels-subpixel",
+     "at": "2026-09-15T08:56:14.898744Z"
+    }
+   ]
+  },
+  "mermaid-w2-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-145",
+     "signature": "oversize-canvas-content-clipped-labels-subpixel",
+     "at": "2026-09-15T08:56:13.201288Z"
+    },
+    {
+     "origin": "D-288",
+     "signature": "gantt-layout-collapsed-to-thumbnail-blank-canvas",
+     "at": "2026-09-15T08:56:14.938497Z"
+    }
+   ]
+  },
+  "mermaid-w1-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-149",
+     "signature": "sequence-alt-else-branch-label-missing",
+     "at": "2026-09-15T08:56:13.205156Z"
+    },
+    {
+     "origin": "D-154",
+     "signature": "dark-palette-foreground-not-adapted",
+     "at": "2026-09-15T08:56:13.239747Z"
+    },
+    {
+     "origin": "D-291",
+     "signature": "sequence-alt-else-and-state-choice-semantics-dropped",
+     "at": "2026-09-15T08:56:14.962298Z"
+    }
+   ]
+  },
+  "mermaid-w1-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-150",
+     "signature": "class-multiplicity-label-collision",
+     "at": "2026-09-15T08:56:13.217122Z"
+    }
+   ]
+  },
+  "mermaid-w1-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-151",
+     "signature": "gantt-gridlines-drawn-over-bars",
+     "at": "2026-09-15T08:56:13.230205Z"
+    },
+    {
+     "origin": "D-288",
+     "signature": "gantt-layout-collapsed-to-thumbnail-blank-canvas",
+     "at": "2026-09-15T08:56:14.933883Z"
+    }
+   ]
+  },
+  "mermaid-w2-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-152",
+     "signature": "pie-legend-truncated-and-slice-labels-collide-at-scale",
+     "at": "2026-09-15T08:56:13.236610Z"
+    },
+    {
+     "origin": "D-157",
+     "signature": "pie-default-palette-not-canvas-aware",
+     "at": "2026-09-15T08:56:13.289699Z"
+    }
+   ]
+  },
+  "mermaid-w1-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-154",
+     "signature": "dark-palette-foreground-not-adapted",
+     "at": "2026-09-15T08:56:13.250000Z"
+    },
+    {
+     "origin": "D-294",
+     "signature": "light-palette-not-canvas-aware-hsl-NaN-remediation-aborts",
+     "at": "2026-09-15T08:56:14.968213Z"
+    }
+   ]
+  },
+  "mermaid-w1-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-154",
+     "signature": "dark-palette-foreground-not-adapted",
+     "at": "2026-09-15T08:56:13.254579Z"
+    },
+    {
+     "origin": "D-287",
+     "signature": "oversize-canvas-content-shrunk-labels-subpixel",
+     "at": "2026-09-15T08:56:14.849403Z"
+    }
+   ]
+  },
+  "mermaid-w1-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-155",
+     "signature": "linkstyle-stroke-override-dropped:dark",
+     "at": "2026-09-15T08:56:13.264784Z"
+    }
+   ],
+   "golden": {
+    "light": {
+     "hash": "32e425c6fe8c8c34ef2530da7afd1535bea5dc8c724be8753dbdf80cdd823f53",
+     "validated_at": "2026-09-16T06:34:17.761924Z"
+    },
+    "dark": {
+     "hash": "ff9e989f5ef39504c3ae7254cb62e6522dbeb662a230b8a274e1220acd662fc4",
+     "validated_at": "2026-09-16T06:34:17.766756Z"
+    }
+   }
+  },
+  "mermaid-w1-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-156",
+     "signature": "er-relationship-marker-filled-occludes-entity:dark",
+     "at": "2026-09-15T08:56:13.271320Z"
+    }
+   ]
+  },
+  "mermaid-w1-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-157",
+     "signature": "pie-default-palette-not-canvas-aware",
+     "at": "2026-09-15T08:56:13.286095Z"
+    }
+   ]
+  },
+  "mermaid-w4-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-158",
+     "signature": "missing-preprocessor-parse-hang",
+     "at": "2026-09-15T08:56:13.316250Z"
+    },
+    {
+     "origin": "D-298",
+     "signature": "user-text-on-user-fill-below-floor-not-remediated",
+     "at": "2026-09-15T08:56:14.991847Z"
+    }
+   ]
+  },
+  "mermaid-w4-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-158",
+     "signature": "missing-preprocessor-parse-hang",
+     "at": "2026-09-15T08:56:13.321997Z"
+    }
+   ]
+  },
+  "mermaid-w4-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-158",
+     "signature": "missing-preprocessor-parse-hang",
+     "at": "2026-09-15T08:56:13.336577Z"
+    }
+   ]
+  },
+  "mermaid-w4-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-158",
+     "signature": "missing-preprocessor-parse-hang",
+     "at": "2026-09-15T08:56:13.349403Z"
+    }
+   ]
+  },
+  "mermaid-w4-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-159",
+     "signature": "recovery-colour-honoured-no-contrast-remediation",
+     "at": "2026-09-15T08:56:13.354266Z"
+    },
+    {
+     "origin": "D-298",
+     "signature": "user-text-on-user-fill-below-floor-not-remediated",
+     "at": "2026-09-15T08:56:14.996655Z"
+    }
+   ]
+  },
+  "mermaid-w4-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-160",
+     "signature": "missing-dateFormat-yields-NaN-scale-all-bars-dropped",
+     "at": "2026-09-15T08:56:13.369932Z"
+    }
+   ]
+  },
+  "mermaid-w1-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-287",
+     "signature": "oversize-canvas-content-shrunk-labels-subpixel",
+     "at": "2026-09-15T08:56:14.845278Z"
+    }
+   ]
+  },
+  "mermaid-w2-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-287",
+     "signature": "oversize-canvas-content-shrunk-labels-subpixel",
+     "at": "2026-09-15T08:56:14.866524Z"
+    }
+   ]
+  },
+  "mermaid-w3-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-287",
+     "signature": "oversize-canvas-content-shrunk-labels-subpixel",
+     "at": "2026-09-15T08:56:14.908395Z"
+    }
+   ]
+  },
+  "mermaid-w3-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-287",
+     "signature": "oversize-canvas-content-shrunk-labels-subpixel",
+     "at": "2026-09-15T08:56:14.912553Z"
+    }
+   ]
+  },
+  "mermaid-w3-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-287",
+     "signature": "oversize-canvas-content-shrunk-labels-subpixel",
+     "at": "2026-09-15T08:56:14.918177Z"
+    }
+   ]
+  },
+  "mermaid-w3-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-287",
+     "signature": "oversize-canvas-content-shrunk-labels-subpixel",
+     "at": "2026-09-15T08:56:14.925844Z"
+    }
+   ]
+  },
+  "mermaid-w3-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-287",
+     "signature": "oversize-canvas-content-shrunk-labels-subpixel",
+     "at": "2026-09-15T08:56:14.930532Z"
+    }
+   ]
+  },
+  "mermaid-w1-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-289",
+     "signature": "flowchart-parallelogram-shape-not-honored-delimiter-leak",
+     "at": "2026-09-15T08:56:14.943821Z"
+    }
+   ]
+  },
+  "mermaid-w3-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-289",
+     "signature": "flowchart-parallelogram-shape-not-honored-delimiter-leak",
+     "at": "2026-09-15T08:56:14.949291Z"
+    }
+   ]
+  },
+  "mermaid-w3-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-290",
+     "signature": "sequence-break-block-refused-empty-svg",
+     "at": "2026-09-15T08:56:14.954248Z"
+    }
+   ]
+  },
+  "mermaid-w3-06b": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-290",
+     "signature": "sequence-break-block-refused-empty-svg",
+     "at": "2026-09-15T08:56:14.959432Z"
+    }
+   ]
+  },
+  "mermaid-w1-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-294",
+     "signature": "light-palette-not-canvas-aware-hsl-NaN-remediation-aborts",
+     "at": "2026-09-15T08:56:14.974441Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "57fe6f9c807dc2770dfad8d997f4164c78bab9256e68f56fdc46a972debda511",
+     "validated_at": "2026-09-16T06:32:54.804049Z"
+    }
+   }
+  },
+  "mermaid-w3-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-294",
+     "signature": "light-palette-not-canvas-aware-hsl-NaN-remediation-aborts",
+     "at": "2026-09-15T08:56:14.978513Z"
+    }
+   ]
+  },
+  "mermaid-w3-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-295",
+     "signature": "hardcoded-or-init-fill-merges-with-same-value-canvas",
+     "at": "2026-09-15T08:56:14.983534Z"
+    }
+   ]
+  },
+  "mermaid-w3-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-295",
+     "signature": "hardcoded-or-init-fill-merges-with-same-value-canvas",
+     "at": "2026-09-15T08:56:14.988666Z"
+    }
+   ]
+  }
+ }
+}

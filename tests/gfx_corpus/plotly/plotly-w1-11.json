@@ -1,0 +1,82 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "sankey",
+    "orientation": "h",
+    "node": {
+     "label": [
+      "Ingest",
+      "Validate",
+      "Enrich",
+      "Reject",
+      "Warehouse",
+      "Cache",
+      "Report"
+     ],
+     "pad": 18,
+     "thickness": 18,
+     "color": [
+      "#4c78a8",
+      "#f58518",
+      "#54a24b",
+      "#e45756",
+      "#72b7b2",
+      "#b279a2",
+      "#9d755d"
+     ],
+     "line": {
+      "color": "#333333",
+      "width": 0.5
+     }
+    },
+    "link": {
+     "source": [
+      0,
+      0,
+      1,
+      1,
+      2,
+      2,
+      4
+     ],
+     "target": [
+      1,
+      3,
+      2,
+      3,
+      4,
+      5,
+      6
+     ],
+     "value": [
+      100,
+      12,
+      80,
+      8,
+      60,
+      20,
+      55
+     ],
+     "color": [
+      "rgba(76,120,168,0.4)",
+      "rgba(228,87,86,0.4)",
+      "rgba(245,133,24,0.4)",
+      "rgba(228,87,86,0.4)",
+      "rgba(84,162,75,0.4)",
+      "rgba(178,121,162,0.4)",
+      "rgba(114,183,178,0.4)"
+     ]
+    }
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "Data Pipeline Flow"
+   },
+   "height": 480
+  }
+ },
+ "intent": "Sankey flow diagram with labelled nodes, coloured links and explicit node padding — the plugin's flagship network/flow trace."
+}

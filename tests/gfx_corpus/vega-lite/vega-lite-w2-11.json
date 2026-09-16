@@ -1,0 +1,42 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "40-slice donut",
+  "data": {
+   "sequence": {
+    "start": 0,
+    "stop": 40,
+    "step": 1,
+    "as": "n"
+   }
+  },
+  "transform": [
+   {
+    "calculate": "'seg-'+format(datum.n,'02d')",
+    "as": "k"
+   },
+   {
+    "calculate": "2+40*abs(sin(datum.n/5))",
+    "as": "v"
+   }
+  ],
+  "mark": {
+   "type": "arc",
+   "innerRadius": 70,
+   "outerRadius": 150
+  },
+  "height": 360,
+  "encoding": {
+   "theta": {
+    "field": "v",
+    "type": "quantitative"
+   },
+   "color": {
+    "field": "k",
+    "type": "nominal"
+   }
+  }
+ },
+ "intent": "SCALE: 40 arc slices - pushes the arc-label injection path to high slice count and recycles the categorical palette in a 40-entry legend."
+}

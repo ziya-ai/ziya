@@ -1,0 +1,856 @@
+{
+ "type": "network",
+ "definition": {
+  "nodes": [
+   {
+    "id": 0,
+    "x": 40,
+    "y": 45,
+    "size": 7
+   },
+   {
+    "id": 1,
+    "x": 130,
+    "y": 45,
+    "size": 7
+   },
+   {
+    "id": 2,
+    "x": 220,
+    "y": 45,
+    "size": 7
+   },
+   {
+    "id": 3,
+    "x": 310,
+    "y": 45,
+    "size": 7
+   },
+   {
+    "id": 4,
+    "x": 400,
+    "y": 45,
+    "size": 7
+   },
+   {
+    "id": 5,
+    "x": 490,
+    "y": 45,
+    "size": 7
+   },
+   {
+    "id": 6,
+    "x": 580,
+    "y": 45,
+    "size": 7
+   },
+   {
+    "id": 7,
+    "x": 670,
+    "y": 45,
+    "size": 7
+   },
+   {
+    "id": 8,
+    "x": 760,
+    "y": 45,
+    "size": 7
+   },
+   {
+    "id": 9,
+    "x": 850,
+    "y": 45,
+    "size": 7
+   },
+   {
+    "id": 10,
+    "x": 40,
+    "y": 100,
+    "size": 7
+   },
+   {
+    "id": 11,
+    "x": 130,
+    "y": 100,
+    "size": 7
+   },
+   {
+    "id": 12,
+    "x": 220,
+    "y": 100,
+    "size": 7
+   },
+   {
+    "id": 13,
+    "x": 310,
+    "y": 100,
+    "size": 7
+   },
+   {
+    "id": 14,
+    "x": 400,
+    "y": 100,
+    "size": 7
+   },
+   {
+    "id": 15,
+    "x": 490,
+    "y": 100,
+    "size": 7
+   },
+   {
+    "id": 16,
+    "x": 580,
+    "y": 100,
+    "size": 7
+   },
+   {
+    "id": 17,
+    "x": 670,
+    "y": 100,
+    "size": 7
+   },
+   {
+    "id": 18,
+    "x": 760,
+    "y": 100,
+    "size": 7
+   },
+   {
+    "id": 19,
+    "x": 850,
+    "y": 100,
+    "size": 7
+   },
+   {
+    "id": 20,
+    "x": 40,
+    "y": 155,
+    "size": 7
+   },
+   {
+    "id": 21,
+    "x": 130,
+    "y": 155,
+    "size": 7
+   },
+   {
+    "id": 22,
+    "x": 220,
+    "y": 155,
+    "size": 7
+   },
+   {
+    "id": 23,
+    "x": 310,
+    "y": 155,
+    "size": 7
+   },
+   {
+    "id": 24,
+    "x": 400,
+    "y": 155,
+    "size": 7
+   },
+   {
+    "id": 25,
+    "x": 490,
+    "y": 155,
+    "size": 7
+   },
+   {
+    "id": 26,
+    "x": 580,
+    "y": 155,
+    "size": 7
+   },
+   {
+    "id": 27,
+    "x": 670,
+    "y": 155,
+    "size": 7
+   },
+   {
+    "id": 28,
+    "x": 760,
+    "y": 155,
+    "size": 7
+   },
+   {
+    "id": 29,
+    "x": 850,
+    "y": 155,
+    "size": 7
+   },
+   {
+    "id": 30,
+    "x": 40,
+    "y": 210,
+    "size": 7
+   },
+   {
+    "id": 31,
+    "x": 130,
+    "y": 210,
+    "size": 7
+   },
+   {
+    "id": 32,
+    "x": 220,
+    "y": 210,
+    "size": 7
+   },
+   {
+    "id": 33,
+    "x": 310,
+    "y": 210,
+    "size": 7
+   },
+   {
+    "id": 34,
+    "x": 400,
+    "y": 210,
+    "size": 7
+   },
+   {
+    "id": 35,
+    "x": 490,
+    "y": 210,
+    "size": 7
+   },
+   {
+    "id": 36,
+    "x": 580,
+    "y": 210,
+    "size": 7
+   },
+   {
+    "id": 37,
+    "x": 670,
+    "y": 210,
+    "size": 7
+   },
+   {
+    "id": 38,
+    "x": 760,
+    "y": 210,
+    "size": 7
+   },
+   {
+    "id": 39,
+    "x": 850,
+    "y": 210,
+    "size": 7
+   },
+   {
+    "id": 40,
+    "x": 40,
+    "y": 265,
+    "size": 7
+   },
+   {
+    "id": 41,
+    "x": 130,
+    "y": 265,
+    "size": 7
+   },
+   {
+    "id": 42,
+    "x": 220,
+    "y": 265,
+    "size": 7
+   },
+   {
+    "id": 43,
+    "x": 310,
+    "y": 265,
+    "size": 7
+   },
+   {
+    "id": 44,
+    "x": 400,
+    "y": 265,
+    "size": 7
+   },
+   {
+    "id": 45,
+    "x": 490,
+    "y": 265,
+    "size": 7
+   },
+   {
+    "id": 46,
+    "x": 580,
+    "y": 265,
+    "size": 7
+   },
+   {
+    "id": 47,
+    "x": 670,
+    "y": 265,
+    "size": 7
+   },
+   {
+    "id": 48,
+    "x": 760,
+    "y": 265,
+    "size": 7
+   },
+   {
+    "id": 49,
+    "x": 850,
+    "y": 265,
+    "size": 7
+   },
+   {
+    "id": 50,
+    "x": 40,
+    "y": 320,
+    "size": 7
+   },
+   {
+    "id": 51,
+    "x": 130,
+    "y": 320,
+    "size": 7
+   },
+   {
+    "id": 52,
+    "x": 220,
+    "y": 320,
+    "size": 7
+   },
+   {
+    "id": 53,
+    "x": 310,
+    "y": 320,
+    "size": 7
+   },
+   {
+    "id": 54,
+    "x": 400,
+    "y": 320,
+    "size": 7
+   },
+   {
+    "id": 55,
+    "x": 490,
+    "y": 320,
+    "size": 7
+   },
+   {
+    "id": 56,
+    "x": 580,
+    "y": 320,
+    "size": 7
+   },
+   {
+    "id": 57,
+    "x": 670,
+    "y": 320,
+    "size": 7
+   },
+   {
+    "id": 58,
+    "x": 760,
+    "y": 320,
+    "size": 7
+   },
+   {
+    "id": 59,
+    "x": 850,
+    "y": 320,
+    "size": 7
+   }
+  ],
+  "links": [
+   {
+    "source": 0,
+    "target": 1
+   },
+   {
+    "source": 1,
+    "target": 2
+   },
+   {
+    "source": 2,
+    "target": 3
+   },
+   {
+    "source": 3,
+    "target": 4
+   },
+   {
+    "source": 4,
+    "target": 5
+   },
+   {
+    "source": 5,
+    "target": 6
+   },
+   {
+    "source": 6,
+    "target": 7
+   },
+   {
+    "source": 7,
+    "target": 8
+   },
+   {
+    "source": 8,
+    "target": 9
+   },
+   {
+    "source": 9,
+    "target": 10
+   },
+   {
+    "source": 10,
+    "target": 11
+   },
+   {
+    "source": 11,
+    "target": 12
+   },
+   {
+    "source": 12,
+    "target": 13
+   },
+   {
+    "source": 13,
+    "target": 14
+   },
+   {
+    "source": 14,
+    "target": 15
+   },
+   {
+    "source": 15,
+    "target": 16
+   },
+   {
+    "source": 16,
+    "target": 17
+   },
+   {
+    "source": 17,
+    "target": 18
+   },
+   {
+    "source": 18,
+    "target": 19
+   },
+   {
+    "source": 19,
+    "target": 20
+   },
+   {
+    "source": 20,
+    "target": 21
+   },
+   {
+    "source": 21,
+    "target": 22
+   },
+   {
+    "source": 22,
+    "target": 23
+   },
+   {
+    "source": 23,
+    "target": 24
+   },
+   {
+    "source": 24,
+    "target": 25
+   },
+   {
+    "source": 25,
+    "target": 26
+   },
+   {
+    "source": 26,
+    "target": 27
+   },
+   {
+    "source": 27,
+    "target": 28
+   },
+   {
+    "source": 28,
+    "target": 29
+   },
+   {
+    "source": 29,
+    "target": 30
+   },
+   {
+    "source": 30,
+    "target": 31
+   },
+   {
+    "source": 31,
+    "target": 32
+   },
+   {
+    "source": 32,
+    "target": 33
+   },
+   {
+    "source": 33,
+    "target": 34
+   },
+   {
+    "source": 34,
+    "target": 35
+   },
+   {
+    "source": 35,
+    "target": 36
+   },
+   {
+    "source": 36,
+    "target": 37
+   },
+   {
+    "source": 37,
+    "target": 38
+   },
+   {
+    "source": 38,
+    "target": 39
+   },
+   {
+    "source": 39,
+    "target": 40
+   },
+   {
+    "source": 40,
+    "target": 41
+   },
+   {
+    "source": 41,
+    "target": 42
+   },
+   {
+    "source": 42,
+    "target": 43
+   },
+   {
+    "source": 43,
+    "target": 44
+   },
+   {
+    "source": 44,
+    "target": 45
+   },
+   {
+    "source": 45,
+    "target": 46
+   },
+   {
+    "source": 46,
+    "target": 47
+   },
+   {
+    "source": 47,
+    "target": 48
+   },
+   {
+    "source": 48,
+    "target": 49
+   },
+   {
+    "source": 49,
+    "target": 50
+   },
+   {
+    "source": 50,
+    "target": 51
+   },
+   {
+    "source": 51,
+    "target": 52
+   },
+   {
+    "source": 52,
+    "target": 53
+   },
+   {
+    "source": 53,
+    "target": 54
+   },
+   {
+    "source": 54,
+    "target": 55
+   },
+   {
+    "source": 55,
+    "target": 56
+   },
+   {
+    "source": 56,
+    "target": 57
+   },
+   {
+    "source": 57,
+    "target": 58
+   },
+   {
+    "source": 58,
+    "target": 59
+   }
+  ],
+  "groups": [
+   {
+    "id": "board0",
+    "label": "Board 0",
+    "members": [
+     0,
+     1
+    ]
+   },
+   {
+    "id": "board1",
+    "label": "Board 1",
+    "members": [
+     2,
+     3
+    ]
+   },
+   {
+    "id": "board2",
+    "label": "Board 2",
+    "members": [
+     4,
+     5
+    ]
+   },
+   {
+    "id": "board3",
+    "label": "Board 3",
+    "members": [
+     6,
+     7
+    ]
+   },
+   {
+    "id": "board4",
+    "label": "Board 4",
+    "members": [
+     8,
+     9
+    ]
+   },
+   {
+    "id": "board5",
+    "label": "Board 5",
+    "members": [
+     10,
+     11
+    ]
+   },
+   {
+    "id": "board6",
+    "label": "Board 6",
+    "members": [
+     12,
+     13
+    ]
+   },
+   {
+    "id": "board7",
+    "label": "Board 7",
+    "members": [
+     14,
+     15
+    ]
+   },
+   {
+    "id": "board8",
+    "label": "Board 8",
+    "members": [
+     16,
+     17
+    ]
+   },
+   {
+    "id": "board9",
+    "label": "Board 9",
+    "members": [
+     18,
+     19
+    ]
+   },
+   {
+    "id": "board10",
+    "label": "Board 10",
+    "members": [
+     20,
+     21
+    ]
+   },
+   {
+    "id": "board11",
+    "label": "Board 11",
+    "members": [
+     22,
+     23
+    ]
+   },
+   {
+    "id": "board12",
+    "label": "Board 12",
+    "members": [
+     24,
+     25
+    ]
+   },
+   {
+    "id": "board13",
+    "label": "Board 13",
+    "members": [
+     26,
+     27
+    ]
+   },
+   {
+    "id": "board14",
+    "label": "Board 14",
+    "members": [
+     28,
+     29
+    ]
+   },
+   {
+    "id": "board15",
+    "label": "Board 15",
+    "members": [
+     30,
+     31
+    ]
+   },
+   {
+    "id": "board16",
+    "label": "Board 16",
+    "members": [
+     32,
+     33
+    ]
+   },
+   {
+    "id": "board17",
+    "label": "Board 17",
+    "members": [
+     34,
+     35
+    ]
+   },
+   {
+    "id": "board18",
+    "label": "Board 18",
+    "members": [
+     36,
+     37
+    ]
+   },
+   {
+    "id": "board19",
+    "label": "Board 19",
+    "members": [
+     38,
+     39
+    ]
+   },
+   {
+    "id": "board20",
+    "label": "Board 20",
+    "members": [
+     40,
+     41
+    ]
+   },
+   {
+    "id": "board21",
+    "label": "Board 21",
+    "members": [
+     42,
+     43
+    ]
+   },
+   {
+    "id": "board22",
+    "label": "Board 22",
+    "members": [
+     44,
+     45
+    ]
+   },
+   {
+    "id": "board23",
+    "label": "Board 23",
+    "members": [
+     46,
+     47
+    ]
+   },
+   {
+    "id": "board24",
+    "label": "Board 24",
+    "members": [
+     48,
+     49
+    ]
+   },
+   {
+    "id": "board25",
+    "label": "Board 25",
+    "members": [
+     50,
+     51
+    ]
+   },
+   {
+    "id": "board26",
+    "label": "Board 26",
+    "members": [
+     52,
+     53
+    ]
+   },
+   {
+    "id": "board27",
+    "label": "Board 27",
+    "members": [
+     54,
+     55
+    ]
+   },
+   {
+    "id": "board28",
+    "label": "Board 28",
+    "members": [
+     56,
+     57
+    ]
+   },
+   {
+    "id": "board29",
+    "label": "Board 29",
+    "members": [
+     58,
+     59
+    ]
+   }
+  ],
+  "width": 950,
+  "height": 400,
+  "style": {
+   "labelColor": "#7e7e7e",
+   "fontSize": 9,
+   "linkColor": "#7e7e7e",
+   "linkOpacity": 1
+  }
+ },
+ "intent": "SCALE/nesting breadth: 30 `groups` containers over 60 nodes - group rect geometry comes from a hardcoded id==='modem_board' ternary, so all 30 must stack at one of two fixed positions."
+}

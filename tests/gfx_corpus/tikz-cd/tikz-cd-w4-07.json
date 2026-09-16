@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\begin{tikzcd}\nA \\arrow[r, “f”] \\arrow[d, ‘g’] & B \\arrow[d, “h”] \\\\\nC \\arrow[r, “k”] & D\n\\end{tikzcd}",
+ "intent": "Smart quotes (U+201C/201D curly double, U+2018/2019 single) where tikz-cd requires ASCII \" for labels. Recovery: normalize to straight quotes."
+}

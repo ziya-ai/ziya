@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\definecolor{darkfill}{HTML}{1E1E1E}\n\\definecolor{darkedge}{HTML}{444444}\n\\definecolor{lightink}{HTML}{E6E6E6}\n\\begin{tikzcd}[cells={nodes={draw=darkedge,fill=darkfill,inner sep=6pt}}]\n\\textcolor{lightink}{\\mathsf{In}} \\rar[draw=lightink,\"\\textcolor{lightink}{f}\"] & \\textcolor{lightink}{\\mathsf{Mid}} \\dar[draw=lightink] \\\\\n\\textcolor{lightink}{\\mathsf{Out}} \\rar[draw=lightink,\"\\textcolor{lightink}{g}\"'] & \\textcolor{lightink}{\\mathsf{End}}\n\\end{tikzcd}",
+ "intent": "hardcoded DARK palette: #1E1E1E fills with #E6E6E6 ink - must survive a light page"
+}

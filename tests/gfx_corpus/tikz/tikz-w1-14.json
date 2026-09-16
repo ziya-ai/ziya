@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "[every node/.style={font=\\small}]\n\\node[draw,circle,thick] (a) at (0,0) {$q_0$};\n\\node[draw,circle,thick] (b) at (3.2,0) {$q_1$};\n\\node[draw,circle,thick,double] (c) at (6.4,0) {$q_2$};\n\\draw[-{Stealth},thick] (a) -- node[midway,above] {a} node[midway,below] {/1} (b);\n\\draw[-{Stealth},thick] (b) -- node[near start,above] {b} (c);\n\\draw[-{Stealth},thick] (a) to[bend right=45] node[midway,below] {reset} (c);\n\\draw[-{Stealth},thick] (b) to[loop above] node[above] {$\\epsilon$} (b);\n\\draw[-{Stealth},thick] (c) to[bend left=35] node[midway,above] {pop} (b);",
+ "intent": "edge labels: node[midway/near start] on paths, bend, and self loop with loop above"
+}

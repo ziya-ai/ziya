@@ -1,0 +1,211 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 440,
+  "height": 230,
+  "padding": 5,
+  "data": [
+   {
+    "name": "trend",
+    "values": [
+     {
+      "t": 1,
+      "v": 12,
+      "k": "cpu"
+     },
+     {
+      "t": 2,
+      "v": 31,
+      "k": "cpu"
+     },
+     {
+      "t": 3,
+      "v": 27,
+      "k": "cpu"
+     },
+     {
+      "t": 4,
+      "v": 45,
+      "k": "cpu"
+     },
+     {
+      "t": 5,
+      "v": 38,
+      "k": "cpu"
+     },
+     {
+      "t": 1,
+      "v": 40,
+      "k": "memory"
+     },
+     {
+      "t": 2,
+      "v": 42,
+      "k": "memory"
+     },
+     {
+      "t": 3,
+      "v": 55,
+      "k": "memory"
+     },
+     {
+      "t": 4,
+      "v": 52,
+      "k": "memory"
+     },
+     {
+      "t": 5,
+      "v": 70,
+      "k": "memory"
+     },
+     {
+      "t": 1,
+      "v": 5,
+      "k": "disk"
+     },
+     {
+      "t": 2,
+      "v": 9,
+      "k": "disk"
+     },
+     {
+      "t": 3,
+      "v": 14,
+      "k": "disk"
+     },
+     {
+      "t": 4,
+      "v": 11,
+      "k": "disk"
+     },
+     {
+      "t": 5,
+      "v": 22,
+      "k": "disk"
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "linear",
+    "range": "width",
+    "domain": {
+     "data": "trend",
+     "field": "t"
+    }
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "range": "height",
+    "nice": true,
+    "zero": true,
+    "domain": {
+     "data": "trend",
+     "field": "v"
+    }
+   },
+   {
+    "name": "color",
+    "type": "ordinal",
+    "range": {
+     "scheme": "tableau10"
+    },
+    "domain": {
+     "data": "trend",
+     "field": "k"
+    }
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x",
+    "title": "Sample",
+    "tickCount": 5
+   },
+   {
+    "orient": "left",
+    "scale": "y",
+    "title": "Utilisation %",
+    "grid": true
+   }
+  ],
+  "legends": [
+   {
+    "stroke": "color",
+    "title": "Metric",
+    "orient": "top-right",
+    "symbolType": "stroke"
+   }
+  ],
+  "marks": [
+   {
+    "type": "group",
+    "from": {
+     "facet": {
+      "name": "byMetric",
+      "data": "trend",
+      "groupby": "k"
+     }
+    },
+    "marks": [
+     {
+      "type": "line",
+      "from": {
+       "data": "byMetric"
+      },
+      "encode": {
+       "enter": {
+        "x": {
+         "scale": "x",
+         "field": "t"
+        },
+        "y": {
+         "scale": "y",
+         "field": "v"
+        },
+        "stroke": {
+         "scale": "color",
+         "field": "k"
+        },
+        "strokeWidth": {
+         "value": 2.5
+        }
+       }
+      }
+     },
+     {
+      "type": "symbol",
+      "from": {
+       "data": "byMetric"
+      },
+      "encode": {
+       "enter": {
+        "x": {
+         "scale": "x",
+         "field": "t"
+        },
+        "y": {
+         "scale": "y",
+         "field": "v"
+        },
+        "fill": {
+         "scale": "color",
+         "field": "k"
+        },
+        "size": {
+         "value": 70
+        }
+       }
+      }
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "Multi-series line chart with faceted group marks, symbol marks at each point, and a symbol legend. Exercises line marks + point overlay + legend symbol type."
+}

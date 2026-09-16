@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "flowchart LR\n  A[\"日本語のラベル 中文標籤 한국어\"] --> B[\"🚀 emoji ✅ mixed ⚠️ 🔥\"]\n  B --> C[\"مرحبا بالعالم RTL שלום\"]\n  C --> D[\"Ελληνικά Цириллица ẞ\"]\n  D --> E[\"combining é́ ẘ̈ ZWJ 👨‍👩‍👧‍👦\"]\n  E --> A",
+ "intent": "Unicode/CJK/RTL/emoji/ZWJ/combining-mark labels in one flowchart. Probes font fallback, glyph clipping, node width measurement for wide (CJK) and bidi (Arabic/Hebrew) runs, and whether ZWJ family emoji renders as one glyph or four. Text is drawn on the node fill, so it is also a text-on-colored-element contrast case in both themes."
+}

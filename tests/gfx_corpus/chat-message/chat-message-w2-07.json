@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "# H1 section 00\n\n## H2 section 01\n\n### H3 section 02\n\n#### H4 section 03\n\n##### H5 section 04\n\n###### H6 section 05\n\n# H1 section 06\n\n## H2 section 07\n\n### H3 section 08\n\n#### H4 section 09\n\n##### H5 section 10\n\n###### H6 section 11\n\n# H1 section 12\n\n## H2 section 13\n\n### H3 section 14\n\n#### H4 section 15\n\n##### H5 section 16\n\n###### H6 section 17\n\n# H1 section 18\n\n## H2 section 19\n\n### H3 section 20\n\n#### H4 section 21\n\n##### H5 section 22\n\n###### H6 section 23\n\n# H1 section 24\n\n## H2 section 25\n\n### H3 section 26\n\n#### H4 section 27\n\n##### H5 section 28\n\n###### H6 section 29\n\n# H1 section 30\n\n## H2 section 31\n\n### H3 section 32\n\n#### H4 section 33\n\n##### H5 section 34\n\n###### H6 section 35\n",
+ "intent": "36 headings spanning h1-h6 back to back, probing heading hierarchy legibility and h5/h6 sizing at high heading count"
+}

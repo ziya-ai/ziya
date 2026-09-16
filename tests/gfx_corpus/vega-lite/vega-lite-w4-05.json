@@ -1,0 +1,5 @@
+{
+ "type": "vega-lite",
+ "definition": "{\n  \"$schema\": \"https://vega.github.io/schema/vega-lite/v2.json\",\n  \"data\": {\"values\": [{\"g\": \"P\", \"y\": 4}, {\"g\": \"Q\", \"y\": 9}, {\"g\": \"R\", \"y\": 6}]},\n  \"mark\": {\"type\": \"bar\", \"cornerRadiusEnd\": 4, \"tooltip\": true},\n  \"encoding\": {\n    \"x\": {\"field\": \"g\", \"type\": \"nominal\"},\n    \"y\": {\"field\": \"y\", \"type\": \"quantitative\", \"title\": \"Yield\"},\n    \"color\": {\"field\": \"g\", \"type\": \"nominal\", \"legend\": {\"orient\": \"top\"}}\n  }\n}",
+ "intent": "Dialect mismatch: declares the v2 schema but uses v5-only syntax (cornerRadiusEnd, mark.tooltip, encoding-level title). Intent: a coloured 3-bar chart with a top legend."
+}

@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "journey\n  title Onboarding a new tenant\n  section Discovery\n    Land on marketing page: 5: Prospect\n    Read pricing: 3: Prospect\n    Request trial: 4: Prospect, Sales\n  section Provisioning\n    Create account: 3: Admin\n    Wait for DNS: 1: Admin\n    Invite team: 4: Admin, Team\n  section First value\n    Connect data source: 2: Admin, Support\n    See first dashboard: 5: Admin, Team\n",
+ "intent": "user journey diagram with sections, actors and scores"
+}

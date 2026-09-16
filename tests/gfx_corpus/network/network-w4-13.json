@@ -1,0 +1,5 @@
+{
+ "type": "network",
+ "definition": "{\n  \"nodes\": [\n    {\"id\": \"v1\", \"label\": \"var accent\",  \"x\": 160, \"y\": 140, \"size\": 22, \"color\": \"var(--ziya-node-accent)\"},\n    {\"id\": \"v2\", \"label\": \"var primary\", \"x\": 330, \"y\": 140, \"size\": 22, \"color\": \"var(--ziya-primary, )\"},\n    {\"id\": \"v3\", \"label\": \"token name\",  \"x\": 500, \"y\": 140, \"size\": 22, \"color\": \"theme.node.fill\"},\n    {\"id\": \"v4\", \"label\": \"known good\",  \"x\": 330, \"y\": 300, \"size\": 22, \"color\": \"#2e6eaa\"}\n  ],\n  \"links\": [\n    {\"source\": \"v1\", \"target\": \"v2\", \"weight\": 2},\n    {\"source\": \"v2\", \"target\": \"v3\", \"weight\": 2},\n    {\"source\": \"v2\", \"target\": \"v4\", \"weight\": 2}\n  ],\n  \"width\": 640, \"height\": 380,\n  \"style\": {\"labelColor\": \"var(--ziya-text-primary)\", \"fontSize\": 13,\n            \"linkColor\": \"var(--ziya-border)\", \"linkOpacity\": 1}\n}",
+ "intent": "A theme token that does not exist - CSS custom properties and a bare token name the engine never defines. Recovery = fall back to a THEME-APPROPRIATE colour, not to the CSS initial value."
+}

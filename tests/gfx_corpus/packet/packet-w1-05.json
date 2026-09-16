@@ -1,0 +1,100 @@
+{
+ "type": "packet",
+ "definition": {
+  "type": "packet",
+  "title": "Named Theme Palette",
+  "subtitle": "One section per built-in semantic theme key",
+  "bitWidth": 32,
+  "sections": [
+   {
+    "label": "header",
+    "color": "header",
+    "rows": [
+     [
+      [
+       "Magic",
+       16
+      ],
+      [
+       "Version",
+       8
+      ],
+      [
+       "Type",
+       8
+      ]
+     ]
+    ]
+   },
+   {
+    "label": "transport",
+    "color": "transport",
+    "rows": [
+     [
+      [
+       "Src Port",
+       16
+      ],
+      [
+       "Dst Port",
+       16
+      ]
+     ]
+    ]
+   },
+   {
+    "label": "security",
+    "color": "security",
+    "rows": [
+     [
+      [
+       "Nonce",
+       32
+      ]
+     ]
+    ]
+   },
+   {
+    "label": "control",
+    "color": "control",
+    "rows": [
+     [
+      [
+       "Seq",
+       24
+      ],
+      [
+       "Flags",
+       8
+      ]
+     ]
+    ]
+   },
+   {
+    "label": "payload",
+    "color": "payload",
+    "rows": [
+     [
+      [
+       "Body",
+       32
+      ]
+     ]
+    ]
+   },
+   {
+    "label": "error",
+    "color": "error",
+    "rows": [
+     [
+      [
+       "CRC32",
+       32
+      ]
+     ]
+    ]
+   }
+  ]
+ },
+ "intent": "Named built-in color themes, one per section (header/transport/security/control/payload/error)"
+}

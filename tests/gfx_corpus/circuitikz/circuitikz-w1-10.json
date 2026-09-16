@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\\node[amp] (a) at (0,0) {};\n\\node[adc, right=1.6cm of a] (b) {};\n\\node[dsp, right=1.6cm of b] (c) {DSP};\n\\node[dac, right=1.6cm of c] (d) {};\n\\draw (a) -- (b) -- (c) -- (d);\n\\draw (a) -- ++(-1.2,0) node[left]{$s(t)$};\n\\draw (d) -- ++(1.2,0) node[right]{$y(t)$};\n\\node at (4,1.6) {Signal chain};",
+ "intent": "Block-diagram chain built with the positioning library's right=1.6cm of X syntax across amp/adc/dsp/dac blocks."
+}

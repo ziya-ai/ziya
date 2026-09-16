@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\chemfig{\\color{Crimson}{H_3C}-[,,,,DarkGreen]C(=[:60,,,,Navy]O)-[:-60,,,,Teal]\\color{DarkOrange}{OH}}",
+ "intent": "Per-bond colour via the 5th bond field (TikZ options) plus \\color on atom labels, using xcolor svgnames the profile pre-loads."
+}

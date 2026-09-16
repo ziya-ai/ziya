@@ -1,0 +1,131 @@
+{
+ "type": "basic-chart",
+ "definition": {
+  "type": "bar",
+  "width": 110,
+  "height": 80,
+  "data": [
+   {
+    "label": "m0",
+    "value": 18
+   },
+   {
+    "label": "m1",
+    "value": 72
+   },
+   {
+    "label": "m2",
+    "value": 59
+   },
+   {
+    "label": "m3",
+    "value": 28
+   },
+   {
+    "label": "m4",
+    "value": 95
+   },
+   {
+    "label": "m5",
+    "value": 18
+   },
+   {
+    "label": "m6",
+    "value": 27
+   },
+   {
+    "label": "m7",
+    "value": 32
+   },
+   {
+    "label": "m8",
+    "value": 34
+   },
+   {
+    "label": "m9",
+    "value": 73
+   },
+   {
+    "label": "m10",
+    "value": 96
+   },
+   {
+    "label": "m11",
+    "value": 69
+   },
+   {
+    "label": "m12",
+    "value": 92
+   },
+   {
+    "label": "m13",
+    "value": 16
+   },
+   {
+    "label": "m14",
+    "value": 76
+   },
+   {
+    "label": "m15",
+    "value": 55
+   },
+   {
+    "label": "m16",
+    "value": 86
+   },
+   {
+    "label": "m17",
+    "value": 56
+   },
+   {
+    "label": "m18",
+    "value": 47
+   },
+   {
+    "label": "m19",
+    "value": 63
+   },
+   {
+    "label": "m20",
+    "value": 73
+   },
+   {
+    "label": "m21",
+    "value": 25
+   },
+   {
+    "label": "m22",
+    "value": 47
+   },
+   {
+    "label": "m23",
+    "value": 94
+   },
+   {
+    "label": "m24",
+    "value": 34
+   },
+   {
+    "label": "m25",
+    "value": 36
+   },
+   {
+    "label": "m26",
+    "value": 38
+   },
+   {
+    "label": "m27",
+    "value": 79
+   },
+   {
+    "label": "m28",
+    "value": 86
+   },
+   {
+    "label": "m29",
+    "value": 44
+   }
+  ]
+ },
+ "intent": "SCALE-DOWN: 110x80 canvas with 30 bars - explicit size far BELOW natural; plot area shrinks to 50x30"
+}

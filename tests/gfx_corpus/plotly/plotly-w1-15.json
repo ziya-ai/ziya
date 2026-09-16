@@ -1,0 +1,83 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "table",
+    "columnwidth": [
+     90,
+     60,
+     60,
+     70
+    ],
+    "header": {
+     "values": [
+      "<b>Service</b>",
+      "<b>p50</b>",
+      "<b>p99</b>",
+      "<b>Errors</b>"
+     ],
+     "align": [
+      "left",
+      "right",
+      "right",
+      "right"
+     ],
+     "fill": {
+      "color": "#4c78a8"
+     },
+     "font": {
+      "color": "#ffffff",
+      "size": 13
+     }
+    },
+    "cells": {
+     "values": [
+      [
+       "auth",
+       "catalog",
+       "checkout",
+       "search",
+       "recs"
+      ],
+      [
+       12,
+       8,
+       24,
+       15,
+       31
+      ],
+      [
+       88,
+       51,
+       210,
+       130,
+       260
+      ],
+      [
+       "0.02%",
+       "0.01%",
+       "0.31%",
+       "0.04%",
+       "0.12%"
+      ]
+     ],
+     "align": [
+      "left",
+      "right",
+      "right",
+      "right"
+     ],
+     "height": 26
+    }
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "Service Latency Table"
+   },
+   "height": 400
+  }
+ },
+ "intent": "Table trace with header/cell styling, alternating row fill and per-column alignment — canonical tabular output."
+}

@@ -1,0 +1,134 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 900,
+  "height": 300,
+  "padding": 5,
+  "autosize": "pad",
+  "data": [
+   {
+    "name": "t",
+    "transform": [
+     {
+      "type": "sequence",
+      "start": 0,
+      "stop": 400,
+      "step": 1,
+      "as": "i"
+     },
+     {
+      "type": "formula",
+      "as": "v",
+      "expr": "20 + 18*sin(datum.i/9) + 12*cos(datum.i/23)"
+     },
+     {
+      "type": "formula",
+      "as": "k",
+      "expr": "'c' + datum.i"
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "band",
+    "domain": {
+     "data": "t",
+     "field": "k"
+    },
+    "range": "width",
+    "padding": 0.05
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "domain": {
+     "data": "t",
+     "field": "v"
+    },
+    "range": "height",
+    "nice": true
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x",
+    "title": "category (400 bands)",
+    "labelAngle": -90,
+    "labelAlign": "right"
+   },
+   {
+    "orient": "left",
+    "scale": "y",
+    "title": "value",
+    "grid": true
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "k"
+      },
+      "width": {
+       "scale": "x",
+       "band": 1
+      },
+      "y": {
+       "scale": "y",
+       "field": "v"
+      },
+      "y2": {
+       "scale": "y",
+       "value": 0
+      },
+      "fill": {
+       "value": "#4c78a8"
+      }
+     }
+    }
+   },
+   {
+    "type": "text",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "k",
+       "band": 0.5
+      },
+      "y": {
+       "scale": "y",
+       "field": "v"
+      },
+      "dy": {
+       "value": -3
+      },
+      "align": {
+       "value": "center"
+      },
+      "fontSize": {
+       "value": 7
+      },
+      "text": {
+       "signal": "format(datum.v, '.0f')"
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "SCALE/COUNT: bar chart with 400 band-scale bars plus 400 data-bound text value labels. Probes label collision, sub-pixel band width, and whether the dark text-mark defect gets worse at density."
+}

@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "server -> database\ndatabase -> cache\ncache -> server\n",
+ "intent": "Canonical D2 basic directed connections forming a 3-node cycle."
+}

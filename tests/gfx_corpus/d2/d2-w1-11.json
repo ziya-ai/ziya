@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "direction: right\nstep1: Ingest\nstep2: Transform\nstep3: Load\nstep1 -> step2 -> step3\n",
+ "intent": "Top-level `direction: right` keyword plus a chained connection (a -> b -> c)."
+}

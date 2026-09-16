@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "mindmap\n  root((Observability))\n    Metrics\n      Counters\n      Histograms\n        p50\n        p99\n    Logs\n      Structured\n      Sampling\n    Traces\n      Spans\n      Baggage\n    Alerting\n      SLO burn\n      Paging policy\n",
+ "intent": "mindmap with nested levels and mixed node shapes"
+}

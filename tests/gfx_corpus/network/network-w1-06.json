@@ -1,0 +1,68 @@
+{
+ "type": "network",
+ "definition": {
+  "type": "network",
+  "width": 600,
+  "height": 400,
+  "nodes": [
+   {
+    "id": "ingest",
+    "label": "Ingest",
+    "x": 90,
+    "y": 200
+   },
+   {
+    "id": "route",
+    "label": "Router",
+    "x": 300,
+    "y": 200
+   },
+   {
+    "id": "hot",
+    "label": "Hot Path",
+    "x": 500,
+    "y": 90
+   },
+   {
+    "id": "warm",
+    "label": "Warm Path",
+    "x": 500,
+    "y": 200
+   },
+   {
+    "id": "cold",
+    "label": "Cold Path",
+    "x": 500,
+    "y": 320
+   }
+  ],
+  "links": [
+   {
+    "source": "ingest",
+    "target": "route",
+    "weight": 12
+   },
+   {
+    "source": "route",
+    "target": "hot",
+    "weight": 8
+   },
+   {
+    "source": "route",
+    "target": "warm",
+    "weight": 4
+   },
+   {
+    "source": "route",
+    "target": "cold",
+    "weight": 1
+   }
+  ],
+  "style": {
+   "labelColor": "#7e7e7e",
+   "linkColor": "#4a4a4a",
+   "linkOpacity": 0.85
+  }
+ },
+ "intent": "Per-link `weight` drives stroke-width (1..12); relative edge thickness must be visually distinguishable and every weighted edge must survive."
+}

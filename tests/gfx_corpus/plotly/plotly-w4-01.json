@@ -1,0 +1,5 @@
+{
+ "type": "plotly",
+ "definition": "{\n  \"data\": [\n    {\"type\": \"bar\", \"x\": [\"Alpha\",\"Beta\",\"Gamma\",], \"y\": [3,7,5,], \"name\": \"Series 1\",},\n  ],\n  \"layout\": {\"title\": {\"text\": \"Trailing Commas Everywhere\"}, \"xaxis\": {\"title\": {\"text\": \"Group\"}}, \"yaxis\": {\"title\": {\"text\": \"Value\"}},}\n}",
+ "intent": "trailing commas after last array element and last object member, in data, x, y and layout - the single most common LLM JSON slip. Intent: a 3-bar chart with titled axes."
+}

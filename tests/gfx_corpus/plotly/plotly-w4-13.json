@@ -1,0 +1,5 @@
+{
+ "type": "plotly",
+ "definition": "{\"data\":[{\"x\":[\"a\",\"b\",\"c\",\"d\"],\"y\":[4,7,2,9],\"name\":\"first\"},{\"y\":[1,3,2,5],\"name\":\"second, no x\"}]}",
+ "intent": "missing optional-but-assumed fields: no 'type' on either trace, no 'mode', no 'x' on the second trace, and no layout block at all. Intent: two comparable series over four categories, legible and labelled."
+}

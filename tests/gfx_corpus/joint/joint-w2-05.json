@@ -1,0 +1,88 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "autoLayout": false,
+  "elements": [
+   {
+    "id": "L0",
+    "type": "rect",
+    "label": "The quick brown fox jumps over the lazy dog while carrying an exceptionally verbose identifier that no sane person would ever place inside a diagram node, and yet here we are",
+    "position": [
+     60,
+     60
+    ],
+    "size": {
+     "width": 200,
+     "height": 90
+    }
+   },
+   {
+    "id": "L1",
+    "type": "rect",
+    "label": "The quick brown fox jumps over the lazy dog while carrying an exceptionally verbose identifier that no sane person would",
+    "position": [
+     60,
+     200
+    ],
+    "size": {
+     "width": 200,
+     "height": 90
+    }
+   },
+   {
+    "id": "L2",
+    "type": "rect",
+    "label": "The quick brown fox jumps over the lazy dog while carrying an exceptionally verbose identifier that no sane person would ever place inside a diagram node, and yet here we are",
+    "position": [
+     60,
+     340
+    ],
+    "size": {
+     "width": 200,
+     "height": 90
+    }
+   },
+   {
+    "id": "L3",
+    "type": "rect",
+    "label": "The quick brown fox jumps over the lazy dog while carrying an exceptionally verbose identifier that no sane person would ever place inside a diagram node, and yet here we are",
+    "position": [
+     60,
+     480
+    ],
+    "size": {
+     "width": 200,
+     "height": 90
+    }
+   },
+   {
+    "id": "L4",
+    "type": "rect",
+    "label": "The quick brown fox jumps over the lazy dog while carrying an exceptionally verbose identifier that no sane person would ever place inside a diagram node, and yet here we are",
+    "position": [
+     60,
+     620
+    ],
+    "size": {
+     "width": 200,
+     "height": 90
+    }
+   },
+   {
+    "id": "L5",
+    "type": "rect",
+    "label": "The quick brown fox jumps over the lazy dog while carrying an exceptionally verbose identifier that no sane person would ever place inside a diagram node, and yet here we are",
+    "position": [
+     60,
+     760
+    ],
+    "size": {
+     "width": 200,
+     "height": 90
+    }
+   }
+  ]
+ },
+ "intent": "Very long labels: 6 rects carrying 60..360 character labels in a 200px-wide box. Tests text wrapping / ellipsis / overflow."
+}

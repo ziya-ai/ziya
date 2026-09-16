@@ -1,0 +1,910 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "autoLayout": false,
+  "elements": [
+   {
+    "id": "p0",
+    "type": "rect",
+    "label": "rec0",
+    "position": [
+     40,
+     40
+    ]
+   },
+   {
+    "id": "p1",
+    "type": "circle",
+    "label": "cir1",
+    "position": [
+     190,
+     40
+    ]
+   },
+   {
+    "id": "p2",
+    "type": "ellipse",
+    "label": "ell2",
+    "position": [
+     340,
+     40
+    ]
+   },
+   {
+    "id": "p3",
+    "type": "diamond",
+    "label": "dia3",
+    "position": [
+     490,
+     40
+    ]
+   },
+   {
+    "id": "p4",
+    "type": "hexagon",
+    "label": "hex4",
+    "position": [
+     640,
+     40
+    ]
+   },
+   {
+    "id": "p5",
+    "type": "rect",
+    "label": "rec5",
+    "position": [
+     790,
+     40
+    ]
+   },
+   {
+    "id": "p6",
+    "type": "circle",
+    "label": "cir6",
+    "position": [
+     940,
+     40
+    ]
+   },
+   {
+    "id": "p7",
+    "type": "ellipse",
+    "label": "ell7",
+    "position": [
+     1090,
+     40
+    ]
+   },
+   {
+    "id": "p8",
+    "type": "diamond",
+    "label": "dia8",
+    "position": [
+     1240,
+     40
+    ]
+   },
+   {
+    "id": "p9",
+    "type": "hexagon",
+    "label": "hex9",
+    "position": [
+     1390,
+     40
+    ]
+   },
+   {
+    "id": "p10",
+    "type": "rect",
+    "label": "rec10",
+    "position": [
+     40,
+     170
+    ]
+   },
+   {
+    "id": "p11",
+    "type": "circle",
+    "label": "cir11",
+    "position": [
+     190,
+     170
+    ]
+   },
+   {
+    "id": "p12",
+    "type": "ellipse",
+    "label": "ell12",
+    "position": [
+     340,
+     170
+    ]
+   },
+   {
+    "id": "p13",
+    "type": "diamond",
+    "label": "dia13",
+    "position": [
+     490,
+     170
+    ]
+   },
+   {
+    "id": "p14",
+    "type": "hexagon",
+    "label": "hex14",
+    "position": [
+     640,
+     170
+    ]
+   },
+   {
+    "id": "p15",
+    "type": "rect",
+    "label": "rec15",
+    "position": [
+     790,
+     170
+    ]
+   },
+   {
+    "id": "p16",
+    "type": "circle",
+    "label": "cir16",
+    "position": [
+     940,
+     170
+    ]
+   },
+   {
+    "id": "p17",
+    "type": "ellipse",
+    "label": "ell17",
+    "position": [
+     1090,
+     170
+    ]
+   },
+   {
+    "id": "p18",
+    "type": "diamond",
+    "label": "dia18",
+    "position": [
+     1240,
+     170
+    ]
+   },
+   {
+    "id": "p19",
+    "type": "hexagon",
+    "label": "hex19",
+    "position": [
+     1390,
+     170
+    ]
+   },
+   {
+    "id": "p20",
+    "type": "rect",
+    "label": "rec20",
+    "position": [
+     40,
+     300
+    ]
+   },
+   {
+    "id": "p21",
+    "type": "circle",
+    "label": "cir21",
+    "position": [
+     190,
+     300
+    ]
+   },
+   {
+    "id": "p22",
+    "type": "ellipse",
+    "label": "ell22",
+    "position": [
+     340,
+     300
+    ]
+   },
+   {
+    "id": "p23",
+    "type": "diamond",
+    "label": "dia23",
+    "position": [
+     490,
+     300
+    ]
+   },
+   {
+    "id": "p24",
+    "type": "hexagon",
+    "label": "hex24",
+    "position": [
+     640,
+     300
+    ]
+   },
+   {
+    "id": "p25",
+    "type": "rect",
+    "label": "rec25",
+    "position": [
+     790,
+     300
+    ]
+   },
+   {
+    "id": "p26",
+    "type": "circle",
+    "label": "cir26",
+    "position": [
+     940,
+     300
+    ]
+   },
+   {
+    "id": "p27",
+    "type": "ellipse",
+    "label": "ell27",
+    "position": [
+     1090,
+     300
+    ]
+   },
+   {
+    "id": "p28",
+    "type": "diamond",
+    "label": "dia28",
+    "position": [
+     1240,
+     300
+    ]
+   },
+   {
+    "id": "p29",
+    "type": "hexagon",
+    "label": "hex29",
+    "position": [
+     1390,
+     300
+    ]
+   },
+   {
+    "id": "p30",
+    "type": "rect",
+    "label": "rec30",
+    "position": [
+     40,
+     430
+    ]
+   },
+   {
+    "id": "p31",
+    "type": "circle",
+    "label": "cir31",
+    "position": [
+     190,
+     430
+    ]
+   },
+   {
+    "id": "p32",
+    "type": "ellipse",
+    "label": "ell32",
+    "position": [
+     340,
+     430
+    ]
+   },
+   {
+    "id": "p33",
+    "type": "diamond",
+    "label": "dia33",
+    "position": [
+     490,
+     430
+    ]
+   },
+   {
+    "id": "p34",
+    "type": "hexagon",
+    "label": "hex34",
+    "position": [
+     640,
+     430
+    ]
+   },
+   {
+    "id": "p35",
+    "type": "rect",
+    "label": "rec35",
+    "position": [
+     790,
+     430
+    ]
+   },
+   {
+    "id": "p36",
+    "type": "circle",
+    "label": "cir36",
+    "position": [
+     940,
+     430
+    ]
+   },
+   {
+    "id": "p37",
+    "type": "ellipse",
+    "label": "ell37",
+    "position": [
+     1090,
+     430
+    ]
+   },
+   {
+    "id": "p38",
+    "type": "diamond",
+    "label": "dia38",
+    "position": [
+     1240,
+     430
+    ]
+   },
+   {
+    "id": "p39",
+    "type": "hexagon",
+    "label": "hex39",
+    "position": [
+     1390,
+     430
+    ]
+   },
+   {
+    "id": "p40",
+    "type": "rect",
+    "label": "rec40",
+    "position": [
+     40,
+     560
+    ]
+   },
+   {
+    "id": "p41",
+    "type": "circle",
+    "label": "cir41",
+    "position": [
+     190,
+     560
+    ]
+   },
+   {
+    "id": "p42",
+    "type": "ellipse",
+    "label": "ell42",
+    "position": [
+     340,
+     560
+    ]
+   },
+   {
+    "id": "p43",
+    "type": "diamond",
+    "label": "dia43",
+    "position": [
+     490,
+     560
+    ]
+   },
+   {
+    "id": "p44",
+    "type": "hexagon",
+    "label": "hex44",
+    "position": [
+     640,
+     560
+    ]
+   },
+   {
+    "id": "p45",
+    "type": "rect",
+    "label": "rec45",
+    "position": [
+     790,
+     560
+    ]
+   },
+   {
+    "id": "p46",
+    "type": "circle",
+    "label": "cir46",
+    "position": [
+     940,
+     560
+    ]
+   },
+   {
+    "id": "p47",
+    "type": "ellipse",
+    "label": "ell47",
+    "position": [
+     1090,
+     560
+    ]
+   },
+   {
+    "id": "p48",
+    "type": "diamond",
+    "label": "dia48",
+    "position": [
+     1240,
+     560
+    ]
+   },
+   {
+    "id": "p49",
+    "type": "hexagon",
+    "label": "hex49",
+    "position": [
+     1390,
+     560
+    ]
+   },
+   {
+    "id": "p50",
+    "type": "rect",
+    "label": "rec50",
+    "position": [
+     40,
+     690
+    ]
+   },
+   {
+    "id": "p51",
+    "type": "circle",
+    "label": "cir51",
+    "position": [
+     190,
+     690
+    ]
+   },
+   {
+    "id": "p52",
+    "type": "ellipse",
+    "label": "ell52",
+    "position": [
+     340,
+     690
+    ]
+   },
+   {
+    "id": "p53",
+    "type": "diamond",
+    "label": "dia53",
+    "position": [
+     490,
+     690
+    ]
+   },
+   {
+    "id": "p54",
+    "type": "hexagon",
+    "label": "hex54",
+    "position": [
+     640,
+     690
+    ]
+   },
+   {
+    "id": "p55",
+    "type": "rect",
+    "label": "rec55",
+    "position": [
+     790,
+     690
+    ]
+   },
+   {
+    "id": "p56",
+    "type": "circle",
+    "label": "cir56",
+    "position": [
+     940,
+     690
+    ]
+   },
+   {
+    "id": "p57",
+    "type": "ellipse",
+    "label": "ell57",
+    "position": [
+     1090,
+     690
+    ]
+   },
+   {
+    "id": "p58",
+    "type": "diamond",
+    "label": "dia58",
+    "position": [
+     1240,
+     690
+    ]
+   },
+   {
+    "id": "p59",
+    "type": "hexagon",
+    "label": "hex59",
+    "position": [
+     1390,
+     690
+    ]
+   },
+   {
+    "id": "p60",
+    "type": "rect",
+    "label": "rec60",
+    "position": [
+     40,
+     820
+    ]
+   },
+   {
+    "id": "p61",
+    "type": "circle",
+    "label": "cir61",
+    "position": [
+     190,
+     820
+    ]
+   },
+   {
+    "id": "p62",
+    "type": "ellipse",
+    "label": "ell62",
+    "position": [
+     340,
+     820
+    ]
+   },
+   {
+    "id": "p63",
+    "type": "diamond",
+    "label": "dia63",
+    "position": [
+     490,
+     820
+    ]
+   },
+   {
+    "id": "p64",
+    "type": "hexagon",
+    "label": "hex64",
+    "position": [
+     640,
+     820
+    ]
+   },
+   {
+    "id": "p65",
+    "type": "rect",
+    "label": "rec65",
+    "position": [
+     790,
+     820
+    ]
+   },
+   {
+    "id": "p66",
+    "type": "circle",
+    "label": "cir66",
+    "position": [
+     940,
+     820
+    ]
+   },
+   {
+    "id": "p67",
+    "type": "ellipse",
+    "label": "ell67",
+    "position": [
+     1090,
+     820
+    ]
+   },
+   {
+    "id": "p68",
+    "type": "diamond",
+    "label": "dia68",
+    "position": [
+     1240,
+     820
+    ]
+   },
+   {
+    "id": "p69",
+    "type": "hexagon",
+    "label": "hex69",
+    "position": [
+     1390,
+     820
+    ]
+   },
+   {
+    "id": "p70",
+    "type": "rect",
+    "label": "rec70",
+    "position": [
+     40,
+     950
+    ]
+   },
+   {
+    "id": "p71",
+    "type": "circle",
+    "label": "cir71",
+    "position": [
+     190,
+     950
+    ]
+   },
+   {
+    "id": "p72",
+    "type": "ellipse",
+    "label": "ell72",
+    "position": [
+     340,
+     950
+    ]
+   },
+   {
+    "id": "p73",
+    "type": "diamond",
+    "label": "dia73",
+    "position": [
+     490,
+     950
+    ]
+   },
+   {
+    "id": "p74",
+    "type": "hexagon",
+    "label": "hex74",
+    "position": [
+     640,
+     950
+    ]
+   },
+   {
+    "id": "p75",
+    "type": "rect",
+    "label": "rec75",
+    "position": [
+     790,
+     950
+    ]
+   },
+   {
+    "id": "p76",
+    "type": "circle",
+    "label": "cir76",
+    "position": [
+     940,
+     950
+    ]
+   },
+   {
+    "id": "p77",
+    "type": "ellipse",
+    "label": "ell77",
+    "position": [
+     1090,
+     950
+    ]
+   },
+   {
+    "id": "p78",
+    "type": "diamond",
+    "label": "dia78",
+    "position": [
+     1240,
+     950
+    ]
+   },
+   {
+    "id": "p79",
+    "type": "hexagon",
+    "label": "hex79",
+    "position": [
+     1390,
+     950
+    ]
+   },
+   {
+    "id": "p80",
+    "type": "rect",
+    "label": "rec80",
+    "position": [
+     40,
+     1080
+    ]
+   },
+   {
+    "id": "p81",
+    "type": "circle",
+    "label": "cir81",
+    "position": [
+     190,
+     1080
+    ]
+   },
+   {
+    "id": "p82",
+    "type": "ellipse",
+    "label": "ell82",
+    "position": [
+     340,
+     1080
+    ]
+   },
+   {
+    "id": "p83",
+    "type": "diamond",
+    "label": "dia83",
+    "position": [
+     490,
+     1080
+    ]
+   },
+   {
+    "id": "p84",
+    "type": "hexagon",
+    "label": "hex84",
+    "position": [
+     640,
+     1080
+    ]
+   },
+   {
+    "id": "p85",
+    "type": "rect",
+    "label": "rec85",
+    "position": [
+     790,
+     1080
+    ]
+   },
+   {
+    "id": "p86",
+    "type": "circle",
+    "label": "cir86",
+    "position": [
+     940,
+     1080
+    ]
+   },
+   {
+    "id": "p87",
+    "type": "ellipse",
+    "label": "ell87",
+    "position": [
+     1090,
+     1080
+    ]
+   },
+   {
+    "id": "p88",
+    "type": "diamond",
+    "label": "dia88",
+    "position": [
+     1240,
+     1080
+    ]
+   },
+   {
+    "id": "p89",
+    "type": "hexagon",
+    "label": "hex89",
+    "position": [
+     1390,
+     1080
+    ]
+   },
+   {
+    "id": "p90",
+    "type": "rect",
+    "label": "rec90",
+    "position": [
+     40,
+     1210
+    ]
+   },
+   {
+    "id": "p91",
+    "type": "circle",
+    "label": "cir91",
+    "position": [
+     190,
+     1210
+    ]
+   },
+   {
+    "id": "p92",
+    "type": "ellipse",
+    "label": "ell92",
+    "position": [
+     340,
+     1210
+    ]
+   },
+   {
+    "id": "p93",
+    "type": "diamond",
+    "label": "dia93",
+    "position": [
+     490,
+     1210
+    ]
+   },
+   {
+    "id": "p94",
+    "type": "hexagon",
+    "label": "hex94",
+    "position": [
+     640,
+     1210
+    ]
+   },
+   {
+    "id": "p95",
+    "type": "rect",
+    "label": "rec95",
+    "position": [
+     790,
+     1210
+    ]
+   },
+   {
+    "id": "p96",
+    "type": "circle",
+    "label": "cir96",
+    "position": [
+     940,
+     1210
+    ]
+   },
+   {
+    "id": "p97",
+    "type": "ellipse",
+    "label": "ell97",
+    "position": [
+     1090,
+     1210
+    ]
+   },
+   {
+    "id": "p98",
+    "type": "diamond",
+    "label": "dia98",
+    "position": [
+     1240,
+     1210
+    ]
+   },
+   {
+    "id": "p99",
+    "type": "hexagon",
+    "label": "hex99",
+    "position": [
+     1390,
+     1210
+    ]
+   }
+  ]
+ },
+ "intent": "Palette contrast AT DENSITY: 100 nodes cycling rect/circle/ellipse/diamond/hexagon so every fill in the plugin palette appears many times at reduced effective scale."
+}

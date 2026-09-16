@@ -1,0 +1,444 @@
+{
+ "schema": 1,
+ "engine": "chemfig",
+ "specs": {
+  "chemfig-w1-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.137371Z"
+    }
+   ]
+  },
+  "chemfig-w1-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.147426Z"
+    }
+   ]
+  },
+  "chemfig-w1-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.151335Z"
+    }
+   ]
+  },
+  "chemfig-w1-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.154380Z"
+    }
+   ]
+  },
+  "chemfig-w3-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.157843Z"
+    }
+   ]
+  },
+  "chemfig-w3-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.160689Z"
+    }
+   ]
+  },
+  "chemfig-w3-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.164616Z"
+    }
+   ]
+  },
+  "chemfig-w4-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.169677Z"
+    }
+   ]
+  },
+  "chemfig-w4-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.175911Z"
+    }
+   ]
+  },
+  "chemfig-w4-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.187177Z"
+    }
+   ]
+  },
+  "chemfig-w3-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-029",
+     "signature": "ts1-textcomp-font-tcrm1000-missing-fatal",
+     "at": "2026-09-15T08:56:12.203867Z"
+    }
+   ]
+  },
+  "chemfig-w3-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-030",
+     "signature": "parameterised-definesubmol-arg-not-substituted-fatal",
+     "at": "2026-09-15T08:56:12.206008Z"
+    }
+   ]
+  },
+  "chemfig-w1-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-033",
+     "signature": "literal-color-no-contrast-guard",
+     "at": "2026-09-15T08:56:12.218752Z"
+    }
+   ]
+  },
+  "chemfig-w3-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-033",
+     "signature": "literal-color-no-contrast-guard",
+     "at": "2026-09-15T08:56:12.222126Z"
+    }
+   ]
+  },
+  "chemfig-w3-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-033",
+     "signature": "literal-color-no-contrast-guard",
+     "at": "2026-09-15T08:56:12.231875Z"
+    }
+   ]
+  },
+  "chemfig-w3-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-033",
+     "signature": "literal-color-no-contrast-guard",
+     "at": "2026-09-15T08:56:12.235565Z"
+    }
+   ]
+  },
+  "chemfig-w4-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-037",
+     "signature": "recovered-colour-not-theme-adapted-below-floor:dark",
+     "at": "2026-09-15T08:56:12.238389Z"
+    }
+   ]
+  },
+  "chemfig-w4-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-038",
+     "signature": "colour-argument-normaliser-context-gaps",
+     "at": "2026-09-15T08:56:12.241762Z"
+    }
+   ]
+  },
+  "chemfig-w4-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-038",
+     "signature": "colour-argument-normaliser-context-gaps",
+     "at": "2026-09-15T08:56:12.244349Z"
+    }
+   ]
+  },
+  "chemfig-w4-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-038",
+     "signature": "colour-argument-normaliser-context-gaps",
+     "at": "2026-09-15T08:56:12.247541Z"
+    }
+   ]
+  },
+  "chemfig-w4-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-038",
+     "signature": "colour-argument-normaliser-context-gaps",
+     "at": "2026-09-15T08:56:12.252489Z"
+    }
+   ]
+  },
+  "chemfig-w4-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-039",
+     "signature": "chemname-long-label-overflows-crop-clipped",
+     "at": "2026-09-15T08:56:12.257174Z"
+    }
+   ]
+  },
+  "chemfig-w4-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-039",
+     "signature": "chemname-long-label-overflows-crop-clipped",
+     "at": "2026-09-15T08:56:12.267493Z"
+    }
+   ]
+  },
+  "chemfig-w4-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-041",
+     "signature": "stray-statement-terminator-typeset-as-literal",
+     "at": "2026-09-15T08:56:12.270345Z"
+    }
+   ]
+  }
+ }
+}

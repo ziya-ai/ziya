@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "classes: {\n  service: {\n    style.fill: \"#e1f5fe\"\n    style.stroke: \"#01579b\"\n  }\n}\nauth: Auth {class: service}\nbill: Billing {class: service}\nauth -> bill: charge\n",
+ "intent": "Reusable `classes` declaration applied to nodes with `class:` -- D2's style reuse feature."
+}

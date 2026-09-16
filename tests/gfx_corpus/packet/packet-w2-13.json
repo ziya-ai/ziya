@@ -1,0 +1,860 @@
+{
+ "type": "packet",
+ "definition": {
+  "title": "50 sections",
+  "bitWidth": 16,
+  "sections": [
+   {
+    "label": "Section number 0",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 1",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 2",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 3",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 4",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 5",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 6",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 7",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 8",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 9",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 10",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 11",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 12",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 13",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 14",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 15",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 16",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 17",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 18",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 19",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 20",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 21",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 22",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 23",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 24",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 25",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 26",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 27",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 28",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 29",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 30",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 31",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 32",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 33",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 34",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 35",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 36",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 37",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 38",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 39",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 40",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 41",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 42",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 43",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 44",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 45",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 46",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 47",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 48",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "Section number 49",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f",
+        8
+       ],
+       [
+        "g",
+        8
+       ]
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "Max section count: 50 labelled single-row sections -> section-label and boundary density"
+}

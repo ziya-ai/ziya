@@ -1,0 +1,80 @@
+{
+ "type": "force-directed",
+ "definition": {
+  "nodes": [
+   {
+    "id": "p0",
+    "label": "palette only",
+    "group": 0,
+    "size": 16
+   },
+   {
+    "id": "p1",
+    "label": "nodeColors[1]",
+    "group": 1,
+    "size": 16
+   },
+   {
+    "id": "p2",
+    "label": "node.color wins",
+    "group": 1,
+    "color": "#000000",
+    "size": 16
+   },
+   {
+    "id": "p3",
+    "label": "nodeColors[3]",
+    "group": 3,
+    "size": 16
+   },
+   {
+    "id": "p4",
+    "label": "node.color+map",
+    "group": 3,
+    "color": "#ffffff",
+    "size": 16
+   },
+   {
+    "id": "p5",
+    "label": "group 12 wraps",
+    "group": 12,
+    "size": 16
+   }
+  ],
+  "links": [
+   {
+    "source": "p0",
+    "target": "p1"
+   },
+   {
+    "source": "p1",
+    "target": "p2"
+   },
+   {
+    "source": "p2",
+    "target": "p3"
+   },
+   {
+    "source": "p3",
+    "target": "p4"
+   },
+   {
+    "source": "p4",
+    "target": "p5"
+   },
+   {
+    "source": "p5",
+    "target": "p0"
+   }
+  ],
+  "style": {
+   "nodeColors": {
+    "1": "#fdfdfd",
+    "3": "#101018"
+   },
+   "fontSize": 13,
+   "linkOpacity": 0.9
+  }
+ },
+ "intent": "INTERACTION: conflicting colour precedence - style.nodeColors map AND per-node color AND group palette all specify a fill for the same nodes, stacked with size/fontSize/linkOpacity."
+}

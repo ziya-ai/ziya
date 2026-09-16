@@ -1,0 +1,5 @@
+{
+ "type": "force-directed",
+ "definition": "{\n  \"type\": \"force-directed\",\n  \"nodes\": [\n    {\"name\": \"api\", \"group\": 0},\n    {\"name\": \"auth\", \"group\": 1},\n    {\"name\": \"db\", \"group\": 2},\n    {\"name\": \"cache\", \"group\": 2},\n    {\"name\": \"queue\", \"group\": 1},\n    {\"name\": \"worker\", \"group\": 0}\n  ],\n  \"edges\": [\n    {\"from\": \"api\", \"to\": \"auth\"},\n    {\"from\": \"api\", \"to\": \"cache\"},\n    {\"from\": \"auth\", \"to\": \"db\"},\n    {\"from\": \"api\", \"to\": \"queue\"},\n    {\"from\": \"queue\", \"to\": \"worker\"},\n    {\"from\": \"worker\", \"to\": \"db\"}\n  ]\n}",
+ "intent": "RECOVERY: deprecated/alternate dialect - 'edges' with from/to endpoints and 'name' instead of 'id' (the vis.js / cytoscape habit). resolveForceDirectedSpec accepts 'edges' but nothing maps from/to or name. Same 6-node intent."
+}

@@ -1,0 +1,72 @@
+{
+ "type": "music",
+ "definition": {
+  "clef": "treble",
+  "keySignature": "C",
+  "timeSignature": "4/4",
+  "voices": [
+   {
+    "stemDirection": "up",
+    "notes": [
+     {
+      "keys": [
+       "e/5"
+      ],
+      "duration": "8"
+     },
+     {
+      "keys": [
+       "f/5"
+      ],
+      "duration": "8"
+     },
+     {
+      "keys": [
+       "g/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "rest": true,
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "a/5"
+      ],
+      "duration": "q"
+     }
+    ]
+   },
+   {
+    "stemDirection": "down",
+    "notes": [
+     {
+      "keys": [
+       "c/4"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "e/4"
+      ],
+      "duration": "q"
+     },
+     {
+      "rest": true,
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "g/4"
+      ],
+      "duration": "q"
+     }
+    ]
+   }
+  ],
+  "endBar": "final"
+ },
+ "intent": "Two independent voices on one staff with forced opposite stem directions and simultaneous rests (voice-major spelling)."
+}

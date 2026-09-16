@@ -1,0 +1,253 @@
+{
+ "type": "music",
+ "definition": {
+  "clef": "treble",
+  "keySignature": "Ab",
+  "timeSignature": "4/4",
+  "width": 120,
+  "autoBeam": true,
+  "notes": [
+   {
+    "keys": [
+     "c/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/5"
+    ],
+    "duration": "8"
+   }
+  ]
+ },
+ "intent": "SCALE: explicit width 120 (MIN_CANVAS_WIDTH) forced onto 40 notes — canvas an order of magnitude below the natural size, testing whether content is compressed, clipped or overflows."
+}

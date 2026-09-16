@@ -1,0 +1,5 @@
+{
+ "type": "network",
+ "definition": "{\n  \"nodes\": [\n    {\"id\": \"m1\", \"label\": \"Frontend\", \"x\": 150, \"y\": 190, \"size\": 18},\n    {\"id\": \"m2\", \"label\": \"Backend\",  \"x\": 330, \"y\": 190, \"size\": 18},\n    {\"id\": \"m3\", \"label\": \"Queue\",    \"x\": 510, \"y\": 120, \"size\": 16},\n    {\"name\": \"m4\", \"label\": \"Nameless\", \"x\": 510, \"y\": 290, \"size\": 16}\n  ],\n  \"links\": [\n    {\"source\": \"m1\", \"target\": \"m2\"},\n    {\"source\": \"m2\"},\n    {\"source\": \"m2\", \"to\": \"m3\"}\n  ],\n  \"width\": 640, \"height\": 380,\n  \"style\": {\"labelColor\": \"#7e7e7e\", \"fontSize\": 13, \"linkColor\": \"#7e7e7e\", \"linkOpacity\": 1}\n}",
+ "intent": "Missing optional-but-assumed fields: one link has no `target`, one link uses `to` instead of `target`, one node carries `name` instead of `id`. Recovery = drop the unusable rows (or map the obvious alias) and render the rest, not reject everything."
+}

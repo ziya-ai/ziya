@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "%%{init: {'theme':'nord', 'themeVariables': {'primaryColor':'transparent','nodeBorder':'currentColor','labelTextColor':'inherit'}}}%%\nflowchart TD\n  A[Frontend] --> B[Backend]\n  B --> C[Worker]\n  style C fill:transparent,stroke:currentColor",
+ "intent": "RECOVERY: a theme name that does not exist ('nord') plus non-colour CSS keywords (transparent, currentColor, inherit) as theme variables. Should fall back to a valid theme and paint legible nodes."
+}

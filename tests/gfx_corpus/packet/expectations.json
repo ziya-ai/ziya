@@ -1,0 +1,572 @@
+{
+ "schema": 1,
+ "engine": "packet",
+ "specs": {
+  "packet-w1-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.544667Z"
+    }
+   ]
+  },
+  "packet-w1-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.546632Z"
+    }
+   ]
+  },
+  "packet-w1-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.549386Z"
+    }
+   ]
+  },
+  "packet-w1-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.553107Z"
+    }
+   ]
+  },
+  "packet-w1-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.555518Z"
+    }
+   ]
+  },
+  "packet-w2-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.559091Z"
+    }
+   ]
+  },
+  "packet-w2-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.562930Z"
+    }
+   ]
+  },
+  "packet-w2-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.565777Z"
+    }
+   ]
+  },
+  "packet-w4-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.570275Z"
+    }
+   ]
+  },
+  "packet-w4-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.572756Z"
+    }
+   ]
+  },
+  "packet-w4-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-195",
+     "signature": "no-lenient-json-parse",
+     "at": "2026-09-15T08:56:13.970418Z"
+    }
+   ]
+  },
+  "packet-w4-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-195",
+     "signature": "no-lenient-json-parse",
+     "at": "2026-09-15T08:56:13.973085Z"
+    }
+   ]
+  },
+  "packet-w4-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-195",
+     "signature": "no-lenient-json-parse",
+     "at": "2026-09-15T08:56:13.976469Z"
+    }
+   ]
+  },
+  "packet-w4-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-195",
+     "signature": "no-lenient-json-parse",
+     "at": "2026-09-15T08:56:13.979362Z"
+    }
+   ]
+  },
+  "packet-w4-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-195",
+     "signature": "no-lenient-json-parse",
+     "at": "2026-09-15T08:56:13.981517Z"
+    }
+   ]
+  },
+  "packet-w4-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-196",
+     "signature": "markdown-fence-not-stripped",
+     "at": "2026-09-15T08:56:13.985507Z"
+    }
+   ]
+  },
+  "packet-w4-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-196",
+     "signature": "markdown-fence-not-stripped",
+     "at": "2026-09-15T08:56:13.989337Z"
+    }
+   ]
+  },
+  "packet-w4-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-197",
+     "signature": "dsl-relative-width-syntax-unsupported",
+     "at": "2026-09-15T08:56:13.992527Z"
+    }
+   ]
+  },
+  "packet-w4-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-198",
+     "signature": "row-nesting-off-by-one-kills-render",
+     "at": "2026-09-15T08:56:13.994639Z"
+    }
+   ]
+  },
+  "packet-w4-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-199",
+     "signature": "section-cells-alias-dropped-to-placeholder",
+     "at": "2026-09-15T08:56:13.997591Z"
+    }
+   ]
+  },
+  "packet-w2-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-200",
+     "signature": "tall-canvas-vertically-cropped",
+     "at": "2026-09-15T08:56:14.002536Z"
+    }
+   ]
+  },
+  "packet-w2-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-200",
+     "signature": "tall-canvas-vertically-cropped",
+     "at": "2026-09-15T08:56:14.005851Z"
+    },
+    {
+     "origin": "D-209",
+     "signature": "auto-palette-same-hue-collision",
+     "at": "2026-09-15T08:56:14.045069Z"
+    }
+   ]
+  },
+  "packet-w2-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-200",
+     "signature": "tall-canvas-vertically-cropped",
+     "at": "2026-09-15T08:56:14.010410Z"
+    },
+    {
+     "origin": "D-209",
+     "signature": "auto-palette-same-hue-collision",
+     "at": "2026-09-15T08:56:14.047261Z"
+    }
+   ]
+  },
+  "packet-w2-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-200",
+     "signature": "tall-canvas-vertically-cropped",
+     "at": "2026-09-15T08:56:14.013321Z"
+    }
+   ]
+  },
+  "packet-w2-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-200",
+     "signature": "tall-canvas-vertically-cropped",
+     "at": "2026-09-15T08:56:14.017399Z"
+    }
+   ]
+  },
+  "packet-w2-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-200",
+     "signature": "tall-canvas-vertically-cropped",
+     "at": "2026-09-15T08:56:14.020976Z"
+    },
+    {
+     "origin": "D-209",
+     "signature": "auto-palette-same-hue-collision",
+     "at": "2026-09-15T08:56:14.049966Z"
+    }
+   ]
+  },
+  "packet-w2-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-201",
+     "signature": "wide-grid-downscaled-text-illegible",
+     "at": "2026-09-15T08:56:14.024382Z"
+    }
+   ]
+  },
+  "packet-w1-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-203",
+     "signature": "section-label-clipped-at-canvas-edge",
+     "at": "2026-09-15T08:56:14.035232Z"
+    }
+   ]
+  },
+  "packet-w2-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-206",
+     "signature": "multiline-label-overflows-section-height",
+     "at": "2026-09-15T08:56:14.038810Z"
+    }
+   ]
+  },
+  "packet-w4-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-208",
+     "signature": "transparent-fill-assumes-white-page:dark",
+     "at": "2026-09-15T08:56:14.042540Z"
+    }
+   ]
+  }
+ }
+}

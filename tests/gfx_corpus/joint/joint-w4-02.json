@@ -1,0 +1,5 @@
+{
+ "type": "joint",
+ "definition": "{\n  elements: [\n    {id: \"queue\", type: \"rect\", label: \"Queue\"},\n    {id: \"worker\", type: \"rect\", label: \"Worker\"},\n    {id: \"sink\", type: \"rect\", label: \"Sink\"}\n  ],\n  connections: [\n    {id: \"c1\", source: \"queue\", target: \"worker\", label: \"pop\"},\n    {id: \"c2\", source: \"worker\", target: \"sink\", label: \"emit\"}\n  ]\n}",
+ "intent": "RECOVERY: JS object-literal style with UNQUOTED keys (valid JS, invalid JSON). Intent: Queue->Worker->Sink."
+}

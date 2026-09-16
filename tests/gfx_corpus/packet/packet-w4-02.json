@@ -1,0 +1,5 @@
+{
+ "type": "packet",
+ "definition": "{\n  type: \"packet\",\n  title: \"TCP Header (unquoted keys)\",\n  bitWidth: 32,\n  sections: [\n    { label: \"TCP\", rows: [\n      [[\"Source Port\",16],[\"Dest Port\",16]],\n      [[\"Sequence Number\",32]],\n      [[\"Acknowledgment Number\",32]]\n    ]}\n  ]\n}",
+ "intent": "Unquoted object keys - JS object literal emitted where JSON was required"
+}

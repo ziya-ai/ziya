@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "### Alpha and gradient\n\n<div style=\"background:rgba(0,0,0,0.06); padding:10px;\">Panel on rgba(0,0,0,0.06) — a 6% black wash that is a light grey on a white page and nearly invisible on a dark one.</div>\n\n<div style=\"background:linear-gradient(90deg,#ffffff 0%,#eeeeee 100%); color:#555555; padding:10px;\">Gradient panel, #ffffff to #eeeeee, with #555555 text.</div>\n\n<p style=\"opacity:0.35\">Body text at opacity 0.35 — inherits the theme colour but blends 65% into whatever is behind it.</p>\n\n<p><span style=\"color:rgba(120,120,120,0.5)\">Semi-transparent grey rgba(120,120,120,0.5)</span> next to normal text.</p>\n\n<div style=\"background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.15); padding:8px;\">Glass panel: rgba(255,255,255,0.08) fill, rgba(255,255,255,0.15) border.</div>\n",
+ "intent": "low-opacity, rgba and gradient overlays: alpha-blended fills and opacity:0.35 text over the message surface"
+}

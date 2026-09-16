@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "\\pgfmathdeclarefunction{wob}{1}{\\pgfmathparse{0.55*sin(mod(#1*37,360))}}\n\\definecolor{motifA}{HTML}{1F4E79}\n\\definecolor{motifB}{HTML}{7F3300}\n\\tikzset{\n  cell/.style={draw=motifA, thick, fill=motifA!12, minimum size=8mm, inner sep=1pt, font=\\scriptsize},\n  ring/.style={draw=motifB, line width=0.7pt, dashed},\n  tie/.style={-{Stealth[length=2mm]}, draw=motifA!70!black}\n}\n\\foreach \\i in {0,...,9}{\n  \\pgfmathsetmacro{\\dy}{wob(\\i)}\n  \\node[cell] (n\\i) at (\\i*1.35, \\dy) {$m_{\\i}$};\n  \\draw[ring] (\\i*1.35, \\dy) circle (6.5mm);\n}\n\\foreach \\i [evaluate=\\i as \\j using int(\\i+1)] in {0,...,8}{ \\draw[tie] (n\\i) -- (n\\j); }\n\\node[font=\\bfseries, motifA] at (6.075,-2.2) {declared function + styles, no \\textbackslash def};",
+ "intent": "feature interaction: \\pgfmathdeclarefunction + \\tikzset .style + \\definecolor as the substitute for the \\newcommand idiom the safety layer blocks"
+}

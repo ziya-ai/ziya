@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "He said “ship it” — so we did.\n\n```mermaid\nflowchart LR\n  A[“Start”] --> B[\"Say “hello”\"]\n  B --> C[\"Don’t panic\"]\n```\n",
+ "intent": "Smart quotes — curly quotes/apostrophes both INSIDE labels and AS the label quoting characters, plus curly quotes in prose. Recovery = quotes normalized, labels intact."
+}

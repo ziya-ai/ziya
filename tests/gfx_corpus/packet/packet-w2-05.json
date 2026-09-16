@@ -1,0 +1,72 @@
+{
+ "type": "packet",
+ "definition": {
+  "title": "200-char field names",
+  "bitWidth": 32,
+  "sections": [
+   {
+    "label": "Long names",
+    "color": "security",
+    "rows": [
+     {
+      "fields": [
+       [
+        "VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_",
+        8
+       ],
+       [
+        "VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_",
+        8
+       ],
+       [
+        "VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_",
+        8
+       ],
+       [
+        "VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_",
+        8
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_",
+        4
+       ],
+       [
+        "VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_",
+        4
+       ],
+       [
+        "VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_",
+        4
+       ],
+       [
+        "VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_",
+        4
+       ],
+       [
+        "VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_",
+        4
+       ],
+       [
+        "VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_",
+        4
+       ],
+       [
+        "VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_",
+        4
+       ],
+       [
+        "VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_VeryLongFieldNameThatKeepsGoing_",
+        4
+       ]
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "Very long labels: 224-char field names in 96px and 192px cells -> fitFieldLabel scaling/ellipsis"
+}

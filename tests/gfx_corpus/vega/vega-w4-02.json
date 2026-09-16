@@ -1,0 +1,5 @@
+{
+ "type": "vega",
+ "definition": "{\n  $schema: \"https://vega.github.io/schema/vega/v5.json\",\n  width: 380, height: 200, padding: 5,\n  data: [{name: \"t\", values: [{c: \"one\", v: 12}, {c: \"two\", v: 34}, {c: \"three\", v: 21}]}],\n  scales: [\n    {name: \"x\", type: \"band\", domain: {data: \"t\", field: \"c\"}, range: \"width\", padding: 0.2},\n    {name: \"y\", type: \"linear\", domain: {data: \"t\", field: \"v\"}, range: \"height\", nice: true}\n  ],\n  axes: [{orient: \"bottom\", scale: \"x\"}, {orient: \"left\", scale: \"y\"}],\n  marks: [{type: \"rect\", from: {data: \"t\"}, encode: {update: {\n    x: {scale: \"x\", field: \"c\"}, width: {scale: \"x\", band: 1},\n    y: {scale: \"y\", field: \"v\"}, y2: {scale: \"y\", value: 0},\n    fill: {value: \"#54a24b\"}\n  }}}]\n}",
+ "intent": "unquoted object keys (JavaScript literal style rather than JSON) - a model that has been writing JS emits this; same 3-bar chart should recover"
+}

@@ -1,0 +1,5 @@
+{
+ "type": "packet",
+ "definition": "{\n  \"type\": \"packet\",\n  \"title\": \"IPv4 Header (trailing commas)\",\n  \"bitWidth\": 32,\n  \"sections\": [\n    {\n      \"label\": \"Base Header\",\n      \"rows\": [\n        [[\"Version\",4],[\"IHL\",4],[\"DSCP\",6],[\"ECN\",2],[\"Total Length\",16],],\n        [[\"Identification\",16],[\"Flags\",3],[\"Fragment Offset\",13],],\n        [[\"TTL\",8],[\"Protocol\",8],[\"Header Checksum\",16],],\n      ],\n    },\n  ],\n}",
+ "intent": "Trailing commas after array/object members - the single most common LLM JSON slip"
+}

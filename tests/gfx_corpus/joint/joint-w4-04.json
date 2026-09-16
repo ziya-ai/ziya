@@ -1,0 +1,5 @@
+{
+ "type": "joint",
+ "definition": "```json\n{\n  \"elements\": [\n    {\"id\": \"edge\", \"type\": \"rect\", \"label\": \"Edge\"},\n    {\"id\": \"cache\", \"type\": \"rect\", \"label\": \"Cache\"},\n    {\"id\": \"origin\", \"type\": \"rect\", \"label\": \"Origin\"}\n  ],\n  \"connections\": [\n    {\"id\": \"m1\", \"source\": \"edge\", \"target\": \"cache\", \"label\": \"hit?\"},\n    {\"id\": \"m2\", \"source\": \"cache\", \"target\": \"origin\", \"label\": \"miss\"}\n  ]\n}\n```",
+ "intent": "RECOVERY: otherwise-perfect JSON wrapped in a ```json markdown fence. Intent: Edge->Cache->Origin."
+}

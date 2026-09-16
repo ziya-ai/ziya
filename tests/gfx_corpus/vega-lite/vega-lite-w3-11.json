@@ -1,0 +1,49 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "width": 420,
+  "height": 300,
+  "data": {
+   "values": [
+    {
+     "k": "only",
+     "v": 1
+    }
+   ]
+  },
+  "layer": [
+   {
+    "mark": {
+     "type": "arc",
+     "innerRadius": 60,
+     "outerRadius": 110
+    }
+   },
+   {
+    "mark": {
+     "type": "text",
+     "radius": 135,
+     "fontSize": 13
+    },
+    "encoding": {
+     "text": {
+      "field": "k",
+      "type": "nominal"
+     }
+    }
+   }
+  ],
+  "encoding": {
+   "theta": {
+    "field": "v",
+    "type": "quantitative",
+    "stack": true
+   },
+   "color": {
+    "field": "k",
+    "type": "nominal"
+   }
+  }
+ },
+ "intent": "DEGENERATE - SINGLE ELEMENT: one datum in an arc/donut with theta, a colour legend and a text label. A single slice must fill 360 degrees."
+}

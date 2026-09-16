@@ -1,0 +1,5 @@
+{
+ "type": "network",
+ "definition": "{\n  nodes: [\n    {id: \"Hub\",  x: 320, y: 190, size: 22},\n    {id: \"N1\",   x: 140, y: 90,  size: 12},\n    {id: \"N2\",   x: 500, y: 90,  size: 12},\n    {id: \"N3\",   x: 140, y: 290, size: 12},\n    {id: \"N4\",   x: 500, y: 290, size: 12}\n  ],\n  links: [\n    {source: \"Hub\", target: \"N1\"},\n    {source: \"Hub\", target: \"N2\"},\n    {source: \"Hub\", target: \"N3\"},\n    {source: \"Hub\", target: \"N4\"}\n  ],\n  width: 640,\n  height: 380,\n  style: {labelColor: \"#7e7e7e\", fontSize: 13, linkColor: \"#7e7e7e\", linkOpacity: 1}\n}",
+ "intent": "Unquoted object keys (JS object-literal habit). Evident intent: 5-node star. Recovery = quote the keys and render."
+}

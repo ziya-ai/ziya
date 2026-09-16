@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "```mermaid\n%%{init: {theme:'base', themeVariables:{primaryColor:'#c62828', primaryTextColor:'#ffffff', fontSize:'18'}}}%%\nflowchart LR\n  A[Red] --> B[Theme]\n```\n",
+ "intent": "Sloppy init JSON — unquoted keys, single-quoted values, fontSize given as a string number. Recovery = parse leniently and apply."
+}

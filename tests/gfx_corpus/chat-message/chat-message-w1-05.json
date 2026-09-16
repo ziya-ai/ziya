@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "### Complexity analysis\n\nThe reconciliation loop terminates in $O(n \\log n)$ comparisons where $n$ is the\nnumber of tracked replicas.  Because each retry sleeps for $0.25 \\cdot k$ seconds\non attempt $k$, the worst case wall clock cost is $\\sum_{k=1}^{10} 0.25k = 13.75$\nseconds.\n\nIf the convergence probability per attempt is $p = 0.4$, the expected attempt\ncount is $1/p = 2.5$, so typical latency remains near $\\tfrac{3}{4}$ of a second.\n",
+ "intent": "inline math spans interleaved with prose, several per paragraph"
+}

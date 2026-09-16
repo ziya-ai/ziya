@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "Deploy flow below.\n\n```MERMAID\nflowchart LR\n  A[Commit] --> B[Build]\n  B --> C[Deploy]\n```\n\nThree stages, nothing exotic.\n",
+ "intent": "Uppercase fence info string — models sometimes emit ```MERMAID. Recovery = route to the mermaid renderer anyway."
+}

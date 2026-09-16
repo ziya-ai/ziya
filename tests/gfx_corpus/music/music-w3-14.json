@@ -1,0 +1,120 @@
+{
+ "type": "music",
+ "definition": {
+  "type": "music",
+  "clef": "treble",
+  "keySignature": "Bb",
+  "timeSignature": "4/4",
+  "autoBeam": true,
+  "title": "Navigation Stack",
+  "section": "B",
+  "measureNumbers": true,
+  "measureNumber": 9,
+  "tempo": {
+   "name": "Allegro",
+   "duration": "q",
+   "bpm": 132
+  },
+  "marks": [
+   "segno",
+   "to-coda",
+   "dal-segno-al-coda",
+   "coda"
+  ],
+  "voltas": [
+   {
+    "type": "begin",
+    "label": "1.",
+    "measures": [
+     1,
+     2
+    ]
+   },
+   {
+    "type": "begin-end",
+    "label": "2.",
+    "measures": [
+     3,
+     4
+    ]
+   }
+  ],
+  "beginBar": "repeat-begin",
+  "measures": [
+   {
+    "notes": [
+     {
+      "keys": [
+       "bb/4"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "d/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "f/5"
+      ],
+      "duration": "h"
+     }
+    ]
+   },
+   {
+    "notes": [
+     {
+      "keys": [
+       "g/5"
+      ],
+      "duration": "h"
+     },
+     {
+      "keys": [
+       "f/5"
+      ],
+      "duration": "h"
+     }
+    ],
+    "endBar": "repeat-end"
+   },
+   {
+    "notes": [
+     {
+      "keys": [
+       "eb/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "d/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "c/5"
+      ],
+      "duration": "h"
+     }
+    ]
+   },
+   {
+    "notes": [
+     {
+      "keys": [
+       "bb/4"
+      ],
+      "duration": "w"
+     }
+    ],
+    "endBar": "final"
+   }
+  ],
+  "endBar": "final"
+ },
+ "intent": "Navigation dialect stack: 4 navigation marks (segno/to-coda/dal-segno-al-coda/coda) + TWO voltas with measure ranges + repeat-begin/repeat-end barlines + rehearsal section + tempo + measureNumbers starting at 9, all in the above-staff band. Tests band contention among rarely-combined features."
+}

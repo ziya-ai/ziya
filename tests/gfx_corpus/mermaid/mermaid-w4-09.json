@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "%%{init: {theme: dark, flowchart: {curve: basis, useMaxWidth: true,},}}%%\nflowchart LR\n  A[Read] --> B[Map] --> C[Reduce] --> D[Write]",
+ "intent": "RECOVERY: JSON5-ish init directive - unquoted keys, unquoted string value, and TWO trailing commas. Should be normalised to valid JSON and honoured (or ignored) without killing the render."
+}

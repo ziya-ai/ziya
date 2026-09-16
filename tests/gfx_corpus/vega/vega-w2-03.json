@@ -1,0 +1,144 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 640,
+  "height": 380,
+  "padding": 5,
+  "autosize": "pad",
+  "data": [
+   {
+    "name": "raw",
+    "transform": [
+     {
+      "type": "sequence",
+      "start": 0,
+      "stop": 1600,
+      "step": 1,
+      "as": "i"
+     },
+     {
+      "type": "formula",
+      "as": "g",
+      "expr": "'series-' + (datum.i % 40)"
+     },
+     {
+      "type": "formula",
+      "as": "t",
+      "expr": "floor(datum.i / 40)"
+     },
+     {
+      "type": "formula",
+      "as": "v",
+      "expr": "10 + (datum.i % 40) + 6*sin(floor(datum.i/40)/3 + (datum.i%40))"
+     }
+    ]
+   },
+   {
+    "name": "series",
+    "source": "raw",
+    "transform": [
+     {
+      "type": "collect",
+      "sort": {
+       "field": "t"
+      }
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "linear",
+    "domain": {
+     "data": "raw",
+     "field": "t"
+    },
+    "range": "width"
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "domain": {
+     "data": "raw",
+     "field": "v"
+    },
+    "range": "height",
+    "nice": true
+   },
+   {
+    "name": "c",
+    "type": "ordinal",
+    "domain": {
+     "data": "raw",
+     "field": "g"
+    },
+    "range": {
+     "scheme": "category10"
+    }
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x",
+    "title": "t"
+   },
+   {
+    "orient": "left",
+    "scale": "y",
+    "title": "v",
+    "grid": true
+   }
+  ],
+  "legends": [
+   {
+    "stroke": "c",
+    "title": "series (40)",
+    "symbolType": "stroke",
+    "columns": 2
+   }
+  ],
+  "marks": [
+   {
+    "type": "group",
+    "from": {
+     "facet": {
+      "name": "f",
+      "data": "series",
+      "groupby": "g"
+     }
+    },
+    "marks": [
+     {
+      "type": "line",
+      "from": {
+       "data": "f"
+      },
+      "encode": {
+       "enter": {
+        "x": {
+         "scale": "x",
+         "field": "t"
+        },
+        "y": {
+         "scale": "y",
+         "field": "v"
+        },
+        "stroke": {
+         "scale": "c",
+         "field": "g"
+        },
+        "strokeWidth": {
+         "value": 1
+        }
+       }
+      }
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "SCALE/FAN-OUT + PALETTE RECYCLING: 40 line series over a 10-colour category10 scheme, so every hue repeats 4x, plus a 40-entry symbol legend. The wave's core legibility target."
+}

@@ -1,0 +1,67 @@
+{
+ "type": "music",
+ "definition": {
+  "clef": "treble",
+  "keySignature": "G",
+  "timeSignature": "4/4",
+  "autoBeam": true,
+  "notes": [
+   {
+    "keys": [
+     "g/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/5"
+    ],
+    "duration": "q."
+   },
+   {
+    "keys": [
+     "e/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/4",
+     "b/4",
+     "d/5"
+    ],
+    "duration": "h"
+   },
+   {
+    "rest": true,
+    "duration": "q"
+   },
+   {
+    "keys": [
+     "f#/5"
+    ],
+    "duration": "q"
+   }
+  ],
+  "endBar": "final"
+ },
+ "intent": "Baseline single treble staff: key signature, time signature, chords, rests, dotted values, autoBeam with beat grouping."
+}

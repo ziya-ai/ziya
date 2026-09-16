@@ -1,0 +1,44 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "200 nominal categories",
+  "data": {
+   "sequence": {
+    "start": 0,
+    "stop": 200,
+    "step": 1,
+    "as": "n"
+   }
+  },
+  "transform": [
+   {
+    "calculate": "'C'+format(datum.n,'03d')",
+    "as": "cat"
+   },
+   {
+    "calculate": "20+70*abs(sin(datum.n/7))",
+    "as": "v"
+   }
+  ],
+  "mark": "bar",
+  "height": 260,
+  "encoding": {
+   "x": {
+    "field": "cat",
+    "type": "nominal",
+    "axis": {
+     "title": "category (200 distinct)"
+    }
+   },
+   "y": {
+    "field": "v",
+    "type": "quantitative",
+    "axis": {
+     "title": "value"
+    }
+   }
+  }
+ },
+ "intent": "SCALE: 200 distinct nominal categories in one bar chart - bar width and nominal tick-label density at high element count."
+}

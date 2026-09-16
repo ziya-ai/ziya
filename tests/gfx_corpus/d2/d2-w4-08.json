@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "db: Database\ncache: Cache Layer\ndb.style.fill: rgba(255, 99, 71, 0.5)\ncache.style.fill: rgb(70,130,180)\ndb -> cache\n",
+ "intent": "RECOVERY: rgba()/rgb() functional color notation where hex is expected"
+}

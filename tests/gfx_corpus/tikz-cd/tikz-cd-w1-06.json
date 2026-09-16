@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\mathcal{C} \\arrow[r, bend left=40, \"F\"] \\arrow[r, bend right=40, \"G\"'] & \\mathcal{D} \\\\\nA \\arrow[r, equal] & A",
+ "intent": "double arrows: equal sign and Rightarrow for a natural transformation"
+}

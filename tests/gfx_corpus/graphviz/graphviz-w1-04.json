@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph html { node [shape=plaintext]; users [label=<<TABLE BORDER=\"0\" CELLBORDER=\"1\" CELLSPACING=\"0\"><TR><TD BGCOLOR=\"#1f4e79\"><FONT COLOR=\"#ffffff\">users</FONT></TD></TR><TR><TD BGCOLOR=\"#ffffcc\"><FONT COLOR=\"#000000\">id : int</FONT></TD></TR><TR><TD BGCOLOR=\"#ffffcc\"><FONT COLOR=\"#000000\">email : text</FONT></TD></TR></TABLE>>]; orders [label=<<TABLE BORDER=\"0\" CELLBORDER=\"1\" CELLSPACING=\"0\"><TR><TD BGCOLOR=\"#1f4e79\"><FONT COLOR=\"#ffffff\">orders</FONT></TD></TR><TR><TD BGCOLOR=\"#ffffcc\"><FONT COLOR=\"#000000\">id : int</FONT></TD></TR><TR><TD BGCOLOR=\"#ffffcc\"><FONT COLOR=\"#000000\">user_id : int</FONT></TD></TR></TABLE>>]; users -> orders; }",
+ "intent": "HTML-like table label with explicit bgcolor/fontcolor cells (measurable contrast)"
+}

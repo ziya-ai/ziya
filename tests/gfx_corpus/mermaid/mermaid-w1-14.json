@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "xychart-beta\n  title \"Request latency vs throughput\"\n  x-axis [\"w1\", \"w2\", \"w3\", \"w4\", \"w5\", \"w6\"]\n  y-axis \"p99 latency (ms)\" 0 --> 400\n  bar [120, 145, 210, 190, 305, 260]\n  line [100, 130, 180, 175, 280, 240]\n",
+ "intent": "xychart-beta with bar and line series on a shared numeric axis"
+}

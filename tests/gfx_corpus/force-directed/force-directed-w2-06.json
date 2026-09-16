@@ -1,0 +1,118 @@
+{
+ "type": "force-directed",
+ "definition": {
+  "nodes": [
+   {
+    "id": "L0",
+    "label": "distributed-consensus-coordinator-service-replica-shard-primary-with-write-ahead-log-and-snapshot-compaction-subsystem-us-east-1a-000",
+    "group": 0
+   },
+   {
+    "id": "L1",
+    "label": "distributed-consensus-coordinator-service-replica-shard-primary-with-write-ahead-log-and-snapshot-compaction-subsystem-us-east-1a-001",
+    "group": 1
+   },
+   {
+    "id": "L2",
+    "label": "distributed-consensus-coordinator-service-replica-shard-primary-with-write-ahead-log-and-snapshot-compaction-subsystem-us-east-1a-002",
+    "group": 2
+   },
+   {
+    "id": "L3",
+    "label": "distributed-consensus-coordinator-service-replica-shard-primary-with-write-ahead-log-and-snapshot-compaction-subsystem-us-east-1a-003",
+    "group": 3
+   },
+   {
+    "id": "L4",
+    "label": "distributed-consensus-coordinator-service-replica-shard-primary-with-write-ahead-log-and-snapshot-compaction-subsystem-us-east-1a-004",
+    "group": 0
+   },
+   {
+    "id": "L5",
+    "label": "distributed-consensus-coordinator-service-replica-shard-primary-with-write-ahead-log-and-snapshot-compaction-subsystem-us-east-1a-005",
+    "group": 1
+   },
+   {
+    "id": "L6",
+    "label": "distributed-consensus-coordinator-service-replica-shard-primary-with-write-ahead-log-and-snapshot-compaction-subsystem-us-east-1a-006",
+    "group": 2
+   },
+   {
+    "id": "L7",
+    "label": "distributed-consensus-coordinator-service-replica-shard-primary-with-write-ahead-log-and-snapshot-compaction-subsystem-us-east-1a-007",
+    "group": 3
+   },
+   {
+    "id": "L8",
+    "label": "distributed-consensus-coordinator-service-replica-shard-primary-with-write-ahead-log-and-snapshot-compaction-subsystem-us-east-1a-008",
+    "group": 0
+   },
+   {
+    "id": "L9",
+    "label": "distributed-consensus-coordinator-service-replica-shard-primary-with-write-ahead-log-and-snapshot-compaction-subsystem-us-east-1a-009",
+    "group": 1
+   },
+   {
+    "id": "L10",
+    "label": "distributed-consensus-coordinator-service-replica-shard-primary-with-write-ahead-log-and-snapshot-compaction-subsystem-us-east-1a-010",
+    "group": 2
+   },
+   {
+    "id": "L11",
+    "label": "distributed-consensus-coordinator-service-replica-shard-primary-with-write-ahead-log-and-snapshot-compaction-subsystem-us-east-1a-011",
+    "group": 3
+   }
+  ],
+  "links": [
+   {
+    "source": "L0",
+    "target": "L1"
+   },
+   {
+    "source": "L1",
+    "target": "L2"
+   },
+   {
+    "source": "L2",
+    "target": "L3"
+   },
+   {
+    "source": "L3",
+    "target": "L4"
+   },
+   {
+    "source": "L4",
+    "target": "L5"
+   },
+   {
+    "source": "L5",
+    "target": "L6"
+   },
+   {
+    "source": "L6",
+    "target": "L7"
+   },
+   {
+    "source": "L7",
+    "target": "L8"
+   },
+   {
+    "source": "L8",
+    "target": "L9"
+   },
+   {
+    "source": "L9",
+    "target": "L10"
+   },
+   {
+    "source": "L10",
+    "target": "L11"
+   },
+   {
+    "source": "L11",
+    "target": "L0"
+   }
+  ]
+ },
+ "intent": "SCALE: very long labels — 12 nodes each carrying a ~133-character label drawn at the fixed x=size+4 offset with no wrapping or truncation."
+}

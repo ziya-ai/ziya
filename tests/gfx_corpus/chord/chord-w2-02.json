@@ -1,0 +1,651 @@
+{
+ "type": "chord",
+ "definition": {
+  "type": "chord",
+  "nodes": [
+   {
+    "id": "N001"
+   },
+   {
+    "id": "N002"
+   },
+   {
+    "id": "N003"
+   },
+   {
+    "id": "N004"
+   },
+   {
+    "id": "N005"
+   },
+   {
+    "id": "N006"
+   },
+   {
+    "id": "N007"
+   },
+   {
+    "id": "N008"
+   },
+   {
+    "id": "N009"
+   },
+   {
+    "id": "N010"
+   },
+   {
+    "id": "N011"
+   },
+   {
+    "id": "N012"
+   },
+   {
+    "id": "N013"
+   },
+   {
+    "id": "N014"
+   },
+   {
+    "id": "N015"
+   },
+   {
+    "id": "N016"
+   },
+   {
+    "id": "N017"
+   },
+   {
+    "id": "N018"
+   },
+   {
+    "id": "N019"
+   },
+   {
+    "id": "N020"
+   },
+   {
+    "id": "N021"
+   },
+   {
+    "id": "N022"
+   },
+   {
+    "id": "N023"
+   },
+   {
+    "id": "N024"
+   },
+   {
+    "id": "N025"
+   },
+   {
+    "id": "N026"
+   },
+   {
+    "id": "N027"
+   },
+   {
+    "id": "N028"
+   },
+   {
+    "id": "N029"
+   },
+   {
+    "id": "N030"
+   },
+   {
+    "id": "N031"
+   },
+   {
+    "id": "N032"
+   },
+   {
+    "id": "N033"
+   },
+   {
+    "id": "N034"
+   },
+   {
+    "id": "N035"
+   },
+   {
+    "id": "N036"
+   },
+   {
+    "id": "N037"
+   },
+   {
+    "id": "N038"
+   },
+   {
+    "id": "N039"
+   },
+   {
+    "id": "N040"
+   },
+   {
+    "id": "N041"
+   },
+   {
+    "id": "N042"
+   },
+   {
+    "id": "N043"
+   },
+   {
+    "id": "N044"
+   },
+   {
+    "id": "N045"
+   },
+   {
+    "id": "N046"
+   },
+   {
+    "id": "N047"
+   },
+   {
+    "id": "N048"
+   },
+   {
+    "id": "N049"
+   },
+   {
+    "id": "N050"
+   },
+   {
+    "id": "N051"
+   },
+   {
+    "id": "N052"
+   },
+   {
+    "id": "N053"
+   },
+   {
+    "id": "N054"
+   },
+   {
+    "id": "N055"
+   },
+   {
+    "id": "N056"
+   },
+   {
+    "id": "N057"
+   },
+   {
+    "id": "N058"
+   },
+   {
+    "id": "N059"
+   },
+   {
+    "id": "N060"
+   },
+   {
+    "id": "N061"
+   },
+   {
+    "id": "N062"
+   },
+   {
+    "id": "N063"
+   },
+   {
+    "id": "N064"
+   },
+   {
+    "id": "N065"
+   },
+   {
+    "id": "N066"
+   },
+   {
+    "id": "N067"
+   },
+   {
+    "id": "N068"
+   },
+   {
+    "id": "N069"
+   },
+   {
+    "id": "N070"
+   },
+   {
+    "id": "N071"
+   },
+   {
+    "id": "N072"
+   },
+   {
+    "id": "N073"
+   },
+   {
+    "id": "N074"
+   },
+   {
+    "id": "N075"
+   },
+   {
+    "id": "N076"
+   },
+   {
+    "id": "N077"
+   },
+   {
+    "id": "N078"
+   },
+   {
+    "id": "N079"
+   },
+   {
+    "id": "N080"
+   }
+  ],
+  "links": [
+   {
+    "source": "N001",
+    "target": "N002",
+    "value": 5
+   },
+   {
+    "source": "N002",
+    "target": "N003",
+    "value": 6
+   },
+   {
+    "source": "N003",
+    "target": "N004",
+    "value": 7
+   },
+   {
+    "source": "N004",
+    "target": "N005",
+    "value": 8
+   },
+   {
+    "source": "N005",
+    "target": "N006",
+    "value": 9
+   },
+   {
+    "source": "N006",
+    "target": "N007",
+    "value": 10
+   },
+   {
+    "source": "N007",
+    "target": "N008",
+    "value": 11
+   },
+   {
+    "source": "N008",
+    "target": "N009",
+    "value": 5
+   },
+   {
+    "source": "N009",
+    "target": "N010",
+    "value": 6
+   },
+   {
+    "source": "N010",
+    "target": "N011",
+    "value": 7
+   },
+   {
+    "source": "N011",
+    "target": "N012",
+    "value": 8
+   },
+   {
+    "source": "N012",
+    "target": "N013",
+    "value": 9
+   },
+   {
+    "source": "N013",
+    "target": "N014",
+    "value": 10
+   },
+   {
+    "source": "N014",
+    "target": "N015",
+    "value": 11
+   },
+   {
+    "source": "N015",
+    "target": "N016",
+    "value": 5
+   },
+   {
+    "source": "N016",
+    "target": "N017",
+    "value": 6
+   },
+   {
+    "source": "N017",
+    "target": "N018",
+    "value": 7
+   },
+   {
+    "source": "N018",
+    "target": "N019",
+    "value": 8
+   },
+   {
+    "source": "N019",
+    "target": "N020",
+    "value": 9
+   },
+   {
+    "source": "N020",
+    "target": "N021",
+    "value": 10
+   },
+   {
+    "source": "N021",
+    "target": "N022",
+    "value": 11
+   },
+   {
+    "source": "N022",
+    "target": "N023",
+    "value": 5
+   },
+   {
+    "source": "N023",
+    "target": "N024",
+    "value": 6
+   },
+   {
+    "source": "N024",
+    "target": "N025",
+    "value": 7
+   },
+   {
+    "source": "N025",
+    "target": "N026",
+    "value": 8
+   },
+   {
+    "source": "N026",
+    "target": "N027",
+    "value": 9
+   },
+   {
+    "source": "N027",
+    "target": "N028",
+    "value": 10
+   },
+   {
+    "source": "N028",
+    "target": "N029",
+    "value": 11
+   },
+   {
+    "source": "N029",
+    "target": "N030",
+    "value": 5
+   },
+   {
+    "source": "N030",
+    "target": "N031",
+    "value": 6
+   },
+   {
+    "source": "N031",
+    "target": "N032",
+    "value": 7
+   },
+   {
+    "source": "N032",
+    "target": "N033",
+    "value": 8
+   },
+   {
+    "source": "N033",
+    "target": "N034",
+    "value": 9
+   },
+   {
+    "source": "N034",
+    "target": "N035",
+    "value": 10
+   },
+   {
+    "source": "N035",
+    "target": "N036",
+    "value": 11
+   },
+   {
+    "source": "N036",
+    "target": "N037",
+    "value": 5
+   },
+   {
+    "source": "N037",
+    "target": "N038",
+    "value": 6
+   },
+   {
+    "source": "N038",
+    "target": "N039",
+    "value": 7
+   },
+   {
+    "source": "N039",
+    "target": "N040",
+    "value": 8
+   },
+   {
+    "source": "N040",
+    "target": "N041",
+    "value": 9
+   },
+   {
+    "source": "N041",
+    "target": "N042",
+    "value": 10
+   },
+   {
+    "source": "N042",
+    "target": "N043",
+    "value": 11
+   },
+   {
+    "source": "N043",
+    "target": "N044",
+    "value": 5
+   },
+   {
+    "source": "N044",
+    "target": "N045",
+    "value": 6
+   },
+   {
+    "source": "N045",
+    "target": "N046",
+    "value": 7
+   },
+   {
+    "source": "N046",
+    "target": "N047",
+    "value": 8
+   },
+   {
+    "source": "N047",
+    "target": "N048",
+    "value": 9
+   },
+   {
+    "source": "N048",
+    "target": "N049",
+    "value": 10
+   },
+   {
+    "source": "N049",
+    "target": "N050",
+    "value": 11
+   },
+   {
+    "source": "N050",
+    "target": "N051",
+    "value": 5
+   },
+   {
+    "source": "N051",
+    "target": "N052",
+    "value": 6
+   },
+   {
+    "source": "N052",
+    "target": "N053",
+    "value": 7
+   },
+   {
+    "source": "N053",
+    "target": "N054",
+    "value": 8
+   },
+   {
+    "source": "N054",
+    "target": "N055",
+    "value": 9
+   },
+   {
+    "source": "N055",
+    "target": "N056",
+    "value": 10
+   },
+   {
+    "source": "N056",
+    "target": "N057",
+    "value": 11
+   },
+   {
+    "source": "N057",
+    "target": "N058",
+    "value": 5
+   },
+   {
+    "source": "N058",
+    "target": "N059",
+    "value": 6
+   },
+   {
+    "source": "N059",
+    "target": "N060",
+    "value": 7
+   },
+   {
+    "source": "N060",
+    "target": "N061",
+    "value": 8
+   },
+   {
+    "source": "N061",
+    "target": "N062",
+    "value": 9
+   },
+   {
+    "source": "N062",
+    "target": "N063",
+    "value": 10
+   },
+   {
+    "source": "N063",
+    "target": "N064",
+    "value": 11
+   },
+   {
+    "source": "N064",
+    "target": "N065",
+    "value": 5
+   },
+   {
+    "source": "N065",
+    "target": "N066",
+    "value": 6
+   },
+   {
+    "source": "N066",
+    "target": "N067",
+    "value": 7
+   },
+   {
+    "source": "N067",
+    "target": "N068",
+    "value": 8
+   },
+   {
+    "source": "N068",
+    "target": "N069",
+    "value": 9
+   },
+   {
+    "source": "N069",
+    "target": "N070",
+    "value": 10
+   },
+   {
+    "source": "N070",
+    "target": "N071",
+    "value": 11
+   },
+   {
+    "source": "N071",
+    "target": "N072",
+    "value": 5
+   },
+   {
+    "source": "N072",
+    "target": "N073",
+    "value": 6
+   },
+   {
+    "source": "N073",
+    "target": "N074",
+    "value": 7
+   },
+   {
+    "source": "N074",
+    "target": "N075",
+    "value": 8
+   },
+   {
+    "source": "N075",
+    "target": "N076",
+    "value": 9
+   },
+   {
+    "source": "N076",
+    "target": "N077",
+    "value": 10
+   },
+   {
+    "source": "N077",
+    "target": "N078",
+    "value": 11
+   },
+   {
+    "source": "N078",
+    "target": "N079",
+    "value": 5
+   },
+   {
+    "source": "N079",
+    "target": "N080",
+    "value": 6
+   },
+   {
+    "source": "N080",
+    "target": "N001",
+    "value": 7
+   }
+  ]
+ },
+ "intent": "SCALE: 80 nodes, ring flow. Label tangential spacing ~19px at default 600px canvas."
+}

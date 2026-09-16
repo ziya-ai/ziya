@@ -1,0 +1,5 @@
+{
+ "type": "joint",
+ "definition": "{\n  \"elements\": [\n    {\"id\": \"src\", \"type\": \"rect\", \"label\": \"Source\", \"attrs\": {\"body\": {\"fill\": \"tomato\", \"stroke\": \"rebeccapurple\"}, \"label\": {\"fill\": \"white\"}}},\n    {\"id\": \"mid\", \"type\": \"rect\", \"label\": \"Middle\", \"attrs\": {\"body\": {\"fill\": \"transparent\", \"stroke\": \"black\"}, \"label\": {\"fill\": \"black\"}}},\n    {\"id\": \"dst\", \"type\": \"rect\", \"label\": \"Dest\", \"attrs\": {\"body\": {\"fill\": \"lightgoldenrodyellow\"}, \"label\": {\"fill\": \"white\"}}}\n  ],\n  \"connections\": [\n    {\"id\": \"w1\", \"source\": \"src\", \"target\": \"mid\", \"label\": \"in\"},\n    {\"id\": \"w2\", \"source\": \"mid\", \"target\": \"dst\", \"label\": \"out\"}\n  ]\n}",
+ "intent": "RECOVERY (colour form): CSS COLOR NAMES (tomato, rebeccapurple, lightgoldenrodyellow, white, black) plus fill \"transparent\" and a white-on-pale-yellow pairing that is illegible if honoured verbatim. Intent: Source->Middle->Dest."
+}

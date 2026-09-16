@@ -1,0 +1,90 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "width": 560,
+  "height": 280,
+  "background": "#ffffff",
+  "data": {
+   "values": [
+    {
+     "c": "Alpha",
+     "v": 42
+    },
+    {
+     "c": "Beta",
+     "v": 58
+    },
+    {
+     "c": "Gamma",
+     "v": 31
+    },
+    {
+     "c": "Delta",
+     "v": 67
+    },
+    {
+     "c": "Epsilon",
+     "v": 50
+    }
+   ]
+  },
+  "layer": [
+   {
+    "mark": {
+     "type": "bar"
+    },
+    "encoding": {
+     "x": {
+      "field": "c",
+      "type": "nominal",
+      "axis": {
+       "labelAngle": 0
+      }
+     },
+     "y": {
+      "field": "v",
+      "type": "quantitative"
+     }
+    }
+   },
+   {
+    "data": {
+     "values": [
+      {}
+     ]
+    },
+    "mark": {
+     "type": "rect",
+     "fill": "#ffffff",
+     "fillOpacity": 0.55,
+     "width": 560,
+     "height": 280
+    }
+   },
+   {
+    "data": {
+     "values": [
+      {
+       "lbl": "OVERLAID"
+      }
+     ]
+    },
+    "mark": {
+     "type": "text",
+     "fontSize": 26,
+     "color": "#888888"
+    },
+    "encoding": {
+     "text": {
+      "field": "lbl",
+      "type": "nominal"
+     }
+    }
+   }
+  ],
+  "config": {
+   "background": "#ffffff"
+  }
+ },
+ "intent": "SEMI-TRANSPARENT WHITE OVERLAY: data layer beneath a full-extent rect of fill #ffffff at fillOpacity 0.55, plus config.background forced to #ffffff. A scrim that washes out data on a dark page."
+}

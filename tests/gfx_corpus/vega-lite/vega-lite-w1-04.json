@@ -1,0 +1,114 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "Latency p99 by Service",
+  "width": 460,
+  "height": 250,
+  "data": {
+   "values": [
+    {
+     "day": 1,
+     "service": "api",
+     "ms": 210
+    },
+    {
+     "day": 2,
+     "service": "api",
+     "ms": 195
+    },
+    {
+     "day": 3,
+     "service": "api",
+     "ms": 240
+    },
+    {
+     "day": 4,
+     "service": "api",
+     "ms": 225
+    },
+    {
+     "day": 5,
+     "service": "api",
+     "ms": 260
+    },
+    {
+     "day": 1,
+     "service": "auth",
+     "ms": 120
+    },
+    {
+     "day": 2,
+     "service": "auth",
+     "ms": 135
+    },
+    {
+     "day": 3,
+     "service": "auth",
+     "ms": 128
+    },
+    {
+     "day": 4,
+     "service": "auth",
+     "ms": 150
+    },
+    {
+     "day": 5,
+     "service": "auth",
+     "ms": 142
+    },
+    {
+     "day": 1,
+     "service": "search",
+     "ms": 330
+    },
+    {
+     "day": 2,
+     "service": "search",
+     "ms": 310
+    },
+    {
+     "day": 3,
+     "service": "search",
+     "ms": 355
+    },
+    {
+     "day": 4,
+     "service": "search",
+     "ms": 300
+    },
+    {
+     "day": 5,
+     "service": "search",
+     "ms": 290
+    }
+   ]
+  },
+  "mark": {
+   "type": "line",
+   "point": true,
+   "strokeWidth": 2
+  },
+  "encoding": {
+   "x": {
+    "field": "day",
+    "type": "quantitative",
+    "title": "Day",
+    "axis": {
+     "tickMinStep": 1
+    }
+   },
+   "y": {
+    "field": "ms",
+    "type": "quantitative",
+    "title": "p99 latency (ms)"
+   },
+   "color": {
+    "field": "service",
+    "type": "nominal",
+    "title": "Service"
+   }
+  }
+ },
+ "intent": "Multi-series line chart with point overlay and a color legend (line+point mark object)."
+}

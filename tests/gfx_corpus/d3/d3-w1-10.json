@@ -1,0 +1,60 @@
+{
+ "type": "d3",
+ "definition": {
+  "type": "bar",
+  "width": 700,
+  "height": 400,
+  "data": [
+   {
+    "label": "01",
+    "value": 14
+   },
+   {
+    "label": "02",
+    "value": 27
+   },
+   {
+    "label": "03",
+    "value": 9
+   },
+   {
+    "label": "04",
+    "value": 33
+   },
+   {
+    "label": "05",
+    "value": 41
+   },
+   {
+    "label": "06",
+    "value": 18
+   },
+   {
+    "label": "07",
+    "value": 55
+   },
+   {
+    "label": "08",
+    "value": 12
+   },
+   {
+    "label": "09",
+    "value": 37
+   },
+   {
+    "label": "10",
+    "value": 48
+   },
+   {
+    "label": "11",
+    "value": 22
+   },
+   {
+    "label": "12",
+    "value": 60
+   }
+  ],
+  "intent_note": "dense band scale"
+ },
+ "intent": "basic-chart dense band scale: 12 categories with 0.1 padding, tests tick density and bar spacing"
+}

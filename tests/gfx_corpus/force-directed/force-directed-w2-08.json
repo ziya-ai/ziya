@@ -1,0 +1,328 @@
+{
+ "type": "force-directed",
+ "definition": {
+  "nodes": [
+   {
+    "id": "w0",
+    "group": 0
+   },
+   {
+    "id": "w1",
+    "group": 1
+   },
+   {
+    "id": "w2",
+    "group": 2
+   },
+   {
+    "id": "w3",
+    "group": 3
+   },
+   {
+    "id": "w4",
+    "group": 4
+   },
+   {
+    "id": "w5",
+    "group": 0
+   },
+   {
+    "id": "w6",
+    "group": 1
+   },
+   {
+    "id": "w7",
+    "group": 2
+   },
+   {
+    "id": "w8",
+    "group": 3
+   },
+   {
+    "id": "w9",
+    "group": 4
+   },
+   {
+    "id": "w10",
+    "group": 0
+   },
+   {
+    "id": "w11",
+    "group": 1
+   },
+   {
+    "id": "w12",
+    "group": 2
+   },
+   {
+    "id": "w13",
+    "group": 3
+   },
+   {
+    "id": "w14",
+    "group": 4
+   },
+   {
+    "id": "w15",
+    "group": 0
+   },
+   {
+    "id": "w16",
+    "group": 1
+   },
+   {
+    "id": "w17",
+    "group": 2
+   },
+   {
+    "id": "w18",
+    "group": 3
+   },
+   {
+    "id": "w19",
+    "group": 4
+   },
+   {
+    "id": "w20",
+    "group": 0
+   },
+   {
+    "id": "w21",
+    "group": 1
+   },
+   {
+    "id": "w22",
+    "group": 2
+   },
+   {
+    "id": "w23",
+    "group": 3
+   },
+   {
+    "id": "w24",
+    "group": 4
+   },
+   {
+    "id": "w25",
+    "group": 0
+   },
+   {
+    "id": "w26",
+    "group": 1
+   },
+   {
+    "id": "w27",
+    "group": 2
+   },
+   {
+    "id": "w28",
+    "group": 3
+   },
+   {
+    "id": "w29",
+    "group": 4
+   },
+   {
+    "id": "w30",
+    "group": 0
+   },
+   {
+    "id": "w31",
+    "group": 1
+   },
+   {
+    "id": "w32",
+    "group": 2
+   },
+   {
+    "id": "w33",
+    "group": 3
+   },
+   {
+    "id": "w34",
+    "group": 4
+   },
+   {
+    "id": "w35",
+    "group": 0
+   },
+   {
+    "id": "w36",
+    "group": 1
+   },
+   {
+    "id": "w37",
+    "group": 2
+   },
+   {
+    "id": "w38",
+    "group": 3
+   },
+   {
+    "id": "w39",
+    "group": 4
+   }
+  ],
+  "links": [
+   {
+    "source": "w0",
+    "target": "w1"
+   },
+   {
+    "source": "w1",
+    "target": "w2"
+   },
+   {
+    "source": "w2",
+    "target": "w3"
+   },
+   {
+    "source": "w3",
+    "target": "w4"
+   },
+   {
+    "source": "w4",
+    "target": "w5"
+   },
+   {
+    "source": "w5",
+    "target": "w6"
+   },
+   {
+    "source": "w6",
+    "target": "w7"
+   },
+   {
+    "source": "w7",
+    "target": "w8"
+   },
+   {
+    "source": "w8",
+    "target": "w9"
+   },
+   {
+    "source": "w9",
+    "target": "w10"
+   },
+   {
+    "source": "w10",
+    "target": "w11"
+   },
+   {
+    "source": "w11",
+    "target": "w12"
+   },
+   {
+    "source": "w12",
+    "target": "w13"
+   },
+   {
+    "source": "w13",
+    "target": "w14"
+   },
+   {
+    "source": "w14",
+    "target": "w15"
+   },
+   {
+    "source": "w15",
+    "target": "w16"
+   },
+   {
+    "source": "w16",
+    "target": "w17"
+   },
+   {
+    "source": "w17",
+    "target": "w18"
+   },
+   {
+    "source": "w18",
+    "target": "w19"
+   },
+   {
+    "source": "w19",
+    "target": "w20"
+   },
+   {
+    "source": "w20",
+    "target": "w21"
+   },
+   {
+    "source": "w21",
+    "target": "w22"
+   },
+   {
+    "source": "w22",
+    "target": "w23"
+   },
+   {
+    "source": "w23",
+    "target": "w24"
+   },
+   {
+    "source": "w24",
+    "target": "w25"
+   },
+   {
+    "source": "w25",
+    "target": "w26"
+   },
+   {
+    "source": "w26",
+    "target": "w27"
+   },
+   {
+    "source": "w27",
+    "target": "w28"
+   },
+   {
+    "source": "w28",
+    "target": "w29"
+   },
+   {
+    "source": "w29",
+    "target": "w30"
+   },
+   {
+    "source": "w30",
+    "target": "w31"
+   },
+   {
+    "source": "w31",
+    "target": "w32"
+   },
+   {
+    "source": "w32",
+    "target": "w33"
+   },
+   {
+    "source": "w33",
+    "target": "w34"
+   },
+   {
+    "source": "w34",
+    "target": "w35"
+   },
+   {
+    "source": "w35",
+    "target": "w36"
+   },
+   {
+    "source": "w36",
+    "target": "w37"
+   },
+   {
+    "source": "w37",
+    "target": "w38"
+   },
+   {
+    "source": "w38",
+    "target": "w39"
+   }
+  ],
+  "width": 200,
+  "height": 3000
+ },
+ "intent": "SCALE: extreme TALL aspect ratio 200x3000 (1:15) with 40 nodes."
+}

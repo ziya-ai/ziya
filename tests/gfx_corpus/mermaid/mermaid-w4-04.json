@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "flowchart TD\n  A[Parse request (fast path)] --> B[Validate (schema v2)]\n  B --> C[Emit result (JSON)]",
+ "intent": "RECOVERY: parentheses inside an UNQUOTED square-bracket label - the classic mermaid parse killer. Preprocessor should quote the label; expected render is 3 nodes with parens shown."
+}

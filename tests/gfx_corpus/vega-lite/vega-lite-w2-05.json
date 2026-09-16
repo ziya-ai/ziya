@@ -1,0 +1,59 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "8 categories with 65-75 char labels",
+  "data": {
+   "values": [
+    {
+     "p": "Enterprise Resource Planning Migration Programme Phase Two Northern Region",
+     "v": 10
+    },
+    {
+     "p": "Customer Relationship Management Consolidation And Data Hygiene Initiative",
+     "v": 19
+    },
+    {
+     "p": "Distributed Ledger Reconciliation Service Decommissioning Workstream",
+     "v": 28
+    },
+    {
+     "p": "Legacy Mainframe Batch Window Compression And Throughput Optimisation",
+     "v": 37
+    },
+    {
+     "p": "Cross Border Regulatory Reporting Automation Delivery Track Alpha",
+     "v": 46
+    },
+    {
+     "p": "Warehouse Automation Robotics Fleet Firmware Rollout Coordination",
+     "v": 55
+    },
+    {
+     "p": "Multi Tenant Identity Federation And Single Sign On Hardening Effort",
+     "v": 64
+    },
+    {
+     "p": "Realtime Fraud Signal Ingestion Pipeline Latency Reduction Project",
+     "v": 73
+    }
+   ]
+  },
+  "mark": "bar",
+  "height": 300,
+  "encoding": {
+   "x": {
+    "field": "p",
+    "type": "nominal",
+    "axis": {
+     "title": "programme"
+    }
+   },
+   "y": {
+    "field": "v",
+    "type": "quantitative"
+   }
+  }
+ },
+ "intent": "SCALE: VERY LONG LABELS - eight 65-75 character nominal category names; labelLimit truncation and label overlap."
+}

@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph records { node [shape=record]; rankdir=LR; struct1 [label=\"left|middle|right\"]; struct2 [label=\"{ Header | { id | name | email } }\"]; struct3 [label=\"hello\\nworld |{ b |{c|d|e}| f}| g | h\"]; struct1 -> struct2; struct2 -> struct3; }",
+ "intent": "Record shape with pipe-delimited fields and a nested brace group (canonical struct rendering)"
+}

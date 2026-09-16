@@ -1,0 +1,32 @@
+{
+ "type": "d3",
+ "definition": {
+  "type": "bar",
+  "data": [
+   {
+    "label": "alpha",
+    "value": 42,
+    "color": "#39f"
+   },
+   {
+    "label": "bravo",
+    "value": 37,
+    "color": "#f90"
+   },
+   {
+    "label": "charlie",
+    "value": 58,
+    "color": "#2a4"
+   },
+   {
+    "label": "delta",
+    "value": 23,
+    "color": "#c36"
+   }
+  ],
+  "style": {
+   "axisColor": "#555"
+  }
+ },
+ "intent": "RECOVERY: three-digit shorthand hex colors (#39f) where the plugin's own defaults are six-digit. Intent: 4 differently-coloured bars."
+}

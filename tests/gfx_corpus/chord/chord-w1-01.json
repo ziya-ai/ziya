@@ -1,0 +1,33 @@
+{
+ "type": "chord",
+ "definition": {
+  "type": "chord",
+  "matrix": [
+   [
+    0,
+    12,
+    5,
+    3
+   ],
+   [
+    8,
+    0,
+    7,
+    2
+   ],
+   [
+    4,
+    6,
+    0,
+    9
+   ],
+   [
+    1,
+    3,
+    11,
+    0
+   ]
+  ]
+ },
+ "intent": "Matrix form, 4x4, no names/colors -> numeric index labels + default palette"
+}

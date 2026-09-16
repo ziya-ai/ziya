@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\\definecolor{plate}{HTML}{16324A}\n\\definecolor{plateink}{HTML}{F2F6FA}\n\\definecolor{plateaccent}{HTML}{5FD4E4}\n\\fill[plate] (-0.9,-1.5) rectangle (7.3,1.9);\n\\draw[color=steelblue] (0,0) to[R=$R_1$] (2.4,0) node[ocirc]{};\n\\draw[color=tomato] (0,-1.1) to[short] (2.4,-1.1);\n\\node[darkslategray] at (2.4,1.4) {CSS names};\n",
+ "intent": "RECOVERY: lowercase CSS colour names (steelblue, tomato, darkslategray). w3-09 proved capitalised svgnames (Crimson/Navy) are a fatal abort because the profile omits xcolor's svgnames option. This checks whether the lowercase CSS spellings a model is even MORE likely to emit share that fate, and whether any recovery maps them."
+}

@@ -1,0 +1,75 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "width": 620,
+  "height": 300,
+  "data": {
+   "values": [
+    {
+     "c": "日本語テスト",
+     "v": 55
+    },
+    {
+     "c": "中文标签",
+     "v": 42
+    },
+    {
+     "c": "العربية",
+     "v": 61
+    },
+    {
+     "c": "עברית",
+     "v": 38
+    },
+    {
+     "c": "🚀 rocket",
+     "v": 49
+    },
+    {
+     "c": "Ωμέγα",
+     "v": 57
+    },
+    {
+     "c": "Ĥełłø Wõrld",
+     "v": 33
+    },
+    {
+     "c": "🎉🎊🎈",
+     "v": 66
+    }
+   ]
+  },
+  "layer": [
+   {
+    "mark": "bar"
+   },
+   {
+    "mark": {
+     "type": "text",
+     "dy": -8,
+     "fontSize": 11
+    },
+    "encoding": {
+     "text": {
+      "field": "c",
+      "type": "nominal"
+     }
+    }
+   }
+  ],
+  "encoding": {
+   "x": {
+    "field": "c",
+    "type": "nominal",
+    "axis": {
+     "labelAngle": 0
+    }
+   },
+   "y": {
+    "field": "v",
+    "type": "quantitative"
+   }
+  }
+ },
+ "intent": "UNICODE / CJK / RTL / EMOJI: eight categories spanning Japanese, Chinese, Arabic, Hebrew, Greek, diacritics and emoji, used as BOTH axis tick labels and text-mark content."
+}

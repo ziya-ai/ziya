@@ -1,0 +1,5 @@
+{
+ "type": "network",
+ "definition": "{\n  \"graph\": {\n    \"nodes\": [\n      {\"id\": \"VPC\",     \"x\": 320, \"y\": 80,  \"size\": 20},\n      {\"id\": \"SubnetA\", \"x\": 180, \"y\": 220, \"size\": 16},\n      {\"id\": \"SubnetB\", \"x\": 460, \"y\": 220, \"size\": 16},\n      {\"id\": \"NAT\",     \"x\": 320, \"y\": 330, \"size\": 14}\n    ],\n    \"links\": [\n      {\"source\": \"VPC\", \"target\": \"SubnetA\"},\n      {\"source\": \"VPC\", \"target\": \"SubnetB\"},\n      {\"source\": \"SubnetA\", \"target\": \"NAT\"},\n      {\"source\": \"SubnetB\", \"target\": \"NAT\"}\n    ],\n    \"width\": 640,\n    \"height\": 380,\n    \"style\": {\"labelColor\": \"#7e7e7e\", \"fontSize\": 13}\n  }\n}",
+ "intent": "Nesting depth wrong by one: graph wrapped in a `graph` envelope instead of top-level or the supported `data`. Valid JSON; the recovery question is envelope tolerance."
+}

@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "### Raw HTML surfaces\n\n<details>\n<summary>Click to expand details element</summary>\n\nHidden body paragraph with `code` inside.\n\n</details>\n\n<table>\n  <tr><th colspan=\"2\">Spanned header</th></tr>\n  <tr><td rowspan=\"2\">Rowspan cell</td><td>b1</td></tr>\n  <tr><td>b2</td></tr>\n</table>\n\nAn <abbr title=\"Application Programming Interface\">API</abbr> reference, <b>bold</b> <i>italic</i> <u>underline</u>, and <small>small text</small>.\n\n<p>Raw paragraph tag with <code>inline code</code> inside.</p>\n",
+ "intent": "raw inline HTML: details/summary, table with colspan/rowspan, abbr, span nesting"
+}

@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "block-beta\n  columns 3\n  a[\"Ingest\"] b[\"Transform\"] c[\"Serve\"]\n  d[\"Queue\"]:2 e[\"Cache\"]\n  block:group1:3\n    f[\"Shard 1\"] g[\"Shard 2\"] h[\"Shard 3\"]\n  end\n  a --> d\n  d --> f\n  style a fill:#f5f5f5,stroke:#dddddd,color:#333333\n  style e fill:#1a1a1a,stroke:#000000,color:#eeeeee",
+ "intent": "Less-travelled dialect: block-beta (column spans and nested block groups), combined with a deliberate palette collision - node 'a' is a hardcoded LIGHT trio (#f5f5f5 fill / #dddddd stroke / #333333 text) and node 'e' is a hardcoded DARK trio (#1a1a1a / #000000 / #eeeeee) in the SAME diagram. Whatever the theme, one of the two should be at risk, so this single image shows whether the enhancer remediates in one direction, both, or neither. All six colors are computable."
+}

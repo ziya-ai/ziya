@@ -1,0 +1,154 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "layout": {
+   "type": "hierarchical"
+  },
+  "elements": [
+   {
+    "id": "lb",
+    "type": "rect",
+    "label": "LB"
+   },
+   {
+    "id": "gw",
+    "type": "rect",
+    "label": "Gateway"
+   },
+   {
+    "id": "auth",
+    "type": "rect",
+    "label": "Auth"
+   },
+   {
+    "id": "cat",
+    "type": "rect",
+    "label": "Catalog"
+   },
+   {
+    "id": "cart",
+    "type": "rect",
+    "label": "Cart"
+   },
+   {
+    "id": "ord",
+    "type": "rect",
+    "label": "Orders"
+   },
+   {
+    "id": "pay",
+    "type": "rect",
+    "label": "Payments"
+   },
+   {
+    "id": "ship",
+    "type": "rect",
+    "label": "Shipping"
+   },
+   {
+    "id": "notif",
+    "type": "rect",
+    "label": "Notify"
+   },
+   {
+    "id": "pg",
+    "type": "cylinder",
+    "label": "Postgres"
+   },
+   {
+    "id": "rd",
+    "type": "cylinder",
+    "label": "Redis"
+   },
+   {
+    "id": "mq",
+    "type": "rect",
+    "label": "Queue"
+   },
+   {
+    "id": "s3",
+    "type": "cylinder",
+    "label": "Blobs"
+   }
+  ],
+  "connections": [
+   {
+    "id": "x01",
+    "source": "lb",
+    "target": "gw"
+   },
+   {
+    "id": "x02",
+    "source": "gw",
+    "target": "auth"
+   },
+   {
+    "id": "x03",
+    "source": "gw",
+    "target": "cat"
+   },
+   {
+    "id": "x04",
+    "source": "gw",
+    "target": "cart"
+   },
+   {
+    "id": "x05",
+    "source": "cart",
+    "target": "ord"
+   },
+   {
+    "id": "x06",
+    "source": "ord",
+    "target": "pay"
+   },
+   {
+    "id": "x07",
+    "source": "ord",
+    "target": "ship"
+   },
+   {
+    "id": "x08",
+    "source": "pay",
+    "target": "mq"
+   },
+   {
+    "id": "x09",
+    "source": "ship",
+    "target": "mq"
+   },
+   {
+    "id": "x10",
+    "source": "mq",
+    "target": "notif"
+   },
+   {
+    "id": "x11",
+    "source": "cat",
+    "target": "pg"
+   },
+   {
+    "id": "x12",
+    "source": "ord",
+    "target": "pg"
+   },
+   {
+    "id": "x13",
+    "source": "auth",
+    "target": "rd"
+   },
+   {
+    "id": "x14",
+    "source": "cat",
+    "target": "s3"
+   },
+   {
+    "id": "x15",
+    "source": "cart",
+    "target": "rd"
+   }
+  ]
+ },
+ "intent": "Auto-layout at scale: 13-node layered service dependency graph, no positions given, DirectedGraph must rank it."
+}

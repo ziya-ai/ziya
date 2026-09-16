@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "### Verification procedure\n\n1. Capture the baseline\n\n   ```bash\n   ziya-admin scheduler describe --format json > baseline.json\n   ```\n\n2. Compare against expectations\n\n   | Field | Expected |\n   |:------|:---------|\n   | replicas | 3 |\n   | generation | 17 |\n\n3. Record the outcome\n\n> **Note** — if `generation` regresses, the reconciliation loop observed a stale\n> cache.  Invalidate and repeat step 1 before escalating.\n\nCompletion of all three steps closes the verification gate.\n",
+ "intent": "composite document nesting a fenced code block and a table inside list items and a blockquote"
+}

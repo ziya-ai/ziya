@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "flowchart LR\n  A[Stage one] --> B[Stage two] --> C[Stage three]\n  style A fill:#ffffff,stroke:#ffffff,color:#ffffff\n  style B fill:#FFF,stroke:#EEE,color:#FEFEFE\n  style C fill:white,stroke:white,color:ivory\n  linkStyle 0,1 stroke:#fffff,stroke-width:1px",
+ "intent": "RECOVERY + CONTRAST TRAP: white-on-white written three ways (6-digit, 3-digit, CSS name) plus a MALFORMED 5-digit hex (#fffff) in linkStyle. A recovery that honours these literally is structurally correct and totally illegible; a recovery that remediates contrast is the pass."
+}

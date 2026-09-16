@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "peer_a: Peer A\npeer_b: Peer B\npeer_c: Peer C\npeer_a <-> peer_b: gossip\npeer_b <-> peer_c: gossip\n",
+ "intent": "Bidirectional connections (<->) which D2 renders with arrowheads on both ends."
+}

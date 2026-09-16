@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph L {\n bgcolor=\"transparent\";\n node [shape=box style=filled fillcolor=\"#fafafa\" color=\"#dddddd\" fontcolor=\"#333333\" penwidth=1];\n edge [color=\"#cccccc\" fontcolor=\"#333333\"];\n ingest [fillcolor=\"#f8f8f8\"];\n parse; validate; store [fillcolor=\"#f5f5f5\"]; report;\n ingest -> parse [label=\"raw\"];\n parse -> validate [label=\"ast\"];\n validate -> store [label=\"ok\"];\n validate -> report [label=\"err\"];\n store -> report [label=\"stats\"];\n}",
+ "intent": "HARDCODED LIGHT PALETTE: near-white fills #fafafa/#f8f8f8, pale grey strokes #dddddd, #333333 text. Author assumed a white page. Must still be legible when the page is dark."
+}

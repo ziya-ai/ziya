@@ -1,0 +1,308 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "width": 160,
+  "height": 120,
+  "elements": [
+   {
+    "id": "t0",
+    "type": "rect",
+    "label": "task0"
+   },
+   {
+    "id": "t1",
+    "type": "rect",
+    "label": "task1"
+   },
+   {
+    "id": "t2",
+    "type": "rect",
+    "label": "task2"
+   },
+   {
+    "id": "t3",
+    "type": "rect",
+    "label": "task3"
+   },
+   {
+    "id": "t4",
+    "type": "rect",
+    "label": "task4"
+   },
+   {
+    "id": "t5",
+    "type": "rect",
+    "label": "task5"
+   },
+   {
+    "id": "t6",
+    "type": "rect",
+    "label": "task6"
+   },
+   {
+    "id": "t7",
+    "type": "rect",
+    "label": "task7"
+   },
+   {
+    "id": "t8",
+    "type": "rect",
+    "label": "task8"
+   },
+   {
+    "id": "t9",
+    "type": "rect",
+    "label": "task9"
+   },
+   {
+    "id": "t10",
+    "type": "rect",
+    "label": "task10"
+   },
+   {
+    "id": "t11",
+    "type": "rect",
+    "label": "task11"
+   },
+   {
+    "id": "t12",
+    "type": "rect",
+    "label": "task12"
+   },
+   {
+    "id": "t13",
+    "type": "rect",
+    "label": "task13"
+   },
+   {
+    "id": "t14",
+    "type": "rect",
+    "label": "task14"
+   },
+   {
+    "id": "t15",
+    "type": "rect",
+    "label": "task15"
+   },
+   {
+    "id": "t16",
+    "type": "rect",
+    "label": "task16"
+   },
+   {
+    "id": "t17",
+    "type": "rect",
+    "label": "task17"
+   },
+   {
+    "id": "t18",
+    "type": "rect",
+    "label": "task18"
+   },
+   {
+    "id": "t19",
+    "type": "rect",
+    "label": "task19"
+   },
+   {
+    "id": "t20",
+    "type": "rect",
+    "label": "task20"
+   },
+   {
+    "id": "t21",
+    "type": "rect",
+    "label": "task21"
+   },
+   {
+    "id": "t22",
+    "type": "rect",
+    "label": "task22"
+   },
+   {
+    "id": "t23",
+    "type": "rect",
+    "label": "task23"
+   },
+   {
+    "id": "t24",
+    "type": "rect",
+    "label": "task24"
+   },
+   {
+    "id": "t25",
+    "type": "rect",
+    "label": "task25"
+   },
+   {
+    "id": "t26",
+    "type": "rect",
+    "label": "task26"
+   },
+   {
+    "id": "t27",
+    "type": "rect",
+    "label": "task27"
+   },
+   {
+    "id": "t28",
+    "type": "rect",
+    "label": "task28"
+   },
+   {
+    "id": "t29",
+    "type": "rect",
+    "label": "task29"
+   }
+  ],
+  "connections": [
+   {
+    "id": "q1",
+    "source": "t0",
+    "target": "t1"
+   },
+   {
+    "id": "q2",
+    "source": "t1",
+    "target": "t2"
+   },
+   {
+    "id": "q3",
+    "source": "t2",
+    "target": "t3"
+   },
+   {
+    "id": "q4",
+    "source": "t3",
+    "target": "t4"
+   },
+   {
+    "id": "q5",
+    "source": "t4",
+    "target": "t5"
+   },
+   {
+    "id": "q6",
+    "source": "t5",
+    "target": "t6"
+   },
+   {
+    "id": "q7",
+    "source": "t6",
+    "target": "t7"
+   },
+   {
+    "id": "q8",
+    "source": "t7",
+    "target": "t8"
+   },
+   {
+    "id": "q9",
+    "source": "t8",
+    "target": "t9"
+   },
+   {
+    "id": "q10",
+    "source": "t9",
+    "target": "t10"
+   },
+   {
+    "id": "q11",
+    "source": "t10",
+    "target": "t11"
+   },
+   {
+    "id": "q12",
+    "source": "t11",
+    "target": "t12"
+   },
+   {
+    "id": "q13",
+    "source": "t12",
+    "target": "t13"
+   },
+   {
+    "id": "q14",
+    "source": "t13",
+    "target": "t14"
+   },
+   {
+    "id": "q15",
+    "source": "t14",
+    "target": "t15"
+   },
+   {
+    "id": "q16",
+    "source": "t15",
+    "target": "t16"
+   },
+   {
+    "id": "q17",
+    "source": "t16",
+    "target": "t17"
+   },
+   {
+    "id": "q18",
+    "source": "t17",
+    "target": "t18"
+   },
+   {
+    "id": "q19",
+    "source": "t18",
+    "target": "t19"
+   },
+   {
+    "id": "q20",
+    "source": "t19",
+    "target": "t20"
+   },
+   {
+    "id": "q21",
+    "source": "t20",
+    "target": "t21"
+   },
+   {
+    "id": "q22",
+    "source": "t21",
+    "target": "t22"
+   },
+   {
+    "id": "q23",
+    "source": "t22",
+    "target": "t23"
+   },
+   {
+    "id": "q24",
+    "source": "t23",
+    "target": "t24"
+   },
+   {
+    "id": "q25",
+    "source": "t24",
+    "target": "t25"
+   },
+   {
+    "id": "q26",
+    "source": "t25",
+    "target": "t26"
+   },
+   {
+    "id": "q27",
+    "source": "t26",
+    "target": "t27"
+   },
+   {
+    "id": "q28",
+    "source": "t27",
+    "target": "t28"
+   },
+   {
+    "id": "q29",
+    "source": "t28",
+    "target": "t29"
+   }
+  ]
+ },
+ "intent": "Explicit width/height FAR BELOW natural size: a 30-node auto-laid-out chain forced into a declared 160x120 canvas."
+}

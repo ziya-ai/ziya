@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "A \\arrow[r, \"f\"] \\arrow[d, \"u\"'] \\arrow[rd, crossing over, \"w\" near start] & B \\arrow[d, \"v\"] \\\\\nC \\arrow[r, \"g\"'] & D",
+ "intent": "crossing over: cube face with one arrow drawn under another"
+}

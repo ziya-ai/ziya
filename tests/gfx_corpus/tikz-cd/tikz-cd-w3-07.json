@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\begin{tikzcd}[ampersand replacement=\\&, row sep=large, column sep=huge]\nA \\arrow[r, hook] \\arrow[d, two heads] \\& B \\arrow[d, maps to] \\\\\nC \\arrow[r, equal] \\& D \\arrow[ul, Rightarrow, dashed]\n\\end{tikzcd}",
+ "intent": "less-travelled dialect: long-form arrow, ampersand replacement, matrix options, hook/two heads/maps to/equal/Rightarrow"
+}

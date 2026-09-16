@@ -1,0 +1,36 @@
+{
+ "type": "basic-chart",
+ "definition": {
+  "type": "bubble",
+  "style": {
+   "axisColor": "#0b5394"
+  },
+  "data": [
+   {
+    "x": 100,
+    "y": 200,
+    "size": 80,
+    "label": "p"
+   },
+   {
+    "x": 250,
+    "y": 420,
+    "size": 200,
+    "label": "q"
+   },
+   {
+    "x": 410,
+    "y": 300,
+    "size": 120,
+    "label": "r"
+   },
+   {
+    "x": 560,
+    "y": 610,
+    "size": 300,
+    "label": "s"
+   }
+  ]
+ },
+ "intent": "bubble chart with style.axisColor - explicit axis tick label color"
+}

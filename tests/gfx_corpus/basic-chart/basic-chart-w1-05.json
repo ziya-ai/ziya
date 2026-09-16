@@ -1,0 +1,37 @@
+{
+ "type": "basic-chart",
+ "definition": {
+  "type": "scatter",
+  "data": [
+   {
+    "label": "a",
+    "value": 11
+   },
+   {
+    "label": "b",
+    "value": 25
+   },
+   {
+    "label": "c",
+    "value": 6
+   },
+   {
+    "label": "d",
+    "value": 30
+   },
+   {
+    "label": "e",
+    "value": 18
+   },
+   {
+    "label": "f",
+    "value": 22
+   },
+   {
+    "label": "g",
+    "value": 14
+   }
+  ]
+ },
+ "intent": "scatter chart in categorical (label/value) mode - points only, no connecting line"
+}

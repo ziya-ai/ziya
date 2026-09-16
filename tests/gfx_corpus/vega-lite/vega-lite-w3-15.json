@@ -1,0 +1,56 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "width": 420,
+  "height": 320,
+  "data": {
+   "values": [
+    {
+     "k": "has-value",
+     "v": 100
+    },
+    {
+     "k": "zero",
+     "v": 0
+    }
+   ]
+  },
+  "layer": [
+   {
+    "mark": {
+     "type": "arc",
+     "innerRadius": 50,
+     "outerRadius": 120,
+     "stroke": "#ffffff",
+     "strokeWidth": 2
+    }
+   },
+   {
+    "mark": {
+     "type": "text",
+     "radius": 85,
+     "fontSize": 14,
+     "color": "#333333"
+    },
+    "encoding": {
+     "text": {
+      "field": "k",
+      "type": "nominal"
+     }
+    }
+   }
+  ],
+  "encoding": {
+   "theta": {
+    "field": "v",
+    "type": "quantitative",
+    "stack": true
+   },
+   "color": {
+    "field": "k",
+    "type": "nominal"
+   }
+  }
+ },
+ "intent": "DEGENERATE DONUT WITH ZERO SLICE + TEXT ON THE SLICE: two categories, one with value 0, labels drawn inside the arc with hardcoded #333333 - probes the wave-1 arc-label colour bug at a LOW slice count where labels ARE emitted."
+}

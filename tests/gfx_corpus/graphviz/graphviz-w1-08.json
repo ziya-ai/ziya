@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "graph neato_mesh { layout=neato; overlap=false; splines=true; node [shape=circle]; n1 -- n2 [len=1.5]; n1 -- n3 [len=1.5]; n2 -- n3; n2 -- n4; n3 -- n5; n4 -- n5; n4 -- n6; n5 -- n6; n6 -- n1 [len=2.0]; }",
+ "intent": "Undirected graph with neato layout engine and edge lengths"
+}

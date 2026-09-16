@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "flowchart LR\n  Start([Request]) --> Auth[Authenticate]\n  Auth --> Cache{Cache hit?}\n  Cache -->|hit| Serve[Serve cached]\n  Cache -->|miss| Fetch[Fetch from origin]\n  Fetch --> Store[(Write cache)]\n  Store --> Serve\n  Serve --> Done([Response])\n  classDef pale fill:#fafafa,stroke:#e0e0e0,stroke-width:1px,color:#333333\n  class Start,Auth,Cache,Serve,Fetch,Store,Done pale\n  linkStyle default stroke:#cccccc,stroke-width:1px",
+ "intent": "HARDCODED LIGHT PALETTE that must survive DARK theme: near-white fills #fafafa, pale grey strokes #e0e0e0, #333333 text, #cccccc edge strokes. In light theme these are all fine-to-marginal; in dark theme the #fafafa islands should punch out of the dark canvas while #333 text on #fafafa stays readable - the real question is the #e0e0e0/#cccccc strokes, which must hold 3:1 against BOTH canvases. Every color is written in the spec so every ratio is computable. Paired with w3-10 (mirror) and w3-15 (no colors) on the SAME graph so the three are directly comparable."
+}

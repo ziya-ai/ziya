@@ -1,0 +1,44 @@
+{
+ "type": "packet",
+ "definition": {
+  "name": "MQTT CONNECT (no type, aliases only)",
+  "bits_per_row": 16,
+  "sections": [
+   {
+    "name": "Fixed Header",
+    "cells": [
+     {
+      "name": "Packet Type",
+      "bits": 4
+     },
+     {
+      "label": "Flags",
+      "width": 4
+     },
+     {
+      "name": "Remaining Length",
+      "size": 8
+     }
+    ]
+   },
+   {
+    "title": "Variable Header",
+    "fields": [
+     {
+      "name": "Protocol Name Len",
+      "bits": 16
+     },
+     {
+      "name": "Protocol Level",
+      "bits": 8
+     },
+     {
+      "name": "Connect Flags",
+      "bits": 8
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "No `type`, no `title`, no `bitWidth`, no `rows`: every field arrives under an alias (name/title, bits_per_row, cells/fields, width/size)"
+}

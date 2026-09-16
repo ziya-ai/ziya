@@ -1,0 +1,108 @@
+{
+ "type": "music",
+ "definition": {
+  "clef": "treble",
+  "keySignature": "C",
+  "timeSignature": "4/4",
+  "autoBeam": true,
+  "notes": [
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/5"
+    ],
+    "duration": "16"
+   },
+   {
+    "keys": [
+     "g/5"
+    ],
+    "duration": "16"
+   },
+   {
+    "keys": [
+     "a/5"
+    ],
+    "duration": "16"
+   },
+   {
+    "keys": [
+     "b/5"
+    ],
+    "duration": "16"
+   },
+   {
+    "keys": [
+     "c/6"
+    ],
+    "duration": "16"
+   },
+   {
+    "keys": [
+     "g/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "h"
+   }
+  ],
+  "tuplets": [
+   {
+    "from": 0,
+    "to": 2,
+    "num": 3,
+    "inSpaceOf": 2
+   },
+   {
+    "from": 3,
+    "to": 7,
+    "num": 5,
+    "inSpaceOf": 4,
+    "ratioed": true,
+    "bracketed": true
+   },
+   {
+    "from": 8,
+    "to": 10,
+    "num": 3,
+    "inSpaceOf": 2,
+    "position": "below"
+   }
+  ],
+  "endBar": "final"
+ },
+ "intent": "Tuplets: a beamed eighth triplet, a bracketed quintuplet with explicit ratio, and a below-staff triplet."
+}

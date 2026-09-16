@@ -1,0 +1,130 @@
+{
+ "type": "force-directed",
+ "definition": {
+  "nodes": [
+   {
+    "id": "n0",
+    "label": "ASCII base",
+    "group": 0,
+    "size": 10
+   },
+   {
+    "id": "n1",
+    "label": "日本語のノード",
+    "group": 1,
+    "size": 10
+   },
+   {
+    "id": "n2",
+    "label": "中文节点标签",
+    "group": 2,
+    "size": 10
+   },
+   {
+    "id": "n3",
+    "label": "한국어 노드",
+    "group": 3,
+    "size": 10
+   },
+   {
+    "id": "n4",
+    "label": "مرحبا بالعالم",
+    "group": 4,
+    "size": 10
+   },
+   {
+    "id": "n5",
+    "label": "עברית שלום",
+    "group": 5,
+    "size": 10
+   },
+   {
+    "id": "n6",
+    "label": "🎉🚀🔥 emoji",
+    "group": 0,
+    "size": 10
+   },
+   {
+    "id": "n7",
+    "label": "Ω≈ç√∫˜µ≤≥÷",
+    "group": 1,
+    "size": 10
+   },
+   {
+    "id": "n8",
+    "label": "é̀̂ combin",
+    "group": 2,
+    "size": 10
+   },
+   {
+    "id": "n9",
+    "label": "ZWJ:👨‍👩‍👧‍👦",
+    "group": 3,
+    "size": 10
+   },
+   {
+    "id": "n10",
+    "label": "ᚠᚢᚦᚨᚱᚲ runic",
+    "group": 4,
+    "size": 10
+   },
+   {
+    "id": "n11",
+    "label": "ทดสอบภาษาไทย",
+    "group": 5,
+    "size": 10
+   }
+  ],
+  "links": [
+   {
+    "source": "n0",
+    "target": "n1"
+   },
+   {
+    "source": "n1",
+    "target": "n2"
+   },
+   {
+    "source": "n2",
+    "target": "n3"
+   },
+   {
+    "source": "n3",
+    "target": "n4"
+   },
+   {
+    "source": "n4",
+    "target": "n5"
+   },
+   {
+    "source": "n5",
+    "target": "n6"
+   },
+   {
+    "source": "n6",
+    "target": "n7"
+   },
+   {
+    "source": "n7",
+    "target": "n8"
+   },
+   {
+    "source": "n8",
+    "target": "n9"
+   },
+   {
+    "source": "n9",
+    "target": "n10"
+   },
+   {
+    "source": "n10",
+    "target": "n11"
+   },
+   {
+    "source": "n11",
+    "target": "n0"
+   }
+  ]
+ },
+ "intent": "INTERACTION: mixed-script labels - CJK, Hangul, Arabic/Hebrew RTL, emoji + ZWJ family, combining diacritics, Thai, runic - on a 12-node ring."
+}

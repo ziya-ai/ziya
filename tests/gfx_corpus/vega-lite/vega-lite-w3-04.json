@@ -1,0 +1,98 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "width": 560,
+  "height": 300,
+  "data": {
+   "values": [
+    {
+     "c": "dark-1",
+     "v": 60,
+     "f": "#1b2a41",
+     "t": "#222222"
+    },
+    {
+     "c": "dark-2",
+     "v": 52,
+     "f": "#2e1a47",
+     "t": "#222222"
+    },
+    {
+     "c": "pale-1",
+     "v": 58,
+     "f": "#f7f7f2",
+     "t": "#ffffff"
+    },
+    {
+     "c": "pale-2",
+     "v": 45,
+     "f": "#eef3f7",
+     "t": "#ffffff"
+    },
+    {
+     "c": "mid",
+     "v": 50,
+     "f": "#7f8c8d",
+     "t": "#7f8c8d"
+    }
+   ]
+  },
+  "layer": [
+   {
+    "mark": {
+     "type": "bar"
+    },
+    "encoding": {
+     "color": {
+      "field": "f",
+      "type": "nominal",
+      "scale": null,
+      "legend": null
+     }
+    }
+   },
+   {
+    "mark": {
+     "type": "text",
+     "fontSize": 13,
+     "baseline": "middle",
+     "align": "center"
+    },
+    "encoding": {
+     "y": {
+      "field": "v",
+      "type": "quantitative",
+      "stack": null
+     },
+     "text": {
+      "field": "v",
+      "type": "quantitative"
+     },
+     "color": {
+      "field": "t",
+      "type": "nominal",
+      "scale": null,
+      "legend": null
+     },
+     "yOffset": {
+      "value": 40
+     }
+    }
+   }
+  ],
+  "encoding": {
+   "x": {
+    "field": "c",
+    "type": "nominal",
+    "axis": {
+     "labelAngle": 0
+    }
+   },
+   "y": {
+    "field": "v",
+    "type": "quantitative"
+   }
+  }
+ },
+ "intent": "TEXT DRAWN ON A COLOURED ELEMENT: value labels centred INSIDE the bars. Dark #222222 text on dark fills and #ffffff text on near-white fills - contrast is against the mark, not the page."
+}

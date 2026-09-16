@@ -1,0 +1,62 @@
+{
+ "type": "packet",
+ "definition": {
+  "type": "packet",
+  "title": "transparent + bogus theme token",
+  "bitWidth": 32,
+  "sections": [
+   {
+    "label": "Explicit transparent triple",
+    "color": {
+     "bg": "transparent",
+     "border": "#cccccc"
+    },
+    "rows": [
+     [
+      [
+       "Reserved",
+       16
+      ],
+      [
+       "Must Be Zero",
+       16
+      ]
+     ]
+    ]
+   },
+   {
+    "label": "Bogus theme token",
+    "color": "primary",
+    "rows": [
+     [
+      [
+       "Opcode",
+       8
+      ],
+      [
+       "Flags",
+       8
+      ],
+      [
+       "Length",
+       16
+      ]
+     ]
+    ]
+   },
+   {
+    "label": "Bogus token 2",
+    "color": "accent-strong",
+    "rows": [
+     [
+      [
+       "Body",
+       32
+      ]
+     ]
+    ]
+   }
+  ]
+ },
+ "intent": "'transparent' inside an explicit ColorTriple, plus theme tokens ('primary'/'accent-strong') the engine does not define"
+}

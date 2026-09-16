@@ -1,0 +1,1423 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     0.0,
+     0.3,
+     0.6,
+     0.8,
+     1.0,
+     1.0,
+     0.9,
+     0.7
+    ],
+    "xaxis": "x",
+    "yaxis": "y"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     0.9,
+     1.1,
+     1.1,
+     1.0,
+     0.8,
+     0.5,
+     0.2,
+     -0.2
+    ],
+    "xaxis": "x2",
+    "yaxis": "y2"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     1.1,
+     0.9,
+     0.5,
+     0.2,
+     -0.2,
+     -0.6,
+     -0.9,
+     -1.1
+    ],
+    "xaxis": "x3",
+    "yaxis": "y3"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     0.2,
+     -0.2,
+     -0.7,
+     -1.0,
+     -1.2,
+     -1.3,
+     -1.2,
+     -1.1
+    ],
+    "xaxis": "x4",
+    "yaxis": "y4"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     -1.1,
+     -1.3,
+     -1.4,
+     -1.3,
+     -1.1,
+     -0.8,
+     -0.4,
+     0.1
+    ],
+    "xaxis": "x5",
+    "yaxis": "y5"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     -1.4,
+     -1.2,
+     -0.9,
+     -0.4,
+     0.1,
+     0.6,
+     1.0,
+     1.3
+    ],
+    "xaxis": "x6",
+    "yaxis": "y6"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     -0.4,
+     0.1,
+     0.6,
+     1.1,
+     1.4,
+     1.6,
+     1.6,
+     1.4
+    ],
+    "xaxis": "x7",
+    "yaxis": "y7"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     1.1,
+     1.5,
+     1.7,
+     1.7,
+     1.5,
+     1.2,
+     0.7,
+     0.2
+    ],
+    "xaxis": "x8",
+    "yaxis": "y8"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     1.8,
+     1.6,
+     1.2,
+     0.7,
+     0.2,
+     -0.4,
+     -1.0,
+     -1.4
+    ],
+    "xaxis": "x9",
+    "yaxis": "y9"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     0.8,
+     0.2,
+     -0.5,
+     -1.0,
+     -1.5,
+     -1.8,
+     -1.9,
+     -1.8
+    ],
+    "xaxis": "x10",
+    "yaxis": "y10"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     -1.1,
+     -1.6,
+     -1.9,
+     -2.0,
+     -1.9,
+     -1.6,
+     -1.1,
+     -0.5
+    ],
+    "xaxis": "x11",
+    "yaxis": "y11"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     -2.1,
+     -2.0,
+     -1.6,
+     -1.1,
+     -0.5,
+     0.2,
+     0.9,
+     1.5
+    ],
+    "xaxis": "x12",
+    "yaxis": "y12"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     -1.2,
+     -0.5,
+     0.2,
+     0.9,
+     1.5,
+     2.0,
+     2.2,
+     2.2
+    ],
+    "xaxis": "x13",
+    "yaxis": "y13"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     1.0,
+     1.6,
+     2.1,
+     2.3,
+     2.3,
+     2.0,
+     1.5,
+     0.8
+    ],
+    "xaxis": "x14",
+    "yaxis": "y14"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     2.4,
+     2.4,
+     2.1,
+     1.6,
+     0.9,
+     0.1,
+     -0.7,
+     -1.4
+    ],
+    "xaxis": "x15",
+    "yaxis": "y15"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     1.6,
+     0.9,
+     0.1,
+     -0.7,
+     -1.5,
+     -2.0,
+     -2.4,
+     -2.5
+    ],
+    "xaxis": "x16",
+    "yaxis": "y16"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     -0.7,
+     -1.5,
+     -2.1,
+     -2.5,
+     -2.6,
+     -2.4,
+     -2.0,
+     -1.3
+    ],
+    "xaxis": "x17",
+    "yaxis": "y17"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     -2.6,
+     -2.7,
+     -2.5,
+     -2.0,
+     -1.3,
+     -0.5,
+     0.4,
+     1.3
+    ],
+    "xaxis": "x18",
+    "yaxis": "y18"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     -2.1,
+     -1.4,
+     -0.5,
+     0.4,
+     1.3,
+     2.0,
+     2.6,
+     2.8
+    ],
+    "xaxis": "x19",
+    "yaxis": "y19"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     0.4,
+     1.3,
+     2.1,
+     2.6,
+     2.9,
+     2.8,
+     2.4,
+     1.8
+    ],
+    "xaxis": "x20",
+    "yaxis": "y20"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     2.7,
+     3.0,
+     2.9,
+     2.5,
+     1.8,
+     1.0,
+     -0.0,
+     -1.0
+    ],
+    "xaxis": "x21",
+    "yaxis": "y21"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     2.6,
+     1.9,
+     1.0,
+     -0.0,
+     -1.0,
+     -1.9,
+     -2.6,
+     -3.0
+    ],
+    "xaxis": "x22",
+    "yaxis": "y22"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     -0.0,
+     -1.1,
+     -2.0,
+     -2.7,
+     -3.1,
+     -3.2,
+     -2.9,
+     -2.3
+    ],
+    "xaxis": "x23",
+    "yaxis": "y23"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     -2.8,
+     -3.2,
+     -3.3,
+     -3.0,
+     -2.4,
+     -1.5,
+     -0.4,
+     0.7
+    ],
+    "xaxis": "x24",
+    "yaxis": "y24"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     -3.1,
+     -2.4,
+     -1.5,
+     -0.4,
+     0.7,
+     1.7,
+     2.6,
+     3.2
+    ],
+    "xaxis": "x25",
+    "yaxis": "y25"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     -0.5,
+     0.7,
+     1.8,
+     2.7,
+     3.3,
+     3.5,
+     3.3,
+     2.8
+    ],
+    "xaxis": "x26",
+    "yaxis": "y26"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     2.7,
+     3.4,
+     3.6,
+     3.4,
+     2.9,
+     2.1,
+     1.0,
+     -0.2
+    ],
+    "xaxis": "x27",
+    "yaxis": "y27"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     3.5,
+     3.0,
+     2.1,
+     1.0,
+     -0.2,
+     -1.4,
+     -2.5,
+     -3.2
+    ],
+    "xaxis": "x28",
+    "yaxis": "y28"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     1.0,
+     -0.2,
+     -1.5,
+     -2.5,
+     -3.3,
+     -3.7,
+     -3.8,
+     -3.4
+    ],
+    "xaxis": "x29",
+    "yaxis": "y29"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     -2.6,
+     -3.4,
+     -3.8,
+     -3.9,
+     -3.4,
+     -2.7,
+     -1.6,
+     -0.3
+    ],
+    "xaxis": "x30",
+    "yaxis": "y30"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     -4.0,
+     -3.5,
+     -2.7,
+     -1.6,
+     -0.3,
+     1.0,
+     2.2,
+     3.2
+    ],
+    "xaxis": "x31",
+    "yaxis": "y31"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     -1.7,
+     -0.3,
+     1.0,
+     2.3,
+     3.3,
+     3.9,
+     4.1,
+     3.9
+    ],
+    "xaxis": "x32",
+    "yaxis": "y32"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     2.3,
+     3.3,
+     4.0,
+     4.2,
+     4.0,
+     3.3,
+     2.2,
+     0.9
+    ],
+    "xaxis": "x33",
+    "yaxis": "y33"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     4.3,
+     4.0,
+     3.3,
+     2.3,
+     1.0,
+     -0.5,
+     -1.8,
+     -3.0
+    ],
+    "xaxis": "x34",
+    "yaxis": "y34"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     2.3,
+     1.0,
+     -0.5,
+     -1.9,
+     -3.1,
+     -3.9,
+     -4.4,
+     -4.3
+    ],
+    "xaxis": "x35",
+    "yaxis": "y35"
+   },
+   {
+    "type": "scatter",
+    "mode": "lines",
+    "showlegend": false,
+    "y": [
+     -1.9,
+     -3.2,
+     -4.0,
+     -4.5,
+     -4.4,
+     -3.9,
+     -2.9,
+     -1.6
+    ],
+    "xaxis": "x36",
+    "yaxis": "y36"
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "6x6 subplot grid (36 panels)"
+   },
+   "grid": {
+    "rows": 6,
+    "columns": 6,
+    "pattern": "independent"
+   },
+   "height": 900,
+   "xaxis": {
+    "title": {
+     "text": "t0",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis": {
+    "title": {
+     "text": "v0",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis2": {
+    "title": {
+     "text": "t1",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis2": {
+    "title": {
+     "text": "v1",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis3": {
+    "title": {
+     "text": "t2",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis3": {
+    "title": {
+     "text": "v2",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis4": {
+    "title": {
+     "text": "t3",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis4": {
+    "title": {
+     "text": "v3",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis5": {
+    "title": {
+     "text": "t4",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis5": {
+    "title": {
+     "text": "v4",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis6": {
+    "title": {
+     "text": "t5",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis6": {
+    "title": {
+     "text": "v5",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis7": {
+    "title": {
+     "text": "t6",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis7": {
+    "title": {
+     "text": "v6",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis8": {
+    "title": {
+     "text": "t7",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis8": {
+    "title": {
+     "text": "v7",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis9": {
+    "title": {
+     "text": "t8",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis9": {
+    "title": {
+     "text": "v8",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis10": {
+    "title": {
+     "text": "t9",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis10": {
+    "title": {
+     "text": "v9",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis11": {
+    "title": {
+     "text": "t10",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis11": {
+    "title": {
+     "text": "v10",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis12": {
+    "title": {
+     "text": "t11",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis12": {
+    "title": {
+     "text": "v11",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis13": {
+    "title": {
+     "text": "t12",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis13": {
+    "title": {
+     "text": "v12",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis14": {
+    "title": {
+     "text": "t13",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis14": {
+    "title": {
+     "text": "v13",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis15": {
+    "title": {
+     "text": "t14",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis15": {
+    "title": {
+     "text": "v14",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis16": {
+    "title": {
+     "text": "t15",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis16": {
+    "title": {
+     "text": "v15",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis17": {
+    "title": {
+     "text": "t16",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis17": {
+    "title": {
+     "text": "v16",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis18": {
+    "title": {
+     "text": "t17",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis18": {
+    "title": {
+     "text": "v17",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis19": {
+    "title": {
+     "text": "t18",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis19": {
+    "title": {
+     "text": "v18",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis20": {
+    "title": {
+     "text": "t19",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis20": {
+    "title": {
+     "text": "v19",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis21": {
+    "title": {
+     "text": "t20",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis21": {
+    "title": {
+     "text": "v20",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis22": {
+    "title": {
+     "text": "t21",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis22": {
+    "title": {
+     "text": "v21",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis23": {
+    "title": {
+     "text": "t22",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis23": {
+    "title": {
+     "text": "v22",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis24": {
+    "title": {
+     "text": "t23",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis24": {
+    "title": {
+     "text": "v23",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis25": {
+    "title": {
+     "text": "t24",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis25": {
+    "title": {
+     "text": "v24",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis26": {
+    "title": {
+     "text": "t25",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis26": {
+    "title": {
+     "text": "v25",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis27": {
+    "title": {
+     "text": "t26",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis27": {
+    "title": {
+     "text": "v26",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis28": {
+    "title": {
+     "text": "t27",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis28": {
+    "title": {
+     "text": "v27",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis29": {
+    "title": {
+     "text": "t28",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis29": {
+    "title": {
+     "text": "v28",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis30": {
+    "title": {
+     "text": "t29",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis30": {
+    "title": {
+     "text": "v29",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis31": {
+    "title": {
+     "text": "t30",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis31": {
+    "title": {
+     "text": "v30",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis32": {
+    "title": {
+     "text": "t31",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis32": {
+    "title": {
+     "text": "v31",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis33": {
+    "title": {
+     "text": "t32",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis33": {
+    "title": {
+     "text": "v32",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis34": {
+    "title": {
+     "text": "t33",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis34": {
+    "title": {
+     "text": "v33",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis35": {
+    "title": {
+     "text": "t34",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis35": {
+    "title": {
+     "text": "v34",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "xaxis36": {
+    "title": {
+     "text": "t35",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   },
+   "yaxis36": {
+    "title": {
+     "text": "v35",
+     "font": {
+      "size": 8
+     }
+    },
+    "tickfont": {
+     "size": 7
+    }
+   }
+  }
+ },
+ "intent": "SCALE: 6x6 independent subplot grid, 36 panels, 72 axes (xaxis2..xaxis36) each titled - subplot-count ceiling and axis theming beyond xaxis/yaxis."
+}

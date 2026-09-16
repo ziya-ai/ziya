@@ -1,0 +1,5 @@
+{
+ "type": "music",
+ "definition": "{\n  // a I-IV-V-I cadence in C\n  \"timeSignature\": \"4/4\",\n  \"clef\": \"treble\",\n  \"title\": \"Comments Inside JSON\",\n  /* block comment describing the voicing */\n  \"notes\": [\n    {\"keys\": [\"c/4\", \"e/4\", \"g/4\"], \"duration\": \"q\"},   // tonic\n    {\"keys\": [\"f/4\", \"a/4\", \"c/5\"], \"duration\": \"q\"},   // subdominant\n    {\"keys\": [\"g/4\", \"b/4\", \"d/5\"], \"duration\": \"q\"},   // dominant\n    {\"keys\": [\"c/4\", \"e/4\", \"g/4\"], \"duration\": \"q\"}    // tonic\n  ]\n}",
+ "intent": "JS line and block comments interleaved with otherwise valid JSON"
+}

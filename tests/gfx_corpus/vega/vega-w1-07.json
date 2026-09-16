@@ -1,0 +1,174 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 480,
+  "height": 300,
+  "padding": 4,
+  "autosize": "none",
+  "data": [
+   {
+    "name": "tree",
+    "values": [
+     {
+      "id": "root"
+     },
+     {
+      "id": "svc",
+      "parent": "root"
+     },
+     {
+      "id": "web",
+      "parent": "root"
+     },
+     {
+      "id": "auth",
+      "parent": "svc",
+      "size": 62
+     },
+     {
+      "id": "search",
+      "parent": "svc",
+      "size": 45
+     },
+     {
+      "id": "billing",
+      "parent": "svc",
+      "size": 28
+     },
+     {
+      "id": "spa",
+      "parent": "web",
+      "size": 51
+     },
+     {
+      "id": "assets",
+      "parent": "web",
+      "size": 33
+     },
+     {
+      "id": "docs",
+      "parent": "web",
+      "size": 19
+     }
+    ],
+    "transform": [
+     {
+      "type": "stratify",
+      "key": "id",
+      "parentKey": "parent"
+     },
+     {
+      "type": "treemap",
+      "field": "size",
+      "sort": {
+       "field": "value",
+       "order": "descending"
+      },
+      "round": true,
+      "method": "squarify",
+      "padding": 2,
+      "size": [
+       {
+        "signal": "width"
+       },
+       {
+        "signal": "height"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "leaves",
+    "source": "tree",
+    "transform": [
+     {
+      "type": "filter",
+      "expr": "!datum.children"
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "color",
+    "type": "ordinal",
+    "domain": [
+     "svc",
+     "web"
+    ],
+    "range": [
+     "#4c78a8",
+     "#f58518"
+    ]
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "from": {
+     "data": "leaves"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "field": "x0"
+      },
+      "y": {
+       "field": "y0"
+      },
+      "x2": {
+       "field": "x1"
+      },
+      "y2": {
+       "field": "y1"
+      },
+      "fill": {
+       "scale": "color",
+       "field": "parent"
+      },
+      "stroke": {
+       "value": "#ffffff"
+      },
+      "strokeWidth": {
+       "value": 1
+      }
+     }
+    }
+   },
+   {
+    "type": "text",
+    "from": {
+     "data": "leaves"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "signal": "(datum.x0 + datum.x1) / 2"
+      },
+      "y": {
+       "signal": "(datum.y0 + datum.y1) / 2"
+      },
+      "align": {
+       "value": "center"
+      },
+      "baseline": {
+       "value": "middle"
+      },
+      "fill": {
+       "value": "#ffffff"
+      },
+      "fontSize": {
+       "value": 13
+      },
+      "text": {
+       "signal": "datum.id + ' (' + datum.size + ')'"
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "Treemap: stratify + treemap transforms, nested rect marks with data-bound leaf labels. Canonical hierarchical layout claimed by the plugin docstring."
+}

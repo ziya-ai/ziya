@@ -1,0 +1,5 @@
+{
+ "type": "chord",
+ "definition": "{\n  // chord diagram of team handoffs\n  type: 'chord';\n  nodes: [\n    {id: 'Design'};\n    {id: 'Build'};\n    {id: 'Test'};\n    {id: 'Ship'}\n  ];\n  /* flows, in tickets per week */\n  links: [\n    {source: 'Design', target: 'Build', value: 14};\n    {source: 'Build',  target: 'Test',  value: 11};\n    {source: 'Test',   target: 'Ship',  value: 9};\n    {source: 'Ship',   target: 'Design', value: 4}\n  ]\n}",
+ "intent": "JSON5-ish slips together: // and /* */ comments, SEMICOLONS where commas belong, unquoted keys, single-quoted strings. Intent: 4-stage handoff chord."
+}

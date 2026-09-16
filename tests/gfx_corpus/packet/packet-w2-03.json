@@ -1,0 +1,48 @@
+{
+ "type": "packet",
+ "definition": {
+  "title": "bitWidth 512 (cap)",
+  "bitWidth": 512,
+  "sections": [
+   {
+    "label": "Wide",
+    "color": "metadata",
+    "rows": [
+     {
+      "fields": [
+       [
+        "q0",
+        128
+       ],
+       [
+        "q1",
+        128
+       ],
+       [
+        "q2",
+        128
+       ],
+       [
+        "q3",
+        128
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "h0",
+        256
+       ],
+       [
+        "h1",
+        256
+       ]
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "Extreme wide aspect: bitWidth at PACKET_MAX_BIT_WIDTH=512 -> 8192px grid, 512 ruler ticks"
+}

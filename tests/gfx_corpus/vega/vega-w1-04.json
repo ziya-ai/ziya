@@ -1,0 +1,201 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 400,
+  "height": 300,
+  "padding": 5,
+  "data": [
+   {
+    "name": "pts",
+    "values": [
+     {
+      "x": 1.2,
+      "y": 3.4,
+      "w": 14,
+      "z": 0.1
+     },
+     {
+      "x": 2.8,
+      "y": 1.9,
+      "w": 42,
+      "z": 0.55
+     },
+     {
+      "x": 4.1,
+      "y": 5.2,
+      "w": 8,
+      "z": 0.9
+     },
+     {
+      "x": 5.5,
+      "y": 2.7,
+      "w": 26,
+      "z": 0.32
+     },
+     {
+      "x": 6.9,
+      "y": 6.1,
+      "w": 33,
+      "z": 0.71
+     },
+     {
+      "x": 3.3,
+      "y": 4.4,
+      "w": 19,
+      "z": 0.45
+     },
+     {
+      "x": 7.7,
+      "y": 3.1,
+      "w": 47,
+      "z": 0.2
+     },
+     {
+      "x": 8.4,
+      "y": 5.8,
+      "w": 11,
+      "z": 0.83
+     },
+     {
+      "x": 2.1,
+      "y": 6.6,
+      "w": 38,
+      "z": 0.62
+     },
+     {
+      "x": 5.0,
+      "y": 1.2,
+      "w": 22,
+      "z": 0.05
+     },
+     {
+      "x": 9.1,
+      "y": 4.0,
+      "w": 30,
+      "z": 0.98
+     },
+     {
+      "x": 6.2,
+      "y": 2.2,
+      "w": 17,
+      "z": 0.4
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "linear",
+    "range": "width",
+    "nice": true,
+    "zero": true,
+    "domain": {
+     "data": "pts",
+     "field": "x"
+    }
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "range": "height",
+    "nice": true,
+    "zero": true,
+    "domain": {
+     "data": "pts",
+     "field": "y"
+    }
+   },
+   {
+    "name": "color",
+    "type": "linear",
+    "range": {
+     "scheme": "viridis"
+    },
+    "domain": {
+     "data": "pts",
+     "field": "z"
+    }
+   },
+   {
+    "name": "size",
+    "type": "linear",
+    "range": [
+     40,
+     500
+    ],
+    "domain": {
+     "data": "pts",
+     "field": "w"
+    }
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x",
+    "title": "Latency (ms)",
+    "grid": true
+   },
+   {
+    "orient": "left",
+    "scale": "y",
+    "title": "Throughput",
+    "grid": true
+   }
+  ],
+  "legends": [
+   {
+    "fill": "color",
+    "type": "gradient",
+    "title": "Score",
+    "gradientLength": 140
+   },
+   {
+    "size": "size",
+    "title": "Weight",
+    "symbolStrokeColor": "#666",
+    "symbolFillColor": "transparent"
+   }
+  ],
+  "marks": [
+   {
+    "type": "symbol",
+    "from": {
+     "data": "pts"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "x"
+      },
+      "y": {
+       "scale": "y",
+       "field": "y"
+      },
+      "fill": {
+       "scale": "color",
+       "field": "z"
+      },
+      "size": {
+       "scale": "size",
+       "field": "w"
+      },
+      "fillOpacity": {
+       "value": 0.85
+      },
+      "stroke": {
+       "value": "#333"
+      },
+      "strokeWidth": {
+       "value": 0.8
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "Scatter plot with a continuous (sequential) color scale, a size scale, and BOTH a gradient color legend and a size legend. Exercises linear color scales + gradient legend rendering."
+}

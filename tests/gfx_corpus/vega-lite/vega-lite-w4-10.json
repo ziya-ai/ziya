@@ -1,0 +1,5 @@
+{
+ "type": "vega-lite",
+ "definition": "{\n  \"data\": {\"values\": [{\"x\": 1, \"y\": 3}, {\"x\": 2, \"y\": 7}, {\"x\": 3, \"y\": 5}, {\"x\": 4, \"y\": 9}]},\n  \"mark\": {\n    \"type\": \"line\",\n    \"point\": true,\n    \"encoding\": {\n      \"x\": {\"field\": \"x\", \"type\": \"quantitative\"},\n      \"y\": {\"field\": \"y\", \"type\": \"quantitative\"}\n    }\n  }\n}",
+ "intent": "Nesting off by one level: the encoding block is placed INSIDE the mark object instead of as a sibling of it. Intent: a 4-point line-with-points of y against x."
+}

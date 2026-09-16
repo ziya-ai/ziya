@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph BG {\n bgcolor=\"#ffffff\";\n fontcolor=\"#333333\";\n label=\"hardcoded white canvas\";\n node [shape=box style=filled fillcolor=\"#ffffff\" color=\"#bbbbbb\" fontcolor=\"#333333\"];\n subgraph cluster_w {\n  label=\"white cluster\"; style=filled; fillcolor=\"#fcfcfc\"; color=\"#dddddd\"; fontcolor=\"#333333\";\n  in1; in2;\n }\n out1 [fillcolor=\"#f7f7f7\"];\n in1 -> in2 [color=\"#999999\" fontcolor=\"#333333\" label=\"pale\"];\n in2 -> out1 [color=\"#999999\"];\n}",
+ "intent": "HARDCODED LIGHT GRAPH BACKGROUND: graph bgcolor=\"#ffffff\" plus a white-filled cluster and #333333 text. The canonical hardcoded-light-background-inside-a-dark-page case."
+}

@@ -1,0 +1,131 @@
+{
+ "type": "basic-chart",
+ "definition": {
+  "type": "bar",
+  "width": 220,
+  "height": 2400,
+  "data": [
+   {
+    "label": "t0",
+    "value": 34
+   },
+   {
+    "label": "t1",
+    "value": 37
+   },
+   {
+    "label": "t2",
+    "value": 14
+   },
+   {
+    "label": "t3",
+    "value": 89
+   },
+   {
+    "label": "t4",
+    "value": 11
+   },
+   {
+    "label": "t5",
+    "value": 46
+   },
+   {
+    "label": "t6",
+    "value": 86
+   },
+   {
+    "label": "t7",
+    "value": 65
+   },
+   {
+    "label": "t8",
+    "value": 36
+   },
+   {
+    "label": "t9",
+    "value": 69
+   },
+   {
+    "label": "t10",
+    "value": 72
+   },
+   {
+    "label": "t11",
+    "value": 58
+   },
+   {
+    "label": "t12",
+    "value": 21
+   },
+   {
+    "label": "t13",
+    "value": 74
+   },
+   {
+    "label": "t14",
+    "value": 50
+   },
+   {
+    "label": "t15",
+    "value": 91
+   },
+   {
+    "label": "t16",
+    "value": 95
+   },
+   {
+    "label": "t17",
+    "value": 19
+   },
+   {
+    "label": "t18",
+    "value": 25
+   },
+   {
+    "label": "t19",
+    "value": 37
+   },
+   {
+    "label": "t20",
+    "value": 81
+   },
+   {
+    "label": "t21",
+    "value": 67
+   },
+   {
+    "label": "t22",
+    "value": 60
+   },
+   {
+    "label": "t23",
+    "value": 33
+   },
+   {
+    "label": "t24",
+    "value": 65
+   },
+   {
+    "label": "t25",
+    "value": 36
+   },
+   {
+    "label": "t26",
+    "value": 96
+   },
+   {
+    "label": "t27",
+    "value": 83
+   },
+   {
+    "label": "t28",
+    "value": 32
+   },
+   {
+    "label": "t29",
+    "value": 85
+   }
+  ]
+ },
+ "intent": "SCALE+ASPECT: 220x2400 skyscraper aspect - extreme tall/narrow far above natural height"
+}

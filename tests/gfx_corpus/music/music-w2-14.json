@@ -1,0 +1,773 @@
+{
+ "type": "music",
+ "definition": {
+  "clef": "treble",
+  "keySignature": "C",
+  "timeSignature": "4/4",
+  "autoBeam": true,
+  "notes": [
+   {
+    "keys": [
+     "c/4"
+    ],
+    "duration": "8",
+    "dynamic": "mf"
+   },
+   {
+    "keys": [
+     "d/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/4"
+    ],
+    "duration": "8",
+    "dynamic": "mf"
+   },
+   {
+    "keys": [
+     "f/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/4"
+    ],
+    "duration": "8",
+    "dynamic": "mf"
+   },
+   {
+    "keys": [
+     "a/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/4"
+    ],
+    "duration": "8",
+    "dynamic": "mf"
+   },
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/5"
+    ],
+    "duration": "8",
+    "dynamic": "mf"
+   },
+   {
+    "keys": [
+     "e/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/5"
+    ],
+    "duration": "8",
+    "dynamic": "mf"
+   },
+   {
+    "keys": [
+     "g/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/5"
+    ],
+    "duration": "8",
+    "dynamic": "mf"
+   },
+   {
+    "keys": [
+     "b/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/4"
+    ],
+    "duration": "8"
+   }
+  ],
+  "slurs": [
+   {
+    "from": 0,
+    "to": 2
+   },
+   {
+    "from": 4,
+    "to": 6
+   },
+   {
+    "from": 8,
+    "to": 10
+   },
+   {
+    "from": 12,
+    "to": 14
+   },
+   {
+    "from": 16,
+    "to": 18
+   },
+   {
+    "from": 20,
+    "to": 22
+   },
+   {
+    "from": 24,
+    "to": 26
+   },
+   {
+    "from": 28,
+    "to": 30
+   },
+   {
+    "from": 32,
+    "to": 34
+   },
+   {
+    "from": 36,
+    "to": 38
+   },
+   {
+    "from": 40,
+    "to": 42
+   },
+   {
+    "from": 44,
+    "to": 46
+   },
+   {
+    "from": 48,
+    "to": 50
+   },
+   {
+    "from": 52,
+    "to": 54
+   },
+   {
+    "from": 56,
+    "to": 58
+   },
+   {
+    "from": 60,
+    "to": 62
+   },
+   {
+    "from": 64,
+    "to": 66
+   },
+   {
+    "from": 68,
+    "to": 70
+   },
+   {
+    "from": 72,
+    "to": 74
+   },
+   {
+    "from": 76,
+    "to": 78
+   },
+   {
+    "from": 80,
+    "to": 82
+   },
+   {
+    "from": 84,
+    "to": 86
+   },
+   {
+    "from": 88,
+    "to": 90
+   },
+   {
+    "from": 92,
+    "to": 94
+   },
+   {
+    "from": 96,
+    "to": 98
+   }
+  ],
+  "hairpins": [
+   {
+    "from": 0,
+    "to": 6,
+    "type": "cresc"
+   },
+   {
+    "from": 10,
+    "to": 16,
+    "type": "dim"
+   },
+   {
+    "from": 20,
+    "to": 26,
+    "type": "cresc"
+   },
+   {
+    "from": 30,
+    "to": 36,
+    "type": "dim"
+   },
+   {
+    "from": 40,
+    "to": 46,
+    "type": "cresc"
+   },
+   {
+    "from": 50,
+    "to": 56,
+    "type": "dim"
+   },
+   {
+    "from": 60,
+    "to": 66,
+    "type": "cresc"
+   },
+   {
+    "from": 70,
+    "to": 76,
+    "type": "dim"
+   },
+   {
+    "from": 80,
+    "to": 86,
+    "type": "cresc"
+   },
+   {
+    "from": 90,
+    "to": 96,
+    "type": "dim"
+   }
+  ]
+ },
+ "intent": "SCALE: overlay-layer density — 100 notes with 25 slurs, 10 hairpins and 7 dynamics, stressing the hand-drawn d3 overlay bands at high span count."
+}

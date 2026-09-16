@@ -1,0 +1,5 @@
+{
+ "type": "vega",
+ "definition": "```json\n{\n  \"$schema\": \"https://vega.github.io/schema/vega/v5.json\",\n  \"width\": 380, \"height\": 200, \"padding\": 5,\n  \"data\": [{\"name\": \"t\", \"values\": [{\"x\": 1, \"y\": 5}, {\"x\": 2, \"y\": 9}, {\"x\": 3, \"y\": 4}, {\"x\": 4, \"y\": 11}]}],\n  \"scales\": [\n    {\"name\": \"x\", \"type\": \"linear\", \"domain\": {\"data\": \"t\", \"field\": \"x\"}, \"range\": \"width\"},\n    {\"name\": \"y\", \"type\": \"linear\", \"domain\": {\"data\": \"t\", \"field\": \"y\"}, \"range\": \"height\", \"nice\": true}\n  ],\n  \"axes\": [{\"orient\": \"bottom\", \"scale\": \"x\"}, {\"orient\": \"left\", \"scale\": \"y\"}],\n  \"marks\": [{\"type\": \"line\", \"from\": {\"data\": \"t\"}, \"encode\": {\"update\": {\n    \"x\": {\"scale\": \"x\", \"field\": \"x\"}, \"y\": {\"scale\": \"y\", \"field\": \"y\"},\n    \"stroke\": {\"value\": \"#4c78a8\"}, \"strokeWidth\": {\"value\": 2}\n  }}}]\n}\n```",
+ "intent": "the whole spec wrapped in a ```json markdown fence - the classic copy-of-a-chat-answer defect; a 4-point line chart should recover"
+}

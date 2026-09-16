@@ -1,0 +1,5 @@
+{
+ "type": "plotly",
+ "definition": "{\"data\":[{\"type\":\"heatmap\",\"z\":[[1,4,7],[3,9,2],[6,5,8]],\"x\":[\"c1\",\"c2\",\"c3\"],\"y\":[\"r1\",\"r2\",\"r3\"],\"colorscale\":[[0,\"#fff\"],[0.5,\"#f80\"],[1,\"#03a\"]],\"colorbar\":{\"title\":{\"text\":\"score\"},\"outlinecolor\":\"#888\"}}],\"layout\":{\"title\":{\"text\":\"Three-Digit Hex Colours\"},\"colorway\":[\"#f80\",\"#0af\",\"#8c0\"],\"paper_bgcolor\":\"#fff\"}}",
+ "intent": "three-digit shorthand hex (#fff, #f80, #03a, #8c0) in colorscale stops, colorway and paper_bgcolor, where models routinely abbreviate. Intent: a 3x3 heatmap with a white-orange-blue scale and a labelled colorbar. Note the hardcoded #fff paper is itself the non-adapting-colour trap."
+}

@@ -1,0 +1,78 @@
+{
+ "type": "music",
+ "definition": {
+  "musicVersion": "1.0",
+  "version": 2,
+  "dialect": "vexflow-4",
+  "time": "4/4",
+  "timeSignature": "4/4",
+  "clef": "treble",
+  "keySignature": "C",
+  "title": "Mixed Dialect Versions",
+  "autoBeam": "true",
+  "showMeasureNumbers": "yes",
+  "measures": [
+   {
+    "barline": "single",
+    "notes": [
+     {
+      "keys": [
+       "c/4"
+      ],
+      "duration": "8"
+     },
+     {
+      "keys": [
+       "d/4"
+      ],
+      "duration": "8"
+     },
+     {
+      "keys": [
+       "e/4"
+      ],
+      "duration": "8"
+     },
+     {
+      "keys": [
+       "f/4"
+      ],
+      "duration": "8"
+     }
+    ]
+   },
+   {
+    "barline": "double",
+    "chords": [
+     "G7"
+    ],
+    "notes": [
+     {
+      "keys": [
+       "g/4"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "b/4"
+      ],
+      "duration": "q"
+     }
+    ]
+   },
+   {
+    "barline": "final",
+    "notes": [
+     {
+      "keys": [
+       "c/5"
+      ],
+      "duration": "h"
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "two version markers plus a dialect tag, duplicated time/timeSignature, string booleans, and 'barline'/'chords' instead of endBar/chordSymbol"
+}

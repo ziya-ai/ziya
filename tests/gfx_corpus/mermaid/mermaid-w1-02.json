@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "flowchart LR\n  A[Ingress] --> B[Router]\n  B --> C[Worker A]\n  B --> D[Worker B]\n  C --> E[Sink]\n  D --> E\n  classDef hot fill:#ffcccc,stroke:#cc0000,color:#000000\n  classDef cold fill:#003366,stroke:#66ccff,color:#ffffff\n  class C hot\n  class D cold\n  style E fill:#ffffff,stroke:#999999,color:#111111\n",
+ "intent": "flowchart with classDef / style hardcoded fills and explicit text colors (theme-adaptation test)"
+}

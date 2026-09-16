@@ -1,0 +1,76 @@
+{
+ "type": "packet",
+ "definition": {
+  "type": "packet",
+  "title": "Nested Bracket Depths",
+  "subtitle": "Overlapping ranges should nest into distinct depth lanes",
+  "bitWidth": 32,
+  "sections": [
+   {
+    "label": "Encapsulation",
+    "color": "network",
+    "rows": [
+     [
+      [
+       "Outer IP",
+       32
+      ]
+     ],
+     [
+      [
+       "Outer UDP",
+       32
+      ]
+     ],
+     [
+      [
+       "ESP SPI",
+       32
+      ]
+     ],
+     [
+      [
+       "Inner IP",
+       32
+      ]
+     ],
+     [
+      [
+       "Inner TCP",
+       32
+      ]
+     ],
+     [
+      [
+       "App Data",
+       32
+      ]
+     ]
+    ],
+    "brackets": [
+     {
+      "start_row": 0,
+      "end_row": 5,
+      "label": "Wire frame"
+     },
+     {
+      "start_row": 2,
+      "end_row": 5,
+      "label": "Tunnel"
+     },
+     {
+      "start_row": 3,
+      "end_row": 5,
+      "label": "Inner"
+     },
+     {
+      "start_row": 4,
+      "end_row": 5,
+      "label": "Stream"
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "Nested brackets: overlapping ranges auto-assigned distinct depths (3-level ladder) on the right side"
+}

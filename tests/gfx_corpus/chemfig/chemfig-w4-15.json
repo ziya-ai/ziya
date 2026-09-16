@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\textcolor{336699}{\\chemfig{S(=[:45]O)(=[:135]O)(-[:-135]OH)-[:-45]OH}}\n\\textcolor[HTML]{336699}{\\chemfig{Cl-Cl}}",
+ "intent": "RECOVERY: bare 6-digit hex used as a colour name, with the correct \\textcolor[HTML]{} form in the same body as an in-spec control."
+}

@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\chemfig{H_3C-[:30]CH(-[:-60]CH_3)-[:30]CH_2-[:-30]CH_2-[:30]OH}",
+ "intent": "Branching with parenthesised substituent and absolute bond angles ([:nn]) producing a zig-zag skeleton (3-methyl-1-butanol)."
+}

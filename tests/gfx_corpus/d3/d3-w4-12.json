@@ -1,0 +1,54 @@
+{
+ "type": "d3",
+ "definition": {
+  "type": "d3",
+  "layout": "force-directed",
+  "data": {
+   "nodes": [
+    {
+     "id": "api",
+     "color": "rebeccapurple"
+    },
+    {
+     "id": "cache",
+     "color": "tomato"
+    },
+    {
+     "id": "db",
+     "color": "darkslategray"
+    },
+    {
+     "id": "queue",
+     "color": "gold"
+    },
+    {
+     "id": "worker",
+     "color": "seagreen"
+    }
+   ],
+   "links": [
+    {
+     "source": "api",
+     "target": "cache"
+    },
+    {
+     "source": "api",
+     "target": "db"
+    },
+    {
+     "source": "api",
+     "target": "queue"
+    },
+    {
+     "source": "queue",
+     "target": "worker"
+    },
+    {
+     "source": "worker",
+     "target": "db"
+    }
+   ]
+  }
+ },
+ "intent": "RECOVERY: CSS colour keywords ('rebeccapurple','tomato','darkslategray','gold','seagreen') where the plugin's palette is hex. Intent: 5-node force graph, each node a distinct named colour."
+}

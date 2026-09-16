@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\definecolor{onfillA}{HTML}{F1C40F}\n\\definecolor{onfillB}{HTML}{2980B9}\n\\definecolor{onfillC}{HTML}{34495E}\n\\definecolor{onfillD}{HTML}{F9E79F}\n\\begin{tikzcd}[cells={nodes={draw=none,inner sep=7pt}}]\n|[fill=onfillA]| \\textcolor{black}{\\mathsf{blk/A}} \\rar & |[fill=onfillB]| \\textcolor{white}{\\mathsf{wht/B}} \\\\\n|[fill=onfillC]| \\textcolor{black}{\\mathsf{blk/C}} \\rar & |[fill=onfillD]| \\textcolor{white}{\\mathsf{wht/D}}\n\\end{tikzcd}",
+ "intent": "text drawn ON a saturated coloured element, two pairings deliberately right and two deliberately wrong"
+}

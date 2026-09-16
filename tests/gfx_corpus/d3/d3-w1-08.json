@@ -1,0 +1,37 @@
+{
+ "type": "d3",
+ "definition": {
+  "type": "bar",
+  "width": 660,
+  "height": 400,
+  "margin": {
+   "top": 30,
+   "right": 30,
+   "bottom": 90,
+   "left": 70
+  },
+  "data": [
+   {
+    "label": "authentication",
+    "value": 1240
+   },
+   {
+    "label": "authorization",
+    "value": 880
+   },
+   {
+    "label": "provisioning",
+    "value": 1610
+   },
+   {
+    "label": "reconciliation",
+    "value": 720
+   },
+   {
+    "label": "notification",
+    "value": 1030
+   }
+  ]
+ },
+ "intent": "basic-chart custom margin: wide bottom/left margins to accommodate long category labels and 4-digit ticks"
+}

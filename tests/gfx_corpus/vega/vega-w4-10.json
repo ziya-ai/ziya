@@ -1,0 +1,97 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v2.json",
+  "width": 380,
+  "height": 200,
+  "padding": {
+   "top": 10,
+   "left": 40,
+   "bottom": 30,
+   "right": 10
+  },
+  "data": [
+   {
+    "name": "t",
+    "values": [
+     {
+      "c": "a",
+      "v": 30
+     },
+     {
+      "c": "b",
+      "v": 52
+     },
+     {
+      "c": "d",
+      "v": 25
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "ordinal",
+    "domain": {
+     "data": "t",
+     "field": "c"
+    },
+    "range": "width",
+    "points": false
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "domain": {
+     "data": "t",
+     "field": "v"
+    },
+    "range": "height",
+    "nice": true
+   }
+  ],
+  "axes": [
+   {
+    "type": "x",
+    "scale": "x"
+   },
+   {
+    "type": "y",
+    "scale": "y"
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "from": {
+     "data": "t"
+    },
+    "properties": {
+     "update": {
+      "x": {
+       "scale": "x",
+       "field": "c"
+      },
+      "width": {
+       "scale": "x",
+       "band": true
+      },
+      "y": {
+       "scale": "y",
+       "field": "v"
+      },
+      "y2": {
+       "scale": "y",
+       "value": 0
+      },
+      "fill": {
+       "value": "#bab0ac"
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "Vega 2 dialect: axes use type:'x'/'y' rather than orient, marks use properties: rather than encode:, scale type 'ordinal' with points:false, band:true as a boolean. A model trained on old tutorials emits exactly this"
+}

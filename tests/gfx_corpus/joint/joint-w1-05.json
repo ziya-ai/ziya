@@ -1,0 +1,64 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "elements": [
+   {
+    "id": "acct",
+    "type": "class",
+    "size": {
+     "width": 190,
+     "height": 130
+    },
+    "label": "Account\n- id: UUID\n- balance: Money\n+ deposit(amount)\n+ withdraw(amount)"
+   },
+   {
+    "id": "iface",
+    "type": "interface",
+    "size": {
+     "width": 190,
+     "height": 100
+    },
+    "label": "Ledger\n+ post(entry)\n+ balanceOf(id)"
+   },
+   {
+    "id": "pkg",
+    "type": "package",
+    "size": {
+     "width": 170,
+     "height": 90
+    },
+    "label": "banking.core"
+   },
+   {
+    "id": "nt",
+    "type": "note",
+    "size": {
+     "width": 170,
+     "height": 70
+    },
+    "label": "Balances are\neventually consistent"
+   }
+  ],
+  "connections": [
+   {
+    "id": "u1",
+    "source": "acct",
+    "target": "iface",
+    "label": "implements"
+   },
+   {
+    "id": "u2",
+    "source": "pkg",
+    "target": "acct",
+    "label": "contains"
+   },
+   {
+    "id": "u3",
+    "source": "nt",
+    "target": "acct"
+   }
+  ]
+ },
+ "intent": "UML shapes: class with attribute/method compartments, interface, package, note."
+}

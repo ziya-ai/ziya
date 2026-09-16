@@ -1,0 +1,120 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "autoLayout": false,
+  "elements": [
+   {
+    "id": "a",
+    "type": "rect",
+    "label": "A",
+    "position": {
+     "x": 40,
+     "y": 40
+    },
+    "size": {
+     "width": 110,
+     "height": 60
+    }
+   },
+   {
+    "id": "b",
+    "type": "rect",
+    "label": "B",
+    "position": {
+     "x": 220,
+     "y": 40
+    },
+    "size": {
+     "width": 110,
+     "height": 60
+    }
+   },
+   {
+    "id": "c",
+    "type": "rect",
+    "label": "C",
+    "position": {
+     "x": 400,
+     "y": 40
+    },
+    "size": {
+     "width": 110,
+     "height": 60
+    }
+   },
+   {
+    "id": "d",
+    "type": "rect",
+    "label": "D",
+    "position": {
+     "x": 40,
+     "y": 220
+    },
+    "size": {
+     "width": 110,
+     "height": 60
+    }
+   },
+   {
+    "id": "e",
+    "type": "rect",
+    "label": "E",
+    "position": {
+     "x": 220,
+     "y": 220
+    },
+    "size": {
+     "width": 110,
+     "height": 60
+    }
+   },
+   {
+    "id": "f",
+    "type": "rect",
+    "label": "F",
+    "position": {
+     "x": 400,
+     "y": 220
+    },
+    "size": {
+     "width": 110,
+     "height": 60
+    }
+   }
+  ],
+  "connections": [
+   {
+    "id": "h1",
+    "source": "a",
+    "target": "b"
+   },
+   {
+    "id": "h2",
+    "source": "b",
+    "target": "c"
+   },
+   {
+    "id": "h3",
+    "source": "d",
+    "target": "e"
+   },
+   {
+    "id": "h4",
+    "source": "e",
+    "target": "f"
+   },
+   {
+    "id": "v1",
+    "source": "a",
+    "target": "d"
+   },
+   {
+    "id": "v2",
+    "source": "c",
+    "target": "f"
+   }
+  ]
+ },
+ "intent": "Manual positioning honoured with autoLayout:false — a 3x2 lattice at explicit coordinates."
+}

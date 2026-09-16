@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "graph G {\n  rankdir=LR;\n  a [label=\"Start\"];\n  b [label=\"Middle\"];\n  c [label=\"End\"];\n  a -> b -> c;\n  a -> c [label=\"skip\"];\n}",
+ "intent": "Dialect mix: undirected 'graph' keyword with directed -> edge operators"
+}

@@ -1,0 +1,89 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "width": 560,
+  "height": 280,
+  "data": {
+   "values": [
+    {
+     "c": "Alpha",
+     "v": 42
+    },
+    {
+     "c": "Beta",
+     "v": 58
+    },
+    {
+     "c": "Gamma",
+     "v": 31
+    },
+    {
+     "c": "Delta",
+     "v": 67
+    },
+    {
+     "c": "Epsilon",
+     "v": 50
+    }
+   ]
+  },
+  "layer": [
+   {
+    "mark": {
+     "type": "bar",
+     "fill": {
+      "gradient": "linear",
+      "x1": 0,
+      "y1": 1,
+      "x2": 0,
+      "y2": 0,
+      "stops": [
+       {
+        "offset": 0,
+        "color": "#f6f6f6"
+       },
+       {
+        "offset": 1,
+        "color": "#4572a7"
+       }
+      ]
+     }
+    }
+   },
+   {
+    "mark": {
+     "type": "point",
+     "size": 300,
+     "filled": true,
+     "fill": {
+      "gradient": "radial",
+      "stops": [
+       {
+        "offset": 0,
+        "color": "#ffffff"
+       },
+       {
+        "offset": 1,
+        "color": "#aa4643"
+       }
+      ]
+     }
+    }
+   }
+  ],
+  "encoding": {
+   "x": {
+    "field": "c",
+    "type": "nominal",
+    "axis": {
+     "labelAngle": 0
+    }
+   },
+   "y": {
+    "field": "v",
+    "type": "quantitative"
+   }
+  }
+ },
+ "intent": "LESS-TRAVELLED DIALECT - GRADIENT FILL: a linear gradient mark fill with explicit stops, plus a second layer using a radial gradient. Tests whether the gradient object survives preprocessing at all."
+}

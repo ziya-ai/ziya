@@ -1,0 +1,90 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 380,
+  "height": 200,
+  "padding": 5,
+  "data": [
+   {
+    "name": "t",
+    "values": [
+     {
+      "c": "a",
+      "v": 30
+     },
+     {
+      "c": "b",
+      "v": 52
+     },
+     {
+      "c": "d",
+      "v": 25
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "band",
+    "domain": {
+     "data": "t",
+     "field": "c"
+    },
+    "range": "width",
+    "padding": 0.2
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "domain": {
+     "data": "t",
+     "field": "v"
+    },
+    "range": "height",
+    "nice": true
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x"
+   },
+   {
+    "orient": "left",
+    "scale": "y"
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "x": {
+      "scale": "x",
+      "field": "c"
+     },
+     "width": {
+      "scale": "x",
+      "band": 1
+     },
+     "y": {
+      "scale": "y",
+      "field": "v"
+     },
+     "y2": {
+      "scale": "y",
+      "value": 0
+     },
+     "fill": {
+      "value": "#9d755d"
+     }
+    }
+   }
+  ]
+ },
+ "intent": "nesting depth off by one: the encode channels sit directly under encode instead of under encode.update (or enter). Extremely common; the intent is unambiguous and one level of wrapping recovers it"
+}

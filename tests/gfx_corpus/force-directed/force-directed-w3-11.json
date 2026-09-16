@@ -1,0 +1,75 @@
+{
+ "type": "force-directed",
+ "definition": {
+  "nodes": [
+   {
+    "id": "J0",
+    "label": "orphan label 0",
+    "color": "#161b22",
+    "size": 15
+   },
+   {
+    "id": "J1",
+    "label": "orphan label 1",
+    "color": "#161b22",
+    "size": 15
+   },
+   {
+    "id": "J2",
+    "label": "orphan label 2",
+    "color": "#161b22",
+    "size": 15
+   },
+   {
+    "id": "J3",
+    "label": "orphan label 3",
+    "color": "#161b22",
+    "size": 15
+   },
+   {
+    "id": "J4",
+    "label": "orphan label 4",
+    "color": "#161b22",
+    "size": 15
+   },
+   {
+    "id": "J5",
+    "label": "orphan label 5",
+    "color": "#161b22",
+    "size": 15
+   }
+  ],
+  "links": [
+   {
+    "source": "J0",
+    "target": "J1"
+   },
+   {
+    "source": "J1",
+    "target": "J2"
+   },
+   {
+    "source": "J2",
+    "target": "J3"
+   },
+   {
+    "source": "J3",
+    "target": "J4"
+   },
+   {
+    "source": "J4",
+    "target": "J5"
+   },
+   {
+    "source": "J5",
+    "target": "J0"
+   }
+  ],
+  "style": {
+   "background": "#0d1117",
+   "linkOpacity": 0.9,
+   "fontSize": 13
+  }
+ },
+ "intent": "COLOR: hardcoded #0d1117 background and near-black fills but labelColor DELIBERATELY OMITTED, so the theme default label colour is applied over a theme-locked dark surface."
+}

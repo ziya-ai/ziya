@@ -1,0 +1,87 @@
+{
+ "type": "packet",
+ "definition": {
+  "type": "packet",
+  "title": "Right-side Brackets",
+  "bitWidth": 32,
+  "sections": [
+   {
+    "label": "TCP Header",
+    "color": "transport",
+    "rows": [
+     [
+      [
+       "Source Port",
+       16
+      ],
+      [
+       "Destination Port",
+       16
+      ]
+     ],
+     [
+      [
+       "Sequence Number",
+       32
+      ]
+     ],
+     [
+      [
+       "Acknowledgment Number",
+       32
+      ]
+     ],
+     [
+      [
+       "Data Off",
+       4
+      ],
+      [
+       "Rsvd",
+       3
+      ],
+      [
+       "Flags",
+       9
+      ],
+      [
+       "Window",
+       16
+      ]
+     ],
+     [
+      [
+       "Checksum",
+       16
+      ],
+      [
+       "Urgent Pointer",
+       16
+      ]
+     ]
+    ],
+    "brackets": [
+     {
+      "start_row": 0,
+      "end_row": 0,
+      "label": "Endpoints",
+      "side": "right"
+     },
+     {
+      "start_row": 1,
+      "end_row": 2,
+      "label": "Sequencing",
+      "side": "right"
+     },
+     {
+      "start_row": 3,
+      "end_row": 4,
+      "label": "Control",
+      "side": "right"
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "Right-side bracket annotations spanning row ranges (canonical default side)"
+}

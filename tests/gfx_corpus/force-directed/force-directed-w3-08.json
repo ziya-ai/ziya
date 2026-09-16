@@ -1,0 +1,91 @@
+{
+ "type": "force-directed",
+ "definition": {
+  "nodes": [
+   {
+    "id": "L0",
+    "label": "light-0",
+    "color": "#fafafa",
+    "size": 14
+   },
+   {
+    "id": "L1",
+    "label": "light-1",
+    "color": "#f5f5f5",
+    "size": 14
+   },
+   {
+    "id": "L2",
+    "label": "light-2",
+    "color": "#f0f0f0",
+    "size": 14
+   },
+   {
+    "id": "L3",
+    "label": "light-3",
+    "color": "#eeeeee",
+    "size": 14
+   },
+   {
+    "id": "L4",
+    "label": "light-4",
+    "color": "#f7f7f7",
+    "size": 14
+   },
+   {
+    "id": "L5",
+    "label": "light-5",
+    "color": "#fcfcfc",
+    "size": 14
+   },
+   {
+    "id": "L6",
+    "label": "light-6",
+    "color": "#f2f2f2",
+    "size": 14
+   }
+  ],
+  "links": [
+   {
+    "source": "L0",
+    "target": "L1"
+   },
+   {
+    "source": "L1",
+    "target": "L2"
+   },
+   {
+    "source": "L2",
+    "target": "L3"
+   },
+   {
+    "source": "L3",
+    "target": "L4"
+   },
+   {
+    "source": "L4",
+    "target": "L5"
+   },
+   {
+    "source": "L5",
+    "target": "L6"
+   },
+   {
+    "source": "L6",
+    "target": "L0"
+   },
+   {
+    "source": "L0",
+    "target": "L3"
+   }
+  ],
+  "style": {
+   "background": "#ffffff",
+   "linkColor": "#dddddd",
+   "labelColor": "#333333",
+   "linkOpacity": 0.9,
+   "fontSize": 12
+  }
+ },
+ "intent": "COLOR: fully hardcoded LIGHT palette - white background, near-white node fills, pale grey links, #333 label text. Must be judged inside a dark page."
+}

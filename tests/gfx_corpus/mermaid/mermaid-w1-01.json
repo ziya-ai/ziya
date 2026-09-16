@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "flowchart TD\n  Start([Start]) --> Parse[/Parse request/]\n  Parse --> Valid{Valid?}\n  Valid -- yes --> subgraph_entry\n  Valid -- no --> Err[(Reject)]\n  subgraph Core[Core pipeline]\n    subgraph_entry[Normalize] --> Enrich[[Enrich]]\n    Enrich --> Store[(Datastore)]\n  end\n  Store --> Done([Done])\n  Err --> Done\n",
+ "intent": "Canonical flowchart TD with multiple node shapes, subgraph, and edge labels"
+}

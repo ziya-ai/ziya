@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "\\fill[black!88] (-0.6,-0.6) rectangle (18.6,12.6);\n\\foreach \\i in {0,...,17}{\n  \\foreach \\j in {0,...,11}{\n    \\pgfmathtruncatemacro{\\n}{\\i*12+\\j}\n    \\draw[white!70!black, line width=0.12pt] (\\i,\\j) -- (\\i+1,\\j);\n    \\draw[white!70!black, line width=0.12pt] (\\i,\\j) -- (\\i,\\j+1);\n    \\fill[white] (\\i,\\j) circle (0.05);\n    \\node[text=white, font=\\tiny, anchor=south west, inner sep=1pt] at (\\i,\\j) {\\n};\n  }\n}\n\\node[text=white, font=\\bfseries\\small, anchor=north west] at (0,12.4) {216 nodes / 432 edges, self-plated white ink};",
+ "intent": "216 nodes and 432 edges with 216 labels, all white ink on a self-painted plate: establishes where the scale ceiling sits when the theme defect is worked around"
+}

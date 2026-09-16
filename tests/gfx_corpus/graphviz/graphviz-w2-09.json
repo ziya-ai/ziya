@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph G{size=\"1.5,1.5!\";ratio=compress;node[shape=box,fontsize=14];\nm0_0->m0_1->m0_2->m0_3->m0_4->m0_5->m0_6->m0_7;\nm1_0->m1_1->m1_2->m1_3->m1_4->m1_5->m1_6->m1_7;\nm2_0->m2_1->m2_2->m2_3->m2_4->m2_5->m2_6->m2_7;\nm3_0->m3_1->m3_2->m3_3->m3_4->m3_5->m3_6->m3_7;\nm4_0->m4_1->m4_2->m4_3->m4_4->m4_5->m4_6->m4_7;\nm5_0->m5_1->m5_2->m5_3->m5_4->m5_5->m5_6->m5_7;\nm6_0->m6_1->m6_2->m6_3->m6_4->m6_5->m6_6->m6_7;\nm7_0->m7_1->m7_2->m7_3->m7_4->m7_5->m7_6->m7_7;\nm8_0->m8_1->m8_2->m8_3->m8_4->m8_5->m8_6->m8_7;\nm9_0->m9_1->m9_2->m9_3->m9_4->m9_5->m9_6->m9_7;\nm0_0->m1_0->m2_0->m3_0->m4_0->m5_0->m6_0->m7_0->m8_0->m9_0;\n}",
+ "intent": "SCALE: 80-node graph crushed into size=\"1.5,1.5!\" - explicit size far BELOW natural, downscaled text"
+}

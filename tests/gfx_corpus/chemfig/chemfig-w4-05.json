@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\textcolor{crimson}{\\chemfig{N(-[:30,,,,navy]H)(-[:150,,,,darkgreen]H)-H}}",
+ "intent": "RECOVERY: svgnames colours written in CSS lowercase (crimson/navy/darkgreen) instead of xcolor's Crimson/Navy/DarkGreen."
+}

@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph G {\n  rankdir=LR;\n  node [shape=box style=filled fontcolor=\"#ffffff\"];\n  a [label=\"Rebecca\" fillcolor=\"rebeccapurple\"];\n  b [label=\"Cornflower\" fillcolor=\"cornflower\"];\n  c [label=\"Current\" fillcolor=\"currentColor\"];\n  d [label=\"Valid Teal\" fillcolor=\"teal\"];\n  a -> b -> c -> d;\n}",
+ "intent": "CSS-only color names absent from the graphviz X11 scheme (rebeccapurple, cornflower, currentColor)"
+}

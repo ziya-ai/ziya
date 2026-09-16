@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "Graph with a self-loop and a cycle:\n\n```mermaid\nflowchart LR\n    A[🔁 retry 再試行] --> A\n    A --> B{decide 判断}\n    B --> C[commit]\n    C --> A\n    B --> B\n    A[🔁 retry 再試行] --> D[مخرج]\n    D --> C\n```\n\nThe self-edges on `A` and `B` and the `A -> B -> C -> A` cycle are intentional.\n",
+ "intent": "mermaid fence with self-edge, cycle, duplicate id declarations, and emoji/CJK node labels"
+}

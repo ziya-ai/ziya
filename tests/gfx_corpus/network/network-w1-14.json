@@ -1,0 +1,74 @@
+{
+ "type": "network",
+ "definition": {
+  "type": "network",
+  "width": 700,
+  "height": 400,
+  "nodes": [
+   {
+    "id": "ig",
+    "label": "Ingress Controller",
+    "x": 120,
+    "y": 90,
+    "size": 14
+   },
+   {
+    "id": "ms",
+    "label": "Metrics Scraper",
+    "x": 580,
+    "y": 90,
+    "size": 14
+   },
+   {
+    "id": "ps",
+    "label": "Payment Service",
+    "x": 350,
+    "y": 200,
+    "size": 14
+   },
+   {
+    "id": "wq",
+    "label": "Work Queue Broker",
+    "x": 120,
+    "y": 320,
+    "size": 14
+   },
+   {
+    "id": "ar",
+    "label": "Archive Retention",
+    "x": 580,
+    "y": 320,
+    "size": 14
+   }
+  ],
+  "links": [
+   {
+    "source": "ig",
+    "target": "ps"
+   },
+   {
+    "source": "ps",
+    "target": "ms"
+   },
+   {
+    "source": "ps",
+    "target": "wq"
+   },
+   {
+    "source": "wq",
+    "target": "ar"
+   },
+   {
+    "source": "ms",
+    "target": "ar"
+   }
+  ],
+  "style": {
+   "labelColor": "#7e7e7e",
+   "linkColor": "#7e7e7e",
+   "linkOpacity": 1,
+   "fontSize": 13
+  }
+ },
+ "intent": "Human-readable multi-word `label` distinct from a terse `id`, on nodes placed near the canvas edges: labels must render (not the id) and must not be clipped horizontally by the viewBox."
+}

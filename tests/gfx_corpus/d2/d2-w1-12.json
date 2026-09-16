@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "cache: Redis Cache {\n  style {\n    fill: \"#fff3e0\"\n    stroke: \"#e65100\"\n    stroke-width: 3\n  }\n}\nworker: Worker\nworker -> cache: SET/GET\n",
+ "intent": "Multi-line nested style block inside a node body -- the block form of D2 styling."
+}

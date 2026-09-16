@@ -1,0 +1,690 @@
+{
+ "schema": 1,
+ "engine": "basic-chart",
+ "specs": {
+  "basic-chart-w1-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.054756Z"
+    }
+   ]
+  },
+  "basic-chart-w1-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.056984Z"
+    }
+   ]
+  },
+  "basic-chart-w1-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.068602Z"
+    }
+   ]
+  },
+  "basic-chart-w1-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.071320Z"
+    }
+   ]
+  },
+  "basic-chart-w1-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.075008Z"
+    }
+   ]
+  },
+  "basic-chart-w1-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.078908Z"
+    }
+   ]
+  },
+  "basic-chart-w4-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.081846Z"
+    }
+   ]
+  },
+  "basic-chart-w4-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.085141Z"
+    }
+   ]
+  },
+  "basic-chart-w4-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.088174Z"
+    }
+   ]
+  },
+  "basic-chart-w4-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.102766Z"
+    }
+   ]
+  },
+  "basic-chart-w2-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-001",
+     "signature": "explicit-width-height-silently-ignored",
+     "at": "2026-09-15T08:56:11.819944Z"
+    }
+   ]
+  },
+  "basic-chart-w2-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-001",
+     "signature": "explicit-width-height-silently-ignored",
+     "at": "2026-09-15T08:56:11.823930Z"
+    }
+   ]
+  },
+  "basic-chart-w2-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-001",
+     "signature": "explicit-width-height-silently-ignored",
+     "at": "2026-09-15T08:56:11.832971Z"
+    }
+   ]
+  },
+  "basic-chart-w2-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-001",
+     "signature": "explicit-width-height-silently-ignored",
+     "at": "2026-09-15T08:56:11.838227Z"
+    },
+    {
+     "origin": "D-007",
+     "signature": "bubble-label-contrast-collapses-on-fill-at-density",
+     "at": "2026-09-15T08:56:11.930683Z"
+    }
+   ]
+  },
+  "basic-chart-w1-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-002",
+     "signature": "band-tick-labels-overlap-no-rotation",
+     "at": "2026-09-15T08:56:11.847064Z"
+    }
+   ]
+  },
+  "basic-chart-w2-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-002",
+     "signature": "band-tick-labels-overlap-no-rotation",
+     "at": "2026-09-15T08:56:11.854797Z"
+    }
+   ]
+  },
+  "basic-chart-w2-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-002",
+     "signature": "band-tick-labels-overlap-no-rotation",
+     "at": "2026-09-15T08:56:11.863713Z"
+    }
+   ]
+  },
+  "basic-chart-w1-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-003",
+     "signature": "scatter-xy-missing-size-max-radius",
+     "at": "2026-09-15T08:56:11.867418Z"
+    }
+   ]
+  },
+  "basic-chart-w1-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-004",
+     "signature": "bubble-label-clipped-above-svg-top",
+     "at": "2026-09-15T08:56:11.870334Z"
+    },
+    {
+     "origin": "D-006",
+     "signature": "plugin-ignores-isDarkMode",
+     "at": "2026-09-15T08:56:11.885118Z"
+    }
+   ]
+  },
+  "basic-chart-w1-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-004",
+     "signature": "bubble-label-clipped-above-svg-top",
+     "at": "2026-09-15T08:56:11.873542Z"
+    }
+   ]
+  },
+  "basic-chart-w2-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-005",
+     "signature": "zero-margin-clips-axis-tick-labels",
+     "at": "2026-09-15T08:56:11.882143Z"
+    }
+   ]
+  },
+  "basic-chart-w1-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-006",
+     "signature": "plugin-ignores-isDarkMode",
+     "at": "2026-09-15T08:56:11.896849Z"
+    }
+   ]
+  },
+  "basic-chart-w1-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-006",
+     "signature": "plugin-ignores-isDarkMode",
+     "at": "2026-09-15T08:56:11.914050Z"
+    }
+   ]
+  },
+  "basic-chart-w1-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-006",
+     "signature": "plugin-ignores-isDarkMode",
+     "at": "2026-09-15T08:56:11.924506Z"
+    }
+   ]
+  },
+  "basic-chart-w2-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-007",
+     "signature": "bubble-label-contrast-collapses-on-fill-at-density",
+     "at": "2026-09-15T08:56:11.928801Z"
+    }
+   ]
+  },
+  "basic-chart-w2-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-008",
+     "signature": "palette-weakest-swatch-below-graphical-floor-at-thin-bars",
+     "at": "2026-09-15T08:56:11.938986Z"
+    }
+   ]
+  },
+  "basic-chart-w4-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-009",
+     "signature": "preprocessor-string-never-parses-timeout",
+     "at": "2026-09-15T08:56:11.942995Z"
+    }
+   ]
+  },
+  "basic-chart-w4-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-009",
+     "signature": "preprocessor-string-never-parses-timeout",
+     "at": "2026-09-15T08:56:11.951098Z"
+    }
+   ]
+  },
+  "basic-chart-w4-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-009",
+     "signature": "preprocessor-string-never-parses-timeout",
+     "at": "2026-09-15T08:56:11.954930Z"
+    }
+   ]
+  },
+  "basic-chart-w4-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-009",
+     "signature": "preprocessor-string-never-parses-timeout",
+     "at": "2026-09-15T08:56:11.972673Z"
+    }
+   ]
+  },
+  "basic-chart-w4-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-009",
+     "signature": "preprocessor-string-never-parses-timeout",
+     "at": "2026-09-15T08:56:11.977757Z"
+    }
+   ]
+  },
+  "basic-chart-w4-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-010",
+     "signature": "plugin-declines-or-throws-now-recovered-at-plugin",
+     "at": "2026-09-15T08:56:11.983757Z"
+    }
+   ]
+  },
+  "basic-chart-w4-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-010",
+     "signature": "plugin-declines-or-throws-now-recovered-at-plugin",
+     "at": "2026-09-15T08:56:11.987897Z"
+    }
+   ]
+  },
+  "basic-chart-w4-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-010",
+     "signature": "plugin-declines-or-throws-now-recovered-at-plugin",
+     "at": "2026-09-15T08:56:11.991279Z"
+    }
+   ]
+  },
+  "basic-chart-w4-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-011",
+     "signature": "caller-color-passed-to-fill-unvalidated",
+     "at": "2026-09-15T08:56:11.994439Z"
+    }
+   ]
+  },
+  "basic-chart-w4-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-011",
+     "signature": "caller-color-passed-to-fill-unvalidated",
+     "at": "2026-09-15T08:56:11.997299Z"
+    }
+   ]
+  },
+  "basic-chart-w4-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-011",
+     "signature": "caller-color-passed-to-fill-unvalidated",
+     "at": "2026-09-15T08:56:12.000824Z"
+    }
+   ]
+  }
+ }
+}

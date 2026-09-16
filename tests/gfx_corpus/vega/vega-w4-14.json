@@ -1,0 +1,111 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 380,
+  "height": 200,
+  "padding": 5,
+  "background": "var(--ziya-surface)",
+  "data": [
+   {
+    "name": "t",
+    "values": [
+     {
+      "c": "a",
+      "v": 30
+     },
+     {
+      "c": "b",
+      "v": 52
+     },
+     {
+      "c": "d",
+      "v": 25
+     },
+     {
+      "c": "e",
+      "v": 41
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "band",
+    "domain": {
+     "data": "t",
+     "field": "c"
+    },
+    "range": "width",
+    "padding": 0.2
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "domain": {
+     "data": "t",
+     "field": "v"
+    },
+    "range": "height",
+    "nice": true
+   },
+   {
+    "name": "col",
+    "type": "ordinal",
+    "domain": {
+     "data": "t",
+     "field": "c"
+    },
+    "range": {
+     "scheme": "ziyaDark"
+    }
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x",
+    "labelColor": "var(--ziya-text)"
+   },
+   {
+    "orient": "left",
+    "scale": "y",
+    "labelColor": "currentColor"
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "update": {
+      "x": {
+       "scale": "x",
+       "field": "c"
+      },
+      "width": {
+       "scale": "x",
+       "band": 1
+      },
+      "y": {
+       "scale": "y",
+       "field": "v"
+      },
+      "y2": {
+       "scale": "y",
+       "value": 0
+      },
+      "fill": {
+       "scale": "col",
+       "field": "c"
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "theme tokens that do not exist: a CSS custom property as background and axis labelColor, 'currentColor', and range {scheme:'ziyaDark'} which is not a real Vega scheme. Tests whether an unresolvable colour token falls back to something legible or to the background"
+}

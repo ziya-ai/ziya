@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\chemfig{H-C\n  -[:30]OH};\n\\chemfig{C=O};",
+ "intent": "RECOVERY: statement-terminating semicolons borrowed from other dialects, and a newline split mid-chain inside \\chemfig braces."
+}

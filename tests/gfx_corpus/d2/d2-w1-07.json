@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "region {\n  az1 {\n    node1: Node 1\n    node2: Node 2\n    node1 -> node2\n  }\n  az2 {\n    node3: Node 3\n  }\n}\n",
+ "intent": "Nested containers two levels deep, the canonical D2 hierarchy feature."
+}

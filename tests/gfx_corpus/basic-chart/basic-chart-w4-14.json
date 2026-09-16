@@ -1,0 +1,5 @@
+{
+ "type": "d3",
+ "definition": "{\n  \"type\": \"bar\",\n  \"data\": [\n    {\"label\": \"Alpha\", \"value\": 30, \"color\": \"var(--ziya-accent)\"},\n    {\"label\": \"Beta\", \"value\": 55, \"color\": \"$primary\"},\n    {\"label\": \"Gamma\", \"value\": 18, \"color\": \"theme.colors.chart1\"},\n    {\"label\": \"Delta\", \"value\": 44, \"color\": \"transparent\"}\n  ]\n}",
+ "intent": "nonexistent theme tokens and CSS var references as color values"
+}

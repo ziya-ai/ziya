@@ -1,0 +1,5 @@
+{
+ "type": "d3",
+ "definition": "{\n  \"type\": \"bar\",\n  \"data\": [\n    {\"label\": \"Alpha\", \"value\": 30, \"color\": \"rgba(70,130,180,1)\"},\n    {\"label\": \"Beta\", \"value\": 55, \"color\": \"rgba(214,39,40,0.35)\"},\n    {\"label\": \"Gamma\", \"value\": 18, \"color\": \"rgba(0,0,0,0)\"},\n    {\"label\": \"Delta\", \"value\": 44, \"color\": \"rgb(44 160 44)\"}\n  ]\n}",
+ "intent": "rgba() colors where hex is expected, including rgba(0,0,0,0) fully transparent"
+}

@@ -1,0 +1,63 @@
+{
+ "type": "chord",
+ "definition": {
+  "type": "chord",
+  "width": 860,
+  "height": 760,
+  "nodes": [
+   {
+    "id": "Warehouse A"
+   },
+   {
+    "id": "Warehouse B"
+   },
+   {
+    "id": "Retail North"
+   },
+   {
+    "id": "Retail South"
+   },
+   {
+    "id": "Returns Center"
+   }
+  ],
+  "links": [
+   {
+    "source": "Warehouse A",
+    "target": "Retail North",
+    "value": 34
+   },
+   {
+    "source": "Warehouse A",
+    "target": "Retail South",
+    "value": 21
+   },
+   {
+    "source": "Warehouse B",
+    "target": "Retail North",
+    "value": 17
+   },
+   {
+    "source": "Warehouse B",
+    "target": "Retail South",
+    "value": 29
+   },
+   {
+    "source": "Retail North",
+    "target": "Returns Center",
+    "value": 6
+   },
+   {
+    "source": "Retail South",
+    "target": "Returns Center",
+    "value": 9
+   },
+   {
+    "source": "Returns Center",
+    "target": "Warehouse A",
+    "value": 12
+   }
+  ]
+ },
+ "intent": "custom width/height (860x760, non-square) -> radius sizing + label gutter"
+}

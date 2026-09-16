@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "\\coordinate (A) at (0,0);\n\\coordinate (B) at (4,2.4);\n\\coordinate (C) at (4,0);\n\\draw[thick] (A) -- (B) -- (C) -- cycle;\n\\fill[red] ($(A)!0.5!(B)$) circle (2pt) node[above left] {mid AB};\n\\fill[blue] ($(B)!0.33!(C)$) circle (2pt) node[right] {1/3 BC};\n\\fill[green!50!black] ($(A)+(1.2,0.35)$) circle (2pt) node[below right] {A+(1.2,.35)};\n\\draw[dashed] (B) -- ($(A)!(B)!(C)$) node[below] {proj};\n\\node[below] at (2,-0.4) {calc: !t!, +offset, projection};",
+ "intent": "calc library: partway modifier ($(A)!.5!(B)$), coordinate offset, and projection onto a segment"
+}

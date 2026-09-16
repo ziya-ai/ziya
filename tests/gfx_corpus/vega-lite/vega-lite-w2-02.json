@@ -1,0 +1,51 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "5000-point scatter",
+  "data": {
+   "sequence": {
+    "start": 0,
+    "stop": 5000,
+    "step": 1,
+    "as": "n"
+   }
+  },
+  "transform": [
+   {
+    "calculate": "50+18*sin(datum.n*2.399)+6*cos(datum.n*0.7)",
+    "as": "x"
+   },
+   {
+    "calculate": "50+18*cos(datum.n*1.618)+6*sin(datum.n*0.31)",
+    "as": "y"
+   },
+   {
+    "calculate": "'g'+(datum.n%5)",
+    "as": "g"
+   }
+  ],
+  "mark": {
+   "type": "point",
+   "filled": true,
+   "size": 12,
+   "opacity": 0.35
+  },
+  "height": 420,
+  "encoding": {
+   "x": {
+    "field": "x",
+    "type": "quantitative"
+   },
+   "y": {
+    "field": "y",
+    "type": "quantitative"
+   },
+   "color": {
+    "field": "g",
+    "type": "nominal"
+   }
+  }
+ },
+ "intent": "SCALE: 5000 points, 5 colour groups, size 12 at opacity 0.35 - overplotting plus low-opacity survival in dark theme."
+}

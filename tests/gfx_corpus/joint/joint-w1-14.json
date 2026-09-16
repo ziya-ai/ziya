@@ -1,0 +1,78 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "elements": [
+   {
+    "id": "d1",
+    "type": "document",
+    "label": "Order form"
+   },
+   {
+    "id": "m1",
+    "type": "manual",
+    "label": "Manual review"
+   },
+   {
+    "id": "sp",
+    "type": "subprocess",
+    "label": "Fulfilment"
+   },
+   {
+    "id": "da",
+    "type": "data",
+    "label": "Order data"
+   },
+   {
+    "id": "ms",
+    "type": "message",
+    "label": "Confirmation"
+   },
+   {
+    "id": "cp",
+    "type": "component",
+    "label": "PaymentSvc"
+   },
+   {
+    "id": "mo",
+    "type": "module",
+    "label": "billing"
+   }
+  ],
+  "connections": [
+   {
+    "id": "p1",
+    "source": "d1",
+    "target": "m1"
+   },
+   {
+    "id": "p2",
+    "source": "m1",
+    "target": "sp",
+    "label": "approved"
+   },
+   {
+    "id": "p3",
+    "source": "sp",
+    "target": "da"
+   },
+   {
+    "id": "p4",
+    "source": "sp",
+    "target": "ms"
+   },
+   {
+    "id": "p5",
+    "source": "cp",
+    "target": "sp",
+    "label": "charge"
+   },
+   {
+    "id": "p6",
+    "source": "mo",
+    "target": "cp"
+   }
+  ]
+ },
+ "intent": "Document/process shape family: subprocess, manual, data, document, message, component, module."
+}

@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph G {\n  rankdir=LR;\n  node [shape=box, style=filled, fillcolor=\"#fef3c7\", fontcolor=\"#000000\",];\n  a [label=\"One\",];\n  b [label=\"Two\",];\n  c [label=\"Three\",];\n  d [label=\"Sink\"];\n  { a, b, c, } -> d;\n  a -> b [label=\"ok\", color=green,];\n  c -> d [,];\n}",
+ "intent": "Trailing commas in attribute lists and node groups, plus an empty attribute list"
+}

@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\begin{tikzcd}[row sep=huge, column sep=large]\nA \\arrow[r, \"f\"] \\arrow[d, \"g\"'] & B \\arrow[d, \"h\"] \\\\\nC \\arrow[r, \"k\"'] & D\n\\end{tikzcd}",
+ "intent": "environment options: row sep=huge, column sep=large, cramped"
+}

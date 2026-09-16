@@ -1,0 +1,47 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "30-series stacked area",
+  "data": {
+   "sequence": {
+    "start": 0,
+    "stop": 1200,
+    "step": 1,
+    "as": "n"
+   }
+  },
+  "transform": [
+   {
+    "calculate": "datum.n%40",
+    "as": "t"
+   },
+   {
+    "calculate": "2+3*abs(sin(((datum.n%40)+floor(datum.n/40))/7))",
+    "as": "v"
+   },
+   {
+    "calculate": "'s'+format(floor(datum.n/40),'02d')",
+    "as": "s"
+   }
+  ],
+  "mark": "area",
+  "height": 380,
+  "encoding": {
+   "x": {
+    "field": "t",
+    "type": "quantitative"
+   },
+   "y": {
+    "field": "v",
+    "type": "quantitative",
+    "stack": "zero"
+   },
+   "color": {
+    "field": "s",
+    "type": "nominal"
+   }
+  }
+ },
+ "intent": "SCALE: 30 stacked area bands (1200 rows) - band thickness and adjacent-band separability once the categorical scheme recycles."
+}

@@ -1,0 +1,5 @@
+{
+ "type": "vega-lite",
+ "definition": "{\n  \"background\": \"#fff\",\n  \"data\": {\"values\": [{\"c\": \"A\", \"v\": 30}, {\"c\": \"B\", \"v\": 55}, {\"c\": \"C\", \"v\": 40}]},\n  \"mark\": {\"type\": \"bar\", \"color\": \"#38a\", \"stroke\": \"#036\"},\n  \"encoding\": {\n    \"x\": {\"field\": \"c\", \"type\": \"nominal\", \"axis\": {\"labelColor\": \"#333\", \"labelAngle\": 0}},\n    \"y\": {\"field\": \"v\", \"type\": \"quantitative\", \"axis\": {\"labelColor\": \"#333\", \"gridColor\": \"#ccc\"}}\n  }\n}",
+ "intent": "Colours in 3-digit shorthand hex (#38a, #036, #fff, #333, #ccc) rather than 6-digit. Note the hardcoded #fff background and #333 label colour, which cannot adapt to a dark page. Intent: teal bars with a dark outline."
+}

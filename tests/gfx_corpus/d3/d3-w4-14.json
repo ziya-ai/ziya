@@ -1,0 +1,56 @@
+{
+ "type": "d3",
+ "definition": {
+  "type": "d3",
+  "layout": "force-directed",
+  "data": {
+   "nodes": [
+    {
+     "id": "web",
+     "group": 1
+    },
+    {
+     "id": "api",
+     "group": 1
+    },
+    {
+     "id": "cache",
+     "group": 2
+    },
+    {
+     "id": "db",
+     "group": 2
+    },
+    {
+     "id": "cron",
+     "group": 3
+    }
+   ],
+   "links": [
+    {
+     "source": "web",
+     "target": "api"
+    },
+    {
+     "source": "api",
+     "target": "cache"
+    },
+    {
+     "source": "api",
+     "target": "db"
+    },
+    {
+     "source": "cron",
+     "target": "db"
+    }
+   ]
+  },
+  "style": {
+   "background": "var(--ziya-diagram-bg)",
+   "labelColor": "theme.text.primary",
+   "linkColor": "$border-subtle",
+   "nodeColor": "currentColor"
+  }
+ },
+ "intent": "RECOVERY: style values given as theme tokens that do not exist in this engine ('var(--ziya-diagram-bg)', 'theme.text.primary', '$border-subtle', 'currentColor'). Intent: 5-node force graph with theme-appropriate colours."
+}

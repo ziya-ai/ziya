@@ -1,0 +1,41 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "Extreme aspect: height 2400, 120 bars",
+  "data": {
+   "sequence": {
+    "start": 0,
+    "stop": 120,
+    "step": 1,
+    "as": "n"
+   }
+  },
+  "transform": [
+   {
+    "calculate": "'item-'+format(datum.n,'03d')",
+    "as": "cat"
+   },
+   {
+    "calculate": "5+95*abs(cos(datum.n/11))",
+    "as": "v"
+   }
+  ],
+  "mark": "bar",
+  "height": 2400,
+  "encoding": {
+   "y": {
+    "field": "cat",
+    "type": "nominal",
+    "axis": {
+     "title": "item (120)"
+    }
+   },
+   "x": {
+    "field": "v",
+    "type": "quantitative"
+   }
+  }
+ },
+ "intent": "ASPECT: authored height 2400 far ABOVE natural with 120 horizontal bars - very tall canvas, long-axis label legibility."
+}

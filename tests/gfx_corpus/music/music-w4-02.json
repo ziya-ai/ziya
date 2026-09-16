@@ -1,0 +1,5 @@
+{
+ "type": "music",
+ "definition": "{\n  type: 'music',\n  timeSignature: '4/4',\n  clef: 'treble',\n  keySignature: 'C',\n  title: 'Unquoted Keys',\n  autoBeam: true,\n  notes: [\n    {keys: ['c/4'], duration: '8'},\n    {keys: ['d/4'], duration: '8'},\n    {keys: ['e/4'], duration: '8'},\n    {keys: ['f/4'], duration: '8'},\n    {keys: ['g/4'], duration: 'q'},\n    {keys: ['a/4'], duration: 'q'}\n  ]\n}",
+ "intent": "JS object-literal form: unquoted keys and single-quoted string values"
+}

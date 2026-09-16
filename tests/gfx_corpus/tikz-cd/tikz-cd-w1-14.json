@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\displaystyle\\bigoplus_{i=1}^{n} M_i \\arrow[r, \"\\Sigma\"] & \\dfrac{M}{N} \\\\\n\\substack{\\text{colim}\\\\ \\text{of }F} \\arrow[u, \"\\theta\"] \\arrow[r, \"\\psi\"'] & \\varprojlim_{k} A_k \\arrow[u, \"\\pi\"']",
+ "intent": "math-heavy cells: displaystyle bigoplus, substack, fractions"
+}

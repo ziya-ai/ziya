@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\begin{tikzcd}[row sep=\"2em\", column sep='3em', scale=\"1.5\"]\nA \\arrow[r, \"f\", shift left=\"2pt\"] & B \\arrow[d, \"h\", \"1\"] \\\\\nC \\arrow[r, \"k\"', bend left=\"30\"] & D\n\\end{tikzcd}",
+ "intent": "Numeric and dimension option values wrapped in double/single quotes as if JSON. Recovery: unquote scalars before handing them to pgfkeys."
+}

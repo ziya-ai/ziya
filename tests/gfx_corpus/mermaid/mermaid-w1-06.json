@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "erDiagram\n  CUSTOMER ||--o{ ORDER : places\n  ORDER ||--|{ LINE_ITEM : contains\n  PRODUCT ||--o{ LINE_ITEM : \"appears in\"\n  CUSTOMER }o--o| ADDRESS : \"ships to\"\n  CUSTOMER {\n    string id PK\n    string email UK\n    string name\n  }\n  ORDER {\n    string id PK\n    string customerId FK\n    decimal total\n    datetime placedAt\n  }\n  LINE_ITEM {\n    string sku FK\n    int qty\n    decimal unitPrice\n  }\n  PRODUCT {\n    string sku PK\n    string title\n  }\n  ADDRESS {\n    string id PK\n    string line1\n    string postcode\n  }\n",
+ "intent": "erDiagram with cardinalities, attribute types, keys and comments"
+}

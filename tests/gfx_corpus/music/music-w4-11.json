@@ -1,0 +1,30 @@
+{
+ "type": "music",
+ "definition": {
+  "title": "Missing Assumed Fields",
+  "notes": [
+   {
+    "keys": [
+     "c/4"
+    ]
+   },
+   {
+    "keys": [
+     "e/4"
+    ]
+   },
+   {
+    "keys": [
+     "g/4"
+    ],
+    "duration": "q"
+   },
+   {
+    "keys": [
+     "c/5"
+    ]
+   }
+  ]
+ },
+ "intent": "no clef, no timeSignature, no keySignature, and duration omitted on three of four notes"
+}

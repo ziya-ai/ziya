@@ -1,0 +1,46 @@
+{
+ "type": "chord",
+ "definition": {
+  "type": "chord",
+  "style": {
+   "background": "#f7f7f7"
+  },
+  "nodes": [
+   {
+    "id": "Read"
+   },
+   {
+    "id": "Write"
+   },
+   {
+    "id": "Delete"
+   },
+   {
+    "id": "List"
+   }
+  ],
+  "links": [
+   {
+    "source": "Read",
+    "target": "Write",
+    "value": 15
+   },
+   {
+    "source": "Write",
+    "target": "Delete",
+    "value": 6
+   },
+   {
+    "source": "List",
+    "target": "Read",
+    "value": 28
+   },
+   {
+    "source": "Delete",
+    "target": "List",
+    "value": 4
+   }
+  ]
+ },
+ "intent": "style.background explicit light hex -> tests whether a hardcoded background survives dark mode with a dark-mode label color"
+}

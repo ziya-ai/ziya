@@ -1,0 +1,39 @@
+{
+ "type": "music",
+ "definition": {
+  "timeSignature": "4/4",
+  "clef": "treble",
+  "title": "Nesting Depth Off By One",
+  "notes": [
+   [
+    {
+     "keys": [
+      "c/4"
+     ],
+     "duration": "q"
+    },
+    {
+     "keys": [
+      "d/4"
+     ],
+     "duration": "q"
+    }
+   ],
+   [
+    {
+     "keys": [
+      "e/4"
+     ],
+     "duration": "q"
+    },
+    {
+     "keys": [
+      "f/4"
+     ],
+     "duration": "q"
+    }
+   ]
+  ]
+ },
+ "intent": "notes[] double-wrapped: an extra array level, as if measures were inlined into notes"
+}

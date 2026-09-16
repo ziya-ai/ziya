@@ -1,0 +1,5 @@
+{
+ "type": "network",
+ "definition": "{\"type\": \"network\", \"width\": 620, \"height\": 400, \"nodes\": [{\"id\": \"cdn\", \"label\": \"CDN\"}, {\"id\": \"origin\", \"label\": \"Origin\"}, {\"id\": \"auth\", \"label\": \"Auth\"}, {\"id\": \"users\", \"label\": \"Users DB\"}, {\"id\": \"logs\", \"label\": \"Log Sink\"}], \"links\": [{\"source\": \"cdn\", \"target\": \"origin\"}, {\"source\": \"origin\", \"target\": \"auth\"}, {\"source\": \"auth\", \"target\": \"users\"}, {\"source\": \"origin\", \"target\": \"logs\"}], \"style\": {\"labelColor\": \"#7e7e7e\", \"fontSize\": 13}}",
+ "intent": "Structured recovery path: the whole graph arrives as a JSON *string* in `definition` (the documented always-a-string tool contract); resolveNetworkSpec must parse and lift nodes/links/width/height/style."
+}

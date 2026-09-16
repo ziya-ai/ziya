@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "```tikz\n\\begin{tikzpicture}\n\\fill[black!88] (-0.5,-0.5) rectangle (8.00,3.20);\n\\node[white,anchor=west,font=\\bfseries] at (-0.2,2.65) {Fenced source};\n\\node[draw=white,text=white,fill=blue!60!black,rounded corners] (a) at (1,1) {Client};\n\\node[draw=white,text=white,fill=green!50!black,rounded corners] (b) at (4,1) {API};\n\\node[draw=white,text=white,fill=orange!70!black,rounded corners] (c) at (7,1) {Store};\n\\draw[white,-{Stealth[length=2mm]}] (a)--(b);\n\\draw[white,-{Stealth[length=2mm]}] (b)--(c);\n\\end{tikzpicture}\n```",
+ "intent": "markdown code fence left around the source, the single most common model wrapper defect"
+}

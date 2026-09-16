@@ -1,0 +1,48 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "24-cell facet fan-out",
+  "data": {
+   "sequence": {
+    "start": 0,
+    "stop": 192,
+    "step": 1,
+    "as": "n"
+   }
+  },
+  "transform": [
+   {
+    "calculate": "'T'+format(floor(datum.n/8),'02d')",
+    "as": "team"
+   },
+   {
+    "calculate": "datum.n%8",
+    "as": "x"
+   },
+   {
+    "calculate": "10+30*abs(sin((floor(datum.n/8)+(datum.n%8))/4))",
+    "as": "y"
+   }
+  ],
+  "mark": "line",
+  "width": 110,
+  "height": 80,
+  "encoding": {
+   "x": {
+    "field": "x",
+    "type": "quantitative"
+   },
+   "y": {
+    "field": "y",
+    "type": "quantitative"
+   },
+   "facet": {
+    "field": "team",
+    "type": "nominal",
+    "columns": 6
+   }
+  }
+ },
+ "intent": "SCALE: WIDE FAN-OUT - 24 facet cells wrapped at 6 columns, exercising facet layout at high cell count."
+}

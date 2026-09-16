@@ -1,0 +1,169 @@
+{
+ "type": "basic-chart",
+ "definition": {
+  "type": "bar",
+  "data": [
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline00",
+    "value": 23
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline01",
+    "value": 42
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline02",
+    "value": 54
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline03",
+    "value": 47
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline04",
+    "value": 38
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline05",
+    "value": 70
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline06",
+    "value": 25
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline07",
+    "value": 45
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline08",
+    "value": 46
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline09",
+    "value": 27
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline10",
+    "value": 52
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline11",
+    "value": 51
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline12",
+    "value": 35
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline13",
+    "value": 33
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline14",
+    "value": 55
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline15",
+    "value": 56
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline16",
+    "value": 56
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline17",
+    "value": 29
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline18",
+    "value": 29
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline19",
+    "value": 24
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline20",
+    "value": 28
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline21",
+    "value": 74
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline22",
+    "value": 75
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline23",
+    "value": 89
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline24",
+    "value": 36
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline25",
+    "value": 47
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline26",
+    "value": 64
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline27",
+    "value": 72
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline28",
+    "value": 28
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline29",
+    "value": 30
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline30",
+    "value": 49
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline31",
+    "value": 70
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline32",
+    "value": 53
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline33",
+    "value": 83
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline34",
+    "value": 54
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline35",
+    "value": 49
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline36",
+    "value": 63
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline37",
+    "value": 40
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline38",
+    "value": 48
+   },
+   {
+    "label": "IdentityAndAccessManagementTokenIntrospectionAndRevocationSubsystemWithBackpressureAwareRetryBudgetEnforcementPipeline39",
+    "value": 59
+   }
+  ]
+ },
+ "intent": "SCALE: 40 categories with ~118-character labels - extreme label length against ~12px bandwidth"
+}

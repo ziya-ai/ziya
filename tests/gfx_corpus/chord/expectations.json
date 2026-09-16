@@ -1,0 +1,318 @@
+{
+ "schema": 1,
+ "engine": "chord",
+ "specs": {
+  "chord-w1-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.190365Z"
+    }
+   ]
+  },
+  "chord-w1-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.193777Z"
+    }
+   ]
+  },
+  "chord-w1-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.196233Z"
+    }
+   ]
+  },
+  "chord-w2-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.199618Z"
+    }
+   ]
+  },
+  "chord-w2-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.204880Z"
+    }
+   ]
+  },
+  "chord-w2-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.208263Z"
+    }
+   ]
+  },
+  "chord-w4-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.211760Z"
+    }
+   ]
+  },
+  "chord-w4-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.213773Z"
+    }
+   ]
+  },
+  "chord-w4-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.216774Z"
+    }
+   ]
+  },
+  "chord-w4-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.220110Z"
+    }
+   ]
+  },
+  "chord-w2-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-042",
+     "signature": "subpixel-ribbons-at-high-edge-count",
+     "at": "2026-09-15T08:56:12.280324Z"
+    }
+   ]
+  },
+  "chord-w2-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-042",
+     "signature": "subpixel-ribbons-at-high-edge-count",
+     "at": "2026-09-15T08:56:12.286592Z"
+    }
+   ]
+  },
+  "chord-w1-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-043",
+     "signature": "custom-width-clipped-by-fixed-container",
+     "at": "2026-09-15T08:56:12.289674Z"
+    }
+   ]
+  },
+  "chord-w2-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-043",
+     "signature": "custom-width-clipped-by-fixed-container",
+     "at": "2026-09-15T08:56:12.292614Z"
+    }
+   ]
+  },
+  "chord-w2-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-043",
+     "signature": "custom-width-clipped-by-fixed-container",
+     "at": "2026-09-15T08:56:12.298627Z"
+    }
+   ]
+  },
+  "chord-w4-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-044",
+     "signature": "background-token-not-validated-poisons-theme-resolution:dark",
+     "at": "2026-09-15T08:56:12.321187Z"
+    }
+   ]
+  },
+  "chord-w4-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-045",
+     "signature": "json5-semicolon-separators-not-recovered",
+     "at": "2026-09-15T08:56:12.328887Z"
+    }
+   ]
+  }
+ }
+}

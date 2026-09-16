@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "```mermaid\ngraph TD\n  A[Client] <--> B[Gateway]\n  subgraph svc [Services]\n    direction LR\n    C[Users] --> D[Orders]\n  end\n  B --> C\n```\n",
+ "intent": "Mixed dialect versions — legacy `graph TD` header combined with flowchart-v2-only features (bidirectional edge, subgraph direction). Recovery = render the evident graph."
+}

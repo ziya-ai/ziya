@@ -1,0 +1,39 @@
+{
+ "type": "d3",
+ "definition": {
+  "type": "line",
+  "width": 620,
+  "height": 380,
+  "data": [
+   {
+    "label": "Jan",
+    "value": 12
+   },
+   {
+    "label": "Feb",
+    "value": 28
+   },
+   {
+    "label": "Mar",
+    "value": 22
+   },
+   {
+    "label": "Apr",
+    "value": 45
+   },
+   {
+    "label": "May",
+    "value": 38
+   },
+   {
+    "label": "Jun",
+    "value": 61
+   },
+   {
+    "label": "Jul",
+    "value": 55
+   }
+  ]
+ },
+ "intent": "basic-chart line: d3.line path over band-centred points plus point markers"
+}

@@ -1,0 +1,269 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "elements": [
+   {
+    "id": "k0",
+    "type": "rect",
+    "label": "svc0"
+   },
+   {
+    "id": "k1",
+    "type": "rect",
+    "label": "svc1"
+   },
+   {
+    "id": "k2",
+    "type": "rect",
+    "label": "svc2"
+   },
+   {
+    "id": "k3",
+    "type": "rect",
+    "label": "svc3"
+   },
+   {
+    "id": "k4",
+    "type": "rect",
+    "label": "svc4"
+   },
+   {
+    "id": "k5",
+    "type": "rect",
+    "label": "svc5"
+   },
+   {
+    "id": "k6",
+    "type": "rect",
+    "label": "svc6"
+   },
+   {
+    "id": "k7",
+    "type": "rect",
+    "label": "svc7"
+   },
+   {
+    "id": "k8",
+    "type": "rect",
+    "label": "svc8"
+   },
+   {
+    "id": "k9",
+    "type": "rect",
+    "label": "svc9"
+   },
+   {
+    "id": "k10",
+    "type": "rect",
+    "label": "svc10"
+   },
+   {
+    "id": "k11",
+    "type": "rect",
+    "label": "svc11"
+   },
+   {
+    "id": "k12",
+    "type": "rect",
+    "label": "svc12"
+   },
+   {
+    "id": "k13",
+    "type": "rect",
+    "label": "svc13"
+   },
+   {
+    "id": "k14",
+    "type": "rect",
+    "label": "svc14"
+   },
+   {
+    "id": "k15",
+    "type": "rect",
+    "label": "svc15"
+   },
+   {
+    "id": "k16",
+    "type": "rect",
+    "label": "svc16"
+   },
+   {
+    "id": "k17",
+    "type": "rect",
+    "label": "svc17"
+   },
+   {
+    "id": "k18",
+    "type": "rect",
+    "label": "svc18"
+   },
+   {
+    "id": "k19",
+    "type": "rect",
+    "label": "svc19"
+   },
+   {
+    "id": "k20",
+    "type": "rect",
+    "label": "svc20"
+   },
+   {
+    "id": "k21",
+    "type": "rect",
+    "label": "svc21"
+   },
+   {
+    "id": "k22",
+    "type": "rect",
+    "label": "svc22"
+   },
+   {
+    "id": "k23",
+    "type": "rect",
+    "label": "svc23"
+   }
+  ],
+  "connections": [
+   {
+    "id": "j1",
+    "source": "k0",
+    "target": "k1",
+    "label": "invoke/v2/resource/01?timeout=30000&retries=3"
+   },
+   {
+    "id": "j2",
+    "source": "k1",
+    "target": "k2",
+    "label": "invoke/v2/resource/02?timeout=30000&retries=3"
+   },
+   {
+    "id": "j3",
+    "source": "k2",
+    "target": "k3",
+    "label": "invoke/v2/resource/03?timeout=30000&retries=3"
+   },
+   {
+    "id": "j4",
+    "source": "k3",
+    "target": "k4",
+    "label": "invoke/v2/resource/04?timeout=30000&retries=3"
+   },
+   {
+    "id": "j5",
+    "source": "k4",
+    "target": "k5",
+    "label": "invoke/v2/resource/05?timeout=30000&retries=3"
+   },
+   {
+    "id": "j6",
+    "source": "k5",
+    "target": "k6",
+    "label": "invoke/v2/resource/06?timeout=30000&retries=3"
+   },
+   {
+    "id": "j7",
+    "source": "k6",
+    "target": "k7",
+    "label": "invoke/v2/resource/07?timeout=30000&retries=3"
+   },
+   {
+    "id": "j8",
+    "source": "k7",
+    "target": "k8",
+    "label": "invoke/v2/resource/08?timeout=30000&retries=3"
+   },
+   {
+    "id": "j9",
+    "source": "k8",
+    "target": "k9",
+    "label": "invoke/v2/resource/09?timeout=30000&retries=3"
+   },
+   {
+    "id": "j10",
+    "source": "k9",
+    "target": "k10",
+    "label": "invoke/v2/resource/10?timeout=30000&retries=3"
+   },
+   {
+    "id": "j11",
+    "source": "k10",
+    "target": "k11",
+    "label": "invoke/v2/resource/11?timeout=30000&retries=3"
+   },
+   {
+    "id": "j12",
+    "source": "k11",
+    "target": "k12",
+    "label": "invoke/v2/resource/12?timeout=30000&retries=3"
+   },
+   {
+    "id": "j13",
+    "source": "k12",
+    "target": "k13",
+    "label": "invoke/v2/resource/13?timeout=30000&retries=3"
+   },
+   {
+    "id": "j14",
+    "source": "k13",
+    "target": "k14",
+    "label": "invoke/v2/resource/14?timeout=30000&retries=3"
+   },
+   {
+    "id": "j15",
+    "source": "k14",
+    "target": "k15",
+    "label": "invoke/v2/resource/15?timeout=30000&retries=3"
+   },
+   {
+    "id": "j16",
+    "source": "k15",
+    "target": "k16",
+    "label": "invoke/v2/resource/16?timeout=30000&retries=3"
+   },
+   {
+    "id": "j17",
+    "source": "k16",
+    "target": "k17",
+    "label": "invoke/v2/resource/17?timeout=30000&retries=3"
+   },
+   {
+    "id": "j18",
+    "source": "k17",
+    "target": "k18",
+    "label": "invoke/v2/resource/18?timeout=30000&retries=3"
+   },
+   {
+    "id": "j19",
+    "source": "k18",
+    "target": "k19",
+    "label": "invoke/v2/resource/19?timeout=30000&retries=3"
+   },
+   {
+    "id": "j20",
+    "source": "k19",
+    "target": "k20",
+    "label": "invoke/v2/resource/20?timeout=30000&retries=3"
+   },
+   {
+    "id": "j21",
+    "source": "k20",
+    "target": "k21",
+    "label": "invoke/v2/resource/21?timeout=30000&retries=3"
+   },
+   {
+    "id": "j22",
+    "source": "k21",
+    "target": "k22",
+    "label": "invoke/v2/resource/22?timeout=30000&retries=3"
+   },
+   {
+    "id": "j23",
+    "source": "k22",
+    "target": "k23",
+    "label": "invoke/v2/resource/23?timeout=30000&retries=3"
+   }
+  ]
+ },
+ "intent": "Long LINK labels at scale: 24-node auto-laid-out chain with 23 links each carrying a 45-char label; no label background rect exists (wave-1 lesson) so overdraw is expected - measure how bad it gets."
+}

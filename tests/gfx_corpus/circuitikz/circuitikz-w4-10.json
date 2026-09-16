@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\\definecolor{plate}{HTML}{16324A}\n\\definecolor{plateink}{HTML}{F2F6FA}\n\\definecolor{plateaccent}{HTML}{5FD4E4}\n\\fill[plate] (-0.9,-1.5) rectangle (7.3,1.9);\n\\draw[color=plateink] (0,0) to[R=$R_1$] (2.4,0)\n  to[C=$C_1$] (4.8,0) node[ocirc]{};\n\\node[plateink] at (2.4,1.4) {Off-by-one nesting};\n\\end{circuitikz}\n",
+ "intent": "RECOVERY: nesting depth wrong by one. The body omits \\begin{circuitikz} (correct -- the profile supplies it) but still emits a trailing \\end{circuitikz}, believing it must close what it did not open. The double-wrap guard keys on \\begin only, so this should produce an unmatched \\end."
+}

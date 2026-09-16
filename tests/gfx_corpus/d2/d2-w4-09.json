@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "lb: Load Balancer\napp: App Server\nlb.style.fill: cornflowerblue\napp.style.fill: papayawhip\nlb.style.stroke: darkslategray\nlb -> app\n",
+ "intent": "RECOVERY: CSS named colors instead of hex"
+}

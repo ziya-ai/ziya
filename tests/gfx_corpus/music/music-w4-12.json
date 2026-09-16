@@ -1,0 +1,28 @@
+{
+ "type": "music",
+ "definition": {
+  "timeSignature": "4/4",
+  "clef": "treble",
+  "keySignature": "C",
+  "title": "Scalar Keys, Long Durations",
+  "notes": [
+   {
+    "keys": "c/4",
+    "duration": "quarter"
+   },
+   {
+    "keys": "e/4",
+    "duration": "quarter"
+   },
+   {
+    "keys": "g/4",
+    "duration": "half"
+   },
+   {
+    "keys": "c/5",
+    "duration": "whole"
+   }
+  ]
+ },
+ "intent": "keys as a bare string instead of an array, and English long-form duration names"
+}

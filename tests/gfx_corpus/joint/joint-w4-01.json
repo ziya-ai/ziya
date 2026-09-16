@@ -1,0 +1,5 @@
+{
+ "type": "joint",
+ "definition": "{\n  \"elements\": [\n    {\"id\": \"ingest\", \"type\": \"rect\", \"label\": \"Ingest\",},\n    {\"id\": \"parse\", \"type\": \"rect\", \"label\": \"Parse\",},\n    {\"id\": \"store\", \"type\": \"rect\", \"label\": \"Store\",},\n  ],\n  \"connections\": [\n    {\"id\": \"e1\", \"source\": \"ingest\", \"target\": \"parse\", \"label\": \"raw\",},\n    {\"id\": \"e2\", \"source\": \"parse\", \"target\": \"store\", \"label\": \"clean\",},\n  ],\n}",
+ "intent": "RECOVERY: trailing commas after the last array element and last object member (the single most common LLM JSON defect). Intent: 3-node pipeline Ingest->Parse->Store with edge labels."
+}

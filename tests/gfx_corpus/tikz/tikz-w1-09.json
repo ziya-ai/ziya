@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "\\draw[-{Stealth}] (-0.3,0) -- (6.6,0) node[below right] {$x$};\n\\draw[-{Stealth}] (0,-1.4) -- (0,1.7) node[left] {$y$};\n\\foreach \\x in {1,...,6} { \\draw (\\x,0.06) -- (\\x,-0.06) node[below,font=\\small] {\\x}; }\n\\foreach \\y in {-1,1} { \\draw (0.06,\\y) -- (-0.06,\\y) node[left,font=\\small] {\\y}; }\n\\draw[thick,blue,domain=0:6.4,samples=200,smooth] plot (\\x,{sin(\\x r)});\n\\draw[thick,red,dashed,domain=0:6.4,samples=200,smooth] plot (\\x,{cos(\\x r)});\n\\node[blue,right] at (4.6,1.2) {$\\sin x$};\n\\node[red,right] at (4.6,-1.2) {$\\cos x$};",
+ "intent": "mathematical function plot: \\draw plot with domain and samples, hand-drawn axes and ticks"
+}

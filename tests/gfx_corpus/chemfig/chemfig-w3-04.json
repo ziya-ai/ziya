@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\chemfig{@{a}C(-[:90]@{a}N)(-[:-90]@{a}O)-[:0]@{a}S}\n\n\\vspace{4mm}\n\n\\chemfig{A?-[:60]B-[:-60]C?}",
+ "intent": "DUPLICATE NODE IDS: the same @{a} name attached to four different atoms, plus a ring-closure bond (?) pairing the first and last atom of a 3-atom chain -- a self-referencing 3-cycle. Tests whether duplicate marks error, silently win-last, or corrupt geometry."
+}

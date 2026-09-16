@@ -1,0 +1,499 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "Deep nesting: vconcat > hconcat > layer",
+  "vconcat": [
+   {
+    "hconcat": [
+     {
+      "title": "leaf 1",
+      "width": 150,
+      "height": 110,
+      "data": {
+       "values": [
+        {
+         "c": "P",
+         "v": 23.08778787184609
+        },
+        {
+         "c": "Q",
+         "v": 34.73479212278948
+        },
+        {
+         "c": "R",
+         "v": 43.65883939231586
+        },
+        {
+         "c": "S",
+         "v": 48.87751605453251
+        }
+       ]
+      },
+      "layer": [
+       {
+        "mark": "bar",
+        "encoding": {
+         "x": {
+          "field": "c",
+          "type": "nominal"
+         },
+         "y": {
+          "field": "v",
+          "type": "quantitative"
+         }
+        }
+       },
+       {
+        "mark": {
+         "type": "rule",
+         "color": "firebrick"
+        },
+        "encoding": {
+         "y": {
+          "field": "v",
+          "type": "quantitative",
+          "aggregate": "mean"
+         }
+        }
+       }
+      ]
+     },
+     {
+      "title": "leaf 2",
+      "width": 150,
+      "height": 110,
+      "data": {
+       "values": [
+        {
+         "c": "P",
+         "v": 34.73479212278948
+        },
+        {
+         "c": "Q",
+         "v": 43.65883939231586
+        },
+        {
+         "c": "R",
+         "v": 48.87751605453251
+        },
+        {
+         "c": "S",
+         "v": 49.8163183100706
+        }
+       ]
+      },
+      "layer": [
+       {
+        "mark": "bar",
+        "encoding": {
+         "x": {
+          "field": "c",
+          "type": "nominal"
+         },
+         "y": {
+          "field": "v",
+          "type": "quantitative"
+         }
+        }
+       },
+       {
+        "mark": {
+         "type": "rule",
+         "color": "firebrick"
+        },
+        "encoding": {
+         "y": {
+          "field": "v",
+          "type": "quantitative",
+          "aggregate": "mean"
+         }
+        }
+       }
+      ]
+     },
+     {
+      "title": "leaf 3",
+      "width": 150,
+      "height": 110,
+      "data": {
+       "values": [
+        {
+         "c": "P",
+         "v": 43.65883939231586
+        },
+        {
+         "c": "Q",
+         "v": 48.87751605453251
+        },
+        {
+         "c": "R",
+         "v": 49.8163183100706
+        },
+        {
+         "c": "S",
+         "v": 46.37189707302727
+        }
+       ]
+      },
+      "layer": [
+       {
+        "mark": "bar",
+        "encoding": {
+         "x": {
+          "field": "c",
+          "type": "nominal"
+         },
+         "y": {
+          "field": "v",
+          "type": "quantitative"
+         }
+        }
+       },
+       {
+        "mark": {
+         "type": "rule",
+         "color": "firebrick"
+        },
+        "encoding": {
+         "y": {
+          "field": "v",
+          "type": "quantitative",
+          "aggregate": "mean"
+         }
+        }
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "hconcat": [
+     {
+      "title": "leaf 4",
+      "width": 150,
+      "height": 110,
+      "data": {
+       "values": [
+        {
+         "c": "P",
+         "v": 48.87751605453251
+        },
+        {
+         "c": "Q",
+         "v": 49.8163183100706
+        },
+        {
+         "c": "R",
+         "v": 46.37189707302727
+        },
+        {
+         "c": "S",
+         "v": 38.92343526953298
+        }
+       ]
+      },
+      "layer": [
+       {
+        "mark": "bar",
+        "encoding": {
+         "x": {
+          "field": "c",
+          "type": "nominal"
+         },
+         "y": {
+          "field": "v",
+          "type": "quantitative"
+         }
+        }
+       },
+       {
+        "mark": {
+         "type": "rule",
+         "color": "firebrick"
+        },
+        "encoding": {
+         "y": {
+          "field": "v",
+          "type": "quantitative",
+          "aggregate": "mean"
+         }
+        }
+       }
+      ]
+     },
+     {
+      "title": "leaf 5",
+      "width": 150,
+      "height": 110,
+      "data": {
+       "values": [
+        {
+         "c": "P",
+         "v": 49.8163183100706
+        },
+        {
+         "c": "Q",
+         "v": 46.37189707302727
+        },
+        {
+         "c": "R",
+         "v": 38.92343526953298
+        },
+        {
+         "c": "S",
+         "v": 28.29090506543248
+        }
+       ]
+      },
+      "layer": [
+       {
+        "mark": "bar",
+        "encoding": {
+         "x": {
+          "field": "c",
+          "type": "nominal"
+         },
+         "y": {
+          "field": "v",
+          "type": "quantitative"
+         }
+        }
+       },
+       {
+        "mark": {
+         "type": "rule",
+         "color": "firebrick"
+        },
+        "encoding": {
+         "y": {
+          "field": "v",
+          "type": "quantitative",
+          "aggregate": "mean"
+         }
+        }
+       }
+      ]
+     },
+     {
+      "title": "leaf 6",
+      "width": 150,
+      "height": 110,
+      "data": {
+       "values": [
+        {
+         "c": "P",
+         "v": 46.37189707302727
+        },
+        {
+         "c": "Q",
+         "v": 38.92343526953298
+        },
+        {
+         "c": "R",
+         "v": 28.29090506543248
+        },
+        {
+         "c": "S",
+         "v": 15.644800322394689
+        }
+       ]
+      },
+      "layer": [
+       {
+        "mark": "bar",
+        "encoding": {
+         "x": {
+          "field": "c",
+          "type": "nominal"
+         },
+         "y": {
+          "field": "v",
+          "type": "quantitative"
+         }
+        }
+       },
+       {
+        "mark": {
+         "type": "rule",
+         "color": "firebrick"
+        },
+        "encoding": {
+         "y": {
+          "field": "v",
+          "type": "quantitative",
+          "aggregate": "mean"
+         }
+        }
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "hconcat": [
+     {
+      "title": "leaf 7",
+      "width": 150,
+      "height": 110,
+      "data": {
+       "values": [
+        {
+         "c": "P",
+         "v": 38.92343526953298
+        },
+        {
+         "c": "Q",
+         "v": 28.29090506543248
+        },
+        {
+         "c": "R",
+         "v": 15.644800322394689
+        },
+        {
+         "c": "S",
+         "v": 17.622718515019415
+        }
+       ]
+      },
+      "layer": [
+       {
+        "mark": "bar",
+        "encoding": {
+         "x": {
+          "field": "c",
+          "type": "nominal"
+         },
+         "y": {
+          "field": "v",
+          "type": "quantitative"
+         }
+        }
+       },
+       {
+        "mark": {
+         "type": "rule",
+         "color": "firebrick"
+        },
+        "encoding": {
+         "y": {
+          "field": "v",
+          "type": "quantitative",
+          "aggregate": "mean"
+         }
+        }
+       }
+      ]
+     },
+     {
+      "title": "leaf 8",
+      "width": 150,
+      "height": 110,
+      "data": {
+       "values": [
+        {
+         "c": "P",
+         "v": 28.29090506543248
+        },
+        {
+         "c": "Q",
+         "v": 15.644800322394689
+        },
+        {
+         "c": "R",
+         "v": 17.622718515019415
+        },
+        {
+         "c": "S",
+         "v": 30.05108194353379
+        }
+       ]
+      },
+      "layer": [
+       {
+        "mark": "bar",
+        "encoding": {
+         "x": {
+          "field": "c",
+          "type": "nominal"
+         },
+         "y": {
+          "field": "v",
+          "type": "quantitative"
+         }
+        }
+       },
+       {
+        "mark": {
+         "type": "rule",
+         "color": "firebrick"
+        },
+        "encoding": {
+         "y": {
+          "field": "v",
+          "type": "quantitative",
+          "aggregate": "mean"
+         }
+        }
+       }
+      ]
+     },
+     {
+      "title": "leaf 9",
+      "width": 150,
+      "height": 110,
+      "data": {
+       "values": [
+        {
+         "c": "P",
+         "v": 15.644800322394689
+        },
+        {
+         "c": "Q",
+         "v": 17.622718515019415
+        },
+        {
+         "c": "R",
+         "v": 30.05108194353379
+        },
+        {
+         "c": "S",
+         "v": 40.27209981231714
+        }
+       ]
+      },
+      "layer": [
+       {
+        "mark": "bar",
+        "encoding": {
+         "x": {
+          "field": "c",
+          "type": "nominal"
+         },
+         "y": {
+          "field": "v",
+          "type": "quantitative"
+         }
+        }
+       },
+       {
+        "mark": {
+         "type": "rule",
+         "color": "firebrick"
+        },
+        "encoding": {
+         "y": {
+          "field": "v",
+          "type": "quantitative",
+          "aggregate": "mean"
+         }
+        }
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "SCALE: DEEP NESTING - vconcat of 3 hconcats of 3 layered leaves = 9 sub-views across 3 composition levels."
+}

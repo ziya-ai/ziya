@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "pie showData\n  title Storage by tier (TB)\n  \"Hot NVMe\" : 42.5\n  \"Warm SSD\" : 128.0\n  \"Cold object store\" : 512.75\n  \"Glacier archive\" : 2048.0\n  \"Scratch / ephemeral\" : 16.25\n",
+ "intent": "pie chart with showData and long slice labels"
+}

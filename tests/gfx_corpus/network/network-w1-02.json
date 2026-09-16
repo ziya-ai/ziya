@@ -1,0 +1,70 @@
+{
+ "type": "network",
+ "definition": {
+  "type": "network",
+  "width": 600,
+  "height": 400,
+  "nodes": [
+   {
+    "id": "lb",
+    "label": "Load Balancer",
+    "x": 300,
+    "y": 60
+   },
+   {
+    "id": "a1",
+    "label": "App 1",
+    "x": 120,
+    "y": 190
+   },
+   {
+    "id": "a2",
+    "label": "App 2",
+    "x": 300,
+    "y": 190
+   },
+   {
+    "id": "a3",
+    "label": "App 3",
+    "x": 480,
+    "y": 190
+   },
+   {
+    "id": "store",
+    "label": "Datastore",
+    "x": 300,
+    "y": 330
+   }
+  ],
+  "links": [
+   {
+    "source": "lb",
+    "target": "a1"
+   },
+   {
+    "source": "lb",
+    "target": "a2"
+   },
+   {
+    "source": "lb",
+    "target": "a3"
+   },
+   {
+    "source": "a1",
+    "target": "store"
+   },
+   {
+    "source": "a2",
+    "target": "store"
+   },
+   {
+    "source": "a3",
+    "target": "store"
+   }
+  ],
+  "style": {
+   "labelColor": "#000000"
+  }
+ },
+ "intent": "Explicit x/y coordinates on every node: force simulation must be skipped and the authored hand-placed layout preserved exactly."
+}

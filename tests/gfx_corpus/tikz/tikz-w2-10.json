@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "\\foreach \\i in {0,...,15}{\n  \\foreach \\j in {0,...,11}{\n    \\pgfmathtruncatemacro{\\n}{\\i*12+\\j}\n    \\node[draw, minimum size=7mm, inner sep=0pt, font=\\tiny] at (\\i*0.85,\\j*0.85) {\\n};\n  }\n}\n\\node[font=\\small] at (6.4,10.6) {192 labelled cells forced to width 120};",
+ "intent": "192 labelled cells rendered with explicit width far BELOW natural size: downscaling-induced legibility collapse"
+}

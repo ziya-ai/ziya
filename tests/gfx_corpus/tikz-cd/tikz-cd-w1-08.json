@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "A \\arrow[rr, \"f\"] \\arrow[rrd, \"q\"'] & & B \\\\\nC \\arrow[r, shift left=2pt, \"s\"] \\arrow[r, shift right=2pt, \"t\"'] & D & E",
+ "intent": "multi-cell spans (rr, rrd) and parallel arrows via shift left/right"
+}

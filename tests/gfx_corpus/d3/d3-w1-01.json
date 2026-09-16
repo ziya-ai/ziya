@@ -1,0 +1,31 @@
+{
+ "type": "d3",
+ "definition": {
+  "type": "bar",
+  "width": 620,
+  "height": 380,
+  "data": [
+   {
+    "label": "Alpha",
+    "value": 42
+   },
+   {
+    "label": "Bravo",
+    "value": 78
+   },
+   {
+    "label": "Charlie",
+    "value": 31
+   },
+   {
+    "label": "Delta",
+    "value": 95
+   },
+   {
+    "label": "Echo",
+    "value": 60
+   }
+  ]
+ },
+ "intent": "basic-chart bar: categorical band x-scale, linear y-scale, default steelblue fill, both axes"
+}

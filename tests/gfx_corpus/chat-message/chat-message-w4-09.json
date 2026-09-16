@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "```mermaid\nflowchart LR\n  A[Alpha] --> B[Named]\n  style A fill:rgba(74,144,217,0.85),stroke:darkorange,color:white\n  style B fill:rebeccapurple,stroke:black,color:white\n```\n",
+ "intent": "CSS color forms — rgba() with alpha and CSS named colors (darkorange, rebeccapurple) in style directives. Recovery = colors honored, labels legible."
+}

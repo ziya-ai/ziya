@@ -1,0 +1,65 @@
+{
+ "type": "force-directed",
+ "definition": {
+  "nodes": [
+   {
+    "id": "t0",
+    "label": "on #cccccc",
+    "color": "#cccccc",
+    "size": 46
+   },
+   {
+    "id": "t1",
+    "label": "on #333333",
+    "color": "#333333",
+    "size": 46
+   },
+   {
+    "id": "t2",
+    "label": "on #edc948",
+    "color": "#edc948",
+    "size": 46
+   },
+   {
+    "id": "t3",
+    "label": "on #4e79a7",
+    "color": "#4e79a7",
+    "size": 46
+   },
+   {
+    "id": "t4",
+    "label": "on #bab0ac",
+    "color": "#bab0ac",
+    "size": 46
+   }
+  ],
+  "links": [
+   {
+    "source": "t0",
+    "target": "t1"
+   },
+   {
+    "source": "t1",
+    "target": "t2"
+   },
+   {
+    "source": "t2",
+    "target": "t3"
+   },
+   {
+    "source": "t3",
+    "target": "t4"
+   },
+   {
+    "source": "t4",
+    "target": "t0"
+   }
+  ],
+  "style": {
+   "fontSize": 14
+  },
+  "width": 760,
+  "height": 520
+ },
+ "intent": "COLOR: label text drawn ON a coloured element - node radii large enough that the label sits inside the disc, with fills luminance-matched to #333333 (light label) and #cccccc (dark label)."
+}

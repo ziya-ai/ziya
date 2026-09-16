@@ -1,0 +1,41 @@
+{
+ "type": "basic-chart",
+ "definition": {
+  "type": "line",
+  "data": [
+   {
+    "label": "t0",
+    "value": 5
+   },
+   {
+    "label": "t1",
+    "value": 12
+   },
+   {
+    "label": "t2",
+    "value": 9
+   },
+   {
+    "label": "t3",
+    "value": 21
+   },
+   {
+    "label": "t4",
+    "value": 17
+   },
+   {
+    "label": "t5",
+    "value": 28
+   },
+   {
+    "label": "t6",
+    "value": 24
+   },
+   {
+    "label": "t7",
+    "value": 33
+   }
+  ]
+ },
+ "intent": "line chart, 8 points, steelblue polyline plus point markers"
+}

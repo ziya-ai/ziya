@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "type: d2\ndefinition: |\n    web: Web Server\n    api: API Service\n    db: Database\n    web -> api\n    api -> db\n",
+ "intent": "RECOVERY: YAML-wrapped definition (the one preprocessor that exists) indented 4 spaces instead of 2"
+}

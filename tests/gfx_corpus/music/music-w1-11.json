@@ -1,0 +1,80 @@
+{
+ "type": "music",
+ "definition": {
+  "clef": "bass",
+  "keySignature": "C",
+  "timeSignature": "4/4",
+  "autoBeam": true,
+  "notes": [
+   {
+    "keys": [
+     "c/3"
+    ],
+    "duration": "q"
+   },
+   {
+    "keys": [
+     "e/3"
+    ],
+    "duration": "q"
+   },
+   {
+    "keys": [
+     "g/3"
+    ],
+    "duration": "q"
+   },
+   {
+    "keys": [
+     "c/4"
+    ],
+    "duration": "q"
+   },
+   {
+    "keys": [
+     "b/2"
+    ],
+    "duration": "q"
+   },
+   {
+    "keys": [
+     "d/3"
+    ],
+    "duration": "q"
+   },
+   {
+    "keys": [
+     "f/3"
+    ],
+    "duration": "q"
+   },
+   {
+    "keys": [
+     "g/3"
+    ],
+    "duration": "q"
+   }
+  ],
+  "pedals": [
+   {
+    "from": 0,
+    "to": 3,
+    "pedal": "sustain",
+    "style": "bracket"
+   },
+   {
+    "from": 4,
+    "to": 5,
+    "pedal": "sustain",
+    "style": "text"
+   },
+   {
+    "from": 6,
+    "to": 7,
+    "pedal": "sostenuto"
+   }
+  ],
+  "endBar": "final"
+ },
+ "intent": "Piano pedal markings: sustain bracket, sustain text style, mixed style, and the sostenuto pedal's fixed wording."
+}

@@ -1,0 +1,120 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 380,
+  "height": 200,
+  "padding": 5,
+  "data": [
+   {
+    "name": "t",
+    "values": [
+     {
+      "c": "a",
+      "v": 30
+     },
+     {
+      "c": "b",
+      "v": 52
+     },
+     {
+      "c": "d",
+      "v": 25
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "band",
+    "domain": {
+     "data": "t",
+     "field": "c"
+    },
+    "range": "width",
+    "padding": 0.2
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "domain": {
+     "data": "t",
+     "field": "v"
+    },
+    "range": "height",
+    "nice": true
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x",
+    "labelColor": "rgb(70, 70, 70)"
+   },
+   {
+    "orient": "left",
+    "scale": "y",
+    "grid": true,
+    "gridColor": "rgba(0, 0, 0, 0.12)"
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "update": {
+      "x": {
+       "scale": "x",
+       "field": "c"
+      },
+      "width": {
+       "scale": "x",
+       "band": 1
+      },
+      "y": {
+       "scale": "y",
+       "field": "v"
+      },
+      "y2": {
+       "scale": "y",
+       "value": 0
+      },
+      "fill": {
+       "value": "rgba(76, 120, 168, 0.85)"
+      },
+      "stroke": {
+       "value": "rgb(31, 60, 90)"
+      }
+     }
+    }
+   },
+   {
+    "type": "text",
+    "encode": {
+     "update": {
+      "x": {
+       "value": 8
+      },
+      "y": {
+       "value": 14
+      },
+      "text": {
+       "value": "rgba fill / rgb stroke"
+      },
+      "fill": {
+       "value": "rgba(20, 20, 20, 0.9)"
+      },
+      "fontSize": {
+       "value": 11
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "CSS rgb()/rgba() functional notation wherever a colour is taken - mark fill and stroke, axis labelColor, gridColor, and a text mark. Probes both acceptance and whether the alpha-blended results stay above the contrast floor in each theme"
+}

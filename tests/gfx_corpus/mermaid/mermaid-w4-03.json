@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "flowchart LR\n  A[“Ingest stage”] --> B[‘Transform’]\n  B --> C[“Load — final”]\n  C --> D[Done…]",
+ "intent": "RECOVERY: smart quotes (U+201C/201D/2018/2019), em dash and ellipsis pasted from a word processor. Should render 4 nodes with the punctuation intact, not a parse error."
+}

@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "classDiagram\n  class Repository~T~ {\n    <<interface>>\n    +find(id: String) T\n    +save(entity: T) void\n  }\n  class OrderRepository {\n    -conn: Connection\n    +find(id: String) Order\n    +save(entity: Order) void\n    #flush() void\n  }\n  class Order {\n    +String id\n    +Money total\n    +List~LineItem~ items\n    +addItem(LineItem) void\n  }\n  class LineItem {\n    +String sku\n    +int qty\n  }\n  Repository~T~ <|.. OrderRepository\n  OrderRepository ..> Order : manages\n  Order \"1\" *-- \"many\" LineItem : contains\n",
+ "intent": "classDiagram with inheritance, composition, generics, visibility modifiers"
+}

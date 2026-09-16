@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\begin{tikzcd}\n|[alias=dup]| A \\ar[loop left,\"\\iota\"] \\rar[\"f\"] & |[alias=dup]| B \\dar[\"g\"] \\\\\n& C \\ar[ul,\"h\"]\n\\end{tikzcd}",
+ "intent": "duplicate alias ids + self-referencing loop + 3-cycle in one diagram"
+}

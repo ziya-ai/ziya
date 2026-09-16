@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "graph radial { layout=twopi; root=core; ranksep=1.2; node [shape=circle]; core -- svcA; core -- svcB; core -- svcC; core -- svcD; svcA -- a1; svcA -- a2; svcB -- b1; svcB -- b2; svcC -- c1; svcD -- d1; svcD -- d2; svcD -- d3; }",
+ "intent": "Radial layout engine: layout=twopi with a designated root and concentric ranks"
+}

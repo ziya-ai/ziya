@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "### Reconciliation control flow\n\nThe client polls until observed and desired states agree:\n\n```mermaid\nflowchart TD\n    Start([Reconcile invoked]) --> Describe[Describe observed state]\n    Describe --> Compare{Replicas match?}\n    Compare -- yes --> Done([Return success])\n    Compare -- no --> Attempts{Attempts exhausted?}\n    Attempts -- no --> Backoff[Sleep 0.25k seconds]\n    Backoff --> Describe\n    Attempts -- yes --> Fail([Raise timeout])\n```\n\nBackoff is linear rather than exponential to bound total latency.\n",
+ "intent": "mermaid diagram fence embedded inside a chat message alongside surrounding prose"
+}

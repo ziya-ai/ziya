@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "flowchart TD\n  subgraph Outer[Outer boundary]\n    subgraph Inner[Inner boundary]\n      A[Task A] --> B[Task B]\n    end\n  A --> C[Task C]\n  D[Outside] --> A",
+ "intent": "RECOVERY: nesting depth off by one - the Outer subgraph is never closed with 'end'. Preprocessor should append the missing end; intent is 2 nested clusters plus an external node."
+}

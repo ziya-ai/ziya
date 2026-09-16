@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "graph TD\n  A[Client] -->> B[Server]\n  B -.-> C[Log]\n  C ==> D[Archive]\n  B --x E[Dropped]\n  A -- plain label --> F[Other]\n  E -->|retry| A",
+ "intent": "RECOVERY: deprecated 'graph' header mixed with a sequenceDiagram arrow ('-->>') that has no flowchart meaning, alongside legal dotted/thick/cross variants. Should degrade the bad arrow to a plain edge, not abort the whole diagram."
+}

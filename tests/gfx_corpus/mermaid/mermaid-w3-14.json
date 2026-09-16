@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "flowchart LR\n  Start([Request]) --> Auth[Authenticate]\n  Auth --> Cache{Cache hit?}\n  Cache -->|hit| Serve[Serve cached]\n  Cache -->|miss| Fetch[Fetch from origin]\n  Fetch --> Store[(Write cache)]\n  Store --> Serve\n  Serve --> Done([Response])\n  classDef deep fill:#0b3d2e,stroke:#0b3d2e,stroke-width:2px\n  classDef mid fill:#8b0000,stroke:#8b0000,stroke-width:2px\n  class Start,Auth,Cache,Serve deep\n  class Fetch,Store,Done mid",
+ "intent": "TEXT DRAWN ON A COLORED ELEMENT with NO text color specified - same graph as w3-09/w3-10/w3-15, dark saturated fills (#0b3d2e forest, #8b0000 maroon) and no color: property, so the label color is whatever the THEME supplies. In light theme the theme's text is dark (#333-ish) and will be near-invisible on these fills; in dark theme the theme's text is #eceff4 and should be fine. That asymmetry is the whole point: the fill is user-controlled and the text is theme-controlled, and nothing reconciles them. Both candidate pairs are computable."
+}

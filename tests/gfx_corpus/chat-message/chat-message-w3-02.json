@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "## 🌐 Unicode 混合 مزيج\n\n| Language | Sample | Note |\n|:---|:---|:---|\n| Japanese | 日本語のテキスト | 全角 |\n| Chinese | 简体中文字符串 | CJK |\n| Korean | 한국어 문자열 | Hangul |\n| Arabic | مرحبا بالعالم | RTL |\n| Hebrew | שלום עולם | RTL |\n| Combining | é vs é | NFC/NFD |\n| Emoji ZWJ | 👨‍👩‍👧‍👦 👩🏽‍💻 🏳️‍🌈 | families |\n\nRTL paragraph: هذا نص عربي طويل يجب أن يتم عرضه من اليمين إلى اليسار مع الأرقام 12345 بينه.\n\n- ✅ done · 🚧 in progress · ❌ blocked\n- `emoji_in_code = \"🔥💯\"` and CJK in code: `変数 = 値`\n- Zero-width: a​b (ZWSP between a and b)\n\n漢字とかなの混在テキストで、行の折り返しが正しく行われるかを確認します。\n",
+ "intent": "unicode / CJK / RTL / emoji / combining marks in headings, table cells, code and list markers"
+}

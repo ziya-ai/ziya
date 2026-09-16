@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "flowchart TD; A[Start] --> B{Check}; B -->|yes| C[Do work]; B -->|no| D[Skip];; C --> E[End]; D --> E;",
+ "intent": "RECOVERY: newline slip - whole diagram on one line with semicolon separators plus a doubled ';;'. Legal-ish in old mermaid; should render a 5-node decision flow."
+}

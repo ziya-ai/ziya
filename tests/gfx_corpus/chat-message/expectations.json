@@ -1,0 +1,952 @@
+{
+ "schema": 1,
+ "engine": "chat-message",
+ "specs": {
+  "chat-message-w1-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.106296Z"
+    }
+   ]
+  },
+  "chat-message-w1-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.108854Z"
+    }
+   ]
+  },
+  "chat-message-w1-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.111182Z"
+    }
+   ]
+  },
+  "chat-message-w2-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.114245Z"
+    }
+   ]
+  },
+  "chat-message-w2-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.118095Z"
+    }
+   ]
+  },
+  "chat-message-w2-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.121605Z"
+    }
+   ]
+  },
+  "chat-message-w3-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.124366Z"
+    }
+   ]
+  },
+  "chat-message-w3-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.128385Z"
+    }
+   ]
+  },
+  "chat-message-w4-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.130984Z"
+    }
+   ]
+  },
+  "chat-message-w4-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.133729Z"
+    }
+   ]
+  },
+  "chat-message-w1-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-012",
+     "signature": "mermaid-node-label-below-wcag:dark",
+     "at": "2026-09-15T08:56:12.004007Z"
+    }
+   ]
+  },
+  "chat-message-w3-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-012",
+     "signature": "mermaid-node-label-below-wcag:dark",
+     "at": "2026-09-15T08:56:12.006060Z"
+    }
+   ]
+  },
+  "chat-message-w3-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-012",
+     "signature": "mermaid-node-label-below-wcag:dark",
+     "at": "2026-09-15T08:56:12.009047Z"
+    },
+    {
+     "origin": "D-019",
+     "signature": "author-hardcoded-color-not-theme-normalized",
+     "at": "2026-09-15T08:56:12.137038Z"
+    }
+   ]
+  },
+  "chat-message-w3-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-012",
+     "signature": "mermaid-node-label-below-wcag:dark",
+     "at": "2026-09-15T08:56:12.011496Z"
+    },
+    {
+     "origin": "D-019",
+     "signature": "author-hardcoded-color-not-theme-normalized",
+     "at": "2026-09-15T08:56:12.142241Z"
+    }
+   ]
+  },
+  "chat-message-w3-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-012",
+     "signature": "mermaid-node-label-below-wcag:dark",
+     "at": "2026-09-15T08:56:12.014810Z"
+    },
+    {
+     "origin": "D-020",
+     "signature": "syntax-keyword-below-wcag:light",
+     "at": "2026-09-15T08:56:12.164587Z"
+    }
+   ]
+  },
+  "chat-message-w3-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-012",
+     "signature": "mermaid-node-label-below-wcag:dark",
+     "at": "2026-09-15T08:56:12.017618Z"
+    },
+    {
+     "origin": "D-018",
+     "signature": "inline-span-style-structure-broken",
+     "at": "2026-09-15T08:56:12.134534Z"
+    },
+    {
+     "origin": "D-019",
+     "signature": "author-hardcoded-color-not-theme-normalized",
+     "at": "2026-09-15T08:56:12.156970Z"
+    }
+   ]
+  },
+  "chat-message-w4-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-012",
+     "signature": "mermaid-node-label-below-wcag:dark",
+     "at": "2026-09-15T08:56:12.020542Z"
+    }
+   ]
+  },
+  "chat-message-w4-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-012",
+     "signature": "mermaid-node-label-below-wcag:dark",
+     "at": "2026-09-15T08:56:12.023441Z"
+    }
+   ]
+  },
+  "chat-message-w4-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-012",
+     "signature": "mermaid-node-label-below-wcag:dark",
+     "at": "2026-09-15T08:56:12.027382Z"
+    }
+   ]
+  },
+  "chat-message-w4-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-012",
+     "signature": "mermaid-node-label-below-wcag:dark",
+     "at": "2026-09-15T08:56:12.029932Z"
+    }
+   ]
+  },
+  "chat-message-w4-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-012",
+     "signature": "mermaid-node-label-below-wcag:dark",
+     "at": "2026-09-15T08:56:12.032395Z"
+    }
+   ]
+  },
+  "chat-message-w4-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-012",
+     "signature": "mermaid-node-label-below-wcag:dark",
+     "at": "2026-09-15T08:56:12.035636Z"
+    },
+    {
+     "origin": "D-027",
+     "signature": "transparent-fill-label-invisible:light",
+     "at": "2026-09-15T08:56:12.200845Z"
+    }
+   ]
+  },
+  "chat-message-w4-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-012",
+     "signature": "mermaid-node-label-below-wcag:dark",
+     "at": "2026-09-15T08:56:12.038253Z"
+    }
+   ]
+  },
+  "chat-message-w2-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-013",
+     "signature": "oversize-message-capture-clipped",
+     "at": "2026-09-15T08:56:12.042115Z"
+    }
+   ]
+  },
+  "chat-message-w2-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-013",
+     "signature": "oversize-message-capture-clipped",
+     "at": "2026-09-15T08:56:12.045062Z"
+    }
+   ]
+  },
+  "chat-message-w2-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-013",
+     "signature": "oversize-message-capture-clipped",
+     "at": "2026-09-15T08:56:12.047772Z"
+    }
+   ]
+  },
+  "chat-message-w2-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-013",
+     "signature": "oversize-message-capture-clipped",
+     "at": "2026-09-15T08:56:12.050928Z"
+    }
+   ]
+  },
+  "chat-message-w2-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-013",
+     "signature": "oversize-message-capture-clipped",
+     "at": "2026-09-15T08:56:12.054169Z"
+    }
+   ]
+  },
+  "chat-message-w2-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-013",
+     "signature": "oversize-message-capture-clipped",
+     "at": "2026-09-15T08:56:12.056364Z"
+    }
+   ]
+  },
+  "chat-message-w2-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-013",
+     "signature": "oversize-message-capture-clipped",
+     "at": "2026-09-15T08:56:12.059467Z"
+    }
+   ]
+  },
+  "chat-message-w2-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-013",
+     "signature": "oversize-message-capture-clipped",
+     "at": "2026-09-15T08:56:12.066203Z"
+    }
+   ]
+  },
+  "chat-message-w2-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-014",
+     "signature": "overflow-x-clipped-no-scroll-no-wrap",
+     "at": "2026-09-15T08:56:12.071959Z"
+    }
+   ]
+  },
+  "chat-message-w2-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-014",
+     "signature": "overflow-x-clipped-no-scroll-no-wrap",
+     "at": "2026-09-15T08:56:12.084946Z"
+    }
+   ]
+  },
+  "chat-message-w1-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-015",
+     "signature": "blockquote-no-visual-affordance",
+     "at": "2026-09-15T08:56:12.089102Z"
+    }
+   ]
+  },
+  "chat-message-w1-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-015",
+     "signature": "blockquote-no-visual-affordance",
+     "at": "2026-09-15T08:56:12.101364Z"
+    }
+   ]
+  },
+  "chat-message-w2-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-015",
+     "signature": "blockquote-no-visual-affordance",
+     "at": "2026-09-15T08:56:12.104781Z"
+    }
+   ]
+  },
+  "chat-message-w3-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-015",
+     "signature": "blockquote-no-visual-affordance",
+     "at": "2026-09-15T08:56:12.107904Z"
+    }
+   ]
+  },
+  "chat-message-w3-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-017",
+     "signature": "markdown-dialect-and-raw-html-unsupported",
+     "at": "2026-09-15T08:56:12.111959Z"
+    }
+   ]
+  },
+  "chat-message-w3-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-017",
+     "signature": "markdown-dialect-and-raw-html-unsupported",
+     "at": "2026-09-15T08:56:12.116006Z"
+    }
+   ]
+  },
+  "chat-message-w3-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-017",
+     "signature": "markdown-dialect-and-raw-html-unsupported",
+     "at": "2026-09-15T08:56:12.119651Z"
+    },
+    {
+     "origin": "D-021",
+     "signature": "katex-error-red-below-wcag:dark",
+     "at": "2026-09-15T08:56:12.167324Z"
+    }
+   ]
+  },
+  "chat-message-w3-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-018",
+     "signature": "inline-span-style-structure-broken",
+     "at": "2026-09-15T08:56:12.123016Z"
+    },
+    {
+     "origin": "D-019",
+     "signature": "author-hardcoded-color-not-theme-normalized",
+     "at": "2026-09-15T08:56:12.146740Z"
+    }
+   ]
+  },
+  "chat-message-w3-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-018",
+     "signature": "inline-span-style-structure-broken",
+     "at": "2026-09-15T08:56:12.127462Z"
+    },
+    {
+     "origin": "D-019",
+     "signature": "author-hardcoded-color-not-theme-normalized",
+     "at": "2026-09-15T08:56:12.149362Z"
+    }
+   ]
+  },
+  "chat-message-w3-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-018",
+     "signature": "inline-span-style-structure-broken",
+     "at": "2026-09-15T08:56:12.131340Z"
+    }
+   ]
+  },
+  "chat-message-w3-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-019",
+     "signature": "author-hardcoded-color-not-theme-normalized",
+     "at": "2026-09-15T08:56:12.153836Z"
+    }
+   ]
+  },
+  "chat-message-w1-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-020",
+     "signature": "syntax-keyword-below-wcag:light",
+     "at": "2026-09-15T08:56:12.161601Z"
+    }
+   ]
+  },
+  "chat-message-w4-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-024",
+     "signature": "init-json-palette-dropped",
+     "at": "2026-09-15T08:56:12.170466Z"
+    }
+   ]
+  },
+  "chat-message-w4-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-024",
+     "signature": "init-json-palette-dropped",
+     "at": "2026-09-15T08:56:12.176192Z"
+    }
+   ]
+  },
+  "chat-message-w4-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-025",
+     "signature": "style-rgba-color-form-parse-error",
+     "at": "2026-09-15T08:56:12.186654Z"
+    }
+   ]
+  },
+  "chat-message-w4-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-026",
+     "signature": "table-separator-column-mismatch-pipe-soup",
+     "at": "2026-09-15T08:56:12.195068Z"
+    }
+   ]
+  }
+ }
+}

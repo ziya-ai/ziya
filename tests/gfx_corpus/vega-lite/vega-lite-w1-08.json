@@ -1,0 +1,95 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "Error Rate by Region and Hour",
+  "width": 420,
+  "height": 220,
+  "data": {
+   "values": [
+    {
+     "region": "us-east",
+     "hour": "00",
+     "rate": 0.4
+    },
+    {
+     "region": "us-east",
+     "hour": "06",
+     "rate": 1.1
+    },
+    {
+     "region": "us-east",
+     "hour": "12",
+     "rate": 2.8
+    },
+    {
+     "region": "us-east",
+     "hour": "18",
+     "rate": 1.9
+    },
+    {
+     "region": "eu-west",
+     "hour": "00",
+     "rate": 0.9
+    },
+    {
+     "region": "eu-west",
+     "hour": "06",
+     "rate": 2.2
+    },
+    {
+     "region": "eu-west",
+     "hour": "12",
+     "rate": 3.6
+    },
+    {
+     "region": "eu-west",
+     "hour": "18",
+     "rate": 1.3
+    },
+    {
+     "region": "ap-south",
+     "hour": "00",
+     "rate": 1.7
+    },
+    {
+     "region": "ap-south",
+     "hour": "06",
+     "rate": 3.1
+    },
+    {
+     "region": "ap-south",
+     "hour": "12",
+     "rate": 4.4
+    },
+    {
+     "region": "ap-south",
+     "hour": "18",
+     "rate": 2.5
+    }
+   ]
+  },
+  "mark": "rect",
+  "encoding": {
+   "x": {
+    "field": "hour",
+    "type": "nominal",
+    "title": "Hour (UTC)"
+   },
+   "y": {
+    "field": "region",
+    "type": "nominal",
+    "title": "Region"
+   },
+   "color": {
+    "field": "rate",
+    "type": "quantitative",
+    "title": "Error %",
+    "scale": {
+     "scheme": "viridis"
+    }
+   }
+  }
+ },
+ "intent": "Heatmap: rect mark on two nominal axes with a sequential quantitative color scale and gradient legend."
+}

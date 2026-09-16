@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "A \\arrow[r, \"f\"] \\arrow[d, \"g\"'] & B \\arrow[d, \"h\"] \\\\\nC \\arrow[r, \"k\"'] & D",
+ "intent": "basic commuting square: r/d/dr arrows with primed (below) labels"
+}

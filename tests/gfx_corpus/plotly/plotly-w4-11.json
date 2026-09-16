@@ -1,0 +1,5 @@
+{
+ "type": "plotly",
+ "definition": "{\n  \"data\": [{\"type\":\"bar\",\"x\":[\"a\",\"b\",\"c\"],\"y\":[6,3,9],\"color\":\"#4c78a8\",\"size\":12,\"opacity\":0.85}],\n  \"title\": {\"text\": \"Nesting Depth Off By One\"},\n  \"xaxis\": {\"title\": {\"text\": \"category\"}},\n  \"yaxis\": {\"title\": {\"text\": \"count\"}},\n  \"showlegend\": true,\n  \"layout\": {\"barmode\": \"group\"}\n}",
+ "intent": "keys placed one level too shallow: title/xaxis/yaxis/showlegend at the spec root instead of inside layout, and color/size/opacity at the trace root instead of inside marker. Intent: a 3-bar chart, blue bars, titled axes."
+}

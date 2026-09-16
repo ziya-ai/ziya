@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "consumer: Consumer\nqueue: Message Queue\nproducer: Producer\nconsumer <- queue: deliver\nqueue <- producer: enqueue\n",
+ "intent": "Reversed connections (<-) which must draw the arrow pointing at the left-hand operand."
+}

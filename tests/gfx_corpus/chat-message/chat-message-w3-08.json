@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "Pipeline, styled for a light page:\n\n```mermaid\n%%{init: {'theme':'base','themeVariables':{'background':'#ffffff','primaryColor':'#fafafa','primaryTextColor':'#333333','primaryBorderColor':'#dddddd','lineColor':'#cccccc','secondaryColor':'#f5f5f5','tertiaryColor':'#fbfbfb','fontSize':'15px'}}}%%\nflowchart LR\n    Ingest[Ingest queue] --> Parse[Parser]\n    Parse --> Store[(Object store)]\n    Parse --> Fail{Malformed?}\n    Fail -- yes --> Dead[Dead letter]\n    Fail -- no --> Store\n```\n\nFills are #fafafa, strokes #dddddd, label text #333333 — all chosen for a white page.\n",
+ "intent": "mermaid fence hardcoding a LIGHT-appropriate palette (near-white fills, pale grey strokes, #333 text) - must stay legible on a dark page"
+}

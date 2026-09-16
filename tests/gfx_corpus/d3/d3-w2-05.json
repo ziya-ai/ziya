@@ -1,0 +1,43 @@
+{
+ "type": "d3",
+ "definition": {
+  "type": "bar",
+  "width": 130,
+  "height": 100,
+  "data": [
+   {
+    "label": "c0",
+    "value": 10
+   },
+   {
+    "label": "c1",
+    "value": 17
+   },
+   {
+    "label": "c2",
+    "value": 24
+   },
+   {
+    "label": "c3",
+    "value": 31
+   },
+   {
+    "label": "c4",
+    "value": 38
+   },
+   {
+    "label": "c5",
+    "value": 45
+   },
+   {
+    "label": "c6",
+    "value": 52
+   },
+   {
+    "label": "c7",
+    "value": 59
+   }
+  ]
+ },
+ "intent": "SCALE: explicit 130x100 - far BELOW natural size; default margins (l40 r20 t20 b30) leave only 70x50 of plot area"
+}

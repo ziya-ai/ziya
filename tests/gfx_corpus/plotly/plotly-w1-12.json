@@ -1,0 +1,101 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "candlestick",
+    "x": [
+     "2025-01-02",
+     "2025-01-03",
+     "2025-01-06",
+     "2025-01-07",
+     "2025-01-08",
+     "2025-01-09",
+     "2025-01-10",
+     "2025-01-13",
+     "2025-01-14",
+     "2025-01-15"
+    ],
+    "open": [
+     131.2,
+     133.0,
+     135.4,
+     134.1,
+     136.8,
+     139.2,
+     137.5,
+     140.1,
+     142.6,
+     141.0
+    ],
+    "high": [
+     134.0,
+     136.2,
+     136.9,
+     137.5,
+     140.0,
+     140.4,
+     141.2,
+     143.8,
+     144.1,
+     143.2
+    ],
+    "low": [
+     130.4,
+     132.1,
+     133.2,
+     133.0,
+     135.9,
+     136.8,
+     136.9,
+     139.4,
+     140.2,
+     139.1
+    ],
+    "close": [
+     133.1,
+     135.5,
+     134.0,
+     136.9,
+     139.4,
+     137.3,
+     140.3,
+     142.7,
+     141.1,
+     142.4
+    ],
+    "increasing": {
+     "line": {
+      "color": "#2ca02c"
+     }
+    },
+    "decreasing": {
+     "line": {
+      "color": "#d62728"
+     }
+    },
+    "name": "ACME"
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "ACME Daily OHLC"
+   },
+   "xaxis": {
+    "title": {
+     "text": "Session"
+    },
+    "rangeslider": {
+     "visible": false
+    }
+   },
+   "yaxis": {
+    "title": {
+     "text": "Price (USD)"
+    }
+   },
+   "height": 470
+  }
+ },
+ "intent": "Candlestick OHLC financial chart on a date axis with increasing/decreasing colors and rangeslider disabled."
+}

@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\chemfig{\\text{\\ss}-[:30]\\text{\\ae}-[:-30]\\text{\\o}-[:30]\\text{\\AA}-[:-30]\\text{\\c{c}}}\n\n\\vspace{4mm}\n\n\\chemfig{*6(-=-(-\\text{\\textmu}m)=-=)}",
+ "intent": "DIACRITIC / NON-ASCII GLYPH labels (sharp-s, ae, o-slash, angstrom, c-cedilla, micro) used as atom names, second structure puts one inside an aromatic ring substituent -- tests font coverage plus ring+label interaction."
+}

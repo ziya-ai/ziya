@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "\\draw[->] (0,0) -- (24.5,0) node[right, font=\\tiny] {t};\n\\draw[->] (0,-3.2) -- (0,3.4) node[above, font=\\tiny] {y};\n\\draw[blue!70!black, line width=0.2pt] plot[domain=0:24, samples=2000, smooth] (\\x, {2.6*sin(\\x*140)*exp(-\\x/40)});\n\\draw[red!70!black, line width=0.2pt] plot[domain=0:24, samples=2000, smooth] (\\x, {2.2*cos(\\x*97)*exp(-\\x/55)});\n\\draw[green!50!black, line width=0.2pt] plot[domain=0:24, samples=2000, smooth] (\\x, {1.7*sin(\\x*211)});\n\\foreach \\i in {0,...,24}{ \\draw (\\i,-0.08) -- (\\i,0.08) node[below=2pt, font=\\tiny] {\\i}; }",
+ "intent": "three smoothed curves at 2000 samples each (6000 plot points) with 25 tick labels: plot-handler throughput and hairline stroke survival"
+}

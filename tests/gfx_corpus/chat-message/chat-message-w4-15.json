@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "```mermaid\nflowchart LR; A[Start]-->B{OK?}; B--Yes-->C[Done]; B--No-->D[Retry]; D-->B\n```\n",
+ "intent": "One-liner mermaid — entire flowchart on a single line with semicolon separators, as models constantly emit. Recovery = split into statements and render all four nodes."
+}

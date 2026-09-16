@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "[\n  base/.style={draw,thick,minimum width=22mm,minimum height=9mm,align=center},\n  ok/.style={base,fill=green!20,rounded corners},\n  warn/.style={base,fill=yellow!35,double},\n  bad/.style={base,fill=red!25,dashed},\n  flow/.style={-{Stealth},thick,gray!60!black}\n]\n\\node[ok]   (a) at (0,2)   {healthy};\n\\node[warn] (b) at (0,0.8) {degraded};\n\\node[bad]  (c) at (0,-0.4){failed};\n\\node[base] (d) at (4,0.8) {monitor};\n\\draw[flow] (a) -- (d);\n\\draw[flow] (b) -- (d);\n\\draw[flow] (c) -- (d);",
+ "intent": "tikzset named styles: style definition, reuse, and style inheritance with .style key"
+}

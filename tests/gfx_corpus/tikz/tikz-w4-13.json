@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "\\fill[black!88] (-0.5,-0.5) rectangle (8.00,3.20);\n\\node[white,anchor=west,font=\\bfseries] at (-0.2,2.65) {SVG attributes};\n\\node[fill=\"#3366CC\",stroke-width=2,text=white] (a) at (1,1) {Alpha};\n\\node[fill=blue!60!black,font-size=12,text-anchor=middle,text=white] (b) at (4,1) {Beta};\n\\node[draw=white,text=white,fill=green!50!black] (c) at (7,1) {Gamma};\n\\draw[stroke=white,stroke-width=2] (a)--(b);\n\\draw[white,thick] (b)--(c);\n",
+ "intent": "SVG/CSS attribute dialect (fill=\"#hex\", stroke-width, font-size, text-anchor) used as pgfkeys"
+}

@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\begin{CD}\nA @>{f}>> B \\\\\n@V{g}VV @VV{h}V \\\\\nC @>>{k}> D\n\\end{CD}",
+ "intent": "Mixed dialect: amscd's \\begin{CD} with @>>> arrows instead of tikz-cd's \\arrow[r]. Recovery: translate the dialect, or at minimum fail with a message naming the dialect mismatch."
+}

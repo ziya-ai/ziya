@@ -1,0 +1,5 @@
+{
+ "type": "joint",
+ "definition": "{\n  \"graph\": {\n    \"cells\": [\n      {\"id\": \"n1\", \"type\": \"standard.Rectangle\", \"attrs\": {\"label\": {\"text\": \"Load\"}}},\n      {\"id\": \"n2\", \"type\": \"standard.Rectangle\", \"attrs\": {\"label\": {\"text\": \"Transform\"}}},\n      {\"id\": \"n3\", \"type\": \"standard.Rectangle\", \"attrs\": {\"label\": {\"text\": \"Publish\"}}},\n      {\"id\": \"k1\", \"type\": \"standard.Link\", \"source\": {\"id\": \"n1\"}, \"target\": {\"id\": \"n2\"}},\n      {\"id\": \"k2\", \"type\": \"standard.Link\", \"source\": {\"id\": \"n2\"}, \"target\": {\"id\": \"n3\"}}\n    ]\n  }\n}",
+ "intent": "RECOVERY: nesting depth wrong by ONE - the canonical cells array is buried under an extra {\"graph\": ...} wrapper. Intent: Load->Transform->Publish."
+}

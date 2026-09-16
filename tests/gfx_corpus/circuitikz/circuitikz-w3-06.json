@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\n\\node[draw, minimum width=2.4cm, minimum height=1cm] (a) at (0,0) {STAGE A};\n\\node[draw, minimum width=2.4cm, minimum height=1cm] (b) at (3.6,0) {STAGE B};\n\\node[draw, minimum width=2.4cm, minimum height=1cm] (c) at (7.2,0) {STAGE C};\n\\node[draw, minimum width=2.4cm, minimum height=1cm] (d) at (3.6,-2) {BIAS};\n\\draw[thick] (a) -- (b) -- (c);\n\\draw[thick] (b) -- (d);\n\\node at (3.6,1.6) {no colours specified at all -- engine defaults};\n",
+ "intent": "identical structure to w3-05 with NO colours specified -- engine-default baseline in each theme"
+}

@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\\definecolor{plate}{HTML}{16324A}\n\\definecolor{plateink}{HTML}{F2F6FA}\n\\definecolor{plateaccent}{HTML}{5FD4E4}\n\\fill[plate] (-0.9,-1.5) rectangle (7.3,1.9);\n\\draw[color=plateink] (0,0) to[R=$R_1$] (2.4,0) node[ocirc]{}\n\\draw[color=plateink] (0,-1.1) to[C=$C_1$] (2.4,-1.1) node[ocirc]{}\n\\draw[color=plateaccent] (0,0) to[short] (0,-1.1)\n\\node[plateink] at (2.4,1.4) {Missing semicolons}\n",
+ "intent": "RECOVERY: newline treated as a statement terminator -- every \\draw is missing its closing semicolon. A pervasive LLM slip because most diagram DSLs are newline-terminated. Evident intent is three independent draws."
+}

@@ -1,0 +1,76 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "width": 560,
+  "height": 260,
+  "data": {
+   "values": [
+    {
+     "c": "Alpha",
+     "v": 42
+    },
+    {
+     "c": "Beta",
+     "v": 58
+    },
+    {
+     "c": "Gamma",
+     "v": 31
+    },
+    {
+     "c": "Delta",
+     "v": 67
+    },
+    {
+     "c": "Epsilon",
+     "v": 50
+    }
+   ]
+  },
+  "layer": [
+   {
+    "mark": {
+     "type": "bar",
+     "fill": "#14213d",
+     "stroke": "#2b3a67"
+    }
+   },
+   {
+    "mark": {
+     "type": "text",
+     "dy": -7,
+     "color": "#f0f0f0",
+     "fontSize": 12
+    },
+    "encoding": {
+     "text": {
+      "field": "v",
+      "type": "quantitative"
+     }
+    }
+   }
+  ],
+  "encoding": {
+   "x": {
+    "field": "c",
+    "type": "nominal",
+    "axis": {
+     "labelAngle": 0
+    }
+   },
+   "y": {
+    "field": "v",
+    "type": "quantitative"
+   }
+  },
+  "config": {
+   "axis": {
+    "labelColor": "#cccccc",
+    "titleColor": "#cccccc",
+    "gridColor": "#444444",
+    "domainColor": "#666666"
+   }
+  }
+ },
+ "intent": "HARDCODED DARK PALETTE: near-black bar fill #14213d, light #f0f0f0 value text placed ABOVE the bars so it lands on the page background, hardcoded axis labelColor #cccccc. Must survive a light page."
+}

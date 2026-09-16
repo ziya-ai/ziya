@@ -1,0 +1,885 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "elements": [
+   {
+    "id": "s0",
+    "type": "rect",
+    "label": "stage 0"
+   },
+   {
+    "id": "s1",
+    "type": "rect",
+    "label": "stage 1"
+   },
+   {
+    "id": "s2",
+    "type": "rect",
+    "label": "stage 2"
+   },
+   {
+    "id": "s3",
+    "type": "rect",
+    "label": "stage 3"
+   },
+   {
+    "id": "s4",
+    "type": "rect",
+    "label": "stage 4"
+   },
+   {
+    "id": "s5",
+    "type": "rect",
+    "label": "stage 5"
+   },
+   {
+    "id": "s6",
+    "type": "rect",
+    "label": "stage 6"
+   },
+   {
+    "id": "s7",
+    "type": "rect",
+    "label": "stage 7"
+   },
+   {
+    "id": "s8",
+    "type": "rect",
+    "label": "stage 8"
+   },
+   {
+    "id": "s9",
+    "type": "rect",
+    "label": "stage 9"
+   },
+   {
+    "id": "s10",
+    "type": "rect",
+    "label": "stage 10"
+   },
+   {
+    "id": "s11",
+    "type": "rect",
+    "label": "stage 11"
+   },
+   {
+    "id": "s12",
+    "type": "rect",
+    "label": "stage 12"
+   },
+   {
+    "id": "s13",
+    "type": "rect",
+    "label": "stage 13"
+   },
+   {
+    "id": "s14",
+    "type": "rect",
+    "label": "stage 14"
+   },
+   {
+    "id": "s15",
+    "type": "rect",
+    "label": "stage 15"
+   },
+   {
+    "id": "s16",
+    "type": "rect",
+    "label": "stage 16"
+   },
+   {
+    "id": "s17",
+    "type": "rect",
+    "label": "stage 17"
+   },
+   {
+    "id": "s18",
+    "type": "rect",
+    "label": "stage 18"
+   },
+   {
+    "id": "s19",
+    "type": "rect",
+    "label": "stage 19"
+   },
+   {
+    "id": "s20",
+    "type": "rect",
+    "label": "stage 20"
+   },
+   {
+    "id": "s21",
+    "type": "rect",
+    "label": "stage 21"
+   },
+   {
+    "id": "s22",
+    "type": "rect",
+    "label": "stage 22"
+   },
+   {
+    "id": "s23",
+    "type": "rect",
+    "label": "stage 23"
+   },
+   {
+    "id": "s24",
+    "type": "rect",
+    "label": "stage 24"
+   },
+   {
+    "id": "s25",
+    "type": "rect",
+    "label": "stage 25"
+   },
+   {
+    "id": "s26",
+    "type": "rect",
+    "label": "stage 26"
+   },
+   {
+    "id": "s27",
+    "type": "rect",
+    "label": "stage 27"
+   },
+   {
+    "id": "s28",
+    "type": "rect",
+    "label": "stage 28"
+   },
+   {
+    "id": "s29",
+    "type": "rect",
+    "label": "stage 29"
+   },
+   {
+    "id": "s30",
+    "type": "rect",
+    "label": "stage 30"
+   },
+   {
+    "id": "s31",
+    "type": "rect",
+    "label": "stage 31"
+   },
+   {
+    "id": "s32",
+    "type": "rect",
+    "label": "stage 32"
+   },
+   {
+    "id": "s33",
+    "type": "rect",
+    "label": "stage 33"
+   },
+   {
+    "id": "s34",
+    "type": "rect",
+    "label": "stage 34"
+   },
+   {
+    "id": "s35",
+    "type": "rect",
+    "label": "stage 35"
+   },
+   {
+    "id": "s36",
+    "type": "rect",
+    "label": "stage 36"
+   },
+   {
+    "id": "s37",
+    "type": "rect",
+    "label": "stage 37"
+   },
+   {
+    "id": "s38",
+    "type": "rect",
+    "label": "stage 38"
+   },
+   {
+    "id": "s39",
+    "type": "rect",
+    "label": "stage 39"
+   },
+   {
+    "id": "s40",
+    "type": "rect",
+    "label": "stage 40"
+   },
+   {
+    "id": "s41",
+    "type": "rect",
+    "label": "stage 41"
+   },
+   {
+    "id": "s42",
+    "type": "rect",
+    "label": "stage 42"
+   },
+   {
+    "id": "s43",
+    "type": "rect",
+    "label": "stage 43"
+   },
+   {
+    "id": "s44",
+    "type": "rect",
+    "label": "stage 44"
+   },
+   {
+    "id": "s45",
+    "type": "rect",
+    "label": "stage 45"
+   },
+   {
+    "id": "s46",
+    "type": "rect",
+    "label": "stage 46"
+   },
+   {
+    "id": "s47",
+    "type": "rect",
+    "label": "stage 47"
+   },
+   {
+    "id": "s48",
+    "type": "rect",
+    "label": "stage 48"
+   },
+   {
+    "id": "s49",
+    "type": "rect",
+    "label": "stage 49"
+   },
+   {
+    "id": "s50",
+    "type": "rect",
+    "label": "stage 50"
+   },
+   {
+    "id": "s51",
+    "type": "rect",
+    "label": "stage 51"
+   },
+   {
+    "id": "s52",
+    "type": "rect",
+    "label": "stage 52"
+   },
+   {
+    "id": "s53",
+    "type": "rect",
+    "label": "stage 53"
+   },
+   {
+    "id": "s54",
+    "type": "rect",
+    "label": "stage 54"
+   },
+   {
+    "id": "s55",
+    "type": "rect",
+    "label": "stage 55"
+   },
+   {
+    "id": "s56",
+    "type": "rect",
+    "label": "stage 56"
+   },
+   {
+    "id": "s57",
+    "type": "rect",
+    "label": "stage 57"
+   },
+   {
+    "id": "s58",
+    "type": "rect",
+    "label": "stage 58"
+   },
+   {
+    "id": "s59",
+    "type": "rect",
+    "label": "stage 59"
+   },
+   {
+    "id": "s60",
+    "type": "rect",
+    "label": "stage 60"
+   },
+   {
+    "id": "s61",
+    "type": "rect",
+    "label": "stage 61"
+   },
+   {
+    "id": "s62",
+    "type": "rect",
+    "label": "stage 62"
+   },
+   {
+    "id": "s63",
+    "type": "rect",
+    "label": "stage 63"
+   },
+   {
+    "id": "s64",
+    "type": "rect",
+    "label": "stage 64"
+   },
+   {
+    "id": "s65",
+    "type": "rect",
+    "label": "stage 65"
+   },
+   {
+    "id": "s66",
+    "type": "rect",
+    "label": "stage 66"
+   },
+   {
+    "id": "s67",
+    "type": "rect",
+    "label": "stage 67"
+   },
+   {
+    "id": "s68",
+    "type": "rect",
+    "label": "stage 68"
+   },
+   {
+    "id": "s69",
+    "type": "rect",
+    "label": "stage 69"
+   },
+   {
+    "id": "s70",
+    "type": "rect",
+    "label": "stage 70"
+   },
+   {
+    "id": "s71",
+    "type": "rect",
+    "label": "stage 71"
+   },
+   {
+    "id": "s72",
+    "type": "rect",
+    "label": "stage 72"
+   },
+   {
+    "id": "s73",
+    "type": "rect",
+    "label": "stage 73"
+   },
+   {
+    "id": "s74",
+    "type": "rect",
+    "label": "stage 74"
+   },
+   {
+    "id": "s75",
+    "type": "rect",
+    "label": "stage 75"
+   },
+   {
+    "id": "s76",
+    "type": "rect",
+    "label": "stage 76"
+   },
+   {
+    "id": "s77",
+    "type": "rect",
+    "label": "stage 77"
+   },
+   {
+    "id": "s78",
+    "type": "rect",
+    "label": "stage 78"
+   },
+   {
+    "id": "s79",
+    "type": "rect",
+    "label": "stage 79"
+   }
+  ],
+  "connections": [
+   {
+    "id": "c1",
+    "source": "s0",
+    "target": "s1",
+    "label": "t1"
+   },
+   {
+    "id": "c2",
+    "source": "s1",
+    "target": "s2",
+    "label": "t2"
+   },
+   {
+    "id": "c3",
+    "source": "s2",
+    "target": "s3",
+    "label": "t3"
+   },
+   {
+    "id": "c4",
+    "source": "s3",
+    "target": "s4",
+    "label": "t4"
+   },
+   {
+    "id": "c5",
+    "source": "s4",
+    "target": "s5",
+    "label": "t5"
+   },
+   {
+    "id": "c6",
+    "source": "s5",
+    "target": "s6",
+    "label": "t6"
+   },
+   {
+    "id": "c7",
+    "source": "s6",
+    "target": "s7",
+    "label": "t7"
+   },
+   {
+    "id": "c8",
+    "source": "s7",
+    "target": "s8",
+    "label": "t8"
+   },
+   {
+    "id": "c9",
+    "source": "s8",
+    "target": "s9",
+    "label": "t9"
+   },
+   {
+    "id": "c10",
+    "source": "s9",
+    "target": "s10",
+    "label": "t10"
+   },
+   {
+    "id": "c11",
+    "source": "s10",
+    "target": "s11",
+    "label": "t11"
+   },
+   {
+    "id": "c12",
+    "source": "s11",
+    "target": "s12",
+    "label": "t12"
+   },
+   {
+    "id": "c13",
+    "source": "s12",
+    "target": "s13",
+    "label": "t13"
+   },
+   {
+    "id": "c14",
+    "source": "s13",
+    "target": "s14",
+    "label": "t14"
+   },
+   {
+    "id": "c15",
+    "source": "s14",
+    "target": "s15",
+    "label": "t15"
+   },
+   {
+    "id": "c16",
+    "source": "s15",
+    "target": "s16",
+    "label": "t16"
+   },
+   {
+    "id": "c17",
+    "source": "s16",
+    "target": "s17",
+    "label": "t17"
+   },
+   {
+    "id": "c18",
+    "source": "s17",
+    "target": "s18",
+    "label": "t18"
+   },
+   {
+    "id": "c19",
+    "source": "s18",
+    "target": "s19",
+    "label": "t19"
+   },
+   {
+    "id": "c20",
+    "source": "s19",
+    "target": "s20",
+    "label": "t20"
+   },
+   {
+    "id": "c21",
+    "source": "s20",
+    "target": "s21",
+    "label": "t21"
+   },
+   {
+    "id": "c22",
+    "source": "s21",
+    "target": "s22",
+    "label": "t22"
+   },
+   {
+    "id": "c23",
+    "source": "s22",
+    "target": "s23",
+    "label": "t23"
+   },
+   {
+    "id": "c24",
+    "source": "s23",
+    "target": "s24",
+    "label": "t24"
+   },
+   {
+    "id": "c25",
+    "source": "s24",
+    "target": "s25",
+    "label": "t25"
+   },
+   {
+    "id": "c26",
+    "source": "s25",
+    "target": "s26",
+    "label": "t26"
+   },
+   {
+    "id": "c27",
+    "source": "s26",
+    "target": "s27",
+    "label": "t27"
+   },
+   {
+    "id": "c28",
+    "source": "s27",
+    "target": "s28",
+    "label": "t28"
+   },
+   {
+    "id": "c29",
+    "source": "s28",
+    "target": "s29",
+    "label": "t29"
+   },
+   {
+    "id": "c30",
+    "source": "s29",
+    "target": "s30",
+    "label": "t30"
+   },
+   {
+    "id": "c31",
+    "source": "s30",
+    "target": "s31",
+    "label": "t31"
+   },
+   {
+    "id": "c32",
+    "source": "s31",
+    "target": "s32",
+    "label": "t32"
+   },
+   {
+    "id": "c33",
+    "source": "s32",
+    "target": "s33",
+    "label": "t33"
+   },
+   {
+    "id": "c34",
+    "source": "s33",
+    "target": "s34",
+    "label": "t34"
+   },
+   {
+    "id": "c35",
+    "source": "s34",
+    "target": "s35",
+    "label": "t35"
+   },
+   {
+    "id": "c36",
+    "source": "s35",
+    "target": "s36",
+    "label": "t36"
+   },
+   {
+    "id": "c37",
+    "source": "s36",
+    "target": "s37",
+    "label": "t37"
+   },
+   {
+    "id": "c38",
+    "source": "s37",
+    "target": "s38",
+    "label": "t38"
+   },
+   {
+    "id": "c39",
+    "source": "s38",
+    "target": "s39",
+    "label": "t39"
+   },
+   {
+    "id": "c40",
+    "source": "s39",
+    "target": "s40",
+    "label": "t40"
+   },
+   {
+    "id": "c41",
+    "source": "s40",
+    "target": "s41",
+    "label": "t41"
+   },
+   {
+    "id": "c42",
+    "source": "s41",
+    "target": "s42",
+    "label": "t42"
+   },
+   {
+    "id": "c43",
+    "source": "s42",
+    "target": "s43",
+    "label": "t43"
+   },
+   {
+    "id": "c44",
+    "source": "s43",
+    "target": "s44",
+    "label": "t44"
+   },
+   {
+    "id": "c45",
+    "source": "s44",
+    "target": "s45",
+    "label": "t45"
+   },
+   {
+    "id": "c46",
+    "source": "s45",
+    "target": "s46",
+    "label": "t46"
+   },
+   {
+    "id": "c47",
+    "source": "s46",
+    "target": "s47",
+    "label": "t47"
+   },
+   {
+    "id": "c48",
+    "source": "s47",
+    "target": "s48",
+    "label": "t48"
+   },
+   {
+    "id": "c49",
+    "source": "s48",
+    "target": "s49",
+    "label": "t49"
+   },
+   {
+    "id": "c50",
+    "source": "s49",
+    "target": "s50",
+    "label": "t50"
+   },
+   {
+    "id": "c51",
+    "source": "s50",
+    "target": "s51",
+    "label": "t51"
+   },
+   {
+    "id": "c52",
+    "source": "s51",
+    "target": "s52",
+    "label": "t52"
+   },
+   {
+    "id": "c53",
+    "source": "s52",
+    "target": "s53",
+    "label": "t53"
+   },
+   {
+    "id": "c54",
+    "source": "s53",
+    "target": "s54",
+    "label": "t54"
+   },
+   {
+    "id": "c55",
+    "source": "s54",
+    "target": "s55",
+    "label": "t55"
+   },
+   {
+    "id": "c56",
+    "source": "s55",
+    "target": "s56",
+    "label": "t56"
+   },
+   {
+    "id": "c57",
+    "source": "s56",
+    "target": "s57",
+    "label": "t57"
+   },
+   {
+    "id": "c58",
+    "source": "s57",
+    "target": "s58",
+    "label": "t58"
+   },
+   {
+    "id": "c59",
+    "source": "s58",
+    "target": "s59",
+    "label": "t59"
+   },
+   {
+    "id": "c60",
+    "source": "s59",
+    "target": "s60",
+    "label": "t60"
+   },
+   {
+    "id": "c61",
+    "source": "s60",
+    "target": "s61",
+    "label": "t61"
+   },
+   {
+    "id": "c62",
+    "source": "s61",
+    "target": "s62",
+    "label": "t62"
+   },
+   {
+    "id": "c63",
+    "source": "s62",
+    "target": "s63",
+    "label": "t63"
+   },
+   {
+    "id": "c64",
+    "source": "s63",
+    "target": "s64",
+    "label": "t64"
+   },
+   {
+    "id": "c65",
+    "source": "s64",
+    "target": "s65",
+    "label": "t65"
+   },
+   {
+    "id": "c66",
+    "source": "s65",
+    "target": "s66",
+    "label": "t66"
+   },
+   {
+    "id": "c67",
+    "source": "s66",
+    "target": "s67",
+    "label": "t67"
+   },
+   {
+    "id": "c68",
+    "source": "s67",
+    "target": "s68",
+    "label": "t68"
+   },
+   {
+    "id": "c69",
+    "source": "s68",
+    "target": "s69",
+    "label": "t69"
+   },
+   {
+    "id": "c70",
+    "source": "s69",
+    "target": "s70",
+    "label": "t70"
+   },
+   {
+    "id": "c71",
+    "source": "s70",
+    "target": "s71",
+    "label": "t71"
+   },
+   {
+    "id": "c72",
+    "source": "s71",
+    "target": "s72",
+    "label": "t72"
+   },
+   {
+    "id": "c73",
+    "source": "s72",
+    "target": "s73",
+    "label": "t73"
+   },
+   {
+    "id": "c74",
+    "source": "s73",
+    "target": "s74",
+    "label": "t74"
+   },
+   {
+    "id": "c75",
+    "source": "s74",
+    "target": "s75",
+    "label": "t75"
+   },
+   {
+    "id": "c76",
+    "source": "s75",
+    "target": "s76",
+    "label": "t76"
+   },
+   {
+    "id": "c77",
+    "source": "s76",
+    "target": "s77",
+    "label": "t77"
+   },
+   {
+    "id": "c78",
+    "source": "s77",
+    "target": "s78",
+    "label": "t78"
+   },
+   {
+    "id": "c79",
+    "source": "s78",
+    "target": "s79",
+    "label": "t79"
+   }
+  ]
+ },
+ "intent": "Extreme TALL aspect ratio: 80-node linear chain with labelled links, auto-layout TB. Aspect ~ 200x14000."
+}

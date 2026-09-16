@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "\\node[draw,fill=blue!20,rounded corners] (a) at (1,1) {Source};\n\\node[draw,fill=green!20,rounded corners] (b) at (4,1) {Filter};\n\\node[draw,fill=orange!20,rounded corners] (c) at (7,1) {Sink};\n\\draw[thick,-{Stealth[length=2mm]}] (a)--(b);\n\\draw[thick,-{Stealth[length=2mm]}] (b)--(c);\n\\node[font=\\bfseries] at (4,2.2) {Pipeline (no tikzpicture wrapper)};\n",
+ "intent": "body with no \\begin{tikzpicture} wrapper at all - probes the profile's single auto-wrap affordance"
+}

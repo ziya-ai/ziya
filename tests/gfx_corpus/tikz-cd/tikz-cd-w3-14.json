@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\begin{tikzcd}\n\\mathsf{Load} \\rar[\"step\"] & \\mathsf{Parse} \\dar \\\\\n\\mathsf{Emit} \\rar[\"done\"'] & \\mathsf{Store}\n\\end{tikzcd}",
+ "intent": "CONTROL: identical structure to w3-08 with NO colours at all - exposes the engine's own defaults in each theme"
+}

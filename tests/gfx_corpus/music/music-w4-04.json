@@ -1,0 +1,5 @@
+{
+ "type": "music",
+ "definition": "```json\n{\n  \"timeSignature\": \"4/4\",\n  \"clef\": \"treble\",\n  \"keySignature\": \"D\",\n  \"title\": \"Markdown Fenced JSON\",\n  \"notes\": [\n    {\"keys\": [\"d/4\"], \"duration\": \"q\"},\n    {\"keys\": [\"f#/4\"], \"duration\": \"q\"},\n    {\"keys\": [\"a/4\"], \"duration\": \"q\"},\n    {\"keys\": [\"d/5\"], \"duration\": \"q\"}\n  ]\n}\n```",
+ "intent": "strictly valid JSON wrapped in a ```json markdown fence, exactly as a model emits it in prose"
+}

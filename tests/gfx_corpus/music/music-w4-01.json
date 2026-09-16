@@ -1,0 +1,5 @@
+{
+ "type": "music",
+ "definition": "{\"timeSignature\": \"4/4\", \"clef\": \"treble\", \"keySignature\": \"G\",\n \"title\": \"Trailing Commas\",\n \"notes\": [\n   {\"keys\": [\"g/4\"], \"duration\": \"q\",},\n   {\"keys\": [\"a/4\"], \"duration\": \"q\"},\n   {\"keys\": [\"b/4\"], \"duration\": \"q\",},\n   {\"keys\": [\"d/5\"], \"duration\": \"q\"},\n ],\n}",
+ "intent": "trailing commas after the last member of objects and arrays -- the single most common LLM JSON slip"
+}

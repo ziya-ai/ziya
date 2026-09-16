@@ -1,0 +1,1068 @@
+{
+ "schema": 1,
+ "engine": "tikz-cd",
+ "specs": {
+  "tikz-cd-w1-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.273411Z"
+    }
+   ]
+  },
+  "tikz-cd-w1-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.277624Z"
+    }
+   ]
+  },
+  "tikz-cd-w1-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.281622Z"
+    }
+   ]
+  },
+  "tikz-cd-w1-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.284241Z"
+    }
+   ]
+  },
+  "tikz-cd-w1-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.288699Z"
+    }
+   ]
+  },
+  "tikz-cd-w1-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.292282Z"
+    }
+   ]
+  },
+  "tikz-cd-w1-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.296743Z"
+    }
+   ]
+  },
+  "tikz-cd-w1-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.307492Z"
+    }
+   ]
+  },
+  "tikz-cd-w1-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.311117Z"
+    }
+   ]
+  },
+  "tikz-cd-w1-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.314423Z"
+    }
+   ]
+  },
+  "tikz-cd-w1-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.317247Z"
+    }
+   ]
+  },
+  "tikz-cd-w1-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.320134Z"
+    }
+   ]
+  },
+  "tikz-cd-w1-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.323389Z"
+    }
+   ]
+  },
+  "tikz-cd-w1-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.331450Z"
+    }
+   ]
+  },
+  "tikz-cd-w1-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.334617Z"
+    }
+   ]
+  },
+  "tikz-cd-w2-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.339002Z"
+    }
+   ]
+  },
+  "tikz-cd-w2-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.342822Z"
+    }
+   ]
+  },
+  "tikz-cd-w2-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.346514Z"
+    }
+   ]
+  },
+  "tikz-cd-w2-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.349522Z"
+    }
+   ]
+  },
+  "tikz-cd-w2-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.352208Z"
+    }
+   ]
+  },
+  "tikz-cd-w2-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.355535Z"
+    }
+   ]
+  },
+  "tikz-cd-w2-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.358957Z"
+    }
+   ]
+  },
+  "tikz-cd-w2-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.362736Z"
+    }
+   ]
+  },
+  "tikz-cd-w2-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.365951Z"
+    }
+   ]
+  },
+  "tikz-cd-w2-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.368767Z"
+    }
+   ]
+  },
+  "tikz-cd-w2-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.373989Z"
+    }
+   ]
+  },
+  "tikz-cd-w2-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.379289Z"
+    }
+   ]
+  },
+  "tikz-cd-w2-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.384195Z"
+    }
+   ]
+  },
+  "tikz-cd-w2-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.389526Z"
+    }
+   ]
+  },
+  "tikz-cd-w2-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.394739Z"
+    }
+   ]
+  },
+  "tikz-cd-w3-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.399677Z"
+    }
+   ]
+  },
+  "tikz-cd-w3-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.403643Z"
+    }
+   ]
+  },
+  "tikz-cd-w3-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.408093Z"
+    }
+   ]
+  },
+  "tikz-cd-w3-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.411990Z"
+    }
+   ]
+  },
+  "tikz-cd-w3-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.416654Z"
+    }
+   ]
+  },
+  "tikz-cd-w3-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.420605Z"
+    }
+   ]
+  },
+  "tikz-cd-w3-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.425177Z"
+    }
+   ]
+  },
+  "tikz-cd-w3-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.429634Z"
+    }
+   ]
+  },
+  "tikz-cd-w3-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.434700Z"
+    }
+   ]
+  },
+  "tikz-cd-w3-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.440373Z"
+    }
+   ]
+  },
+  "tikz-cd-w3-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.445611Z"
+    }
+   ]
+  },
+  "tikz-cd-w3-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.449936Z"
+    }
+   ]
+  },
+  "tikz-cd-w3-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.454988Z"
+    }
+   ]
+  },
+  "tikz-cd-w3-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.459611Z"
+    }
+   ]
+  },
+  "tikz-cd-w3-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.465013Z"
+    }
+   ]
+  },
+  "tikz-cd-w4-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.469956Z"
+    }
+   ]
+  },
+  "tikz-cd-w4-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.477450Z"
+    }
+   ]
+  },
+  "tikz-cd-w4-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.482525Z"
+    }
+   ]
+  },
+  "tikz-cd-w4-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.487323Z"
+    }
+   ]
+  },
+  "tikz-cd-w4-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.492860Z"
+    }
+   ]
+  },
+  "tikz-cd-w4-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.498049Z"
+    }
+   ]
+  },
+  "tikz-cd-w4-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.502228Z"
+    }
+   ]
+  },
+  "tikz-cd-w4-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.507478Z"
+    }
+   ]
+  },
+  "tikz-cd-w4-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.512897Z"
+    }
+   ]
+  },
+  "tikz-cd-w4-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.518463Z"
+    }
+   ]
+  },
+  "tikz-cd-w4-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.522745Z"
+    }
+   ]
+  },
+  "tikz-cd-w4-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.528338Z"
+    }
+   ]
+  },
+  "tikz-cd-w4-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.533546Z"
+    }
+   ]
+  },
+  "tikz-cd-w4-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-227",
+     "signature": "profile-package-not-installed",
+     "at": "2026-09-15T08:56:14.537812Z"
+    }
+   ]
+  }
+ }
+}

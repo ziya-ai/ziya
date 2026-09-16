@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "level0 {\n  n0: Depth 0 Node\n  level1 {\n    n1: Depth 1 Node\n    level2 {\n      n2: Depth 2 Node\n      level3 {\n        n3: Depth 3 Node\n        level4 {\n          n4: Depth 4 Node\n          level5 {\n            n5: Depth 5 Node\n            level6 {\n              n6: Depth 6 Node\n              level7 {\n                n7: Depth 7 Node\n                level8 {\n                  n8: Depth 8 Node\n                  level9 {\n                    n9: Depth 9 Node\n                    level10 {\n                      n10: Depth 10 Node\n                      level11 {\n                        n11: Depth 11 Node\n                      }\n                    }\n                  }\n                }\n              }\n            }\n          }\n        }\n      }\n    }\n  }\n}",
+ "intent": "12 levels of nesting, one node per level: deep-nesting scale"
+}

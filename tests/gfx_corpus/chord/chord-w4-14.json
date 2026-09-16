@@ -1,0 +1,65 @@
+{
+ "type": "chord",
+ "definition": {
+  "type": "chord",
+  "nodes": [
+   {
+    "id": "Alpha",
+    "color": "var(--chart-1)"
+   },
+   {
+    "id": "Beta",
+    "color": "primary"
+   },
+   {
+    "id": "Gamma",
+    "color": "$blue-500"
+   },
+   {
+    "id": "Delta",
+    "color": "theme.accent"
+   },
+   {
+    "id": "Epsilon",
+    "color": "colors.warning"
+   }
+  ],
+  "links": [
+   {
+    "source": "Alpha",
+    "target": "Beta",
+    "value": 12
+   },
+   {
+    "source": "Beta",
+    "target": "Gamma",
+    "value": 8
+   },
+   {
+    "source": "Gamma",
+    "target": "Delta",
+    "value": 6
+   },
+   {
+    "source": "Delta",
+    "target": "Epsilon",
+    "value": 9
+   },
+   {
+    "source": "Epsilon",
+    "target": "Alpha",
+    "value": 11
+   },
+   {
+    "source": "Alpha",
+    "target": "Gamma",
+    "value": 5
+   }
+  ],
+  "style": {
+   "background": "var(--surface-bg)",
+   "labelColor": "token.text.primary"
+  }
+ },
+ "intent": "Colors as design-system TOKENS that do not exist here: var(--chart-1), 'primary', '$blue-500', plus a token background and labelColor. Intent: 5-node ring; engine should fall back to a legible palette in each theme."
+}

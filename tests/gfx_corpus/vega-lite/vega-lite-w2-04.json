@@ -1,0 +1,56 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "20 series x 100 points",
+  "data": {
+   "sequence": {
+    "start": 0,
+    "stop": 2000,
+    "step": 1,
+    "as": "n"
+   }
+  },
+  "transform": [
+   {
+    "calculate": "datum.n%100",
+    "as": "t"
+   },
+   {
+    "calculate": "floor(datum.n/100)",
+    "as": "si"
+   },
+   {
+    "calculate": "50+30*sin((datum.n%100)/9+floor(datum.n/100))+floor(datum.n/100)",
+    "as": "v"
+   },
+   {
+    "calculate": "'series-'+format(floor(datum.n/100),'02d')",
+    "as": "s"
+   }
+  ],
+  "mark": {
+   "type": "line",
+   "strokeWidth": 1
+  },
+  "height": 380,
+  "encoding": {
+   "x": {
+    "field": "t",
+    "type": "quantitative"
+   },
+   "y": {
+    "field": "v",
+    "type": "quantitative"
+   },
+   "color": {
+    "field": "s",
+    "type": "nominal",
+    "legend": {
+     "title": "series (20)"
+    }
+   }
+  }
+ },
+ "intent": "SCALE: 20 categorical colour series (2000 points, 1px strokes) - forces a 10-colour categorical scheme to RECYCLE hues."
+}

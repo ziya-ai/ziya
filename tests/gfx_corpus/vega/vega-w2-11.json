@@ -1,0 +1,157 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 840,
+  "height": 420,
+  "padding": 5,
+  "autosize": "pad",
+  "data": [
+   {
+    "name": "g",
+    "transform": [
+     {
+      "type": "sequence",
+      "start": 0,
+      "stop": 6000,
+      "step": 1,
+      "as": "i"
+     },
+     {
+      "type": "formula",
+      "as": "cx",
+      "expr": "'x' + (datum.i % 120)"
+     },
+     {
+      "type": "formula",
+      "as": "cy",
+      "expr": "'y' + floor(datum.i / 120)"
+     },
+     {
+      "type": "formula",
+      "as": "v",
+      "expr": "abs(round(50 + 45*sin((datum.i%120)/8) * cos(floor(datum.i/120)/6)))"
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "band",
+    "domain": {
+     "data": "g",
+     "field": "cx"
+    },
+    "range": "width"
+   },
+   {
+    "name": "y",
+    "type": "band",
+    "domain": {
+     "data": "g",
+     "field": "cy"
+    },
+    "range": "height"
+   },
+   {
+    "name": "c",
+    "type": "linear",
+    "range": {
+     "scheme": "yellowgreenblue"
+    },
+    "domain": {
+     "data": "g",
+     "field": "v"
+    }
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x",
+    "title": "x (120)",
+    "labelFontSize": 4,
+    "labelAngle": -90
+   },
+   {
+    "orient": "left",
+    "scale": "y",
+    "title": "y (50)",
+    "labelFontSize": 4
+   }
+  ],
+  "legends": [
+   {
+    "fill": "c",
+    "type": "gradient",
+    "title": "v"
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "from": {
+     "data": "g"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "cx"
+      },
+      "width": {
+       "scale": "x",
+       "band": 1
+      },
+      "y": {
+       "scale": "y",
+       "field": "cy"
+      },
+      "height": {
+       "scale": "y",
+       "band": 1
+      },
+      "fill": {
+       "scale": "c",
+       "field": "v"
+      }
+     }
+    }
+   },
+   {
+    "type": "text",
+    "from": {
+     "data": "g"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "cx",
+       "band": 0.5
+      },
+      "y": {
+       "scale": "y",
+       "field": "cy",
+       "band": 0.5
+      },
+      "align": {
+       "value": "center"
+      },
+      "baseline": {
+       "value": "middle"
+      },
+      "fontSize": {
+       "value": 3
+      },
+      "text": {
+       "field": "v"
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "SCALE/COUNT + DENSITY: 120 x 50 = 6000-cell band/band heatmap with a sequential scale, gradient legend and 6000 in-cell text labels at 3px. Probes sub-pixel cells and mass text at density."
+}

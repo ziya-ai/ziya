@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "A \\arrow[r, bend left=35, \"f\"] \\arrow[r, bend right=35, \"g\"'] \\arrow[loop left, \"\\mathrm{id}\"] & B",
+ "intent": "curved arrows: bend left/right pair plus a self loop"
+}

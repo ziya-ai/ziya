@@ -1,0 +1,120 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "bar",
+    "name": "Requests",
+    "x": [
+     "W1",
+     "W2",
+     "W3",
+     "W4",
+     "W5",
+     "W6"
+    ],
+    "y": [
+     1200,
+     1450,
+     1310,
+     1780,
+     2050,
+     1920
+    ],
+    "marker": {
+     "color": "#4c78a8"
+    }
+   },
+   {
+    "type": "scatter",
+    "mode": "lines+markers",
+    "name": "Error rate",
+    "yaxis": "y2",
+    "x": [
+     "W1",
+     "W2",
+     "W3",
+     "W4",
+     "W5",
+     "W6"
+    ],
+    "y": [
+     0.8,
+     1.1,
+     0.9,
+     2.4,
+     3.9,
+     1.6
+    ],
+    "line": {
+     "color": "#e45756",
+     "width": 3
+    },
+    "marker": {
+     "size": 9
+    }
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "Traffic vs Error Rate"
+   },
+   "xaxis": {
+    "title": {
+     "text": "Week"
+    }
+   },
+   "yaxis": {
+    "title": {
+     "text": "Requests (k)"
+    }
+   },
+   "yaxis2": {
+    "title": {
+     "text": "Error rate (%)"
+    },
+    "overlaying": "y",
+    "side": "right",
+    "range": [
+     0,
+     5
+    ],
+    "showgrid": false
+   },
+   "shapes": [
+    {
+     "type": "rect",
+     "xref": "paper",
+     "yref": "y2",
+     "x0": 0,
+     "x1": 1,
+     "y0": 3,
+     "y1": 5,
+     "fillcolor": "rgba(228,87,86,0.15)",
+     "line": {
+      "width": 0
+     },
+     "layer": "below"
+    }
+   ],
+   "annotations": [
+    {
+     "x": "W5",
+     "y": 3.9,
+     "yref": "y2",
+     "text": "SLO breach",
+     "showarrow": true,
+     "arrowhead": 3,
+     "ax": -50,
+     "ay": -40
+    }
+   ],
+   "legend": {
+    "orientation": "h",
+    "y": -0.22
+   },
+   "height": 480
+  }
+ },
+ "intent": "Dual y-axis overlay (yaxis2 with overlaying/side=right) plus a paper-referenced shape and an annotation with arrow — canonical secondary-axis dashboard."
+}

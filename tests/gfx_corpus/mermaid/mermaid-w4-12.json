@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "pie showData\n  title Storage split\n  \"Hot tier\" : \"42\"\n  \"Warm tier\" : \"31.5\"\n  \"Cold tier\" : '18'\n  \"Archive\" : 8,5",
+ "intent": "RECOVERY: pie values given as quoted strings ('42', \"31.5\", '18') and one using a comma decimal separator (8,5). Should coerce to numbers and draw 4 slices summing to 100."
+}

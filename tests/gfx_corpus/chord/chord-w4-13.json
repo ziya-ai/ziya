@@ -1,0 +1,61 @@
+{
+ "type": "chord",
+ "definition": {
+  "type": "chord",
+  "nodes": [
+   {
+    "id": "Alpha",
+    "color": "#4e79a7"
+   },
+   {
+    "id": "Beta",
+    "color": "transparent"
+   },
+   {
+    "id": "Gamma",
+    "color": "#e15759"
+   },
+   {
+    "id": "Delta",
+    "color": "transparent"
+   },
+   {
+    "id": "Epsilon",
+    "color": "#59a14f"
+   }
+  ],
+  "links": [
+   {
+    "source": "Alpha",
+    "target": "Beta",
+    "value": 12
+   },
+   {
+    "source": "Beta",
+    "target": "Gamma",
+    "value": 8
+   },
+   {
+    "source": "Gamma",
+    "target": "Delta",
+    "value": 6
+   },
+   {
+    "source": "Delta",
+    "target": "Epsilon",
+    "value": 9
+   },
+   {
+    "source": "Epsilon",
+    "target": "Alpha",
+    "value": 11
+   },
+   {
+    "source": "Alpha",
+    "target": "Gamma",
+    "value": 5
+   }
+  ]
+ },
+ "intent": "Two nodes colored 'transparent' (models emit this to mean 'no fill / use default'). Intent: 5 visible arcs; Beta and Delta must still be identifiable."
+}

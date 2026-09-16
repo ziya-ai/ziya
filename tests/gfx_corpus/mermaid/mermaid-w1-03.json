@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "sequenceDiagram\n  autonumber\n  participant C as Client\n  participant G as Gateway\n  participant S as Service\n  participant D as DB\n  C->>G: POST /order\n  activate G\n  G->>S: validate(order)\n  activate S\n  loop each line item\n    S->>D: check stock\n    D-->>S: qty\n  end\n  alt all in stock\n    S-->>G: 200 OK\n  else short\n    S-->>G: 409 Conflict\n  end\n  deactivate S\n  Note over G,S: idempotency key retained 24h\n  G-->>C: response\n  deactivate G\n",
+ "intent": "sequenceDiagram with participants, activations, loop, alt, and notes"
+}

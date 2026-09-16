@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph G {\n  rankdir=LR;\n  a [label=\"Node A\"];\n  b [label=\"Node B\"];\n  c [label=\"Node C\"];\n  a -- b -- c;\n  a -- c;\n}",
+ "intent": "Dialect mix (inverse): directed 'digraph' keyword with undirected -- edge operators"
+}

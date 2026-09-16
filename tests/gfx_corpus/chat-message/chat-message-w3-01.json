@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "### Composite nesting\n\n> Reviewer note, quoting the spec:\n>\n> 1. The bound is $O(n \\log n)$ amortised.\n>    - see `scheduler.rs:412` and [RFC-77](https://example.com/rfc77)\n>    - the table below is **inside** the quote, inside the list:\n>\n>      | sym | meaning | value |\n>      |:---|:---|---:|\n>      | $\\alpha$ | decay | `0.94` |\n>      | $\\beta_2$ | momentum | `0.999` |\n>\n> 2. Second item resumes numbering after the table.\n\nProse after the quote, with a trailing $\\sum_{i=1}^{n} x_i$ inline.\n",
+ "intent": "three features nested in one another: table with inline code + KaTeX + link inside a nested list inside a blockquote"
+}

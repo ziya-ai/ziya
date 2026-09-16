@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\\foreach \\y in {0,...,19}{\n  \\foreach \\x in {0,...,19}{\n    \\draw ({1.7*\\x},{1.25*\\y}) to[R=$R_{\\x\\y}$] ({1.7*\\x+1.7},{1.25*\\y});\n  }\n}\n\\node at (17,-1.4) {400 labelled resistors, 20 rows x 20 in series};",
+ "intent": "400 labelled bipoles: same count class as w2-01 but every component carries a math label, so the test is label pitch and label/label collision at scale rather than raw stroke count."
+}

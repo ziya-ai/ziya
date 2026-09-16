@@ -1,0 +1,5 @@
+{
+ "type": "joint",
+ "definition": "{\n  “elements”: [\n    {“id”: “client”, “type”: “rect”, “label”: “Client”},\n    {“id”: “proxy”, “type”: “rect”, “label”: “Proxy”},\n    {“id”: “server”, “type”: “rect”, “label”: “Server”}\n  ],\n  “connections”: [\n    {“id”: “s1”, “source”: “client”, “target”: “proxy”, “label”: “GET”},\n    {“id”: “s2”, “source”: “proxy”, “target”: “server”, “label”: “fwd”}\n  ]\n}",
+ "intent": "RECOVERY: SMART/CURLY quotes (U+201C/U+201D) instead of ASCII double quotes, as produced by prose-formatted model output. Intent: Client->Proxy->Server."
+}

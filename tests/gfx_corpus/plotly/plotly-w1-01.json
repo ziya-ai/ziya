@@ -1,0 +1,125 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "scatter",
+    "mode": "lines+markers",
+    "name": "p50 latency",
+    "x": [
+     "Jan",
+     "Feb",
+     "Mar",
+     "Apr",
+     "May",
+     "Jun",
+     "Jul",
+     "Aug"
+    ],
+    "y": [
+     42,
+     45,
+     41,
+     48,
+     52,
+     49,
+     44,
+     43
+    ],
+    "line": {
+     "color": "#1f77b4",
+     "width": 2
+    },
+    "marker": {
+     "size": 7
+    }
+   },
+   {
+    "type": "scatter",
+    "mode": "lines+markers",
+    "name": "p90 latency",
+    "x": [
+     "Jan",
+     "Feb",
+     "Mar",
+     "Apr",
+     "May",
+     "Jun",
+     "Jul",
+     "Aug"
+    ],
+    "y": [
+     88,
+     95,
+     91,
+     112,
+     130,
+     121,
+     99,
+     94
+    ],
+    "line": {
+     "color": "#ff7f0e",
+     "width": 2
+    },
+    "marker": {
+     "size": 7
+    }
+   },
+   {
+    "type": "scatter",
+    "mode": "lines+markers",
+    "name": "p99 latency",
+    "x": [
+     "Jan",
+     "Feb",
+     "Mar",
+     "Apr",
+     "May",
+     "Jun",
+     "Jul",
+     "Aug"
+    ],
+    "y": [
+     180,
+     210,
+     195,
+     260,
+     340,
+     290,
+     220,
+     205
+    ],
+    "line": {
+     "color": "#2ca02c",
+     "width": 2,
+     "dash": "dot"
+    },
+    "marker": {
+     "size": 7
+    }
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "Service Latency Percentiles"
+   },
+   "xaxis": {
+    "title": {
+     "text": "Month"
+    }
+   },
+   "yaxis": {
+    "title": {
+     "text": "Latency (ms)"
+    }
+   },
+   "legend": {
+    "orientation": "h",
+    "y": -0.2
+   },
+   "height": 460
+  }
+ },
+ "intent": "Canonical multi-series line+marker scatter with legend, axis titles and hovermode — the single most common Plotly chart."
+}

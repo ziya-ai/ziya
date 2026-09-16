@@ -1,0 +1,5 @@
+{
+ "type": "vega-lite",
+ "definition": "{\n  \"data\": [{\"city\": \"Oslo\", \"pop\": 700}, {\"city\": \"Bergen\", \"pop\": 280}, {\"city\": \"Tromso\", \"pop\": 77}],\n  \"mark\": \"bar\",\n  \"encoding\": {\n    \"x\": {\"field\": \"city\"},\n    \"y\": {\"field\": \"pop\"}\n  }\n}",
+ "intent": "Omits the fields a model assumes are optional: data given as a bare array instead of {values:...}, no $schema, and no encoding types at all. Intent: a 3-city population bar chart."
+}

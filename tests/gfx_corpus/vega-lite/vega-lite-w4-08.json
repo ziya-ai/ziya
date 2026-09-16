@@ -1,0 +1,5 @@
+{
+ "type": "vega-lite",
+ "definition": "{\n  \"data\": {\"values\": [{\"s\": \"up\", \"t\": 20}, {\"s\": \"flat\", \"t\": 20}, {\"s\": \"down\", \"t\": 8}]};\n  \"mark\": \"bar\";\n  \"encoding\": {\n    \"x\": {\"field\": \"s\", \"type\": \"nominal\"},\n    \"y\": {\"field\": \"t\", \"type\": \"quantitative\"}\n  }\n};",
+ "intent": "Semicolons used as statement separators between top-level properties and a trailing semicolon after the closing brace - the JS-authoring reflex leaking into JSON. Intent: a 3-bar up/flat/down chart."
+}

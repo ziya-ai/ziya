@@ -1,0 +1,5 @@
+{
+ "type": "vega-lite",
+ "definition": "{\n  \"$schema\": \"https://vega.github.io/schema/vega-lite/v5.json\",\n  \"theme\": \"ziya-dark\",\n  \"usermeta\": {\"embedOptions\": {\"theme\": \"nonexistent-theme-name\"}},\n  \"data\": {\"values\": [{\"c\": \"A\", \"v\": 30}, {\"c\": \"B\", \"v\": 55}, {\"c\": \"C\", \"v\": 40}]},\n  \"mark\": \"bar\",\n  \"encoding\": {\n    \"x\": {\"field\": \"c\", \"type\": \"nominal\"},\n    \"y\": {\"field\": \"v\", \"type\": \"quantitative\"},\n    \"color\": {\"field\": \"c\", \"type\": \"nominal\", \"scale\": {\"scheme\": \"not-a-real-scheme\"}}\n  },\n  \"config\": {\"background\": \"$surface\", \"axis\": {\"labelColor\": \"$textPrimary\"}}\n}",
+ "intent": "Theme tokens that do not exist: a top-level 'theme' key Vega-Lite has no notion of, an unknown embedOptions theme name, an unknown colour scheme, and '$surface'/'$textPrimary' design-token strings where colours belong. Intent: a 3-bar coloured chart that should fall back to the engine default theme."
+}

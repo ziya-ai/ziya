@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\setatomsep{2.2em}\n\\setbondoffset{1.5pt}\n\\chemfig{H_2N-[:30]-[:-30](=[:90]O)-[:-30]OH}",
+ "intent": "RECOVERY: deprecated \\setatomsep/\\setbondoffset (removed from modern chemfig). Preprocessor should rewrite to \\setchemfig{atom sep=..., bond offset=...}."
+}

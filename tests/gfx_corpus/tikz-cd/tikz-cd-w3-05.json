@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\begin{tikzcd}\nA \\ar[from=1-1,to=1-1,loop above,\"\\mathrm{id}\"] \\ar[from=1-1,to=1-2] & B \\\\\nC \\ar[from=2-1,to=1-2,crossing over] & D \\ar[from=2-2,to=1-1]\n\\end{tikzcd}",
+ "intent": "colliding coordinates: from= and to= naming the SAME cell, plus overlapping row/col refs"
+}

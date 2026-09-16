@@ -1,0 +1,5 @@
+{
+ "type": "chord",
+ "definition": "```json\n{\n  \"type\": \"chord\",\n  \"nodes\": [\n    {\n      \"id\": \"Alpha\"\n    },\n    {\n      \"id\": \"Beta\"\n    },\n    {\n      \"id\": \"Gamma\"\n    },\n    {\n      \"id\": \"Delta\"\n    },\n    {\n      \"id\": \"Epsilon\"\n    }\n  ],\n  \"links\": [\n    {\n      \"source\": \"Alpha\",\n      \"target\": \"Beta\",\n      \"value\": 12\n    },\n    {\n      \"source\": \"Beta\",\n      \"target\": \"Gamma\",\n      \"value\": 8\n    },\n    {\n      \"source\": \"Gamma\",\n      \"target\": \"Delta\",\n      \"value\": 6\n    },\n    {\n      \"source\": \"Delta\",\n      \"target\": \"Epsilon\",\n      \"value\": 9\n    },\n    {\n      \"source\": \"Epsilon\",\n      \"target\": \"Alpha\",\n      \"value\": 11\n    },\n    {\n      \"source\": \"Alpha\",\n      \"target\": \"Gamma\",\n      \"value\": 5\n    }\n  ]\n}\n```",
+ "intent": "Byte-valid chord JSON wrapped in a ```json markdown fence (models fence tool payloads constantly). Same ring, 6 links."
+}

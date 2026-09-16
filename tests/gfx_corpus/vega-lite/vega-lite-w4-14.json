@@ -1,0 +1,5 @@
+{
+ "type": "vega-lite",
+ "definition": "{\n  \"background\": \"transparent\",\n  \"data\": {\"values\": [{\"c\": \"A\", \"v\": 30}, {\"c\": \"B\", \"v\": 55}, {\"c\": \"C\", \"v\": 40}]},\n  \"mark\": {\"type\": \"bar\", \"color\": \"steelblue\", \"stroke\": \"darkslategray\"},\n  \"encoding\": {\n    \"x\": {\"field\": \"c\", \"type\": \"nominal\", \"axis\": {\"labelColor\": \"black\", \"labelAngle\": 0}},\n    \"y\": {\"field\": \"v\", \"type\": \"quantitative\", \"axis\": {\"labelColor\": \"black\", \"gridColor\": \"lightgray\"}},\n    \"color\": {\"field\": \"c\", \"type\": \"nominal\", \"scale\": {\"range\": [\"tomato\", \"gold\", \"seagreen\"]}}\n  }\n}",
+ "intent": "CSS colour keywords instead of hex, plus background 'transparent'. The named 'black' label colour is a theme-blind hardcode; 'transparent' tests whether the engine substitutes an opaque light background. Intent: three named-colour bars."
+}

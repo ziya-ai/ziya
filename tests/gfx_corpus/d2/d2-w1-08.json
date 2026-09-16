@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "frontend {\n  ui: Browser UI\n}\nbackend {\n  api: REST API\n  db: Postgres\n}\nfrontend.ui -> backend.api: fetch\nbackend.api -> backend.db: query\n",
+ "intent": "Fully-qualified dotted path references (container.child) used as edge endpoints."
+}

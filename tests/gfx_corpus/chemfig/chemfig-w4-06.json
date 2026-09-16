@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\colorbox{transparent}{\\textcolor{--ziya-text-primary}{\\chemfig{O=C=O}}}",
+ "intent": "RECOVERY: CSS 'transparent' keyword and a nonexistent theme token '--ziya-text-primary' used as xcolor names."
+}

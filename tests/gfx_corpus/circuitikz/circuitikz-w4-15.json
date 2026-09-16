@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\\definecolor{plate}{HTML}{16324A}\n\\definecolor{plateink}{HTML}{F2F6FA}\n\\definecolor{plateaccent}{HTML}{5FD4E4}\n\\fill[plate] (-0.9,-1.5) rectangle (7.3,1.9);\n\\draw[color=plateink]\n  (0,0) to[R, l=$R_C=\\SI{2.2}{\\kilo\\ohm}$] (3.0,0)\n  to[C, l=$C_1=100\\,\\mathrm{nF}$] (6.0,0) node[ocirc]{};\n\\draw[color=plateaccent] (0,0) to[R, a=$k\\in(0,1]$] (0,-1.6) node[ground]{};\n\\node[plateink] at (3.0,1.5) {pgfkeys-hostile values};\n",
+ "intent": "RECOVERY POSITIVE CONTROL, aimed squarely at the ONE repair that circuitikz actually implements (circuitikz_lint.autofix): option values carrying pgfkeys-hostile characters at brace depth zero -- a bare '=' inside l=, a ',' inside a math value, and a ']' from interval notation. Each is a fatal abort unpreprocessed. Combined with the proven plate so a successful recovery is legible in BOTH themes."
+}

@@ -1,0 +1,5 @@
+{
+ "type": "joint",
+ "definition": "{\n  \"elements\": [\n    {\"id\": \"spider\"},\n    {\"id\": \"indexer\"},\n    {\"id\": \"ranker\"},\n    {\"id\": \"serp\"}\n  ],\n  \"connections\": [\n    {\"from\": \"spider\", \"to\": \"indexer\", \"label\": \"html\"},\n    {\"from\": \"indexer\", \"to\": \"ranker\", \"label\": \"postings\"},\n    {\"from\": \"ranker\", \"to\": \"serp\", \"label\": \"top-10\"}\n  ]\n}",
+ "intent": "RECOVERY: missing optional-but-assumed fields (no type, no label, no size, no link ids) AND the from/to key slip in place of source/target. Intent: Spider->Indexer->Ranker->SERP."
+}

@@ -1,0 +1,493 @@
+{
+ "type": "chord",
+ "definition": {
+  "type": "chord",
+  "nodes": [
+   {
+    "id": "B01"
+   },
+   {
+    "id": "B02"
+   },
+   {
+    "id": "B03"
+   },
+   {
+    "id": "B04"
+   },
+   {
+    "id": "B05"
+   },
+   {
+    "id": "B06"
+   },
+   {
+    "id": "B07"
+   },
+   {
+    "id": "B08"
+   },
+   {
+    "id": "B09"
+   },
+   {
+    "id": "B10"
+   },
+   {
+    "id": "B11"
+   },
+   {
+    "id": "B12"
+   },
+   {
+    "id": "B13"
+   },
+   {
+    "id": "B14"
+   },
+   {
+    "id": "B15"
+   },
+   {
+    "id": "B16"
+   },
+   {
+    "id": "B17"
+   },
+   {
+    "id": "B18"
+   },
+   {
+    "id": "B19"
+   },
+   {
+    "id": "B20"
+   },
+   {
+    "id": "B21"
+   },
+   {
+    "id": "B22"
+   },
+   {
+    "id": "B23"
+   },
+   {
+    "id": "B24"
+   },
+   {
+    "id": "B25"
+   },
+   {
+    "id": "B26"
+   },
+   {
+    "id": "B27"
+   },
+   {
+    "id": "B28"
+   },
+   {
+    "id": "B29"
+   },
+   {
+    "id": "B30"
+   },
+   {
+    "id": "B31"
+   },
+   {
+    "id": "B32"
+   },
+   {
+    "id": "B33"
+   },
+   {
+    "id": "B34"
+   },
+   {
+    "id": "B35"
+   },
+   {
+    "id": "B36"
+   },
+   {
+    "id": "B37"
+   },
+   {
+    "id": "B38"
+   },
+   {
+    "id": "B39"
+   },
+   {
+    "id": "B40"
+   },
+   {
+    "id": "B41"
+   },
+   {
+    "id": "B42"
+   },
+   {
+    "id": "B43"
+   },
+   {
+    "id": "B44"
+   },
+   {
+    "id": "B45"
+   },
+   {
+    "id": "B46"
+   },
+   {
+    "id": "B47"
+   },
+   {
+    "id": "B48"
+   },
+   {
+    "id": "B49"
+   },
+   {
+    "id": "B50"
+   },
+   {
+    "id": "B51"
+   },
+   {
+    "id": "B52"
+   },
+   {
+    "id": "B53"
+   },
+   {
+    "id": "B54"
+   },
+   {
+    "id": "B55"
+   },
+   {
+    "id": "B56"
+   },
+   {
+    "id": "B57"
+   },
+   {
+    "id": "B58"
+   },
+   {
+    "id": "B59"
+   },
+   {
+    "id": "B60"
+   }
+  ],
+  "links": [
+   {
+    "source": "B01",
+    "target": "B02",
+    "value": 5
+   },
+   {
+    "source": "B02",
+    "target": "B03",
+    "value": 6
+   },
+   {
+    "source": "B03",
+    "target": "B04",
+    "value": 7
+   },
+   {
+    "source": "B04",
+    "target": "B05",
+    "value": 8
+   },
+   {
+    "source": "B05",
+    "target": "B06",
+    "value": 9
+   },
+   {
+    "source": "B06",
+    "target": "B07",
+    "value": 10
+   },
+   {
+    "source": "B07",
+    "target": "B08",
+    "value": 11
+   },
+   {
+    "source": "B08",
+    "target": "B09",
+    "value": 5
+   },
+   {
+    "source": "B09",
+    "target": "B10",
+    "value": 6
+   },
+   {
+    "source": "B10",
+    "target": "B11",
+    "value": 7
+   },
+   {
+    "source": "B11",
+    "target": "B12",
+    "value": 8
+   },
+   {
+    "source": "B12",
+    "target": "B13",
+    "value": 9
+   },
+   {
+    "source": "B13",
+    "target": "B14",
+    "value": 10
+   },
+   {
+    "source": "B14",
+    "target": "B15",
+    "value": 11
+   },
+   {
+    "source": "B15",
+    "target": "B16",
+    "value": 5
+   },
+   {
+    "source": "B16",
+    "target": "B17",
+    "value": 6
+   },
+   {
+    "source": "B17",
+    "target": "B18",
+    "value": 7
+   },
+   {
+    "source": "B18",
+    "target": "B19",
+    "value": 8
+   },
+   {
+    "source": "B19",
+    "target": "B20",
+    "value": 9
+   },
+   {
+    "source": "B20",
+    "target": "B21",
+    "value": 10
+   },
+   {
+    "source": "B21",
+    "target": "B22",
+    "value": 11
+   },
+   {
+    "source": "B22",
+    "target": "B23",
+    "value": 5
+   },
+   {
+    "source": "B23",
+    "target": "B24",
+    "value": 6
+   },
+   {
+    "source": "B24",
+    "target": "B25",
+    "value": 7
+   },
+   {
+    "source": "B25",
+    "target": "B26",
+    "value": 8
+   },
+   {
+    "source": "B26",
+    "target": "B27",
+    "value": 9
+   },
+   {
+    "source": "B27",
+    "target": "B28",
+    "value": 10
+   },
+   {
+    "source": "B28",
+    "target": "B29",
+    "value": 11
+   },
+   {
+    "source": "B29",
+    "target": "B30",
+    "value": 5
+   },
+   {
+    "source": "B30",
+    "target": "B31",
+    "value": 6
+   },
+   {
+    "source": "B31",
+    "target": "B32",
+    "value": 7
+   },
+   {
+    "source": "B32",
+    "target": "B33",
+    "value": 8
+   },
+   {
+    "source": "B33",
+    "target": "B34",
+    "value": 9
+   },
+   {
+    "source": "B34",
+    "target": "B35",
+    "value": 10
+   },
+   {
+    "source": "B35",
+    "target": "B36",
+    "value": 11
+   },
+   {
+    "source": "B36",
+    "target": "B37",
+    "value": 5
+   },
+   {
+    "source": "B37",
+    "target": "B38",
+    "value": 6
+   },
+   {
+    "source": "B38",
+    "target": "B39",
+    "value": 7
+   },
+   {
+    "source": "B39",
+    "target": "B40",
+    "value": 8
+   },
+   {
+    "source": "B40",
+    "target": "B41",
+    "value": 9
+   },
+   {
+    "source": "B41",
+    "target": "B42",
+    "value": 10
+   },
+   {
+    "source": "B42",
+    "target": "B43",
+    "value": 11
+   },
+   {
+    "source": "B43",
+    "target": "B44",
+    "value": 5
+   },
+   {
+    "source": "B44",
+    "target": "B45",
+    "value": 6
+   },
+   {
+    "source": "B45",
+    "target": "B46",
+    "value": 7
+   },
+   {
+    "source": "B46",
+    "target": "B47",
+    "value": 8
+   },
+   {
+    "source": "B47",
+    "target": "B48",
+    "value": 9
+   },
+   {
+    "source": "B48",
+    "target": "B49",
+    "value": 10
+   },
+   {
+    "source": "B49",
+    "target": "B50",
+    "value": 11
+   },
+   {
+    "source": "B50",
+    "target": "B51",
+    "value": 5
+   },
+   {
+    "source": "B51",
+    "target": "B52",
+    "value": 6
+   },
+   {
+    "source": "B52",
+    "target": "B53",
+    "value": 7
+   },
+   {
+    "source": "B53",
+    "target": "B54",
+    "value": 8
+   },
+   {
+    "source": "B54",
+    "target": "B55",
+    "value": 9
+   },
+   {
+    "source": "B55",
+    "target": "B56",
+    "value": 10
+   },
+   {
+    "source": "B56",
+    "target": "B57",
+    "value": 11
+   },
+   {
+    "source": "B57",
+    "target": "B58",
+    "value": 5
+   },
+   {
+    "source": "B58",
+    "target": "B59",
+    "value": 6
+   },
+   {
+    "source": "B59",
+    "target": "B60",
+    "value": 7
+   },
+   {
+    "source": "B60",
+    "target": "B01",
+    "value": 8
+   }
+  ],
+  "width": 2000,
+  "height": 2000
+ },
+ "intent": "SIZE FAR ABOVE NATURAL: 2000x2000 with 60 nodes. Tests how much real content the fixed/overflow:hidden container discards at large explicit sizes."
+}

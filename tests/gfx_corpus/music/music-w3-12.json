@@ -1,0 +1,115 @@
+{
+ "type": "music",
+ "definition": {
+  "type": "music",
+  "clef": "treble",
+  "keySignature": "C",
+  "timeSignature": "4/4",
+  "autoBeam": true,
+  "title": "Reversed Duplicate Out Of Range",
+  "measures": [
+   {
+    "notes": [
+     {
+      "keys": [
+       "c/5"
+      ],
+      "duration": "8"
+     },
+     {
+      "keys": [
+       "d/5"
+      ],
+      "duration": "8"
+     },
+     {
+      "keys": [
+       "e/5"
+      ],
+      "duration": "8"
+     },
+     {
+      "keys": [
+       "f/5"
+      ],
+      "duration": "8"
+     },
+     {
+      "keys": [
+       "g/5"
+      ],
+      "duration": "8"
+     },
+     {
+      "keys": [
+       "a/5"
+      ],
+      "duration": "8"
+     },
+     {
+      "keys": [
+       "b/5"
+      ],
+      "duration": "8"
+     },
+     {
+      "keys": [
+       "c/6"
+      ],
+      "duration": "8"
+     }
+    ]
+   }
+  ],
+  "slurs": [
+   {
+    "from": 5,
+    "to": 1
+   },
+   {
+    "from": 0,
+    "to": 3
+   },
+   {
+    "from": 0,
+    "to": 3
+   },
+   {
+    "from": 0,
+    "to": 3
+   },
+   {
+    "from": 0,
+    "to": 999
+   },
+   {
+    "from": -2,
+    "to": 2
+   }
+  ],
+  "ties": [
+   {
+    "from": 7,
+    "to": 0
+   },
+   {
+    "from": 3,
+    "to": 3
+   }
+  ],
+  "tuplets": [
+   {
+    "from": 0,
+    "to": 2,
+    "num": 3
+   },
+   {
+    "from": 1,
+    "to": 3,
+    "num": 3
+   }
+  ],
+  "endBar": "final"
+ },
+ "intent": "Reversed spans (from>to), out-of-range indices (to:999, from:-2), three IDENTICAL duplicate slurs at colliding coordinates, and two OVERLAPPING tuplets sharing notes 1-2. Tests index validation and coincident-geometry stacking."
+}

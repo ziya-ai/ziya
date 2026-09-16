@@ -1,0 +1,39 @@
+{
+ "type": "basic-chart",
+ "definition": {
+  "type": "bubble",
+  "data": [
+   {
+    "x": 10,
+    "y": 20,
+    "size": 40,
+    "label": "small"
+   },
+   {
+    "x": 30,
+    "y": 55,
+    "size": 180,
+    "label": "medium"
+   },
+   {
+    "x": 55,
+    "y": 35,
+    "size": 90,
+    "label": "mid"
+   },
+   {
+    "x": 75,
+    "y": 70,
+    "size": 320,
+    "label": "large"
+   },
+   {
+    "x": 90,
+    "y": 45,
+    "size": 60,
+    "label": "tiny"
+   }
+  ]
+ },
+ "intent": "bubble chart: sqrt size scale (r 4-40px) plus per-bubble labels above each circle"
+}

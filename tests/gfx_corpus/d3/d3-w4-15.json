@@ -1,0 +1,40 @@
+{
+ "type": "d3",
+ "definition": {
+  "type": "d3",
+  "layout": "force-directed",
+  "data": {
+   "data": {
+    "nodes": [
+     {
+      "id": "ingest"
+     },
+     {
+      "id": "parse"
+     },
+     {
+      "id": "index"
+     },
+     {
+      "id": "serve"
+     }
+    ],
+    "links": [
+     {
+      "source": "ingest",
+      "target": "parse"
+     },
+     {
+      "source": "parse",
+      "target": "index"
+     },
+     {
+      "source": "index",
+      "target": "serve"
+     }
+    ]
+   }
+  }
+ },
+ "intent": "RECOVERY: nesting depth wrong by one - nodes/links buried at data.data.* instead of data.*. Intent: 4-node linear pipeline force graph."
+}

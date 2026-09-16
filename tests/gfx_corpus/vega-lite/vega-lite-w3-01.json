@@ -1,0 +1,78 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "width": 560,
+  "height": 260,
+  "background": "#ffffff",
+  "data": {
+   "values": [
+    {
+     "c": "Alpha",
+     "v": 42
+    },
+    {
+     "c": "Beta",
+     "v": 58
+    },
+    {
+     "c": "Gamma",
+     "v": 31
+    },
+    {
+     "c": "Delta",
+     "v": 67
+    },
+    {
+     "c": "Epsilon",
+     "v": 50
+    }
+   ]
+  },
+  "layer": [
+   {
+    "mark": {
+     "type": "bar",
+     "fill": "#f4f4f4",
+     "stroke": "#dddddd",
+     "strokeWidth": 1
+    }
+   },
+   {
+    "mark": {
+     "type": "text",
+     "dy": -7,
+     "color": "#333333",
+     "fontSize": 12
+    },
+    "encoding": {
+     "text": {
+      "field": "v",
+      "type": "quantitative"
+     }
+    }
+   }
+  ],
+  "encoding": {
+   "x": {
+    "field": "c",
+    "type": "nominal",
+    "axis": {
+     "labelAngle": 0
+    }
+   },
+   "y": {
+    "field": "v",
+    "type": "quantitative"
+   }
+  },
+  "config": {
+   "axis": {
+    "labelColor": "#555555",
+    "titleColor": "#555555",
+    "gridColor": "#eeeeee",
+    "domainColor": "#cccccc"
+   }
+  }
+ },
+ "intent": "HARDCODED LIGHT PALETTE: near-white bar fills #f4f4f4, pale grey stroke #dddddd, #333333 value text, hardcoded axis labelColor #555555. Must remain legible when the page around it is dark."
+}

@@ -1,0 +1,49 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "50x50 heatmap (2500 cells)",
+  "data": {
+   "sequence": {
+    "start": 0,
+    "stop": 2500,
+    "step": 1,
+    "as": "n"
+   }
+  },
+  "transform": [
+   {
+    "calculate": "'r'+format(floor(datum.n/50),'02d')",
+    "as": "r"
+   },
+   {
+    "calculate": "'c'+format(datum.n%50,'02d')",
+    "as": "c"
+   },
+   {
+    "calculate": "50+50*sin(floor(datum.n/50)/6)*cos((datum.n%50)/5)",
+    "as": "v"
+   }
+  ],
+  "mark": "rect",
+  "height": 420,
+  "encoding": {
+   "x": {
+    "field": "c",
+    "type": "nominal"
+   },
+   "y": {
+    "field": "r",
+    "type": "nominal"
+   },
+   "color": {
+    "field": "v",
+    "type": "quantitative",
+    "scale": {
+     "scheme": "viridis"
+    }
+   }
+  }
+ },
+ "intent": "SCALE: 2500 rect cells on two 50-member nominal axes - cell size, tick-label collision on BOTH axes, gradient legend."
+}

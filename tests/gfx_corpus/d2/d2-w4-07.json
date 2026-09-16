@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "web: Web Server\napi: API Service\nweb.style.fill: #f0f\napi.style.fill: #0ff\nweb.style.stroke: #039\nweb -> api\n",
+ "intent": "RECOVERY: three-digit shorthand hex colors where six-digit may be required"
+}

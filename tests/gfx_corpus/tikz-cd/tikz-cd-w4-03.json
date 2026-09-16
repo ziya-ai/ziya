@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "```tikz-cd\n\\begin{tikzcd}\nP \\arrow[r, \"p_1\"] \\arrow[d, \"p_2\"'] & A \\arrow[d, \"f\"] \\\\\nB \\arrow[r, \"g\"'] & C\n\\end{tikzcd}\n```",
+ "intent": "Source wrapped in a fenced markdown block with a language tag. Recovery: strip the fence and the tag, render the pullback square."
+}

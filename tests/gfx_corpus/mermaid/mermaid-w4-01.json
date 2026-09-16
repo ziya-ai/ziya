@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "```mermaid\nflowchart LR\n  A[Client] --> B[API Gateway]\n  B --> C[(Database)]\n  B --> D[Cache]\n```",
+ "intent": "RECOVERY: whole diagram wrapped in a markdown ```mermaid fence, which LLMs emit constantly. Preprocessor should strip the fence and render the 4-node flowchart."
+}

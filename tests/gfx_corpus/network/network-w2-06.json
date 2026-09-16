@@ -1,0 +1,498 @@
+{
+ "type": "network",
+ "definition": {
+  "nodes": [
+   {
+    "id": 0,
+    "label": "ingress-subsystem-worker-000"
+   },
+   {
+    "id": 1,
+    "label": "dispatch-subsystem-worker-001"
+   },
+   {
+    "id": 2,
+    "label": "aggregator-subsystem-worker-002"
+   },
+   {
+    "id": 3,
+    "label": "persistence-subsystem-worker-003"
+   },
+   {
+    "id": 4,
+    "label": "telemetry-subsystem-worker-004"
+   },
+   {
+    "id": 5,
+    "label": "scheduler-subsystem-worker-005"
+   },
+   {
+    "id": 6,
+    "label": "ingress-subsystem-worker-006"
+   },
+   {
+    "id": 7,
+    "label": "dispatch-subsystem-worker-007"
+   },
+   {
+    "id": 8,
+    "label": "aggregator-subsystem-worker-008"
+   },
+   {
+    "id": 9,
+    "label": "persistence-subsystem-worker-009"
+   },
+   {
+    "id": 10,
+    "label": "telemetry-subsystem-worker-010"
+   },
+   {
+    "id": 11,
+    "label": "scheduler-subsystem-worker-011"
+   },
+   {
+    "id": 12,
+    "label": "ingress-subsystem-worker-012"
+   },
+   {
+    "id": 13,
+    "label": "dispatch-subsystem-worker-013"
+   },
+   {
+    "id": 14,
+    "label": "aggregator-subsystem-worker-014"
+   },
+   {
+    "id": 15,
+    "label": "persistence-subsystem-worker-015"
+   },
+   {
+    "id": 16,
+    "label": "telemetry-subsystem-worker-016"
+   },
+   {
+    "id": 17,
+    "label": "scheduler-subsystem-worker-017"
+   },
+   {
+    "id": 18,
+    "label": "ingress-subsystem-worker-018"
+   },
+   {
+    "id": 19,
+    "label": "dispatch-subsystem-worker-019"
+   },
+   {
+    "id": 20,
+    "label": "aggregator-subsystem-worker-020"
+   },
+   {
+    "id": 21,
+    "label": "persistence-subsystem-worker-021"
+   },
+   {
+    "id": 22,
+    "label": "telemetry-subsystem-worker-022"
+   },
+   {
+    "id": 23,
+    "label": "scheduler-subsystem-worker-023"
+   },
+   {
+    "id": 24,
+    "label": "ingress-subsystem-worker-024"
+   },
+   {
+    "id": 25,
+    "label": "dispatch-subsystem-worker-025"
+   },
+   {
+    "id": 26,
+    "label": "aggregator-subsystem-worker-026"
+   },
+   {
+    "id": 27,
+    "label": "persistence-subsystem-worker-027"
+   },
+   {
+    "id": 28,
+    "label": "telemetry-subsystem-worker-028"
+   },
+   {
+    "id": 29,
+    "label": "scheduler-subsystem-worker-029"
+   },
+   {
+    "id": 30,
+    "label": "ingress-subsystem-worker-030"
+   },
+   {
+    "id": 31,
+    "label": "dispatch-subsystem-worker-031"
+   },
+   {
+    "id": 32,
+    "label": "aggregator-subsystem-worker-032"
+   },
+   {
+    "id": 33,
+    "label": "persistence-subsystem-worker-033"
+   },
+   {
+    "id": 34,
+    "label": "telemetry-subsystem-worker-034"
+   },
+   {
+    "id": 35,
+    "label": "scheduler-subsystem-worker-035"
+   },
+   {
+    "id": 36,
+    "label": "ingress-subsystem-worker-036"
+   },
+   {
+    "id": 37,
+    "label": "dispatch-subsystem-worker-037"
+   },
+   {
+    "id": 38,
+    "label": "aggregator-subsystem-worker-038"
+   },
+   {
+    "id": 39,
+    "label": "persistence-subsystem-worker-039"
+   },
+   {
+    "id": 40,
+    "label": "telemetry-subsystem-worker-040"
+   },
+   {
+    "id": 41,
+    "label": "scheduler-subsystem-worker-041"
+   },
+   {
+    "id": 42,
+    "label": "ingress-subsystem-worker-042"
+   },
+   {
+    "id": 43,
+    "label": "dispatch-subsystem-worker-043"
+   },
+   {
+    "id": 44,
+    "label": "aggregator-subsystem-worker-044"
+   },
+   {
+    "id": 45,
+    "label": "persistence-subsystem-worker-045"
+   },
+   {
+    "id": 46,
+    "label": "telemetry-subsystem-worker-046"
+   },
+   {
+    "id": 47,
+    "label": "scheduler-subsystem-worker-047"
+   },
+   {
+    "id": 48,
+    "label": "ingress-subsystem-worker-048"
+   },
+   {
+    "id": 49,
+    "label": "dispatch-subsystem-worker-049"
+   },
+   {
+    "id": 50,
+    "label": "aggregator-subsystem-worker-050"
+   },
+   {
+    "id": 51,
+    "label": "persistence-subsystem-worker-051"
+   },
+   {
+    "id": 52,
+    "label": "telemetry-subsystem-worker-052"
+   },
+   {
+    "id": 53,
+    "label": "scheduler-subsystem-worker-053"
+   },
+   {
+    "id": 54,
+    "label": "ingress-subsystem-worker-054"
+   },
+   {
+    "id": 55,
+    "label": "dispatch-subsystem-worker-055"
+   },
+   {
+    "id": 56,
+    "label": "aggregator-subsystem-worker-056"
+   },
+   {
+    "id": 57,
+    "label": "persistence-subsystem-worker-057"
+   },
+   {
+    "id": 58,
+    "label": "telemetry-subsystem-worker-058"
+   },
+   {
+    "id": 59,
+    "label": "scheduler-subsystem-worker-059"
+   }
+  ],
+  "links": [
+   {
+    "source": 0,
+    "target": 3
+   },
+   {
+    "source": 1,
+    "target": 10
+   },
+   {
+    "source": 2,
+    "target": 17
+   },
+   {
+    "source": 3,
+    "target": 24
+   },
+   {
+    "source": 4,
+    "target": 31
+   },
+   {
+    "source": 5,
+    "target": 38
+   },
+   {
+    "source": 6,
+    "target": 45
+   },
+   {
+    "source": 7,
+    "target": 52
+   },
+   {
+    "source": 8,
+    "target": 59
+   },
+   {
+    "source": 9,
+    "target": 6
+   },
+   {
+    "source": 10,
+    "target": 13
+   },
+   {
+    "source": 11,
+    "target": 20
+   },
+   {
+    "source": 12,
+    "target": 27
+   },
+   {
+    "source": 13,
+    "target": 34
+   },
+   {
+    "source": 14,
+    "target": 41
+   },
+   {
+    "source": 15,
+    "target": 48
+   },
+   {
+    "source": 16,
+    "target": 55
+   },
+   {
+    "source": 17,
+    "target": 2
+   },
+   {
+    "source": 18,
+    "target": 9
+   },
+   {
+    "source": 19,
+    "target": 16
+   },
+   {
+    "source": 20,
+    "target": 23
+   },
+   {
+    "source": 21,
+    "target": 30
+   },
+   {
+    "source": 22,
+    "target": 37
+   },
+   {
+    "source": 23,
+    "target": 44
+   },
+   {
+    "source": 24,
+    "target": 51
+   },
+   {
+    "source": 25,
+    "target": 58
+   },
+   {
+    "source": 26,
+    "target": 5
+   },
+   {
+    "source": 27,
+    "target": 12
+   },
+   {
+    "source": 28,
+    "target": 19
+   },
+   {
+    "source": 29,
+    "target": 26
+   },
+   {
+    "source": 30,
+    "target": 33
+   },
+   {
+    "source": 31,
+    "target": 40
+   },
+   {
+    "source": 32,
+    "target": 47
+   },
+   {
+    "source": 33,
+    "target": 54
+   },
+   {
+    "source": 34,
+    "target": 1
+   },
+   {
+    "source": 35,
+    "target": 8
+   },
+   {
+    "source": 36,
+    "target": 15
+   },
+   {
+    "source": 37,
+    "target": 22
+   },
+   {
+    "source": 38,
+    "target": 29
+   },
+   {
+    "source": 39,
+    "target": 36
+   },
+   {
+    "source": 40,
+    "target": 43
+   },
+   {
+    "source": 41,
+    "target": 50
+   },
+   {
+    "source": 42,
+    "target": 57
+   },
+   {
+    "source": 43,
+    "target": 4
+   },
+   {
+    "source": 44,
+    "target": 11
+   },
+   {
+    "source": 45,
+    "target": 18
+   },
+   {
+    "source": 46,
+    "target": 25
+   },
+   {
+    "source": 47,
+    "target": 32
+   },
+   {
+    "source": 48,
+    "target": 39
+   },
+   {
+    "source": 49,
+    "target": 46
+   },
+   {
+    "source": 50,
+    "target": 53
+   },
+   {
+    "source": 51,
+    "target": 0
+   },
+   {
+    "source": 52,
+    "target": 7
+   },
+   {
+    "source": 53,
+    "target": 14
+   },
+   {
+    "source": 54,
+    "target": 21
+   },
+   {
+    "source": 55,
+    "target": 28
+   },
+   {
+    "source": 56,
+    "target": 35
+   },
+   {
+    "source": 57,
+    "target": 42
+   },
+   {
+    "source": 58,
+    "target": 49
+   },
+   {
+    "source": 59,
+    "target": 56
+   }
+  ],
+  "width": 700,
+  "height": 400,
+  "style": {
+   "labelColor": "#7e7e7e",
+   "fontSize": 11,
+   "linkColor": "#7e7e7e",
+   "linkOpacity": 1
+  }
+ },
+ "intent": "SCALE/label density: 60 force-laid-out nodes each with a ~30-character label at fontSize 11 - locates the element count at which label text starts colliding with neighbouring labels, nodes and edges."
+}

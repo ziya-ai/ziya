@@ -1,0 +1,5 @@
+{
+ "type": "packet",
+ "definition": "```mermaid\npacket-beta\ntitle Ethernet II Frame\n0-47: \"Destination MAC\"\n48-95: \"Source MAC\"\n96-111: \"EtherType\"\n112-127: \"Payload start\"\n```",
+ "intent": "packet-beta DSL wrapped in a ```mermaid fence - the fence defeats the /^packet/ DSL sniff"
+}

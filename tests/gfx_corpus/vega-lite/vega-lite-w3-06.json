@@ -1,0 +1,170 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "width": 560,
+  "height": 280,
+  "data": {
+   "values": [
+    {
+     "c": "Alpha",
+     "v": 42,
+     "s": "p1"
+    },
+    {
+     "c": "Beta",
+     "v": 58,
+     "s": "p1"
+    },
+    {
+     "c": "Gamma",
+     "v": 31,
+     "s": "p1"
+    },
+    {
+     "c": "Delta",
+     "v": 67,
+     "s": "p1"
+    },
+    {
+     "c": "Epsilon",
+     "v": 50,
+     "s": "p1"
+    },
+    {
+     "c": "Alpha",
+     "v": 42,
+     "s": "p2"
+    },
+    {
+     "c": "Beta",
+     "v": 58,
+     "s": "p2"
+    },
+    {
+     "c": "Gamma",
+     "v": 31,
+     "s": "p2"
+    },
+    {
+     "c": "Delta",
+     "v": 67,
+     "s": "p2"
+    },
+    {
+     "c": "Epsilon",
+     "v": 50,
+     "s": "p2"
+    },
+    {
+     "c": "Alpha",
+     "v": 42,
+     "s": "p3"
+    },
+    {
+     "c": "Beta",
+     "v": 58,
+     "s": "p3"
+    },
+    {
+     "c": "Gamma",
+     "v": 31,
+     "s": "p3"
+    },
+    {
+     "c": "Delta",
+     "v": 67,
+     "s": "p3"
+    },
+    {
+     "c": "Epsilon",
+     "v": 50,
+     "s": "p3"
+    },
+    {
+     "c": "Alpha",
+     "v": 42,
+     "s": "p4"
+    },
+    {
+     "c": "Beta",
+     "v": 58,
+     "s": "p4"
+    },
+    {
+     "c": "Gamma",
+     "v": 31,
+     "s": "p4"
+    },
+    {
+     "c": "Delta",
+     "v": 67,
+     "s": "p4"
+    },
+    {
+     "c": "Epsilon",
+     "v": 50,
+     "s": "p4"
+    },
+    {
+     "c": "Alpha",
+     "v": 42,
+     "s": "p5"
+    },
+    {
+     "c": "Beta",
+     "v": 58,
+     "s": "p5"
+    },
+    {
+     "c": "Gamma",
+     "v": 31,
+     "s": "p5"
+    },
+    {
+     "c": "Delta",
+     "v": 67,
+     "s": "p5"
+    },
+    {
+     "c": "Epsilon",
+     "v": 50,
+     "s": "p5"
+    }
+   ]
+  },
+  "mark": {
+   "type": "bar",
+   "stroke": null
+  },
+  "encoding": {
+   "x": {
+    "field": "c",
+    "type": "nominal",
+    "axis": {
+     "labelAngle": 0
+    }
+   },
+   "y": {
+    "field": "v",
+    "type": "quantitative"
+   },
+   "xOffset": {
+    "field": "s"
+   },
+   "color": {
+    "field": "s",
+    "type": "nominal",
+    "scale": {
+     "range": [
+      "#fdf6e3",
+      "#eee8d5",
+      "#f5f5dc",
+      "#faf0e6",
+      "#fffaf0"
+     ]
+    }
+   }
+  }
+ },
+ "intent": "CUSTOM SCALE FIGHTING THE THEME: an explicit 5-colour range of near-white pastels supplied via scale.range, overriding whatever the theme would have chosen."
+}

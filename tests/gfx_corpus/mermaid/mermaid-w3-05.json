@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "flowchart TD\n  subgraph outer[\"**Bold** cluster with _markdown_\"]\n    A[\"`Multi\n    line **markdown** string`\"] --> B{{\"Hexagon decision\"}}\n    B -->|yes| C[(Database)]\n    B -->|no| D[/Trapezoid/]\n  end\n  C --> E((Circle))\n  D --> E\n  classDef warm fill:#ffcc00,stroke:#994400,stroke-width:3px,color:#000000\n  classDef cool fill:#003366,stroke:#66ccff,color:#ffffff\n  class A,B warm\n  class C,D cool\n  linkStyle 0 stroke:#ff0000,stroke-width:4px\n  linkStyle 3 stroke:#00aa00,stroke-width:4px",
+ "intent": "THREE features combined that wave 1 only tested singly: markdown string labels (backtick form) inside a subgraph title AND a node, five distinct node shapes, classDef with explicit color: override, and linkStyle on specific edge indices. Wave 1 lesson says classDef fills survive dark but linkStyle strokes are DISCARDED - this spec has both in one graph so the inconsistent policy shows up in a single image. Hardcoded #ffcc00/#000000 and #003366/#ffffff are computable pairs."
+}

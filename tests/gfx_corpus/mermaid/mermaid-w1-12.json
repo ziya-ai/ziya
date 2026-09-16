@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "timeline\n  title Storage engine evolution\n  section Early\n    2019 : B-tree prototype\n         : single-node only\n    2020 : WAL added\n  section Scaling\n    2021 : LSM rewrite\n         : compaction tuning\n    2022 : Sharding\n         : cross-region replicas\n  section Modern\n    2023 : Columnar tier\n    2024 : Vector index\n         : tiered object storage\n",
+ "intent": "timeline diagram with sections and multiple events per period"
+}

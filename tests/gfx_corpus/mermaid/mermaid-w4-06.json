@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "flowchart TD\n  A[Queue] --> B[Worker] --> C[Sink]\n  style A fill:rgba(255,99,71,0.85),stroke:rgb(139,0,0),color:rgba(0,0,0,1)\n  style B fill:rgba(70,130,180,0.4),stroke:rgb(25,25,112)\n  style C fill:hsl(120, 60%, 45%),color:#fff",
+ "intent": "RECOVERY: rgba()/rgb()/hsl() functional colour notation in style directives. Low-alpha fill on B (0.4) is the theme-parity trap: may survive light and dissolve into a dark canvas."
+}

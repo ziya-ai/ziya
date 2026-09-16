@@ -1,0 +1,400 @@
+{
+ "type": "packet",
+ "definition": {
+  "title": "30 auto-coloured sections",
+  "bitWidth": 32,
+  "sections": [
+   {
+    "label": "sec0",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f0",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec1",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f1",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec2",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f2",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec3",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f3",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec4",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f4",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec5",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f5",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec6",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f6",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec7",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f7",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec8",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f8",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec9",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f9",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec10",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f10",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec11",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f11",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec12",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f12",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec13",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f13",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec14",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f14",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec15",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f15",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec16",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f16",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec17",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f17",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec18",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f18",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec19",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f19",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec20",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f20",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec21",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f21",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec22",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f22",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec23",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f23",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec24",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f24",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec25",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f25",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec26",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f26",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec27",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f27",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec28",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f28",
+        32
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "label": "sec29",
+    "rows": [
+     {
+      "fields": [
+       [
+        "f29",
+        32
+       ]
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "Palette recycling: 30 sections against a 10-entry AUTO_PALETTE"
+}

@@ -1,0 +1,5 @@
+{
+ "type": "plotly",
+ "definition": "{\n  “data”: [ { “type”: “bar”, “x”: [“North”, “South”, “East”], “y”: [8, 5, 11], “name”: “units” } ],\n  “layout”: { “title”: { “text”: “Smart Quotes’ Revenge” } }\n}",
+ "intent": "curly/smart typographic quotes (U+201C/U+201D/U+2019) substituted for ASCII double quotes - what happens when spec text passes through a word processor or a model's prose channel. Intent: a 3-region bar chart."
+}

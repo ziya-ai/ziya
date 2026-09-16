@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "stateDiagram-v2\n  [*] --> Idle\n  Idle --> Running : start\n  state Running {\n    [*] --> Fetching\n    Fetching --> Transforming : rows\n    Transforming --> Writing\n    Writing --> [*]\n  }\n  Running --> Paused : pause\n  Paused --> Running : resume\n  Running --> Failed : error\n  state choose <<choice>>\n  Failed --> choose\n  choose --> Running : retries left\n  choose --> [*] : give up\n  note right of Paused : checkpoint flushed\n",
+ "intent": "stateDiagram-v2 with composite state, fork/join, choice, and notes"
+}

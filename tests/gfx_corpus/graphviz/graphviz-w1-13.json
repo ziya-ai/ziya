@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph gradients { rankdir=LR; node [shape=box, style=filled, fontcolor=\"#000000\"]; lin [fillcolor=\"#ffffcc:#f59e0b\", gradientangle=0, label=\"linear\"]; ang [fillcolor=\"#a7f3d0:#065f46\", gradientangle=90, label=\"angled\"]; rad [fillcolor=\"#ffffff:#1d4ed8\", style=\"filled,radial\", label=\"radial\"]; strp [shape=box, style=striped, fillcolor=\"#fca5a5:#fdba74:#fde68a\", label=\"striped\"]; wdg [shape=circle, style=wedged, fillcolor=\"#93c5fd:#c4b5fd:#f9a8d4\", label=\"wedged\"]; lin -> ang -> rad -> strp -> wdg; }",
+ "intent": "Gradient fills via colorList (style=filled with \"c1:c2\"), radial gradients, and striped/wedged multi-color fills"
+}

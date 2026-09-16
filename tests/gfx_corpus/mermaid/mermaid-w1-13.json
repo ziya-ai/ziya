@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "quadrantChart\n  title Feature prioritisation\n  x-axis Low effort --> High effort\n  y-axis Low impact --> High impact\n  quadrant-1 Strategic bets\n  quadrant-2 Quick wins\n  quadrant-3 Fill-ins\n  quadrant-4 Thankless toil\n  \"Dark mode parity\": [0.25, 0.82]\n  \"Bulk export\": [0.70, 0.75]\n  \"Tooltip polish\": [0.15, 0.30]\n  \"Legacy SDK shim\": [0.80, 0.20]\n  \"SSO\": [0.60, 0.90]\n  \"Icon refresh\": [0.30, 0.35]\n",
+ "intent": "quadrantChart with axis labels, quadrant names and plotted points"
+}

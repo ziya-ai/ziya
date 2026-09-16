@@ -1,0 +1,573 @@
+{
+ "schema": 1,
+ "engine": "force-directed",
+ "specs": {
+  "force-directed-w2-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.345867Z"
+    }
+   ]
+  },
+  "force-directed-w2-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.348879Z"
+    }
+   ]
+  },
+  "force-directed-w2-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.352411Z"
+    }
+   ]
+  },
+  "force-directed-w3-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.355058Z"
+    }
+   ]
+  },
+  "force-directed-w3-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.358057Z"
+    }
+   ]
+  },
+  "force-directed-w3-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.360365Z"
+    }
+   ]
+  },
+  "force-directed-w3-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.363357Z"
+    }
+   ]
+  },
+  "force-directed-w4-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.368156Z"
+    }
+   ]
+  },
+  "force-directed-w4-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.372086Z"
+    }
+   ]
+  },
+  "force-directed-w4-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.376528Z"
+    }
+   ]
+  },
+  "force-directed-w2-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-107",
+     "signature": "fit-pass-clips-graph-that-fits",
+     "at": "2026-09-15T08:56:12.754356Z"
+    }
+   ]
+  },
+  "force-directed-w2-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-107",
+     "signature": "fit-pass-clips-graph-that-fits",
+     "at": "2026-09-15T08:56:12.760729Z"
+    }
+   ]
+  },
+  "force-directed-w3-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-107",
+     "signature": "fit-pass-clips-graph-that-fits",
+     "at": "2026-09-15T08:56:12.763845Z"
+    }
+   ]
+  },
+  "force-directed-w3-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-107",
+     "signature": "fit-pass-clips-graph-that-fits",
+     "at": "2026-09-15T08:56:12.766569Z"
+    }
+   ]
+  },
+  "force-directed-w3-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-107",
+     "signature": "fit-pass-clips-graph-that-fits",
+     "at": "2026-09-15T08:56:12.770008Z"
+    }
+   ]
+  },
+  "force-directed-w4-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-107",
+     "signature": "fit-pass-clips-graph-that-fits",
+     "at": "2026-09-15T08:56:12.772565Z"
+    }
+   ]
+  },
+  "force-directed-w2-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-108",
+     "signature": "pathological-canvas-blank-or-illegible",
+     "at": "2026-09-15T08:56:12.777597Z"
+    }
+   ]
+  },
+  "force-directed-w2-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-108",
+     "signature": "pathological-canvas-blank-or-illegible",
+     "at": "2026-09-15T08:56:12.780452Z"
+    }
+   ]
+  },
+  "force-directed-w2-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-108",
+     "signature": "pathological-canvas-blank-or-illegible",
+     "at": "2026-09-15T08:56:12.783979Z"
+    }
+   ]
+  },
+  "force-directed-w2-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-108",
+     "signature": "pathological-canvas-blank-or-illegible",
+     "at": "2026-09-15T08:56:12.786560Z"
+    }
+   ]
+  },
+  "force-directed-w2-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-109",
+     "signature": "no-label-decluttering-at-scale",
+     "at": "2026-09-15T08:56:12.790850Z"
+    }
+   ]
+  },
+  "force-directed-w2-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-109",
+     "signature": "no-label-decluttering-at-scale",
+     "at": "2026-09-15T08:56:12.795805Z"
+    }
+   ]
+  },
+  "force-directed-w2-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-109",
+     "signature": "no-label-decluttering-at-scale",
+     "at": "2026-09-15T08:56:12.800292Z"
+    }
+   ]
+  },
+  "force-directed-w2-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-109",
+     "signature": "no-label-decluttering-at-scale",
+     "at": "2026-09-15T08:56:12.804852Z"
+    }
+   ]
+  },
+  "force-directed-w2-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-110",
+     "signature": "fit-scale-floored-content-clipped-at-scale",
+     "at": "2026-09-15T08:56:12.811421Z"
+    }
+   ]
+  },
+  "force-directed-w2-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-110",
+     "signature": "fit-scale-floored-content-clipped-at-scale",
+     "at": "2026-09-15T08:56:12.816901Z"
+    }
+   ]
+  },
+  "force-directed-w3-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-111",
+     "signature": "user-linkOpacity-not-floored-faint-edges",
+     "at": "2026-09-15T08:56:12.819751Z"
+    }
+   ]
+  },
+  "force-directed-w4-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-113",
+     "signature": "hardcoded-label-color:dark",
+     "at": "2026-09-15T08:56:12.822578Z"
+    }
+   ]
+  },
+  "force-directed-w4-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-113",
+     "signature": "hardcoded-label-color:dark",
+     "at": "2026-09-15T08:56:12.826186Z"
+    }
+   ]
+  },
+  "force-directed-w4-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-114",
+     "signature": "container-shape-unrecognised-silent-timeout",
+     "at": "2026-09-15T08:56:12.829210Z"
+    }
+   ]
+  },
+  "force-directed-w4-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-115",
+     "signature": "rgb-rgba-with-spaces-dropped-color-collapse",
+     "at": "2026-09-15T08:56:12.832175Z"
+    }
+   ]
+  }
+ }
+}

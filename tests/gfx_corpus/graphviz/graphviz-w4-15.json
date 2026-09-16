@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "{\"type\": \"graphviz\", \"definition\": \"digraph G { rankdir=LR; a [label=Build Step]; b [label=\\\"Test\\\"]; c [label=\\\"Ship\\\"]; a -> b -> c; }\"}",
+ "intent": "Nesting depth off by one: the JSON envelope pasted in as the definition, with an unquoted multiword label inside"
+}

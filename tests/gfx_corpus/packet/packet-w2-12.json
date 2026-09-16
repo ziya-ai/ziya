@@ -1,0 +1,668 @@
+{
+ "type": "packet",
+ "definition": {
+  "title": "50 disjoint brackets",
+  "bitWidth": 32,
+  "sections": [
+   {
+    "label": "Fan",
+    "color": "accent",
+    "rows": [
+     {
+      "fields": [
+       [
+        "r0",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r1",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r2",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r3",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r4",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r5",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r6",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r7",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r8",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r9",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r10",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r11",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r12",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r13",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r14",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r15",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r16",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r17",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r18",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r19",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r20",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r21",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r22",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r23",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r24",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r25",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r26",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r27",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r28",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r29",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r30",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r31",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r32",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r33",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r34",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r35",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r36",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r37",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r38",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r39",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r40",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r41",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r42",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r43",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r44",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r45",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r46",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r47",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r48",
+        32
+       ]
+      ]
+     },
+     {
+      "fields": [
+       [
+        "r49",
+        32
+       ]
+      ]
+     }
+    ],
+    "brackets": [
+     {
+      "start_row": 0,
+      "end_row": 0,
+      "label": "b0"
+     },
+     {
+      "start_row": 1,
+      "end_row": 1,
+      "label": "b1"
+     },
+     {
+      "start_row": 2,
+      "end_row": 2,
+      "label": "b2"
+     },
+     {
+      "start_row": 3,
+      "end_row": 3,
+      "label": "b3"
+     },
+     {
+      "start_row": 4,
+      "end_row": 4,
+      "label": "b4"
+     },
+     {
+      "start_row": 5,
+      "end_row": 5,
+      "label": "b5"
+     },
+     {
+      "start_row": 6,
+      "end_row": 6,
+      "label": "b6"
+     },
+     {
+      "start_row": 7,
+      "end_row": 7,
+      "label": "b7"
+     },
+     {
+      "start_row": 8,
+      "end_row": 8,
+      "label": "b8"
+     },
+     {
+      "start_row": 9,
+      "end_row": 9,
+      "label": "b9"
+     },
+     {
+      "start_row": 10,
+      "end_row": 10,
+      "label": "b10"
+     },
+     {
+      "start_row": 11,
+      "end_row": 11,
+      "label": "b11"
+     },
+     {
+      "start_row": 12,
+      "end_row": 12,
+      "label": "b12"
+     },
+     {
+      "start_row": 13,
+      "end_row": 13,
+      "label": "b13"
+     },
+     {
+      "start_row": 14,
+      "end_row": 14,
+      "label": "b14"
+     },
+     {
+      "start_row": 15,
+      "end_row": 15,
+      "label": "b15"
+     },
+     {
+      "start_row": 16,
+      "end_row": 16,
+      "label": "b16"
+     },
+     {
+      "start_row": 17,
+      "end_row": 17,
+      "label": "b17"
+     },
+     {
+      "start_row": 18,
+      "end_row": 18,
+      "label": "b18"
+     },
+     {
+      "start_row": 19,
+      "end_row": 19,
+      "label": "b19"
+     },
+     {
+      "start_row": 20,
+      "end_row": 20,
+      "label": "b20"
+     },
+     {
+      "start_row": 21,
+      "end_row": 21,
+      "label": "b21"
+     },
+     {
+      "start_row": 22,
+      "end_row": 22,
+      "label": "b22"
+     },
+     {
+      "start_row": 23,
+      "end_row": 23,
+      "label": "b23"
+     },
+     {
+      "start_row": 24,
+      "end_row": 24,
+      "label": "b24"
+     },
+     {
+      "start_row": 25,
+      "end_row": 25,
+      "label": "b25"
+     },
+     {
+      "start_row": 26,
+      "end_row": 26,
+      "label": "b26"
+     },
+     {
+      "start_row": 27,
+      "end_row": 27,
+      "label": "b27"
+     },
+     {
+      "start_row": 28,
+      "end_row": 28,
+      "label": "b28"
+     },
+     {
+      "start_row": 29,
+      "end_row": 29,
+      "label": "b29"
+     },
+     {
+      "start_row": 30,
+      "end_row": 30,
+      "label": "b30"
+     },
+     {
+      "start_row": 31,
+      "end_row": 31,
+      "label": "b31"
+     },
+     {
+      "start_row": 32,
+      "end_row": 32,
+      "label": "b32"
+     },
+     {
+      "start_row": 33,
+      "end_row": 33,
+      "label": "b33"
+     },
+     {
+      "start_row": 34,
+      "end_row": 34,
+      "label": "b34"
+     },
+     {
+      "start_row": 35,
+      "end_row": 35,
+      "label": "b35"
+     },
+     {
+      "start_row": 36,
+      "end_row": 36,
+      "label": "b36"
+     },
+     {
+      "start_row": 37,
+      "end_row": 37,
+      "label": "b37"
+     },
+     {
+      "start_row": 38,
+      "end_row": 38,
+      "label": "b38"
+     },
+     {
+      "start_row": 39,
+      "end_row": 39,
+      "label": "b39"
+     },
+     {
+      "start_row": 40,
+      "end_row": 40,
+      "label": "b40"
+     },
+     {
+      "start_row": 41,
+      "end_row": 41,
+      "label": "b41"
+     },
+     {
+      "start_row": 42,
+      "end_row": 42,
+      "label": "b42"
+     },
+     {
+      "start_row": 43,
+      "end_row": 43,
+      "label": "b43"
+     },
+     {
+      "start_row": 44,
+      "end_row": 44,
+      "label": "b44"
+     },
+     {
+      "start_row": 45,
+      "end_row": 45,
+      "label": "b45"
+     },
+     {
+      "start_row": 46,
+      "end_row": 46,
+      "label": "b46"
+     },
+     {
+      "start_row": 47,
+      "end_row": 47,
+      "label": "b47"
+     },
+     {
+      "start_row": 48,
+      "end_row": 48,
+      "label": "b48"
+     },
+     {
+      "start_row": 49,
+      "end_row": 49,
+      "label": "b49"
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "Wide fan-out: 50 disjoint one-row brackets over 50 rows"
+}

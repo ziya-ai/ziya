@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "\\fill[black!88] (-0.5,-0.5) rectangle (8.00,3.20);\n\\node[white,anchor=west,font=\\bfseries] at (-0.2,2.65) {Missing semicolons};\n\\node[draw=white,text=white,fill=blue!60!black] (a) at (1,1) {Read}\n\\node[draw=white,text=white,fill=green!50!black] (b) at (4,1) {Map};\n\\node[draw=white,text=white,fill=red!60!black] (c) at (7,1) {Write};\n\\draw[white,thick] (a)--(b)\n\\draw[white,thick] (b)--(c);\n",
+ "intent": "statement-terminating semicolons omitted on two of five path commands"
+}

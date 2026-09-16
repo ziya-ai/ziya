@@ -1,0 +1,5 @@
+{
+ "type": "plotly",
+ "definition": "// Revenue by region, FY24\nvar fig = {\n  \"data\": [\n    /* one bar trace */\n    {\"type\": \"bar\", \"x\": [\"NA\",\"EU\",\"APAC\"], \"y\": [120, 95, 143], \"name\": \"revenue\"}\n  ],\n  \"layout\": {\"title\": {\"text\": \"JS Wrapper And Comments\"}, \"yaxis\": {\"title\": {\"text\": \"USD m\"}}}\n};",
+ "intent": "a JS variable assignment wrapper, // and /* */ comments, and a trailing semicolon around otherwise-valid JSON. Intent: a 3-region revenue bar chart."
+}

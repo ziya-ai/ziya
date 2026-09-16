@@ -1,0 +1,40 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "200-bin histogram over 4000 rows",
+  "data": {
+   "sequence": {
+    "start": 0,
+    "stop": 4000,
+    "step": 1,
+    "as": "n"
+   }
+  },
+  "transform": [
+   {
+    "calculate": "100+22*(sin(datum.n*2.399)+cos(datum.n*1.117)+sin(datum.n*0.53))/1.7",
+    "as": "m"
+   }
+  ],
+  "mark": "bar",
+  "height": 300,
+  "encoding": {
+   "x": {
+    "field": "m",
+    "type": "quantitative",
+    "bin": {
+     "maxbins": 200
+    },
+    "axis": {
+     "title": "measure"
+    }
+   },
+   "y": {
+    "aggregate": "count",
+    "type": "quantitative"
+   }
+  }
+ },
+ "intent": "SCALE: bin maxbins 200 over 4000 rows - hairline bar widths and a very dense numeric axis."
+}

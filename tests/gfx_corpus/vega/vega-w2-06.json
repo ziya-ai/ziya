@@ -1,0 +1,152 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 420,
+  "height": 900,
+  "padding": 5,
+  "autosize": "pad",
+  "data": [
+   {
+    "name": "nodes",
+    "transform": [
+     {
+      "type": "sequence",
+      "start": 0,
+      "stop": 241,
+      "step": 1,
+      "as": "i"
+     },
+     {
+      "type": "formula",
+      "as": "id",
+      "expr": "datum.i + 1"
+     },
+     {
+      "type": "formula",
+      "as": "parent",
+      "expr": "datum.i === 0 ? null : 1"
+     },
+     {
+      "type": "formula",
+      "as": "nm",
+      "expr": "datum.i === 0 ? 'root' : 'leaf-' + datum.i"
+     },
+     {
+      "type": "stratify",
+      "key": "id",
+      "parentKey": "parent"
+     },
+     {
+      "type": "tree",
+      "method": "tidy",
+      "size": [
+       {
+        "signal": "height"
+       },
+       {
+        "signal": "width - 60"
+       }
+      ],
+      "as": [
+       "yy",
+       "xx",
+       "depth",
+       "children"
+      ]
+     }
+    ]
+   },
+   {
+    "name": "links",
+    "source": "nodes",
+    "transform": [
+     {
+      "type": "treelinks"
+     },
+     {
+      "type": "linkpath",
+      "orient": "horizontal",
+      "shape": "line",
+      "sourceX": "source.xx",
+      "sourceY": "source.yy",
+      "targetX": "target.xx",
+      "targetY": "target.yy"
+     }
+    ]
+   }
+  ],
+  "marks": [
+   {
+    "type": "path",
+    "from": {
+     "data": "links"
+    },
+    "encode": {
+     "enter": {
+      "path": {
+       "field": "path"
+      },
+      "stroke": {
+       "value": "#9aa5b1"
+      },
+      "strokeWidth": {
+       "value": 0.4
+      }
+     }
+    }
+   },
+   {
+    "type": "symbol",
+    "from": {
+     "data": "nodes"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "field": "xx"
+      },
+      "y": {
+       "field": "yy"
+      },
+      "size": {
+       "value": 10
+      },
+      "fill": {
+       "value": "#4c78a8"
+      }
+     }
+    }
+   },
+   {
+    "type": "text",
+    "from": {
+     "data": "nodes"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "field": "xx"
+      },
+      "y": {
+       "field": "yy"
+      },
+      "dx": {
+       "value": 5
+      },
+      "baseline": {
+       "value": "middle"
+      },
+      "fontSize": {
+       "value": 5
+      },
+      "text": {
+       "field": "nm"
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "SCALE/FAN-OUT: single root with 240 direct children, all labelled, tidy-tree laid out. Probes extreme sibling density in one rank and whether 240 text labels collide or are dropped."
+}

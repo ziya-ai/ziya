@@ -1,0 +1,332 @@
+{
+ "type": "force-directed",
+ "definition": {
+  "nodes": [
+   {
+    "id": "b0",
+    "group": 0
+   },
+   {
+    "id": "b1",
+    "group": 1
+   },
+   {
+    "id": "b2",
+    "group": 2
+   },
+   {
+    "id": "b3",
+    "group": 3
+   },
+   {
+    "id": "b4",
+    "group": 4
+   },
+   {
+    "id": "b5",
+    "group": 5
+   },
+   {
+    "id": "b6",
+    "group": 0
+   },
+   {
+    "id": "b7",
+    "group": 1
+   },
+   {
+    "id": "b8",
+    "group": 2
+   },
+   {
+    "id": "b9",
+    "group": 3
+   },
+   {
+    "id": "b10",
+    "group": 4
+   },
+   {
+    "id": "b11",
+    "group": 5
+   },
+   {
+    "id": "b12",
+    "group": 0
+   },
+   {
+    "id": "b13",
+    "group": 1
+   },
+   {
+    "id": "b14",
+    "group": 2
+   },
+   {
+    "id": "b15",
+    "group": 3
+   },
+   {
+    "id": "b16",
+    "group": 4
+   },
+   {
+    "id": "b17",
+    "group": 5
+   },
+   {
+    "id": "b18",
+    "group": 0
+   },
+   {
+    "id": "b19",
+    "group": 1
+   },
+   {
+    "id": "b20",
+    "group": 2
+   },
+   {
+    "id": "b21",
+    "group": 3
+   },
+   {
+    "id": "b22",
+    "group": 4
+   },
+   {
+    "id": "b23",
+    "group": 5
+   },
+   {
+    "id": "b24",
+    "group": 0
+   },
+   {
+    "id": "b25",
+    "group": 1
+   },
+   {
+    "id": "b26",
+    "group": 2
+   },
+   {
+    "id": "b27",
+    "group": 3
+   },
+   {
+    "id": "b28",
+    "group": 4
+   },
+   {
+    "id": "b29",
+    "group": 5
+   },
+   {
+    "id": "b30",
+    "group": 0
+   },
+   {
+    "id": "b31",
+    "group": 1
+   },
+   {
+    "id": "b32",
+    "group": 2
+   },
+   {
+    "id": "b33",
+    "group": 3
+   },
+   {
+    "id": "b34",
+    "group": 4
+   },
+   {
+    "id": "b35",
+    "group": 5
+   },
+   {
+    "id": "b36",
+    "group": 0
+   },
+   {
+    "id": "b37",
+    "group": 1
+   },
+   {
+    "id": "b38",
+    "group": 2
+   },
+   {
+    "id": "b39",
+    "group": 3
+   }
+  ],
+  "links": [
+   {
+    "source": "b0",
+    "target": "b1"
+   },
+   {
+    "source": "b1",
+    "target": "b2"
+   },
+   {
+    "source": "b2",
+    "target": "b3"
+   },
+   {
+    "source": "b3",
+    "target": "b4"
+   },
+   {
+    "source": "b4",
+    "target": "b5"
+   },
+   {
+    "source": "b5",
+    "target": "b6"
+   },
+   {
+    "source": "b6",
+    "target": "b7"
+   },
+   {
+    "source": "b7",
+    "target": "b8"
+   },
+   {
+    "source": "b8",
+    "target": "b9"
+   },
+   {
+    "source": "b9",
+    "target": "b10"
+   },
+   {
+    "source": "b10",
+    "target": "b11"
+   },
+   {
+    "source": "b11",
+    "target": "b12"
+   },
+   {
+    "source": "b12",
+    "target": "b13"
+   },
+   {
+    "source": "b13",
+    "target": "b14"
+   },
+   {
+    "source": "b14",
+    "target": "b15"
+   },
+   {
+    "source": "b15",
+    "target": "b16"
+   },
+   {
+    "source": "b16",
+    "target": "b17"
+   },
+   {
+    "source": "b17",
+    "target": "b18"
+   },
+   {
+    "source": "b18",
+    "target": "b19"
+   },
+   {
+    "source": "b19",
+    "target": "b20"
+   },
+   {
+    "source": "b20",
+    "target": "b21"
+   },
+   {
+    "source": "b21",
+    "target": "b22"
+   },
+   {
+    "source": "b22",
+    "target": "b23"
+   },
+   {
+    "source": "b23",
+    "target": "b24"
+   },
+   {
+    "source": "b24",
+    "target": "b25"
+   },
+   {
+    "source": "b25",
+    "target": "b26"
+   },
+   {
+    "source": "b26",
+    "target": "b27"
+   },
+   {
+    "source": "b27",
+    "target": "b28"
+   },
+   {
+    "source": "b28",
+    "target": "b29"
+   },
+   {
+    "source": "b29",
+    "target": "b30"
+   },
+   {
+    "source": "b30",
+    "target": "b31"
+   },
+   {
+    "source": "b31",
+    "target": "b32"
+   },
+   {
+    "source": "b32",
+    "target": "b33"
+   },
+   {
+    "source": "b33",
+    "target": "b34"
+   },
+   {
+    "source": "b34",
+    "target": "b35"
+   },
+   {
+    "source": "b35",
+    "target": "b36"
+   },
+   {
+    "source": "b36",
+    "target": "b37"
+   },
+   {
+    "source": "b37",
+    "target": "b38"
+   },
+   {
+    "source": "b38",
+    "target": "b39"
+   },
+   {
+    "source": "b39",
+    "target": "b0"
+   }
+  ],
+  "width": 6000,
+  "height": 4000
+ },
+ "intent": "SCALE: explicit canvas 6000x4000 — far ABOVE natural size for 40 nodes; fontSize stays at the fixed 10px default."
+}

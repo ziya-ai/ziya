@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph G {\n  rankdir=LR;\n  a [label=“Deploy”];\n  b [label=“User’s Session”];\n  c [label=‘Cleanup’];\n  a -> b -> c;\n}",
+ "intent": "Smart/curly typographic quotes around label values plus a curly apostrophe"
+}

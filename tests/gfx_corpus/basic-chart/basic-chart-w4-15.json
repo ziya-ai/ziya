@@ -1,0 +1,5 @@
+{
+ "type": "d3",
+ "definition": "```chart\n{\n  type: 'bar',\n  data: [\n    {label: ‘Alpha’, value: \"30\", color: '#f90',},\n    {label: 'Beta', value: \"55\", color: '#09c',},\n    {label: 'Gamma', value: \"18\", color: 'rebeccapurple',},\n  ],\n}\n```",
+ "intent": "kitchen sink: markdown fence + unquoted keys + trailing comma + smart-quoted label + 3-digit hex + numbers as strings"
+}

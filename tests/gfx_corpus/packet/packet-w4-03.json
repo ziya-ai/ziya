@@ -1,0 +1,5 @@
+{
+ "type": "packet",
+ "definition": "{\n  'type': 'packet',\n  'title': 'UDP Datagram (single quotes)',\n  'bitWidth': 32,\n  'sections': [\n    {'label': 'UDP', 'rows': [\n      [['Source Port', 16], ['Dest Port', 16]],\n      [['Length', 16], ['Checksum', 16]]\n    ]}\n  ]\n}",
+ "intent": "Single-quoted keys and string values throughout"
+}

@@ -1,0 +1,5 @@
+{
+ "type": "network",
+ "definition": "{\n  \"nodes\": [\n    {\"id\": \"a\", \"label\": \"steelblue\", \"x\": 130, \"y\": 120, \"size\": 20, \"color\": \"steelblue\"},\n    {\"id\": \"b\", \"label\": \"crimson\",   \"x\": 330, \"y\": 120, \"size\": 20, \"color\": \"crimson\"},\n    {\"id\": \"c\", \"label\": \"seagreen\",  \"x\": 530, \"y\": 120, \"size\": 20, \"color\": \"seagreen\"},\n    {\"id\": \"d\", \"label\": \"goldenrod\", \"x\": 230, \"y\": 280, \"size\": 20, \"color\": \"goldenrod\"},\n    {\"id\": \"e\", \"label\": \"slateblue\", \"x\": 430, \"y\": 280, \"size\": 20, \"color\": \"slateblue\"}\n  ],\n  \"links\": [\n    {\"source\": \"a\", \"target\": \"b\"}, {\"source\": \"b\", \"target\": \"c\"},\n    {\"source\": \"a\", \"target\": \"d\"}, {\"source\": \"c\", \"target\": \"e\"},\n    {\"source\": \"d\", \"target\": \"e\"}\n  ],\n  \"width\": 640, \"height\": 380,\n  \"style\": {\"labelColor\": \"gray\", \"fontSize\": 13, \"linkColor\": \"dimgray\", \"linkOpacity\": 1}\n}",
+ "intent": "CSS/SVG colour KEYWORDS instead of hex (steelblue, crimson, seagreen, goldenrod, slateblue) plus a keyword link colour. Recovery = accept keywords."
+}

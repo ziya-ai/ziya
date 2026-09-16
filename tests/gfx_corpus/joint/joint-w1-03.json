@@ -1,0 +1,56 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "elements": [
+   {
+    "id": "c",
+    "type": "circle",
+    "label": "Circle"
+   },
+   {
+    "id": "e",
+    "type": "ellipse",
+    "label": "Ellipse"
+   },
+   {
+    "id": "d",
+    "type": "diamond",
+    "label": "Diamond"
+   },
+   {
+    "id": "h",
+    "type": "hexagon",
+    "label": "Hexagon"
+   },
+   {
+    "id": "y",
+    "type": "cylinder",
+    "label": "Cylinder"
+   }
+  ],
+  "connections": [
+   {
+    "id": "a1",
+    "source": "c",
+    "target": "e"
+   },
+   {
+    "id": "a2",
+    "source": "e",
+    "target": "d"
+   },
+   {
+    "id": "a3",
+    "source": "d",
+    "target": "h"
+   },
+   {
+    "id": "a4",
+    "source": "h",
+    "target": "y"
+   }
+  ]
+ },
+ "intent": "Shape-registry variety: circle, ellipse, diamond, hexagon, cylinder in one graph."
+}

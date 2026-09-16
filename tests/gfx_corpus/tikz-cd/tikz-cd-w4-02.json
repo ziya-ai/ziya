@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\usepackage{tikz-cd}\n\\begin{tikzcd}\nX \\arrow[r, \"\\alpha\"] & Y \\arrow[r, \"\\beta\"] & Z\n\\end{tikzcd}",
+ "intent": "Model prepends only \\usepackage{tikz-cd}. Recovery: drop the redundant package line (the profile already loads it) and render the diagram."
+}
