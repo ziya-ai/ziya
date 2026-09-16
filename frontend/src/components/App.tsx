@@ -28,6 +28,7 @@ import { SafariWarning } from './SafariWarning';
 import { loadFormatters } from '../utils/mcpFormatterLoader';
 import { useConfig } from '../context/ConfigContext'
 import { ServerStatusBanner } from './ServerStatusBanner';
+import { EphemeralChatBanner } from './EphemeralChatBanner';
 import { useScrollManager } from '../hooks/useScrollManager';
 import { TASK_CARD_OPEN_EVENT } from '../hooks/useTaskBindings';
 import { ScrollIndicator } from './ScrollIndicator';
@@ -179,6 +180,8 @@ export const App: React.FC = () => {
         hasNewContentWhileAway,
         streamCompletedWhileAway,
         scrollToActiveEnd,
+        scrollToStart,
+        scrollToEnd,
         clearIndicators
     } = useScrollManager({
         containerRef: chatContainerRef,
@@ -324,6 +327,13 @@ export const App: React.FC = () => {
 
     // Add keyboard shortcut handling
     useEffect(() => {
+        // True when the keystroke belongs to a text field — Ctrl+Home/End
+        // must keep moving the caret there, not the conversation.
+        const isEditableTarget = (t: EventTarget | null): boolean => {
+            const el = t as HTMLElement | null;
+            if (!el || typeof el.closest !== 'function') return false;
+            return !!el.closest('input, textarea, select, [contenteditable=""], [contenteditable="true"]');
+        };
         const handleKeyDown = (e: KeyboardEvent) => {
             if (e.ctrlKey && !e.shiftKey && e.key === 'r') {
                 e.preventDefault();
@@ -338,10 +348,28 @@ export const App: React.FC = () => {
                         e.preventDefault();
                         setShowMemoryBrowser(prev => !prev);
             }
+            // Jump straight to the top / bottom of the conversation.  Wheel
+            // travel through a long conversation has to pass every placeholder
+            // shell on the way; a jump does not.
+            //   Ctrl+Home / Ctrl+End  — Windows/Linux convention
+            //   ⌘↑ / ⌘↓               — macOS convention (Mac laptops have no
+            //                            Home/End keys; they're Fn+←/→)
+            const jumpToTop =
+                (e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.key === 'Home') ||
+                (e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'ArrowUp');
+            const jumpToBottom =
+                (e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey && e.key === 'End') ||
+                (e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'ArrowDown');
+            if ((jumpToTop || jumpToBottom) && !isEditableTarget(e.target)) {
+                e.preventDefault();
+                if (jumpToTop) scrollToStart(); else scrollToEnd();
+            }
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, []);
+    // scrollToStart/scrollToEnd are stable useCallbacks keyed on the container
+    // ref; listing them keeps the handler honest without re-binding per render.
+    }, [scrollToStart, scrollToEnd]);
 
     // Inline card tile "Edit card" backlink → open the deck on that card.
     useEffect(() => {
@@ -544,6 +572,7 @@ export const App: React.FC = () => {
                             className="chat-container"
                             ref={chatContainerRef}
                         >
+                            <EphemeralChatBanner />
                             <div className="chat-content-stabilizer">
                                 <LayoutErrorBoundary>
                                     {chatContainerContent}
