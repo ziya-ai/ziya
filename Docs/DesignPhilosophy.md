@@ -320,6 +320,97 @@ as an opportunity rather than a defect.
 
 ---
 
+## What Ziya Deliberately Does Not Do
+
+A competitive sweep of the field (synthesis run `s1-20260910`) confirmed 28
+capabilities that Ziya does not have and that I do not intend to build. Each was
+checked at the mechanism level — not "we haven't got to it" but "the code is
+arranged so this would be a different product." They are decisions, not
+inconvenient gaps, so they belong here rather than on a backlog. They fall under
+five choices I made on purpose, and each one costs something; I list the cost
+honestly rather than pretend the trade is free. (Ids in comments trace each line
+back to the study's ledger.)
+
+### 1. Local-first, single owner — no shared, hosted, or multi-tenant surface
+
+Ziya's entire security story — root-signed privilege escalation, the write
+policy, the shell allowlist, OriginGuard, the loopback bind — presupposes one
+trusted operator running one process on one host. There is no login layer
+because the host process's own credentials *are* the trust boundary; every store
+is keyed by conversation, never by user. Making Ziya multi-user or hosted would
+not add a feature, it would re-base that whole model. This is the largest cluster
+of declined capabilities, and the one that costs the most: team adoption and
+enterprise procurement are simply off the table.
+
+- **Multi-user accounts & RBAC** <!-- cap: multiuser-accounts-rbac --> — team login, roles, per-user data isolation (LibreChat, Open WebUI, Devin, Factory). *Cost:* the single most prevalent capability I decline — ~16 live rivals ship it; any shared-deployment buyer rules Ziya out.
+- **Web user authentication** <!-- cap: no-web-user-authentication --> — a built-in login/session tier (LibreChat, Open WebUI). Loopback + OriginGuard is the substitute; enterprise identity is left to an unshipped plugin hook. *Cost:* binding to `0.0.0.0` is on you to secure (a shared-secret gate is the most I'd add).
+- **Enterprise governance & identity** <!-- cap: enterprise-governance-audit --> — SSO/SAML/OIDC, SCIM, admin console, org-wide audit sink (ChatGPT/Claude Enterprise, Cursor, Kiro). The data-plane half — a default-on tool-execution audit log, CMK envelope encryption, retention TTLs — already ships; the *identity/admin* control plane is the non-goal. *Cost:* Ziya cannot pass an enterprise identity checklist.
+- **Cross-device session sync** <!-- cap: cross-device-session-sync --> — history that follows a hosted account across machines (ChatGPT, claude.ai). Ziya ships a mature same-host sync *engine*; the missing half is the hosted account. *Cost:* no "pick up on my other device."
+- **Real-time collaboration** <!-- cap: realtime-collaboration --> — multiplayer co-editing, presence, follow-mode (Zed). Ziya has the one-way fan-out transport but no multi-human identity to hang it on. *Cost:* no shared live sessions; my answer is single-owner CLI↔GUI continuity instead.
+- **Horizontal / team-scale deployment** <!-- cap: horizontal-scale-deployment --> — multi-node, shared-DB, load-balanced serving (librechat, lobechat, open-webui). Flat-file `fcntl`-locked storage and a single-writer scheduler are single-host by design. *Cost:* no scale-out; a single-user Dockerfile is the only concession.
+- **Zero-setup hosted scale** <!-- cap: zero-setup-hosted-scale --> — a managed SaaS you just log into (ChatGPT, claude.ai). Ziya is a thing you run. *Cost:* the first-session setup tax is real and paid up front.
+- **Embeddable chat widget** <!-- cap: embeddable-chat-widget --> — a public `<script>` bot dropped onto any site (anythingllm). The stack is hardened *against* embedding (`frame-ancestors 'none'`, X-Frame-Options DENY). *Cost:* no customer-support-bot use case; a local IM bridge is the only variant that fits.
+- **LAN / remote browser binding** <!-- cap: remote-lan-network-binding --> — serving the web UI to other machines' browsers (opencode). Socket binding exists for CLI/curl/tunnel clients; a LAN *browser* is blocked because it re-opens the CSRF hole OriginGuard closes. *Cost:* remote browser access needs an auth layer I won't add to core.
+- **Client-side / zero-backend operation** <!-- cap: client-side-zero-backend --> — a browser-only app with no required server (big-agi, LobeChat lite). Ziya's value *is* the server-side diff-apply pipeline, AST grounding and tool execution. *Cost:* the blank cell against browser-first chat clients is a positioning choice, not an oversight.
+- **Cloud-managed agent execution** <!-- cap: cloud-managed-agent-execution --> — agents in vendor-managed remote VMs that return a PR (Devin devbox, Cursor Background Agents, Codex async tasks). Ziya runs every agent in-process on your loopback host and diffs to your working tree. *Cost:* no off-host offload or isolation; a self-hosted "outpost" executor is the compatible slice.
+- **Zero-infrastructure / git-as-state model** <!-- cap: zero-infra-git-state-model --> — no backend, git as the only database (aider). Ziya runs a server and keeps an encrypted local state store precisely so agentic work is resumable. *Cost:* not a single-binary CLI; I offset it with `ziya purge` and git-visible edits.
+- **Offensive-security specialization** <!-- cap: offensive-security-specialization --> — a bundled CTF/pentest mode (SWE-agent EnIGMA, itself dormant). Ziya's security surface is uniformly *defensive*; bundling offensive tooling inverts that. *Cost:* none owed — the skill framework already lets a user author their own opt-in offensive skill.
+- **UI internationalization** <!-- cap: internationalization-i18n --> — localized multilingual UI (lobechat, ChatGPT). This one does not fight the architecture; it is an audience choice — my users work in English-centric code/CLI contexts. *Cost:* a non-English end-user surface would need a string-externalization sweep I've chosen not to fund.
+- **Open / neutral foundation governance** <!-- cap: open-neutral-governance --> — project stewarded by a neutral foundation (goose, Linux Foundation AAIF). Ziya is open-core with a closed-plugin split and single-vendor roadmap control. *Cost:* no foundation-backed longevity signal at procurement time; I counter-position on permissive MIT + self-hosted + you-own-your-data.
+
+### 2. A served web-SPA + CLI harness, not an editor
+
+Ziya's editing model is: chat → the model emits a unified diff → you review and
+apply it against files on disk. There is deliberately no editable code buffer and
+no editor dependency in the frontend. The diff-apply pipeline is the considered
+alternative to being a VS Code fork — so every capability that presupposes *being*
+the editor is declined. The cost is real: the largest population of developers
+lives inside an editor and will never encounter Ziya there. (A thin
+localhost-bridge extension that embeds the existing SPA is the one compatible way
+in, and is not itself a non-goal.)
+
+- **In-editor integration surface** <!-- cap: in-editor-integration-surface --> — being, or plugging a full editor's buffers/LSP/git-panel into, the IDE (Cursor, Zed, Kiro, Windsurf). *Cost:* a context-switch to a browser tab to review diffs, versus reviewing them in the buffer.
+- **In-editor selection edit** <!-- cap: in-editor-selection-edit --> — highlight a region, Cmd-K, inline rewrite with scoped accept/reject (Cursor, Continue, Windsurf, Zed). This bypasses chat entirely — the opposite of review-before-apply. *Cost:* no daily-driver inline edit for editor-resident users.
+- **Inline autocomplete / tab** <!-- cap: inline-autocomplete-tab --> — sub-100ms ghost-text next-edit prediction (Cursor Tab, Zed Edit Prediction). It requires a live buffer you type code into; Ziya assumes you never do. *Cost:* none of the headline editor-first UX.
+- **Integrated debugger** <!-- cap: integrated-debugger --> — a native DAP step debugger (inherited by every VS Code-fork tool). Presupposes an editor identity Ziya declined. *Cost:* run Ziya beside your IDE and keep that IDE's debugger; an agent-driven headless inspection tool is the on-thesis alternative.
+- **Native desktop app** <!-- cap: native-desktop-app --> — a signed, self-contained, auto-updating installer (Cursor, Zed, Kiro, Antigravity). Ziya ships as a pip wheel serving a local browser SPA — a BYO-environment delivery choice. *Cost:* this one bites — a packaged desktop surface is effectively table-stakes (14 tools at ≥3); a thin pywebview/Tauri shell is the low-cost hedge if it ever must be answered.
+- **Human-takeover mode** <!-- cap: human-takeover-mode --> — a human performing tool actions *as steps in the agent's trajectory* (swe-agent, for RL data). Ziya's loop is model-actor-only; a human-attributed tool step is a new turn kind that would confuse the hallucination guards. *Cost:* none in practice — "stop, edit/run it yourself, resume" already works out-of-band; it just needs documenting.
+- **Per-model edit-format tuning** <!-- cap: per-model-edit-format-tuning --> — picking each model's cleanest edit encoding, with a leaderboard (aider). Ziya bet the opposite way: one canonical diff format hardened by a ~2,900-line multi-stage apply cascade. *Cost:* I can't publish per-model apply-success numbers today (the measurement, not the capability, is the real gap).
+
+### 3. No infrastructure provisioning
+
+The shell layer deliberately denies infrastructure verbs (`sam deploy`,
+`cdk deploy`, `cdk destroy`) — an AI coding assistant must not stand up or tear
+down cloud infrastructure. Ziya edits and reasons about a repo you already have;
+it is not a generate-and-host app builder. That safe default is a decision, so
+the whole vibe-coding "prompt to a live app" funnel is out.
+
+- **Managed backend provisioning** <!-- cap: managed-backend-provisioning --> — scaffold-and-wire a hosted backend/database (bolt.new). *Cost:* no BaaS-style app-builder flow; connecting an *existing* user-provisioned backend is the compatible slice.
+- **One-click deploy / hosting** <!-- cap: one-click-deploy-hosting --> — prompt → live public URL (bolt.new via Netlify, kiro Artifact Deploy). Affirmatively blocked by the IaC guard. *Cost:* deploy is a manual, out-of-band step; a narrow per-deploy-approved static-site tool is the only honest concession.
+- **Mobile app build flow** <!-- cap: mobile-app-build-flow --> — a guided Expo/React Native builder with preview (bolt.new). Requires a runtime/preview surface Ziya omits, and loosens the `npx` shell restriction. *Cost:* no vertical mobile builder; an opt-in Skill + scoped allowlist profile is the ecosystem answer.
+
+### 4. A BYO-credentials, model-agnostic broker
+
+Every provider endpoint is built against *your* keys; Ziya never holds
+credentials or moves money, and it deliberately owns no model. This neutrality —
+you own your keys, your data, and your spend — is the point, so the two most
+"valuable" gaps in the whole study (both scored top-priority) are exactly the
+things Ziya refuses to be.
+
+- **Managed model gateway & billing** <!-- cap: managed-model-gateway-billing --> — a hosted, credential-holding, metered gateway (ChatGPT, Cursor). It requires a multi-tenant billing service Ziya would have to operate. *Cost:* no keyless "just start typing"; first-class support for user-owned aggregator gateways (OpenRouter, `OPENAI_BASE_URL`) plus a spend meter is the compatible version.
+- **Proprietary co-designed model** <!-- cap: proprietary-codesigned-model --> — a first-party frontier model that is the core of the product (ChatGPT, Claude, Cursor Composer, Zed Zeta). Owning a default model means picking a horse against the vendors Ziya brokers. *Cost:* no vertically-integrated speed/quality edge; narrow fine-tuned helpers (diff-repair, intent classification) are the only model work that fits.
+
+### 5. A streaming-text core, no generative media
+
+Every provider yields text token deltas; the artifact store, routing and
+executor all assume text output. Generative media is a heavyweight, cloud-only,
+async-job modality that produces nothing a coding/analysis user acts on — so it
+is out of scope by design.
+
+- **Video (and image/audio) generation** <!-- cap: video-generation --> — text/source → rendered media (NotebookLM video overviews, ChatGPT, LobeChat). A submit-job/poll/fetch-binary lifecycle the streaming executor cannot host. *Cost:* small today in the coding-agent segment; if it ever matters, an external MCP server can generate the media and Ziya displays it through the `<video>` tag it already allowlists.
+
+---
+
 ## What I'd Do Differently
 
 The biggest one is that almost all of my attention has gone to the backend.
