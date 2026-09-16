@@ -1,222 +1,216 @@
-# Notes from the Field: What I See When I Look at Other Tools
+# Ziya Competitive Analysis
+
+> **Provenance.** Derived from the code-grounded competitive-landscape study: cells run
+> `m3-20260827` (555 capabilities × 27 competitor tools, grid complete), reintegration run
+> `r1-20260901`, depth run `r2-20260830`, synthesis run `s1-20260910` (study date 2026-09-10).
+> Full report with appendices: `.ziya/complandscape/60-synthesis/s1-20260910/REPORT.pdf`
+> (markdown source `REPORT.md` in the same directory). Both synthesis critiques
+> (`60-critique-ziya.json`, `60-critique-competitors.json`) are applied throughout; corrected
+> values are used and each correction is noted. This is the **only** Ziya document that
+> compares Ziya with rivals; other docs describe, they do not editorialise.
+>
+> The previous (May 2026, paper-based) version of this document is preserved unmodified at
+> `Docs/old-competitive-analysis-2026-05.md`.
+
+## 1. How to read this document
+
+**A competitor "lacking" something means one of three different things**, and they are never
+merged here (grid totals from REPORT.md §2, out of 14,985 competitor cells):
+
+| status | cells | meaning |
+|---|---:|---|
+| absent | 4,044 | determined not to have it — the only status that *supports* a "Ziya leads" claim |
+| not_applicable | 5,139 (34%) | the capability presupposes an architecture the tool lacks — supports **no** claim; "Ziya hardens a feature only Ziya has" is a fact about Ziya, not a lead |
+| unknown | 1,659 (11%) | the study looked and could not tell — residual ignorance, never read as absence |
+
+Every leadership claim in §4 therefore carries its **absent / not_applicable / unknown split**
+(out of 27 tools), and no claim below rests mainly on `not_applicable`.
+
+**Evidence tiers.** Ziya's own 555 cells rest on source code, tests, config, or runtime checks
+(tiers A/B) with `path:line` citations. Competitor cells were researched primarily from docs
+and web sources (A = verified use/source, B = official docs, C = vendor marketing,
+D = third-party/inference). This asymmetry is structural: 89% of all `absent` cells (3,602 of
+4,044) are tier C/D and only 108 are tier A — so even a "determined absence" is usually
+"not found in the docs". Claims against the 15 open-source rivals deserve *more* skepticism,
+not less: their source was readable and mostly was not read (only 91 of their 2,719 absents
+are tier A). One targeted source read killed a uniqueness claim during the study (§4);
+treat that as the decay model for every unfalsified claim.
+
+**Unknowns cluster on the most dangerous rivals**: factory 152, antigravity 134, devin 100,
+windsurf 98, amp 83 — the newest, best-funded closed tools, i.e. exactly the ones most able
+to close a gap quickly.
+
+**Out of scope.** The roster omits GitHub Copilot (no recorded exclusion rationale), Replit
+Agent, Lovable, JetBrains Junie, and Warp; nothing here makes claims about them. Any
+table-stakes framing below would only get harsher with Copilot included. 275 of the 380
+contested capabilities have no head-to-head depth record (§6) — the largest single hole in
+the study.
+
+## 2. The field
+
+27 tools in six categories (roster 2026-08-19; recency sourced from the study's dossiers, not
+the roster, which disagrees with its own dossiers on Continue's status, Antigravity's launch
+date, and Jan's star count). One line each: design bet, then recency.
+
+**Self-hosted chat UI** — own your chat surface; BYO models; breadth of connectors.
+
+- **open-webui** — the universal self-hosted, multi-user front-end for any model and any team; competes on breadth and governance. Active, weekly cadence (v0.10.0, 2026-08).
+- **librechat** — the open-source, self-hostable, multi-user ChatGPT replacement for teams and enterprises. Active (v0.8.8-rc1, 2026-08).
+- **lobechat** — chat UI evolving into a prosumer "agent operations" platform: agents as reusable teammates plus a marketplace. Active, weekly cadence ("LobeHub 2.0", 2026-08).
+- **anythingllm** — private ChatGPT over *your* documents for everyone on the team, minimal setup. Active, roughly weekly releases (2026-08).
+- **big-agi** — the fastest, most polished provider-agnostic multi-model chat workspace (Beam multi-model compare). Active (2.0.5, 2026-08).
+- **jan** — personal AI that is local and owned: open models on your hardware, data on-device. Active (v0.8.4, 2026-07-21).
+
+**CLI coding agent** — terminal-native agentic loop; git as workspace.
+
+- **claude-code** — vertical integration: a terminal/IDE-native harness co-designed with Anthropic's frontier models. Very active (v2.1.235, near-daily releases, 2026-08).
+- **aider** — radical simplicity with git as the system of record; repo-map context + benchmark-tuned edit formats. Active (v0.86.x era, 2026).
+- **codex-cli** — a thin, OS-sandboxed, multi-surface client co-designed with OpenAI's reasoning models. Very active (rust-v0.146.x, 2026-08-18).
+- **opencode** — AI coding agent as open infrastructure: MIT client/server core with a fast native TUI. Very active, near-continuous releases (2026-08).
+- **goose** — the neutral, open, local-first substrate for agentic work (Rust; CLI + desktop); donated to Linux Foundation AAIF 2025-12. Active (2026-08).
+- **amp** — bet on the frontier and the cloud: unconstrained token routing, remote "orbs", shareable threads, Sourcegraph code-graph retrieval. Very active, ships weekly+ (2026).
+
+**IDE agent** — live in the editor; inline edit/autocomplete; fork-of-VS-Code economics.
+
+- **cursor** — the editor as center of gravity, aggressively expanded into an agent-execution runtime and SDLC platform. Very active (3.x line; Builds/Origin, 2026-08).
+- **cline** — the open, provider-neutral, human-in-the-loop agent living where developers already work. Active (SDK 2026-06, CLI 2.0 2026-02, releases through 2026-08).
+- **continue** — the open, model-agnostic, you-own-the-config substrate. **DISCONTINUED**: final release v2.0.0 2026-06-19, repo read-only, team acqui-hired by Cursor. Excluded from every contender count in this document.
+- **windsurf** — a polished, closed agentic GUI IDE (Cascade). Active (Wave 13, 2026-07). **Same vendor as Devin** (Cognition); counted as one vendor everywhere here.
+- **kiro** — structure beats improvisation: spec-driven flow (requirements → design → tasks). Active (IDE ~0.11.x, Crew 2026-08; GA 2026-05-07).
+- **zed** — the fastest native editor with AI and collaboration built in, as neutral agent infrastructure. Active (~weekly cadence, 1.0 ~2026-04).
+- **antigravity** — Google's agent-first platform: a Manager command center dispatching parallel agents that produce reviewable artifacts. Launched 2025-11-18 (the roster's 2026-05 date is wrong), iterating a "2.0" generation through 2026.
+
+**Autonomous harness** — delegate whole tasks; cloud sandboxes; parallel agents.
+
+- **openhands** — bet everything on the sandbox and autonomy: the agent gets an isolated, fully-equipped computer. Active (V1 Agent SDK, 2026-08). Strongest OSS harness.
+- **swe-agent** — the thinnest, most transparent, reproducible scaffold; a research yardstick. 1.x line in **maintenance mode**; energy moved to mini-SWE-agent v2 (active).
+- **devin** — autonomy-as-a-service over a managed cloud devbox. Active (2026). **Same vendor as Windsurf** (Cognition); 25 of Devin's present cells cite the Windsurf-rebrand lineage rather than product evidence.
+- **factory** — the enterprise software-delivery workflow as the durable unit of value. Active (2026); 152 unknown cells make it the least-legible well-funded rival.
+
+**Hosted surface** — zero-setup scale; first-party frontier models.
+
+- **chatgpt** — the universal, zero-setup, hosted assistant for everyone. Continuous (2026-08).
+- **claude-ai** — the hosted, vertically-integrated frontier assistant with a polished multi-surface product. Continuous (2026-08).
+- **notebooklm** — grounded understanding of a corpus you trust, turned into multimodal artifacts. Active (major agentic upgrade 2026-07-16). Different product; nominal comparison.
+
+**Vibe-coding / preview** — prompt-to-app with live preview and deploy.
+
+- **bolt-new** — collapse the distance from natural-language idea to a running, deployed web app. Active (2026). Sole category sample; nothing here generalizes about vibe-coding as a class.
+
+**Real threats** by breadth × velocity × money (REPORT.md §4): claude-code, cursor, Cognition
+(windsurf+devin merged), factory, amp, openhands.
 
-I deliberately don't spend much time looking at what other AI tools do — partly because I want Ziya's design to come from how I actually work rather than from imitation, and partly because keeping my head down has been more productive than benchmark-watching. But periodically I do a sweep, both to keep an honest accounting of where Ziya is behind and to notice ideas I should consider stealing. This document is a snapshot of one of those sweeps. It's organized by what I'm missing rather than what I have, because the gaps are the more useful thing to look at — features Ziya already ships only show up here when a competitor does them materially better.
+## 3. Where Ziya leads
 
-A caveat on the methodology: most of what's in this document is paper-based. I've read project READMEs, release notes, and feature pages, but I haven't run most of these tools as a daily driver. The exceptions are Kiro (which I use extensively because of where I work) and Claude's various surfaces — Claude Chat, Claude Code, and Cline — which I've used enough to have real opinions about. Where my judgment about another tool is grounded in actual use, I'll say so. Otherwise: a feature listed on a competitor's marketing page can be anything from "deeply integrated and load-bearing" to "shipped once and abandoned" and I can't always tell which from the outside. Where I cite a number (GitHub stars, plugin counts), the number is probably correct; where I cite a *qualitative* judgment about whether their version is better than ours, I'm usually working from claims rather than experience. Treat the gap inventory as "things worth investigating further" rather than as settled comparisons.
+Only the differentiators the report retained after critic correction (REPORT.md §6). The
+headline "88 unique capabilities, 70 strong claims" did not survive scrutiny — see §7 for the
+count corrections; the defensible number is **~15–20 distinct differentiators**, and they are
+real. Splits are absent / not_applicable / unknown out of 27; Ziya's evidence is tier A
+throughout. Inherited caveat: even these splits rest on absents that are 89% C/D-tier.
 
----
+**Settled (rests on determined absences or source-verified depth):**
 
-## The Uncomfortable Summary
-
-The first thing that comes out of this exercise is that Ziya is missing most of what a "modern AI chat frontend" is now expected to have — multi-user accounts, voice, image generation, plugin ecosystems, mobile, enterprise auth as a deployable consumer feature, live preview. Several of the tools I look at have communities 10-60x the size of Ziya's and ship weekly across feature areas Ziya hasn't started on. That's the honest bottom line and it's worth keeping it in front of me.
-
-The second thing, less comfortable in a different direction, is that I don't actually know where Ziya fits relative to these tools because I'm not optimizing for the same things they are. The visualization breadth, the patch pipeline, the AST integration, and the parallel-work model — running multiple Ziya servers against the same project against different provider backends with conversations that travel across them — are pieces I haven't seen combined this way elsewhere. I genuinely don't know whether that's because nobody is doing it or because I'm not looking hard enough; I'd rather state the uncertainty than overclaim.
-
-The point of this document is to keep both of those true at the same time. There are large surfaces where Ziya is behind and the catch-up cost would be substantial. There are smaller surfaces where Ziya might be doing something the rest of the field isn't, and those are worth understanding too — partly because they tell me what's worth protecting as the project evolves, and partly because if I'm wrong about them being unusual I'd like to know.
-
----
-
-## Tier 1: Gaps That Multiple Major Competitors Already Ship
-
-These are features that **3+ competitors with significant adoption** treat as table stakes. Not having them puts Ziya in a different (smaller) product category.
-
-### 1. Multi-User / RBAC / Team Features
-
-**Who has it:** Open WebUI, LibreChat, LobeChat, AnythingLLM, MSTY
-
-Ziya is single-user only. No login, no user accounts, no role-based access, no shared workspaces. Every major chat UI competitor supports multi-user deployments with admin/user roles at minimum. LibreChat goes furthest with SAML, LDAP/AD, OAuth2, and per-user token credit/spending limits. Open WebUI has full RBAC with group permissions.
-
-**How far behind:** This isn't a feature gap — it's an architecture gap. Adding multi-user would touch auth, storage, conversation isolation, and deployment. Every competitor that has this built it in from early on.
-
-### 2. Enterprise Authentication (SAML / LDAP / OAuth2)
-
-**Who ships it as a deployable feature:** LibreChat (SAML + LDAP + OAuth2), Open WebUI (OAuth2 + RBAC), LobeChat (Clerk/Auth.js)
-
-Related to multi-user but distinct: enterprise SSO integration. Ziya has a pluggable `AuthProvider` interface, and the internal Amazon deployment uses it to run against Midway (corporate SSO + credential refresh) — the architecture is real and proven in production. What's not there is a community-edition build that ships SAML/LDAP/OIDC adapters configurable from the UI without writing a plugin. LibreChat is the gold standard at the consumer-deployable end of that spectrum, supporting Azure AD, Google Workspace, GitHub, Discord, and generic OIDC, plus LDAP/AD. Ziya has the substrate for enterprise auth but expects deployers to bring (or write) the adapter for their environment.
-
-### 3. Image Generation
-
-**Who has it:** LibreChat (DALL-E, Stable Diffusion, Flux), Open WebUI (DALL-E, ComfyUI, AUTOMATIC1111), LobeChat (native), big-AGI (native)
-
-Four of the five largest chat UIs integrate image generation natively. Open WebUI supports the most backends (including local ComfyUI workflows). Ziya has a stencil library for architecture diagrams but no general-purpose image generation.
-
-**How far behind:** This is an integration task, not an architecture task — pipe image gen API calls through an existing provider. Medium effort, but the model/provider diversity (DALL-E vs SD vs Flux vs ComfyUI) adds complexity.
-
-### 4. Voice Input / TTS / STT
-
-**Who has it:** Open WebUI, LibreChat, LobeChat, Jan.ai, bolt.diy, TypingMind
-
-Voice is becoming a default expectation. Open WebUI has the most complete implementation (voice calls, configurable TTS backends). LobeChat and LibreChat both support speech-to-text input and text-to-speech output. Ziya has no voice capabilities.
-
-### 5. Plugin Marketplace / Ecosystem at Scale
-
-**Who has it:** LobeChat (~10,000 MCP skills in marketplace), Open WebUI (Pipelines framework + community functions)
-
-LobeChat's plugin marketplace is an order of magnitude larger than anyone else's. It's a self-reinforcing ecosystem — more plugins attract more users attract more plugin authors. Open WebUI's Pipelines framework lets users write custom processing functions. Ziya supports MCP and has registry browsing/installation, but has no community plugin ecosystem or marketplace.
-
-**Why this matters:** Plugin ecosystems create moats. Once users invest in configuring plugins, switching costs rise. LobeChat is building this moat aggressively.
-
-### 6. Shareable Conversation Links
-
-**Who has it:** LibreChat, LobeChat, Open WebUI (export as PDF/link)
-
-Generate a URL, share a conversation with someone else. Requires multi-user infrastructure (see Gap #1). Simple feature but critical for collaboration. Ziya can export/import conversations but can't share via link.
-
-### 7. Agent / Assistant Builder UI
-
-**Who has it:** LibreChat (Agents with MCP + tools + code interpreter), LobeChat (Agent Market), AnythingLLM (visual agent builder), MSTY (Personas)
-
-Users can create reusable AI agents/personas with specific tools, system prompts, and capabilities — then share them. LibreChat's Agents system is the most capable (access to MCP tools, file search, code interpreter). LobeChat has a marketplace of community-contributed agents. Ziya has no agent builder or persona system.
-
-### 8. Prompt Presets / Templates Library
-
-**Who has it:** LibreChat (presets), TypingMind (prompt library), LobeChat (community prompts), MSTY (Prompt Studio)
-
-Save and reuse prompt configurations — model, system prompt, parameters, tools. TypingMind and MSTY have dedicated prompt management UIs. Ziya has no saved-prompt system.
-
----
-
-## Tier 2: Gaps Where 1-2 Strong Competitors Have Significant Differentiation
-
-These features aren't universal yet but represent meaningful competitive advantages for the tools that have them.
-
-### 9. Multi-Model Simultaneous Query + Fusion
-
-**Who has it:** big-AGI (Beam — queries multiple models, AI-fuses best answer), Open WebUI (concurrent multi-model with response merging)
-
-Query 3-4 models at once, compare answers, optionally merge them into a best-of response. big-AGI's Beam feature is specifically designed to reduce hallucinations through multi-model consensus. Ziya supports model switching mid-conversation but can't query multiple models in parallel on the same prompt.
-
-**Why this matters:** This is a legitimate de-hallucination technique. As model diversity grows, multi-model querying becomes more valuable.
-
-### 10. In-Browser Code Execution + Live Preview
-
-**Who has it:** bolt.diy (WebContainer — full Node.js in browser via WASM)
-
-bolt.diy runs complete Node.js applications inside the browser using StackBlitz's WebContainer technology. Users see a live preview of their app updating in real time as the AI writes code. Ziya can render HTML mockups in iframes but cannot execute arbitrary code in the browser.
-
-**Limitations to note:** WebContainer is Node/JS-only. No Python, Go, Rust. So this is impressive but narrow.
-
-### 11. One-Click Cloud Deployment
-
-**Who has it:** bolt.diy (Netlify, Vercel, GitHub Pages)
-
-Generate an app → deploy it to production in one click. Ziya has no deployment workflow.
-
-### 12. Desktop Application (Native / Electron)
-
-**Who has it:** Jan.ai (native, offline-first), LobeChat (desktop), bolt.diy (Electron), MSTY (desktop-first)
-
-Ziya is web-only (`localhost:6969`). Several competitors ship installable desktop apps with native OS integration, system tray, offline operation. Jan.ai is the most committed to this — it's desktop-native with local model management built in.
-
-### 13. Cloud Storage Backends
-
-**Who advertises it:** Open WebUI (S3, GCS, Azure Blob, Google Drive, SharePoint connectors listed), LibreChat (cloud file storage)
-
-For enterprise deployments: store conversation history, uploaded files, and embeddings in cloud storage instead of local disk. Ziya stores everything locally. I haven't audited how the cloud backends are actually used in either project — connector count is a feature-page metric, not a usage one — but the local-only assumption is a real architectural fact about Ziya regardless.
-
-### 14. Mobile / PWA Support
-
-**Who has it:** Open WebUI (PWA), LobeChat (PWA + responsive)
-
-Progressive Web App support for mobile access. Both Open WebUI and LobeChat work on phones. Ziya's UI is desktop-oriented.
-
----
-
-## Tier 3: Niche Gaps Worth Tracking
-
-Not urgent, but each represents a capability some users will specifically seek out.
-
-### 15. Workflow Automation
-
-**Who has it:** MSTY (Turnstiles — reusable multi-step automated workflows)
-
-Define a sequence of AI operations that run automatically. Think: "every morning, summarize my inbox, extract action items, draft responses." Ziya has swarm delegation for complex tasks, but no persistent automated workflows.
-
-### 16. PII Scrubbing in Document Processing
-
-**Who has it:** MSTY (automatic PII redaction before embedding)
-
-Strip personally identifiable information before sending documents to models or embedding them. Compliance feature for regulated industries. Ziya has no PII detection or scrubbing.
-
-### 17. YouTube / Web Content Transcription
-
-**Who has it:** big-AGI, AnythingLLM (browser extension for web scraping + YouTube)
-
-Ingest YouTube videos or web pages as context. AnythingLLM has a browser extension that clips web content directly into workspaces. Ziya has no web scraping or video transcription.
-
-### 18. Model Arena / Leaderboard
-
-**Who has it:** Open WebUI (blind comparison + rating + leaderboard)
-
-Compare model outputs blind, rate them, build internal leaderboards. Useful for evaluation and model selection. Ziya has no model evaluation framework.
-
-### 19. OpenAI-Compatible Local API Server
-
-**Who has it:** Jan.ai (serves models at localhost:1337 with OpenAI-compatible API)
-
-Jan.ai can act as a local model server that other tools connect to. This turns it into infrastructure, not just a frontend. Ziya consumes APIs but doesn't serve them.
-
----
-
-## Areas Where Other Tools Do Similar Things More Capably
-
-Places where Ziya has the feature in some form, but someone else's implementation is materially better and worth learning from.
-
-A caveat for this whole section: I've read these projects' documentation but haven't used them as daily drivers. The judgments below are based on what each project claims to do, not on direct comparison.
-
-### Bedrock Integration Depth
-
-**LibreChat** supports Bedrock inference profiles, guardrails integration, and prompt caching configuration. Ziya connects to Bedrock but doesn't expose these Bedrock-specific capabilities. If a user needs Bedrock guardrails, they'd get a better experience in LibreChat.
-
-### MCP Ecosystem
-
-**LobeChat** is reported to have ~10,000 MCP skills in a browsable marketplace with one-click install. I should note that LobeChat hasn't come up much among engineers I've talked to despite its star count, so I can't speak to how heavily that marketplace is actually used; the reach of the ecosystem may not match the catalog size. Either way, Ziya supports MCP and has registry browsing, but isn't trying to host its own marketplace at that scale.
-
-### RAG and Document Processing Architecture
-
-**Open WebUI** lists integration with nine vector databases, document extraction tooling (OCR for images-in-PDFs, table parsing from Excel), and cloud storage backends. Ziya takes a different approach: tool-driven RAG with AST-aware code intelligence, and native readers for PDF / DOCX / XLSX / PPTX without a separate vector store. Whether that's actually a worse outcome for any given workload is something I'd have to test rather than infer from feature lists — connector counts say nothing about how content gets used downstream. If Open WebUI has found a category of work where their pipeline produces better answers, that belongs in my "to-study" backlog rather than in a comparative judgment I haven't actually run.
-
----
-
-## What I've Actually Felt the Pain of Elsewhere
-
-Speaking only about the tools I've used as daily drivers — Kiro, Claude Chat, Claude Code, and Cline — the consistent friction point that motivates Ziya's design is context management. All four of them lose the thread at points where I don't want them to. The compaction is automatic, the heuristic is recency-weighted or model-driven, and the thing that gets dropped is regularly the part of the conversation that established what we were trying to do in the first place. I find myself either re-pasting setup material into long sessions or starting over more often than I'd like to.
-
-I should be careful about how I frame the response, though, because it's not that I'm philosophically opposed to automatic curation — I'm not. If a tool could reliably identify which parts of a long conversation are still load-bearing and which have served their purpose, I'd use it. The position Ziya takes is narrower: I haven't seen automatic curation that I trust to make those decisions for me yet, and until I do, I'd rather curate manually than let a model selectively discard my context. Ziya's mute / fork / truncate / drop-files toolkit is the manual workaround for a problem the field hasn't solved, not a stand against the idea of solving it.
-
-The reason I'm uncertain that automatic curation can be done well yet is connected to the open problem with memory I mentioned in the philosophy doc: the experiments I've run on various cross-session memory architectures keep showing me that "knowing what was important about an earlier conversation" is harder than it looks, and a tool that can't do that reliably also can't reliably decide what to keep mid-conversation. The two problems are the same problem at different time scales. I keep working on memory partly because I think solving it is the precursor to ever trusting auto-curation, and the other tools I'm comparing to are doing auto-curation without (in my read) having solved the precursor. I don't fault them for shipping the heuristic — it works often enough to be useful — but it also makes the failure mode I described above predictable rather than surprising.
-
-So the gap between Ziya and the other tools isn't "manual is right, automatic is wrong." It's that I haven't seen anyone solve the underlying problem well enough to deploy automatic curation without losing data the user cares about, and I'd rather pay the cost of manual curation in the meantime than pay the cost of unpredictable loss. When someone — possibly me, possibly someone else — gets memory and importance-detection working well enough that auto-curation becomes trustworthy, Ziya should adopt it. I just don't think we're there yet, and I'm not willing to pretend we are.
-
----
-
-## Competitor Community Size (Context for Velocity)
-
-These numbers matter because community size correlates with development velocity, plugin availability, and long-term viability. They aren't a measure of which tools are *better*; they're a measure of which projects have momentum and people building on top of them, which is a different question.
-
-| Competitor | GitHub Stars | Notes |
+| differentiator | why (technical) | abs / n·a / unk |
 |---|---|---|
-| **LobeChat** | ~60,000+ | Plugin marketplace, fast release cadence |
-| **Open WebUI** | ~40,000+ | Enterprise-deployment focus, large contributor pool |
-| **Aider** | ~30,000+ | Terminal/CLI; large coding-agent community |
-| **Chatbot UI** | ~29,000+ | Largely inactive at the time of this snapshot |
-| **LibreChat** | ~25,000+ | Active; strong on auth/SSO and provider breadth |
-| **Dyad** | ~20,000+ | Newer entrant in the "vibe-coding" space |
-| **Kilo Code** | ~15,800+ | IDE-based coding agent |
-| **Jan.ai** | ~10,000+ | Desktop-native, local-first |
-| **big-AGI** | ~5,000+ | Beam (multi-model fusion), personas |
-| **AnythingLLM** | ~5,000+ | RAG-focused |
-| **Bedrock Chat** | ~1,200 | AWS-focused niche |
-| **Bedrock Engineer** | ~160 | Small project |
+| Hallucinated tool-output detection & recovery <!-- cap: fake-shell-session-detection --> (cluster of 5 ids incl. `fake-shell-session-detection`, `fake-tool-result-echo-detection`, `shingle-parroting-detection`, plus the verification gate and recovery retry) | shingle-index matching of model output against real tool transcripts catches fabricated results before they enter context; a recovery path retries with the detection surfaced | 21 / 3 / 3 |
+| MCP tool-result signing <!-- cap: mcp-tool-result-signing --> | tool results are integrity-signed so a model cannot forge or replay tool output into the transcript | 22 / 2 / 3 |
+| Per-message context mute <!-- cap: fcm-per-message-mute --> | any individual message can be dropped from live context without deleting it — token-budget control at message granularity | 23 / 1 / 3 |
+| Root-signed scope escalation <!-- cap: approval-root-signer-cli --> (one differentiator, not three: `approval-root-signer-cli`, `escalation-config-signature-gate`, `signed-task-scope-approval-store` are one Ed25519 mechanism) | escalations above the write-policy floor verify against a provisioned root key; tested end-to-end. Maturity corrected 5→4: unprovisioned installs (the default) clamp to floor and never exercise it | grid satellites are n/a-heavy; the lead rests on ledger + depth source verification, not the grid |
+| Diff-apply cascade <!-- cap: diff-git-apply-stage --> (one pipeline, not 12 ids: `diff-git-apply-stage`, `diff-difflib-fuzzy-stage`, `diff-fuzzy-hunk-matching`, …) | multi-stage apply (system patch → git-apply → fuzzy → LLM regeneration) with validation feedback; depth verdicts ZIYA_AHEAD on the cascade and CLI applicator | mixed per-id; core ids absent-dominant |
+| Mermaid spec-repair <!-- cap: viz-mermaid-spec-repair --> | 95 registered repair rules with a test corpus; depth verdict ZIYA_AHEAD (high confidence) on viz-mermaid-render | leads via depth; competitors render without repairing |
+| Rendering breadth in-browser <!-- cap: viz-render-diagram-vision-tool --> (drawio 19/7/0, packet 19/7/0, architecture-shapes 18/9/0, server-side LaTeX 16/10/0) | render-and-inspect loop: the agent can see its own rendered output as pixels | 16–19 / 7–10 / 0 — the n/a block is the CLI tools; real, but narrower than "27 tools lack it" |
+| PCAP ingestion + TCP health analysis <!-- cap: pcap-tcp-health --> | per-flow seq/ACK tracking for retransmits/resets/zero-window (`pcap_analyzer.py`) | 25 / 1 / 0 — the cleanest absent split in the queue; niche audience |
+| Inline tool-invoke XML detection <!-- cap: inline-invoke-xml-detection --> | catches model-emitted pseudo-tool-call markup in prose | 18 / 6 / 3 |
+| Bead task-tree / origin propagation <!-- cap: bead-task-tree --> | conversation-embedded task lineage | 16 / 11 / 0 |
+| Shell IaC deploy guard <!-- cap: shell-iac-deploy-guard --> | recognizes and gates infrastructure-mutating commands | 14 / 8 / 5 |
+| Memory REM synthesis / retrieval feedback <!-- cap: memory-retrieval-feedback --> | post-conversation extraction with a use-signal feedback loop; maturity corrected 4→3 — efficacy never evaluated | 20 / 1–2 / 5–6 — borderline unfalsified |
 
-**Note:** OpenCode was reported at ~101k stars by researchers but this number seems suspect and should be verified independently before citing.
+**Unfalsified — label them as such wherever quoted.** For each of these the correct phrasing
+is "**no evidence any competitor does this**", never "no competitor does this"; the
+non-holders are mostly `unknown`, and for closed tools some are unfalsifiable by construction:
 
----
+- Streaming Unicode-tag sanitization <!-- cap: stream-unicode-tag-sanitization --> — 22 unknown; under active industry pressure after the 2026-09 ASCII-smuggling advisory; expect decay.
+- Hidden-character sanitization <!-- cap: hidden-char-sanitization --> — 13 unknown.
+- Memory prompt-injection isolation <!-- cap: memory-prompt-injection-isolation --> — 13 unknown, including against ChatGPT, the single most important memory competitor.
+- Encoded-payload scanning <!-- cap: encoded-payload-scanning --> — 12 unknown.
 
-## What I Take Away from This
+**Killed during the study** (the decay model in action): surrogate sanitization before DB
+persistence <!-- cap: storage-surrogate-sanitization --> — open-webui ships the same
+capability (commit 43e7eefa); its cell was `unknown` and one targeted search settled it.
+Dropped as non-claims (implementation details, not user capabilities):
+`mcp-tool-enhancement-injection`, `bedrock-persistent-client-cache`,
+`self-calibrating-token-estimator`.
 
-The pieces of Ziya I'd most like to keep are the ones that don't show up in the gap inventories above because most of the field isn't building toward them: visualization breadth used as a *normal mode of conversation* rather than a special feature, the patch pipeline that means you don't copy-paste from a chat window, AST-based code intelligence integrated as a tool the model can call, and the parallel-work model where conversations are durable across windows, servers, and provider backends. Whether any of those turn out to be lasting contributions or just the particular shape of one person's working tool is genuinely an open question, and one of the reasons I do this exercise is to keep that question honest.
+## 4. Where Ziya is behind
 
-The gaps are real and several of them — multi-user accounts, voice, image generation, mobile, a community plugin marketplace at LobeChat scale — represent large surfaces of work that Ziya simply hasn't done. The other tools aren't standing still: LobeChat and Open WebUI ship features weekly with contributor communities orders of magnitude larger than mine. For any deployment that needs teams, non-developers, or mobile access, Ziya isn't in the conversation, and that's not a surprise — it's a research vehicle that turned out to be a usable working tool, not a product targeting that surface.
+The real gaps (REPORT.md §7), after reintegration removed terminology artifacts and after the
+critic discounts (Continue removed from all contender counts; Cognition counted once; category
+errors moved to non-goals). Prevalence = live tools at score ≥3 out of 26 counting units.
+Effort classes are the study's corrected values and are **lower bounds**.
 
-The more interesting question this exercise raises is what the right shape of the gap inventory will look like in another year. A lot of what's listed above is genuinely necessary work that the field has done and Ziya hasn't. Some of it is feature-checklist material that won't matter in retrospect. And some of what currently looks like Ziya's quirks may turn out to be either widely adopted (in which case good) or convincingly demonstrated to be local maxima of one person's workflow (in which case also good — it's information). I revisit this document partly to keep an honest accounting and partly because it's the most useful place to notice when my mental model of the field is out of date.
+| gap | prevalence | best | effort (corrected) | notes |
+|---|---:|---:|---|---|
+| lifecycle-hooks <!-- cap: lifecycle-hooks --> | 11 | 5 | MEDIUM | pre/post-tool and session hooks; extension points exist, no architectural conflict |
+| git-worktree-parallel-isolation <!-- cap: git-worktree-parallel-isolation --> | 12 | 4 | MEDIUM→**LARGE** | provisioning is the easy 20%; `merge_back` (conflict policy, partial-merge failure) is the capability and was unpriced |
+| github-repo-sync-export <!-- cap: github-repo-sync-export --> | 12 | 4 | SMALL | push/PR round-trip from the harness; git-mcp-server exists to build on |
+| lint-test-fix-repair-loop <!-- cap: lint-test-fix-repair-loop --> | 12 | 4 | SMALL–MEDIUM | Ziya corrected to maturity 2: the deterministic exit gate is unimplemented (`block_executor.py:2706`) and there is no zero-authoring auto-fire after edits |
+| browser-automation / computer-use <!-- cap: browser-automation-computer-use --> | 10 | 5 | MEDIUM→**LARGE** | one-shot screenshot plumbing exists; persistent agent-driven sessions are what vendors treated as multi-quarter |
+| auto-context-compaction (input-side) <!-- cap: auto-context-compaction --> | 7 | 4 | MEDIUM | the continuation ladder handles output overflow only; input compaction is explicitly not built |
+| sandboxed-execution-runtime <!-- cap: sandboxed-execution-runtime --> | — | — | MEDIUM→**ARCHITECTURAL** | kernel confinement per task_scope changes the trust model; the allowlist engine is the compensating control for its absence — the study's most decision-relevant correction |
+| llm-observability-tracing <!-- cap: llm-observability-tracing --> | 8 | 4 | MEDIUM | request/trace inspection for debugging agent runs |
+| multi-model-comparison-arena <!-- cap: multi-model-comparison-arena --> | 3 | 5 | MEDIUM | big-AGI Beam-style fan-out compare; low prevalence, high fit |
+| fast-apply-merge-model <!-- cap: fast-apply-merge-model --> | **1 live** | 5 | MEDIUM | single live contender (Cursor), vendor-benchmark evidence; watch item, not a build item |
+| image-generation <!-- cap: image-generation --> | 8 | 5 | SMALL | modality tension with the streaming-text core |
+| internationalization-i18n <!-- cap: internationalization-i18n --> | 8 | 5 | (non-goal) | real prevalence; accepted cost |
+
+At dimension level the 17 depth-phase BEHIND verdicts sharpen the same picture: Ziya's CLI is
+a second-class citizen next to claude-code/codex-cli/amp (headless subcommands, one-shot/stdin
+piping, model switching, goal-autonomous mode, git-aware review), and document-ingestion
+breadth (Ziya mean 2.49 vs field 2.81) trails the self-hosted chat UIs (docx, pptx,
+pdf-rag-index, web-search-tool).
+
+## 5. Contested capabilities, quantified
+
+Depth run `r2-20260830`: 108 head-to-head records against dimension registry 1.0.0
+(REPORT.md §8). Verdict × confidence:
+
+| verdict | n | high conf | medium | low |
+|---|---:|---:|---:|---:|
+| ZIYA_AHEAD | 42 | 3 | 37 | 2 |
+| PARITY | 31 | 0 | 29 | 2 |
+| ZIYA_BEHIND | 17 | 0 | 16 | 1 |
+| INDETERMINATE | 18 | 5 | 11 | 2 |
+
+AHEAD concentrates in visualization (2 of the 3 high-confidence AHEADs), streaming
+robustness, scheduling/resumption, memory, and export; BEHIND concentrates in CLI surface and
+document extraction. Standing caveats: 93 of 108 records are medium confidence; Ziya's side
+is tier A/B while 72% of competitor dimension scores are C/D, so one-point margins are inside
+the evidence-quality gap; and **275 of the 380 contested capabilities have no depth record at
+all** — their head-to-head is unquantified. Full per-record tables:
+`.ziya/complandscape/60-synthesis/s1-20260910/APPENDIX-A-head-to-head.md` (per-tool scorecards
+in `APPENDIX-B-tool-scorecards.md`, gap register in `APPENDIX-C-gap-register.md`).
+
+## 6. Deliberate non-goals
+
+28 capabilities the study confirmed absent by mechanism are decisions, not gaps — each with a
+rationale and a stated cost (local-first single-operator trust model; served web-SPA + CLI
+rather than an in-IDE editor; no infrastructure provisioning; BYO-credentials brokerage;
+streaming-text core with no generative media). They are documented once, with per-capability
+rationale and cost, in `Docs/DesignPhilosophy.md` § "What Ziya Deliberately Does Not Do"; this
+document does not duplicate them. The competitive consequence worth stating here: the single
+most prevalent capability Ziya declines is multiuser accounts/RBAC (16 live tools at ≥3), and
+the two top-priority entries in the raw gap queue (proprietary co-designed model, managed
+model gateway/billing, both 96.2) are category errors as build items but real strategic
+pressure — users who will not bring their own keys.
+
+## 7. Count corrections
+
+Capability ids are frozen (registry keys on them), so over-splitting is reported here as
+count corrections, not renames (Critic A, `60-critique-ziya.json`; carried in REPORT.md §3/§6):
+
+- **Read "88 unique capabilities / 70 strong claims" as ~15–20 distinct differentiators**, because the queue's `claim_strength` counted `not_applicable` as support (54 of 70 STRONG claims are n/a-majority; 28 have ≤2 genuine absents; 9 are pure tautologies with all 27 competitors n/a), 48 of the 88 entries are fan-out from five subsystems (export 14, diff 12, viz 10, sched 8, taskcard 4), and one claim was killed outright by a competitor counterexample.
+- **Read the ledger's five maturity-5 capabilities as two subsystems**, because three of the five (`approval-root-signer-cli`, `escalation-config-signature-gate`, `signed-task-scope-approval-store`) are one Ed25519 root-signed scope-escalation mechanism viewed from three angles; the others are the shell-allowlist engine and mermaid spec-repair.
+- **Read the four `sched-resume-*` ids as one capability** ("resumable scheduled runs at block/iteration/fanout/call granularity"), the two superseded-diff ids as one behavior, and the 12 diff-* unique entries as one apply cascade — each cluster is one differentiator counted multiple times.
+- **Read raw ledger id counts (467 capabilities; subsystem counts like diff 31, viz 31) as cluster sizes, not feature counts**, because internal plumbing (CLI route registration, shared args, entry points) is recorded as maturity-4 capabilities.
+- **Read "24 terminology artifacts (18.8% of investigated gaps)" as ~18 solid + 6 partial (~14–18%)**, because the critic's re-audit found 6 of the 24 FOUND verdicts were partial mechanisms stretched to FOUND.
+- **Read gap-queue contender counts after removing Continue and merging Cognition** (Critic B): 20 of 54 entries had `roster_tools_at_3plus` inflated by the discontinued Continue and/or the windsurf+devin same-vendor double count, including 5 of the top 10 by priority; `fast-apply-merge-model` drops to a single live contender.
