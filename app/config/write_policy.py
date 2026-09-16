@@ -460,7 +460,14 @@ class WritePolicyManager:
                 # matched a ".ziya" safe entry. All callers supply project_root,
                 # so the normalized project-relative check above is sufficient.
 
-        rel = resolved[len(project_root):].lstrip(os.sep) if (project_root and resolved.startswith(project_root)) else raw
+        # Patterns are project policy: a glob matches only a target that
+        # resolves inside project_root. The former fallback matched the raw
+        # string (and its basename) when the target was outside the root, so
+        # "*.md" also approved /etc/foo.md; and the containment test lacked
+        # a separator, so a sibling "<root>2/" counted as inside.
+        rel = _project_relative(resolved, project_root)
+        if rel is None:
+            return False
         for raw_pattern in self._policy.get('allowed_write_patterns', []):
             # Handle comma-separated patterns that were stored as a single
             # entry (e.g. "*.txt,*.md") by the frontend input field.
@@ -469,6 +476,19 @@ class WritePolicyManager:
                 if pattern and (fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(os.path.basename(rel), pattern)):
                     return True
         return False
+
+
+def _project_relative(resolved: str, project_root: str) -> Optional[str]:
+    """*resolved* (already normalized) relative to *project_root*, or None
+    when it is not the root or a descendant of it (or there is no root)."""
+    if not project_root:
+        return None
+    root = os.path.normpath(project_root)
+    if resolved == root:
+        return ""
+    if resolved.startswith(root + os.sep):
+        return resolved[len(root) + 1:]
+    return None
 
 
 _manager: Optional[WritePolicyManager] = None
