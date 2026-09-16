@@ -53,7 +53,7 @@ logger = logging.getLogger(__name__)
 PASS_ARTIFACT_RETENTION_CAP = 50
 """Max passing iterations whose full Artifact is persisted per Repeat."""
 
-MAX_CALL_DEPTH = 5
+MAX_CALL_DEPTH = 8
 """Maximum nesting of Call blocks within a single run.
 
 A cap is needed in addition to cycle detection: an acyclic call graph can
@@ -2665,9 +2665,11 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
         # set the layer-3 contract is that only the evaluator decides.  So
         # require either the agent's own explicit obstacle report, or
         # failure TOGETHER WITH no new information:
-        #   - objective_met="partial" — the agent reporting a real obstacle
-        #     rather than a verdict on the goal; deliberate, and the honest
-        #     form of the run-2e1fbe76 failure this breaker exists for; or
+        #   - objective_met="partial" AND the summary is unchanged — the
+        #     agent reporting the same obstacle twice.  A lone "partial" is
+        #     not enough: in a repair loop it is the honest step-level
+        #     answer whenever work remains, and counting it alone stopped
+        #     GFX Stage 2 at iteration 2 while the ledger was advancing; or
         #   - the iteration failed AND its summary is unchanged, i.e. it
         #     went wrong and told us nothing we did not already know.
         # THREE in a row are still required, so a loop that is genuinely
@@ -2676,10 +2678,8 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
         raw_sa = getattr(artifact, "self_assessment", None) or {}
         sig_now = _iteration_signature(artifact)
         repeated = prev_sig is not None and sig_now == prev_sig
-        stalled = (
-            (raw_sa.get("objective_met") or "").strip().lower() == "partial"
-            or (bool(artifact.failed) and repeated)
-        )
+        partial = (raw_sa.get("objective_met") or "").strip().lower() == "partial"
+        stalled = repeated and (partial or bool(artifact.failed))
         prev_sig = sig_now
         stall_streak = stall_streak + 1 if stalled else 0
         if stall_streak >= _UNTIL_STALL_LIMIT:

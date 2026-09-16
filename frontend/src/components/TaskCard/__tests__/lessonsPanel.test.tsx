@@ -142,4 +142,27 @@ describe('LessonsPanel', () => {
     fireEvent.click(btn);
     expect(mockRevert).not.toHaveBeenCalled();
   });
+
+  it('renders a judge failure as an error with its raw-reply excerpt, not as an accept', async () => {
+    // A judge outage used to be ledgered as verdict "accept" and shown
+    // as a green lesson row; the row must now name the failure and
+    // expose enough of the reply to diagnose it.
+    mockLessons.mockResolvedValue({
+      card_id: 'c1', count: 1, edits_applied: 0, judge_errors: 1,
+      lessons: [{
+        card_id: 'c1', block_id: 'b-err', revision: 0,
+        verdict: 'error', error: 'unparseable',
+        rationale: 'judge unparseable: no JSON object in reply',
+        reply_excerpt: '{"verdict": "revise", "rationale": "the instr',
+        reply_len: 8123, applied: false, ts: 1700000000,
+      }],
+    });
+    const { container } = mount();
+    openPanel(container);
+    expect(await screen.findByText('judge error: unparseable')).toBeInTheDocument();
+    expect(screen.getByText('{"verdict": "revise", "rationale": "the instr')).toBeInTheDocument();
+    expect(screen.getByText(/1 judge error/)).toBeInTheDocument();
+    expect(screen.queryByText('accept')).toBeNull();
+    expect(screen.queryByText('Revert')).toBeNull();
+  });
 });
