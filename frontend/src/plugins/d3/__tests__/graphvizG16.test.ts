@@ -158,9 +158,22 @@ describe('D-128 colour normalisation (recovery)', () => {
         expect(normalizeGraphvizColors(raw)).toContain('fillcolor=cornflowerblue');
     });
 
-    it('leaves resolvable colours untouched', () => {
+    it('snaps rebeccapurple in a colour attribute to hex (w4-06)', () => {
+        // rebeccapurple is a CSS4 name graphviz's X11 scheme lacks: Viz.js
+        // falls it back to #000000 (a black slab). Direction: present in a
+        // colour attr pre-fix, must become #663399 (the CSS hex).
+        const raw = 'digraph{b[fillcolor="rebeccapurple" fontcolor="#ffffff"]}';
+        expect(raw).toContain('rebeccapurple'); // direction: unresolved -> black
+        const out = normalizeGraphvizColors(raw);
+        expect(out).toContain('fillcolor="#663399"');
+        expect(out).not.toMatch(/rebeccapurple/i);
+        expect(out).not.toContain('#000000');
+    });
+
+    it('leaves resolvable colours untouched (and rebeccapurple only in a colour attr)', () => {
+        // teal + #663399 resolve in graphviz; `b=` is NOT a colour attribute,
+        // so rebeccapurple there is a plain identifier and stays untouched.
         const raw = 'digraph{a[fillcolor="#663399" color=teal b=rebeccapurple]}';
-        // rebeccapurple/teal/#663399 all resolve in graphviz -> unchanged
         expect(normalizeGraphvizColors(raw)).toBe(raw);
     });
 });

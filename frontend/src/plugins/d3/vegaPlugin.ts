@@ -1094,7 +1094,17 @@ export function buildVegaEmbedOptions(
   // These live in `config.axis` (DEFAULTS), so a spec's own `axes[]` properties
   // still win, and ordinary charts — whose labels neither collide nor overrun
   // 180px — render byte-for-byte as before.
-  const config: Record<string, any> = { axis: { labelOverlap: true, labelLimit: 0 } };
+  // (D-267 regression fix) labelLimit is a FINITE 320px, not 0. D-280/D-281
+  // wanted labels to stop truncating to identical ~26-char prefixes at the 180px
+  // default; 0 (unlimited) went too far. A left-axis band of ~180-char category
+  // names (vega-w2-04) then rendered every label at full width, so getBBox
+  // ballooned the measured width past 3x the authored canvas and the D-283
+  // flood-clip cut the whole chart (or, un-clipped, squeezed the bars into a
+  // sliver). 320px still disambiguates prefixes up to ~45 chars (well beyond the
+  // 180px default's ~26) yet caps the pathological long labels with an ellipsis,
+  // so the bbox stays near the authored width and the bars keep their extent.
+  const AXIS_LABEL_LIMIT_PX = 320;
+  const config: Record<string, any> = { axis: { labelOverlap: true, labelLimit: AXIS_LABEL_LIMIT_PX } };
   if (isDarkMode) {
     // Readable default text-mark fill in dark (raw {type:'text'} marks are never
     // restyled by vega-embed's 'dark' theme; #e6e6e6 = 10.12:1 on #333333).
@@ -1534,6 +1544,18 @@ export const vegaPlugin: D3RenderPlugin = {
     // makes Vega re-tick / re-lay text at real pixel size, aspect preserved.
     const authoredSpecW = typeof vegaSpec.width === 'number' ? vegaSpec.width : 0;
     const authoredSpecH = typeof vegaSpec.height === 'number' ? vegaSpec.height : 0;
+    // (D-267 regression fix) The dims postRenderSizing/resolveVegaViewBox must
+    // compare the rendered bbox against. For a NORMAL spec this stays the
+    // authored canvas (so the D-283 world-flood clip still fires). But once we
+    // RE-TICK an intrinsically un-scalable canvas below, the scenegraph is
+    // legitimately laid out at the RE-TICK size, not the authored size — and a
+    // tiny (w2-09 70×45) or ultra-tall (w2-08 110×1600) authored canvas would
+    // otherwise make resolveVegaViewBox see the re-ticked bbox as a >3x "flood"
+    // of the authored viewport and CLIP the good chart back down to a sliver.
+    // (That clip landed after D-267 was first verified — it is the regression.)
+    // Track the effective sizing base so the flood test compares like with like.
+    let sizingBaseW = authoredSpecW;
+    let sizingBaseH = authoredSpecH;
     try {
       const containerW0 = container.getBoundingClientRect().width || 0;
       const retick = computeReTickDimensions(authoredSpecW, authoredSpecH, containerW0);
@@ -1541,6 +1563,9 @@ export const vegaPlugin: D3RenderPlugin = {
         result.view.width(retick.width).height(retick.height);
         if (typeof result.view.runAsync === 'function') await result.view.runAsync();
         else if (typeof result.view.run === 'function') result.view.run();
+        // The content now lives at the re-tick size; measure the flood against it.
+        sizingBaseW = retick.width;
+        sizingBaseH = retick.height;
       }
     } catch { /* re-tick is best-effort; never break a render */ }
 
@@ -1577,7 +1602,10 @@ export const vegaPlugin: D3RenderPlugin = {
       // canvas by many multiples; getBBox would then shrink the intended
       // regional map to a few percent. When the content floods far beyond the
       // authored viewport, honour the authored viewport and CLIP the spill.
-      const vb = resolveVegaViewBox(authoredSpecW, authoredSpecH, bboxX, bboxY, svgW, svgH);
+      // (D-267 regression fix) Compare the bbox against the EFFECTIVE sizing
+      // base (re-tick dims when we re-ticked, else the authored canvas), so a
+      // legitimately re-laid-out tiny/tall canvas is not mistaken for a flood.
+      const vb = resolveVegaViewBox(sizingBaseW, sizingBaseH, bboxX, bboxY, svgW, svgH);
       const usedW = vb.w, usedH = vb.h;
 
       // Set viewBox so ALL content is visible (or, for a flood, the authored

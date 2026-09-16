@@ -103,12 +103,22 @@ export function extractExplicitDimensions(spec: any): { width: number; height: n
  * requested canvas is laid out and captured. 'fixed' plugins already receive the
  * explicit props unchanged, and a spec without explicit dims returns null so the
  * responsive default is preserved verbatim.
+ *
+ * A plugin that ownsSpecDimensions is excluded: for it, `width`/`height` are
+ * document properties (a Vega-Lite plot-area size), not a canvas. Pinning the
+ * container to them is actively wrong — with width:'container' Vega measures
+ * that pinned box, emits an SVG of exactly that width, and once the container
+ * is later released to 100% the responsive `svg { width:100% }` rule scales the
+ * SVG (and its viewBox content) up to fill it, leaving an oversized chart and a
+ * chart-sized blank beneath it once the wrappers adopt the inflated height.
  */
 export function resolveContainerDimensions(
     spec: any,
     sizingStrategy: string | undefined,
+    plugin?: { ownsSpecDimensions?: boolean } | null,
 ): { width: string; height: string } | null {
     if (sizingStrategy === 'fixed') return null;
+    if (plugin?.ownsSpecDimensions) return null;
     const dims = extractExplicitDimensions(spec);
     if (!dims) return null;
     return { width: `${dims.width}px`, height: `${dims.height}px` };
