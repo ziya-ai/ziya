@@ -163,6 +163,55 @@ div.diff-view.smaller-diff-view.diff-view-split > table.diff-table > tbody > tr 
   transform: translateY(-50%);
 }
 
+/* Per-conversation ephemeral indicator, pinned to the top of the chat
+   window (see EphemeralChatBanner.tsx). Distinct from .ephemeral-badge,
+   which marks the server-wide ephemeral *mode* in the app header. */
+.ephemeral-chat-banner {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  font-size: 13px;
+  line-height: 1.3;
+  color: #7a2e0e;
+  background: linear-gradient(180deg, #fff1e6 0%, #ffe4d1 100%);
+  border-bottom: 1px dashed #ee5a24;
+  border-radius: 6px 6px 0 0;
+}
+
+.ephemeral-chat-banner-icon {
+  font-size: 15px;
+  line-height: 1;
+}
+
+.ephemeral-chat-banner-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.ephemeral-chat-banner-keep {
+  flex-shrink: 0;
+}
+
+/* Tint the whole chat surface while an ephemeral chat is active so the
+   state is legible even when scrolled past the banner. */
+.chat-container:has(> .ephemeral-chat-banner) {
+  border: 1px dashed #ee5a24 !important;
+}
+
+body.dark .ephemeral-chat-banner {
+  color: #ffc9a8;
+  background: linear-gradient(180deg, rgba(238, 90, 36, 0.22) 0%, rgba(238, 90, 36, 0.14) 100%);
+  border-bottom-color: rgba(255, 140, 90, 0.7);
+}
+
+body.dark .chat-container:has(> .ephemeral-chat-banner) {
+  border-color: rgba(255, 140, 90, 0.7) !important;
+}
+
 .dark .app-header {
   background: linear-gradient(90deg, #18121b 0%, #0d2220 100%);
   border-bottom-color: #303030;
