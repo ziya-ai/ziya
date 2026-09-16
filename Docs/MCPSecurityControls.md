@@ -51,6 +51,8 @@ All subprocess calls use `shell=False`. The server parses shell features (pipes,
 
 A second security layer after the allowlist catches output redirection, in-place edits (`sed -i`), destructive commands (`rm`, `mv` on project files), and interpreter escapes. Write operations are restricted to approved paths (`.ziya/`, `/tmp/`, configured patterns).
 
+Relative write targets are judged against the directory the segment will actually run in, not blindly against the project root: the checker simulates each `cd` in the command (`cd /tmp && cp a b` writes `/tmp/b`; `cd ~ && cp x .ziya/y` writes into the *global* `~/.ziya`, and is refused). Only literal `cd` targets are modelled. After `cd $VAR`, `cd -`, or a `cd` inside a loop body / brace group the cwd is treated as unknown and any relative write target is refused — the denial says so, and an absolute path is the fix. Where control flow leaves the directory ambiguous (`cd x; …`, `a || cd x && …`, a `cd` inside a pipeline) the target must be permitted under every directory it could resolve to. Denials name the resolved path, e.g. `'cp b' blocked … (resolves to /path/to/project/b)`.
+
 **Module:** `app/mcp/client.py` — policy block detection
 
 When the shell server rejects a command (BLOCKED or WRITE BLOCKED), the MCP client recognizes the rejection as a permanent policy violation and returns immediately without retrying. The error is tagged with `policy_block: True` so the streaming executor can provide clear feedback to the model indicating the command is permanently blocked and should not be reattempted.
