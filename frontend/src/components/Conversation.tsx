@@ -25,6 +25,7 @@ import { useTaskBindings } from '../hooks/useTaskBindings';
 import { isRunOver } from './TaskCard/runControls';
 import { MessageIdContext } from '../context/MessageIdContext';
 import { useCopyCleanup } from '../hooks/useCopyCleanup';
+import { getSharedScrollVelocityTracker } from '../utils/scrollVelocity';
 
 // Lazy load the MarkdownRenderer
 import { MarkdownRenderer } from "./MarkdownRenderer";
@@ -94,6 +95,20 @@ const __processMessageQueue = () => {
     __mq(`scheduling rIC (queue=${__messageRenderQueue.length}, timeout=500)`);
     __rIC((deadline?: IdleDeadline) => {
         __mq(`rIC fired after wait=${(performance.now() - __messageQueueScheduledAt).toFixed(0)}ms (queue=${__messageRenderQueue.length})`);
+        // Hold the queue while the user is flinging through the conversation.
+        // Every mount here swaps an estimated-height shell for real content,
+        // and doing that above/below a fast-moving viewport shifts the
+        // document under the user (and steals main-thread time from the
+        // gesture).  Nothing in this queue is visible — visible shells mount
+        // via the observer path below — so waiting costs the user nothing.
+        // The rIC timeout means we re-check within ~100ms regardless.
+        const tracker = getSharedScrollVelocityTracker();
+        if (tracker?.isFlinging()) {
+            __messageQueueProcessing = false;
+            __mq(`hold: user is flinging (v=${tracker.velocity().toFixed(1)}px/ms, queue=${__messageRenderQueue.length})`);
+            setTimeout(__processMessageQueue, 100);
+            return;
+        }
         __messageRenderQueue.sort((a, b) => b.priority - a.priority);
         __messageQueueProcessing = false;
 
@@ -177,6 +192,10 @@ if (typeof document !== 'undefined') {
 // cost is negligible compared with observer machinery.
 const INLINE_THRESHOLD_CHARS = 400;
 
+// Must match the observer's rootMargin below: used to re-check whether a
+// deferred shell is still near the viewport once a fling settles.
+const PRELOAD_MARGIN_PX = 500;
+
 const LazyMarkdownRenderer: React.FC<React.ComponentProps<typeof MarkdownRenderer>> = (props) => {
     const { markdown } = props;
     const isSmall = (markdown?.length || 0) < INLINE_THRESHOLD_CHARS;
@@ -209,39 +228,74 @@ const LazyMarkdownRenderer: React.FC<React.ComponentProps<typeof MarkdownRendere
         __processMessageQueue();
 
         let observer: IntersectionObserver | null = null;
+        let unsubscribeSettle: (() => void) | null = null;
+
+        // Bypass the queue: mount visible items immediately instead of
+        // waiting for an rIC slot.  Going through the queue serializes
+        // mounts one-per-idle-callback, which causes observable scroll
+        // freezes — each rIC can fire mid-scroll and block for 100-300ms
+        // while a heavy MarkdownRenderer mounts.  Direct setMounted lets
+        // React batch concurrent mounts that arrive in the same frame.
+        const mountNow = (via: string) => {
+            if (mountedRef.current) return;
+            const idx = __messageRenderQueue.indexOf(entry);
+            // Traced because this path bypasses the queue entirely: on-screen
+            // messages mount here and never wait for an rIC slot, so a queue
+            // stall cannot explain blank text for a message that is visible.
+            __mq(`${via} -> immediate mount ${entry.label} (was queued at idx ${idx})`);
+            if (idx >= 0) __messageRenderQueue.splice(idx, 1);
+            mountedRef.current = true;
+            setMounted(true);
+            observer?.disconnect();
+            if (unsubscribeSettle) { unsubscribeSettle(); unsubscribeSettle = null; }
+        };
+
+        // Is the placeholder still within the preload band?  Checked when a
+        // fling settles, because the observer only reports *transitions*: if
+        // the shell entered and then left the band during the fling, the
+        // observer has already told us it left, and we must not mount it.
+        const isNearViewport = () => {
+            const el = placeholderRef.current;
+            if (!el) return false;
+            const r = el.getBoundingClientRect();
+            const vh = window.innerHeight || document.documentElement.clientHeight;
+            return r.bottom >= -PRELOAD_MARGIN_PX && r.top <= vh + PRELOAD_MARGIN_PX;
+        };
+
         if (placeholderRef.current && typeof IntersectionObserver !== 'undefined') {
             observer = new IntersectionObserver((entries) => {
                 for (const e of entries) {
-                    if (e.isIntersecting) {
-                        // Bypass the queue: mount visible items immediately
-                        // instead of waiting for an rIC slot.  Going through
-                        // the queue serializes mounts one-per-idle-callback,
-                        // which causes observable scroll freezes — each rIC
-                        // can fire mid-scroll and block for 100-300ms while a
-                        // heavy MarkdownRenderer mounts.  Direct setMounted
-                        // lets React batch concurrent mounts that arrive in
-                        // the same frame.
-                        const idx = __messageRenderQueue.indexOf(entry);
-                        // Traced because this path bypasses the queue entirely:
-                        // on-screen messages mount here and never wait for an
-                        // rIC slot, so a queue stall cannot explain blank text
-                        // for a message that is visible. Distinguishing "mounted
-                        // via observer" from "waited in queue" tells us whether
-                        // the render queue is even the right layer to suspect.
-                        __mq(`observer bypass -> immediate mount ${entry.label} (was queued at idx ${idx})`);
-                        if (idx >= 0) __messageRenderQueue.splice(idx, 1);
-                        mountedRef.current = true;
-                        setMounted(true);
-                        observer?.disconnect();
+                    if (!e.isIntersecting) continue;
+
+                    // Fling gate.  If the user is scrolling fast, this shell
+                    // is just passing through: mounting it now would stall
+                    // the gesture for 100-300ms and swap its estimated
+                    // height for the real one under a moving viewport.  Leave
+                    // it as a shell and re-check once scrolling settles.  A
+                    // slow, reading-speed scroll is unaffected — it still
+                    // mounts immediately with the 500px preload.
+                    const tracker = getSharedScrollVelocityTracker();
+                    if (tracker?.isFlinging()) {
+                        if (!unsubscribeSettle) {
+                            __mq(`fling: deferring ${entry.label} until scroll settles`);
+                            unsubscribeSettle = tracker.onSettle(() => {
+                                unsubscribeSettle = null;
+                                if (!mountedRef.current && isNearViewport()) mountNow('settle');
+                            });
+                        }
                         break;
                     }
+
+                    mountNow('observer bypass');
+                    break;
                 }
-            }, { rootMargin: '500px 0px' }); // 500px preload
+            }, { rootMargin: `${PRELOAD_MARGIN_PX}px 0px` }); // preload band
             observer.observe(placeholderRef.current);
         }
 
         return () => {
             observer?.disconnect();
+            if (unsubscribeSettle) unsubscribeSettle();
             const idx = __messageRenderQueue.indexOf(entry);
             if (idx >= 0) __messageRenderQueue.splice(idx, 1);
         };
