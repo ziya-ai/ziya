@@ -315,7 +315,17 @@ export function ChatProvider({ children }: ChatProviderProps) {
     // works without retaining the previous Set.
     const prevStreamingCountRef = useRef<number>(0);
 
-    const removedStreamingIds = useRef<Set<string>>(new Set());
+    // Conversation ids whose streaming state was learned from ANOTHER tab's
+    // BroadcastChannel messages (streaming-chunk / streaming-state) rather
+    // than from this tab's own sendPayload.  Kept separate because:
+    //  1. syncWithServer skips polling while this tab is streaming, on the
+    //     grounds that its own state is authoritative mid-turn.  That does
+    //     not hold for a stream another tab owns — we write nothing for it —
+    //     so remote ids must not gate the poll.
+    //  2. Their `streaming-ended` arrives only on the channel we learned
+    //     them on.  Leaving that channel (project switch) means it can never
+    //     arrive, so they must be dropped on leave or they pin the set forever.
+    const remoteStreamingIdsRef = useRef<Set<string>>(new Set());
     // Epoch counter — bumped on every project-switch effect firing.  Stale
     // syncs (from a previously-mounted effect, or from an in-flight periodic
     // poll that started before the user switched) detect the mismatch at
@@ -504,15 +514,15 @@ export function ChatProvider({ children }: ChatProviderProps) {
         // CRITICAL: Check if this is the CURRENT conversation
         const isCurrentConv = id === currentConversationId;
 
-        // Guard against broadcast loops: each streaming-ended broadcast triggers
-        // listeners which call this function again. Use a ref to dedup.
-        if (removedStreamingIds.current.has(id)) {
-            return;
-        }
-        removedStreamingIds.current.add(id);
-        setTimeout(() => removedStreamingIds.current.delete(id), 2000);
-
-        // Check ref to prevent processing if already removed
+        // Idempotency: skip if not currently streaming.  This is the ONLY
+        // guard — there used to be a 2s time-based dedup ref ahead of it, a
+        // leftover from before projectSync filtered a tab's own broadcasts by
+        // sender.  It checked a sync ref while addStreamingConversation wrote
+        // async state, so any remove → add → remove of the same id inside 2s
+        // (stop, resend, stop; error, retry, fast failure) swallowed the
+        // second remove and left the conversation streaming for the life of
+        // the page.  Duplicate same-tick removes cost at most a redundant
+        // streaming-ended broadcast, which receivers no-op here.
         const wasStreaming = streamingConversationsRef.current.has(id);
         if (!wasStreaming) {
             return;  // Already removed or never was streaming - skip
@@ -3053,11 +3063,20 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 if (!isServerReachable) {
                     return;
                 }
-                // Skip polling when any conversation is actively streaming.
-                // This tab's own state is authoritative during streaming; the
-                // server poll would race with addMessageToConversation /
-                // queueSave and clobber in-progress conversation data.
-                if (streamingConversationsRef.current.size > 0) return;
+                // Skip polling while THIS TAB owns a stream.  Its own state is
+                // authoritative during streaming; the server poll would race
+                // with addMessageToConversation / queueSave and clobber
+                // in-progress conversation data.  Streams owned by another tab
+                // (learned via BroadcastChannel) do not gate the poll: we hold
+                // no in-flight writes for them, and a remote id whose
+                // streaming-ended was never received would otherwise block
+                // sync for the life of the page — silently.
+                const localStreaming = Array.from(streamingConversationsRef.current)
+                    .filter(id => !remoteStreamingIdsRef.current.has(id));
+                if (localStreaming.length > 0) {
+                    console.debug(`📡 SERVER_SYNC: skipping — ${localStreaming.length} local conversation(s) streaming`);
+                    return;
+                }
                 // Skip polling when tab is not visible
                 if (document.hidden) {
                     return;
@@ -4124,13 +4143,20 @@ export function ChatProvider({ children }: ChatProviderProps) {
     useEffect(() => {
         currentConversationRef.current = currentConversationId;
         folderRef.current = currentFolderId;
-        // Timestamp when the active conversation was last set — used by the
-        // RECOVERY effect's grace period to avoid switching away from a
-        // just-created conversation during sync-merge races.
+    }, [currentConversationId, conversations, currentFolderId]);
+
+    // Timestamp when the active conversation was last SET — read by the
+    // RECOVERY effect's 60s grace period.  Keyed on the id alone: this used
+    // to live in the ref-mirror effect above, whose deps include
+    // \`conversations\`, so every list commit (each sync cycle) refreshed the
+    // stamp and a stranded id could sit under a grace that never expired
+    // ("RECOVERY_GRACE: ... set 0s ago" logged immediately after a sync
+    // commit, with the id absent from the list).
+    useEffect(() => {
         if (currentConversationId) {
             (window as any).__ziyaLastConvSetAt = Date.now();
         }
-    }, [currentConversationId, conversations, currentFolderId]);
+    }, [currentConversationId]);
 
     // Cross-tab merge.  Reads streamingConversationsRef (not the state
     // value) so the callback identity stays stable — it is a dependency of
@@ -4254,6 +4280,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             // Ensure this conversation is marked as streaming in case we missed
             // the initial streaming-state event (e.g., tab opened mid-stream).
             // Set.has is O(1); new Set is created only when actually needed.
+            remoteStreamingIdsRef.current.add(conversationId);
             setStreamingConversations(prev =>
                 prev.has(conversationId) ? prev : new Set(prev).add(conversationId));
 
@@ -4289,11 +4316,13 @@ export function ChatProvider({ children }: ChatProviderProps) {
             const { conversationId, state } = msg;
             updateProcessingState(conversationId, state);
             if (state !== 'idle') {
+                remoteStreamingIdsRef.current.add(conversationId);
                 setStreamingConversations(prev => new Set(prev).add(conversationId));
             }
         };
 
         const handleStreamingEnded = (msg: any) => {
+            remoteStreamingIdsRef.current.delete(msg.conversationId);
             removeStreamingConversation(msg.conversationId);
         };
 
@@ -4332,6 +4361,31 @@ export function ChatProvider({ children }: ChatProviderProps) {
                 chunkRafId = null;
             }
             pendingChunk = null;
+            // Leaving this channel: any stream we learned about from another
+            // tab can no longer send us its streaming-ended, so drop it now.
+            // Direct state edits, NOT removeStreamingConversation — that path
+            // re-broadcasts streaming-ended on the channel we are leaving,
+            // which would tell the owning tab its own stream has finished.
+            const remote = remoteStreamingIdsRef.current;
+            if (remote.size > 0) {
+                const dropped = new Set(remote);
+                remote.clear();
+                setStreamingConversations(prev => {
+                    const next = new Set(prev);
+                    dropped.forEach(id => next.delete(id));
+                    return next.size === prev.size ? prev : next;
+                });
+                setStreamedContentMap(prev => {
+                    const next = new Map(prev);
+                    dropped.forEach(id => next.delete(id));
+                    return next.size === prev.size ? prev : next;
+                });
+                setProcessingStates(prev => {
+                    const next = new Map(prev);
+                    dropped.forEach(id => next.delete(id));
+                    return next.size === prev.size ? prev : next;
+                });
+            }
             projectSync.off('conversations-changed', handleConversationsChanged);
             projectSync.off('conversation-created', handleConversationsChanged);
             projectSync.off('conversation-deleted', handleConversationsChanged);
