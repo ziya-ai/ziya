@@ -348,13 +348,98 @@ function isSequentialPair(earlierDiff: string, laterDiff: string): boolean {
     return earlierRemoves > 0 && earlierAdds <= 1 && laterAdds > 0;
 }
 
+// -- Content-based redo detection -------------------------------------------
+//
+// Position alone cannot recognise the most common correction an LLM makes to
+// its own failed hunk: it re-emits the same body under a different `@@`
+// header (re-anchored after a context mismatch).  Adjacent-but-disjoint
+// ranges then read as two independent edits.  These helpers judge by the
+// change lines themselves so a redo is caught wherever it was anchored.
+
+/** Change lines shorter than this, or without an alphanumeric character, are
+ *  structural noise (`}`, `);`, blank) shared by unrelated edits. */
+const MIN_SUBSTANTIVE_LINE_CHARS = 4;
+/** A body with at least this many distinct substantive lines is specific
+ *  enough that matching another body is evidence of a redo wherever the two
+ *  were anchored. */
+const MIN_LINES_FOR_POSITION_FREE_MATCH = 6;
+/** Fraction of the smaller body that must reappear in the other. */
+const REDO_OVERLAP_THRESHOLD = 0.8;
+/** Smaller bodies also need positional proximity (original-file lines
+ *  between the nearest hunk edges) — the same one-liner added at two distant
+ *  call sites is two edits, not a redo. */
+const NEAR_GAP_LINES = 10;
+
+/**
+ * The substantive change lines of a diff, sign-prefixed and trimmed.
+ * Context lines and file headers are excluded: context is positional and a
+ * re-anchored correction changes it.  Sign is kept so a later diff that
+ * REMOVES what an earlier one added is not mistaken for a repeat of it.
+ */
+export function changeSignature(diffContent: string): Set<string> {
+    const sig = new Set<string>();
+    for (const line of diffContent.split('\n')) {
+        if (line.startsWith('+++') || line.startsWith('---')) continue;
+        const sign = line[0];
+        if (sign !== '+' && sign !== '-') continue;
+        const body = line.slice(1).trim();
+        if (body.length < MIN_SUBSTANTIVE_LINE_CHARS || !/[A-Za-z0-9]/.test(body)) continue;
+        sig.add(sign + body);
+    }
+    return sig;
+}
+
+/** |A ∩ B| / min(|A|, |B|): 1.0 when the smaller body is fully contained,
+ *  so a correction that EXTENDS the original body still scores as a redo
+ *  (Jaccard would be diluted by the additions). */
+function overlapCoefficient(a: Set<string>, b: Set<string>): number {
+    if (a.size === 0 || b.size === 0) return 0;
+    let shared = 0;
+    for (const x of a) if (b.has(x)) shared++;
+    return shared / Math.min(a.size, b.size);
+}
+
+/** Smallest number of original-file lines between any two hunks of `a` and
+ *  `b` (0 when they touch or overlap; Infinity when either has no ranges). */
+function rangeGap(a: [number, number][], b: [number, number][]): number {
+    let best = Infinity;
+    for (const [aStart, aEnd] of a) {
+        for (const [bStart, bEnd] of b) {
+            best = Math.min(best, Math.max(aStart - bEnd - 1, bStart - aEnd - 1, 0));
+        }
+    }
+    return best;
+}
+
+/**
+ * True if `later` re-does `earlier`: same file (caller checks), bodies that
+ * substantially coincide, and — for bodies too small to be self-identifying —
+ * hunks anchored near each other.  New-file diffs are handled positionally
+ * by the caller and never reach here.
+ */
+function isRedo(earlier: string, later: string,
+                earlierRanges: [number, number][], laterRanges: [number, number][]): boolean {
+    if (earlierRanges.length === 0 || laterRanges.length === 0) return false;
+    const a = changeSignature(earlier);
+    const b = changeSignature(later);
+    const smaller = Math.min(a.size, b.size);
+    if (smaller === 0) return false;
+    if (overlapCoefficient(a, b) < REDO_OVERLAP_THRESHOLD) return false;
+    if (smaller >= MIN_LINES_FOR_POSITION_FREE_MATCH) return true;
+    return rangeGap(earlierRanges, laterRanges) <= NEAR_GAP_LINES;
+}
+
 /**
  * Given an ordered array of single-file diff strings, return the set of
- * indices that are superseded by a later diff for the same file with
- * overlapping hunk ranges.
+ * indices that are superseded by a later diff for the same file — either
+ * because the later hunk overlaps the earlier's line range, or because the
+ * later diff re-does the earlier's change body at a different anchor.
  *
- * Two diffs for the same file that target non-overlapping line ranges
- * are treated as independent changes and both kept.
+ * Two diffs for the same file that target non-overlapping line ranges with
+ * different bodies are treated as independent changes and both kept.  A
+ * superseded diff is faded, not forbidden: once the message settles it can
+ * still be applied, so a false positive costs a click, while a miss offers
+ * the user a hunk the model itself retracted.
  */
 export function findSupersededDiffIndices(diffs: string[]): Set<number> {
     if (diffs.length <= 1) return new Set();
@@ -388,6 +473,14 @@ export function findSupersededDiffIndices(diffs: string[]): Set<number> {
             }
 
             if (rangesOverlap(hunkRanges[i], hunkRanges[j])) {
+                if (isSequentialPair(diffs[i], diffs[j])) continue;
+                superseded.add(i);
+                break;
+            }
+
+            // Disjoint (or barely overlapping) ranges: judge by content.  This
+            // is the re-anchored-correction case the positional check misses.
+            if (isRedo(diffs[i], diffs[j], hunkRanges[i], hunkRanges[j])) {
                 if (isSequentialPair(diffs[i], diffs[j])) continue;
                 superseded.add(i);
                 break;
