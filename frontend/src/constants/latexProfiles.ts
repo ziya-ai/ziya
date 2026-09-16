@@ -32,6 +32,17 @@ export const LATEX_LANG_TO_PROFILE: Readonly<Record<string, string>> = {
   'bussproofs': 'bussproofs',
   'prooftree': 'bussproofs',
   'proof-tree': 'bussproofs',
+  // Fretted-instrument chord-diagram boxes (guitar / ukulele / bass).  The
+  // aliases are the instrument names a model reaches for.  Deliberately NO
+  // 'chord' or 'chord-diagram' alias: ```chord is already the flow-matrix
+  // renderer (plugins/d3 chord), and overloading it would silently route
+  // one notation into the other.
+  'fretboard': 'fretboard',
+  'guitar-chord': 'fretboard',
+  'guitar-chords': 'fretboard',
+  'ukulele-chord': 'fretboard',
+  'ukulele-chords': 'fretboard',
+  'chord-box': 'fretboard',
 } as const;
 
 /**
