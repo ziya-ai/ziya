@@ -1,0 +1,90 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "box",
+    "name": "control",
+    "y": [
+     12,
+     14,
+     13,
+     18,
+     21,
+     15,
+     14,
+     16,
+     19,
+     22,
+     13,
+     17
+    ],
+    "boxpoints": "all",
+    "jitter": 0.4,
+    "marker": {
+     "color": "#4c78a8"
+    }
+   },
+   {
+    "type": "box",
+    "name": "variant A",
+    "y": [
+     16,
+     19,
+     18,
+     24,
+     27,
+     21,
+     20,
+     23,
+     25,
+     29,
+     18,
+     22
+    ],
+    "boxpoints": "all",
+    "jitter": 0.4,
+    "marker": {
+     "color": "#f58518"
+    }
+   },
+   {
+    "type": "box",
+    "name": "variant B",
+    "y": [
+     11,
+     12,
+     15,
+     13,
+     17,
+     14,
+     12,
+     15,
+     16,
+     13,
+     11,
+     14
+    ],
+    "boxpoints": "all",
+    "jitter": 0.4,
+    "marker": {
+     "color": "#54a24b"
+    }
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "Conversion Rate by Cohort"
+   },
+   "yaxis": {
+    "title": {
+     "text": "Conversions per 1k"
+    },
+    "zeroline": true
+   },
+   "showlegend": false,
+   "height": 460
+  }
+ },
+ "intent": "Box plot distribution comparison with boxpoints=all, jitter and per-trace fill/line colors."
+}

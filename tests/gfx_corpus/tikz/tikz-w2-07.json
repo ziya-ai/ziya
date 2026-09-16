@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "\\draw[line width=0.6pt] (0,0) -- (79,0);\n\\foreach \\i in {0,...,79}{\n  \\pgfmathtruncatemacro{\\y}{1946+\\i}\n  \\draw (\\i,-0.12) -- (\\i,0.12);\n  \\node[font=\\tiny, rotate=90, anchor=east] at (\\i,-0.18) {\\y};\n  \\pgfmathsetmacro{\\h}{0.35+2.2*abs(sin(\\i*37))}\n  \\fill[blue!45] (\\i-0.32,0.14) rectangle (\\i+0.32,\\h);\n}\n\\node[font=\\small] at (39.5,3.4) {80-column series, aspect ratio about 22:1};",
+ "intent": "80-column bar series across an ~22:1 canvas with 80 rotated year labels: extreme wide aspect at high tick density"
+}

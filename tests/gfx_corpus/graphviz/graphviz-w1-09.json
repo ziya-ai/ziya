@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph colors { rankdir=LR; node [shape=box, style=filled]; ok [fillcolor=\"#1f4e79\", fontcolor=\"#ffffff\", label=\"navy/white\"]; warn [fillcolor=\"#ffffcc\", fontcolor=\"#000000\", label=\"yellow/black\"]; err [fillcolor=\"#7f1d1d\", fontcolor=\"#ffffff\", label=\"maroon/white\"]; mint [fillcolor=\"#06d6a0\", fontcolor=\"#000000\", label=\"mint/black\"]; ok -> warn [color=\"#1f4e79\", fontcolor=\"#1f4e79\", label=\"blue edge\"]; warn -> err [color=\"#7f1d1d\", fontcolor=\"#7f1d1d\", label=\"red edge\"]; err -> mint; }",
+ "intent": "Explicit fillcolor/fontcolor pairs authored in the spec (fully measurable contrast, incl. a light-on-light footgun-free set)"
+}

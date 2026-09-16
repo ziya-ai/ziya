@@ -1,0 +1,5 @@
+{
+ "type": "d3",
+ "definition": "{\n  // chart kind\n  \"type\": \"bar\",\n  /* five services, requests per second */\n  \"data\": [\n    {\"label\": \"alpha\", \"value\": 42},   \n    {\"label\": \"bravo\", \"value\": 37},\n    {\"label\": \"charlie\", \"value\": 58},\n    {\"label\": \"delta\", \"value\": 23},\n    {\"label\": \"echo\", \"value\": 49}\n  ]\n}",
+ "intent": "RECOVERY: // line comments and a /* block */ comment inside JSON. Intent: 5-bar chart."
+}

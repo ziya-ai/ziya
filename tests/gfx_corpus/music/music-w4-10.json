@@ -1,0 +1,36 @@
+{
+ "type": "music",
+ "definition": {
+  "time": "3/4",
+  "key": "Bb",
+  "staff": "treble",
+  "title": "Deprecated Field Names",
+  "notes": [
+   {
+    "pitch": [
+     "bb/4"
+    ],
+    "dur": "q"
+   },
+   {
+    "pitch": [
+     "d/5"
+    ],
+    "dur": "q"
+   },
+   {
+    "pitch": [
+     "f/5"
+    ],
+    "dur": "q"
+   },
+   {
+    "pitch": [
+     "bb/5"
+    ],
+    "dur": "h."
+   }
+  ]
+ },
+ "intent": "plausible-but-wrong field spellings: time/key/staff at root, pitch/dur per note"
+}

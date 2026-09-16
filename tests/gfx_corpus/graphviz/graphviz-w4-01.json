@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "```dot\ndigraph G {\n  rankdir=LR;\n  a [label=\"Fetch\"];\n  b [label=\"Parse\"];\n  c [label=\"Store\"];\n  a -> b -> c;\n}\n```",
+ "intent": "Markdown fence wrapper: model returns ```dot ... ``` around valid DOT"
+}

@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\chemfig{H_3C-[:0]C(<[:-90]H)(<:[:90]NH_2)-[:0]COOH}",
+ "intent": "Stereochemistry: Cram bonds -- bold wedge (<) toward viewer and hashed wedge (<:) away (alanine)."
+}

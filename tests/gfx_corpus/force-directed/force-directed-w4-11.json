@@ -1,0 +1,5 @@
+{
+ "type": "force-directed",
+ "definition": "{\n  \"type\": \"force-directed\",\n  \"nodes\": [\n    {\"id\": \"api\", \"color\": \"#08f\"},\n    {\"id\": \"auth\", \"color\": \"#f80\"},\n    {\"id\": \"db\", \"color\": \"#093\"},\n    {\"id\": \"cache\", \"color\": \"#c3c\"},\n    {\"id\": \"queue\", \"color\": \"#e14\"},\n    {\"id\": \"worker\", \"color\": \"#357\"}\n  ],\n  \"links\": [\n    {\"source\": \"api\", \"target\": \"auth\"},\n    {\"source\": \"api\", \"target\": \"cache\"},\n    {\"source\": \"auth\", \"target\": \"db\"},\n    {\"source\": \"api\", \"target\": \"queue\"},\n    {\"source\": \"queue\", \"target\": \"worker\"},\n    {\"source\": \"worker\", \"target\": \"db\"}\n  ],\n  \"style\": {\"linkColor\": \"#468\", \"labelColor\": \"#222\"}\n}",
+ "intent": "RECOVERY-COLOR: three-digit shorthand hex for every node fill plus style.linkColor/labelColor. CSS-legal, and d3.color parses it, but any hand-rolled /^#[0-9a-f]{6}$/ validator rejects it. Intent: six distinctly coloured nodes."
+}

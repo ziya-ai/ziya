@@ -1,0 +1,556 @@
+{
+ "schema": 1,
+ "engine": "tikz",
+ "specs": {
+  "tikz-w1-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.642964Z"
+    }
+   ]
+  },
+  "tikz-w1-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.646613Z"
+    }
+   ]
+  },
+  "tikz-w1-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.648995Z"
+    }
+   ]
+  },
+  "tikz-w2-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.651771Z"
+    }
+   ]
+  },
+  "tikz-w2-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.654353Z"
+    }
+   ]
+  },
+  "tikz-w3-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.657242Z"
+    }
+   ]
+  },
+  "tikz-w3-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.661134Z"
+    }
+   ]
+  },
+  "tikz-w3-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.663702Z"
+    }
+   ]
+  },
+  "tikz-w4-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.666587Z"
+    }
+   ]
+  },
+  "tikz-w4-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.670051Z"
+    }
+   ]
+  },
+  "tikz-w1-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-233",
+     "signature": "author-color-below-floor-on-dark-plate:dark",
+     "at": "2026-09-15T08:56:14.542418Z"
+    }
+   ]
+  },
+  "tikz-w1-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-233",
+     "signature": "author-color-below-floor-on-dark-plate:dark",
+     "at": "2026-09-15T08:56:14.545923Z"
+    }
+   ]
+  },
+  "tikz-w1-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-233",
+     "signature": "author-color-below-floor-on-dark-plate:dark",
+     "at": "2026-09-15T08:56:14.550164Z"
+    }
+   ]
+  },
+  "tikz-w1-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-233",
+     "signature": "author-color-below-floor-on-dark-plate:dark",
+     "at": "2026-09-15T08:56:14.554846Z"
+    }
+   ]
+  },
+  "tikz-w2-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-233",
+     "signature": "author-color-below-floor-on-dark-plate:dark",
+     "at": "2026-09-15T08:56:14.558927Z"
+    }
+   ]
+  },
+  "tikz-w2-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-233",
+     "signature": "author-color-below-floor-on-dark-plate:dark",
+     "at": "2026-09-15T08:56:14.564269Z"
+    },
+    {
+     "origin": "D-238",
+     "signature": "categorical-palette-recycles-toward-surface:light",
+     "at": "2026-09-15T08:56:14.586449Z"
+    }
+   ]
+  },
+  "tikz-w2-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-233",
+     "signature": "author-color-below-floor-on-dark-plate:dark",
+     "at": "2026-09-15T08:56:14.567940Z"
+    }
+   ]
+  },
+  "tikz-w1-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-234",
+     "signature": "light-default-ink-on-pale-author-fill:dark",
+     "at": "2026-09-15T08:56:14.572176Z"
+    }
+   ]
+  },
+  "tikz-w3-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-234",
+     "signature": "light-default-ink-on-pale-author-fill:dark",
+     "at": "2026-09-15T08:56:14.576306Z"
+    }
+   ]
+  },
+  "tikz-w3-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-234",
+     "signature": "light-default-ink-on-pale-author-fill:dark",
+     "at": "2026-09-15T08:56:14.580049Z"
+    }
+   ]
+  },
+  "tikz-w4-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-234",
+     "signature": "light-default-ink-on-pale-author-fill:dark",
+     "at": "2026-09-15T08:56:14.583835Z"
+    }
+   ]
+  },
+  "tikz-w2-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-239",
+     "signature": "explicit-width-height-ignored",
+     "at": "2026-09-15T08:56:14.591234Z"
+    }
+   ]
+  },
+  "tikz-w2-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-239",
+     "signature": "explicit-width-height-ignored",
+     "at": "2026-09-15T08:56:14.596505Z"
+    }
+   ]
+  },
+  "tikz-w2-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-240",
+     "signature": "aspect-ratio-collapses-tick-labels",
+     "at": "2026-09-15T08:56:14.600892Z"
+    }
+   ]
+  },
+  "tikz-w2-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-241",
+     "signature": "pgfmath-dimen-overflow-at-high-index",
+     "at": "2026-09-15T08:56:14.605155Z"
+    }
+   ]
+  },
+  "tikz-w4-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-247",
+     "signature": "rgba-rewrite-inside-definecolor-model-fatal",
+     "at": "2026-09-15T08:56:14.609430Z"
+    }
+   ]
+  },
+  "tikz-w4-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-248",
+     "signature": "inline-usetikzlibrary-stripped-shape-undefined",
+     "at": "2026-09-15T08:56:14.613555Z"
+    }
+   ]
+  },
+  "tikz-w4-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-249",
+     "signature": "trailing-serialised-newline-defeats-restore-fatal",
+     "at": "2026-09-15T08:56:14.619801Z"
+    }
+   ]
+  },
+  "tikz-w4-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-250",
+     "signature": "raw-hash-in-option-value-fatal",
+     "at": "2026-09-15T08:56:14.626050Z"
+    }
+   ]
+  },
+  "tikz-w4-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-251",
+     "signature": "missing-path-semicolon-fatal",
+     "at": "2026-09-15T08:56:14.632279Z"
+    }
+   ]
+  }
+ }
+}

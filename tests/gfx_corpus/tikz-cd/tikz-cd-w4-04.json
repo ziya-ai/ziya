@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\begin{tikz-cd}\nA \\arrow[r, \"i\"] & B \\arrow[r, \"q\"] & B/A\n\\end{tikz-cd}",
+ "intent": "Model uses \\begin{tikz-cd} (the diagram TYPE name) instead of \\begin{tikzcd} (the LaTeX env). Recovery: normalize the hyphen; note _wrap only detects the exact 'tikzcd' string so this also double-wraps."
+}

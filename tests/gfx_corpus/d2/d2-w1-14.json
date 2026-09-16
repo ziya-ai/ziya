@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "# Deployment pipeline\nbuild: Build   # compiles sources\ntest: Test\nship: Ship\nbuild -> test: artifacts   # tarball\ntest -> ship: green build\n",
+ "intent": "Comments -- both whole-line (#) and trailing -- must be stripped without eating node or edge labels."
+}

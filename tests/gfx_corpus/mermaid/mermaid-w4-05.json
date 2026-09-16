@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "flowchart LR\n  A[Alpha] --> B[Beta] --> C[Gamma]\n  classDef warm fill:#f9c,stroke:#c36,color:#300\n  classDef cool fill:#9cf,stroke:#36c,color:#003\n  class A,C warm\n  class B cool",
+ "intent": "RECOVERY: 3-digit shorthand hex (#f9c) where mermaid/d3 may expect 6-digit. Should expand to #ff99cc etc; failure mode to watch is a silent fallback onto the canvas colour."
+}

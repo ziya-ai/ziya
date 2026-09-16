@@ -1,0 +1,948 @@
+{
+ "schema": 1,
+ "engine": "plotly",
+ "specs": {
+  "plotly-w1-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.576162Z"
+    }
+   ]
+  },
+  "plotly-w1-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.579158Z"
+    }
+   ]
+  },
+  "plotly-w1-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.582261Z"
+    }
+   ]
+  },
+  "plotly-w1-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.584912Z"
+    }
+   ]
+  },
+  "plotly-w1-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.587474Z"
+    }
+   ]
+  },
+  "plotly-w1-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.589516Z"
+    }
+   ]
+  },
+  "plotly-w1-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.592779Z"
+    },
+    {
+     "origin": "D-213",
+     "signature": "hardcoded-fixed-margin-no-automargin",
+     "at": "2026-09-15T08:56:14.102702Z"
+    },
+    {
+     "origin": "D-226",
+     "signature": "annotation-arrow-unthemed:dark",
+     "at": "2026-09-15T08:56:14.260951Z"
+    }
+   ]
+  },
+  "plotly-w2-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.597274Z"
+    },
+    {
+     "origin": "D-217",
+     "signature": "string-title-silently-dropped",
+     "at": "2026-09-15T08:56:14.195590Z"
+    }
+   ]
+  },
+  "plotly-w2-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.602177Z"
+    },
+    {
+     "origin": "D-215",
+     "signature": "in-shape-text-autoshrink-below-legibility",
+     "at": "2026-09-15T08:56:14.176967Z"
+    }
+   ]
+  },
+  "plotly-w2-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.606946Z"
+    }
+   ]
+  },
+  "plotly-w2-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.610487Z"
+    }
+   ]
+  },
+  "plotly-w2-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.614098Z"
+    },
+    {
+     "origin": "D-213",
+     "signature": "hardcoded-fixed-margin-no-automargin",
+     "at": "2026-09-15T08:56:14.156402Z"
+    }
+   ]
+  },
+  "plotly-w3-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.617716Z"
+    }
+   ]
+  },
+  "plotly-w3-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.620671Z"
+    }
+   ]
+  },
+  "plotly-w4-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.623467Z"
+    },
+    {
+     "origin": "D-211",
+     "signature": "render-timeout-30s-malformed-json-no-repair",
+     "at": "2026-09-15T08:56:14.052367Z"
+    }
+   ]
+  },
+  "plotly-w4-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.631493Z"
+    }
+   ]
+  },
+  "plotly-w4-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.635845Z"
+    }
+   ]
+  },
+  "plotly-w4-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.638800Z"
+    },
+    {
+     "origin": "D-211",
+     "signature": "render-timeout-30s-malformed-json-no-repair",
+     "at": "2026-09-15T08:56:14.081357Z"
+    }
+   ]
+  },
+  "plotly-w4-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-211",
+     "signature": "render-timeout-30s-malformed-json-no-repair",
+     "at": "2026-09-15T08:56:14.054887Z"
+    }
+   ]
+  },
+  "plotly-w4-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-211",
+     "signature": "render-timeout-30s-malformed-json-no-repair",
+     "at": "2026-09-15T08:56:14.058453Z"
+    }
+   ]
+  },
+  "plotly-w4-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-211",
+     "signature": "render-timeout-30s-malformed-json-no-repair",
+     "at": "2026-09-15T08:56:14.063027Z"
+    }
+   ]
+  },
+  "plotly-w4-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-211",
+     "signature": "render-timeout-30s-malformed-json-no-repair",
+     "at": "2026-09-15T08:56:14.069064Z"
+    }
+   ]
+  },
+  "plotly-w4-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-211",
+     "signature": "render-timeout-30s-malformed-json-no-repair",
+     "at": "2026-09-15T08:56:14.074245Z"
+    }
+   ]
+  },
+  "plotly-w1-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-212",
+     "signature": "webgl-unavailable-3d-not-rendered",
+     "at": "2026-09-15T08:56:14.087901Z"
+    }
+   ]
+  },
+  "plotly-w1-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-212",
+     "signature": "webgl-unavailable-3d-not-rendered",
+     "at": "2026-09-15T08:56:14.091104Z"
+    }
+   ]
+  },
+  "plotly-w2-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-212",
+     "signature": "webgl-unavailable-3d-not-rendered",
+     "at": "2026-09-15T08:56:14.096241Z"
+    }
+   ]
+  },
+  "plotly-w1-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-213",
+     "signature": "hardcoded-fixed-margin-no-automargin",
+     "at": "2026-09-15T08:56:14.099866Z"
+    },
+    {
+     "origin": "D-303",
+     "signature": "indicator-title-overlaps-layout-title",
+     "at": "2026-09-15T08:56:15.027509Z"
+    }
+   ]
+  },
+  "plotly-w2-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-213",
+     "signature": "hardcoded-fixed-margin-no-automargin",
+     "at": "2026-09-15T08:56:14.123798Z"
+    }
+   ]
+  },
+  "plotly-w2-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-213",
+     "signature": "hardcoded-fixed-margin-no-automargin",
+     "at": "2026-09-15T08:56:14.139927Z"
+    },
+    {
+     "origin": "D-305",
+     "signature": "long-text-unwrapped-clipped",
+     "at": "2026-09-15T08:56:15.034344Z"
+    }
+   ]
+  },
+  "plotly-w2-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-213",
+     "signature": "hardcoded-fixed-margin-no-automargin",
+     "at": "2026-09-15T08:56:14.151055Z"
+    }
+   ]
+  },
+  "plotly-w1-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-214",
+     "signature": "dark-font-on-unthemed-light-surface:dark",
+     "at": "2026-09-15T08:56:14.159928Z"
+    },
+    {
+     "origin": "D-300",
+     "signature": "trace-geometry-stale-after-container-resize",
+     "at": "2026-09-15T08:56:15.010108Z"
+    }
+   ]
+  },
+  "plotly-w1-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-214",
+     "signature": "dark-font-on-unthemed-light-surface:dark",
+     "at": "2026-09-15T08:56:14.164195Z"
+    }
+   ]
+  },
+  "plotly-w4-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-214",
+     "signature": "dark-font-on-unthemed-light-surface:dark",
+     "at": "2026-09-15T08:56:14.167993Z"
+    },
+    {
+     "origin": "D-225",
+     "signature": "colorscale-endpoint-equals-surface-cell-invisible",
+     "at": "2026-09-15T08:56:14.256164Z"
+    }
+   ]
+  },
+  "plotly-w2-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-215",
+     "signature": "in-shape-text-autoshrink-below-legibility",
+     "at": "2026-09-15T08:56:14.173337Z"
+    },
+    {
+     "origin": "D-300",
+     "signature": "trace-geometry-stale-after-container-resize",
+     "at": "2026-09-15T08:56:15.012971Z"
+    }
+   ]
+  },
+  "plotly-w2-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-215",
+     "signature": "in-shape-text-autoshrink-below-legibility",
+     "at": "2026-09-15T08:56:14.182498Z"
+    },
+    {
+     "origin": "D-300",
+     "signature": "trace-geometry-stale-after-container-resize",
+     "at": "2026-09-15T08:56:15.017203Z"
+    }
+   ]
+  },
+  "plotly-w2-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-216",
+     "signature": "explicit-size-exceeds-viewport-content-clipped",
+     "at": "2026-09-15T08:56:14.186800Z"
+    },
+    {
+     "origin": "D-301",
+     "signature": "render-div-vertical-misalignment-clips-figure",
+     "at": "2026-09-15T08:56:15.022362Z"
+    }
+   ]
+  },
+  "plotly-w2-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-216",
+     "signature": "explicit-size-exceeds-viewport-content-clipped",
+     "at": "2026-09-15T08:56:14.192067Z"
+    },
+    {
+     "origin": "D-301",
+     "signature": "render-div-vertical-misalignment-clips-figure",
+     "at": "2026-09-15T08:56:15.025254Z"
+    }
+   ]
+  },
+  "plotly-w4-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-217",
+     "signature": "string-title-silently-dropped",
+     "at": "2026-09-15T08:56:14.201267Z"
+    }
+   ]
+  },
+  "plotly-w4-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-218",
+     "signature": "root-level-layout-keys-silently-dropped",
+     "at": "2026-09-15T08:56:14.208014Z"
+    }
+   ]
+  },
+  "plotly-w4-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-219",
+     "signature": "invalid-color-token-unvalidated-fallback",
+     "at": "2026-09-15T08:56:14.212395Z"
+    }
+   ]
+  },
+  "plotly-w4-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-220",
+     "signature": "four-arg-rgb-alpha-silently-dropped",
+     "at": "2026-09-15T08:56:14.216955Z"
+    }
+   ]
+  },
+  "plotly-w4-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-221",
+     "signature": "missing-x-appends-index-categories-series-not-aligned",
+     "at": "2026-09-15T08:56:14.223872Z"
+    }
+   ]
+  },
+  "plotly-w2-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-222",
+     "signature": "legend-overflow-clipped",
+     "at": "2026-09-15T08:56:14.233794Z"
+    },
+    {
+     "origin": "D-304",
+     "signature": "title-clipped-by-grown-legend-div",
+     "at": "2026-09-15T08:56:15.031075Z"
+    }
+   ]
+  },
+  "plotly-w2-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-223",
+     "signature": "sankey-node-labels-collide-no-declutter",
+     "at": "2026-09-15T08:56:14.243136Z"
+    }
+   ]
+  },
+  "plotly-w1-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-224",
+     "signature": "category-axis-date-coerced",
+     "at": "2026-09-15T08:56:14.250684Z"
+    }
+   ]
+  },
+  "plotly-w1-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-300",
+     "signature": "trace-geometry-stale-after-container-resize",
+     "at": "2026-09-15T08:56:15.001976Z"
+    }
+   ]
+  },
+  "plotly-w1-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-300",
+     "signature": "trace-geometry-stale-after-container-resize",
+     "at": "2026-09-15T08:56:15.007844Z"
+    }
+   ]
+  }
+ }
+}

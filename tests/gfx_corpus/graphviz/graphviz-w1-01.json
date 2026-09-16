@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph pipeline { rankdir=TB; label=\"Build Pipeline\"; labelloc=t; fontsize=18; source [label=\"Source\"]; build [label=\"Build\"]; test [label=\"Test\"]; deploy [label=\"Deploy\"]; source -> build [label=\"commit\"]; build -> test [label=\"artifact\"]; test -> deploy [label=\"pass\"]; test -> build [label=\"fail\"]; }",
+ "intent": "Canonical directed graph with dot layout, edge labels, and a graph label"
+}

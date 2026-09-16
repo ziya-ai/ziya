@@ -1,0 +1,73 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "elements": [
+   {
+    "id": "s",
+    "type": "start",
+    "label": "Start"
+   },
+   {
+    "id": "p1",
+    "type": "process",
+    "label": "Parse input"
+   },
+   {
+    "id": "dec",
+    "type": "decision",
+    "label": "Valid?"
+   },
+   {
+    "id": "p2",
+    "type": "process",
+    "label": "Handle error"
+   },
+   {
+    "id": "p3",
+    "type": "process",
+    "label": "Commit"
+   },
+   {
+    "id": "z",
+    "type": "end",
+    "label": "End"
+   }
+  ],
+  "connections": [
+   {
+    "id": "f1",
+    "source": "s",
+    "target": "p1"
+   },
+   {
+    "id": "f2",
+    "source": "p1",
+    "target": "dec"
+   },
+   {
+    "id": "f3",
+    "source": "dec",
+    "target": "p3",
+    "label": "yes"
+   },
+   {
+    "id": "f4",
+    "source": "dec",
+    "target": "p2",
+    "label": "no"
+   },
+   {
+    "id": "f5",
+    "source": "p3",
+    "target": "z"
+   },
+   {
+    "id": "f6",
+    "source": "p2",
+    "target": "z"
+   }
+  ]
+ },
+ "intent": "Flowchart semantic aliases: start / process / decision / end with branch labels."
+}

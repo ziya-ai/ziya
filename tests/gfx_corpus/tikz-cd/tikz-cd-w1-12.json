@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "A \\arrow[r, \"f\", description] \\arrow[d, blue!60!black, \"g\"{swap}] & B \\\\\nC \\arrow[ru, \"h\"{description}] &",
+ "intent": "description label (on the arrow), swap, and a coloured arrow+label"
+}

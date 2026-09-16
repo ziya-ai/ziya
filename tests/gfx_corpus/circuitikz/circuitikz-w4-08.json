@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\\definecolor{plate}{HTML}{16324A}\n\\definecolor{plateink}{HTML}{F2F6FA}\n\\definecolor{plateaccent}{HTML}{5FD4E4}\n\\fill[plate] (-0.9,-1.5) rectangle (7.3,1.9);\n\\draw[color=plateink] (0,0) to[R=$R_1$] (2.4,0) node[ocirc]{};\n\\node[plateink] at (2.4,1.4) {“Input stage” – driver’s side};\n\\node[plateink] at (2.4,-1.2) {2.4 kΩ … tol 5′};\n",
+ "intent": "RECOVERY: typographic punctuation a model emits from prose habit -- curly double and single quotes, en dash, ellipsis, non-breaking space, prime. w3 established the Unicode guard's allowlist disagrees with installed fonts, so this probes which punctuation survives."
+}

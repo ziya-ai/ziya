@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\begin{tikzpicture}\n\\shade[left color=yellow, right color=blue] (-0.3,-0.9) rectangle (6.3,0.9);\n\\node[anchor=west] at (-0.1,0) {\\color{black}\\chemfig{H_3C-[:30]C(-[:90]NH_2)-[:-30]COOH}};\n\\node[anchor=west, text=white] at (3.6,0.55) {\\small white on gradient};\n\\node[anchor=west, text=black] at (3.6,-0.55) {\\small black on gradient};\n\\end{tikzpicture}",
+ "intent": "GRADIENT UNDERLAY: a yellow-to-blue \\shade with black chemistry drawn on top plus white and black captions -- text ON a colored element whose luminance varies across its own width, so no single ratio holds."
+}

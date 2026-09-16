@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\chemname{\\chemfig{H_2O}}{**water** &amp; ice &#8594; steam &lt;br/&gt;}",
+ "intent": "RECOVERY: HTML entities (&amp; &#8594; &lt;) and markdown bold leaking into a \\chemname label."
+}

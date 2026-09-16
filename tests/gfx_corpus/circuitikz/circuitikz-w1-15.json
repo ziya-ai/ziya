@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\\fill[black!88] (-1.8,-3) rectangle (5,3.2);\n\\draw[white] (0,0) node[ground]{} to[V=$V_s$] (0,2) to[R=$R_1$] (3,2) to[R=$R_2$] (3,0) to[C=$C_1$] (0,0);\n\\draw[white] (3,0) to[R=$R_L$] (3,-2) node[ground]{};\n\\node[white] at (1.5,2.8) {$v_o$};",
+ "intent": "Plate control: opaque black!88 background rectangle plus explicit white ink -- the workaround proven on the tikz profile, and the Stage 2 regression baseline."
+}

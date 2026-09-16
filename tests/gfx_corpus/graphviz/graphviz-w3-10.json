@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph NC {\n compound=true;\n node [shape=box style=filled fillcolor=\"#ffffff\" fontcolor=\"#000000\"];\n subgraph cluster_d1 {\n  label=\"depth 1\"; style=filled; fillcolor=\"#f0f0f0\"; color=\"#606060\"; penwidth=3; fontcolor=\"#000000\";\n  subgraph cluster_d2 {\n   label=\"depth 2\"; style=filled; fillcolor=\"#d8d8d8\"; color=\"#404040\"; penwidth=3; fontcolor=\"#000000\";\n   subgraph cluster_d3 {\n    label=\"depth 3\"; style=filled; fillcolor=\"#b8b8b8\"; color=\"#202020\"; penwidth=3; fontcolor=\"#000000\";\n    subgraph cluster_d4 {\n     label=\"depth 4\"; style=filled; fillcolor=\"#989898\"; color=\"#000000\"; penwidth=4; fontcolor=\"#ffffff\";\n     leaf;\n    }\n    n3;\n   }\n   n2;\n  }\n  n1;\n }\n outside -> n1 -> n2 -> n3 -> leaf;\n}",
+ "intent": "NESTED CLUSTERS WITH EXPLICITLY DIFFERENT FILLS PER DEPTH + penwidth on borders. Directly tests whether wave-2 nested-cluster-border-invisible-on-cluster-fill:light is author-fixable."
+}

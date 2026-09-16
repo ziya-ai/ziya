@@ -1,0 +1,5 @@
+{
+ "type": "joint",
+ "definition": "{'elements': [{'id': 'auth', 'type': 'rect', 'label': 'Auth'},\n              {'id': 'api', 'type': 'rect', 'label': 'API'},\n              {'id': 'db', 'type': 'rect', 'label': 'DB'}],\n 'connections': [{'id': 'l1', 'source': 'auth', 'target': 'api', 'label': 'token'},\n                 {'id': 'l2', 'source': 'api', 'target': 'db', 'label': 'query'}]}",
+ "intent": "RECOVERY: SINGLE-QUOTED keys and string values throughout (Python-repr style). Intent: Auth->API->DB."
+}

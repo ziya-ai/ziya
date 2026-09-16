@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\documentclass[border=2pt]{standalone}\n\\usepackage{tikz-cd}\n\\begin{document}\n\\begin{tikzcd}\nA \\arrow[r, \"f\"] \\arrow[d, \"g\"'] & B \\arrow[d, \"h\"] \\\\\nC \\arrow[r, \"k\"'] & D\n\\end{tikzcd}\n\\end{document}",
+ "intent": "Model emits a complete standalone document instead of a bare body. Correct recovery: strip preamble/documentclass/document env and compile the inner tikzcd."
+}

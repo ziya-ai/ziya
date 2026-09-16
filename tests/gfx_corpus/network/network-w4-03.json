@@ -1,0 +1,5 @@
+{
+ "type": "network",
+ "definition": "{\n  'nodes': [\n    {'id': 'Ingest',  'x': 120, 'y': 190, 'size': 18},\n    {'id': 'Transform','x': 320, 'y': 190, 'size': 18},\n    {'id': 'Serve',   'x': 520, 'y': 190, 'size': 18}\n  ],\n  'links': [\n    {'source': 'Ingest', 'target': 'Transform'},\n    {'source': 'Transform', 'target': 'Serve'}\n  ],\n  'width': 640,\n  'height': 380,\n  'style': {'labelColor': '#7e7e7e', 'fontSize': 13, 'linkColor': '#7e7e7e', 'linkOpacity': 1}\n}",
+ "intent": "Single-quoted keys and string values throughout (Python/JS dict habit). Evident intent: 3-tier pipeline. Recovery = normalize quotes and render."
+}

@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "Steps:\n\n1. Check out the branch\n3. Run the tests\n   - unit only, 3-space indent\n7. Merge when green\n\nDone.\n",
+ "intent": "List numbering and indent slips — skipped ordinal numbers (1,3,7) and a 3-space nested item (one short of the 4-space rule). Recovery = coherent renumbered list with the nested item attached."
+}

@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\\draw[thin] (0,0) -- (36,0);\n\\draw[thin] (0,-2.2) -- (0,2.2);\n\\foreach \\t in {0,...,59}{\n  \\draw[thin] ({0.6*\\t},-0.12) -- ({0.6*\\t},0.12);\n  \\node[font=\\tiny,rotate=90,anchor=east] at ({0.6*\\t},-0.2) {$t_{\\t}$};\n}\n\\draw[domain=0:1080,samples=4000,variable=\\s,thin] plot ({\\s/30},{2.0*sin(\\s)});\n\\draw[domain=0:1080,samples=4000,variable=\\s,thin] plot ({\\s/30},{1.2*cos(3*\\s)});\n\\draw (36,0) to[R=$R_{L}$] (36,-3.4);\n\\node[ground] at (36,-3.4) {};\n\\node at (18,3.0) {two 4000-sample traces, 60 rotated tick labels};",
+ "intent": "8000 plot samples across two hairline traces plus 60 rotated tick labels on a ~36x6 unit canvas. Combines sample-count stress with the label-pitch regime that broke the tikz profile at high tick counts."
+}

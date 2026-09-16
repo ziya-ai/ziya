@@ -1,0 +1,64 @@
+{
+ "type": "chord",
+ "definition": {
+  "type": "chord",
+  "nodes": [
+   {
+    "id": "Alpha",
+    "color": "steelblue"
+   },
+   {
+    "id": "Beta",
+    "color": "tomato"
+   },
+   {
+    "id": "Gamma",
+    "color": "darkseagreen"
+   },
+   {
+    "id": "Delta",
+    "color": "goldenrod"
+   },
+   {
+    "id": "Epsilon",
+    "color": "rebeccapurple"
+   }
+  ],
+  "links": [
+   {
+    "source": "Alpha",
+    "target": "Beta",
+    "value": 12
+   },
+   {
+    "source": "Beta",
+    "target": "Gamma",
+    "value": 8
+   },
+   {
+    "source": "Gamma",
+    "target": "Delta",
+    "value": 6
+   },
+   {
+    "source": "Delta",
+    "target": "Epsilon",
+    "value": 9
+   },
+   {
+    "source": "Epsilon",
+    "target": "Alpha",
+    "value": 11
+   },
+   {
+    "source": "Alpha",
+    "target": "Gamma",
+    "value": 5
+   }
+  ],
+  "style": {
+   "labelColor": "dimgray"
+  }
+ },
+ "intent": "CSS named colors (steelblue/tomato/...) plus a named labelColor `dimgray`. Intent: 5-node ring, readable labels in both themes."
+}

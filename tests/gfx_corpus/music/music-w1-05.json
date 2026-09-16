@@ -1,0 +1,99 @@
+{
+ "type": "music",
+ "definition": {
+  "clef": "treble",
+  "keySignature": "C",
+  "timeSignature": "4/4",
+  "autoBeam": true,
+  "measures": [
+   {
+    "beginBar": "repeat-begin",
+    "notes": [
+     {
+      "keys": [
+       "c/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "d/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "e/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "f/5"
+      ],
+      "duration": "q"
+     }
+    ]
+   },
+   {
+    "endBar": "repeat-end",
+    "notes": [
+     {
+      "keys": [
+       "g/5"
+      ],
+      "duration": "h"
+     },
+     {
+      "keys": [
+       "e/5"
+      ],
+      "duration": "h"
+     }
+    ]
+   },
+   {
+    "endBar": "final",
+    "notes": [
+     {
+      "keys": [
+       "f/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "d/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "c/5"
+      ],
+      "duration": "h"
+     }
+    ]
+   }
+  ],
+  "voltas": [
+   {
+    "type": "begin-end",
+    "label": "1.",
+    "measures": [
+     2,
+     2
+    ]
+   },
+   {
+    "type": "begin-end",
+    "label": "2.",
+    "measures": [
+     3,
+     3
+    ]
+   }
+  ]
+ },
+ "intent": "Multi-measure staff with real barlines, repeat-begin/repeat-end, and a 1st/2nd ending volta pair anchored by measure range."
+}

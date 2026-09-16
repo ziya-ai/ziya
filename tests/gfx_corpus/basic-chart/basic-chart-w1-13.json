@@ -1,0 +1,31 @@
+{
+ "type": "basic-chart",
+ "definition": {
+  "type": "bar",
+  "margin": {
+   "top": 30,
+   "right": 30,
+   "bottom": 70,
+   "left": 90
+  },
+  "data": [
+   {
+    "label": "Region A",
+    "value": 1250000
+   },
+   {
+    "label": "Region B",
+    "value": 2310000
+   },
+   {
+    "label": "Region C",
+    "value": 870000
+   },
+   {
+    "label": "Region D",
+    "value": 1980000
+   }
+  ]
+ },
+ "intent": "custom margin object with a wide left gutter for 7-digit y tick labels"
+}

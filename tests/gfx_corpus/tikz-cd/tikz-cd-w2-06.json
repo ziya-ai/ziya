@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "L_{3} \\arrow[r] & \\begin{tikzcd}[ampersand replacement=\\&, sep=tiny] L_{2} \\arrow[r] \\& \\begin{tikzcd}[ampersand replacement=\\\\&, sep=tiny] L_{1} \\arrow[r] \\\\& \\begin{tikzcd}[ampersand replacement=\\\\\\&, sep=tiny] L_{0} \\arrow[r] \\\\\\& \\begin{tikzcd}[ampersand replacement=\\\\\\\\&, sep=tiny] a \\arrow[r] \\\\\\\\& b \\end{tikzcd} \\end{tikzcd} \\end{tikzcd} \\end{tikzcd}",
+ "intent": "SCALE: deep nesting - 4 levels of tikzcd environments nested inside diagram cells"
+}

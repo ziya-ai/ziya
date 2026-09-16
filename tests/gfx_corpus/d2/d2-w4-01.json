@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "```d2\nweb: Web Server\napi: API Service\ndb: Database\nweb -> api\napi -> db\n```\n",
+ "intent": "RECOVERY: whole D2 source wrapped in a markdown ```d2 fence - the single most common LLM emission defect"
+}

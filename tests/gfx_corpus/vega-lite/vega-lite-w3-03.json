@@ -1,0 +1,108 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "width": 560,
+  "height": 260,
+  "data": {
+   "values": [
+    {
+     "c": "Alpha",
+     "v": 42,
+     "s": "one"
+    },
+    {
+     "c": "Beta",
+     "v": 58,
+     "s": "one"
+    },
+    {
+     "c": "Gamma",
+     "v": 31,
+     "s": "one"
+    },
+    {
+     "c": "Delta",
+     "v": 67,
+     "s": "one"
+    },
+    {
+     "c": "Epsilon",
+     "v": 50,
+     "s": "one"
+    },
+    {
+     "c": "Alpha",
+     "v": 42,
+     "s": "two"
+    },
+    {
+     "c": "Beta",
+     "v": 58,
+     "s": "two"
+    },
+    {
+     "c": "Gamma",
+     "v": 31,
+     "s": "two"
+    },
+    {
+     "c": "Delta",
+     "v": 67,
+     "s": "two"
+    },
+    {
+     "c": "Epsilon",
+     "v": 50,
+     "s": "two"
+    },
+    {
+     "c": "Alpha",
+     "v": 42,
+     "s": "three"
+    },
+    {
+     "c": "Beta",
+     "v": 58,
+     "s": "three"
+    },
+    {
+     "c": "Gamma",
+     "v": 31,
+     "s": "three"
+    },
+    {
+     "c": "Delta",
+     "v": 67,
+     "s": "three"
+    },
+    {
+     "c": "Epsilon",
+     "v": 50,
+     "s": "three"
+    }
+   ]
+  },
+  "mark": "bar",
+  "encoding": {
+   "x": {
+    "field": "c",
+    "type": "nominal",
+    "axis": {
+     "labelAngle": 0
+    }
+   },
+   "y": {
+    "field": "v",
+    "type": "quantitative"
+   },
+   "color": {
+    "field": "s",
+    "type": "nominal"
+   },
+   "xOffset": {
+    "field": "s"
+   }
+  }
+ },
+ "intent": "CONTROL, NO COLOURS AT ALL: same 5-category data, three series, legend and gridlines, zero authored colour. Establishes what the engine's own defaults do in each theme."
+}

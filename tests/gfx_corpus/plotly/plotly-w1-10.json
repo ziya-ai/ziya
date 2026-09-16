@@ -1,0 +1,86 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "indicator",
+    "mode": "gauge+number+delta",
+    "value": 87.4,
+    "title": {
+     "text": "SLA Attainment (%)"
+    },
+    "delta": {
+     "reference": 92.0,
+     "increasing": {
+      "color": "#54a24b"
+     },
+     "decreasing": {
+      "color": "#e45756"
+     }
+    },
+    "number": {
+     "suffix": "%"
+    },
+    "gauge": {
+     "axis": {
+      "range": [
+       0,
+       100
+      ]
+     },
+     "bar": {
+      "color": "#4c78a8"
+     },
+     "steps": [
+      {
+       "range": [
+        0,
+        70
+       ],
+       "color": "#f2d0d0"
+      },
+      {
+       "range": [
+        70,
+        90
+       ],
+       "color": "#f7e6c4"
+      },
+      {
+       "range": [
+        90,
+        100
+       ],
+       "color": "#d5ecd0"
+      }
+     ],
+     "threshold": {
+      "line": {
+       "color": "#e45756",
+       "width": 4
+      },
+      "thickness": 0.8,
+      "value": 95
+     }
+    },
+    "domain": {
+     "x": [
+      0,
+      1
+     ],
+     "y": [
+      0,
+      1
+     ]
+    }
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "Service Level Gauge"
+   },
+   "height": 440
+  }
+ },
+ "intent": "Indicator gauge with number, delta reference, threshold line and coloured steps — canonical KPI widget."
+}

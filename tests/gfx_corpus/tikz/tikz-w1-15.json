@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "[\n  dk/.style={draw=white,fill=black!88,text=white,thick,minimum width=24mm,\n             minimum height=10mm,align=center,rounded corners},\n  lk/.style={-{Stealth},thick,white}\n]\n\\fill[black!88] (-1.6,-2.2) rectangle (6.2,2.4);\n\\node[dk] (i) at (0,1.4) {ingest};\n\\node[dk] (t) at (0,-0.2) {transform};\n\\node[dk] (s) at (4.6,1.4) {store};\n\\node[dk] (q) at (4.6,-0.2) {query};\n\\draw[lk] (i) -- (t);\n\\draw[lk] (i) -- (s);\n\\draw[lk] (t) -- (q);\n\\draw[lk] (s) -- (q);\n\\node[text=white,font=\\small] at (2.3,-1.7) {white-on-dark authored pipeline};",
+ "intent": "dark-authored diagram: explicit dark node fills with white label text, the inverse contrast case"
+}

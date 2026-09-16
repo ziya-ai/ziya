@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\begin{tikzcd}[execute at begin picture={\\fill[black!88] (-1.3,-1.3) rectangle (4.1,1.5);},\n  every label/.append style={text=white}, cells={nodes={text=white}}, white]\nA \\arrow[r, \"f\"] \\arrow[d, \"g\"'] & B \\arrow[d, \"h\"] \\\\\nC \\arrow[r, \"k\"'] & D\n\\end{tikzcd}",
+ "intent": "option pass-through: opaque backdrop + white ink (dark-safe baseline)"
+}

@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "### Dialect coverage\n\n- [x] completed task\n- [ ] open task\n- [ ] ~~cancelled task~~\n\nStrikethrough ~~removed~~ and autolink https://example.com/plain and <https://example.com/angle>.\n\nFootnote reference here[^a] and a second one[^b].\n\n[^a]: First footnote body.\n[^b]: Second footnote body with `code`.\n\nDefinition list (non-GFM):\n\nTerm A\n: Definition of A\n\nTerm B\n: Definition of B\n\nChemistry H<sub>2</sub>O and math x<sup>2</sup> via raw HTML. Press <kbd>Ctrl</kbd>+<kbd>C</kbd>. <mark>Highlighted</mark> text.\n",
+ "intent": "less-travelled markdown dialects: task lists, strikethrough, footnotes, autolinks, definition list, sub/sup"
+}

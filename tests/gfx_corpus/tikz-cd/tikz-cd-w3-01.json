@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\begin{tikzcd}\n\\text{Ω-群} \\rar[\"\\text{射 }\\alpha\"] \\dar[swap,\"\\text{عربي}\"] & \\Delta^{\\mathrm{op}} \\dar[\"\\text{🔁}\"] \\\\\n\\text{Ж}_{\\mathrm{ru}} \\rar[\"\\alpha\\beta\\gamma\"'] & \\text{混合 }\\Sigma^{2}\n\\end{tikzcd}",
+ "intent": "unicode stress: CJK (群/混合), RTL Arabic (عربي), Cyrillic (Ж), Greek and an emoji (🔁) as cell and arrow labels, mixed with math. pdflatex+inputenc is expected to choke on the astral-plane emoji and unmapped CJK; that outcome IS the finding."
+}

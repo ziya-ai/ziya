@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "The pipeline is:\n\n```mermaid\nflowchart TD\n  A[Request] --> B{Auth?}\n  B -->|yes| C[Serve]\n  B -->|no| D[401]\n",
+ "intent": "Unclosed fence — truncated model output ends inside the mermaid fence with no closing ```. Recovery = render the diagram anyway."
+}

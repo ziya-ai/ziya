@@ -1,0 +1,5 @@
+{
+ "type": "d3",
+ "definition": "{\n  \"type\": \"bar\",\n  \"mark\": \"bar\",\n  \"encoding\": {\n    \"x\": {\"field\": \"label\", \"type\": \"nominal\"},\n    \"y\": {\"field\": \"value\", \"type\": \"quantitative\"}\n  },\n  \"data\": {\"values\": [\n    {\"label\": \"Alpha\", \"value\": 30},\n    {\"label\": \"Beta\", \"value\": 55},\n    {\"label\": \"Gamma\", \"value\": 18}\n  ]}\n}",
+ "intent": "mixed dialect: vega-lite mark/encoding keys carried onto a basic-chart bar spec"
+}

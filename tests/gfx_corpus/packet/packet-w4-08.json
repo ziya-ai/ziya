@@ -1,0 +1,65 @@
+{
+ "type": "packet",
+ "definition": {
+  "type": "packet",
+  "title": "Three-digit hex colors",
+  "bitWidth": 32,
+  "sections": [
+   {
+    "label": "Short hex A",
+    "color": "#8cf",
+    "rows": [
+     [
+      [
+       "Ver",
+       4
+      ],
+      [
+       "Flags",
+       12
+      ],
+      [
+       "Length",
+       16
+      ]
+     ]
+    ]
+   },
+   {
+    "label": "Short hex B",
+    "color": "#036",
+    "rows": [
+     [
+      [
+       "Opaque Token",
+       32
+      ]
+     ]
+    ]
+   },
+   {
+    "label": "Per-field short hex",
+    "rows": [
+     [
+      [
+       "A",
+       8,
+       "#fc9"
+      ],
+      [
+       "B",
+       8,
+       "#333"
+      ],
+      [
+       "C",
+       16,
+       "#9f9"
+      ]
+     ]
+    ]
+   }
+  ]
+ },
+ "intent": "Three-digit CSS hex (#8cf/#036/#fc9/#333) where the engine documents six-digit hex"
+}

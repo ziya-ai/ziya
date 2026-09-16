@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\\draw (0,0) to[V=\\SI{12}{\\volt}] (0,3) to[R=\\SI{4.7}{\\kilo\\ohm}] (3,3) to[C=\\SI{10}{\\micro\\farad}] (3,0) to[L=\\SI{2.2}{\\milli\\henry}] (0,0);",
+ "intent": "siunitx \\SI{}{} unit-typeset component values including \\micro, the reason the profile loads siunitx."
+}

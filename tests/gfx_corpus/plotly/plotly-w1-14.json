@@ -1,0 +1,74 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "scatterpolar",
+    "name": "Current",
+    "fill": "toself",
+    "r": [
+     4.2,
+     3.1,
+     4.8,
+     2.6,
+     3.9,
+     4.2
+    ],
+    "theta": [
+     "Latency",
+     "Cost",
+     "Coverage",
+     "Docs",
+     "Uptime",
+     "Latency"
+    ],
+    "line": {
+     "color": "#4c78a8"
+    },
+    "fillcolor": "rgba(76,120,168,0.35)"
+   },
+   {
+    "type": "scatterpolar",
+    "name": "Target",
+    "fill": "toself",
+    "r": [
+     4.8,
+     4.0,
+     4.5,
+     4.2,
+     4.9,
+     4.8
+    ],
+    "theta": [
+     "Latency",
+     "Cost",
+     "Coverage",
+     "Docs",
+     "Uptime",
+     "Latency"
+    ],
+    "line": {
+     "color": "#f58518"
+    },
+    "fillcolor": "rgba(245,133,24,0.25)"
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "Service Scorecard"
+   },
+   "polar": {
+    "radialaxis": {
+     "visible": true,
+     "range": [
+      0,
+      5
+     ]
+    }
+   },
+   "showlegend": true,
+   "height": 480
+  }
+ },
+ "intent": "Polar radar chart (scatterpolar, toself fill) with two series and a polar subplot block — tests non-cartesian subplot theming."
+}

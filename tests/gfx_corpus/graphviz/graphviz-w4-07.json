@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph G {\n  rankdir=LR;\n  node [shape=box style=filled fontcolor=\"#000000\" color=\"#888888\"];\n  a [label=\"Transparent\" fillcolor=\"transparent\"];\n  b [label=\"None\" fillcolor=\"none\"];\n  c [label=\"Empty\" fillcolor=\"\"];\n  a -> b -> c;\n}",
+ "intent": "fillcolor=transparent with an authored dark fontcolor -- recovery must not land text on the page color"
+}

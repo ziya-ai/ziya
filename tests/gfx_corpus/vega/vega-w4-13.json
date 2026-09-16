@@ -1,0 +1,118 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 380,
+  "height": 200,
+  "padding": 5,
+  "background": "transparent",
+  "data": [
+   {
+    "name": "t",
+    "values": [
+     {
+      "c": "a",
+      "v": 30
+     },
+     {
+      "c": "b",
+      "v": 52
+     },
+     {
+      "c": "d",
+      "v": 25
+     },
+     {
+      "c": "e",
+      "v": 41
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "band",
+    "domain": {
+     "data": "t",
+     "field": "c"
+    },
+    "range": "width",
+    "padding": 0.2
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "domain": {
+     "data": "t",
+     "field": "v"
+    },
+    "range": "height",
+    "nice": true
+   },
+   {
+    "name": "col",
+    "type": "ordinal",
+    "domain": {
+     "data": "t",
+     "field": "c"
+    },
+    "range": [
+     "cornflowerblue",
+     "darkseagreen",
+     "lightgoldenrodyellow",
+     "gainsboro"
+    ]
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x",
+    "labelColor": "dimgray"
+   },
+   {
+    "orient": "left",
+    "scale": "y",
+    "gridColor": "whitesmoke",
+    "grid": true
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "update": {
+      "x": {
+       "scale": "x",
+       "field": "c"
+      },
+      "width": {
+       "scale": "x",
+       "band": 1
+      },
+      "y": {
+       "scale": "y",
+       "field": "v"
+      },
+      "y2": {
+       "scale": "y",
+       "value": 0
+      },
+      "fill": {
+       "scale": "col",
+       "field": "c"
+      },
+      "stroke": {
+       "value": "transparent"
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "CSS named colours (cornflowerblue, darkseagreen, lightgoldenrodyellow, gainsboro, dimgray, whitesmoke) plus 'transparent' as both a background and a stroke. Names are legal SVG but two of these fills are near-white, so the interesting question is whether recovery lands on the background colour in one theme"
+}

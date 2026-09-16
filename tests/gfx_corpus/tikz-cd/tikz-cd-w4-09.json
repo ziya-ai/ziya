@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\begin{tikzcd}\nA \\arrow[r, \"f\", color=#F00] \\arrow[d, \"g\"', color=#00F] & B \\arrow[d, color=#0A0] \\\\\nC \\arrow[r, \"k\"', draw=#333] & D\n\\end{tikzcd}",
+ "intent": "Colors given as CSS three/six-digit hex literals (#F00, #333) which xcolor cannot parse and TeX reads as macro-parameter chars. Recovery: convert to \\definecolor HTML form."
+}

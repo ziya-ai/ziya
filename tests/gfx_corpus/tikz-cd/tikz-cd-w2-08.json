@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "P \\arrow[r] \\arrow[d] & Q \\arrow[r] \\arrow[d] & R \\arrow[d] \\\\\nS \\arrow[r] \\arrow[d] & T \\arrow[r] \\arrow[d] & U \\arrow[d] \\\\\nV \\arrow[r] & W \\arrow[r] & Z",
+ "intent": "SCALE: explicit width/height far ABOVE natural size (4000x3000) on a small 3x3 diagram"
+}

@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\mathrm{ExtremelyLongObjectNameNumberOneWhichIsAbsurd} \\arrow[r, \"\\mathrm{TheVeryLongCanonicalComparisonMorphismInducedByUniversalProperty}\"] \\arrow[d, \"\\mathrm{AnotherExtremelyLongNaturalTransformationNameThatWillNotFitAnywhere}\"^{\\prime}] & \\mathrm{ExtremelyLongObjectNameNumberTwoWhichIsAlsoAbsurd} \\arrow[d] \\\\\n\\mathrm{ExtremelyLongObjectNameNumberThreeStillAbsurd} \\arrow[r, \"\\mathrm{TheVeryLongCanonicalComparisonMorphismInducedByUniversalProperty}\"] & \\mathrm{ExtremelyLongObjectNameNumberFourFinallyDone}",
+ "intent": "SCALE: very long labels - 60-70 char object names and morphism labels on a 2x2 square"
+}

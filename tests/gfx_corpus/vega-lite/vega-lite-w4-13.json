@@ -1,0 +1,5 @@
+{
+ "type": "vega-lite",
+ "definition": "{\n  \"data\": {\"values\": [{\"c\": \"A\", \"v\": 30}, {\"c\": \"B\", \"v\": 55}, {\"c\": \"C\", \"v\": 40}]},\n  \"layer\": [\n    {\"mark\": {\"type\": \"bar\", \"color\": \"rgba(214, 39, 40, 0.85)\"}},\n    {\"mark\": {\"type\": \"line\", \"color\": \"rgb(31,119,180)\", \"strokeWidth\": 3},\n     \"encoding\": {\"y\": {\"field\": \"v\", \"type\": \"quantitative\"}}}\n  ],\n  \"encoding\": {\n    \"x\": {\"field\": \"c\", \"type\": \"nominal\"},\n    \"y\": {\"field\": \"v\", \"type\": \"quantitative\"}\n  }\n}",
+ "intent": "Functional CSS colour notation - rgba() with alpha and rgb() - in fields where the engine's colour handling may assume hex. Intent: red bars with a blue trend line over them."
+}

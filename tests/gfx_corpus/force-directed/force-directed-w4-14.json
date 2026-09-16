@@ -1,0 +1,5 @@
+{
+ "type": "force-directed",
+ "definition": "{\n  \"type\": \"force-directed\",\n  \"nodes\": [\n    {\"id\": \"api\", \"color\": \"var(--ziya-node-primary)\"},\n    {\"id\": \"auth\", \"color\": \"transparent\"},\n    {\"id\": \"db\", \"color\": \"$theme.accent\"},\n    {\"id\": \"cache\", \"color\": \"currentColor\"},\n    {\"id\": \"queue\", \"color\": \"inherit\"},\n    {\"id\": \"worker\", \"color\": \"#4e79a7\"}\n  ],\n  \"links\": [\n    {\"source\": \"api\", \"target\": \"auth\"},\n    {\"source\": \"api\", \"target\": \"cache\"},\n    {\"source\": \"auth\", \"target\": \"db\"},\n    {\"source\": \"api\", \"target\": \"queue\"},\n    {\"source\": \"queue\", \"target\": \"worker\"},\n    {\"source\": \"worker\", \"target\": \"db\"}\n  ],\n  \"style\": {\"nodeColor\": \"var(--ziya-surface)\", \"linkColor\": \"transparent\", \"labelColor\": \"$theme.fg\"}\n}",
+ "intent": "RECOVERY-COLOR: colours the engine cannot resolve - a CSS custom property, 'transparent', a $theme token that does not exist, 'currentColor' and 'inherit'. Correct recovery is a visible palette fallback; landing on the canvas colour is the valuable failure."
+}

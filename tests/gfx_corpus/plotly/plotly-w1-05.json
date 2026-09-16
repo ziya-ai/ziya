@@ -1,0 +1,85 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "scatter3d",
+    "mode": "markers",
+    "name": "clusters",
+    "x": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12
+    ],
+    "y": [
+     4,
+     1,
+     7,
+     3,
+     9,
+     2,
+     8,
+     5,
+     6,
+     11,
+     3,
+     7
+    ],
+    "z": [
+     2,
+     5,
+     3,
+     8,
+     4,
+     9,
+     1,
+     6,
+     7,
+     2,
+     10,
+     5
+    ],
+    "marker": {
+     "size": 8,
+     "color": [
+      10,
+      22,
+      35,
+      41,
+      58,
+      63,
+      70,
+      84,
+      91,
+      102,
+      115,
+      128
+     ],
+     "colorscale": "Cividis",
+     "opacity": 0.9,
+     "colorbar": {
+      "title": {
+       "text": "Score"
+      }
+     }
+    }
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "Cluster Embedding (3D)"
+   },
+   "height": 500
+  }
+ },
+ "intent": "3D scatter with per-point colorscale markers, a colorbar and a text label channel — tests scene defaults without a user scene block."
+}

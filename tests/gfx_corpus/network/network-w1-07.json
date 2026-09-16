@@ -1,0 +1,78 @@
+{
+ "type": "network",
+ "definition": {
+  "type": "network",
+  "width": 600,
+  "height": 400,
+  "nodes": [
+   {
+    "id": "fe",
+    "label": "Frontend",
+    "color": "#4e79a7",
+    "x": 300,
+    "y": 70,
+    "size": 16
+   },
+   {
+    "id": "svc",
+    "label": "Service",
+    "color": "#59a14f",
+    "x": 150,
+    "y": 200,
+    "size": 16
+   },
+   {
+    "id": "err",
+    "label": "Error Bus",
+    "color": "#e15759",
+    "x": 450,
+    "y": 200,
+    "size": 16
+   },
+   {
+    "id": "cache",
+    "label": "Cache",
+    "color": "#8e6cb0",
+    "x": 150,
+    "y": 330,
+    "size": 16
+   },
+   {
+    "id": "audit",
+    "label": "Audit",
+    "color": "#76b7b2",
+    "x": 450,
+    "y": 330,
+    "size": 16
+   }
+  ],
+  "links": [
+   {
+    "source": "fe",
+    "target": "svc"
+   },
+   {
+    "source": "fe",
+    "target": "err"
+   },
+   {
+    "source": "svc",
+    "target": "cache"
+   },
+   {
+    "source": "err",
+    "target": "audit"
+   },
+   {
+    "source": "svc",
+    "target": "audit"
+   }
+  ],
+  "style": {
+   "labelColor": "#7e7e7e",
+   "linkColor": "#7e7e7e",
+   "linkOpacity": 1
+  }
+ },
+ "intent": "Per-node `color` override on each node (bypassing style.nodeColors); every node must take its own authored fill rather than the #69b3a2 default."
+}

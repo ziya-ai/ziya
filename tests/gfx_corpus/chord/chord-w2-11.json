@@ -1,0 +1,61 @@
+{
+ "type": "chord",
+ "definition": {
+  "type": "chord",
+  "nodes": [
+   {
+    "id": "T1"
+   },
+   {
+    "id": "T2"
+   },
+   {
+    "id": "T3"
+   },
+   {
+    "id": "T4"
+   },
+   {
+    "id": "T5"
+   },
+   {
+    "id": "T6"
+   }
+  ],
+  "links": [
+   {
+    "source": "T1",
+    "target": "T2",
+    "value": 5
+   },
+   {
+    "source": "T2",
+    "target": "T3",
+    "value": 6
+   },
+   {
+    "source": "T3",
+    "target": "T4",
+    "value": 7
+   },
+   {
+    "source": "T4",
+    "target": "T5",
+    "value": 8
+   },
+   {
+    "source": "T5",
+    "target": "T6",
+    "value": 9
+   },
+   {
+    "source": "T6",
+    "target": "T1",
+    "value": 10
+   }
+  ],
+  "width": 100,
+  "height": 100
+ },
+ "intent": "SIZE FAR BELOW NATURAL: 100x100. outerRadius = 100*0.5 - 60 = -10 and innerRadius = -28, both NEGATIVE and unclamped."
+}

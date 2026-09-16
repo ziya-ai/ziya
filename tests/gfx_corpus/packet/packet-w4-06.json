@@ -1,0 +1,5 @@
+{
+ "type": "packet",
+ "definition": "packet\ntitle ARP Request\n+16: \"Hardware Type\"\n+16: \"Protocol Type\"\n+8: \"HW Addr Len\"\n+8: \"Proto Addr Len\"\n+16: \"Operation\"\n+48: \"Sender HW Addr\"",
+ "intent": "Mixed dialect: bare `packet` header with mermaid v11 relative `+N:` field widths instead of START-END ranges"
+}

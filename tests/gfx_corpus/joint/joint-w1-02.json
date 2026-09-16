@@ -1,0 +1,98 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "cells": [
+   {
+    "id": "n1",
+    "type": "standard.Rectangle",
+    "position": {
+     "x": 40,
+     "y": 40
+    },
+    "size": {
+     "width": 140,
+     "height": 60
+    },
+    "attrs": {
+     "label": {
+      "text": "Client"
+     }
+    }
+   },
+   {
+    "id": "n2",
+    "type": "standard.Rectangle",
+    "position": {
+     "x": 40,
+     "y": 180
+    },
+    "size": {
+     "width": 140,
+     "height": 60
+    },
+    "attrs": {
+     "label": {
+      "text": "Gateway"
+     }
+    }
+   },
+   {
+    "id": "n3",
+    "type": "standard.Circle",
+    "position": {
+     "x": 260,
+     "y": 180
+    },
+    "size": {
+     "width": 90,
+     "height": 90
+    },
+    "attrs": {
+     "label": {
+      "text": "Cache"
+     }
+    }
+   },
+   {
+    "id": "e1",
+    "type": "standard.Link",
+    "source": {
+     "id": "n1"
+    },
+    "target": {
+     "id": "n2"
+    },
+    "labels": [
+     {
+      "attrs": {
+       "text": {
+        "text": "HTTPS"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "id": "e2",
+    "type": "standard.Link",
+    "source": {
+     "id": "n2"
+    },
+    "target": {
+     "id": "n3"
+    },
+    "labels": [
+     {
+      "attrs": {
+       "text": {
+        "text": "lookup"
+       }
+      }
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "Canonical JointJS graph JSON: cells array with namespaced standard.Rectangle / standard.Circle / standard.Link, labels under attrs.label.text and labels[].attrs.text.text."
+}

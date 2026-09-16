@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "web: Web Server {\n  style: { fill: \"#4287f5\", stroke: 'navy', }\n}\napi: API Service\nweb -> api\n",
+ "intent": "RECOVERY: trailing comma plus mixed double/single-quoted values inside a style block"
+}

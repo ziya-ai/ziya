@@ -1,0 +1,245 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 420,
+  "height": 220,
+  "padding": 5,
+  "background": "#ffffff",
+  "data": [
+   {
+    "name": "cells",
+    "values": [
+     {
+      "h": "00",
+      "d": "Mon",
+      "v": 12
+     },
+     {
+      "h": "06",
+      "d": "Mon",
+      "v": 40
+     },
+     {
+      "h": "12",
+      "d": "Mon",
+      "v": 78
+     },
+     {
+      "h": "18",
+      "d": "Mon",
+      "v": 55
+     },
+     {
+      "h": "00",
+      "d": "Tue",
+      "v": 8
+     },
+     {
+      "h": "06",
+      "d": "Tue",
+      "v": 52
+     },
+     {
+      "h": "12",
+      "d": "Tue",
+      "v": 91
+     },
+     {
+      "h": "18",
+      "d": "Tue",
+      "v": 61
+     },
+     {
+      "h": "00",
+      "d": "Wed",
+      "v": 15
+     },
+     {
+      "h": "06",
+      "d": "Wed",
+      "v": 33
+     },
+     {
+      "h": "12",
+      "d": "Wed",
+      "v": 84
+     },
+     {
+      "h": "18",
+      "d": "Wed",
+      "v": 47
+     },
+     {
+      "h": "00",
+      "d": "Thu",
+      "v": 22
+     },
+     {
+      "h": "06",
+      "d": "Thu",
+      "v": 60
+     },
+     {
+      "h": "12",
+      "d": "Thu",
+      "v": 70
+     },
+     {
+      "h": "18",
+      "d": "Thu",
+      "v": 39
+     },
+     {
+      "h": "00",
+      "d": "Fri",
+      "v": 30
+     },
+     {
+      "h": "06",
+      "d": "Fri",
+      "v": 45
+     },
+     {
+      "h": "12",
+      "d": "Fri",
+      "v": 66
+     },
+     {
+      "h": "18",
+      "d": "Fri",
+      "v": 28
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "band",
+    "domain": {
+     "data": "cells",
+     "field": "h"
+    },
+    "range": "width",
+    "padding": 0.04
+   },
+   {
+    "name": "y",
+    "type": "band",
+    "domain": {
+     "data": "cells",
+     "field": "d"
+    },
+    "range": "height",
+    "padding": 0.04
+   },
+   {
+    "name": "c",
+    "type": "linear",
+    "range": {
+     "scheme": "yellowgreenblue"
+    },
+    "domain": {
+     "data": "cells",
+     "field": "v"
+    },
+    "reverse": false
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x",
+    "title": "Hour",
+    "domain": false,
+    "ticks": false,
+    "labelPadding": 4
+   },
+   {
+    "orient": "left",
+    "scale": "y",
+    "title": "Day",
+    "domain": false,
+    "ticks": false,
+    "labelPadding": 4
+   }
+  ],
+  "legends": [
+   {
+    "fill": "c",
+    "type": "gradient",
+    "title": "Requests",
+    "gradientLength": 160
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "from": {
+     "data": "cells"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "h"
+      },
+      "width": {
+       "scale": "x",
+       "band": 1
+      },
+      "y": {
+       "scale": "y",
+       "field": "d"
+      },
+      "height": {
+       "scale": "y",
+       "band": 1
+      },
+      "fill": {
+       "scale": "c",
+       "field": "v"
+      }
+     }
+    }
+   },
+   {
+    "type": "text",
+    "from": {
+     "data": "cells"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "h",
+       "band": 0.5
+      },
+      "y": {
+       "scale": "y",
+       "field": "d",
+       "band": 0.5
+      },
+      "align": {
+       "value": "center"
+      },
+      "baseline": {
+       "value": "middle"
+      },
+      "fontSize": {
+       "value": 10
+      },
+      "text": {
+       "field": "v"
+      },
+      "fill": {
+       "signal": "datum.v > 60 ? '#ffffff' : '#1a1a1a'"
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "Heatmap: rect marks over a band x band grid with a sequential colour scale, a gradient legend, and an explicit top-level `background` of #ffffff (a very common authoring habit) to probe theme adaptation of a hardcoded background."
+}

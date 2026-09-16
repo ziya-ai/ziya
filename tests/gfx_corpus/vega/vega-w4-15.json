@@ -1,0 +1,77 @@
+{
+ "type": "vega",
+ "definition": {
+  "data": [
+   {
+    "values": [
+     {
+      "c": "a",
+      "v": 30
+     },
+     {
+      "c": "b",
+      "v": 52
+     },
+     {
+      "c": "d",
+      "v": 25
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "band",
+    "domain": {
+     "data": "t",
+     "field": "c"
+    }
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "domain": {
+     "data": "t",
+     "field": "v"
+    }
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x"
+   },
+   {
+    "orient": "left",
+    "scale": "y"
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "encode": {
+     "update": {
+      "x": {
+       "scale": "x",
+       "field": "c"
+      },
+      "width": {
+       "scale": "x",
+       "band": 1
+      },
+      "y": {
+       "scale": "y",
+       "field": "v"
+      },
+      "y2": {
+       "scale": "y",
+       "value": 0
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "everything optional-but-assumed omitted: no $schema, no width/height/padding, the dataset has no name (while scales reference 't'), scales have no range, and the mark has no from.data. A model that trusts defaults produces exactly this; recovery means inferring name/range/from"
+}

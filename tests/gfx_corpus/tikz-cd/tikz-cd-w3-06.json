@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\begin{tikzcd}\nP \\ar[r,bend left=45,\"a\"] \\ar[r,bend right=45,\"b\"'] \\ar[dr,phantom,\"\\lrcorner\",very near start] \\ar[d,shift left=2pt] \\ar[d,shift right=2pt,swap] & Q \\dar \\\\\nR \\ar[r,crossing over] & S\n\\end{tikzcd}",
+ "intent": "three advanced features at once: bend + crossing over + phantom with lrcorner + shift left/right"
+}

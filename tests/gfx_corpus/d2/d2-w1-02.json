@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "web: Web Frontend\napi: API Gateway\nauth: Auth Service\nweb -> api\napi -> auth\n",
+ "intent": "Explicit node labels via `id: Label` shorthand, then connections referencing the ids."
+}

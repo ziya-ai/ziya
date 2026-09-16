@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\chemname{\\chemfig{*6(-=-=-=)}}{“benzene” — mp 5.5°C, −5.5 kJ·mol⁻¹}",
+ "intent": "RECOVERY: smart quotes, em dash, degree sign, unicode minus, thin space, middot and superscript-1 pasted into a \\chemname label."
+}

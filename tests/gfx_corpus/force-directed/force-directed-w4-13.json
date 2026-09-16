@@ -1,0 +1,5 @@
+{
+ "type": "force-directed",
+ "definition": "{\n  \"type\": \"force-directed\",\n  \"nodes\": [\n    {\"id\": \"api\", \"color\": \"steelblue\"},\n    {\"id\": \"auth\", \"color\": \"tomato\"},\n    {\"id\": \"db\", \"color\": \"rebeccapurple\"},\n    {\"id\": \"cache\", \"color\": \"goldenrod\"},\n    {\"id\": \"queue\", \"color\": \"seagreen\"},\n    {\"id\": \"worker\", \"color\": \"slategray\"}\n  ],\n  \"links\": [\n    {\"source\": \"api\", \"target\": \"auth\"},\n    {\"source\": \"api\", \"target\": \"cache\"},\n    {\"source\": \"auth\", \"target\": \"db\"},\n    {\"source\": \"api\", \"target\": \"queue\"},\n    {\"source\": \"queue\", \"target\": \"worker\"},\n    {\"source\": \"worker\", \"target\": \"db\"}\n  ],\n  \"style\": {\"linkColor\": \"dimgray\", \"labelColor\": \"black\"}\n}",
+ "intent": "RECOVERY-COLOR: CSS named colors for fills plus style.labelColor 'black' - a hardcoded name that cannot adapt, so it should be legible in light and unreadable in dark. Intent: six named-colour nodes."
+}

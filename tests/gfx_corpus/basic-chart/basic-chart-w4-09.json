@@ -1,0 +1,5 @@
+{
+ "type": "d3",
+ "definition": "{\n  \"data\": [\n    {\"label\": \"Alpha\", \"value\": 30},\n    {\"label\": \"Beta\", \"value\": 55},\n    {\"label\": \"Gamma\", \"value\": 18}\n  ]\n}",
+ "intent": "optional-but-assumed field missing: no \"type\" key at all, bar implied by data shape"
+}

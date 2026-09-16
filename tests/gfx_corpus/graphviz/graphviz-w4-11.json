@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph G {\n  rankdir=LR;\n  node [shape=box style=\"setlinewidth(4),filled\" fillcolor=\"#eeeeee\" fontcolor=\"#000000\"];\n  edge [style=\"setlinewidth(3)\"];\n  a [label=\"Thick A\"];\n  b [label=\"Thick B\"];\n  c [label=\"Thin C\" style=\"setlinewidth(1),filled\"];\n  a -> b -> c;\n}",
+ "intent": "Deprecated legacy idiom: style=\"setlinewidth(N)\" instead of penwidth"
+}

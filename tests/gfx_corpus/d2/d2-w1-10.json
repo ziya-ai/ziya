@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "danger: Critical Path\ndanger.style.fill: \"#8b0000\"\ndanger.style.stroke: \"#ffffff\"\ndanger.style.font-color: \"#ffffff\"\nsafe: Normal Path\nsafe.style.fill: \"#e8f5e9\"\nsafe.style.font-color: \"#1b5e20\"\ndanger -> safe: fallback\n",
+ "intent": "Per-node style overrides via dotted style keys (fill, stroke, font-color) with explicit hex colors."
+}

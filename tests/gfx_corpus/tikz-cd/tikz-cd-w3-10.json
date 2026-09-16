@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\begin{tikzcd}[cells={nodes={draw=blue,fill=blue,fill opacity=0.15,text opacity=1,inner sep=6pt}}]\nA \\rar[blue,opacity=0.25,\"\\textcolor{blue}{faint}\"] & B \\dar[red,opacity=0.18] \\\\\nC \\rar[green!50!black,opacity=0.2,\"overlay\"'] & D\n\\end{tikzcd}",
+ "intent": "low-opacity / alpha-blended fills plus semi-transparent arrows and labels (survives light, dissolves in dark?)"
+}

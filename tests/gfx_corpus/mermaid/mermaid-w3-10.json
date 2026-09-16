@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "flowchart LR\n  Start([Request]) --> Auth[Authenticate]\n  Auth --> Cache{Cache hit?}\n  Cache -->|hit| Serve[Serve cached]\n  Cache -->|miss| Fetch[Fetch from origin]\n  Fetch --> Store[(Write cache)]\n  Store --> Serve\n  Serve --> Done([Response])\n  classDef nocturne fill:#1e1e1e,stroke:#2a2a2a,stroke-width:1px,color:#eceff4\n  class Start,Auth,Cache,Serve,Fetch,Store,Done nocturne\n  linkStyle default stroke:#3a3a3a,stroke-width:1px",
+ "intent": "HARDCODED DARK PALETTE that must survive LIGHT theme - exact mirror of w3-09 on the same graph. Fills #1e1e1e, strokes #2a2a2a, text #eceff4, edges #3a3a3a. These are the plugin's OWN dark-theme values (wave 1 read #1e1e1e canvas and #eceff4 text out of the enhancer), so this asks what happens when a user hardcodes the dark theme's palette into a light-theme page: the #2a2a2a stroke on a #1e1e1e fill is 1.19:1 in EITHER theme, an unconditional defect independent of theme. All computable."
+}

@@ -1,0 +1,5 @@
+{
+ "type": "plotly",
+ "definition": "{\"data\":[{\"type\":\"scatter\",\"mode\":\"markers\",\"x\":[\"1\",\"2\",\"3\",\"4\",\"5\"],\"y\":[\"10\",\"14\",\"9\",\"17\",\"12\"],\"marker\":{\"size\":\"14\",\"opacity\":\"0.9\",\"color\":\"#e45756\"},\"name\":\"as strings\"}],\"layout\":{\"title\":{\"text\":\"Numbers As Strings\"},\"width\":\"700\",\"height\":\"420\",\"xaxis\":{\"title\":{\"text\":\"index\"}},\"yaxis\":{\"title\":{\"text\":\"value\"}}}}",
+ "intent": "every numeric quoted as a string: x, y, marker.size, marker.opacity, layout.width, layout.height. Intent: a 5-point scatter, numeric x axis, sized markers, 700x420."
+}

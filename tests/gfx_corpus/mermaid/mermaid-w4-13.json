@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "gantt\n  title Release plan\n  section Build\n    Compile        :a1, 2024-03-01, 5d\n    Unit tests     :a2, after a1, 3d\n  section Ship\n    Package        :a3, after a2, 2d\n    Deploy         :milestone, after a3, 0d",
+ "intent": "RECOVERY: gantt with NO dateFormat and NO axisFormat declared - both optional in the grammar but universally assumed present. Dates are ISO; should be inferred and the 4-task chart drawn with a readable time axis."
+}

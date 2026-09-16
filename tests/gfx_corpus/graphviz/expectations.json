@@ -1,0 +1,761 @@
+{
+ "schema": 1,
+ "engine": "graphviz",
+ "specs": {
+  "graphviz-w1-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.380103Z"
+    }
+   ],
+   "golden": {
+    "light": {
+     "hash": "31c3d0546352df67751287faa91221d656c065f9f8b9a3fca1b442baae56051a",
+     "validated_at": "2026-09-16T06:24:08.051156Z"
+    },
+    "dark": {
+     "hash": "97c0bd513813e0f26880ed30a7b39656dd3b9a5cf30643e9c02b4ec2694ccdf1",
+     "validated_at": "2026-09-16T06:24:08.071473Z"
+    }
+   }
+  },
+  "graphviz-w1-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.383541Z"
+    }
+   ],
+   "golden": {
+    "light": {
+     "hash": "a40112122c75aab442af4661fd11ffa516fb1512b18a5f703a9197d1e77f881c",
+     "validated_at": "2026-09-16T06:25:16.504066Z"
+    },
+    "dark": {
+     "hash": "5a21eeadff402fb796484315121d18af369b7b5a7146cbe6b007c7fec3540ee5",
+     "validated_at": "2026-09-16T06:25:16.510315Z"
+    }
+   }
+  },
+  "graphviz-w1-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.387300Z"
+    }
+   ],
+   "golden": {
+    "light": {
+     "hash": "39dfc98eb008a6b07d2aca074033c59fdca66691768376f52b7297c0d1c1131c",
+     "validated_at": "2026-09-16T06:25:16.760164Z"
+    },
+    "dark": {
+     "hash": "63e21b977a7387ad3c8a9bf4e1d43da6396830a7cfc129a21d2f285cc624b392",
+     "validated_at": "2026-09-16T06:25:16.779291Z"
+    }
+   }
+  },
+  "graphviz-w1-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.389782Z"
+    }
+   ],
+   "golden": {
+    "light": {
+     "hash": "bf369d175225f47a823a86c332f4b8c85dfb325b10f1ef7025cae829b93c0707",
+     "validated_at": "2026-09-16T06:26:09.550667Z"
+    },
+    "dark": {
+     "hash": "8b0464ce8d391802bc55b606af9c0d81d7df87fc71fe3487d2cc11e1b7863f1c",
+     "validated_at": "2026-09-16T06:26:09.562321Z"
+    }
+   }
+  },
+  "graphviz-w1-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.393453Z"
+    }
+   ],
+   "golden": {
+    "light": {
+     "hash": "aa876b88c670f522494b01fc5e88da6850af84a592ab2922946a20ed81a95ed0",
+     "validated_at": "2026-09-16T06:27:53.840067Z"
+    },
+    "dark": {
+     "hash": "0426bbd88e6cda3ce6efa2780b2e8695e0fc7b14d1ea5025131abb14b153dc95",
+     "validated_at": "2026-09-16T06:27:53.851412Z"
+    }
+   }
+  },
+  "graphviz-w1-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.395924Z"
+    }
+   ],
+   "golden": {
+    "light": {
+     "hash": "cb3050522a150f18d56215f426189aa2c28ddbbfeb20e29bce32abbf6b872978",
+     "validated_at": "2026-09-16T06:30:09.397283Z"
+    },
+    "dark": {
+     "hash": "a8a11786dd885ab6f6760fefb43b2749694fa356fde8ead865fc4578c19803be",
+     "validated_at": "2026-09-16T06:30:09.407704Z"
+    }
+   }
+  },
+  "graphviz-w1-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.398295Z"
+    }
+   ]
+  },
+  "graphviz-w1-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.401307Z"
+    }
+   ],
+   "golden": {
+    "light": {
+     "hash": "01918579215ef571e46811b413cfc228d440ff370a688a4707e5f370ab898570",
+     "validated_at": "2026-09-16T06:31:16.875262Z"
+    },
+    "dark": {
+     "hash": "c141311ad6101349be165b030b7c5c8f7e325171d21d16f0b566f3d25c52fcb2",
+     "validated_at": "2026-09-16T06:31:16.892565Z"
+    }
+   }
+  },
+  "graphviz-w1-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.403752Z"
+    }
+   ],
+   "golden": {
+    "light": {
+     "hash": "6126694f2af789e4fcfa4c6a5de6f76dc72ee7c07f583e0c2d19c3867b6c201f",
+     "validated_at": "2026-09-16T06:31:17.083364Z"
+    },
+    "dark": {
+     "hash": "abeb4c4d10e9d5d98a4f7ca3f2723b67068a85d06b27120e7b8cce1b3b4a1ed0",
+     "validated_at": "2026-09-16T06:31:17.101385Z"
+    }
+   }
+  },
+  "graphviz-w2-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.406537Z"
+    }
+   ],
+   "golden": {
+    "light": {
+     "hash": "e029b7f0b3eb538e3c6137707c69539df84dbebc9bfd9c3c52a7a177a828cd5e",
+     "validated_at": "2026-09-16T06:35:37.500448Z"
+    },
+    "dark": {
+     "hash": "c07b797d4fa51ff1266533131400dcbf0972aef5b4a80ddb4038becf09e91c8d",
+     "validated_at": "2026-09-16T06:35:37.518786Z"
+    }
+   }
+  },
+  "graphviz-w2-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.409999Z"
+    }
+   ]
+  },
+  "graphviz-w2-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.413544Z"
+    }
+   ],
+   "golden": {
+    "light": {
+     "hash": "cd75d0df2d5cd4c897df1612f47b670b63bb69672eba404da79c68edc8f07c27",
+     "validated_at": "2026-09-16T06:58:29.148043Z"
+    },
+    "dark": {
+     "hash": "c19a3a29940ab1ef6cabca82150ced890973551cb8a99ffab902a8696b13bc0c",
+     "validated_at": "2026-09-16T06:58:29.173557Z"
+    }
+   }
+  },
+  "graphviz-w3-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.417768Z"
+    }
+   ],
+   "golden": {
+    "light": {
+     "hash": "4ed22d00007c0b1fd55b2ed3ec78245e88432f4753d24dc55a9672cca8bd3783",
+     "validated_at": "2026-09-16T07:04:49.423322Z"
+    },
+    "dark": {
+     "hash": "c95033cd4b2cdf14219b71b854c605afb68e7586223ac9f0f684dc3ebbe65192",
+     "validated_at": "2026-09-16T07:04:49.431416Z"
+    }
+   }
+  },
+  "graphviz-w3-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.421547Z"
+    }
+   ]
+  },
+  "graphviz-w4-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.425960Z"
+    }
+   ]
+  },
+  "graphviz-w4-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.429446Z"
+    }
+   ]
+  },
+  "graphviz-w4-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.432935Z"
+    },
+    {
+     "origin": "D-125",
+     "signature": "no-lexical-repair-stage:timeout",
+     "at": "2026-09-15T08:56:12.903840Z"
+    }
+   ]
+  },
+  "graphviz-w2-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:min_text_size"
+   ],
+   "origins": [
+    {
+     "origin": "D-118",
+     "signature": "explicit-undersize-not-upscaled-illegible",
+     "at": "2026-09-15T08:56:12.835883Z"
+    }
+   ]
+  },
+  "graphviz-w2-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-121",
+     "signature": "nested-cluster-border-invisible-on-cluster-fill:light",
+     "at": "2026-09-15T08:56:12.841978Z"
+    }
+   ]
+  },
+  "graphviz-w1-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-122",
+     "signature": "edge-fontcolor-authored-dark-stranded-on-panel:dark",
+     "at": "2026-09-15T08:56:12.847092Z"
+    }
+   ]
+  },
+  "graphviz-w4-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-123",
+     "signature": "authored-fill-overridden-by-node-palette:dark",
+     "at": "2026-09-15T08:56:12.850589Z"
+    },
+    {
+     "origin": "D-280",
+     "signature": "authored-penwidth-flattened-by-dark-restroke:dark",
+     "at": "2026-09-15T08:56:14.823193Z"
+    }
+   ]
+  },
+  "graphviz-w4-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-123",
+     "signature": "authored-fill-overridden-by-node-palette:dark",
+     "at": "2026-09-15T08:56:12.853217Z"
+    }
+   ]
+  },
+  "graphviz-w3-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-124",
+     "signature": "unfilled-node-keeps-authored-black-fontcolor:dark",
+     "at": "2026-09-15T08:56:12.855875Z"
+    }
+   ]
+  },
+  "graphviz-w4-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-124",
+     "signature": "unfilled-node-keeps-authored-black-fontcolor:dark",
+     "at": "2026-09-15T08:56:12.858742Z"
+    }
+   ]
+  },
+  "graphviz-w4-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-125",
+     "signature": "no-lexical-repair-stage:timeout",
+     "at": "2026-09-15T08:56:12.863413Z"
+    }
+   ]
+  },
+  "graphviz-w4-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-125",
+     "signature": "no-lexical-repair-stage:timeout",
+     "at": "2026-09-15T08:56:12.875775Z"
+    }
+   ]
+  },
+  "graphviz-w4-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-125",
+     "signature": "no-lexical-repair-stage:timeout",
+     "at": "2026-09-15T08:56:12.880123Z"
+    }
+   ]
+  },
+  "graphviz-w4-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-125",
+     "signature": "no-lexical-repair-stage:timeout",
+     "at": "2026-09-15T08:56:12.886419Z"
+    }
+   ]
+  },
+  "graphviz-w4-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-125",
+     "signature": "no-lexical-repair-stage:timeout",
+     "at": "2026-09-15T08:56:12.889626Z"
+    }
+   ]
+  },
+  "graphviz-w4-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-125",
+     "signature": "no-lexical-repair-stage:timeout",
+     "at": "2026-09-15T08:56:12.897869Z"
+    }
+   ]
+  },
+  "graphviz-w4-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-125",
+     "signature": "no-lexical-repair-stage:timeout",
+     "at": "2026-09-15T08:56:12.909910Z"
+    }
+   ]
+  },
+  "graphviz-w3-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-283",
+     "signature": "mid-luminance-fill-kept-authored-text-subfloor:dark",
+     "at": "2026-09-15T08:56:14.828305Z"
+    }
+   ]
+  },
+  "graphviz-w3-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-284",
+     "signature": "cluster-label-not-rethemed-on-unfilled-cluster:dark",
+     "at": "2026-09-15T08:56:14.832957Z"
+    }
+   ]
+  },
+  "graphviz-w3-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-285",
+     "signature": "darkened-authored-bgcolor-defeats-dark-palette:dark",
+     "at": "2026-09-15T08:56:14.836365Z"
+    }
+   ]
+  },
+  "graphviz-w3-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-286",
+     "signature": "strict-keyword-bypasses-theme-injection",
+     "at": "2026-09-15T08:56:14.840803Z"
+    }
+   ]
+  }
+ }
+}

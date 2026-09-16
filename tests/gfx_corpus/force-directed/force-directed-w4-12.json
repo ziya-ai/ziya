@@ -1,0 +1,5 @@
+{
+ "type": "force-directed",
+ "definition": "{\n  \"type\": \"force-directed\",\n  \"nodes\": [\n    {\"id\": \"api\", \"color\": \"rgba(31, 119, 180, 1)\"},\n    {\"id\": \"auth\", \"color\": \"rgba(255, 127, 14, 0.9)\"},\n    {\"id\": \"db\", \"color\": \"rgb(44, 160, 44)\"},\n    {\"id\": \"cache\", \"color\": \"rgba(214, 39, 40, 0.85)\"},\n    {\"id\": \"queue\", \"color\": \"rgba(148, 103, 189, 1)\"},\n    {\"id\": \"worker\", \"color\": \"rgba(140, 86, 75, 0.95)\"}\n  ],\n  \"links\": [\n    {\"source\": \"api\", \"target\": \"auth\"},\n    {\"source\": \"api\", \"target\": \"cache\"},\n    {\"source\": \"auth\", \"target\": \"db\"},\n    {\"source\": \"api\", \"target\": \"queue\"},\n    {\"source\": \"queue\", \"target\": \"worker\"},\n    {\"source\": \"worker\", \"target\": \"db\"}\n  ],\n  \"style\": {\"linkColor\": \"rgba(80, 80, 90, 0.75)\", \"labelColor\": \"rgb(20,20,20)\"}\n}",
+ "intent": "RECOVERY-COLOR: rgba()/rgb() functional notation where the engine's examples all use hex, including a fractional alpha that must survive the brighter(0.5) stroke computation. Intent: six distinctly coloured nodes."
+}

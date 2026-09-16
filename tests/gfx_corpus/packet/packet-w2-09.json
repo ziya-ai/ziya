@@ -1,0 +1,28 @@
+{
+ "type": "packet",
+ "definition": {
+  "title": "tiny spec, huge canvas",
+  "bitWidth": 32,
+  "sections": [
+   {
+    "label": "Small",
+    "color": "header",
+    "rows": [
+     {
+      "fields": [
+       [
+        "a",
+        16
+       ],
+       [
+        "b",
+        16
+       ]
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "Explicit width/height far ABOVE natural size (4000x3000 requested for a ~1-row diagram)"
+}

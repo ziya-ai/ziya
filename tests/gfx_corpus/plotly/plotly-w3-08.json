@@ -1,0 +1,129 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "bar",
+    "name": "pale",
+    "x": [
+     "a",
+     "b",
+     "c",
+     "d",
+     "e"
+    ],
+    "y": [
+     4,
+     6,
+     3,
+     7,
+     5
+    ],
+    "marker": {
+     "color": "#f2f2f2",
+     "line": {
+      "color": "#dddddd",
+      "width": 1.5
+     }
+    },
+    "text": [
+     "4",
+     "6",
+     "3",
+     "7",
+     "5"
+    ],
+    "textposition": "outside",
+    "textfont": {
+     "color": "#333333",
+     "size": 13
+    }
+   },
+   {
+    "type": "scatter",
+    "name": "pale line",
+    "x": [
+     "a",
+     "b",
+     "c",
+     "d",
+     "e"
+    ],
+    "y": [
+     5,
+     4,
+     6,
+     3,
+     7
+    ],
+    "mode": "lines+markers",
+    "line": {
+     "color": "#e8e8e8",
+     "width": 3
+    },
+    "marker": {
+     "color": "#fafafa",
+     "line": {
+      "color": "#dddddd",
+      "width": 1
+     }
+    }
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "Hardcoded LIGHT palette",
+    "font": {
+     "color": "#333333"
+    }
+   },
+   "paper_bgcolor": "#ffffff",
+   "plot_bgcolor": "#fafafa",
+   "font": {
+    "color": "#333333"
+   },
+   "xaxis": {
+    "title": {
+     "text": "category"
+    },
+    "gridcolor": "#eeeeee",
+    "linecolor": "#dddddd",
+    "tickfont": {
+     "color": "#333333"
+    }
+   },
+   "yaxis": {
+    "title": {
+     "text": "value"
+    },
+    "gridcolor": "#eeeeee",
+    "linecolor": "#dddddd",
+    "tickfont": {
+     "color": "#333333"
+    }
+   },
+   "legend": {
+    "bgcolor": "#ffffff",
+    "bordercolor": "#dddddd",
+    "borderwidth": 1,
+    "font": {
+     "color": "#333333"
+    }
+   },
+   "annotations": [
+    {
+     "x": "c",
+     "y": 6.5,
+     "text": "#333 on white",
+     "showarrow": true,
+     "font": {
+      "color": "#333333"
+     },
+     "arrowcolor": "#cccccc",
+     "bgcolor": "#f7f7f7"
+    }
+   ]
+  }
+ },
+ "intent": "HARDCODED LIGHT palette: near-white fills #fafafa/#f2f2f2, pale grey #dddddd strokes, #333333 text, explicit white paper. Must still be legible in dark."
+}

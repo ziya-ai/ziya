@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\begin{tikzcd}\nA \\arrow[r, \"f\", color=theme.foreground] \\arrow[d, color=var(--ziya-text)] & B \\arrow[d, color=currentColor] \\\\\nC \\arrow[r, \"k\"', color=$theme-fg] & D\n\\end{tikzcd}",
+ "intent": "Nonexistent theme tokens: theme.foreground, CSS var(--ziya-text), currentColor, $theme-fg. Recovery should resolve these to a theme-appropriate ink, which is the one case where a token WOULD beat a literal."
+}

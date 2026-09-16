@@ -1,0 +1,115 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 380,
+  "height": 200,
+  "padding": 5,
+  "background": "#fff",
+  "data": [
+   {
+    "name": "t",
+    "values": [
+     {
+      "c": "a",
+      "v": 30
+     },
+     {
+      "c": "b",
+      "v": 52
+     },
+     {
+      "c": "d",
+      "v": 25
+     },
+     {
+      "c": "e",
+      "v": 41
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "band",
+    "domain": {
+     "data": "t",
+     "field": "c"
+    },
+    "range": "width",
+    "padding": 0.2
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "domain": {
+     "data": "t",
+     "field": "v"
+    },
+    "range": "height",
+    "nice": true
+   },
+   {
+    "name": "col",
+    "type": "ordinal",
+    "domain": {
+     "data": "t",
+     "field": "c"
+    },
+    "range": [
+     "#f0a",
+     "#0af",
+     "#4a2",
+     "#fc0"
+    ]
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x"
+   },
+   {
+    "orient": "left",
+    "scale": "y"
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "update": {
+      "x": {
+       "scale": "x",
+       "field": "c"
+      },
+      "width": {
+       "scale": "x",
+       "band": 1
+      },
+      "y": {
+       "scale": "y",
+       "field": "v"
+      },
+      "y2": {
+       "scale": "y",
+       "value": 0
+      },
+      "fill": {
+       "scale": "col",
+       "field": "c"
+      },
+      "stroke": {
+       "value": "#333"
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "three-digit CSS hex shorthand (#f0a, #0af, #4a2, #fc0, #fff, #333) where the engine may expect six digits. Also probes whether an authored '#fff' background survives the dark theme"
+}

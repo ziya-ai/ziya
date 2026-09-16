@@ -1,0 +1,5 @@
+{
+ "type": "d3",
+ "definition": "{\n  \"type\": \"bar\",\n  \"data\": [\n    {\"label\": \"alpha\", \"value\": 42},\n    {\"label\": \"bravo\", \"value\": 37},\n    {\"label\": \"charlie\", \"value\": 58},\n    {\"label\": \"delta\", \"value\": 23},\n  ],\n}",
+ "intent": "RECOVERY: trailing commas after the last array element and last object member (the single most common model JSON slip). Intent: 4-bar chart."
+}

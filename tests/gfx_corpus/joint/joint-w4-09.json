@@ -1,0 +1,5 @@
+{
+ "type": "joint",
+ "definition": "{\n  \"cells\": [\n    {\"id\": \"u1\", \"type\": \"basic.Rect\", \"attrs\": {\"text\": {\"text\": \"Producer\"}, \"rect\": {\"fill\": \"#3498db\"}}},\n    {\"id\": \"u2\", \"type\": \"basic.Rect\", \"attrs\": {\"text\": {\"text\": \"Topic\"}, \"rect\": {\"fill\": \"#3498db\"}}},\n    {\"id\": \"u3\", \"type\": \"basic.Rect\", \"attrs\": {\"text\": {\"text\": \"Consumer\"}, \"rect\": {\"fill\": \"#3498db\"}}},\n    {\"id\": \"b1\", \"type\": \"basic.Link\", \"source\": {\"id\": \"u1\"}, \"target\": {\"id\": \"u2\"}, \"labels\": [{\"position\": 0.5, \"attrs\": {\"text\": {\"text\": \"publish\"}}}]},\n    {\"id\": \"b2\", \"type\": \"link\", \"source\": {\"id\": \"u2\"}, \"target\": {\"id\": \"u3\"}, \"labels\": [{\"position\": 0.5, \"attrs\": {\"text\": {\"text\": \"consume\"}}}]}\n  ]\n}",
+ "intent": "RECOVERY: DEPRECATED JointJS v1/v2 dialect mixed with v3 - basic.Rect / basic.Link / bare \"link\" types and attrs.text.text / attrs.rect.fill instead of standard.* and attrs.label/attrs.body. Intent: Producer->Topic->Consumer."
+}

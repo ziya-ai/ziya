@@ -1,0 +1,88 @@
+{
+ "type": "music",
+ "definition": {
+  "type": "music",
+  "clef": "treble",
+  "keySignature": "D",
+  "timeSignature": "4/4",
+  "autoBeam": true,
+  "title": "夜想曲 · Nocturne · نوکتورن 🎼",
+  "subtitle": "変ロ短調 — си-бемоль минор — ♭♯♮ — 🎹🎻",
+  "composer": "F. Chopin / フレデリック・ショパン",
+  "lyricist": "作詞: 佚名 · مؤلف الكلمات",
+  "section": "Ⅳ",
+  "tempo": {
+   "name": "Andante 中庸に ♩=72",
+   "duration": "q",
+   "bpm": 72
+  },
+  "measures": [
+   {
+    "notes": [
+     {
+      "keys": [
+       "d/5"
+      ],
+      "duration": "q",
+      "lyric": "さくら",
+      "annotations": [
+       {
+        "text": "עברית",
+        "position": "above"
+       }
+      ]
+     },
+     {
+      "keys": [
+       "e/5"
+      ],
+      "duration": "q",
+      "lyric": "花",
+      "chordSymbol": "D△⁷"
+     },
+     {
+      "keys": [
+       "f#/5"
+      ],
+      "duration": "q",
+      "lyric": "يا",
+      "annotations": [
+       {
+        "text": "🎵",
+        "position": "above"
+       }
+      ]
+     },
+     {
+      "keys": [
+       "g/5"
+      ],
+      "duration": "q",
+      "lyric": "Ω≈ç√"
+     }
+    ]
+   },
+   {
+    "notes": [
+     {
+      "keys": [
+       "a/5"
+      ],
+      "duration": "h",
+      "lyric": "🎶🎵",
+      "chordSymbol": "A⁷⁽♯¹¹⁾"
+     },
+     {
+      "keys": [
+       "d/5"
+      ],
+      "duration": "h",
+      "lyric": "ﷺ"
+     }
+    ]
+   }
+  ],
+  "endBar": "final"
+ },
+ "intent": "Unicode / CJK / RTL / emoji / combining marks in EVERY text surface: title, subtitle, composer, lyricist, section, tempo name, lyrics, annotations, chord symbols. Tests glyph coverage, RTL direction, emoji color-font behaviour per theme."
+}

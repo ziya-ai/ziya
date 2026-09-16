@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "\\draw[thick,blue!70!black] (0,0) .. controls (1,2) and (3,-1) .. (4,1);\n\\fill (0,0) circle (2pt) node[below left] {P0};\n\\fill (4,1) circle (2pt) node[right] {P3};\n\\fill[gray] (1,2) circle (1.5pt); \\fill[gray] (3,-1) circle (1.5pt);\n\\draw[gray,dashed] (0,0) -- (1,2); \\draw[gray,dashed] (3,-1) -- (4,1);\n\\draw[-{Stealth},thick,red!70!black] (0,2.6) to[out=30,in=150] (4,2.6);\n\\node[above] at (2,3.1) {to[out=30,in=150]};\n\\node (x) at (0.5,-2) {X}; \\node (y) at (3.5,-2) {Y};\n\\draw[-{Stealth}] (x) to[bend left=40] (y);\n\\draw[-{Stealth}] (y) to[bend left=40] (x);",
+ "intent": "curve construction: .. controls .. Bezier, to[out=..,in=..], and bend left/right topaths"
+}

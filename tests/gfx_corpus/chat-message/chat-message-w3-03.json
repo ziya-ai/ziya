@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "### Degenerate structures\n\nHeader-only table (no body rows):\n\n| col_a | col_b |\n|:---|:---|\n\nSingle-cell table:\n\n| only |\n|:---|\n| one |\n\nEmpty list items:\n\n-\n- non-empty\n-\n\nEmpty fence:\n\n```\n```\n\nEmpty blockquote:\n\n>\n\nBare rule:\n\n---\n\n####\n\nSingle character paragraph:\n\nx\n",
+ "intent": "degenerate cases: header-only table, single-cell table, empty list item, empty fence, empty blockquote, bare hr, empty heading"
+}

@@ -1,0 +1,5 @@
+{
+ "type": "music",
+ "definition": "{\n  \"timeSignature\": \"4/4\";\n  \"clef\": \"treble\";\n  \"title\": \"Semicolon Separators\";\n  \"notes\": [\n    {\"keys\": [\"a/4\"], \"duration\": \"q\"};\n    {\"keys\": [\"c/5\"], \"duration\": \"q\"};\n    {\"keys\": [\"e/5\"], \"duration\": \"h\"}\n  ]\n}",
+ "intent": "semicolons where JSON requires commas -- a statement-separator slip"
+}

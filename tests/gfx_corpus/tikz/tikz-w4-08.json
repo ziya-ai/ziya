@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "\\fill[black!88] (-0.5,-0.5) rectangle (8.00,3.20);\n\\node[white,anchor=west,font=\\bfseries] at (-0.2,2.65) {theme tokens};\n\\node[draw=var(--border),text=var(--fg),fill=var(--surface)] (a) at (1,1) {Panel};\n\\node[draw=white,text=currentColor,fill=theme-bg] (b) at (4,1) {Token};\n\\node[draw=white,text=white,fill=blue!60!black] (c) at (7,1) {Real};\n\\draw[white,thick] (a)--(b);\n\\draw[white,thick] (b)--(c);\n",
+ "intent": "CSS variable and theme-token colour names (var(--surface), theme-bg, currentColor)"
+}

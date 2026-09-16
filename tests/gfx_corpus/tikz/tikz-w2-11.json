@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "\\foreach \\c [count=\\i from 0] in {red,blue,green,orange,violet,brown,cyan,magenta,teal,olive,purple,gray,red!60,blue!60,green!60,orange!60,violet!60,brown!60,cyan!60,magenta!60,teal!60,olive!60,purple!60,gray!60}{\n  \\pgfmathsetmacro{\\ph}{\\i*15}\n  \\draw[\\c, line width=0.5pt] plot[domain=0:14, samples=90, smooth] (\\x, {2.4*sin((\\x+\\i*0.4)*57)+\\i*0.02});\n  \\pgfmathtruncatemacro{\\n}{\\i+1}\n  \\fill[\\c] (14.6, 2.5-\\i*0.22) rectangle (15.1, 2.5-\\i*0.22+0.13);\n  \\node[font=\\tiny, anchor=west] at (15.2, 2.5-\\i*0.22+0.065) {series \\n};\n}\n\\draw[->] (0,-2.8) -- (0,3); \\draw[->] (0,0) -- (14.4,0);",
+ "intent": "24 overlaid series drawn from a recycled categorical colour list, each with a legend swatch and label: palette exhaustion plus legend contrast at density"
+}

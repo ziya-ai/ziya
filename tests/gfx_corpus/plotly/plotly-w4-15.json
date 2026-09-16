@@ -1,0 +1,5 @@
+{
+ "type": "plotly",
+ "definition": "{'data': [{'type': 'scatter', 'mode': 'lines+markers', 'x': [1, 2, 3, 4, 5], 'y': [2, None, 5, nan, 7], 'name': 'series', 'connectgaps': False, 'visible': True}], 'layout': {'title': {'text': 'Python Repr Dialect'}, 'showlegend': True, 'xaxis': {'title': {'text': 't'}}, 'yaxis': {'title': {'text': 'y'}}}}",
+ "intent": "a Python dict printed with str(): single quotes plus the Python literals True/False/None and a bare nan. Intent: a 5-point line with gaps at the missing values."
+}

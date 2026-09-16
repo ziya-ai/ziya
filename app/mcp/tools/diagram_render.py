@@ -21,6 +21,8 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
+from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
@@ -143,6 +145,19 @@ class RenderDiagramInput(BaseModel):
             "instead — it freezes the PNG with the run."
         ),
     )
+    save_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Also write the EXACT image bytes returned to this file. The "
+            "path must be under the project's .ziya/ directory or /tmp. "
+            "Use this when a verdict about the image must refer to the "
+            "same pixels later — e.g. the GFX sweep passes the saved file "
+            "to `gfx_ledger.py record --light-png/--dark-png` so a judged-"
+            "ok render becomes the validated golden. A second render is "
+            "not guaranteed to be pixel-identical, so re-rendering later "
+            "is not a substitute."
+        ),
+    )
 
 
 class RenderDiagramTool(BaseMCPTool):
@@ -177,6 +192,37 @@ class RenderDiagramTool(BaseMCPTool):
     InputSchema = RenderDiagramInput
 
     async def execute(self, **kwargs) -> Any:
+        """Render, then optionally persist the returned bytes to ``save_path``.
+
+        The persistence step wraps all three render paths (plugin, LaTeX,
+        chat-message) at their common return shape rather than being added
+        to each, so what is written is provably what was returned.
+        """
+        save_path = kwargs.pop("save_path", None)
+        result = await self._execute(**kwargs)
+        if not save_path or not isinstance(result, dict) or not result.get("_has_image_content"):
+            return result
+        try:
+            dest = _resolve_save_path(save_path)
+            image_block = next(
+                (b for b in result.get("content", [])
+                 if isinstance(b, dict) and b.get("type") == "image"), None)
+            if image_block is None:
+                raise RuntimeError("no image block in render result")
+            data = base64.b64decode(image_block["source"]["data"])
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            tmp = dest.with_name(dest.name + ".tmp")
+            tmp.write_bytes(data)
+            os.replace(tmp, dest)
+            note = f"Saved {len(data)} bytes to {dest}"
+        except Exception as exc:  # noqa: BLE001
+            # The render itself succeeded; report the save problem beside it
+            # rather than discarding a good image.
+            note = f"save_path not written: {exc}"
+        result["content"].append({"type": "text", "text": note})
+        return result
+
+    async def _execute(self, **kwargs) -> Any:
         """Render the diagram and return image + text content blocks."""
         # Retained rather than discarded: the chat-message renderer needs it
         # to resolve which project to seed the throwaway conversation into.
@@ -646,6 +692,83 @@ class RecallImageTool(BaseMCPTool):
                 *[b for b in content
                   if isinstance(b, dict) and b.get("type") == "image"],
                 {"type": "text", "text": note},
+            ],
+        }
+
+
+def _resolve_save_path(raw: str) -> Path:
+    """Confine ``save_path`` (and ``view_image``) to <cwd>/.ziya/ or the temp dirs.
+
+    The tool runs in the server process; without this a model could be
+    talked into writing image bytes over an arbitrary project file.
+    """
+    p = Path(raw).expanduser()
+    if not p.is_absolute():
+        p = Path.cwd() / p
+    p = p.resolve()
+    allowed = [(Path.cwd() / ".ziya").resolve(), Path("/tmp").resolve(),
+               Path("/var/tmp").resolve()]
+    if not any(p == a or a in p.parents for a in allowed):
+        raise ValueError(
+            f"{raw} is outside the allowed save roots (.ziya/, /tmp, /var/tmp)")
+    if p.suffix.lower() not in (".png", ".svg"):
+        raise ValueError("save_path must end in .png or .svg")
+    return p
+
+
+class ViewImageInput(BaseModel):
+    """Input schema for view_image."""
+
+    path: str = Field(
+        ...,
+        description=(
+            "Path of a PNG or SVG under the project's .ziya/ directory or "
+            "/tmp — e.g. a golden under .ziya/gfx-golden/, a drift render "
+            "or heatmap under .ziya/gfx-sweep/drift/, or a file written by "
+            "render_diagram(save_path=...)."
+        ),
+    )
+
+
+class ViewImageTool(BaseMCPTool):
+    """Show an image file that a render or the golden tier left on disk."""
+
+    name: str = "view_image"
+    description: str = (
+        "[DIRECT] Look at an image file on disk. Returns the file's exact "
+        "bytes as an image block — no re-render, no resizing — so what you "
+        "see is what a judge or test saw. Confined to .ziya/ and /tmp: "
+        "this is for renders, goldens and diff heatmaps the GFX pipeline "
+        "wrote, not for arbitrary project files.\n\n"
+        "Use it to compare a validated golden against a drifted render "
+        "(view both, plus the .heatmap.png that paints the differing "
+        "pixels red) before recording a verdict through gfx_ledger.py."
+    )
+
+    InputSchema = ViewImageInput
+
+    async def execute(self, **kwargs) -> Any:
+        kwargs.pop("_workspace_path", None)
+        raw = (kwargs.get("path") or "").strip()
+        if not raw:
+            return _error("'path' is required")
+        try:
+            p = _resolve_save_path(raw)
+        except ValueError as exc:
+            return _error(str(exc))
+        if not p.is_file():
+            return _error(f"{raw}: no such file")
+        data = p.read_bytes()
+        if len(data) > 25 * 1024 * 1024:
+            return _error(f"{raw}: {len(data)} bytes exceeds the 25 MB limit")
+        media_type = "image/svg+xml" if p.suffix.lower() == ".svg" else "image/png"
+        return {
+            "_has_image_content": True,
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": media_type,
+                                             "data": base64.b64encode(data).decode("utf-8")}},
+                {"type": "text", "text": f"{p} ({len(data) / 1024:.1f} KB) — the file's "
+                                         f"exact bytes, not a re-render."},
             ],
         }
 

@@ -1,0 +1,53 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "50-entry categorical legend",
+  "data": {
+   "sequence": {
+    "start": 0,
+    "stop": 50,
+    "step": 1,
+    "as": "n"
+   }
+  },
+  "transform": [
+   {
+    "calculate": "datum.n%25",
+    "as": "x"
+   },
+   {
+    "calculate": "20+60*abs(cos(datum.n/6))",
+    "as": "y"
+   },
+   {
+    "calculate": "'category-name-'+format(datum.n,'02d')",
+    "as": "k"
+   }
+  ],
+  "mark": {
+   "type": "point",
+   "size": 90,
+   "filled": true
+  },
+  "height": 320,
+  "encoding": {
+   "x": {
+    "field": "x",
+    "type": "quantitative"
+   },
+   "y": {
+    "field": "y",
+    "type": "quantitative"
+   },
+   "color": {
+    "field": "k",
+    "type": "nominal",
+    "legend": {
+     "title": "50 categories"
+    }
+   }
+  }
+ },
+ "intent": "SCALE: 50-entry categorical legend, 18-char entry labels - legend height overflow and palette recycling across 50 swatches."
+}

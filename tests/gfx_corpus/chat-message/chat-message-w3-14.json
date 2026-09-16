@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "Text sitting on coloured fills:\n\n```mermaid\nflowchart LR\n    OK[healthy] --> WARN[degraded]\n    WARN --> ERR[failed]\n    ERR --> OK\n    style OK fill:#2e7d32,stroke:#1b5e20,color:#ffffff\n    style WARN fill:#f9a825,stroke:#f57f17,color:#ffffff\n    style ERR fill:#c62828,stroke:#8e0000,color:#000000\n```\n\nHTML badges with text on fill:\n\n<span style=\"background:#2e7d32;color:#ffffff;padding:2px 8px;border-radius:3px;\">PASS</span>\n<span style=\"background:#f9a825;color:#ffffff;padding:2px 8px;border-radius:3px;\">WARN</span>\n<span style=\"background:#c62828;color:#000000;padding:2px 8px;border-radius:3px;\">FAIL</span>\n<span style=\"background:#e8f5e9;color:#a5d6a7;padding:2px 8px;border-radius:3px;\">PALE</span>\n",
+ "intent": "text drawn ON coloured elements: mermaid style/classDef fills with label text, plus HTML status badges"
+}

@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\textcolor{#36c}{\\chemfig{H_3C-[:30](-[:90]OH)-[:-30]CH_3}}",
+ "intent": "RECOVERY: colour given as 3-digit CSS hex '#36c'. Preprocessor should expand to #3366CC and route via \\color[HTML]."
+}

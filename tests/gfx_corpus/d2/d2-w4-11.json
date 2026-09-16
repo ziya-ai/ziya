@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "web: Web Server {\n  width: \"200\"\n  height: \"80\"\n  style.stroke-width: \"3\"\n  style.opacity: \"0.9\"\n}\napi: API Service\nweb -> api\n",
+ "intent": "RECOVERY: numeric values delivered as quoted strings"
+}

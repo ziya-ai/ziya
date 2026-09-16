@@ -1,0 +1,391 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "elements": [
+   {
+    "id": "m0",
+    "type": "rect",
+    "label": "ingest-service-00-region-us-west-2-shard-0"
+   },
+   {
+    "id": "m1",
+    "type": "rect",
+    "label": "normalize-service-01-region-us-west-2-shard-1"
+   },
+   {
+    "id": "m2",
+    "type": "rect",
+    "label": "validate-service-02-region-us-west-2-shard-2"
+   },
+   {
+    "id": "m3",
+    "type": "rect",
+    "label": "enrich-service-03-region-us-west-2-shard-3"
+   },
+   {
+    "id": "m4",
+    "type": "rect",
+    "label": "aggregate-service-04-region-us-west-2-shard-4"
+   },
+   {
+    "id": "m5",
+    "type": "rect",
+    "label": "persist-service-05-region-us-west-2-shard-5"
+   },
+   {
+    "id": "m6",
+    "type": "rect",
+    "label": "publish-service-06-region-us-west-2-shard-6"
+   },
+   {
+    "id": "m7",
+    "type": "rect",
+    "label": "audit-service-07-region-us-west-2-shard-0"
+   },
+   {
+    "id": "m8",
+    "type": "rect",
+    "label": "ingest-service-08-region-us-west-2-shard-1"
+   },
+   {
+    "id": "m9",
+    "type": "rect",
+    "label": "normalize-service-09-region-us-west-2-shard-2"
+   },
+   {
+    "id": "m10",
+    "type": "rect",
+    "label": "validate-service-10-region-us-west-2-shard-3"
+   },
+   {
+    "id": "m11",
+    "type": "rect",
+    "label": "enrich-service-11-region-us-west-2-shard-4"
+   },
+   {
+    "id": "m12",
+    "type": "rect",
+    "label": "aggregate-service-12-region-us-west-2-shard-5"
+   },
+   {
+    "id": "m13",
+    "type": "rect",
+    "label": "persist-service-13-region-us-west-2-shard-6"
+   },
+   {
+    "id": "m14",
+    "type": "rect",
+    "label": "publish-service-14-region-us-west-2-shard-0"
+   },
+   {
+    "id": "m15",
+    "type": "rect",
+    "label": "audit-service-15-region-us-west-2-shard-1"
+   },
+   {
+    "id": "m16",
+    "type": "rect",
+    "label": "ingest-service-16-region-us-west-2-shard-2"
+   },
+   {
+    "id": "m17",
+    "type": "rect",
+    "label": "normalize-service-17-region-us-west-2-shard-3"
+   },
+   {
+    "id": "m18",
+    "type": "rect",
+    "label": "validate-service-18-region-us-west-2-shard-4"
+   },
+   {
+    "id": "m19",
+    "type": "rect",
+    "label": "enrich-service-19-region-us-west-2-shard-5"
+   },
+   {
+    "id": "m20",
+    "type": "rect",
+    "label": "aggregate-service-20-region-us-west-2-shard-6"
+   },
+   {
+    "id": "m21",
+    "type": "rect",
+    "label": "persist-service-21-region-us-west-2-shard-0"
+   },
+   {
+    "id": "m22",
+    "type": "rect",
+    "label": "publish-service-22-region-us-west-2-shard-1"
+   },
+   {
+    "id": "m23",
+    "type": "rect",
+    "label": "audit-service-23-region-us-west-2-shard-2"
+   },
+   {
+    "id": "m24",
+    "type": "rect",
+    "label": "ingest-service-24-region-us-west-2-shard-3"
+   },
+   {
+    "id": "m25",
+    "type": "rect",
+    "label": "normalize-service-25-region-us-west-2-shard-4"
+   },
+   {
+    "id": "m26",
+    "type": "rect",
+    "label": "validate-service-26-region-us-west-2-shard-5"
+   },
+   {
+    "id": "m27",
+    "type": "rect",
+    "label": "enrich-service-27-region-us-west-2-shard-6"
+   },
+   {
+    "id": "m28",
+    "type": "rect",
+    "label": "aggregate-service-28-region-us-west-2-shard-0"
+   },
+   {
+    "id": "m29",
+    "type": "rect",
+    "label": "persist-service-29-region-us-west-2-shard-1"
+   },
+   {
+    "id": "m30",
+    "type": "rect",
+    "label": "publish-service-30-region-us-west-2-shard-2"
+   },
+   {
+    "id": "m31",
+    "type": "rect",
+    "label": "audit-service-31-region-us-west-2-shard-3"
+   },
+   {
+    "id": "m32",
+    "type": "rect",
+    "label": "ingest-service-32-region-us-west-2-shard-4"
+   },
+   {
+    "id": "m33",
+    "type": "rect",
+    "label": "normalize-service-33-region-us-west-2-shard-5"
+   },
+   {
+    "id": "m34",
+    "type": "rect",
+    "label": "validate-service-34-region-us-west-2-shard-6"
+   },
+   {
+    "id": "m35",
+    "type": "rect",
+    "label": "enrich-service-35-region-us-west-2-shard-0"
+   },
+   {
+    "id": "m36",
+    "type": "rect",
+    "label": "aggregate-service-36-region-us-west-2-shard-1"
+   },
+   {
+    "id": "m37",
+    "type": "rect",
+    "label": "persist-service-37-region-us-west-2-shard-2"
+   },
+   {
+    "id": "m38",
+    "type": "rect",
+    "label": "publish-service-38-region-us-west-2-shard-3"
+   },
+   {
+    "id": "m39",
+    "type": "rect",
+    "label": "audit-service-39-region-us-west-2-shard-4"
+   }
+  ],
+  "connections": [
+   {
+    "id": "g4",
+    "source": "m0",
+    "target": "m4"
+   },
+   {
+    "id": "g5",
+    "source": "m1",
+    "target": "m5"
+   },
+   {
+    "id": "g6",
+    "source": "m2",
+    "target": "m6"
+   },
+   {
+    "id": "g7",
+    "source": "m3",
+    "target": "m7"
+   },
+   {
+    "id": "g8",
+    "source": "m4",
+    "target": "m8"
+   },
+   {
+    "id": "g9",
+    "source": "m5",
+    "target": "m9"
+   },
+   {
+    "id": "g10",
+    "source": "m6",
+    "target": "m10"
+   },
+   {
+    "id": "g11",
+    "source": "m7",
+    "target": "m11"
+   },
+   {
+    "id": "g12",
+    "source": "m8",
+    "target": "m12"
+   },
+   {
+    "id": "g13",
+    "source": "m9",
+    "target": "m13"
+   },
+   {
+    "id": "g14",
+    "source": "m10",
+    "target": "m14"
+   },
+   {
+    "id": "g15",
+    "source": "m11",
+    "target": "m15"
+   },
+   {
+    "id": "g16",
+    "source": "m12",
+    "target": "m16"
+   },
+   {
+    "id": "g17",
+    "source": "m13",
+    "target": "m17"
+   },
+   {
+    "id": "g18",
+    "source": "m14",
+    "target": "m18"
+   },
+   {
+    "id": "g19",
+    "source": "m15",
+    "target": "m19"
+   },
+   {
+    "id": "g20",
+    "source": "m16",
+    "target": "m20"
+   },
+   {
+    "id": "g21",
+    "source": "m17",
+    "target": "m21"
+   },
+   {
+    "id": "g22",
+    "source": "m18",
+    "target": "m22"
+   },
+   {
+    "id": "g23",
+    "source": "m19",
+    "target": "m23"
+   },
+   {
+    "id": "g24",
+    "source": "m20",
+    "target": "m24"
+   },
+   {
+    "id": "g25",
+    "source": "m21",
+    "target": "m25"
+   },
+   {
+    "id": "g26",
+    "source": "m22",
+    "target": "m26"
+   },
+   {
+    "id": "g27",
+    "source": "m23",
+    "target": "m27"
+   },
+   {
+    "id": "g28",
+    "source": "m24",
+    "target": "m28"
+   },
+   {
+    "id": "g29",
+    "source": "m25",
+    "target": "m29"
+   },
+   {
+    "id": "g30",
+    "source": "m26",
+    "target": "m30"
+   },
+   {
+    "id": "g31",
+    "source": "m27",
+    "target": "m31"
+   },
+   {
+    "id": "g32",
+    "source": "m28",
+    "target": "m32"
+   },
+   {
+    "id": "g33",
+    "source": "m29",
+    "target": "m33"
+   },
+   {
+    "id": "g34",
+    "source": "m30",
+    "target": "m34"
+   },
+   {
+    "id": "g35",
+    "source": "m31",
+    "target": "m35"
+   },
+   {
+    "id": "g36",
+    "source": "m32",
+    "target": "m36"
+   },
+   {
+    "id": "g37",
+    "source": "m33",
+    "target": "m37"
+   },
+   {
+    "id": "g38",
+    "source": "m34",
+    "target": "m38"
+   },
+   {
+    "id": "g39",
+    "source": "m35",
+    "target": "m39"
+   }
+  ]
+ },
+ "intent": "Long labels AT scale: 40 auto-laid-out nodes each with a 45-55 char label plus 36 links. Label width vs node width vs downscale."
+}

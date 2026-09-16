@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\begin{tikzcd}\nA \\arrow[r, \"f\", color=rgba(41,128,185,0.85)] & B \\arrow[d, color=rgb(231,76,60)] \\\\\n& D \\arrow[r, color=hsl(210,50%,40%)] & E\n\\end{tikzcd}",
+ "intent": "CSS functional color forms rgba()/rgb()/hsl() where xcolor expects rgb:0.16,0.5,0.73 or a named color. Recovery: map to an xcolor model, dropping alpha."
+}

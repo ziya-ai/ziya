@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\begin{tikzcd} X \\end{tikzcd}",
+ "intent": "degenerate: single object, no arrows"
+}

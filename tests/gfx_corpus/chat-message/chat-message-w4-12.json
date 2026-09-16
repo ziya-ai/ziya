@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "Quarterly units:\n\nName | Qty | Price\n--- | ---\nApple | 3 | $1.20\nPear | 5\nPlum | 7 | $0.80\n\nTotals follow.\n",
+ "intent": "Ragged GFM table — no leading/trailing pipes, separator row one column short, one data row missing a cell. Recovery = render the evident 3-column table."
+}

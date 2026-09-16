@@ -1,0 +1,56 @@
+{
+ "type": "network",
+ "definition": {
+  "type": "network",
+  "width": 600,
+  "height": 400,
+  "nodes": [
+   {
+    "id": "n1",
+    "label": "Router"
+   },
+   {
+    "id": "n2",
+    "label": "Switch A"
+   },
+   {
+    "id": "n3",
+    "label": "Switch B"
+   },
+   {
+    "id": "n4",
+    "label": "Host 1"
+   },
+   {
+    "id": "n5",
+    "label": "Host 2"
+   }
+  ],
+  "edges": [
+   {
+    "source": "n1",
+    "target": "n2"
+   },
+   {
+    "source": "n1",
+    "target": "n3"
+   },
+   {
+    "source": "n2",
+    "target": "n4"
+   },
+   {
+    "source": "n3",
+    "target": "n5"
+   },
+   {
+    "source": "n2",
+    "target": "n3"
+   }
+  ],
+  "style": {
+   "labelColor": "#111111"
+  }
+ },
+ "intent": "`edges` used as the documented alias for `links` (resolveNetworkSpec normalizes it); all 5 edges must be drawn."
+}

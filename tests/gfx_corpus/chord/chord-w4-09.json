@@ -1,0 +1,71 @@
+{
+ "type": "chord",
+ "definition": {
+  "type": "chord",
+  "matrix": [
+   [
+    0,
+    5,
+    3,
+    2,
+    1,
+    4
+   ],
+   [
+    4,
+    0,
+    6,
+    2,
+    1,
+    1
+   ],
+   [
+    2,
+    3,
+    0,
+    7,
+    2,
+    1
+   ],
+   [
+    1,
+    2,
+    4,
+    0,
+    5,
+    2
+   ],
+   [
+    3,
+    1,
+    2,
+    3,
+    0,
+    6
+   ],
+   [
+    2,
+    4,
+    1,
+    2,
+    3,
+    0
+   ]
+  ],
+  "names": [
+   "North",
+   "South",
+   "East",
+   "West",
+   "Central"
+  ],
+  "colors": [
+   "#4e79a7",
+   "#f28e2b",
+   "#e15759",
+   "#76b7b2",
+   "#59a14f"
+  ]
+ },
+ "intent": "Matrix form 6x6 but `names` and `colors` supplied with only 5 entries (off-by-one; models miscount). Intent: six named regions with those five colors extended."
+}

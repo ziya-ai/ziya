@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "\\draw[-{Stealth[length=3mm]},thick] (0,3) -- (4,3) node[right] {Stealth};\n\\draw[-{Latex[length=3mm]},thick] (0,2.4) -- (4,2.4) node[right] {Latex};\n\\draw[{Circle[open]}-{Bar},thick] (0,1.8) -- (4,1.8) node[right] {Circle--Bar};\n\\draw[{Stealth}-{Stealth},thick] (0,1.2) -- (4,1.2) node[right] {double Stealth};\n\\draw[-{Triangle[width=4mm,length=3mm]},thick] (0,0.6) -- (4,0.6) node[right] {wide Triangle};\n\\draw[-{Stealth},line width=2pt,blue!60!black] (0,0) -- (4,0) node[right] {thick blue};",
+ "intent": "arrows.meta tip library: Stealth, Latex, Circle, Bar, sized tips and double-ended arrows"
+}

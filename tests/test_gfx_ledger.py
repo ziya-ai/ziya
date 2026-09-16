@@ -462,6 +462,85 @@ class TestSystemRetirement:
         assert L.show(root, defect_id="D-001")["status"] == "deferred"
 
 
+class TestPromotion:
+    """reconcile -> verified must land the spec in the committed corpus."""
+
+    def _spec(self, root, engine, sid, definition="graph LR; A-->B"):
+        _write(root / "specs" / engine / f"{sid}.json",
+               {"type": engine, "definition": definition, "intent": "i"})
+
+    def test_promote_writes_spec_and_expectations(self, root, tmp_path):
+        corpus = tmp_path / "corpus"
+        self._spec(root, "mermaid", "mermaid-w1-01")
+        rec = L.promote(root, engine="mermaid", spec_id="mermaid-w1-01",
+                        origin="D-001", signature="axis-grid-invisible:dark", corpus=corpus)
+        assert (corpus / "mermaid" / "mermaid-w1-01.json").exists()
+        exp = json.loads((corpus / "mermaid" / "expectations.json").read_text())
+        e = exp["specs"]["mermaid-w1-01"]
+        assert e["themes"] == ["dark", "light"]
+        assert set(L.DEFAULT_INVARIANTS) <= set(e["invariants"])
+        assert "visual:contrast" in e["invariants"]
+        assert e["origins"][0]["origin"] == "D-001"
+        assert rec is e or rec == e
+
+    def test_promote_is_idempotent_and_keeps_spec_bytes(self, root, tmp_path):
+        corpus = tmp_path / "corpus"
+        self._spec(root, "mermaid", "s1", definition="ORIGINAL")
+        L.promote(root, engine="mermaid", spec_id="s1", origin="D-001", corpus=corpus)
+        # a later sweep rewrites the on-disk spec; the corpus must NOT follow
+        self._spec(root, "mermaid", "s1", definition="REWRITTEN")
+        L.promote(root, engine="mermaid", spec_id="s1", origin="D-001", corpus=corpus)
+        L.promote(root, engine="mermaid", spec_id="s1", origin="D-002",
+                  signature="label-collide", corpus=corpus)
+        spec = json.loads((corpus / "mermaid" / "s1.json").read_text())
+        assert spec["definition"] == "ORIGINAL"
+        e = json.loads((corpus / "mermaid" / "expectations.json").read_text())["specs"]["s1"]
+        assert [o["origin"] for o in e["origins"]] == ["D-001", "D-002"]
+        assert e["invariants"].count(L.INVARIANT_RENDERS) == 1
+        assert "visual:layout" in e["invariants"]
+
+    def test_promote_missing_spec_returns_none(self, root, tmp_path):
+        assert L.promote(root, engine="mermaid", spec_id="nope", origin="x",
+                         corpus=tmp_path / "c") is None
+
+    def test_regression_sets_seed_with_defaults_only(self, root, tmp_path):
+        corpus = tmp_path / "corpus"
+        self._spec(root, "mermaid", "mermaid-w1-02")
+        _triage(root, "mermaid", [CL], regression={"spec_ids": ["mermaid-w1-02"]})
+        L.merge_triage(root, run="r1")
+        out = L.promote_regression_sets(root, corpus=corpus)
+        assert out == {"mermaid": 1}
+        e = json.loads((corpus / "mermaid" / "expectations.json").read_text())["specs"]["mermaid-w1-02"]
+        assert e["invariants"] == list(L.DEFAULT_INVARIANTS)
+        assert e["origins"][0]["origin"] == "regression_set"
+
+    def test_reconcile_to_verified_promotes(self, root, tmp_path, monkeypatch):
+        corpus = tmp_path / "corpus"
+        monkeypatch.setattr(L, "corpus_root", lambda r: corpus)
+        self._spec(root, "mermaid", "mermaid-w2-01")
+        _triage(root, "mermaid", [CL])
+        L.merge_triage(root, run="r1")
+        L.record(root, "mermaid", "mermaid-w2-01", run="r2", light=OK, dark=OK)
+        stats = L.reconcile(root, run="r2")
+        assert stats["verified"] == 1 and stats.get("promoted") == 1
+        assert (corpus / "mermaid" / "mermaid-w2-01.json").exists()
+        e = json.loads((corpus / "mermaid" / "expectations.json").read_text())["specs"]["mermaid-w2-01"]
+        assert e["origins"][0] == {**e["origins"][0], "origin": "D-001",
+                                   "signature": "axis-grid-invisible:dark"}
+        d = L.show(root, defect_id="D-001")
+        assert d["history"][-1]["promoted_specs"] == 1
+
+
+def test_ledger_invariants_are_understood_by_the_render_suite():
+    """The ledger writes invariant names; the suite reads them.  Drift here
+    would silently promote specs the suite never checks."""
+    import importlib.util
+    p = Path(__file__).parent / "gfx_render" / "test_render_smoke.py"
+    spec = importlib.util.spec_from_file_location("smoke", p)
+    m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+    assert set(L.DEFAULT_INVARIANTS) <= set(m.CHECKS)
+
+
 class TestCLI:
     def test_reconcile_cli(self, root, capsys):
         rc = L.main(["--root", str(root), "reconcile"])

@@ -1,0 +1,277 @@
+{
+ "schema": 1,
+ "engine": "d3",
+ "specs": {
+  "d3-w1-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.271681Z"
+    }
+   ]
+  },
+  "d3-w1-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.274192Z"
+    }
+   ]
+  },
+  "d3-w1-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.278282Z"
+    }
+   ]
+  },
+  "d3-w1-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.281205Z"
+    }
+   ]
+  },
+  "d3-w2-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.287432Z"
+    }
+   ]
+  },
+  "d3-w2-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.296771Z"
+    }
+   ]
+  },
+  "d3-w4-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.300492Z"
+    }
+   ]
+  },
+  "d3-w4-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.303438Z"
+    }
+   ]
+  },
+  "d3-w4-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.305922Z"
+    }
+   ]
+  },
+  "d3-w4-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.308666Z"
+    }
+   ]
+  },
+  "d3-w4-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-079",
+     "signature": "named-color-bypasses-contrast-guard",
+     "at": "2026-09-15T08:56:12.544614Z"
+    }
+   ]
+  },
+  "d3-w4-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-080",
+     "signature": "chart-path-recovery-not-centralized",
+     "at": "2026-09-15T08:56:12.548001Z"
+    }
+   ]
+  },
+  "d3-w4-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-080",
+     "signature": "chart-path-recovery-not-centralized",
+     "at": "2026-09-15T08:56:12.552011Z"
+    }
+   ]
+  },
+  "d3-w4-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-080",
+     "signature": "chart-path-recovery-not-centralized",
+     "at": "2026-09-15T08:56:12.556431Z"
+    }
+   ]
+  },
+  "d3-w4-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-081",
+     "signature": "object-form-graph-nesting-not-recovered",
+     "at": "2026-09-15T08:56:12.559800Z"
+    }
+   ]
+  }
+ }
+}

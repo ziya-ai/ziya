@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "\\draw[step=0.5cm,gray!40,very thin] (0,0) grid (4,3);\n\\draw[thick] (0,0) rectangle (1.5,1);\n\\fill[blue!30] (2.5,0.5) circle (0.5);\n\\draw[thick] (2.5,0.5) circle (0.5);\n\\draw[thick,red!70!black] (0.75,2) ellipse (0.7 and 0.4);\n\\draw[very thick] (3.2,2.6) arc (0:-120:0.8);\n\\draw[line width=1.2pt] (0,0) -- (4,3);\n\\node at (2,-0.45) {rect / circle / ellipse / arc / grid};",
+ "intent": "core path primitives: rectangle, circle, ellipse, arc, grid, line, with fills and line widths"
+}

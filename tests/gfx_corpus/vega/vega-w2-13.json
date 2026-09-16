@@ -1,0 +1,153 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 860,
+  "height": 520,
+  "padding": 5,
+  "autosize": "none",
+  "data": [
+   {
+    "name": "tree",
+    "transform": [
+     {
+      "type": "sequence",
+      "start": 0,
+      "stop": 409,
+      "step": 1,
+      "as": "i"
+     },
+     {
+      "type": "formula",
+      "as": "id",
+      "expr": "datum.i + 1"
+     },
+     {
+      "type": "formula",
+      "as": "parent",
+      "expr": "datum.i === 0 ? null : (datum.i <= 8 ? 1 : ((datum.i % 8) + 2))"
+     },
+     {
+      "type": "formula",
+      "as": "nm",
+      "expr": "datum.i === 0 ? 'root' : 'n' + datum.i"
+     },
+     {
+      "type": "formula",
+      "as": "sz",
+      "expr": "datum.i <= 8 ? null : (1 + (datum.i % 17))"
+     },
+     {
+      "type": "stratify",
+      "key": "id",
+      "parentKey": "parent"
+     },
+     {
+      "type": "treemap",
+      "field": "sz",
+      "method": "squarify",
+      "padding": 1,
+      "round": true,
+      "size": [
+       {
+        "signal": "width"
+       },
+       {
+        "signal": "height"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "leaves",
+    "source": "tree",
+    "transform": [
+     {
+      "type": "filter",
+      "expr": "!datum.children"
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "c",
+    "type": "ordinal",
+    "domain": {
+     "data": "leaves",
+     "field": "parent"
+    },
+    "range": {
+     "scheme": "tableau10"
+    }
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "from": {
+     "data": "leaves"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "field": "x0"
+      },
+      "x2": {
+       "field": "x1"
+      },
+      "y": {
+       "field": "y0"
+      },
+      "y2": {
+       "field": "y1"
+      },
+      "fill": {
+       "scale": "c",
+       "field": "parent"
+      },
+      "stroke": {
+       "value": "#ffffff"
+      },
+      "strokeWidth": {
+       "value": 0.4
+      }
+     }
+    }
+   },
+   {
+    "type": "text",
+    "from": {
+     "data": "leaves"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "signal": "(datum.x0 + datum.x1) / 2"
+      },
+      "y": {
+       "signal": "(datum.y0 + datum.y1) / 2"
+      },
+      "align": {
+       "value": "center"
+      },
+      "baseline": {
+       "value": "middle"
+      },
+      "fontSize": {
+       "value": 5
+      },
+      "fill": {
+       "value": "#ffffff"
+      },
+      "text": {
+       "field": "nm"
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "SCALE/COUNT + NESTING: treemap with 8 parents and 400 leaves, all labelled, squarified. Probes tiny rect areas, 400 labels and label/fill contrast at leaf sizes of a few pixels."
+}

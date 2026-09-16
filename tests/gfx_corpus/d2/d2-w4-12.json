@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "region {\n  az1 {\n    node1: Instance A\n    node2: Instance B\n  }\n  node3: Shared Cache\n}\n}\nnode1 -> node2\n",
+ "intent": "RECOVERY: nesting depth wrong by one - a stray extra closing brace"
+}

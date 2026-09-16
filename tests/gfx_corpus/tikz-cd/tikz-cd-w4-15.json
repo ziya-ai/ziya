@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\begin{tikzcd}\nA \\arrow[r, \"f\"] & B \\arrow[d, \"h\"] \\\nC \\arrow[r, \"k\"'] D \\\\\nE \\arrow[r, \"m\"] & F\n\\end{tikzcd}",
+ "intent": "Row/cell separator slips: a single backslash instead of \\\\ ending row 1, and a missing & between C and D. Recovery: repair the separators rather than aborting."
+}

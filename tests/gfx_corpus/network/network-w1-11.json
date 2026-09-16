@@ -1,0 +1,92 @@
+{
+ "type": "network",
+ "definition": {
+  "type": "network",
+  "width": 950,
+  "height": 600,
+  "nodes": [
+   {
+    "id": "dsp",
+    "label": "DSP",
+    "x": 260,
+    "y": 180,
+    "size": 16
+   },
+   {
+    "id": "afe",
+    "label": "Analog FE",
+    "x": 400,
+    "y": 300,
+    "size": 16
+   },
+   {
+    "id": "phy",
+    "label": "PHY",
+    "x": 260,
+    "y": 420,
+    "size": 16
+   },
+   {
+    "id": "cpu",
+    "label": "Host CPU",
+    "x": 760,
+    "y": 200,
+    "size": 16
+   },
+   {
+    "id": "mem",
+    "label": "DRAM",
+    "x": 760,
+    "y": 400,
+    "size": 16
+   }
+  ],
+  "links": [
+   {
+    "source": "dsp",
+    "target": "afe"
+   },
+   {
+    "source": "afe",
+    "target": "phy"
+   },
+   {
+    "source": "dsp",
+    "target": "phy"
+   },
+   {
+    "source": "phy",
+    "target": "cpu"
+   },
+   {
+    "source": "cpu",
+    "target": "mem"
+   }
+  ],
+  "groups": [
+   {
+    "id": "modem_board",
+    "label": "Modem Board",
+    "members": [
+     "dsp",
+     "afe",
+     "phy"
+    ]
+   },
+   {
+    "id": "host_board",
+    "label": "Host Board",
+    "members": [
+     "cpu",
+     "mem"
+    ]
+   }
+  ],
+  "style": {
+   "labelColor": "#7e7e7e",
+   "linkColor": "#7e7e7e",
+   "linkOpacity": 1
+  }
+ },
+ "intent": "`groups` board containers: dashed enclosure rects with group labels around member nodes — the plugin's only grouping/annotation feature. Uses the documented `modem_board` id plus a second board."
+}

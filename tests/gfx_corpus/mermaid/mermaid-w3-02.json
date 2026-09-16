@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "flowchart TD\n  solo\n  subgraph empty1[Deliberately Empty Cluster]\n  end\n  dup[First label wins?]\n  dup[Second label wins?]\n  self --> self\n  x --> y\n  y --> x\n  solo --> empty1",
+ "intent": "Degenerate-case battery in one spec: an isolated single node, an EMPTY subgraph, a duplicate node id declared twice with conflicting labels, a self-referencing edge, a 2-cycle, and an edge pointing AT a cluster id. Probes whether any of these throws, silently drops, or renders a degenerate/collapsed shape."
+}

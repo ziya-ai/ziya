@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "\\node[draw, circle, minimum size=8mm, font=\\tiny] (a) at (0,0) {A};\n\\node[draw, circle, minimum size=8mm, font=\\tiny] (b) at (2,0) {B};\n\\node[draw, circle, minimum size=8mm, font=\\tiny] (c) at (1,1.6) {C};\n\\draw[-{Stealth}] (a) -- (b); \\draw[-{Stealth}] (b) -- (c); \\draw[-{Stealth}] (c) -- (a);\n\\node[font=\\tiny] at (1,-0.9) {tiny 3-node graph forced to width 2400};",
+ "intent": "a deliberately tiny 3-node graph rendered with explicit width far ABOVE its natural size (upscaling / resampling behaviour)"
+}

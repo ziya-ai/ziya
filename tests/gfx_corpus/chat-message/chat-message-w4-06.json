@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "```mermaid\n%%{init: {\"theme\":\"base\",\"themeVariables\":{\"primaryColor\":\"#2e7d32\",\"primaryTextColor\":\"#ffffff\",}}}%%\nflowchart LR\n  A[Green] --> B[Nodes]\n```\n",
+ "intent": "Trailing comma inside the %%{init}%% themeVariables JSON — the classic model slip. Recovery = strip the comma and apply the palette."
+}

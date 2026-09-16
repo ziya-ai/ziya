@@ -1,0 +1,115 @@
+{
+ "type": "network",
+ "definition": {
+  "type": "network",
+  "width": 900,
+  "height": 600,
+  "nodes": [
+   {
+    "id": "hub",
+    "label": "Hub",
+    "size": 20
+   },
+   {
+    "id": "n01",
+    "label": "Node 01"
+   },
+   {
+    "id": "n02",
+    "label": "Node 02"
+   },
+   {
+    "id": "n03",
+    "label": "Node 03"
+   },
+   {
+    "id": "n04",
+    "label": "Node 04"
+   },
+   {
+    "id": "n05",
+    "label": "Node 05"
+   },
+   {
+    "id": "n06",
+    "label": "Node 06"
+   },
+   {
+    "id": "n07",
+    "label": "Node 07"
+   },
+   {
+    "id": "n08",
+    "label": "Node 08"
+   },
+   {
+    "id": "n09",
+    "label": "Node 09"
+   },
+   {
+    "id": "n10",
+    "label": "Node 10"
+   },
+   {
+    "id": "n11",
+    "label": "Node 11"
+   }
+  ],
+  "links": [
+   {
+    "source": "hub",
+    "target": "n01"
+   },
+   {
+    "source": "hub",
+    "target": "n02"
+   },
+   {
+    "source": "hub",
+    "target": "n03"
+   },
+   {
+    "source": "hub",
+    "target": "n04"
+   },
+   {
+    "source": "n01",
+    "target": "n05"
+   },
+   {
+    "source": "n02",
+    "target": "n06"
+   },
+   {
+    "source": "n03",
+    "target": "n07"
+   },
+   {
+    "source": "n04",
+    "target": "n08"
+   },
+   {
+    "source": "n05",
+    "target": "n09"
+   },
+   {
+    "source": "n06",
+    "target": "n10"
+   },
+   {
+    "source": "n07",
+    "target": "n11"
+   },
+   {
+    "source": "n09",
+    "target": "n10"
+   }
+  ],
+  "style": {
+   "labelColor": "#7e7e7e",
+   "linkColor": "#7e7e7e",
+   "linkOpacity": 1
+  }
+ },
+ "intent": "Large custom canvas (900x600) with a force-laid-out 12-node graph: width/height must be honoured, the layout must spread across the larger canvas and no node may be clipped by the viewBox."
+}

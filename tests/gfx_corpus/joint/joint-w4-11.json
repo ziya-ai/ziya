@@ -1,0 +1,5 @@
+{
+ "type": "joint",
+ "definition": "{\n  \"elements\": [\n    {\"id\": \"warn\", \"type\": \"rect\", \"label\": \"Warn\", \"attrs\": {\"body\": {\"fill\": \"#f90\", \"stroke\": \"#c60\"}, \"label\": {\"fill\": \"#fff\"}}},\n    {\"id\": \"ok\", \"type\": \"rect\", \"label\": \"OK\", \"attrs\": {\"body\": {\"fill\": \"#0a0\"}, \"label\": {\"fill\": \"#fff\"}}},\n    {\"id\": \"err\", \"type\": \"rect\", \"label\": \"Err\", \"attrs\": {\"body\": {\"fill\": \"#c00\"}, \"label\": {\"fill\": \"#fff\"}}}\n  ],\n  \"connections\": [\n    {\"id\": \"h1\", \"source\": \"warn\", \"target\": \"ok\", \"label\": \"clear\"},\n    {\"id\": \"h2\", \"source\": \"warn\", \"target\": \"err\", \"label\": \"escalate\"}\n  ]\n}",
+ "intent": "RECOVERY (colour form): THREE-DIGIT hex colours (#f90, #fff, #0a0, #c00) where 6-digit hex is expected. Intent: Warn branches to OK and Err, semantically coloured."
+}

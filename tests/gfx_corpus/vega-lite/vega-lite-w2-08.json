@@ -1,0 +1,63 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "Tiny explicit size",
+  "data": {
+   "values": [
+    {
+     "c": "A",
+     "v": 12
+    },
+    {
+     "c": "B",
+     "v": 30
+    },
+    {
+     "c": "C",
+     "v": 7
+    },
+    {
+     "c": "D",
+     "v": 44
+    },
+    {
+     "c": "E",
+     "v": 19
+    },
+    {
+     "c": "F",
+     "v": 26
+    },
+    {
+     "c": "G",
+     "v": 38
+    },
+    {
+     "c": "H",
+     "v": 9
+    }
+   ]
+  },
+  "width": 45,
+  "height": 28,
+  "mark": "bar",
+  "encoding": {
+   "x": {
+    "field": "c",
+    "type": "nominal",
+    "axis": {
+     "title": "cat"
+    }
+   },
+   "y": {
+    "field": "v",
+    "type": "quantitative",
+    "axis": {
+     "title": "value"
+    }
+   }
+  }
+ },
+ "intent": "SCALE: explicit width 45 / height 28 FAR BELOW natural - can axis furniture plus 8 bars coexist in a 28px-tall plot?"
+}

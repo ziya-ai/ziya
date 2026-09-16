@@ -1,0 +1,743 @@
+{
+ "type": "music",
+ "definition": {
+  "keySignature": "C",
+  "timeSignature": "4/4",
+  "autoBeam": true,
+  "staves": [
+   {
+    "clef": "treble",
+    "measures": [
+     {
+      "notes": [
+       {
+        "keys": [
+         "c/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "e/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "f/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "g/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "a/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "b/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "c/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "clef": "bass",
+    "measures": [
+     {
+      "notes": [
+       {
+        "keys": [
+         "f/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "g/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "a/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "b/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "c/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "e/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "f/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "clef": "treble",
+    "measures": [
+     {
+      "notes": [
+       {
+        "keys": [
+         "b/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "c/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "e/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "f/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "g/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "a/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "b/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "clef": "bass",
+    "measures": [
+     {
+      "notes": [
+       {
+        "keys": [
+         "e/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "f/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "g/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "a/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "b/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "c/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "e/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "clef": "treble",
+    "measures": [
+     {
+      "notes": [
+       {
+        "keys": [
+         "a/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "b/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "c/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "e/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "f/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "g/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "a/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "clef": "bass",
+    "measures": [
+     {
+      "notes": [
+       {
+        "keys": [
+         "d/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "e/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "f/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "g/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "a/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "b/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "c/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "clef": "treble",
+    "measures": [
+     {
+      "notes": [
+       {
+        "keys": [
+         "g/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "a/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "b/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "c/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "d/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "e/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "f/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "g/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "clef": "bass",
+    "measures": [
+     {
+      "notes": [
+       {
+        "keys": [
+         "c/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "e/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "f/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "g/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "a/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "b/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "c/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "clef": "treble",
+    "measures": [
+     {
+      "notes": [
+       {
+        "keys": [
+         "f/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "g/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "a/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "b/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "c/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "e/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "f/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "clef": "bass",
+    "measures": [
+     {
+      "notes": [
+       {
+        "keys": [
+         "b/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "c/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "e/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "f/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "g/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "a/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "b/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "clef": "treble",
+    "measures": [
+     {
+      "notes": [
+       {
+        "keys": [
+         "e/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "f/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "g/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "a/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "b/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "c/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "e/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "clef": "bass",
+    "measures": [
+     {
+      "notes": [
+       {
+        "keys": [
+         "a/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "b/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "c/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "e/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "f/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "g/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "a/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "SCALE: 12 stacked staves (deep vertical fan-out), each 2 measures of 4 notes, stressing multi-staff vertical stacking and per-staff clef/key repetition."
+}

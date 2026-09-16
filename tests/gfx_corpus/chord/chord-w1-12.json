@@ -1,0 +1,64 @@
+{
+ "type": "chord",
+ "definition": {
+  "type": "chord",
+  "style": {
+   "ribbonOpacity": 0.25,
+   "fadeOpacity": 0.05,
+   "hoverOpacity": 0.9
+  },
+  "nodes": [
+   {
+    "id": "Draft"
+   },
+   {
+    "id": "Review"
+   },
+   {
+    "id": "Approved"
+   },
+   {
+    "id": "Published"
+   },
+   {
+    "id": "Archived"
+   },
+   {
+    "id": "Rejected"
+   }
+  ],
+  "links": [
+   {
+    "source": "Draft",
+    "target": "Review",
+    "value": 40
+   },
+   {
+    "source": "Review",
+    "target": "Approved",
+    "value": 25
+   },
+   {
+    "source": "Review",
+    "target": "Rejected",
+    "value": 10
+   },
+   {
+    "source": "Approved",
+    "target": "Published",
+    "value": 22
+   },
+   {
+    "source": "Published",
+    "target": "Archived",
+    "value": 14
+   },
+   {
+    "source": "Rejected",
+    "target": "Draft",
+    "value": 8
+   }
+  ]
+ },
+ "intent": "style.ribbonOpacity low (0.25) + fadeOpacity -> tests whether faint ribbons survive both themes"
+}

@@ -1,0 +1,5 @@
+{
+ "type": "force-directed",
+ "definition": "{\n  \"$schema\": \"https://ziya.dev/schema/force-directed/v2.json\",\n  \"type\": \"force-directed\",\n  \"layout\": \"force\",\n  \"data\": {\"values\": [\n    {\"id\": \"api\", \"group\": 0},\n    {\"id\": \"auth\", \"group\": 1},\n    {\"id\": \"db\", \"group\": 2},\n    {\"id\": \"cache\", \"group\": 2},\n    {\"id\": \"queue\", \"group\": 1},\n    {\"id\": \"worker\", \"group\": 0}\n  ]},\n  \"encoding\": {\"link\": {\"field\": \"links\"}},\n  \"links\": [\n    {\"source\": \"api\", \"target\": \"auth\"},\n    {\"source\": \"api\", \"target\": \"cache\"},\n    {\"source\": \"auth\", \"target\": \"db\"},\n    {\"source\": \"api\", \"target\": \"queue\"},\n    {\"source\": \"queue\", \"target\": \"worker\"},\n    {\"source\": \"worker\", \"target\": \"db\"}\n  ]\n}",
+ "intent": "RECOVERY: mixed dialect - a v2 $schema that does not exist plus vega-lite's data.values naming for the node array, with links still in the v1 place. Same 6-node intent."
+}

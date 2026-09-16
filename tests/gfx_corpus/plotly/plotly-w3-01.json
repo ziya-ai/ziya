@@ -1,0 +1,108 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "bar",
+    "name": "日本語 系列",
+    "x": [
+     "東京都",
+     "العربية",
+     "עברית",
+     "🚀 emoji",
+     "Ω≈ç√∫",
+     "Zürich",
+     "ไทย",
+     "हिन्दी",
+     "한국어",
+     "Ẍ̧̈ z̈"
+    ],
+    "y": [
+     5,
+     3,
+     4,
+     6,
+     2,
+     7,
+     3,
+     5,
+     4,
+     6
+    ],
+    "text": [
+     "東京",
+     "يمين",
+     "ימין",
+     "🚀🎉",
+     "∑∏",
+     "ü",
+     "ก",
+     "ह",
+     "한",
+     "z̈"
+    ],
+    "textposition": "outside"
+   },
+   {
+    "type": "bar",
+    "name": "مسلسل ٢",
+    "x": [
+     "東京都",
+     "العربية",
+     "עברית",
+     "🚀 emoji",
+     "Ω≈ç√∫",
+     "Zürich",
+     "ไทย",
+     "हिन्दी",
+     "한국어",
+     "Ẍ̧̈ z̈"
+    ],
+    "y": [
+     3,
+     5,
+     2,
+     4,
+     6,
+     3,
+     5,
+     2,
+     6,
+     3
+    ]
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "多言語 • العربية • 🚀 mixed-script axis"
+   },
+   "xaxis": {
+    "title": {
+     "text": "カテゴリ / الفئة / หมวด"
+    }
+   },
+   "yaxis": {
+    "title": {
+     "text": "値 ✓"
+    }
+   },
+   "barmode": "group",
+   "annotations": [
+    {
+     "x": "العربية",
+     "y": 6,
+     "text": "سهم ← RTL annotation",
+     "showarrow": true
+    },
+    {
+     "x": "🚀 emoji",
+     "y": 7,
+     "text": "🔥 emoji arrow",
+     "showarrow": true,
+     "ay": -40
+    }
+   ]
+  }
+ },
+ "intent": "unicode/CJK/RTL/emoji/combining-mark labels on bar + annotations + legend, mixed script in one axis"
+}

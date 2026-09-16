@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "ghost: Invisible Node\nsolid: Solid Node\nghost.style.fill: transparent\nghost.style.stroke: currentColor\nsolid.style.fill: var(--ziya-accent-500)\nghost -> solid\n",
+ "intent": "RECOVERY: transparent, currentColor and a nonexistent theme token - fallback must not land on the page background"
+}

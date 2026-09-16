@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph tree { rankdir=TB; nodesep=0.35; ranksep=0.6; ordering=out; node [shape=circle, fixedsize=true, width=0.6]; r -> n1; r -> n2; n1 -> n3; n1 -> n4; n2 -> n5; n2 -> n6; n3 -> n7; n3 -> n8; n4 -> n9; n4 -> n10; n5 -> n11; n5 -> n12; n6 -> n13; n6 -> n14; n7 -> n15; n7 -> n16; n8 -> n17; n9 -> n18; n10 -> n19; n11 -> n20; n12 -> n21; n13 -> n22; n14 -> n23; n15 [peripheries=2]; n16 [peripheries=2]; n17 [peripheries=2]; n18 [peripheries=2]; }",
+ "intent": "Moderately large binary tree (23 nodes) with nodesep/ranksep tuning, ordered edges and peripheries on leaves"
+}

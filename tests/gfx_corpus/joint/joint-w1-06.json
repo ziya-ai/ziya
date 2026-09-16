@@ -1,0 +1,69 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "shapeLibrary": "network",
+  "elements": [
+   {
+    "id": "cl",
+    "type": "cloud",
+    "label": "Internet"
+   },
+   {
+    "id": "fw",
+    "type": "firewall",
+    "label": "Edge FW"
+   },
+   {
+    "id": "rt",
+    "type": "router",
+    "label": "Core RTR"
+   },
+   {
+    "id": "sw",
+    "type": "switch",
+    "label": "Access SW"
+   },
+   {
+    "id": "sv1",
+    "type": "server",
+    "label": "app-01"
+   },
+   {
+    "id": "sv2",
+    "type": "server",
+    "label": "app-02"
+   }
+  ],
+  "connections": [
+   {
+    "id": "n1",
+    "source": "cl",
+    "target": "fw",
+    "label": "WAN"
+   },
+   {
+    "id": "n2",
+    "source": "fw",
+    "target": "rt"
+   },
+   {
+    "id": "n3",
+    "source": "rt",
+    "target": "sw",
+    "label": "10G"
+   },
+   {
+    "id": "n4",
+    "source": "sw",
+    "target": "sv1"
+   },
+   {
+    "id": "n5",
+    "source": "sw",
+    "target": "sv2"
+   }
+  ]
+ },
+ "intent": "Network shape library: router / switch / server / firewall / cloud with default ports."
+}

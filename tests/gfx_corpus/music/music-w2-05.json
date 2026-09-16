@@ -1,0 +1,377 @@
+{
+ "type": "music",
+ "definition": {
+  "clef": "treble",
+  "keySignature": "C",
+  "timeSignature": "4/4",
+  "width": 16000,
+  "height": 80,
+  "autoBeam": true,
+  "notes": [
+   {
+    "keys": [
+     "c/4"
+    ],
+    "duration": "8",
+    "dynamic": "f"
+   },
+   {
+    "keys": [
+     "d/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/5"
+    ],
+    "duration": "8",
+    "dynamic": "f"
+   },
+   {
+    "keys": [
+     "a/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/5"
+    ],
+    "duration": "8",
+    "dynamic": "f"
+   },
+   {
+    "keys": [
+     "e/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "a/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "c/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "d/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "e/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "f/4"
+    ],
+    "duration": "8"
+   }
+  ]
+ },
+ "intent": "SCALE: extreme aspect ratio - width 16000 (MAX_CANVAS_DIM) with height 80, a 200:1 canvas holding 60 beamed eighths plus dynamics that need a below-staff band."
+}

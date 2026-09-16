@@ -1,0 +1,5 @@
+{
+ "type": "d3",
+ "definition": "{\n  “type”: “bar”,\n  “data”: [\n    {“label”: “Alpha”, “value”: 30},\n    {“label”: “Beta”, “value”: 55},\n    {“label”: “Gamma”, “value”: 18}\n  ]\n}",
+ "intent": "typographic/smart quotes around keys and values"
+}

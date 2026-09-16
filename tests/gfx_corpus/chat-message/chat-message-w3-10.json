@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "### Callout hardcoded for light\n\n<div style=\"background:#ffffff; color:#333333; border:1px solid #e0e0e0; padding:10px; border-radius:4px;\">\n<b style=\"color:#222222\">Notice.</b> This callout hardcodes a white background with #333333 body text and an #e0e0e0 border. It never consults the page theme.\n</div>\n\n<p style=\"color:#666666\">Muted secondary line at #666666 with no background set, so it sits directly on the message surface.</p>\n\n<span style=\"background:#f5f5f5; color:#444444; padding:2px 6px;\">inline chip #444 on #f5f5f5</span>\n\nNormal themed prose follows for comparison.\n",
+ "intent": "raw HTML block hardcoding a LIGHT palette via inline style (white fill, #333 text, pale grey border) - must survive dark"
+}

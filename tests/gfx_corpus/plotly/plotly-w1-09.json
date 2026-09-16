@@ -1,0 +1,61 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "sunburst",
+    "labels": [
+     "Company",
+     "Engineering",
+     "Sales",
+     "Ops",
+     "Backend",
+     "Frontend",
+     "SRE",
+     "Enterprise",
+     "SMB",
+     "Support",
+     "Finance"
+    ],
+    "parents": [
+     "",
+     "Company",
+     "Company",
+     "Company",
+     "Engineering",
+     "Engineering",
+     "Engineering",
+     "Sales",
+     "Sales",
+     "Ops",
+     "Ops"
+    ],
+    "values": [
+     100,
+     50,
+     30,
+     20,
+     25,
+     15,
+     10,
+     18,
+     12,
+     12,
+     8
+    ],
+    "branchvalues": "total",
+    "marker": {
+     "colorscale": "Blues"
+    },
+    "textinfo": "label+percent entry"
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "Headcount Distribution"
+   },
+   "height": 500
+  }
+ },
+ "intent": "Sunburst hierarchy with parents-by-label, branchvalues=total and a value colorscale — exercises the hierarchy stratifier path."
+}

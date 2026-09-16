@@ -1,0 +1,45 @@
+{
+ "type": "packet",
+ "definition": {
+  "type": "packet",
+  "title": "Off-by-one row nesting",
+  "bitWidth": 32,
+  "sections": [
+   {
+    "label": "Rows nested one too deep",
+    "rows": [
+     [
+      [
+       [
+        "Version",
+        4
+       ],
+       [
+        "IHL",
+        4
+       ],
+       [
+        "TOS",
+        8
+       ],
+       [
+        "Total Length",
+        16
+       ]
+      ]
+     ]
+    ]
+   },
+   {
+    "label": "Fields nested one too shallow",
+    "rows": [
+     [
+      "Flat Field Name",
+      32
+     ]
+    ]
+   }
+  ]
+ },
+ "intent": "Row nesting off by one in both directions: an extra array level around a row, and a bare field tuple used as a row"
+}

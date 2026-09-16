@@ -1,0 +1,76 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "Spend by Department (GBP)",
+  "width": 440,
+  "height": 260,
+  "data": {
+   "values": [
+    {
+     "dept": "Eng",
+     "spend": 1250000
+    },
+    {
+     "dept": "Sales",
+     "spend": 890000
+    },
+    {
+     "dept": "Support",
+     "spend": 430000
+    },
+    {
+     "dept": "Marketing",
+     "spend": 610000
+    }
+   ]
+  },
+  "layer": [
+   {
+    "mark": {
+     "type": "bar",
+     "color": "#2b6cb0"
+    },
+    "encoding": {
+     "x": {
+      "field": "dept",
+      "type": "nominal",
+      "title": "Department"
+     },
+     "y": {
+      "field": "spend",
+      "type": "quantitative",
+      "title": "Spend",
+      "axis": {
+       "format": "£,.2s"
+      }
+     }
+    }
+   },
+   {
+    "mark": {
+     "type": "text",
+     "dy": -8,
+     "fontSize": 11,
+     "fontWeight": "bold"
+    },
+    "encoding": {
+     "x": {
+      "field": "dept",
+      "type": "nominal"
+     },
+     "y": {
+      "field": "spend",
+      "type": "quantitative"
+     },
+     "text": {
+      "field": "spend",
+      "type": "quantitative",
+      "format": "£,.2s"
+     }
+    }
+   }
+  ]
+ },
+ "intent": "Bar chart with text-mark value labels and a non-USD currency axis format (£). Exercises the plugin's rewriteCurrencyFormats/formatLocale path plus text-on-mark label contrast."
+}

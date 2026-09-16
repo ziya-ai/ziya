@@ -1,0 +1,5 @@
+{
+ "type": "joint",
+ "definition": "{\n  \"theme\": \"nord-dark\",\n  \"elements\": [\n    {\"id\": \"ui\", \"type\": \"rect\", \"label\": \"UI\", \"attrs\": {\"body\": {\"fill\": \"var(--ziya-node-bg)\"}, \"label\": {\"fill\": \"var(--ziya-node-fg)\"}}},\n    {\"id\": \"svc\", \"type\": \"rect\", \"label\": \"Service\", \"color\": \"primary\", \"attrs\": {\"body\": {\"fill\": \"$surface.raised\"}}},\n    {\"id\": \"store\", \"type\": \"rect\", \"label\": \"Store\", \"color\": \"accent-2\", \"attrs\": {\"body\": {\"fill\": \"theme(colors.slate.700)\"}}}\n  ],\n  \"connections\": [\n    {\"id\": \"t1\", \"source\": \"ui\", \"target\": \"svc\", \"label\": \"rpc\"},\n    {\"id\": \"t2\", \"source\": \"svc\", \"target\": \"store\", \"label\": \"sql\"}\n  ]\n}",
+ "intent": "RECOVERY (colour form): NONEXISTENT theme tokens - a top-level theme \"nord-dark\" that is not a valid theme value, plus var(--ziya-*), $surface.raised, theme(colors.slate.700) and colour names \"primary\"/\"accent-2\". Intent: UI->Service->Store; must not let a bogus theme token override the requested render theme."
+}

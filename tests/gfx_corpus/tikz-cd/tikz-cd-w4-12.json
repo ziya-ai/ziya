@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\begin{tikzcd}\nA \\arrow[r, \"f\", color=transparent] \\arrow[d, opacity=none] & B \\arrow[d, fill=transparent] \\\\\nC \\arrow[r, \"k\"', draw=none, opacity=inherit] & D\n\\end{tikzcd}",
+ "intent": "CSS keywords 'transparent'/'none'/'inherit' used as color and opacity values. A recovery that maps transparent to the BACKGROUND color would be structurally correct but invisible - that is a failure."
+}

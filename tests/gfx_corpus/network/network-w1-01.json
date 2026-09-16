@@ -1,0 +1,55 @@
+{
+ "type": "network",
+ "definition": {
+  "type": "network",
+  "width": 600,
+  "height": 400,
+  "nodes": [
+   {
+    "id": "web"
+   },
+   {
+    "id": "api"
+   },
+   {
+    "id": "cache"
+   },
+   {
+    "id": "db"
+   },
+   {
+    "id": "queue"
+   },
+   {
+    "id": "worker"
+   }
+  ],
+  "links": [
+   {
+    "source": "web",
+    "target": "api"
+   },
+   {
+    "source": "api",
+    "target": "cache"
+   },
+   {
+    "source": "api",
+    "target": "db"
+   },
+   {
+    "source": "api",
+    "target": "queue"
+   },
+   {
+    "source": "queue",
+    "target": "worker"
+   },
+   {
+    "source": "worker",
+    "target": "db"
+   }
+  ]
+ },
+ "intent": "Baseline: bare nodes+links graph with no style block; exercises force-layout auto-positioning and ALL plugin defaults (node #69b3a2, stroke #fff, link #999@0.6, labelColor #ccc)."
+}
