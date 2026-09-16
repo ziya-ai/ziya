@@ -644,6 +644,8 @@ class LatexRenderer:
             body, lint_fixes, lint_warnings = self._lint_circuitikz(body)
         elif profile.key in ("tikz", "tikz-cd", "pgfplots"):
             body, lint_fixes, lint_warnings = self._lint_tikz(body)
+        elif profile.key == "fretboard":
+            body, lint_fixes, lint_warnings = self._lint_fretboard(body)
         if pre_fixes:
             lint_fixes = tuple(pre_fixes) + tuple(lint_fixes)
 
@@ -955,6 +957,32 @@ class LatexRenderer:
             return body, fixes, warnings
         except Exception:                  # pragma: no cover - defensive
             logger.exception("tikz lint failed; rendering body unchanged")
+            return body, (), ()
+
+    @staticmethod
+    def _lint_fretboard(body: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
+        r"""Input normalisation for the ``fretboard`` chord-diagram profile.
+
+        The profile's ``\chord`` macro iterates its positions with pgffor, which
+        splits only on commas, while every chord chart in existence writes the
+        shape as the compact ``x02210``.  ``fretboard_lint`` rewrites compact
+        and space-separated shapes to comma lists, expands bare ``Am x02210``
+        lines into ``\chord`` calls, and turns ``#``/``♯``/``♭`` in a chord
+        name into the text-safe ``{\sharp}``/``{\flat}`` (a bare ``#`` is a
+        fatal macro-parameter error in text mode).
+
+        Wrapped in a blanket except like the other lint passes: a defect here
+        must degrade to "render the body as written", never to a failed render.
+        """
+        try:
+            from app.utils.fretboard_lint import normalize_fretboard
+
+            body, fixes = normalize_fretboard(body)
+            for note in fixes:
+                logger.info("fretboard autofix: %s", note)
+            return body, fixes, ()
+        except Exception:                  # pragma: no cover - defensive
+            logger.exception("fretboard lint failed; rendering body unchanged")
             return body, (), ()
 
     def _not_installed(self, profile: LatexProfile, cap: Capability,

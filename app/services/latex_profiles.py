@@ -360,6 +360,108 @@ _CIRCUITIKZ_BLOCK_ALIASES: tuple[str, ...] = (
 ) + tuple(_circuitikz_block_alias(n) for n in ("amp", "adc", "dac", "dsp"))
 
 
+#: The ``\chord`` macro behind the ``fretboard`` profile (guitar / ukulele /
+#: bass chord-diagram boxes).
+#:
+#: Hand-rolled in TikZ rather than built on a chord package (guitarchordschemes,
+#: gchords, songs, leadsheets) because NONE of those ship in the BasicTeX tree
+#: this renderer targets, and every profile so far has been careful to need
+#: nothing beyond pgf where it can help it.  ~60 lines of TikZ cost no
+#: ``tlmgr install`` and render wherever the ``tikz`` profile does.
+#:
+#: ``\chord[opts]{Name}{positions}`` -- positions are a comma list low string to
+#: high (``x`` muted, ``0`` open, ``n`` fret); the string COUNT is inferred, so
+#: four entries draw a ukulele box and six a guitar.  The compact ``x02210``
+#: form everybody actually writes is rewritten to the comma list beforehand by
+#: ``app.utils.fretboard_lint`` (pgffor's ``\foreach`` only splits on commas).
+#: Options: ``fret=<n>`` base fret (auto: 1 when the shape fits frets 1-4,
+#: else the lowest fretted note, printed as "5fr"), ``barre=<fret>`` a bar
+#: across every string stopped at that fret, ``fingers={...}`` digits printed
+#: under the strings (0 = none), ``frets=<n>`` rows shown (auto), ``scale``.
+#:
+#: ``\sharp``/``\flat`` are re-bound inside the macro to ``\ensuremath`` forms
+#: so a chord NAME can carry them in text mode (``F{\sharp}m``, ``B{\flat}``)
+#: without a "Missing $" abort; the lint rewrites ``#``/``♯``/``♭`` to them.
+#: Each box is its own tikzpicture followed by a small ``\hspace``, so several
+#: ``\chord`` calls in one body line up as a chord row.  Verified by compiling
+#: through the real renderer on both the DVI/SVG and PDF/PNG paths, light and
+#: dark (tests/test_latex_fretboard.py pins the seams).
+_FRETBOARD_PREAMBLE: tuple[str, ...] = (
+    r"\pgfkeys{/ziyafret/.is family,/ziyafret,"
+    r"fingers/.store in=\ziyafretfingers,fingers=,"
+    r"fret/.store in=\ziyafretbase,fret=0,"
+    r"barre/.store in=\ziyafretbarre,barre=0,"
+    r"frets/.store in=\ziyafretcount,frets=0,"
+    r"scale/.store in=\ziyafretscale,scale=1}",
+    r"\newcommand{\chord}[3][]{%",
+    r"\begingroup",
+    r"\pgfkeys{/ziyafret,#1}%",
+    r"\def\ziyaX{x}%",
+    r"\let\ziyaSharp\sharp\let\ziyaFlat\flat",
+    r"\def\sharp{\ensuremath{\ziyaSharp}}\def\flat{\ensuremath{\ziyaFlat}}%",
+    # Pass 1 over the positions: string count and the lowest/highest fretted
+    # note, which drive the automatic base fret and row count below.
+    r"\xdef\ziyaN{0}\xdef\ziyaMin{99}\xdef\ziyaMax{0}%",
+    r"\foreach \p [count=\i] in {#3}{\xdef\ziyaN{\i}%",
+    r"  \ifx\p\ziyaX\else\ifnum\p>0",
+    r"    \ifnum\p<\ziyaMin\relax\xdef\ziyaMin{\p}\fi",
+    r"    \ifnum\p>\ziyaMax\relax\xdef\ziyaMax{\p}\fi",
+    r"  \fi\fi}%",
+    r"\ifnum\ziyafretbase<1",
+    r"  \ifnum\ziyaMax>4 \ifnum\ziyaMin>1 \xdef\ziyafretbase{\ziyaMin}\else\xdef\ziyafretbase{1}\fi",
+    r"  \else\xdef\ziyafretbase{1}\fi",
+    r"\fi",
+    r"\ifnum\ziyafretcount<1",
+    r"  \pgfmathtruncatemacro{\ziyafretcount}{max(4,\ziyaMax-\ziyafretbase+1)}%",
+    r"\fi",
+    r"\pgfmathsetmacro{\ziyaW}{(\ziyaN-1)*0.5}%",
+    r"\pgfmathsetmacro{\ziyaH}{\ziyafretcount*0.6}%",
+    r"\begin{tikzpicture}[scale=\ziyafretscale,line cap=round,line join=round,"
+    r"baseline=(current bounding box.north)]",
+    r"  \node[anchor=south,font=\large\bfseries,inner sep=1pt] at (\ziyaW/2,0.62) {#2};",
+    # Thick nut when the box starts at fret 1; otherwise a plain line and a
+    # "Nfr" label to its right, as published chord charts print it.
+    r"  \ifnum\ziyafretbase=1",
+    r"    \draw[line width=2.2pt] (0,0) -- (\ziyaW,0);",
+    r"  \else",
+    r"    \draw[line width=0.6pt] (0,0) -- (\ziyaW,0);",
+    r"    \node[anchor=west,font=\small,inner sep=2pt] at (\ziyaW,-0.3) {\ziyafretbase fr};",
+    r"  \fi",
+    r"  \foreach \k in {1,...,\ziyafretcount}{\draw[line width=0.6pt] (0,-\k*0.6) -- (\ziyaW,-\k*0.6);}",
+    r"  \pgfmathtruncatemacro{\ziyaNm}{\ziyaN-1}%",
+    r"  \foreach \s in {0,...,\ziyaNm}{\draw[line width=0.6pt] (\s*0.5,0) -- (\s*0.5,-\ziyaH);}",
+    # Barre: a thick bar from the lowest to the highest string stopped at the
+    # barre fret.  Drawn before the dots so the dots sit on top of it.
+    r"  \ifnum\ziyafretbarre>0",
+    r"    \xdef\ziyaBmin{99}\xdef\ziyaBmax{-1}%",
+    r"    \foreach \p [count=\i from 0] in {#3}{%",
+    r"      \ifx\p\ziyaX\else\ifnum\p=\ziyafretbarre\relax",
+    r"        \ifnum\i<\ziyaBmin\relax\xdef\ziyaBmin{\i}\fi",
+    r"        \ifnum\i>\ziyaBmax\relax\xdef\ziyaBmax{\i}\fi",
+    r"      \fi\fi}%",
+    r"    \ifnum\ziyaBmax>\ziyaBmin",
+    r"      \pgfmathsetmacro{\ziyaBy}{-(\ziyafretbarre-\ziyafretbase+0.5)*0.6}%",
+    r"      \draw[line width=5.5pt] (\ziyaBmin*0.5,\ziyaBy) -- (\ziyaBmax*0.5,\ziyaBy);",
+    r"    \fi",
+    r"  \fi",
+    r"  \foreach \p [count=\i from 0] in {#3}{%",
+    r"    \ifx\p\ziyaX",
+    r"      \node[font=\small,inner sep=0pt] at (\i*0.5,0.28) {$\times$};",
+    r"    \else\ifnum\p=0",
+    r"      \draw[line width=0.6pt] (\i*0.5,0.28) circle (0.09);",
+    r"    \else",
+    r"      \pgfmathsetmacro{\ziyaY}{-(\p-\ziyafretbase+0.5)*0.6}%",
+    r"      \fill (\i*0.5,\ziyaY) circle (0.13);",
+    r"    \fi\fi}%",
+    r"  \ifx\ziyafretfingers\empty\else",
+    r"    \foreach \f [count=\i from 0] in \ziyafretfingers{%",
+    r"      \ifnum\f>0 \node[font=\small,anchor=north,inner sep=2pt] at (\i*0.5,-\ziyaH) {\f};\fi}%",
+    r"  \fi",
+    r"\end{tikzpicture}\hspace{0.8em}%",
+    r"\endgroup}",
+)
+
+
 # ---------------------------------------------------------------------------
 # The registry.  Add new LaTeX-family diagram types here.
 # ---------------------------------------------------------------------------
@@ -670,6 +772,23 @@ PROFILES: dict[str, LatexProfile] = {
             # commands place it inside math mode.
             r"\renewcommand{\fCenter}{\mathrel{\vdash}}",
         ),
+    ),
+    # Fretted-instrument chord diagrams (guitar, ukulele, bass, banjo ...): the
+    # dotted fretboard box every chord chart uses.  The VexFlow music renderer
+    # has no primitive for these, so this is the one place they can come from.
+    # Built on tikz alone -- see _FRETBOARD_PREAMBLE for why no chord package.
+    "fretboard": LatexProfile(
+        key="fretboard",
+        # xcolor[svgnames,dvipsnames] FIRST (see the tikz profile) so a colour
+        # name in a body-level \color resolves instead of aborting (D-004).
+        packages=(LatexPackage("xcolor", "svgnames,dvipsnames"), LatexPackage("tikz")),
+        # No wrap_env: each \chord opens its own tikzpicture, and several in a
+        # body sit side by side in standalone's LR-mode box as a chord row.
+        wrap_env=None,
+        # Only pgf is needed -- the whole point of hand-rolling the macro.
+        tl_packages=("pgf",),
+        probe_files=("tikz.sty",),
+        extra_preamble=_FRETBOARD_PREAMBLE,
     ),
 }
 
