@@ -196,6 +196,16 @@ class PrecisionPromptSystem:
                         if _m:
                             relocated_tags.append(_m.group(0))
                             block = block.replace(_m.group(0), "", 1)
+                    # Shadow sessions attached to this conversation (§9).
+                    # Per-turn volatile, so it travels with the timestamps
+                    # onto the user message rather than the cached prefix.
+                    try:
+                        from app.shadow.context import attached_sessions_tag
+                        _shadow_tag = attached_sessions_tag(conversation_id)
+                        if _shadow_tag:
+                            relocated_tags.append(_shadow_tag)
+                    except Exception as _e:  # noqa: BLE001 — never fail a turn on this
+                        logger.debug("Shadow context unavailable: %s", _e)
                     if relocated_tags:
                         current_time_tag = "\n".join(relocated_tags) + "\n"
                         for current_message in reversed(messages):
@@ -341,8 +351,7 @@ class PrecisionPromptSystem:
             return messages
             
         except Exception as e:
-            import logging, traceback
-            logger = logging.getLogger(__name__)
+            import traceback
             logger.warning(f"Error in precision system: {e}")
             logger.warning(f"Traceback:\n{traceback.format_exc()}")
             # Fallback to minimal system
