@@ -1,0 +1,5 @@
+{
+ "type": "joint",
+ "definition": "{\n  \"elements\": [\n    {\"id\": \"a\", \"type\": \"rect\", \"label\": \"Alpha\", \"position\": {\"x\": \"80\", \"y\": \"60\"}, \"size\": {\"width\": \"140\", \"height\": \"70\"}},\n    {\"id\": \"b\", \"type\": \"rect\", \"label\": \"Beta\", \"position\": {\"x\": \"300\", \"y\": \"60\"}, \"size\": {\"width\": \"140\", \"height\": \"70\"}},\n    {\"id\": \"c\", \"type\": \"rect\", \"label\": \"Gamma\", \"position\": {\"x\": \"520\", \"y\": \"60\"}, \"size\": {\"width\": \"140\", \"height\": \"70\"}}\n  ],\n  \"connections\": [\n    {\"id\": \"n1\", \"source\": \"a\", \"target\": \"b\", \"label\": \"1\"},\n    {\"id\": \"n2\", \"source\": \"b\", \"target\": \"c\", \"label\": \"2\"}\n  ],\n  \"autoLayout\": \"false\"\n}",
+ "intent": "RECOVERY: every NUMBER given as a STRING (positions, sizes) and boolean autoLayout as the string \"false\". Intent: 3 boxes in a manual row at x=80/300/520."
+}

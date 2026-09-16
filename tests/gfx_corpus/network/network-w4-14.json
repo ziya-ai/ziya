@@ -1,0 +1,5 @@
+{
+ "type": "network",
+ "definition": "{\n  \"version\": 2,\n  \"nodes\": [\n    {\"id\": \"d1\", \"label\": \"Ingress\",  \"x\": 150, \"y\": 130, \"size\": 18},\n    {\"id\": \"d2\", \"label\": \"Router\",   \"x\": 330, \"y\": 200, \"size\": 22},\n    {\"id\": \"d3\", \"label\": \"Worker A\", \"x\": 510, \"y\": 120, \"size\": 16},\n    {\"id\": \"d4\", \"label\": \"Worker B\", \"x\": 510, \"y\": 290, \"size\": 16}\n  ],\n  \"links\": [\n    {\"source\": \"d1\", \"target\": \"d2\"},\n    {\"source\": \"d2\", \"target\": \"d3\"},\n    {\"source\": \"d2\", \"target\": \"d4\"}\n  ],\n  \"width\": 640, \"height\": 380,\n  \"styles\": {\n    \"default\": {\"labelColor\": \"#7e7e7e\", \"fontSize\": 14, \"linkColor\": \"#7e7e7e\", \"linkOpacity\": 1}\n  },\n  \"nodeStyle\": {\"fill\": \"#2e6eaa\"}\n}",
+ "intent": "Mixed dialect / deprecated syntax: `styles` (the plural keyed form declared in NetworkDiagramSpec) instead of `style`, plus a version stamp and a `nodeStyle` alias. Recovery = read the deprecated form rather than dropping all styling."
+}

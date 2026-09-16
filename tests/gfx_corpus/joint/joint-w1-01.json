@@ -1,0 +1,49 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "elements": [
+   {
+    "id": "ingest",
+    "type": "rect",
+    "label": "Ingest"
+   },
+   {
+    "id": "validate",
+    "type": "rect",
+    "label": "Validate"
+   },
+   {
+    "id": "enrich",
+    "type": "rect",
+    "label": "Enrich"
+   },
+   {
+    "id": "store",
+    "type": "rect",
+    "label": "Store"
+   }
+  ],
+  "connections": [
+   {
+    "id": "l1",
+    "source": "ingest",
+    "target": "validate",
+    "label": "raw"
+   },
+   {
+    "id": "l2",
+    "source": "validate",
+    "target": "enrich",
+    "label": "clean"
+   },
+   {
+    "id": "l3",
+    "source": "enrich",
+    "target": "store",
+    "label": "final"
+   }
+  ]
+ },
+ "intent": "Baseline: rect elements + labeled links, default auto-layout (DirectedGraph TB)."
+}

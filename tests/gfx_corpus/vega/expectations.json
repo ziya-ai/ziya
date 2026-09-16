@@ -1,0 +1,600 @@
+{
+ "schema": 1,
+ "engine": "vega",
+ "specs": {
+  "vega-w1-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.752393Z"
+    }
+   ]
+  },
+  "vega-w1-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.755442Z"
+    }
+   ]
+  },
+  "vega-w1-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.758396Z"
+    }
+   ]
+  },
+  "vega-w1-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.767734Z"
+    }
+   ]
+  },
+  "vega-w1-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.771023Z"
+    }
+   ]
+  },
+  "vega-w1-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.774161Z"
+    }
+   ]
+  },
+  "vega-w1-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.784769Z"
+    }
+   ]
+  },
+  "vega-w1-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.799821Z"
+    }
+   ]
+  },
+  "vega-w2-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.803460Z"
+    }
+   ]
+  },
+  "vega-w4-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.806166Z"
+    }
+   ]
+  },
+  "vega-w1-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-266",
+     "signature": "postrender-viewbox-aspect-clip",
+     "at": "2026-09-15T08:56:14.718053Z"
+    }
+   ]
+  },
+  "vega-w1-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-266",
+     "signature": "postrender-viewbox-aspect-clip",
+     "at": "2026-09-15T08:56:14.723384Z"
+    }
+   ]
+  },
+  "vega-w2-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-266",
+     "signature": "postrender-viewbox-aspect-clip",
+     "at": "2026-09-15T08:56:14.727489Z"
+    }
+   ]
+  },
+  "vega-w2-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-266",
+     "signature": "postrender-viewbox-aspect-clip",
+     "at": "2026-09-15T08:56:14.732032Z"
+    }
+   ]
+  },
+  "vega-w2-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-268",
+     "signature": "high-cardinality-labels-never-thinned",
+     "at": "2026-09-15T08:56:14.735677Z"
+    }
+   ]
+  },
+  "vega-w2-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-268",
+     "signature": "high-cardinality-labels-never-thinned",
+     "at": "2026-09-15T08:56:14.740050Z"
+    }
+   ]
+  },
+  "vega-w2-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-269",
+     "signature": "categorical-scheme-recycles-past-10",
+     "at": "2026-09-15T08:56:14.743678Z"
+    }
+   ]
+  },
+  "vega-w1-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-270",
+     "signature": "v5-let-rewrite-drops-dependent-marks",
+     "at": "2026-09-15T08:56:14.748355Z"
+    }
+   ]
+  },
+  "vega-w2-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-273",
+     "signature": "white-labels-on-scheme-fills-subfloor-both-themes",
+     "at": "2026-09-15T08:56:14.752253Z"
+    }
+   ]
+  },
+  "vega-w4-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-275",
+     "signature": "native-vega-path-skips-theme-color-reconciliation",
+     "at": "2026-09-15T08:56:14.756666Z"
+    }
+   ]
+  },
+  "vega-w4-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-275",
+     "signature": "native-vega-path-skips-theme-color-reconciliation",
+     "at": "2026-09-15T08:56:14.762448Z"
+    }
+   ]
+  },
+  "vega-w4-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-275",
+     "signature": "native-vega-path-skips-theme-color-reconciliation",
+     "at": "2026-09-15T08:56:14.767522Z"
+    }
+   ]
+  },
+  "vega-w4-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-276",
+     "signature": "json-syntax-not-repaired",
+     "at": "2026-09-15T08:56:14.774258Z"
+    }
+   ]
+  },
+  "vega-w4-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-276",
+     "signature": "json-syntax-not-repaired",
+     "at": "2026-09-15T08:56:14.781905Z"
+    }
+   ]
+  },
+  "vega-w4-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-276",
+     "signature": "json-syntax-not-repaired",
+     "at": "2026-09-15T08:56:14.786131Z"
+    }
+   ]
+  },
+  "vega-w4-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-276",
+     "signature": "json-syntax-not-repaired",
+     "at": "2026-09-15T08:56:14.791660Z"
+    }
+   ]
+  },
+  "vega-w4-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-276",
+     "signature": "json-syntax-not-repaired",
+     "at": "2026-09-15T08:56:14.795764Z"
+    }
+   ]
+  },
+  "vega-w4-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-276",
+     "signature": "json-syntax-not-repaired",
+     "at": "2026-09-15T08:56:14.799431Z"
+    }
+   ]
+  },
+  "vega-w4-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-277",
+     "signature": "vl-body-under-vega-schema-renders-blank",
+     "at": "2026-09-15T08:56:14.803056Z"
+    }
+   ]
+  },
+  "vega-w4-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-278",
+     "signature": "missing-or-old-dialect-structure-not-inferred",
+     "at": "2026-09-15T08:56:14.807739Z"
+    }
+   ]
+  },
+  "vega-w4-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-278",
+     "signature": "missing-or-old-dialect-structure-not-inferred",
+     "at": "2026-09-15T08:56:14.811658Z"
+    }
+   ]
+  },
+  "vega-w4-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-278",
+     "signature": "missing-or-old-dialect-structure-not-inferred",
+     "at": "2026-09-15T08:56:14.815430Z"
+    }
+   ]
+  },
+  "vega-w4-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-279",
+     "signature": "dataflow-error-escapes-catch-blank-canvas",
+     "at": "2026-09-15T08:56:14.819534Z"
+    }
+   ]
+  }
+ }
+}

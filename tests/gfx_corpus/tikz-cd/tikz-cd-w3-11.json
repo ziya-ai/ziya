@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\definecolor{gradA}{HTML}{2C3E50}\n\\definecolor{gradB}{HTML}{8E44AD}\n\\begin{tikzcd}[cells={nodes={draw=none,inner sep=8pt}}]\n|[left color=gradA,right color=gradB]| \\textcolor{white}{\\mathsf{Alpha}} \\rar[\"\\textcolor{gradB}{grad}\"] & |[top color=gradB,bottom color=gradA]| \\textcolor{white}{\\mathsf{Beta}}\n\\end{tikzcd}",
+ "intent": "gradient / shaded fill with white label text drawn ON the shading"
+}

@@ -1,0 +1,106 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "surface",
+    "z": [
+     [
+      8.83,
+      8.89,
+      8.81,
+      8.87,
+      8.9,
+      8.87
+     ],
+     [
+      8.89,
+      8.94,
+      8.85,
+      8.94,
+      8.96,
+      8.97
+     ],
+     [
+      8.84,
+      8.9,
+      8.82,
+      8.92,
+      8.93,
+      8.91
+     ],
+     [
+      8.79,
+      8.85,
+      8.79,
+      8.9,
+      8.94,
+      8.92
+     ],
+     [
+      8.79,
+      8.88,
+      8.81,
+      8.82,
+      8.78,
+      8.77
+     ],
+     [
+      8.8,
+      8.82,
+      8.78,
+      8.91,
+      8.94,
+      8.92
+     ]
+    ],
+    "colorscale": "Portland",
+    "contours": {
+     "z": {
+      "show": true,
+      "usecolormap": true,
+      "project": {
+       "z": true
+      }
+     }
+    },
+    "colorbar": {
+     "title": {
+      "text": "Height"
+     }
+    }
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "Terrain Surface"
+   },
+   "scene": {
+    "xaxis": {
+     "title": {
+      "text": "Easting"
+     }
+    },
+    "yaxis": {
+     "title": {
+      "text": "Northing"
+     }
+    },
+    "zaxis": {
+     "title": {
+      "text": "Elevation"
+     }
+    },
+    "camera": {
+     "eye": {
+      "x": 1.6,
+      "y": 1.6,
+      "z": 0.9
+     }
+    }
+   },
+   "height": 500
+  }
+ },
+ "intent": "3D surface plot with contour projection and an explicit scene block (axis titles + camera) — the plugin's headline 3D feature."
+}

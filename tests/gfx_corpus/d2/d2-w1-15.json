@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "users: {\n  shape: sql_table\n  id: int\n  email: varchar\n  org_id: int\n}\norgs: {\n  shape: sql_table\n  id: int\n  name: varchar\n}\nusers.org_id -> orgs.id: FK\n",
+ "intent": "sql_table shape with typed columns and a foreign-key edge between specific rows."
+}

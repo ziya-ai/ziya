@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph S {\n node [shape=circle style=filled];\n dup [fillcolor=\"#ffcccc\" label=\"first\"];\n dup [fillcolor=\"#ccffcc\"];\n dup [label=\"third\"];\n dup -> dup [label=\"self1\"];\n dup -> dup [label=\"self2\"];\n x -> y [label=\"p1\"];\n x -> y [label=\"p2\"];\n x -> y [label=\"p3\"];\n y -> z -> x [label=\"cyc\"];\n z -> z [label=\"loop\"];\n dup -> x;\n}",
+ "intent": "DUPLICATE IDS + SELF-LOOPS + PARALLEL EDGES + CYCLES: node declared three times with conflicting attrs, self-referencing edges, 3 parallel edges between one pair, and a 3-cycle."
+}

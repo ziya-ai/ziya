@@ -1,0 +1,98 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "autoLayout": false,
+  "elements": [
+   {
+    "id": "s1",
+    "type": "rect",
+    "label": "Src 1",
+    "position": {
+     "x": 40,
+     "y": 40
+    }
+   },
+   {
+    "id": "s2",
+    "type": "rect",
+    "label": "Src 2",
+    "position": {
+     "x": 40,
+     "y": 200
+    }
+   },
+   {
+    "id": "s3",
+    "type": "rect",
+    "label": "Src 3",
+    "position": {
+     "x": 40,
+     "y": 360
+    }
+   },
+   {
+    "id": "t1",
+    "type": "rect",
+    "label": "Dst 1",
+    "position": {
+     "x": 420,
+     "y": 40
+    }
+   },
+   {
+    "id": "t2",
+    "type": "rect",
+    "label": "Dst 2",
+    "position": {
+     "x": 420,
+     "y": 200
+    }
+   },
+   {
+    "id": "t3",
+    "type": "rect",
+    "label": "Dst 3",
+    "position": {
+     "x": 420,
+     "y": 360
+    }
+   }
+  ],
+  "connections": [
+   {
+    "id": "r1",
+    "source": "s1",
+    "target": "t1",
+    "router": "orthogonal",
+    "connector": "rounded",
+    "label": "orthogonal"
+   },
+   {
+    "id": "r2",
+    "source": "s2",
+    "target": "t2",
+    "router": "manhattan",
+    "connector": "jumpover",
+    "label": "manhattan"
+   },
+   {
+    "id": "r3",
+    "source": "s3",
+    "target": "t3",
+    "router": "metro",
+    "connector": "smooth",
+    "label": "metro"
+   },
+   {
+    "id": "r4",
+    "source": "s1",
+    "target": "t3",
+    "router": "normal",
+    "connector": "normal",
+    "label": "normal"
+   }
+  ]
+ },
+ "intent": "Link routers and connectors: orthogonal / manhattan / metro / normal crossed with rounded / smooth / jumpover."
+}

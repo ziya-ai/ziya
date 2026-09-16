@@ -1,0 +1,67 @@
+{
+ "type": "chord",
+ "definition": {
+  "type": "chord",
+  "nodes": [
+   {
+    "id": "L0",
+    "label": "Consolidated Transatlantic Freight Settlement Clearinghouse Division"
+   },
+   {
+    "id": "L1",
+    "label": "Regional Distribution and Last-Mile Fulfilment Operations Group"
+   },
+   {
+    "id": "L2",
+    "label": "Corporate Treasury Intercompany Netting and Reconciliation Unit"
+   },
+   {
+    "id": "L3",
+    "label": "Advanced Manufacturing Quality Assurance and Compliance Bureau"
+   },
+   {
+    "id": "L4",
+    "label": "Customer Lifecycle Retention Analytics and Insight Department"
+   },
+   {
+    "id": "L5",
+    "label": "Strategic Procurement Vendor Onboarding and Risk Review Office"
+   }
+  ],
+  "links": [
+   {
+    "source": "L0",
+    "target": "L1",
+    "value": 10
+   },
+   {
+    "source": "L1",
+    "target": "L2",
+    "value": 11
+   },
+   {
+    "source": "L2",
+    "target": "L3",
+    "value": 12
+   },
+   {
+    "source": "L3",
+    "target": "L4",
+    "value": 13
+   },
+   {
+    "source": "L4",
+    "target": "L5",
+    "value": 14
+   },
+   {
+    "source": "L5",
+    "target": "L0",
+    "value": 15
+   }
+  ],
+  "width": 1400,
+  "height": 1400
+ },
+ "intent": "LONG LABELS at 1400x1400: identical labels to w2-09 on a canvas 2.3x wider. The gutter is a CONSTANT 60px, so a bigger canvas grows the ring but not the text room."
+}

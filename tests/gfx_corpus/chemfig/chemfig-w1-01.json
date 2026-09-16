@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\chemfig{H_3C-CH_2-CH=CH-C~CH}",
+ "intent": "Linear chain with all three bond orders: single (-), double (=), triple (~), plus subscripted atom groups."
+}

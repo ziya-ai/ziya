@@ -1,0 +1,5 @@
+{
+ "type": "network",
+ "definition": "{\n  \"nodes\": [\n    {\"id\": \"t1\", \"label\": \"transparent A\", \"x\": 160, \"y\": 150, \"size\": 24, \"color\": \"transparent\"},\n    {\"id\": \"t2\", \"label\": \"transparent B\", \"x\": 330, \"y\": 150, \"size\": 24, \"color\": \"transparent\"},\n    {\"id\": \"t3\", \"label\": \"opaque ref\",    \"x\": 500, \"y\": 150, \"size\": 24, \"color\": \"#2e6eaa\"},\n    {\"id\": \"t4\", \"label\": \"transparent C\", \"x\": 330, \"y\": 300, \"size\": 24, \"color\": \"transparent\"}\n  ],\n  \"links\": [\n    {\"source\": \"t1\", \"target\": \"t2\", \"weight\": 2},\n    {\"source\": \"t2\", \"target\": \"t3\", \"weight\": 2},\n    {\"source\": \"t2\", \"target\": \"t4\", \"weight\": 2}\n  ],\n  \"width\": 640, \"height\": 380,\n  \"style\": {\"labelColor\": \"#7e7e7e\", \"fontSize\": 13,\n            \"linkColor\": \"transparent\", \"linkOpacity\": 1}\n}",
+ "intent": "'transparent' supplied as a colour - the model's way of saying 'outline only'. Structurally legal CSS; the recovery test is whether the engine substitutes a visible fill or silently paints nothing (colour fallback landing on background)."
+}

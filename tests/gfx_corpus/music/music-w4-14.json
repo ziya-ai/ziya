@@ -1,0 +1,52 @@
+{
+ "type": "music",
+ "definition": {
+  "timeSignature": "4/4",
+  "clef": "treble",
+  "keySignature": "A",
+  "title": "rgba() And A Bogus Theme Token",
+  "theme": "solarized-light",
+  "colorScheme": "nord",
+  "palette": "$accent-500",
+  "inkColor": "rgba(0,0,0,0.08)",
+  "staveColor": "hsl(0, 0%, 96%)",
+  "notes": [
+   {
+    "keys": [
+     "a/4"
+    ],
+    "duration": "q",
+    "color": "rgba(255,255,255,1)"
+   },
+   {
+    "keys": [
+     "c#/5"
+    ],
+    "duration": "q",
+    "color": "hsl(210, 100%, 50%)"
+   },
+   {
+    "keys": [
+     "e/5"
+    ],
+    "duration": "q",
+    "color": "var(--ink)",
+    "annotations": [
+     {
+      "text": "rgba ink",
+      "position": "above",
+      "color": "rgba(0,0,0,0.05)"
+     }
+    ]
+   },
+   {
+    "keys": [
+     "a/5"
+    ],
+    "duration": "h",
+    "color": "currentColor"
+   }
+  ]
+ },
+ "intent": "rgba()/hsl()/var()/currentColor where hex is expected, plus theme tokens that do not exist -- the fallback must not land on the background"
+}

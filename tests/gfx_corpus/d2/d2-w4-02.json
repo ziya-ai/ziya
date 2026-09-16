@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "{\n  \"nodes\": [\n    {\"id\": \"web\", \"label\": \"Web Server\"},\n    {\"id\": \"api\", \"label\": \"API Service\"},\n    {\"id\": \"db\", \"label\": \"Database\"},\n  ],\n  \"edges\": [\n    {\"from\": \"web\", \"to\": \"api\"},\n    {\"from\": \"api\", \"to\": \"db\"},\n  ]\n}\n",
+ "intent": "RECOVERY: model emitted a JSON graph object (with trailing commas) instead of D2 text"
+}

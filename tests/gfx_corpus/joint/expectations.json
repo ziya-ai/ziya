@@ -1,0 +1,806 @@
+{
+ "schema": 1,
+ "engine": "joint",
+ "specs": {
+  "joint-w1-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.436373Z"
+    }
+   ]
+  },
+  "joint-w1-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.438975Z"
+    }
+   ]
+  },
+  "joint-w1-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.443157Z"
+    }
+   ]
+  },
+  "joint-w4-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.446870Z"
+    }
+   ]
+  },
+  "joint-w1-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-128",
+     "signature": "raw-dia-element-missing-type:cell-dropped",
+     "at": "2026-09-15T08:56:12.919171Z"
+    }
+   ]
+  },
+  "joint-w1-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-128",
+     "signature": "raw-dia-element-missing-type:cell-dropped",
+     "at": "2026-09-15T08:56:12.924765Z"
+    }
+   ]
+  },
+  "joint-w1-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-128",
+     "signature": "raw-dia-element-missing-type:cell-dropped",
+     "at": "2026-09-15T08:56:12.928896Z"
+    }
+   ]
+  },
+  "joint-w1-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-128",
+     "signature": "raw-dia-element-missing-type:cell-dropped",
+     "at": "2026-09-15T08:56:12.931955Z"
+    }
+   ]
+  },
+  "joint-w1-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-128",
+     "signature": "raw-dia-element-missing-type:cell-dropped",
+     "at": "2026-09-15T08:56:12.935218Z"
+    }
+   ]
+  },
+  "joint-w1-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-128",
+     "signature": "raw-dia-element-missing-type:cell-dropped",
+     "at": "2026-09-15T08:56:12.938478Z"
+    }
+   ]
+  },
+  "joint-w2-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-129",
+     "signature": "content-exceeds-viewport-no-scale-to-fit",
+     "at": "2026-09-15T08:56:12.943869Z"
+    }
+   ]
+  },
+  "joint-w2-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-129",
+     "signature": "content-exceeds-viewport-no-scale-to-fit",
+     "at": "2026-09-15T08:56:12.947459Z"
+    }
+   ]
+  },
+  "joint-w2-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-129",
+     "signature": "content-exceeds-viewport-no-scale-to-fit",
+     "at": "2026-09-15T08:56:12.951504Z"
+    }
+   ]
+  },
+  "joint-w2-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-129",
+     "signature": "content-exceeds-viewport-no-scale-to-fit",
+     "at": "2026-09-15T08:56:12.955976Z"
+    }
+   ]
+  },
+  "joint-w2-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-129",
+     "signature": "content-exceeds-viewport-no-scale-to-fit",
+     "at": "2026-09-15T08:56:12.963224Z"
+    }
+   ]
+  },
+  "joint-w2-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-129",
+     "signature": "content-exceeds-viewport-no-scale-to-fit",
+     "at": "2026-09-15T08:56:12.973043Z"
+    }
+   ]
+  },
+  "joint-w2-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-129",
+     "signature": "content-exceeds-viewport-no-scale-to-fit",
+     "at": "2026-09-15T08:56:12.977736Z"
+    }
+   ]
+  },
+  "joint-w2-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-130",
+     "signature": "label-geometry-not-fitted-to-node",
+     "at": "2026-09-15T08:56:12.980677Z"
+    }
+   ]
+  },
+  "joint-w2-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-130",
+     "signature": "label-geometry-not-fitted-to-node",
+     "at": "2026-09-15T08:56:12.984566Z"
+    }
+   ]
+  },
+  "joint-w2-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-130",
+     "signature": "label-geometry-not-fitted-to-node",
+     "at": "2026-09-15T08:56:12.989021Z"
+    }
+   ]
+  },
+  "joint-w1-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-131",
+     "signature": "link-overdraw-no-label-background",
+     "at": "2026-09-15T08:56:12.993068Z"
+    }
+   ]
+  },
+  "joint-w2-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-131",
+     "signature": "link-overdraw-no-label-background",
+     "at": "2026-09-15T08:56:12.998388Z"
+    }
+   ]
+  },
+  "joint-w1-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-132",
+     "signature": "element-attrs-override-ignored",
+     "at": "2026-09-15T08:56:13.001934Z"
+    }
+   ]
+  },
+  "joint-w4-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-132",
+     "signature": "element-attrs-override-ignored",
+     "at": "2026-09-15T08:56:13.004551Z"
+    }
+   ]
+  },
+  "joint-w4-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-132",
+     "signature": "element-attrs-override-ignored",
+     "at": "2026-09-15T08:56:13.007241Z"
+    }
+   ]
+  },
+  "joint-w4-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-132",
+     "signature": "element-attrs-override-ignored",
+     "at": "2026-09-15T08:56:13.011527Z"
+    }
+   ]
+  },
+  "joint-w2-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-133",
+     "signature": "directed-graph-layout-throws-at-scale",
+     "at": "2026-09-15T08:56:13.015391Z"
+    }
+   ]
+  },
+  "joint-w1-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-134",
+     "signature": "port-position-string-invalid-layoutCallback:links-dropped",
+     "at": "2026-09-15T08:56:13.018962Z"
+    }
+   ]
+  },
+  "joint-w1-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-135",
+     "signature": "network-shapes-flattened-to-plain-rect",
+     "at": "2026-09-15T08:56:13.021681Z"
+    }
+   ]
+  },
+  "joint-w2-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-136",
+     "signature": "nested-container-label-occluded-by-children",
+     "at": "2026-09-15T08:56:13.025262Z"
+    }
+   ]
+  },
+  "joint-w1-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-138",
+     "signature": "shape-palette-label-contrast",
+     "at": "2026-09-15T08:56:13.030414Z"
+    }
+   ]
+  },
+  "joint-w1-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-138",
+     "signature": "shape-palette-label-contrast",
+     "at": "2026-09-15T08:56:13.047653Z"
+    }
+   ]
+  },
+  "joint-w2-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-138",
+     "signature": "shape-palette-label-contrast",
+     "at": "2026-09-15T08:56:13.053619Z"
+    }
+   ]
+  },
+  "joint-w4-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-139",
+     "signature": "bogus-theme-token-overrides-render-theme:dark",
+     "at": "2026-09-15T08:56:13.058909Z"
+    }
+   ]
+  },
+  "joint-w4-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-140",
+     "signature": "json-repair-absent",
+     "at": "2026-09-15T08:56:13.064991Z"
+    }
+   ]
+  },
+  "joint-w4-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-140",
+     "signature": "json-repair-absent",
+     "at": "2026-09-15T08:56:13.070367Z"
+    }
+   ]
+  },
+  "joint-w4-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-140",
+     "signature": "json-repair-absent",
+     "at": "2026-09-15T08:56:13.075062Z"
+    }
+   ]
+  },
+  "joint-w4-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-140",
+     "signature": "json-repair-absent",
+     "at": "2026-09-15T08:56:13.081282Z"
+    }
+   ]
+  },
+  "joint-w4-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-140",
+     "signature": "json-repair-absent",
+     "at": "2026-09-15T08:56:13.086853Z"
+    }
+   ]
+  },
+  "joint-w4-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-140",
+     "signature": "json-repair-absent",
+     "at": "2026-09-15T08:56:13.091261Z"
+    }
+   ]
+  },
+  "joint-w4-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-141",
+     "signature": "markdown-fence-not-stripped",
+     "at": "2026-09-15T08:56:13.102910Z"
+    }
+   ]
+  },
+  "joint-w4-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-142",
+     "signature": "nesting-depth-off-by-one:no-descent",
+     "at": "2026-09-15T08:56:13.107469Z"
+    }
+   ]
+  },
+  "joint-w4-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-143",
+     "signature": "link-endpoint-alias-from-to-unmapped:links-dropped",
+     "at": "2026-09-15T08:56:13.113905Z"
+    }
+   ]
+  },
+  "joint-w4-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-144",
+     "signature": "string-boolean-not-coerced:manual-layout-lost",
+     "at": "2026-09-15T08:56:13.120793Z"
+    }
+   ]
+  }
+ }
+}

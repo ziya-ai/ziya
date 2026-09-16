@@ -1,0 +1,616 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "elements": [
+   {
+    "id": "hub",
+    "type": "rect",
+    "label": "dispatcher"
+   },
+   {
+    "id": "w0",
+    "type": "rect",
+    "label": "worker-00"
+   },
+   {
+    "id": "w1",
+    "type": "rect",
+    "label": "worker-01"
+   },
+   {
+    "id": "w2",
+    "type": "rect",
+    "label": "worker-02"
+   },
+   {
+    "id": "w3",
+    "type": "rect",
+    "label": "worker-03"
+   },
+   {
+    "id": "w4",
+    "type": "rect",
+    "label": "worker-04"
+   },
+   {
+    "id": "w5",
+    "type": "rect",
+    "label": "worker-05"
+   },
+   {
+    "id": "w6",
+    "type": "rect",
+    "label": "worker-06"
+   },
+   {
+    "id": "w7",
+    "type": "rect",
+    "label": "worker-07"
+   },
+   {
+    "id": "w8",
+    "type": "rect",
+    "label": "worker-08"
+   },
+   {
+    "id": "w9",
+    "type": "rect",
+    "label": "worker-09"
+   },
+   {
+    "id": "w10",
+    "type": "rect",
+    "label": "worker-10"
+   },
+   {
+    "id": "w11",
+    "type": "rect",
+    "label": "worker-11"
+   },
+   {
+    "id": "w12",
+    "type": "rect",
+    "label": "worker-12"
+   },
+   {
+    "id": "w13",
+    "type": "rect",
+    "label": "worker-13"
+   },
+   {
+    "id": "w14",
+    "type": "rect",
+    "label": "worker-14"
+   },
+   {
+    "id": "w15",
+    "type": "rect",
+    "label": "worker-15"
+   },
+   {
+    "id": "w16",
+    "type": "rect",
+    "label": "worker-16"
+   },
+   {
+    "id": "w17",
+    "type": "rect",
+    "label": "worker-17"
+   },
+   {
+    "id": "w18",
+    "type": "rect",
+    "label": "worker-18"
+   },
+   {
+    "id": "w19",
+    "type": "rect",
+    "label": "worker-19"
+   },
+   {
+    "id": "w20",
+    "type": "rect",
+    "label": "worker-20"
+   },
+   {
+    "id": "w21",
+    "type": "rect",
+    "label": "worker-21"
+   },
+   {
+    "id": "w22",
+    "type": "rect",
+    "label": "worker-22"
+   },
+   {
+    "id": "w23",
+    "type": "rect",
+    "label": "worker-23"
+   },
+   {
+    "id": "w24",
+    "type": "rect",
+    "label": "worker-24"
+   },
+   {
+    "id": "w25",
+    "type": "rect",
+    "label": "worker-25"
+   },
+   {
+    "id": "w26",
+    "type": "rect",
+    "label": "worker-26"
+   },
+   {
+    "id": "w27",
+    "type": "rect",
+    "label": "worker-27"
+   },
+   {
+    "id": "w28",
+    "type": "rect",
+    "label": "worker-28"
+   },
+   {
+    "id": "w29",
+    "type": "rect",
+    "label": "worker-29"
+   },
+   {
+    "id": "w30",
+    "type": "rect",
+    "label": "worker-30"
+   },
+   {
+    "id": "w31",
+    "type": "rect",
+    "label": "worker-31"
+   },
+   {
+    "id": "w32",
+    "type": "rect",
+    "label": "worker-32"
+   },
+   {
+    "id": "w33",
+    "type": "rect",
+    "label": "worker-33"
+   },
+   {
+    "id": "w34",
+    "type": "rect",
+    "label": "worker-34"
+   },
+   {
+    "id": "w35",
+    "type": "rect",
+    "label": "worker-35"
+   },
+   {
+    "id": "w36",
+    "type": "rect",
+    "label": "worker-36"
+   },
+   {
+    "id": "w37",
+    "type": "rect",
+    "label": "worker-37"
+   },
+   {
+    "id": "w38",
+    "type": "rect",
+    "label": "worker-38"
+   },
+   {
+    "id": "w39",
+    "type": "rect",
+    "label": "worker-39"
+   },
+   {
+    "id": "w40",
+    "type": "rect",
+    "label": "worker-40"
+   },
+   {
+    "id": "w41",
+    "type": "rect",
+    "label": "worker-41"
+   },
+   {
+    "id": "w42",
+    "type": "rect",
+    "label": "worker-42"
+   },
+   {
+    "id": "w43",
+    "type": "rect",
+    "label": "worker-43"
+   },
+   {
+    "id": "w44",
+    "type": "rect",
+    "label": "worker-44"
+   },
+   {
+    "id": "w45",
+    "type": "rect",
+    "label": "worker-45"
+   },
+   {
+    "id": "w46",
+    "type": "rect",
+    "label": "worker-46"
+   },
+   {
+    "id": "w47",
+    "type": "rect",
+    "label": "worker-47"
+   },
+   {
+    "id": "w48",
+    "type": "rect",
+    "label": "worker-48"
+   },
+   {
+    "id": "w49",
+    "type": "rect",
+    "label": "worker-49"
+   },
+   {
+    "id": "w50",
+    "type": "rect",
+    "label": "worker-50"
+   },
+   {
+    "id": "w51",
+    "type": "rect",
+    "label": "worker-51"
+   },
+   {
+    "id": "w52",
+    "type": "rect",
+    "label": "worker-52"
+   },
+   {
+    "id": "w53",
+    "type": "rect",
+    "label": "worker-53"
+   },
+   {
+    "id": "w54",
+    "type": "rect",
+    "label": "worker-54"
+   },
+   {
+    "id": "w55",
+    "type": "rect",
+    "label": "worker-55"
+   },
+   {
+    "id": "w56",
+    "type": "rect",
+    "label": "worker-56"
+   },
+   {
+    "id": "w57",
+    "type": "rect",
+    "label": "worker-57"
+   },
+   {
+    "id": "w58",
+    "type": "rect",
+    "label": "worker-58"
+   },
+   {
+    "id": "w59",
+    "type": "rect",
+    "label": "worker-59"
+   }
+  ],
+  "connections": [
+   {
+    "id": "f0",
+    "source": "hub",
+    "target": "w0"
+   },
+   {
+    "id": "f1",
+    "source": "hub",
+    "target": "w1"
+   },
+   {
+    "id": "f2",
+    "source": "hub",
+    "target": "w2"
+   },
+   {
+    "id": "f3",
+    "source": "hub",
+    "target": "w3"
+   },
+   {
+    "id": "f4",
+    "source": "hub",
+    "target": "w4"
+   },
+   {
+    "id": "f5",
+    "source": "hub",
+    "target": "w5"
+   },
+   {
+    "id": "f6",
+    "source": "hub",
+    "target": "w6"
+   },
+   {
+    "id": "f7",
+    "source": "hub",
+    "target": "w7"
+   },
+   {
+    "id": "f8",
+    "source": "hub",
+    "target": "w8"
+   },
+   {
+    "id": "f9",
+    "source": "hub",
+    "target": "w9"
+   },
+   {
+    "id": "f10",
+    "source": "hub",
+    "target": "w10"
+   },
+   {
+    "id": "f11",
+    "source": "hub",
+    "target": "w11"
+   },
+   {
+    "id": "f12",
+    "source": "hub",
+    "target": "w12"
+   },
+   {
+    "id": "f13",
+    "source": "hub",
+    "target": "w13"
+   },
+   {
+    "id": "f14",
+    "source": "hub",
+    "target": "w14"
+   },
+   {
+    "id": "f15",
+    "source": "hub",
+    "target": "w15"
+   },
+   {
+    "id": "f16",
+    "source": "hub",
+    "target": "w16"
+   },
+   {
+    "id": "f17",
+    "source": "hub",
+    "target": "w17"
+   },
+   {
+    "id": "f18",
+    "source": "hub",
+    "target": "w18"
+   },
+   {
+    "id": "f19",
+    "source": "hub",
+    "target": "w19"
+   },
+   {
+    "id": "f20",
+    "source": "hub",
+    "target": "w20"
+   },
+   {
+    "id": "f21",
+    "source": "hub",
+    "target": "w21"
+   },
+   {
+    "id": "f22",
+    "source": "hub",
+    "target": "w22"
+   },
+   {
+    "id": "f23",
+    "source": "hub",
+    "target": "w23"
+   },
+   {
+    "id": "f24",
+    "source": "hub",
+    "target": "w24"
+   },
+   {
+    "id": "f25",
+    "source": "hub",
+    "target": "w25"
+   },
+   {
+    "id": "f26",
+    "source": "hub",
+    "target": "w26"
+   },
+   {
+    "id": "f27",
+    "source": "hub",
+    "target": "w27"
+   },
+   {
+    "id": "f28",
+    "source": "hub",
+    "target": "w28"
+   },
+   {
+    "id": "f29",
+    "source": "hub",
+    "target": "w29"
+   },
+   {
+    "id": "f30",
+    "source": "hub",
+    "target": "w30"
+   },
+   {
+    "id": "f31",
+    "source": "hub",
+    "target": "w31"
+   },
+   {
+    "id": "f32",
+    "source": "hub",
+    "target": "w32"
+   },
+   {
+    "id": "f33",
+    "source": "hub",
+    "target": "w33"
+   },
+   {
+    "id": "f34",
+    "source": "hub",
+    "target": "w34"
+   },
+   {
+    "id": "f35",
+    "source": "hub",
+    "target": "w35"
+   },
+   {
+    "id": "f36",
+    "source": "hub",
+    "target": "w36"
+   },
+   {
+    "id": "f37",
+    "source": "hub",
+    "target": "w37"
+   },
+   {
+    "id": "f38",
+    "source": "hub",
+    "target": "w38"
+   },
+   {
+    "id": "f39",
+    "source": "hub",
+    "target": "w39"
+   },
+   {
+    "id": "f40",
+    "source": "hub",
+    "target": "w40"
+   },
+   {
+    "id": "f41",
+    "source": "hub",
+    "target": "w41"
+   },
+   {
+    "id": "f42",
+    "source": "hub",
+    "target": "w42"
+   },
+   {
+    "id": "f43",
+    "source": "hub",
+    "target": "w43"
+   },
+   {
+    "id": "f44",
+    "source": "hub",
+    "target": "w44"
+   },
+   {
+    "id": "f45",
+    "source": "hub",
+    "target": "w45"
+   },
+   {
+    "id": "f46",
+    "source": "hub",
+    "target": "w46"
+   },
+   {
+    "id": "f47",
+    "source": "hub",
+    "target": "w47"
+   },
+   {
+    "id": "f48",
+    "source": "hub",
+    "target": "w48"
+   },
+   {
+    "id": "f49",
+    "source": "hub",
+    "target": "w49"
+   },
+   {
+    "id": "f50",
+    "source": "hub",
+    "target": "w50"
+   },
+   {
+    "id": "f51",
+    "source": "hub",
+    "target": "w51"
+   },
+   {
+    "id": "f52",
+    "source": "hub",
+    "target": "w52"
+   },
+   {
+    "id": "f53",
+    "source": "hub",
+    "target": "w53"
+   },
+   {
+    "id": "f54",
+    "source": "hub",
+    "target": "w54"
+   },
+   {
+    "id": "f55",
+    "source": "hub",
+    "target": "w55"
+   },
+   {
+    "id": "f56",
+    "source": "hub",
+    "target": "w56"
+   },
+   {
+    "id": "f57",
+    "source": "hub",
+    "target": "w57"
+   },
+   {
+    "id": "f58",
+    "source": "hub",
+    "target": "w58"
+   },
+   {
+    "id": "f59",
+    "source": "hub",
+    "target": "w59"
+   }
+  ]
+ },
+ "intent": "Extreme WIDE aspect ratio via fan-out: one hub -> 60 leaves in a single rank, auto-layout. Aspect ~ 10500x300."
+}

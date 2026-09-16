@@ -1,0 +1,123 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "violin",
+    "name": "weekday",
+    "legendgroup": "weekday",
+    "side": "negative",
+    "x": [
+     "api",
+     "api",
+     "api",
+     "api",
+     "api",
+     "db",
+     "db",
+     "db",
+     "db",
+     "db",
+     "cache",
+     "cache",
+     "cache",
+     "cache",
+     "cache"
+    ],
+    "y": [
+     22,
+     25,
+     28,
+     24,
+     31,
+     55,
+     61,
+     58,
+     64,
+     70,
+     8,
+     9,
+     7,
+     11,
+     10
+    ],
+    "box": {
+     "visible": true
+    },
+    "meanline": {
+     "visible": true
+    },
+    "line": {
+     "color": "#4c78a8"
+    }
+   },
+   {
+    "type": "violin",
+    "name": "weekend",
+    "legendgroup": "weekend",
+    "side": "positive",
+    "x": [
+     "api",
+     "api",
+     "api",
+     "api",
+     "api",
+     "db",
+     "db",
+     "db",
+     "db",
+     "db",
+     "cache",
+     "cache",
+     "cache",
+     "cache",
+     "cache"
+    ],
+    "y": [
+     14,
+     17,
+     15,
+     19,
+     16,
+     38,
+     42,
+     40,
+     45,
+     49,
+     5,
+     6,
+     4,
+     7,
+     6
+    ],
+    "box": {
+     "visible": true
+    },
+    "meanline": {
+     "visible": true
+    },
+    "line": {
+     "color": "#e45756"
+    }
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "Request Latency Density by Tier"
+   },
+   "violinmode": "overlay",
+   "xaxis": {
+    "title": {
+     "text": "Tier"
+    }
+   },
+   "yaxis": {
+    "title": {
+     "text": "Latency (ms)"
+    }
+   },
+   "height": 470
+  }
+ },
+ "intent": "Violin plot with embedded box, meanline and side-by-side split by legendgroup — canonical statistical density trace."
+}

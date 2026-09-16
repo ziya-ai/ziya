@@ -1,0 +1,65 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "elements": [
+   {
+    "id": "hot",
+    "type": "rect",
+    "label": "Hot path",
+    "attrs": {
+     "body": {
+      "fill": "#b71c1c",
+      "stroke": "#7f0000"
+     },
+     "label": {
+      "fill": "#ffffff"
+     }
+    }
+   },
+   {
+    "id": "warm",
+    "type": "rect",
+    "label": "Warm path",
+    "attrs": {
+     "body": {
+      "fill": "#f9a825",
+      "stroke": "#c17900"
+     },
+     "label": {
+      "fill": "#1a1a1a"
+     }
+    }
+   },
+   {
+    "id": "cold",
+    "type": "rect",
+    "label": "Cold path",
+    "attrs": {
+     "body": {
+      "fill": "#1565c0",
+      "stroke": "#0d47a1"
+     },
+     "label": {
+      "fill": "#ffffff"
+     }
+    }
+   }
+  ],
+  "connections": [
+   {
+    "id": "t1",
+    "source": "hot",
+    "target": "warm",
+    "label": "demote"
+   },
+   {
+    "id": "t2",
+    "source": "warm",
+    "target": "cold",
+    "label": "archive"
+   }
+  ]
+ },
+ "intent": "Per-element attrs override: author-supplied body fill/stroke and label fill (the attrs field the JointElement interface advertises)."
+}

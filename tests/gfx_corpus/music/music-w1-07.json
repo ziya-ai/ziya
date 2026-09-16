@@ -1,0 +1,65 @@
+{
+ "type": "music",
+ "definition": {
+  "clef": "treble",
+  "keySignature": "C",
+  "timeSignature": "4/4",
+  "notes": [
+   {
+    "keys": [
+     "c/4",
+     "e/4",
+     "g/4"
+    ],
+    "duration": "q",
+    "chordSymbol": "C",
+    "annotations": [
+     {
+      "text": "I",
+      "position": "below"
+     }
+    ]
+   },
+   {
+    "keys": [
+     "a/3",
+     "c/4",
+     "e/4"
+    ],
+    "duration": "q",
+    "chordSymbol": {
+     "text": "Am",
+     "superscript": "7"
+    }
+   },
+   {
+    "keys": [
+     "d/4",
+     "f/4",
+     "a/4"
+    ],
+    "duration": "q",
+    "chordSymbol": {
+     "text": "D",
+     "glyph": "halfDiminished",
+     "superscript": "7"
+    }
+   },
+   {
+    "keys": [
+     "g/3",
+     "b/3",
+     "d/4"
+    ],
+    "duration": "q",
+    "chordSymbol": {
+     "text": "V",
+     "subscript": "6",
+     "position": "below"
+    }
+   }
+  ],
+  "endBar": "final"
+ },
+ "intent": "Chord symbols: plain string form, object form with engraved glyph + superscript, and below-staff roman-numeral analysis."
+}

@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\chemfig{C(-[:120,,,,rgba(220,20,60,0.8)]O)(=[:60,,,,rgba(0,0,139,1)]O)-[,,,,rgba(34,139,34,0.6)]OH}",
+ "intent": "RECOVERY: CSS rgba() supplied in chemfig's 5th (colour) bond field where a colour NAME is required."
+}

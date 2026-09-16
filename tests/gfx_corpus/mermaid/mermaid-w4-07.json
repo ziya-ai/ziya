@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "flowchart LR\n  A[Ingest] --> B[Route] --> C[Store]\n  classDef n1 fill:tomato,stroke:rebeccapurple,color:white\n  classDef n2 fill:lightgoldenrodyellow,stroke:darkslategray,color:black\n  classDef n3 fill:whitesmoke,stroke:gainsboro,color:snow\n  class A n1\n  class B n2\n  class C n3",
+ "intent": "RECOVERY: CSS colour keywords instead of hex, including exotic ones (rebeccapurple, lightgoldenrodyellow). n3 is deliberately snow-on-whitesmoke = a legibility trap even if parsing succeeds."
+}

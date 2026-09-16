@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\definecolor{vir1}{HTML}{440154}\n\\definecolor{vir2}{HTML}{414487}\n\\definecolor{vir3}{HTML}{2A788E}\n\\definecolor{vir4}{HTML}{22A884}\n\\definecolor{vir5}{HTML}{7AD151}\n\\definecolor{vir6}{HTML}{FDE725}\n\\begin{tikzcd}\n\\textcolor{vir1}{V_1} \\rar[vir1,\"\\textcolor{vir1}{s_1}\"] & \\textcolor{vir2}{V_2} \\rar[vir2,\"\\textcolor{vir2}{s_2}\"] & \\textcolor{vir3}{V_3} \\\\\n\\textcolor{vir4}{V_4} \\rar[vir4,\"\\textcolor{vir4}{s_4}\"] & \\textcolor{vir5}{V_5} \\rar[vir5,\"\\textcolor{vir5}{s_5}\"] & \\textcolor{vir6}{V_6}\n\\end{tikzcd}",
+ "intent": "custom viridis colour scale fighting the theme's own default ink; arrow labels inherit the arrow colour"
+}

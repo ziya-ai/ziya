@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph shapes { rankdir=LR; a [shape=box, label=\"box\"]; b [shape=ellipse, label=\"ellipse\"]; c [shape=diamond, label=\"diamond\"]; d [shape=hexagon, label=\"hexagon\"]; e [shape=cylinder, label=\"cylinder\"]; f [shape=note, label=\"note\"]; g [shape=folder, label=\"folder\"]; h [shape=parallelogram, label=\"parallelogram\"]; a -> b -> c -> d; e -> f -> g -> h; a -> e; }",
+ "intent": "Node shape gallery: box, ellipse, diamond, hexagon, cylinder, note, folder, parallelogram"
+}

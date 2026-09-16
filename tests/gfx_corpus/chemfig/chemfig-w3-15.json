@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\chemfig{*6(-=-(-[:30]N(-[:90]H)-[:-30]H)=-=)}",
+ "intent": "NO-COLOR CONTROL for w3-14: byte-for-byte the same skeleton with every colour specification stripped, so the engine's OWN default ink is what gets judged in each theme. This is the A/B that separates 'author hardcoded a bad palette' from 'engine default is theme-blind'."
+}

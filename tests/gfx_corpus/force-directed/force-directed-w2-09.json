@@ -1,0 +1,492 @@
+{
+ "type": "force-directed",
+ "definition": {
+  "nodes": [
+   {
+    "id": "t0",
+    "group": 0
+   },
+   {
+    "id": "t1",
+    "group": 1
+   },
+   {
+    "id": "t2",
+    "group": 2
+   },
+   {
+    "id": "t3",
+    "group": 0
+   },
+   {
+    "id": "t4",
+    "group": 1
+   },
+   {
+    "id": "t5",
+    "group": 2
+   },
+   {
+    "id": "t6",
+    "group": 0
+   },
+   {
+    "id": "t7",
+    "group": 1
+   },
+   {
+    "id": "t8",
+    "group": 2
+   },
+   {
+    "id": "t9",
+    "group": 0
+   },
+   {
+    "id": "t10",
+    "group": 1
+   },
+   {
+    "id": "t11",
+    "group": 2
+   },
+   {
+    "id": "t12",
+    "group": 0
+   },
+   {
+    "id": "t13",
+    "group": 1
+   },
+   {
+    "id": "t14",
+    "group": 2
+   },
+   {
+    "id": "t15",
+    "group": 0
+   },
+   {
+    "id": "t16",
+    "group": 1
+   },
+   {
+    "id": "t17",
+    "group": 2
+   },
+   {
+    "id": "t18",
+    "group": 0
+   },
+   {
+    "id": "t19",
+    "group": 1
+   },
+   {
+    "id": "t20",
+    "group": 2
+   },
+   {
+    "id": "t21",
+    "group": 0
+   },
+   {
+    "id": "t22",
+    "group": 1
+   },
+   {
+    "id": "t23",
+    "group": 2
+   },
+   {
+    "id": "t24",
+    "group": 0
+   },
+   {
+    "id": "t25",
+    "group": 1
+   },
+   {
+    "id": "t26",
+    "group": 2
+   },
+   {
+    "id": "t27",
+    "group": 0
+   },
+   {
+    "id": "t28",
+    "group": 1
+   },
+   {
+    "id": "t29",
+    "group": 2
+   },
+   {
+    "id": "t30",
+    "group": 0
+   },
+   {
+    "id": "t31",
+    "group": 1
+   },
+   {
+    "id": "t32",
+    "group": 2
+   },
+   {
+    "id": "t33",
+    "group": 0
+   },
+   {
+    "id": "t34",
+    "group": 1
+   },
+   {
+    "id": "t35",
+    "group": 2
+   },
+   {
+    "id": "t36",
+    "group": 0
+   },
+   {
+    "id": "t37",
+    "group": 1
+   },
+   {
+    "id": "t38",
+    "group": 2
+   },
+   {
+    "id": "t39",
+    "group": 0
+   },
+   {
+    "id": "t40",
+    "group": 1
+   },
+   {
+    "id": "t41",
+    "group": 2
+   },
+   {
+    "id": "t42",
+    "group": 0
+   },
+   {
+    "id": "t43",
+    "group": 1
+   },
+   {
+    "id": "t44",
+    "group": 2
+   },
+   {
+    "id": "t45",
+    "group": 0
+   },
+   {
+    "id": "t46",
+    "group": 1
+   },
+   {
+    "id": "t47",
+    "group": 2
+   },
+   {
+    "id": "t48",
+    "group": 0
+   },
+   {
+    "id": "t49",
+    "group": 1
+   },
+   {
+    "id": "t50",
+    "group": 2
+   },
+   {
+    "id": "t51",
+    "group": 0
+   },
+   {
+    "id": "t52",
+    "group": 1
+   },
+   {
+    "id": "t53",
+    "group": 2
+   },
+   {
+    "id": "t54",
+    "group": 0
+   },
+   {
+    "id": "t55",
+    "group": 1
+   },
+   {
+    "id": "t56",
+    "group": 2
+   },
+   {
+    "id": "t57",
+    "group": 0
+   },
+   {
+    "id": "t58",
+    "group": 1
+   },
+   {
+    "id": "t59",
+    "group": 2
+   }
+  ],
+  "links": [
+   {
+    "source": "t0",
+    "target": "t1"
+   },
+   {
+    "source": "t1",
+    "target": "t4"
+   },
+   {
+    "source": "t2",
+    "target": "t7"
+   },
+   {
+    "source": "t3",
+    "target": "t10"
+   },
+   {
+    "source": "t4",
+    "target": "t13"
+   },
+   {
+    "source": "t5",
+    "target": "t16"
+   },
+   {
+    "source": "t6",
+    "target": "t19"
+   },
+   {
+    "source": "t7",
+    "target": "t22"
+   },
+   {
+    "source": "t8",
+    "target": "t25"
+   },
+   {
+    "source": "t9",
+    "target": "t28"
+   },
+   {
+    "source": "t10",
+    "target": "t31"
+   },
+   {
+    "source": "t11",
+    "target": "t34"
+   },
+   {
+    "source": "t12",
+    "target": "t37"
+   },
+   {
+    "source": "t13",
+    "target": "t40"
+   },
+   {
+    "source": "t14",
+    "target": "t43"
+   },
+   {
+    "source": "t15",
+    "target": "t46"
+   },
+   {
+    "source": "t16",
+    "target": "t49"
+   },
+   {
+    "source": "t17",
+    "target": "t52"
+   },
+   {
+    "source": "t18",
+    "target": "t55"
+   },
+   {
+    "source": "t19",
+    "target": "t58"
+   },
+   {
+    "source": "t20",
+    "target": "t1"
+   },
+   {
+    "source": "t21",
+    "target": "t4"
+   },
+   {
+    "source": "t22",
+    "target": "t7"
+   },
+   {
+    "source": "t23",
+    "target": "t10"
+   },
+   {
+    "source": "t24",
+    "target": "t13"
+   },
+   {
+    "source": "t25",
+    "target": "t16"
+   },
+   {
+    "source": "t26",
+    "target": "t19"
+   },
+   {
+    "source": "t27",
+    "target": "t22"
+   },
+   {
+    "source": "t28",
+    "target": "t25"
+   },
+   {
+    "source": "t29",
+    "target": "t28"
+   },
+   {
+    "source": "t30",
+    "target": "t31"
+   },
+   {
+    "source": "t31",
+    "target": "t34"
+   },
+   {
+    "source": "t32",
+    "target": "t37"
+   },
+   {
+    "source": "t33",
+    "target": "t40"
+   },
+   {
+    "source": "t34",
+    "target": "t43"
+   },
+   {
+    "source": "t35",
+    "target": "t46"
+   },
+   {
+    "source": "t36",
+    "target": "t49"
+   },
+   {
+    "source": "t37",
+    "target": "t52"
+   },
+   {
+    "source": "t38",
+    "target": "t55"
+   },
+   {
+    "source": "t39",
+    "target": "t58"
+   },
+   {
+    "source": "t40",
+    "target": "t1"
+   },
+   {
+    "source": "t41",
+    "target": "t4"
+   },
+   {
+    "source": "t42",
+    "target": "t7"
+   },
+   {
+    "source": "t43",
+    "target": "t10"
+   },
+   {
+    "source": "t44",
+    "target": "t13"
+   },
+   {
+    "source": "t45",
+    "target": "t16"
+   },
+   {
+    "source": "t46",
+    "target": "t19"
+   },
+   {
+    "source": "t47",
+    "target": "t22"
+   },
+   {
+    "source": "t48",
+    "target": "t25"
+   },
+   {
+    "source": "t49",
+    "target": "t28"
+   },
+   {
+    "source": "t50",
+    "target": "t31"
+   },
+   {
+    "source": "t51",
+    "target": "t34"
+   },
+   {
+    "source": "t52",
+    "target": "t37"
+   },
+   {
+    "source": "t53",
+    "target": "t40"
+   },
+   {
+    "source": "t54",
+    "target": "t43"
+   },
+   {
+    "source": "t55",
+    "target": "t46"
+   },
+   {
+    "source": "t56",
+    "target": "t49"
+   },
+   {
+    "source": "t57",
+    "target": "t52"
+   },
+   {
+    "source": "t58",
+    "target": "t55"
+   },
+   {
+    "source": "t59",
+    "target": "t58"
+   }
+  ],
+  "width": 120,
+  "height": 90
+ },
+ "intent": "SCALE: explicit canvas 120x90 — far BELOW the natural size for 60 nodes / 60 links."
+}

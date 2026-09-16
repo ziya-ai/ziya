@@ -1,0 +1,5 @@
+{
+ "type": "plotly",
+ "definition": "{\"data\":[{\"type\":\"scatter\",\"mode\":\"lines\",\"x\":[1,2,3,4],\"y\":[5,3,8,6],\"name\":\"v1 dialect\"}],\"layout\":{\"title\":\"Deprecated v1 Dialect\",\"titlefont\":{\"size\":22,\"color\":\"#1f77b4\"},\"xaxis\":{\"title\":\"time\",\"titlefont\":{\"size\":16}},\"yaxis\":{\"title\":\"amplitude\",\"titlefont\":{\"size\":16}},\"bardir\":\"v\",\"legend\":{\"traceorder\":\"normal\"}}}",
+ "intent": "plotly v1 dialect: string titles plus the removed 'titlefont' attribute at layout and axis level, plus the removed 'bardir'. Intent: a titled 4-point line chart with a 22px title and 16px axis titles."
+}

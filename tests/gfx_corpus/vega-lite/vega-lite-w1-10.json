@@ -1,0 +1,92 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "Signups vs Conversion Rate",
+  "width": 440,
+  "height": 260,
+  "data": {
+   "values": [
+    {
+     "month": "Jan",
+     "signups": 1200,
+     "conv": 4.1
+    },
+    {
+     "month": "Feb",
+     "signups": 1450,
+     "conv": 4.6
+    },
+    {
+     "month": "Mar",
+     "signups": 1310,
+     "conv": 3.9
+    },
+    {
+     "month": "Apr",
+     "signups": 1680,
+     "conv": 5.2
+    },
+    {
+     "month": "May",
+     "signups": 1890,
+     "conv": 5.8
+    },
+    {
+     "month": "Jun",
+     "signups": 1760,
+     "conv": 5.1
+    }
+   ]
+  },
+  "encoding": {
+   "x": {
+    "field": "month",
+    "type": "nominal",
+    "title": "Month"
+   }
+  },
+  "layer": [
+   {
+    "mark": {
+     "type": "bar",
+     "color": "#8da0cb"
+    },
+    "encoding": {
+     "y": {
+      "field": "signups",
+      "type": "quantitative",
+      "title": "Signups",
+      "axis": {
+       "titleColor": "#8da0cb"
+      }
+     }
+    }
+   },
+   {
+    "mark": {
+     "type": "line",
+     "color": "#e7298a",
+     "strokeWidth": 3,
+     "point": true
+    },
+    "encoding": {
+     "y": {
+      "field": "conv",
+      "type": "quantitative",
+      "title": "Conversion %",
+      "axis": {
+       "titleColor": "#e7298a"
+      }
+     }
+    }
+   }
+  ],
+  "resolve": {
+   "scale": {
+    "y": "independent"
+   }
+  }
+ },
+ "intent": "Dual-axis combo: layered bar + line with resolve.scale.y independent. Directly exercises the plugin's unconditional 'delete vegaSpec.resolve' post-process, which should collapse both series onto one y scale."
+}

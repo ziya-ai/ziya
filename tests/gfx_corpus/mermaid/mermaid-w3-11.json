@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "quadrantChart\n  title Colliding coordinates with custom quadrant fills\n  x-axis Low Reach --> High Reach\n  y-axis Low Effort --> High Effort\n  quadrant-1 Do now\n  quadrant-2 Plan\n  quadrant-3 Drop\n  quadrant-4 Delegate\n  Alpha: [0.5, 0.5]\n  Beta: [0.5, 0.5]\n  Gamma: [0.5, 0.5]\n  Delta: [0.501, 0.499]\n  Epsilon: [0.5, 0.5]\n  Zeta: [0.25, 0.75]",
+ "intent": "COLLIDING COORDINATES: five of six points sit at exactly the origin-center [0.5,0.5] (a sixth at 0.501/0.499 to test sub-pixel separation), which is also the quadrant boundary intersection - so point labels must overlap and the boundary case decides which quadrant claims them. Wave 1 found quadrantChart's point labels render white-on-near-white at 1.04:1 in LIGHT theme (a light-only failure); stacking five labels at one coordinate tests that palette defect and label collision simultaneously. Colors come from engine internals here, so contrast is judged VISUALLY and marked measured:false."
+}

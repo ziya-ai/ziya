@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "Same pipeline, styled for a dark page:\n\n```mermaid\n%%{init: {'theme':'base','themeVariables':{'background':'#121212','primaryColor':'#1a1a1a','primaryTextColor':'#eeeeee','primaryBorderColor':'#3a3a3a','lineColor':'#555555','secondaryColor':'#202020','tertiaryColor':'#181818','fontSize':'15px'}}}%%\nflowchart LR\n    Ingest[Ingest queue] --> Parse[Parser]\n    Parse --> Store[(Object store)]\n    Parse --> Fail{Malformed?}\n    Fail -- yes --> Dead[Dead letter]\n    Fail -- no --> Store\n```\n\nFills are #1a1a1a, strokes #3a3a3a, label text #eeeeee — all chosen for a near-black page.\n",
+ "intent": "mermaid fence hardcoding a DARK-appropriate palette (near-black fills, pale text) - must survive a light page"
+}

@@ -1,0 +1,829 @@
+{
+ "type": "music",
+ "definition": {
+  "keySignature": "C",
+  "timeSignature": "4/4",
+  "measureNumbers": true,
+  "measureNumber": 1,
+  "autoBeam": true,
+  "staves": [
+   {
+    "clef": "treble",
+    "measures": [
+     {
+      "notes": [
+       {
+        "keys": [
+         "c/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "e/4"
+        ],
+        "duration": "q"
+       }
+      ],
+      "keySignature": "C",
+      "timeSignature": "4/4"
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "f/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "g/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "a/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "b/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "c/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "e/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "f/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "g/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "a/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "b/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "c/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "d/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "e/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "f/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "g/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "a/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "b/4"
+        ],
+        "duration": "q"
+       }
+      ],
+      "keySignature": "G"
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "c/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "e/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "f/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "g/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "a/5"
+        ],
+        "duration": "q"
+       }
+      ],
+      "timeSignature": "3/4"
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "b/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "c/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/4"
+        ],
+        "duration": "q"
+       }
+      ],
+      "systemBreak": true
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "e/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "f/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "g/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "a/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "b/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "c/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "d/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "e/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "f/5"
+        ],
+        "duration": "q"
+       }
+      ],
+      "keySignature": "D"
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "g/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "a/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "b/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "c/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "e/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "f/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "g/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "a/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "b/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "c/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/5"
+        ],
+        "duration": "q"
+       }
+      ],
+      "timeSignature": "2/4"
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "e/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "f/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "g/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "clef": "bass",
+    "measures": [
+     {
+      "notes": [
+       {
+        "keys": [
+         "c/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "e/4"
+        ],
+        "duration": "q"
+       }
+      ],
+      "keySignature": "C",
+      "timeSignature": "4/4"
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "f/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "g/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "a/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "b/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "c/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "e/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "f/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "g/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "a/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "b/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "c/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "d/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "e/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "f/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "g/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "a/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "b/4"
+        ],
+        "duration": "q"
+       }
+      ],
+      "keySignature": "G"
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "c/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "e/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "f/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "g/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "a/5"
+        ],
+        "duration": "q"
+       }
+      ],
+      "timeSignature": "3/4"
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "b/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "c/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/4"
+        ],
+        "duration": "q"
+       }
+      ],
+      "systemBreak": true
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "e/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "f/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "g/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "a/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "b/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "c/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "d/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "e/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "f/5"
+        ],
+        "duration": "q"
+       }
+      ],
+      "keySignature": "D"
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "g/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "a/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "b/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "c/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "e/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "f/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "g/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "a/4"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "b/4"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "c/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "d/5"
+        ],
+        "duration": "q"
+       }
+      ],
+      "timeSignature": "2/4"
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "e/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "f/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "g/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "SCALE: deep nesting at count — 2 staves each of 18 measures with a key change every 6 bars, meter change every 8, explicit systemBreak every 9, plus measureNumbers."
+}

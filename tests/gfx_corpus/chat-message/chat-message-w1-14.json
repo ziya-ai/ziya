@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "### Symbol reference\n\n| Symbol | Meaning | Bound | Shell variable |\n|:-------|:--------|:------|:---------------|\n| $\\lambda$ | arrival rate | $\\lambda < \\mu$ | `$ARRIVAL_RATE` |\n| $\\mu$ | service rate | $\\mu > 0$ | `$SERVICE_RATE` |\n| $\\rho$ | utilisation | $\\rho = \\lambda/\\mu$ | `$UTILISATION` |\n| $W$ | waiting time | $W = 1/(\\mu-\\lambda)$ | `$WAIT_SECONDS` |\n\nEnvironment variables are read verbatim by the harness.\n",
+ "intent": "inline math inside table cells combined with inline code spans containing dollar signs"
+}

@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "client -> lb: HTTPS 443\nlb -> app: forward\napp -> db: SQL query\ndb -> app: rows\n",
+ "intent": "Edge labels via `a -> b: label` on every connection, including a back-edge."
+}

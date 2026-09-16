@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "start: { shape: circle }\nstore: { shape: cylinder }\nq: { shape: queue }\nstart -> q\nq -> store\n",
+ "intent": "Inline shape keyword on nodes (circle, cylinder, queue) -- D2's shape vocabulary."
+}

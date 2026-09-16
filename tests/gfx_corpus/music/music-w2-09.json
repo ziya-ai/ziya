@@ -1,0 +1,452 @@
+{
+ "type": "music",
+ "definition": {
+  "clef": "treble",
+  "keySignature": "C",
+  "timeSignature": "4/4",
+  "autoBeam": false,
+  "notes": [
+   {
+    "keys": [
+     "c/4"
+    ],
+    "duration": "q",
+    "chordSymbol": "Cmaj7",
+    "annotation": {
+     "text": "a0",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "d/4"
+    ],
+    "duration": "q",
+    "chordSymbol": "Dm9",
+    "annotation": {
+     "text": "a1",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "e/4"
+    ],
+    "duration": "q",
+    "chordSymbol": "G13sus4",
+    "annotation": {
+     "text": "a2",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "f/4"
+    ],
+    "duration": "q",
+    "chordSymbol": "Ebmaj7#11",
+    "annotation": {
+     "text": "a3",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "g/4"
+    ],
+    "duration": "q",
+    "chordSymbol": "F#m7b5",
+    "annotation": {
+     "text": "a4",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "a/4"
+    ],
+    "duration": "q",
+    "chordSymbol": "Bb7alt",
+    "annotation": {
+     "text": "a5",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "b/4"
+    ],
+    "duration": "q",
+    "chordSymbol": "Am11",
+    "annotation": {
+     "text": "a6",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "q",
+    "chordSymbol": "E7#9",
+    "annotation": {
+     "text": "a7",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "d/5"
+    ],
+    "duration": "q",
+    "chordSymbol": "Cmaj7",
+    "annotation": {
+     "text": "a8",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "e/5"
+    ],
+    "duration": "q",
+    "chordSymbol": "Dm9",
+    "annotation": {
+     "text": "a9",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "f/5"
+    ],
+    "duration": "q",
+    "chordSymbol": "G13sus4",
+    "annotation": {
+     "text": "a10",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "g/5"
+    ],
+    "duration": "q",
+    "chordSymbol": "Ebmaj7#11",
+    "annotation": {
+     "text": "a11",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "a/5"
+    ],
+    "duration": "q",
+    "chordSymbol": "F#m7b5",
+    "annotation": {
+     "text": "a12",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "b/5"
+    ],
+    "duration": "q",
+    "chordSymbol": "Bb7alt",
+    "annotation": {
+     "text": "a13",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "c/4"
+    ],
+    "duration": "q",
+    "chordSymbol": "Am11",
+    "annotation": {
+     "text": "a14",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "d/4"
+    ],
+    "duration": "q",
+    "chordSymbol": "E7#9",
+    "annotation": {
+     "text": "a15",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "e/4"
+    ],
+    "duration": "q",
+    "chordSymbol": "Cmaj7",
+    "annotation": {
+     "text": "a16",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "f/4"
+    ],
+    "duration": "q",
+    "chordSymbol": "Dm9",
+    "annotation": {
+     "text": "a17",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "g/4"
+    ],
+    "duration": "q",
+    "chordSymbol": "G13sus4",
+    "annotation": {
+     "text": "a18",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "a/4"
+    ],
+    "duration": "q",
+    "chordSymbol": "Ebmaj7#11",
+    "annotation": {
+     "text": "a19",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "b/4"
+    ],
+    "duration": "q",
+    "chordSymbol": "F#m7b5",
+    "annotation": {
+     "text": "a20",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "q",
+    "chordSymbol": "Bb7alt",
+    "annotation": {
+     "text": "a21",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "d/5"
+    ],
+    "duration": "q",
+    "chordSymbol": "Am11",
+    "annotation": {
+     "text": "a22",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "e/5"
+    ],
+    "duration": "q",
+    "chordSymbol": "E7#9",
+    "annotation": {
+     "text": "a23",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "f/5"
+    ],
+    "duration": "q",
+    "chordSymbol": "Cmaj7",
+    "annotation": {
+     "text": "a24",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "g/5"
+    ],
+    "duration": "q",
+    "chordSymbol": "Dm9",
+    "annotation": {
+     "text": "a25",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "a/5"
+    ],
+    "duration": "q",
+    "chordSymbol": "G13sus4",
+    "annotation": {
+     "text": "a26",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "b/5"
+    ],
+    "duration": "q",
+    "chordSymbol": "Ebmaj7#11",
+    "annotation": {
+     "text": "a27",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "c/4"
+    ],
+    "duration": "q",
+    "chordSymbol": "F#m7b5",
+    "annotation": {
+     "text": "a28",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "d/4"
+    ],
+    "duration": "q",
+    "chordSymbol": "Bb7alt",
+    "annotation": {
+     "text": "a29",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "e/4"
+    ],
+    "duration": "q",
+    "chordSymbol": "Am11",
+    "annotation": {
+     "text": "a30",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "f/4"
+    ],
+    "duration": "q",
+    "chordSymbol": "E7#9",
+    "annotation": {
+     "text": "a31",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "g/4"
+    ],
+    "duration": "q",
+    "chordSymbol": "Cmaj7",
+    "annotation": {
+     "text": "a32",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "a/4"
+    ],
+    "duration": "q",
+    "chordSymbol": "Dm9",
+    "annotation": {
+     "text": "a33",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "b/4"
+    ],
+    "duration": "q",
+    "chordSymbol": "G13sus4",
+    "annotation": {
+     "text": "a34",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "q",
+    "chordSymbol": "Ebmaj7#11",
+    "annotation": {
+     "text": "a35",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "d/5"
+    ],
+    "duration": "q",
+    "chordSymbol": "F#m7b5",
+    "annotation": {
+     "text": "a36",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "e/5"
+    ],
+    "duration": "q",
+    "chordSymbol": "Bb7alt",
+    "annotation": {
+     "text": "a37",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "f/5"
+    ],
+    "duration": "q",
+    "chordSymbol": "Am11",
+    "annotation": {
+     "text": "a38",
+     "position": "above"
+    }
+   },
+   {
+    "keys": [
+     "g/5"
+    ],
+    "duration": "q",
+    "chordSymbol": "E7#9",
+    "annotation": {
+     "text": "a39",
+     "position": "above"
+    }
+   }
+  ]
+ },
+ "intent": "SCALE: 40 notes each carrying BOTH a chordSymbol and an above-staff annotation, saturating the above-staff band to test band negotiation at count."
+}

@@ -1,0 +1,5 @@
+{
+ "type": "network",
+ "definition": "{\n  “nodes”: [\n    {“id”: “Auth”, “x”: 160, “y”: 190, “size”: 18},\n    {“id”: “API”,  “x”: 330, “y”: 190, “size”: 18},\n    {“id”: “User”, “x”: 500, “y”: 190, “size”: 18}\n  ],\n  “links”: [\n    {“source”: “User”, “target”: “Auth”},\n    {“source”: “Auth”, “target”: “API”}\n  ],\n  “width”: 640,\n  “height”: 380,\n  “style”: {“labelColor”: “#7e7e7e”, “fontSize”: 13}\n}",
+ "intent": "Typographic / smart quotes substituted for ASCII double quotes (copy-paste through a word processor or a model that prettified its own output). Recovery = fold to ASCII."
+}

@@ -1,0 +1,5 @@
+{
+ "type": "plotly",
+ "definition": "```json\n{\n  \"data\": [\n    {\"type\": \"scatter\", \"mode\": \"lines+markers\", \"x\": [1,2,3,4,5], \"y\": [2,5,3,8,6], \"name\": \"trend\"}\n  ],\n  \"layout\": {\"title\": {\"text\": \"Fenced In Markdown\"}, \"xaxis\": {\"title\": {\"text\": \"step\"}}, \"yaxis\": {\"title\": {\"text\": \"value\"}}}\n}\n```",
+ "intent": "the whole spec wrapped in a ```json markdown fence, as a model emits when it forgets the tool already implies the language. Intent: a 5-point line+marker series."
+}

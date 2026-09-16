@@ -1,0 +1,58 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "scatter",
+    "mode": "lines+markers",
+    "name": "us-west-2 primary availability zone cluster group alpha, canary cohort, post-migration cutover window, excluding shadow traffic",
+    "x": [
+     "extremely-long-category-label-number-one-that-will-not-fit",
+     "extremely-long-category-label-number-two-that-will-not-fit",
+     "extremely-long-category-label-number-three-that-will-not-fit",
+     "extremely-long-category-label-number-four-that-will-not-fit"
+    ],
+    "y": [
+     12,
+     19,
+     14,
+     22
+    ]
+   },
+   {
+    "type": "scatter",
+    "mode": "lines+markers",
+    "name": "us-west-2 primary availability zone cluster group beta, canary cohort, post-migration cutover window, excluding shadow traffic",
+    "x": [
+     "extremely-long-category-label-number-one-that-will-not-fit",
+     "extremely-long-category-label-number-two-that-will-not-fit",
+     "extremely-long-category-label-number-three-that-will-not-fit",
+     "extremely-long-category-label-number-four-that-will-not-fit"
+    ],
+    "y": [
+     9,
+     15,
+     11,
+     17
+    ]
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "Aggregate p99 end-to-end request latency measured at the edge termination layer for authenticated traffic excluding health-check probes and synthetic canaries"
+   },
+   "xaxis": {
+    "title": {
+     "text": "Aggregate p99 end-to-end request latency measured at the edge termination layer for authenticated traffic excluding health-check probes and synthetic canaries"
+    },
+    "type": "category"
+   },
+   "yaxis": {
+    "title": {
+     "text": "Aggregate p99 end-to-end request latency measured at the edge termination layer for authenticated traffic excluding health-check probes and synthetic canaries"
+    }
+   }
+  }
+ },
+ "intent": "SCALE: pathologically long axis titles (150+ chars), long legend names and long tick labels on a normal-sized chart."
+}

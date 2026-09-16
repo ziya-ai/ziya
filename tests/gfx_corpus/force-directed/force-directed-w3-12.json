@@ -1,0 +1,84 @@
+{
+ "type": "force-directed",
+ "definition": {
+  "nodes": [
+   {
+    "id": "big1",
+    "label": "overlay A 25%",
+    "color": "#4e79a740",
+    "size": 55
+   },
+   {
+    "id": "big2",
+    "label": "overlay B 20%",
+    "color": "#e1575933",
+    "size": 55
+   },
+   {
+    "id": "a1",
+    "label": "alpha 33%",
+    "color": "#59a14f54",
+    "size": 12
+   },
+   {
+    "id": "a2",
+    "label": "alpha 20%",
+    "color": "#f28e2b33",
+    "size": 12
+   },
+   {
+    "id": "a3",
+    "label": "alpha 12%",
+    "color": "#76b7b21f",
+    "size": 12
+   },
+   {
+    "id": "a4",
+    "label": "alpha 8%",
+    "color": "#edc94814",
+    "size": 12
+   },
+   {
+    "id": "a5",
+    "label": "opaque ref",
+    "color": "#b07aa1",
+    "size": 12
+   }
+  ],
+  "links": [
+   {
+    "source": "big1",
+    "target": "big2"
+   },
+   {
+    "source": "big1",
+    "target": "a1"
+   },
+   {
+    "source": "big1",
+    "target": "a2"
+   },
+   {
+    "source": "big2",
+    "target": "a3"
+   },
+   {
+    "source": "big2",
+    "target": "a4"
+   },
+   {
+    "source": "a4",
+    "target": "a5"
+   },
+   {
+    "source": "a1",
+    "target": "a5"
+   }
+  ],
+  "style": {
+   "linkOpacity": 0.08,
+   "fontSize": 13
+  }
+ },
+ "intent": "COLOR: alpha and low opacity - linkOpacity 0.08, 8-digit-hex fills at 20-33% alpha, plus large semi-transparent overlay discs that composite over their neighbours."
+}

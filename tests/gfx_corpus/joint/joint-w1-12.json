@@ -1,0 +1,52 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "grid": false,
+  "width": 700,
+  "height": 420,
+  "elements": [
+   {
+    "id": "web",
+    "type": "rect",
+    "label": "Web tier"
+   },
+   {
+    "id": "api",
+    "type": "rect",
+    "label": "API tier"
+   },
+   {
+    "id": "db",
+    "type": "cylinder",
+    "label": "Postgres"
+   },
+   {
+    "id": "cache",
+    "type": "cylinder",
+    "label": "Redis"
+   }
+  ],
+  "connections": [
+   {
+    "id": "g1",
+    "source": "web",
+    "target": "api",
+    "label": "REST"
+   },
+   {
+    "id": "g2",
+    "source": "api",
+    "target": "db",
+    "label": "SQL"
+   },
+   {
+    "id": "g3",
+    "source": "api",
+    "target": "cache",
+    "label": "GET/SET"
+   }
+  ]
+ },
+ "intent": "Paper options: grid disabled and explicit width/height honoured."
+}

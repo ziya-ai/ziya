@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\chemfig{\\text{\\ce{H2O}}-[:30]\\text{Wasser}-[:-30]\\text{eau}-[:30]\\text{agua}}\n\n\\vspace{4mm}\n\n\\chemfig{H_3C-[:30]C(-[:90]\\text{$\\alpha$})(-[:-90]\\text{$\\beta$})-[:-30]OH}",
+ "intent": "UNICODE-ish via LaTeX escapes: mixed-language atom labels in one chain plus Greek stereo-descriptors as branch labels. Two features combined (\\text in atom slot + parenthesised branches with explicit angles)."
+}

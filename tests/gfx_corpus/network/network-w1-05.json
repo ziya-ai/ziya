@@ -1,0 +1,79 @@
+{
+ "type": "network",
+ "definition": {
+  "type": "network",
+  "width": 600,
+  "height": 400,
+  "nodes": [
+   {
+    "id": "core",
+    "label": "Core",
+    "size": 38,
+    "x": 300,
+    "y": 200
+   },
+   {
+    "id": "r1",
+    "label": "Region A",
+    "size": 22,
+    "x": 140,
+    "y": 110
+   },
+   {
+    "id": "r2",
+    "label": "Region B",
+    "size": 22,
+    "x": 460,
+    "y": 110
+   },
+   {
+    "id": "e1",
+    "label": "Edge 1",
+    "size": 10,
+    "x": 90,
+    "y": 300
+   },
+   {
+    "id": "e2",
+    "label": "Edge 2",
+    "size": 10,
+    "x": 300,
+    "y": 340
+   },
+   {
+    "id": "e3",
+    "label": "Edge 3",
+    "size": 6,
+    "x": 510,
+    "y": 300
+   }
+  ],
+  "links": [
+   {
+    "source": "core",
+    "target": "r1"
+   },
+   {
+    "source": "core",
+    "target": "r2"
+   },
+   {
+    "source": "r1",
+    "target": "e1"
+   },
+   {
+    "source": "core",
+    "target": "e2"
+   },
+   {
+    "source": "r2",
+    "target": "e3"
+   }
+  ],
+  "style": {
+   "labelColor": "#7e7e7e",
+   "fontSize": 12
+  }
+ },
+ "intent": "Per-node `size` drives circle radius across a wide but legal range (6..40) on a 600x400 canvas (cap = 60); hub/leaf hierarchy must be visible and no node clipped at the viewport edge."
+}

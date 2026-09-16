@@ -1,0 +1,5 @@
+{
+ "type": "d3",
+ "definition": "{\n  'type': 'bar',\n  'stacked': False,\n  'title': None,\n  'animate': True,\n  'data': [\n    {'label': 'Alpha', 'value': 30, 'color': None},\n    {'label': 'Beta', 'value': 55},\n    {'label': 'Gamma', 'value': 18}\n  ]\n}",
+ "intent": "Python repr leakage: True/False/None literals and single quotes"
+}

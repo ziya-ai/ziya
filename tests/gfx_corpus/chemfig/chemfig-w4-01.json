@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "```chemfig\n\\chemfig{H-C(-[2]H)(-[6]H)-H}\n```",
+ "intent": "RECOVERY: JSON/source wrapped in a markdown fence. Preprocessor should strip ```chemfig ... ``` and render methane."
+}

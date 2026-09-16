@@ -1,0 +1,5 @@
+{
+ "type": "packet",
+ "definition": "{\n  “type”: “packet”,\n  “title”: “Smart-quoted JSON”,\n  “bitWidth”: 32,\n  “sections”: [\n    {“label”: “Header”, “rows”: [\n      [[“Version”, 4], [“Type”, 4], [“Length”, 24]],\n      [[“Checksum”, 16], [“Reserved”, 16]]\n    ]}\n  ]\n}",
+ "intent": "Curly/smart quotes substituted for straight quotes - typical of prose-formatted model output"
+}

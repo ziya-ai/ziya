@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\begin{tikzcd}[execute at begin picture={\\fill[black!88] ([shift={(-4mm,-4mm)}]current bounding box.south west) rectangle ([shift={(4mm,4mm)}]current bounding box.north east);}]\n\\textcolor{white}{A} \\rar[white,\"\\textcolor{white}{f}\"] & \\textcolor{white}{B} \\dar[white] \\\\\n\\textcolor{white}{C} \\rar[white,\"\\textcolor{white}{g}\"'] & \\textcolor{white}{D}\n\\end{tikzcd}",
+ "intent": "REPAIRED both-theme-safe control: explicit black!88 backdrop behind white ink (the 16.48:1 pattern w2-15 was meant to be)"
+}

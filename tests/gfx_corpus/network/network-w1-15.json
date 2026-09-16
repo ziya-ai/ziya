@@ -1,0 +1,75 @@
+{
+ "type": "network",
+ "definition": {
+  "type": "network",
+  "width": 600,
+  "height": 400,
+  "data": {
+   "nodes": [
+    {
+     "id": "src",
+     "label": "Source",
+     "x": 100,
+     "y": 200,
+     "size": 15
+    },
+    {
+     "id": "map",
+     "label": "Map",
+     "x": 250,
+     "y": 110,
+     "size": 15
+    },
+    {
+     "id": "filter",
+     "label": "Filter",
+     "x": 250,
+     "y": 290,
+     "size": 15
+    },
+    {
+     "id": "join",
+     "label": "Join",
+     "x": 410,
+     "y": 200,
+     "size": 15
+    },
+    {
+     "id": "sink",
+     "label": "Sink",
+     "x": 540,
+     "y": 200,
+     "size": 15
+    }
+   ],
+   "links": [
+    {
+     "source": "src",
+     "target": "map"
+    },
+    {
+     "source": "src",
+     "target": "filter"
+    },
+    {
+     "source": "map",
+     "target": "join"
+    },
+    {
+     "source": "filter",
+     "target": "join"
+    },
+    {
+     "source": "join",
+     "target": "sink"
+    }
+   ]
+  },
+  "style": {
+   "labelColor": "#7e7e7e",
+   "linkColor": "#7e7e7e",
+   "linkOpacity": 1
+  }
+ },
+ "intent": "Nested `data.nodes` / `data.links` container shape (the other detection path in isNetworkDiagramSpec); the graph must be found under `data` and rendered identically to the flat form."
+}

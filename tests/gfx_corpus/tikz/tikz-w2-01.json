@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "\\foreach \\i in {0,...,19}{\n  \\foreach \\j in {0,...,19}{\n    \\pgfmathtruncatemacro{\\n}{\\i*20+\\j}\n    \\node[draw, minimum size=5.5mm, inner sep=0pt, font=\\tiny] at (\\i*0.68,\\j*0.68) {\\n};\n  }\n}",
+ "intent": "400 labelled drawn nodes in a 20x20 lattice: raw element-count ceiling with visible integer text at \\tiny"
+}

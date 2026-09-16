@@ -1,0 +1,115 @@
+{
+ "type": "packet",
+ "definition": {
+  "type": "packet",
+  "title": "Auto Palette + Label Fitting",
+  "subtitle": "No colors specified: rotating deterministic palette; narrow 1-bit cells suppress labels",
+  "bitWidth": 32,
+  "sections": [
+   {
+    "label": "S0",
+    "rows": [
+     [
+      [
+       "Extremely Long Field Name For Fitting",
+       12
+      ],
+      [
+       "Mid",
+       12
+      ],
+      [
+       "A",
+       1
+      ],
+      [
+       "B",
+       1
+      ],
+      [
+       "C",
+       1
+      ],
+      [
+       "D",
+       1
+      ],
+      [
+       "E",
+       1
+      ],
+      [
+       "F",
+       1
+      ],
+      [
+       "G",
+       1
+      ],
+      [
+       "H",
+       1
+      ]
+     ]
+    ]
+   },
+   {
+    "label": "S1",
+    "rows": [
+     [
+      [
+       "Alpha",
+       16
+      ],
+      [
+       "Beta",
+       16
+      ]
+     ]
+    ]
+   },
+   {
+    "label": "S2",
+    "rows": [
+     [
+      [
+       "Gamma",
+       32
+      ]
+     ]
+    ]
+   },
+   {
+    "label": "S3",
+    "rows": [
+     [
+      [
+       "Delta",
+       8
+      ],
+      [
+       "Epsilon",
+       8
+      ],
+      [
+       "Zeta",
+       16
+      ]
+     ]
+    ]
+   },
+   {
+    "label": "S4",
+    "rows": [
+     [
+      [
+       "Eta",
+       32
+      ]
+     ]
+    ]
+   }
+  ]
+ },
+ "intent": "Auto-assigned deterministic palette (no colors given) across 5 sections, plus narrow cells and a long name needing label fitting/truncation"
+}

@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "P \\arrow[r, \"u\"] \\arrow[rd, dashed, \"\\exists!\\,\\varphi\"'] & A \\\\\n& B \\arrow[u, dotted, \"s\"']",
+ "intent": "dashed/dotted arrows and a unique-existence dashed factorisation"
+}

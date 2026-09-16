@@ -1,0 +1,145 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 900,
+  "height": 500,
+  "padding": 5,
+  "autosize": "pad",
+  "data": [
+   {
+    "name": "nodes",
+    "transform": [
+     {
+      "type": "sequence",
+      "start": 0,
+      "stop": 511,
+      "step": 1,
+      "as": "i"
+     },
+     {
+      "type": "formula",
+      "as": "id",
+      "expr": "datum.i + 1"
+     },
+     {
+      "type": "formula",
+      "as": "parent",
+      "expr": "datum.i === 0 ? null : floor((datum.i - 1) / 2) + 1"
+     },
+     {
+      "type": "formula",
+      "as": "depth0",
+      "expr": "floor(log(datum.i + 1) / log(2))"
+     },
+     {
+      "type": "stratify",
+      "key": "id",
+      "parentKey": "parent"
+     },
+     {
+      "type": "tree",
+      "method": "tidy",
+      "size": [
+       {
+        "signal": "height"
+       },
+       {
+        "signal": "width"
+       }
+      ],
+      "as": [
+       "yy",
+       "xx",
+       "depth",
+       "children"
+      ]
+     }
+    ]
+   },
+   {
+    "name": "links",
+    "source": "nodes",
+    "transform": [
+     {
+      "type": "treelinks"
+     },
+     {
+      "type": "linkpath",
+      "orient": "horizontal",
+      "shape": "diagonal",
+      "sourceX": "source.xx",
+      "sourceY": "source.yy",
+      "targetX": "target.xx",
+      "targetY": "target.yy"
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "d",
+    "type": "linear",
+    "range": {
+     "scheme": "blues"
+    },
+    "domain": {
+     "data": "nodes",
+     "field": "depth0"
+    },
+    "zero": false
+   }
+  ],
+  "marks": [
+   {
+    "type": "path",
+    "from": {
+     "data": "links"
+    },
+    "encode": {
+     "enter": {
+      "path": {
+       "field": "path"
+      },
+      "stroke": {
+       "value": "#8899aa"
+      },
+      "strokeWidth": {
+       "value": 0.5
+      }
+     }
+    }
+   },
+   {
+    "type": "symbol",
+    "from": {
+     "data": "nodes"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "field": "xx"
+      },
+      "y": {
+       "field": "yy"
+      },
+      "size": {
+       "value": 12
+      },
+      "fill": {
+       "scale": "d",
+       "field": "depth0"
+      },
+      "stroke": {
+       "value": "#555555"
+      },
+      "strokeWidth": {
+       "value": 0.3
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "SCALE/DEPTH: complete binary tree of depth 9 = 511 nodes and 510 links via stratify+tree+treelinks+linkpath. Probes deep nesting, hierarchy transform cost, and link-stroke visibility at 510 edges."
+}

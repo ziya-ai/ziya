@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "cloud {\n  lb: Load Balancer\n  app: App Server\n  lb -> app\n}\nuser: User\nuser -> lb\n",
+ "intent": "A single container/group with two children plus an edge crossing the container boundary."
+}

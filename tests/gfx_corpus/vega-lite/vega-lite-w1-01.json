@@ -1,0 +1,56 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "Quarterly Revenue by Region",
+  "width": 420,
+  "height": 260,
+  "data": {
+   "values": [
+    {
+     "region": "North",
+     "revenue": 128
+    },
+    {
+     "region": "South",
+     "revenue": 96
+    },
+    {
+     "region": "East",
+     "revenue": 173
+    },
+    {
+     "region": "West",
+     "revenue": 142
+    },
+    {
+     "region": "Central",
+     "revenue": 81
+    }
+   ]
+  },
+  "mark": "bar",
+  "encoding": {
+   "x": {
+    "field": "region",
+    "type": "nominal",
+    "title": "Region",
+    "sort": "-y"
+   },
+   "y": {
+    "field": "revenue",
+    "type": "quantitative",
+    "title": "Revenue (M USD)"
+   },
+   "tooltip": [
+    {
+     "field": "region"
+    },
+    {
+     "field": "revenue"
+    }
+   ]
+  }
+ },
+ "intent": "Canonical simple bar chart: nominal x, quantitative y, axis titles, chart title."
+}

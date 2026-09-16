@@ -1,0 +1,5 @@
+{
+ "type": "plotly",
+ "definition": "{\"data\":[{\"type\":\"scatter\",\"mode\":\"lines\",\"x\":[1,2,3,4,5],\"y\":[3,6,4,9,7],\"line\":{\"color\":\"rgba(214, 39, 40, 1.0)\",\"width\":3},\"fill\":\"tozeroy\",\"fillcolor\":\"rgb(214,39,40,0.2)\",\"name\":\"band\"}],\"layout\":{\"title\":{\"text\":\"rgba Where Hex Expected\"},\"plot_bgcolor\":\"rgba(0,0,0,0)\",\"xaxis\":{\"title\":{\"text\":\"t\"},\"gridcolor\":\"rgba(128,128,128,.35)\"},\"yaxis\":{\"title\":{\"text\":\"y\"}}}}",
+ "intent": "rgba() strings in slots models assume are hex, plus a malformed FOUR-argument rgb() for fillcolor and a leading-dot alpha '.35' in gridcolor. Intent: a filled red line with a translucent band and visible grid."
+}

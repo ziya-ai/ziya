@@ -1,0 +1,5 @@
+{
+ "type": "plotly",
+ "definition": "{\"data\":[{\"type\":\"scatter\",\"mode\":\"lines+markers\",\"x\":[\"Jan\",\"Feb\",\"Mar\",\"Apr\"],\"y\":[14,9,18,12],\"line\":{\"color\":\"var(--accent-color)\",\"width\":3},\"marker\":{\"color\":\"primary\",\"size\":10},\"name\":\"series A\"}],\"layout\":{\"template\":\"plotly_dark_v2\",\"title\":{\"text\":\"Nonexistent Theme Tokens\"},\"font\":{\"color\":\"theme.text\"},\"paper_bgcolor\":\"$background\",\"plot_bgcolor\":\"surface.default\",\"xaxis\":{\"title\":{\"text\":\"month\"},\"gridcolor\":\"neutral-300\"},\"yaxis\":{\"title\":{\"text\":\"count\"}}}}",
+ "intent": "colour values that are design-system tokens rather than colours: CSS custom property var(--accent-color), bare token names 'primary'/'theme.text'/'surface.default'/'neutral-300', a shell-style '$background', and a template name 'plotly_dark_v2' that does not exist. Intent: a 4-month line chart. This is the case where a fallback could land on the background colour."
+}

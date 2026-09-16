@@ -1,0 +1,57 @@
+{
+ "type": "force-directed",
+ "definition": {
+  "nodes": [
+   {
+    "id": "t0",
+    "label": "default 0",
+    "size": 46
+   },
+   {
+    "id": "t1",
+    "label": "default 1",
+    "size": 46
+   },
+   {
+    "id": "t2",
+    "label": "default 2",
+    "size": 46
+   },
+   {
+    "id": "t3",
+    "label": "default 3",
+    "size": 46
+   },
+   {
+    "id": "t4",
+    "label": "default 4",
+    "size": 46
+   }
+  ],
+  "links": [
+   {
+    "source": "t0",
+    "target": "t1"
+   },
+   {
+    "source": "t1",
+    "target": "t2"
+   },
+   {
+    "source": "t2",
+    "target": "t3"
+   },
+   {
+    "source": "t3",
+    "target": "t4"
+   },
+   {
+    "source": "t4",
+    "target": "t0"
+   }
+  ],
+  "width": 760,
+  "height": 520
+ },
+ "intent": "COLOR BASELINE: identical topology and geometry to w3-14 but with NO colour or style keys whatsoever - shows exactly what the engine's own theme defaults do in each theme."
+}

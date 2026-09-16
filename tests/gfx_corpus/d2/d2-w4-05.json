@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "web -> api; api -> db; db -> cache\nweb: Web Server; api: API Service\n",
+ "intent": "RECOVERY: semicolons used as statement separators on one line"
+}

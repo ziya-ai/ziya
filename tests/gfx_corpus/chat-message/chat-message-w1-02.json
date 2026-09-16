@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "## Migration checklist\n\n1. Prepare the staging environment\n   - Provision the replica set\n     - Verify replication lag stays under 200ms\n     - Confirm the arbiter is reachable\n   - Snapshot the primary volume\n2. Cut traffic over gradually\n   - Shift 5% of requests\n   - Observe error budget consumption\n3. Decommission legacy nodes\n\n* Unordered sibling list\n  * Second level entry\n    * Third level entry describing residual cleanup work\n* Final unordered entry\n",
+ "intent": "nested unordered and ordered lists, three levels deep, with mixed markers"
+}

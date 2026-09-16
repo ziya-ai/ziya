@@ -1,0 +1,5 @@
+{
+ "type": "music",
+ "definition": "{'timeSignature': '3/4', 'clef': 'bass', 'keySignature': 'F', 'title': 'Single Quoted Keys', 'notes': [{'keys': ['f/3'], 'duration': 'q'}, {'keys': ['a/3'], 'duration': 'q'}, {'keys': ['c/4'], 'duration': 'q'}, {'keys': ['f/3'], 'duration': 'h'}, {'keys': ['c/4'], 'duration': 'q'}]}",
+ "intent": "every key AND value single-quoted -- valid Python/JS, invalid JSON"
+}

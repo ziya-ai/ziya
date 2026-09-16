@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "### Reviewer correspondence\n\n> The reconciliation loop should not raise `TimeoutError` directly.  Wrap it in a\n> domain error so callers can distinguish **transient** from **permanent**\n> failure.\n>\n> > Agreed, but note that the existing `ControlPlaneError` hierarchy has no\n> > transient variant yet.  That is a separate change.\n>\n> Then land the wrapper first and widen the hierarchy afterwards.\n\nWe adopted the second reviewer's sequencing.\n",
+ "intent": "blockquotes including a nested blockquote and markdown formatting inside quoted text"
+}

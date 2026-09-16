@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "Same pipeline, no colours specified:\n\n```mermaid\nflowchart LR\n    Ingest[Ingest queue] --> Parse[Parser]\n    Parse --> Store[(Object store)]\n    Parse --> Fail{Malformed?}\n    Fail -- yes --> Dead[Dead letter]\n    Fail -- no --> Store\n```\n\nNo init block, no classDef, no style — everything below is the engine default.\n\n| plain | table | control |\n|:---|:---|:---|\n| a | b | c |\n\n```python\ndef control(x):  # default Prism palette\n    return x * 2\n```\n",
+ "intent": "CONTROL: the exact w3-08/09 diagram with NO colours specified at all, so engine defaults can be judged per theme"
+}

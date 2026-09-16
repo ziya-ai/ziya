@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "Reference implementation of the reconciliation loop:\n\n```python\nimport asyncio\nfrom dataclasses import dataclass\n\n@dataclass\nclass Desired:\n    replicas: int = 3\n    image: str = \"registry.internal/scheduler:v2\"\n\nasync def reconcile(client, desired: Desired) -> bool:\n    # Poll until observed state converges on desired state.\n    for attempt in range(1, 11):\n        observed = await client.describe()\n        if observed.replicas == desired.replicas:\n            return True\n        await asyncio.sleep(0.25 * attempt)\n    raise TimeoutError(f\"never converged on {desired!r}\")\n```\n\nThe loop is intentionally bounded.\n",
+ "intent": "fenced python code block exercising syntax highlighting of keywords, strings, numbers and comments"
+}

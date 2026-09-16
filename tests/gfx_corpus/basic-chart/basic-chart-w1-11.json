@@ -1,0 +1,37 @@
+{
+ "type": "basic-chart",
+ "definition": {
+  "type": "bubble",
+  "style": {
+   "labelColor": "#b7791f",
+   "fontSize": 15
+  },
+  "data": [
+   {
+    "x": 1,
+    "y": 1,
+    "size": 70,
+    "label": "Ingest"
+   },
+   {
+    "x": 3,
+    "y": 4,
+    "size": 190,
+    "label": "Transform"
+   },
+   {
+    "x": 5,
+    "y": 2,
+    "size": 110,
+    "label": "Store"
+   },
+   {
+    "x": 7,
+    "y": 6,
+    "size": 300,
+    "label": "Serve"
+   }
+  ]
+ },
+ "intent": "bubble chart with style.labelColor and style.fontSize applied to bubble labels"
+}

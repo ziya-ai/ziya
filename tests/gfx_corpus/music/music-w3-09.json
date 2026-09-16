@@ -1,0 +1,17 @@
+{
+ "type": "music",
+ "definition": {
+  "type": "music",
+  "clef": "treble",
+  "keySignature": "C",
+  "timeSignature": "4/4",
+  "title": "Empty",
+  "measures": [],
+  "notes": [],
+  "slurs": [],
+  "ties": [],
+  "hairpins": [],
+  "staves": []
+ },
+ "intent": "Fully EMPTY degenerate: measures[], notes[], staves[] and every span list all empty arrays with a title present. Tests the zero-content path - error, blank canvas, or a bare staff."
+}

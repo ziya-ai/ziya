@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\setchemfig{atom sep=2.4em, bond offset=1.5pt}\n\\definesubmol{arm}[1]{-[:#1]C(-[:#1+90]H)(-[:#1-90]H)-}\n\\chemfig{H!{arm}[30]O!{arm}[-30]H}",
+ "intent": "LESS-TRAVELLED DIALECT: \\setchemfig key-value configuration (the replacement for the fatal legacy setters) combined with a PARAMETERISED \\definesubmol taking an angle argument used with arithmetic in nested angles. Two rarely-exercised paths at once."
+}

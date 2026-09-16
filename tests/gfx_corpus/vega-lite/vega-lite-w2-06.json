@@ -1,0 +1,40 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "Extreme aspect: height 40",
+  "data": {
+   "sequence": {
+    "start": 0,
+    "stop": 120,
+    "step": 1,
+    "as": "n"
+   }
+  },
+  "transform": [
+   {
+    "calculate": "50+40*sin(datum.n/5)",
+    "as": "v"
+   }
+  ],
+  "mark": "line",
+  "height": 40,
+  "encoding": {
+   "x": {
+    "field": "n",
+    "type": "quantitative",
+    "axis": {
+     "title": "t"
+    }
+   },
+   "y": {
+    "field": "v",
+    "type": "quantitative",
+    "axis": {
+     "title": "v"
+    }
+   }
+  }
+ },
+ "intent": "ASPECT: extreme wide-and-short - authored height 40 against ~1180px width (~30:1); can the plot survive its axis furniture?"
+}

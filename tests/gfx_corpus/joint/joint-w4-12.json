@@ -1,0 +1,5 @@
+{
+ "type": "joint",
+ "definition": "{\n  \"elements\": [\n    {\"id\": \"lb\", \"type\": \"rect\", \"label\": \"LB\", \"attrs\": {\"body\": {\"fill\": \"rgba(52,152,219,0.85)\", \"stroke\": \"rgb(41,128,185)\"}, \"label\": {\"fill\": \"rgba(255,255,255,1)\"}}},\n    {\"id\": \"app1\", \"type\": \"rect\", \"label\": \"App 1\", \"attrs\": {\"body\": {\"fill\": \"rgba(46,204,113,0.6)\"}}},\n    {\"id\": \"app2\", \"type\": \"rect\", \"label\": \"App 2\", \"attrs\": {\"body\": {\"fill\": \"rgba(46,204,113,0.6)\"}}}\n  ],\n  \"connections\": [\n    {\"id\": \"r1\", \"source\": \"lb\", \"target\": \"app1\", \"attrs\": {\"line\": {\"stroke\": \"rgba(0,0,0,0.15)\"}}},\n    {\"id\": \"r2\", \"source\": \"lb\", \"target\": \"app2\", \"attrs\": {\"line\": {\"stroke\": \"rgba(0,0,0,0.15)\"}}}\n  ]\n}",
+ "intent": "RECOVERY (colour form): rgba()/rgb() functional colours where hex is expected, including a very low-opacity link stroke rgba(0,0,0,0.15) that would dissolve in dark if honoured verbatim. Intent: LB fans out to App 1 and App 2."
+}

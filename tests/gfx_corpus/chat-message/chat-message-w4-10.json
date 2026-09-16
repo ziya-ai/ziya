@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "```mermaid\n%%{init: {\"theme\":\"base\",\"themeVariables\":{\"primaryColor\":\"transparent\",\"nodeBackground\":\"#123456\"}}}%%\nflowchart LR\n  A[See-through] --> B[Bogus token]\n```\n",
+ "intent": "'transparent' as primaryColor plus a theme token that does not exist (nodeBackground). Recovery = ignore the bogus token; transparent fill must not leave the label illegible on either surface."
+}

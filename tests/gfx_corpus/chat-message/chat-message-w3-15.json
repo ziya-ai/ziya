@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "### Custom pale ramp\n\n```mermaid\n%%{init: {'theme':'base','themeVariables':{'primaryColor':'#eef6fb','primaryTextColor':'#9fc7e0','primaryBorderColor':'#dbeaf4','lineColor':'#e3eef6'}}}%%\nflowchart TD\n    S1[step 1] --> S2[step 2]\n    S2 --> S3[step 3]\n    S3 --> S4[step 4]\n```\n\nThe same five-stop ramp used as text on the message surface:\n\n<p><span style=\"color:#eef6fb\">#eef6fb</span> · <span style=\"color:#dbeaf4\">#dbeaf4</span> · <span style=\"color:#c3dcec\">#c3dcec</span> · <span style=\"color:#9fc7e0\">#9fc7e0</span> · <span style=\"color:#6fa8cc\">#6fa8cc</span></p>\n\nAnd as fills with mid-ramp text on top:\n\n<span style=\"background:#eef6fb;color:#9fc7e0;padding:3px 8px;\">pale on pale</span>\n<span style=\"background:#6fa8cc;color:#c3dcec;padding:3px 8px;\">mid on mid</span>\n",
+ "intent": "custom colour scale fighting the theme: pale sequential ramp used for fills and for text, both themes"
+}

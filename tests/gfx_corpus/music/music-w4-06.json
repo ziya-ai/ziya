@@ -1,0 +1,5 @@
+{
+ "type": "music",
+ "definition": "{\n  “timeSignature”: “4/4”,\n  “clef”: “treble”,\n  “title”: “Smart Quotes”,\n  “notes”: [\n    {“keys”: [“e/4”], “duration”: “q”},\n    {“keys”: [“g/4”], “duration”: “q”},\n    {“keys”: [“b/4”], “duration”: “h”}\n  ]\n}",
+ "intent": "typographic curly quotes substituted for ASCII double quotes throughout"
+}

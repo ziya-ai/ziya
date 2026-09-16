@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "0 \\arrow[r] & A \\arrow[r, \"\\iota\"] & B \\arrow[r, \"\\pi\"] & C \\arrow[r] & 0 \\\\\n& A \\arrow[u, equal] \\arrow[r, \"\\sim\"'] & A' \\arrow[u, \"\\cong\"'] & &",
+ "intent": "short exact sequence with zero objects and an iso label"
+}

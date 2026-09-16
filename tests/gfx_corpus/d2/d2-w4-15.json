@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "﻿web: Web Server\r\napi: API Service\r\n\tdb: Database\r\nweb -> api\r\napi -> db",
+ "intent": "RECOVERY: BOM, CRLF line endings, tab indentation, and no trailing newline"
+}

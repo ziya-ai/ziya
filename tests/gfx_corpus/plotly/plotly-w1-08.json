@@ -1,0 +1,65 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "pie",
+    "labels": [
+     "Compute",
+     "Storage",
+     "Network",
+     "Support",
+     "Other"
+    ],
+    "values": [
+     4200,
+     2100,
+     1350,
+     620,
+     310
+    ],
+    "hole": 0.45,
+    "pull": [
+     0.06,
+     0,
+     0,
+     0,
+     0
+    ],
+    "textinfo": "label+percent",
+    "textposition": "inside",
+    "marker": {
+     "colors": [
+      "#4c78a8",
+      "#f58518",
+      "#54a24b",
+      "#e45756",
+      "#72b7b2"
+     ],
+     "line": {
+      "color": "#ffffff",
+      "width": 2
+     }
+    }
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "Monthly Cloud Spend Breakdown"
+   },
+   "annotations": [
+    {
+     "text": "$8.58k",
+     "x": 0.5,
+     "y": 0.5,
+     "showarrow": false,
+     "font": {
+      "size": 20
+     }
+    }
+   ],
+   "height": 470
+  }
+ },
+ "intent": "Donut pie chart with hole, pulled slice, percent+label inside text and a centre annotation."
+}

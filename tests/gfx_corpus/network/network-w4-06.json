@@ -1,0 +1,5 @@
+{
+ "type": "network",
+ "definition": "{\n  \"nodes\": [\n    {\"id\": \"Web\", \"x\": 150, \"y\": 120, \"size\": 16}\n    {\"id\": \"Cache\", \"x\": 330, \"y\": 250, \"size\": 16},\n    {\"id\": \"Origin\", \"x\": 520, \"y\": 120, \"size\": 16}\n  ];\n  \"links\": [\n    {\"source\": \"Web\", \"target\": \"Cache\"},\n    {\"source\": \"Cache\", \"target\": \"Origin\"}\n  ];\n  \"width\": 640;\n  \"height\": 380;\n  \"style\": {\"labelColor\": \"#7e7e7e\"; \"fontSize\": 13}\n}",
+ "intent": "Semicolons where commas belong between top-level members, plus a stray newline-only separator inside an array - the 'wrote it like code' slip. Recovery = re-delimit."
+}

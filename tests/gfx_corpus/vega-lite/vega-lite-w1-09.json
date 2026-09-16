@@ -1,0 +1,54 @@
+{
+ "type": "vega-lite",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
+  "title": "Storage Used by Bucket Class",
+  "width": 320,
+  "height": 320,
+  "data": {
+   "values": [
+    {
+     "class": "Standard",
+     "tb": 420
+    },
+    {
+     "class": "Infrequent",
+     "tb": 260
+    },
+    {
+     "class": "Archive",
+     "tb": 180
+    },
+    {
+     "class": "Glacier",
+     "tb": 95
+    }
+   ]
+  },
+  "mark": {
+   "type": "arc",
+   "innerRadius": 60,
+   "outerRadius": 120
+  },
+  "encoding": {
+   "theta": {
+    "field": "tb",
+    "type": "quantitative"
+   },
+   "color": {
+    "field": "class",
+    "type": "nominal",
+    "title": "Class"
+   },
+   "tooltip": [
+    {
+     "field": "class"
+    },
+    {
+     "field": "tb"
+    }
+   ]
+  }
+ },
+ "intent": "Donut chart: arc mark with theta encoding, innerRadius, and a nominal color legend (exercises the plugin's ARC-TEXT-FIX label injection)."
+}

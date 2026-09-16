@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\chemfig{*6(-[,,,,Crimson]=[,,,,DarkOrange]-[,,,,DarkGreen](-[:30,,,,Teal]N(-[:90,,,,Navy]H)-[:-30,,,,Crimson]H)=[,,,,Teal]-[,,,,Navy]=[,,,,DarkGreen])}",
+ "intent": "CUSTOM COLOR SCALE FIGHTING THE THEME: every ring bond a different svgnames hue (Crimson/DarkOrange/DarkGreen/Teal/Navy), chosen so some members pass in light and fail in dark and at least one does the reverse. Direct probe of whether any contrast clamp exists."
+}

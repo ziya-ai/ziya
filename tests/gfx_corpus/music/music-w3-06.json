@@ -1,0 +1,97 @@
+{
+ "type": "music",
+ "definition": {
+  "type": "music",
+  "clef": "treble",
+  "keySignature": "C",
+  "timeSignature": "4/4",
+  "autoBeam": true,
+  "title": "Text On Ink",
+  "measures": [
+   {
+    "notes": [
+     {
+      "keys": [
+       "c/5",
+       "e/5",
+       "g/5"
+      ],
+      "duration": "8",
+      "chordSymbol": "C",
+      "annotations": [
+       {
+        "text": "ON BEAM",
+        "position": "below"
+       }
+      ],
+      "color": "#ffffff"
+     },
+     {
+      "keys": [
+       "d/5",
+       "f/5",
+       "a/5"
+      ],
+      "duration": "8",
+      "chordSymbol": "Dm",
+      "annotations": [
+       {
+        "text": "ON BEAM",
+        "position": "below"
+       }
+      ]
+     },
+     {
+      "keys": [
+       "e/5",
+       "g/5",
+       "b/5"
+      ],
+      "duration": "8",
+      "chordSymbol": "Em",
+      "annotations": [
+       {
+        "text": "ON BEAM",
+        "position": "below"
+       }
+      ]
+     },
+     {
+      "keys": [
+       "f/5",
+       "a/5",
+       "c/6"
+      ],
+      "duration": "8",
+      "chordSymbol": "F",
+      "annotations": [
+       {
+        "text": "ON BEAM",
+        "position": "below"
+       }
+      ]
+     },
+     {
+      "keys": [
+       "g/4"
+      ],
+      "duration": "h",
+      "dynamic": "ff",
+      "lyric": "under",
+      "fingering": 3,
+      "stringNumber": 2
+     }
+    ]
+   }
+  ],
+  "hairpins": [
+   {
+    "from": 0,
+    "to": 4,
+    "type": "cresc"
+   }
+  ],
+  "endBar": "final"
+ },
+ "intent": "Text drawn ON a colored/inked element rather than on the background: annotations forced BELOW into the beam+hairpin band, chord symbols over noteheads, lyric/fingering/stringNumber/dynamic all competing in the same bands. Nearest analogue of label-on-fill for an engine with no fill API."
+}

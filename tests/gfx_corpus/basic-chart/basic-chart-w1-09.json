@@ -1,0 +1,36 @@
+{
+ "type": "basic-chart",
+ "definition": {
+  "type": "bubble",
+  "style": {
+   "background": "#f5f5f5"
+  },
+  "data": [
+   {
+    "x": 2,
+    "y": 4,
+    "size": 50,
+    "label": "n1"
+   },
+   {
+    "x": 6,
+    "y": 9,
+    "size": 150,
+    "label": "n2"
+   },
+   {
+    "x": 10,
+    "y": 5,
+    "size": 90,
+    "label": "n3"
+   },
+   {
+    "x": 14,
+    "y": 12,
+    "size": 260,
+    "label": "n4"
+   }
+  ]
+ },
+ "intent": "bubble chart with style.background - plugin paints an explicit plot backdrop rect"
+}

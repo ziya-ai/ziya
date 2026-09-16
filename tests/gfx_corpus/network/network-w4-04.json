@@ -1,0 +1,5 @@
+{
+ "type": "network",
+ "definition": "```json\n{\n  \"nodes\": [\n    {\"id\": \"Producer\", \"x\": 130, \"y\": 130, \"size\": 18},\n    {\"id\": \"Broker\",   \"x\": 330, \"y\": 190, \"size\": 24},\n    {\"id\": \"Consumer\", \"x\": 530, \"y\": 130, \"size\": 18},\n    {\"id\": \"DLQ\",      \"x\": 330, \"y\": 320, \"size\": 14}\n  ],\n  \"links\": [\n    {\"source\": \"Producer\", \"target\": \"Broker\"},\n    {\"source\": \"Broker\",   \"target\": \"Consumer\"},\n    {\"source\": \"Broker\",   \"target\": \"DLQ\"}\n  ],\n  \"width\": 640,\n  \"height\": 380,\n  \"style\": {\"labelColor\": \"#7e7e7e\", \"fontSize\": 13, \"linkColor\": \"#7e7e7e\", \"linkOpacity\": 1}\n}\n```",
+ "intent": "Perfectly valid JSON wrapped in a ```json markdown fence - what a model emits when it forgets the tool takes raw source. Recovery = strip the fence and render."
+}

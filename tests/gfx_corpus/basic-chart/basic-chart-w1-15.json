@@ -1,0 +1,33 @@
+{
+ "type": "basic-chart",
+ "definition": {
+  "type": "line",
+  "data": [
+   {
+    "label": "s0",
+    "value": 0.004
+   },
+   {
+    "label": "s1",
+    "value": 0.021
+   },
+   {
+    "label": "s2",
+    "value": 0.013
+   },
+   {
+    "label": "s3",
+    "value": 0.038
+   },
+   {
+    "label": "s4",
+    "value": 0.027
+   },
+   {
+    "label": "s5",
+    "value": 0.049
+   }
+  ]
+ },
+ "intent": "sub-unit fractional values - linear y domain [0,max] with small-number tick formatting"
+}

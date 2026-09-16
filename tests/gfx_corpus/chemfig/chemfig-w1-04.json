@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\chemfig{*6(-=-=(-C(=[:30]O)-[:-30]OH)-=)}",
+ "intent": "Kekule six-ring with alternating ring bonds and a nested branch substituent (benzoic acid): ring operator + in-ring branch + angled sub-branches."
+}

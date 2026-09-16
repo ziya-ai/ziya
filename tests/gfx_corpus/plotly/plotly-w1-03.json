@@ -1,0 +1,76 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "heatmap",
+    "z": [
+     [
+      0.12,
+      0.44,
+      0.71,
+      0.93,
+      0.55
+     ],
+     [
+      0.31,
+      0.62,
+      0.18,
+      0.87,
+      0.4
+     ],
+     [
+      0.75,
+      0.22,
+      0.66,
+      0.1,
+      0.98
+     ],
+     [
+      0.48,
+      0.85,
+      0.33,
+      0.59,
+      0.27
+     ]
+    ],
+    "x": [
+     "Mon",
+     "Tue",
+     "Wed",
+     "Thu",
+     "Fri"
+    ],
+    "y": [
+     "00-06",
+     "06-12",
+     "12-18",
+     "18-24"
+    ],
+    "colorscale": "Viridis",
+    "colorbar": {
+     "title": {
+      "text": "Utilization"
+     }
+    }
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "CPU Utilization Heatmap"
+   },
+   "xaxis": {
+    "title": {
+     "text": "Day of week"
+    }
+   },
+   "yaxis": {
+    "title": {
+     "text": "Hour block"
+    }
+   },
+   "height": 440
+  }
+ },
+ "intent": "Heatmap with explicit Viridis colorscale, a titled colorbar and categorical tick labels on both axes."
+}

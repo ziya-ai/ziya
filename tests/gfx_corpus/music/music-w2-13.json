@@ -1,0 +1,359 @@
+{
+ "type": "music",
+ "definition": {
+  "keySignature": "C",
+  "timeSignature": "4/4",
+  "height": 60,
+  "staves": [
+   {
+    "clef": "treble",
+    "notes": [
+     {
+      "keys": [
+       "c/4"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "d/4"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "e/4"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "f/4"
+      ],
+      "duration": "q"
+     }
+    ]
+   },
+   {
+    "clef": "treble",
+    "notes": [
+     {
+      "keys": [
+       "d/4"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "e/4"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "f/4"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "g/4"
+      ],
+      "duration": "q"
+     }
+    ]
+   },
+   {
+    "clef": "treble",
+    "notes": [
+     {
+      "keys": [
+       "e/4"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "f/4"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "g/4"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "a/4"
+      ],
+      "duration": "q"
+     }
+    ]
+   },
+   {
+    "clef": "treble",
+    "notes": [
+     {
+      "keys": [
+       "f/4"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "g/4"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "a/4"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "b/4"
+      ],
+      "duration": "q"
+     }
+    ]
+   },
+   {
+    "clef": "treble",
+    "notes": [
+     {
+      "keys": [
+       "g/4"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "a/4"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "b/4"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "c/5"
+      ],
+      "duration": "q"
+     }
+    ]
+   },
+   {
+    "clef": "treble",
+    "notes": [
+     {
+      "keys": [
+       "a/4"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "b/4"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "c/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "d/5"
+      ],
+      "duration": "q"
+     }
+    ]
+   },
+   {
+    "clef": "treble",
+    "notes": [
+     {
+      "keys": [
+       "b/4"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "c/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "d/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "e/5"
+      ],
+      "duration": "q"
+     }
+    ]
+   },
+   {
+    "clef": "treble",
+    "notes": [
+     {
+      "keys": [
+       "c/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "d/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "e/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "f/5"
+      ],
+      "duration": "q"
+     }
+    ]
+   },
+   {
+    "clef": "treble",
+    "notes": [
+     {
+      "keys": [
+       "d/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "e/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "f/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "g/5"
+      ],
+      "duration": "q"
+     }
+    ]
+   },
+   {
+    "clef": "treble",
+    "notes": [
+     {
+      "keys": [
+       "e/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "f/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "g/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "a/5"
+      ],
+      "duration": "q"
+     }
+    ]
+   },
+   {
+    "clef": "treble",
+    "notes": [
+     {
+      "keys": [
+       "f/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "g/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "a/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "b/5"
+      ],
+      "duration": "q"
+     }
+    ]
+   },
+   {
+    "clef": "treble",
+    "notes": [
+     {
+      "keys": [
+       "g/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "a/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "b/5"
+      ],
+      "duration": "q"
+     },
+     {
+      "keys": [
+       "c/4"
+      ],
+      "duration": "q"
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "SCALE: height 60 (MIN_CANVAS_HEIGHT) forced onto a 12-staff system — vertical canvas an order of magnitude below the natural size, testing clipping vs. compression."
+}

@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "P \\arrow[r, \"p_1\"] \\arrow[d, \"p_2\"'] \\arrow[rd, phantom, \"\\lrcorner\", very near start] & X \\arrow[d, \"f\"] \\\\\nY \\arrow[r, \"g\"'] & Z",
+ "intent": "pullback corner symbol via a phantom arrow (\\lrcorner)"
+}

@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "\\tikzstyle{box}=[draw=white,text=white,fill=blue!60!black,rounded corners]\n\\usetikzlibrary{shapes.geometric}\n\\fill[black!88] (-0.5,-0.5) rectangle (8.50,3.40);\n\\node[white,anchor=west,font=\\bfseries] at (-0.2,2.85) {Deprecated dialect};\n\\node[box] (a) at (1,1) {Parse};\n\\node[box] (b) at (4.2,1) {Plan};\n\\node[diamond,draw=white,text=white,fill=orange!70!black,aspect=2] (c) at (7.4,1) {Gate};\n\\draw[white,thick,->] (a)--(b);\n\\draw[white,thick,-{Stealth[length=2mm]}] (b)--(c);\n\\draw[white,thick,<-] (a) to[bend right=30] (c);\n",
+ "intent": "deprecated \\tikzstyle, old -> arrow dialect, and an inline \\usetikzlibrary for a shape the profile does not preload"
+}

@@ -1,0 +1,228 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 460,
+  "height": 320,
+  "padding": 5,
+  "autosize": "none",
+  "signals": [
+   {
+    "name": "cx",
+    "update": "width / 2"
+   },
+   {
+    "name": "cy",
+    "update": "height / 2"
+   },
+   {
+    "name": "nodeRadius",
+    "value": 11
+   },
+   {
+    "name": "static",
+    "value": true
+   }
+  ],
+  "data": [
+   {
+    "name": "node-data",
+    "values": [
+     {
+      "index": 0,
+      "name": "gateway",
+      "group": 1
+     },
+     {
+      "index": 1,
+      "name": "auth",
+      "group": 1
+     },
+     {
+      "index": 2,
+      "name": "search",
+      "group": 2
+     },
+     {
+      "index": 3,
+      "name": "index",
+      "group": 2
+     },
+     {
+      "index": 4,
+      "name": "store",
+      "group": 3
+     },
+     {
+      "index": 5,
+      "name": "cache",
+      "group": 3
+     },
+     {
+      "index": 6,
+      "name": "queue",
+      "group": 3
+     },
+     {
+      "index": 7,
+      "name": "worker",
+      "group": 2
+     }
+    ]
+   },
+   {
+    "name": "link-data",
+    "values": [
+     {
+      "source": 0,
+      "target": 1
+     },
+     {
+      "source": 0,
+      "target": 2
+     },
+     {
+      "source": 2,
+      "target": 3
+     },
+     {
+      "source": 3,
+      "target": 4
+     },
+     {
+      "source": 2,
+      "target": 5
+     },
+     {
+      "source": 0,
+      "target": 6
+     },
+     {
+      "source": 6,
+      "target": 7
+     },
+     {
+      "source": 7,
+      "target": 4
+     },
+     {
+      "source": 1,
+      "target": 4
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "color",
+    "type": "ordinal",
+    "domain": {
+     "data": "node-data",
+     "field": "group"
+    },
+    "range": {
+     "scheme": "category10"
+    }
+   }
+  ],
+  "marks": [
+   {
+    "name": "nodes",
+    "type": "symbol",
+    "zindex": 1,
+    "from": {
+     "data": "node-data"
+    },
+    "encode": {
+     "enter": {
+      "fill": {
+       "scale": "color",
+       "field": "group"
+      },
+      "stroke": {
+       "value": "#ffffff"
+      },
+      "strokeWidth": {
+       "value": 1.2
+      }
+     },
+     "update": {
+      "size": {
+       "signal": "2 * nodeRadius * nodeRadius"
+      },
+      "cursor": {
+       "value": "pointer"
+      }
+     }
+    },
+    "transform": [
+     {
+      "type": "force",
+      "iterations": 300,
+      "static": {
+       "signal": "static"
+      },
+      "signal": "force",
+      "forces": [
+       {
+        "force": "center",
+        "x": {
+         "signal": "cx"
+        },
+        "y": {
+         "signal": "cy"
+        }
+       },
+       {
+        "force": "collide",
+        "radius": {
+         "signal": "nodeRadius + 4"
+        }
+       },
+       {
+        "force": "nbody",
+        "strength": -30
+       },
+       {
+        "force": "link",
+        "links": "link-data",
+        "distance": 60
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "type": "path",
+    "from": {
+     "data": "link-data"
+    },
+    "interactive": false,
+    "encode": {
+     "update": {
+      "stroke": {
+       "value": "#7f8c9b"
+      },
+      "strokeWidth": {
+       "value": 1.3
+      }
+     }
+    },
+    "transform": [
+     {
+      "type": "linkpath",
+      "require": {
+       "signal": "force"
+      },
+      "shape": "line",
+      "sourceX": "datum.source.x",
+      "sourceY": "datum.source.y",
+      "targetX": "datum.target.x",
+      "targetY": "datum.target.y"
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "Force-directed graph: `force` transform (center + collide + nbody + link) publishing a `signal: force`, consumed by a linkpath `require`. The plugin ships vegaGraphSanitizer specifically to protect this transform."
+}

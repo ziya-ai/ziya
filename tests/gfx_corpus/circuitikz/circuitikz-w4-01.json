@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "```circuitikz\n\\definecolor{plate}{HTML}{16324A}\n\\definecolor{plateink}{HTML}{F2F6FA}\n\\definecolor{plateaccent}{HTML}{5FD4E4}\n\\fill[plate] (-0.9,-1.5) rectangle (7.3,1.9);\n\\draw[color=plateink]\n  (0,0) to[R=$R_1$] (2.4,0) to[R=$R_2$] (4.8,0) node[ocirc]{}\n  (0,0) to[short] (0,-1) node[ground]{};\n\\node[plateink] at (3.2,1.4) {Resistive divider};\n```\n",
+ "intent": "RECOVERY: model wrapped its LaTeX in a markdown code fence with a language tag, the single most common LLM emission defect. Evident intent is the 3-element divider inside. Passing means the fence is stripped and the circuit renders; plate makes both themes achievable."
+}

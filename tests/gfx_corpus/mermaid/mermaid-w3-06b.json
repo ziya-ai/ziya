@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "sequenceDiagram\n  participant A\n  participant B\n  A->>B: normal\n  break oops\n    A->>B: inside break\n  end",
+ "intent": "MINIMAL REPRODUCER, bisected out of mermaid-w3-06. The sequenceDiagram 'break' block alone - 5 lines, no box, no critical, no autonumber, no self-message - hangs the renderer for the full 30000ms and produces NO SVG at all (DOM snapshot svg:0). Bisection evidence: 'box rgb(...)' alone renders fine, 'critical/option' alone renders fine, 'break' alone hangs. Theme-independent (parent spec w3-06 hung in BOTH themes). Persisted separately from w3-06 so Stage 2 has a 5-line regression test for the hang rather than a 17-line spec with four confounded features."
+}

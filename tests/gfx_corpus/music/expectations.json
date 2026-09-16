@@ -1,0 +1,752 @@
+{
+ "schema": 1,
+ "engine": "music",
+ "specs": {
+  "music-w1-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.485359Z"
+    }
+   ]
+  },
+  "music-w1-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.487855Z"
+    }
+   ]
+  },
+  "music-w1-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.491223Z"
+    }
+   ]
+  },
+  "music-w2-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.494920Z"
+    }
+   ]
+  },
+  "music-w3-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.497324Z"
+    }
+   ]
+  },
+  "music-w3-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.500020Z"
+    }
+   ]
+  },
+  "music-w3-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.503566Z"
+    }
+   ]
+  },
+  "music-w3-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.505923Z"
+    }
+   ]
+  },
+  "music-w4-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.508820Z"
+    }
+   ]
+  },
+  "music-w4-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "regression_set",
+     "signature": "",
+     "at": "2026-09-15T08:56:11.510845Z"
+    }
+   ]
+  },
+  "music-w2-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-162",
+     "signature": "wrapping-only-between-measures+explicit-width-disables-wrap",
+     "at": "2026-09-15T08:56:13.375542Z"
+    }
+   ]
+  },
+  "music-w2-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-162",
+     "signature": "wrapping-only-between-measures+explicit-width-disables-wrap",
+     "at": "2026-09-15T08:56:13.382128Z"
+    }
+   ]
+  },
+  "music-w2-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-162",
+     "signature": "wrapping-only-between-measures+explicit-width-disables-wrap",
+     "at": "2026-09-15T08:56:13.386967Z"
+    }
+   ]
+  },
+  "music-w2-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-162",
+     "signature": "wrapping-only-between-measures+explicit-width-disables-wrap",
+     "at": "2026-09-15T08:56:13.397635Z"
+    },
+    {
+     "origin": "D-173",
+     "signature": "stave-line-vanishes-at-scale:light",
+     "at": "2026-09-15T08:56:13.601228Z"
+    }
+   ]
+  },
+  "music-w2-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-163",
+     "signature": "vertical-canvas-misallocation-truncates-content",
+     "at": "2026-09-15T08:56:13.401878Z"
+    }
+   ]
+  },
+  "music-w2-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-163",
+     "signature": "vertical-canvas-misallocation-truncates-content",
+     "at": "2026-09-15T08:56:13.405316Z"
+    }
+   ]
+  },
+  "music-w2-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-163",
+     "signature": "vertical-canvas-misallocation-truncates-content",
+     "at": "2026-09-15T08:56:13.409157Z"
+    }
+   ]
+  },
+  "music-w2-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-164",
+     "signature": "undersized-author-dimension-destroys-content",
+     "at": "2026-09-15T08:56:13.417729Z"
+    }
+   ]
+  },
+  "music-w2-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-164",
+     "signature": "undersized-author-dimension-destroys-content",
+     "at": "2026-09-15T08:56:13.425619Z"
+    }
+   ]
+  },
+  "music-w1-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-166",
+     "signature": "overlay-band-placement-and-negotiation",
+     "at": "2026-09-15T08:56:13.455948Z"
+    }
+   ]
+  },
+  "music-w1-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-166",
+     "signature": "overlay-band-placement-and-negotiation",
+     "at": "2026-09-15T08:56:13.471848Z"
+    }
+   ]
+  },
+  "music-w1-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-166",
+     "signature": "overlay-band-placement-and-negotiation",
+     "at": "2026-09-15T08:56:13.488894Z"
+    }
+   ]
+  },
+  "music-w2-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-166",
+     "signature": "overlay-band-placement-and-negotiation",
+     "at": "2026-09-15T08:56:13.505962Z"
+    }
+   ]
+  },
+  "music-w3-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-166",
+     "signature": "overlay-band-placement-and-negotiation",
+     "at": "2026-09-15T08:56:13.521035Z"
+    }
+   ]
+  },
+  "music-w1-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-168",
+     "signature": "simultaneous-voice-overprint-no-collision-resolution",
+     "at": "2026-09-15T08:56:13.536158Z"
+    }
+   ]
+  },
+  "music-w2-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-168",
+     "signature": "simultaneous-voice-overprint-no-collision-resolution",
+     "at": "2026-09-15T08:56:13.553978Z"
+    }
+   ]
+  },
+  "music-w3-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-169",
+     "signature": "degenerate-input-hangs-instead-of-early-return",
+     "at": "2026-09-15T08:56:13.564258Z"
+    }
+   ]
+  },
+  "music-w1-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-170",
+     "signature": "per-measure-barline-modifiers-dropped",
+     "at": "2026-09-15T08:56:13.573745Z"
+    }
+   ]
+  },
+  "music-w1-14": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-170",
+     "signature": "per-measure-barline-modifiers-dropped",
+     "at": "2026-09-15T08:56:13.588306Z"
+    }
+   ]
+  },
+  "music-w4-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-174",
+     "signature": "strict-json-parse-no-lenient-fallback",
+     "at": "2026-09-15T08:56:13.608323Z"
+    }
+   ]
+  },
+  "music-w4-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-174",
+     "signature": "strict-json-parse-no-lenient-fallback",
+     "at": "2026-09-15T08:56:13.621321Z"
+    }
+   ]
+  },
+  "music-w4-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-174",
+     "signature": "strict-json-parse-no-lenient-fallback",
+     "at": "2026-09-15T08:56:13.631312Z"
+    }
+   ]
+  },
+  "music-w4-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-174",
+     "signature": "strict-json-parse-no-lenient-fallback",
+     "at": "2026-09-15T08:56:13.637581Z"
+    }
+   ]
+  },
+  "music-w4-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-174",
+     "signature": "strict-json-parse-no-lenient-fallback",
+     "at": "2026-09-15T08:56:13.650104Z"
+    }
+   ]
+  },
+  "music-w4-07": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-174",
+     "signature": "strict-json-parse-no-lenient-fallback",
+     "at": "2026-09-15T08:56:13.657742Z"
+    }
+   ]
+  },
+  "music-w4-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-175",
+     "signature": "definition-must-start-with-brace",
+     "at": "2026-09-15T08:56:13.666060Z"
+    }
+   ]
+  },
+  "music-w4-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-176",
+     "signature": "no-field-alias-layer-degrades-silently",
+     "at": "2026-09-15T08:56:13.675615Z"
+    }
+   ]
+  },
+  "music-w4-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-176",
+     "signature": "no-field-alias-layer-degrades-silently",
+     "at": "2026-09-15T08:56:13.688572Z"
+    }
+   ]
+  },
+  "music-w4-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-176",
+     "signature": "no-field-alias-layer-degrades-silently",
+     "at": "2026-09-15T08:56:13.695214Z"
+    }
+   ]
+  },
+  "music-w4-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-177",
+     "signature": "weak-content-gate-scalar-keys-hangs",
+     "at": "2026-09-15T08:56:13.702571Z"
+    }
+   ]
+  },
+  "music-w4-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-178",
+     "signature": "scalar-shorthand-not-lifted-to-object",
+     "at": "2026-09-15T08:56:13.707964Z"
+    }
+   ]
+  }
+ }
+}

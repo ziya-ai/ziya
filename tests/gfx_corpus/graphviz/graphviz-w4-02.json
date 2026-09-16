@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph G {\n  rankdir=TB;\n  subgraph cluster_api {\n    label=\"API\";\n    login; logout;\n  }\n  login -> logout;\n  logout -> done;\n",
+ "intent": "Unbalanced braces: subgraph opened, final closing brace omitted (truncated generation)"
+}

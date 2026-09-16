@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph G {\n  rankdir=LR;\n  node [shape=box style=filled fillcolor='#dbeafe' fontcolor='#000000'];\n  a [label='Login'];\n  b [label='Verify'];\n  c [label='Grant'];\n  a -> b [label='ok' color='steelblue'];\n  b -> c [label='token'];\n}",
+ "intent": "Single-quoted attribute values instead of double quotes"
+}

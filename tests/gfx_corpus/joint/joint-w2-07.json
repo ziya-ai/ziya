@@ -1,0 +1,231 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "autoLayout": false,
+  "cells": [
+   {
+    "type": "standard.Rectangle",
+    "id": "lvl0",
+    "position": {
+     "x": 20,
+     "y": 20
+    },
+    "size": {
+     "width": 900,
+     "height": 700
+    },
+    "attrs": {
+     "label": {
+      "text": "region"
+     }
+    },
+    "embeds": [
+     "lvl1a",
+     "lvl1b"
+    ]
+   },
+   {
+    "type": "standard.Rectangle",
+    "id": "lvl1a",
+    "position": {
+     "x": 50,
+     "y": 80
+    },
+    "size": {
+     "width": 420,
+     "height": 600
+    },
+    "attrs": {
+     "label": {
+      "text": "vpc-a"
+     }
+    },
+    "parent": "lvl0",
+    "embeds": [
+     "lvl2a"
+    ]
+   },
+   {
+    "type": "standard.Rectangle",
+    "id": "lvl1b",
+    "position": {
+     "x": 500,
+     "y": 80
+    },
+    "size": {
+     "width": 400,
+     "height": 600
+    },
+    "attrs": {
+     "label": {
+      "text": "vpc-b"
+     }
+    },
+    "parent": "lvl0",
+    "embeds": [
+     "lvl2b"
+    ]
+   },
+   {
+    "type": "standard.Rectangle",
+    "id": "lvl2a",
+    "position": {
+     "x": 80,
+     "y": 140
+    },
+    "size": {
+     "width": 360,
+     "height": 500
+    },
+    "attrs": {
+     "label": {
+      "text": "subnet-a"
+     }
+    },
+    "parent": "lvl1a",
+    "embeds": [
+     "lvl3a"
+    ]
+   },
+   {
+    "type": "standard.Rectangle",
+    "id": "lvl2b",
+    "position": {
+     "x": 530,
+     "y": 140
+    },
+    "size": {
+     "width": 340,
+     "height": 500
+    },
+    "attrs": {
+     "label": {
+      "text": "subnet-b"
+     }
+    },
+    "parent": "lvl1b",
+    "embeds": [
+     "lvl3b"
+    ]
+   },
+   {
+    "type": "standard.Rectangle",
+    "id": "lvl3a",
+    "position": {
+     "x": 110,
+     "y": 200
+    },
+    "size": {
+     "width": 300,
+     "height": 420
+    },
+    "attrs": {
+     "label": {
+      "text": "asg-a"
+     }
+    },
+    "parent": "lvl2a",
+    "embeds": [
+     "leaf1",
+     "leaf2"
+    ]
+   },
+   {
+    "type": "standard.Rectangle",
+    "id": "lvl3b",
+    "position": {
+     "x": 560,
+     "y": 200
+    },
+    "size": {
+     "width": 280,
+     "height": 420
+    },
+    "attrs": {
+     "label": {
+      "text": "asg-b"
+     }
+    },
+    "parent": "lvl2b",
+    "embeds": [
+     "leaf3"
+    ]
+   },
+   {
+    "type": "standard.Rectangle",
+    "id": "leaf1",
+    "position": {
+     "x": 140,
+     "y": 270
+    },
+    "size": {
+     "width": 120,
+     "height": 60
+    },
+    "attrs": {
+     "label": {
+      "text": "host-1"
+     }
+    },
+    "parent": "lvl3a"
+   },
+   {
+    "type": "standard.Rectangle",
+    "id": "leaf2",
+    "position": {
+     "x": 140,
+     "y": 380
+    },
+    "size": {
+     "width": 120,
+     "height": 60
+    },
+    "attrs": {
+     "label": {
+      "text": "host-2"
+     }
+    },
+    "parent": "lvl3a"
+   },
+   {
+    "type": "standard.Rectangle",
+    "id": "leaf3",
+    "position": {
+     "x": 590,
+     "y": 270
+    },
+    "size": {
+     "width": 120,
+     "height": 60
+    },
+    "attrs": {
+     "label": {
+      "text": "host-3"
+     }
+    },
+    "parent": "lvl3b"
+   },
+   {
+    "type": "standard.Link",
+    "id": "nl1",
+    "source": {
+     "id": "leaf1"
+    },
+    "target": {
+     "id": "leaf3"
+    },
+    "labels": [
+     {
+      "attrs": {
+       "text": {
+        "text": "peer"
+       }
+      }
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "Deep nesting: 5 levels of parent/embeds containers (region > vpc > subnet > asg > host) in canonical cells form, plus one cross-container link."
+}

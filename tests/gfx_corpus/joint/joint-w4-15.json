@@ -1,0 +1,5 @@
+{
+ "type": "joint",
+ "definition": "{\n  \"elements\": [\n    {\"id\": \"plan\"; \"type\": \"rect\"; \"label\": \"Plan\"},\n    {\"id\": \"apply\"; \"type\": \"rect\"; \"label\": \"Apply\"},\n    {\"id\": \"verify\"; \"type\": \"rect\"; \"label\": \"Verify\"}\n  ];\n  \"connections\": [\n    {\"id\": \"y1\"; \"source\": \"plan\"; \"target\": \"apply\"; \"label\": \"diff\"},\n    {\"id\": \"y2\"; \"source\": \"apply\"; \"target\": \"verify\"; \"label\": \"state\"}\n  ]\n};",
+ "intent": "RECOVERY: SEMICOLON slips - semicolons in place of commas between members and after the closing brace (a C/JS muscle-memory error). Intent: Plan->Apply->Verify."
+}

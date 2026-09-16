@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\n\\draw (0,2) to[R=$R_{\\Omega}$] (3,2);\n\\node at (6.2,2) {German: Spannung über Widerstand, 5°C};\n\\node at (6.2,1.2) {CJK: 電圧 抵抗器 コンデンサ};\n\\node at (6.2,0.4) {RTL: مقاومة מנגד};\n\\node at (6.2,-0.4) {emoji: ⚡ 🔋 ✅};\n\\node at (1.5,0.4) {greek inline: $\\alpha\\beta\\gamma\\Omega$};\n\\node at (1.5,-0.4) {arrows: → ⇒ ≠ ≤};\n",
+ "intent": "unicode / CJK / RTL / emoji / accented label probe under pdflatex (literal UTF-8 codepoints)"
+}

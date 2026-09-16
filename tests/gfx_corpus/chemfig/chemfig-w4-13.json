@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\chemfig{\\charge{90:\\|}{O}(-[:210]H)-[:-30]\\charge{45=\\ominus}{O}}\n\\chemfig{\\charge{90}{N}-H}",
+ "intent": "RECOVERY CONTROL: charge written with ':' instead of '=', a bare math payload needing $..$, and a bare-angle \\charge{90} -- all three are inside the documented autofix scope."
+}

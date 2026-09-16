@@ -1,0 +1,37 @@
+{
+ "type": "basic-chart",
+ "definition": {
+  "type": "bubble",
+  "data": [
+   {
+    "x": 5,
+    "y": 8,
+    "size": 100,
+    "color": "#d62728",
+    "label": "red"
+   },
+   {
+    "x": 15,
+    "y": 14,
+    "size": 250,
+    "color": "#2ca02c",
+    "label": "green"
+   },
+   {
+    "x": 25,
+    "y": 6,
+    "size": 60,
+    "color": "#9467bd",
+    "label": "purple"
+   },
+   {
+    "x": 35,
+    "y": 18,
+    "size": 400,
+    "color": "#ff7f0e",
+    "label": "orange"
+   }
+  ]
+ },
+ "intent": "bubble chart with per-datum color override plus white bubble stroke"
+}

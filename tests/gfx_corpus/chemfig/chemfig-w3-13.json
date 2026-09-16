@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\begin{tikzpicture}\n\\node[fill=Navy, text=black, inner sep=4pt, anchor=north west] at (0,1.2) {\\small black label on Navy chip};\n\\node[fill=DarkOrange, text=white, inner sep=4pt, anchor=north west] at (0,0.4) {\\small white label on DarkOrange chip};\n\\node[fill=Crimson, text=black, inner sep=4pt, anchor=north west] at (0,-0.4) {\\small \\chemfig{H_3C-OH}};\n\\node[fill=Teal, text=white, inner sep=4pt, anchor=north west] at (0,-1.6) {\\small \\chemfig{O=C=O}};\n\\end{tikzpicture}",
+ "intent": "TEXT ON A COLORED ELEMENT: four filled chips from the svgnames palette carrying deliberately mismatched label colors (black on Navy, white on DarkOrange), two of them containing whole chemfig structures whose default BLACK ink sits on a saturated fill."
+}

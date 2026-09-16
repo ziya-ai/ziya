@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\begin{tikzcd}\nA \\arrow[r, \"f\", color=rebeccapurple] \\arrow[d, color=dodgerblue] & B \\arrow[d, color=darkslategray] \\\\\nC \\arrow[r, color=lightsteelblue] & D\n\\end{tikzcd}",
+ "intent": "CSS/X11 color names (rebeccapurple, dodgerblue, darkslategray, lightsteelblue) that xcolor's default dvipsnames set does not define. Recovery: resolve to hex via a CSS name table."
+}

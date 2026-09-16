@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "sequenceDiagram\n  autonumber\n  box rgb(200,220,255) Client Zone\n    participant U as User\n    participant W as WebApp\n  end\n  box rgb(60,60,60) Server Zone\n    participant S as Service\n  end\n  U->>W: click\n  critical Establish connection\n    W->>S: connect\n  option network timeout\n    W->>W: retry with backoff\n  option credentials rejected\n    W-->>U: show login\n  end\n  break cache miss\n    S->>S: recompute\n  end\n  W-->>U: render",
+ "intent": "Combines autonumber + box participant grouping (with hardcoded rgb() box fills, one LIGHT rgb(200,220,255) and one DARK rgb(60,60,60)) + critical/option + break. The two boxes are the theme-adaptation test in miniature: participant label text is drawn ON the box fill, so the light box must stay legible in dark theme and the dark box must stay legible in light. Both fills are computable. Also re-probes wave 1's dropped-else-label defect via critical/option."
+}

@@ -1,0 +1,5 @@
+{
+ "type": "packet",
+ "definition": "packet-beta\ntitle TCP Segment (packet-beta DSL)\n0-15: \"Source Port\"\n16-31: \"Destination Port\"\n32-63: \"Sequence Number\"\n64-95: \"Acknowledgment Number\"\n96-99: \"Data Offset\"\n100-105: \"Reserved\"\n106-106: \"URG\"\n107-107: \"ACK\"\n108-108: \"PSH\"\n109-111: \"RST/SYN/FIN\"\n112-127: \"Window\"\n",
+ "intent": "mermaid-style packet-beta textual DSL bridged by parsePacketBetaDsl (start-end: label lines + title)"
+}

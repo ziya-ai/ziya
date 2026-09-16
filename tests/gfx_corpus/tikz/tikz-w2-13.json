@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "\\foreach \\a in {0,...,19}{\n  \\foreach \\b in {0,...,19}{\n    \\foreach \\c in {0,1}{\n      \\pgfmathsetmacro{\\x}{\\a*0.6+\\c*0.28}\n      \\pgfmathsetmacro{\\y}{\\b*0.6+\\c*0.28}\n      \\draw[black, line width=0.06pt] (\\x,\\y) -- (\\x+0.2,\\y+0.2);\n      \\draw[black, line width=0.06pt] (\\x+0.2,\\y) -- (\\x,\\y+0.2);\n    }\n  }\n}\n\\node[font=\\small] at (6,12.6) {1600 crosses / 3200 hairline segments};",
+ "intent": "three-level nested foreach emitting 3200 hairline segments: compile-time and pgfmath throughput probe at the top of the count range"
+}

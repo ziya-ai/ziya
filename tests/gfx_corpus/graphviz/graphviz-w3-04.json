@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph A {\n node [shape=box style=filled fontcolor=\"#000000\"];\n a12 [label=\"alpha 12%\" fillcolor=\"#3366cc20\"];\n a25 [label=\"alpha 25%\" fillcolor=\"#3366cc40\"];\n a50 [label=\"alpha 50%\" fillcolor=\"#3366cc80\"];\n a100 [label=\"alpha 100%\" fillcolor=\"#3366ccff\"];\n faint [label=\"faint edges\" fillcolor=\"#ffffff00\" color=\"#00000030\"];\n a12 -> a25 [color=\"#ff000020\" penwidth=3];\n a25 -> a50 [color=\"#ff000060\" penwidth=3];\n a50 -> a100 [color=\"#ff0000ff\" penwidth=3];\n a100 -> faint [color=\"#00000018\" penwidth=4 label=\"2% ink\"];\n}",
+ "intent": "ALPHA / LOW-OPACITY: 8-digit hex fillcolors at 0x20/0x40/0x80 alpha plus semi-transparent overlapping strokes. Low-opacity strokes classically survive light and dissolve in dark."
+}

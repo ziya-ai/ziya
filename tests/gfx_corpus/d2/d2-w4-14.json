@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "direction: right\nusers: Users {shape: person}\ndb: Inventory {\n  shape: sql_table\n  id: int\n  name: varchar\n}\nnote: |md\n  ## Deployment note\n  Runs in **us-east-1**\n|\nusers -> db: reads {near: top-center}\n",
+ "intent": "RECOVERY: assorted real D2 syntax copied from docs - shape:, sql_table columns, |md| block, near: keyword"
+}

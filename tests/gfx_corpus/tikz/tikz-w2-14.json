@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "\\foreach \\i in {0,...,19}{\n  \\foreach \\j in {0,...,14}{\n    \\pgfmathtruncatemacro{\\n}{\\i*15+\\j}\n    \\pgfmathsetmacro{\\dx}{0.09*sin(\\n*73)}\n    \\pgfmathsetmacro{\\dy}{0.09*cos(\\n*111)}\n    \\node[font=\\tiny, inner sep=0pt] at (\\i*0.78+\\dx, \\j*0.42+\\dy) {N\\n};\n  }\n}",
+ "intent": "300 jittered \\tiny text labels with no boxes at a 0.42-unit vertical pitch: pure text density and label-collision threshold"
+}

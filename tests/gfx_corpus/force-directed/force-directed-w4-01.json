@@ -1,0 +1,5 @@
+{
+ "type": "force-directed",
+ "definition": "{\n  \"type\": \"force-directed\",\n  \"nodes\": [\n    {\"id\": \"api\", \"group\": 0},\n    {\"id\": \"auth\", \"group\": 1},\n    {\"id\": \"db\", \"group\": 2},\n    {\"id\": \"cache\", \"group\": 2},\n    {\"id\": \"queue\", \"group\": 1},\n    {\"id\": \"worker\", \"group\": 0},\n  ],\n  \"links\": [\n    {\"source\": \"api\", \"target\": \"auth\"},\n    {\"source\": \"api\", \"target\": \"cache\"},\n    {\"source\": \"auth\", \"target\": \"db\"},\n    {\"source\": \"api\", \"target\": \"queue\"},\n    {\"source\": \"queue\", \"target\": \"worker\"},\n    {\"source\": \"worker\", \"target\": \"db\"},\n  ],\n}",
+ "intent": "RECOVERY: trailing commas after the last element of both arrays and both object literals - the single most common model JSON slip. Evident intent: 6-node service graph, 3 groups."
+}

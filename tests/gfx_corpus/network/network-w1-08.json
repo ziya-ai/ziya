@@ -1,0 +1,83 @@
+{
+ "type": "network",
+ "definition": {
+  "type": "network",
+  "width": 600,
+  "height": 400,
+  "nodes": [
+   {
+    "id": "u1",
+    "label": "User A",
+    "group": "client",
+    "x": 90,
+    "y": 120,
+    "size": 14
+   },
+   {
+    "id": "u2",
+    "label": "User B",
+    "group": "client",
+    "x": 90,
+    "y": 280,
+    "size": 14
+   },
+   {
+    "id": "gw",
+    "label": "Gateway",
+    "group": "edge",
+    "x": 300,
+    "y": 200,
+    "size": 20
+   },
+   {
+    "id": "s1",
+    "label": "Orders",
+    "group": "service",
+    "x": 500,
+    "y": 100,
+    "size": 16
+   },
+   {
+    "id": "s2",
+    "label": "Billing",
+    "group": "service",
+    "x": 500,
+    "y": 300,
+    "size": 16
+   }
+  ],
+  "links": [
+   {
+    "source": "u1",
+    "target": "gw"
+   },
+   {
+    "source": "u2",
+    "target": "gw"
+   },
+   {
+    "source": "gw",
+    "target": "s1"
+   },
+   {
+    "source": "gw",
+    "target": "s2"
+   },
+   {
+    "source": "s1",
+    "target": "s2"
+   }
+  ],
+  "style": {
+   "nodeColors": {
+    "client": "#4e79a7",
+    "edge": "#e15759",
+    "service": "#59a14f"
+   },
+   "labelColor": "#7e7e7e",
+   "linkColor": "#7e7e7e",
+   "linkOpacity": 1
+  }
+ },
+ "intent": "style.nodeColors keyed by each node's `group` field — categorical colour-by-group, the plugin's documented palette mechanism; three groups must resolve to three distinct fills."
+}

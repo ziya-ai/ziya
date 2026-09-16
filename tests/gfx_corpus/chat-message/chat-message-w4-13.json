@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "<div style=\"padding:8px;border:1px solid #888\">Deployment paused: quota exceeded.\n\nThis paragraph is OUTSIDE the box and has an unclosed <b>bold word in it.\n\nFinal plain paragraph must be plain.\n",
+ "intent": "Unclosed HTML — a styled <div> never closed and an unclosed <b> mid-paragraph. Recovery = auto-close; following content must not inherit the div style or bold."
+}

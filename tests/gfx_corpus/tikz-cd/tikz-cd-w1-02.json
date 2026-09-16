@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "X \\arrow[r, \"\\alpha\", near start] \\arrow[d, \"\\beta\"', pos=0.3] & Y \\arrow[d, \"\\gamma\", near end] \\\\\nZ \\arrow[r, \"\\delta\"'] & W",
+ "intent": "label placement keys: pos=, near start/near end, above/below via prime"
+}

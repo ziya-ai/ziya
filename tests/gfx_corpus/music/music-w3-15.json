@@ -1,0 +1,124 @@
+{
+ "type": "music",
+ "definition": {
+  "type": "music",
+  "timeSignature": "4/4",
+  "title": "Rare Dialects",
+  "cautionaryAccidentals": true,
+  "pickup": true,
+  "measureNumbers": true,
+  "voices": [
+   {
+    "stemDirection": "up",
+    "measures": [
+     {
+      "notes": [
+       {
+        "keys": [
+         "f#/5"
+        ],
+        "duration": "q",
+        "stringNumber": 1,
+        "fingering": {
+         "number": 4,
+         "position": "above"
+        },
+        "tremolo": 3
+       }
+      ],
+      "pickup": true
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "f/5"
+        ],
+        "duration": "q"
+       },
+       {
+        "keys": [
+         "a/5",
+         "c/6"
+        ],
+        "duration": "q",
+        "arpeggio": "brush-up"
+       },
+       {
+        "keys": [
+         "g/5"
+        ],
+        "duration": "q",
+        "breath": "caesura",
+        "cue": 0.7
+       },
+       {
+        "keys": [
+         "e/5"
+        ],
+        "duration": "q"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "d/5"
+        ],
+        "duration": "w"
+       }
+      ],
+      "multiRest": 0
+     }
+    ]
+   },
+   {
+    "stemDirection": "down",
+    "measures": [
+     {
+      "notes": [
+       {
+        "keys": [
+         "a/4"
+        ],
+        "duration": "q"
+       }
+      ],
+      "pickup": true
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "a/4"
+        ],
+        "duration": "h"
+       },
+       {
+        "keys": [
+         "b/4"
+        ],
+        "duration": "h"
+       }
+      ]
+     },
+     {
+      "notes": [
+       {
+        "keys": [
+         "c/5"
+        ],
+        "duration": "w"
+       }
+      ]
+     }
+    ]
+   }
+  ],
+  "clef": "treble",
+  "keySignature": "G",
+  "endBar": "final"
+ },
+ "intent": "Less-travelled dialects at once: two independent voices each with their OWN measures[], a pickup measure, cautionaryAccidentals across a barline (f# then f), stringNumber + object-form fingering + tremolo 3 + brush-up arpeggio + caesura breath + cue scale, plus multiRest:0. Tests the rare-path combination."
+}

@@ -1,0 +1,5 @@
+{
+ "type": "d2",
+ "definition": "A[Web Server] --> B{API Gateway}\nB --> C[(Database)]\nC -.-> A\n",
+ "intent": "RECOVERY: mermaid flowchart dialect emitted under type d2 - mixed-dialect confusion"
+}

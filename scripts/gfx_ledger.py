@@ -24,6 +24,12 @@ Layout (all under --root, default .ziya/gfx-sweep):
   backlog.json         defects keyed by stable id; status ledger; never shrinks
   retired.json         human decisions: ids/signatures excluded from the queue
   history/<ts>/        pre-write snapshot of every ledger touched
+  renders/<run>/       FAILING renders passed to `record --*-png` (evidence)
+  drift/<run>/         golden-tier drift report + new renders + heatmaps
+                       (written by tests/gfx_render, read by the drift judge)
+  ../gfx-golden/       machine-local goldens: <engine>/<spec>.<theme>.png +
+                       sidecar with trust (provisional|validated); see the
+                       "goldens" section below
 
 Subcommands: record, migrate, merge-triage, set-status, retire, unretire,
              queue, snapshot, show.  Run with -h for details.
@@ -41,7 +47,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 DEFAULT_ROOT = ".ziya/gfx-sweep"
 THEMES = ("light", "dark")
@@ -162,13 +168,25 @@ def _verdict_shape(v: Any) -> Dict[str, Any]:
 
 def record(root: Path, engine: str, spec_id: str, *, run: str,
            light: Dict[str, Any], dark: Dict[str, Any],
-           wave: Optional[int] = None, intent: Optional[str] = None) -> Dict[str, Any]:
+           wave: Optional[int] = None, intent: Optional[str] = None,
+           light_png: Optional[Path] = None, dark_png: Optional[Path] = None,
+           corpus: Optional[Path] = None) -> Dict[str, Any]:
     """Append one (light, dark) verdict pair to a spec's history.
 
     Never removes any other spec.  If the spec is new it is created; if
     it exists, ``wave``/``intent`` are only filled when previously absent
     so a re-sweep cannot silently rewrite what a spec was FOR.
+
+    ``light_png``/``dark_png`` are the images the verdicts were judged ON.
+    A theme judged "ok" with its image attached becomes that theme's
+    VALIDATED golden — the judge and the baseline saw the same bytes, which
+    is the whole point.  A "fail" image is kept under renders/<run>/ as
+    evidence and never touches the golden.
     """
+    pngs = {"light": light_png, "dark": dark_png}
+    for theme, p in pngs.items():
+        if p is not None and not Path(p).exists():
+            raise LedgerError(f"--{theme}-png {p}: no such file")
     path = _blackboard_path(root, engine)
     with _locked(root):
         bb = _read(path) or _empty_blackboard(engine)
@@ -193,7 +211,26 @@ def record(root: Path, engine: str, spec_id: str, *, run: str,
                            "light": entry["light"], "dark": entry["dark"]}
         snapshot(root, [path])
         _atomic_write(path, bb)
-        return spec
+    # Golden handling sits OUTSIDE the blackboard lock: golden_capture takes
+    # its own lock on gfx-golden/, and flock is not re-entrant across two
+    # descriptors in one process.
+    goldens: Dict[str, Any] = {}
+    for theme, p in pngs.items():
+        if p is None:
+            continue
+        data = Path(p).read_bytes()
+        if entry[theme]["status"] == "ok":
+            g = golden_capture(root, engine, spec_id, theme, data, trust="validated",
+                               run=run, source="record", corpus=corpus)
+            goldens[theme] = {"trust": g["trust"], "hash": g["hash"],
+                              "in_corpus": g.get("in_corpus", False)}
+        else:
+            dst = _store_render_evidence(root, engine, spec_id, theme, data, run=run)
+            goldens[theme] = {"evidence": str(dst)}
+    if goldens:
+        spec = dict(spec)
+        spec["goldens"] = goldens
+    return spec
 
 
 def _ensure_schema2(bb: Dict[str, Any], engine: str) -> Dict[str, Any]:
@@ -617,6 +654,16 @@ def reconcile(root: Path, *, run: str) -> Dict[str, Any]:
                 ev["status"] = "verified"
                 d.setdefault("history", []).append(ev)
                 stats["verified"] += 1
+                # The moment a defect is known-fixed is the moment its specs
+                # become regression tests: promote into the committed corpus
+                # so tests/gfx_render/ guards the fix on every code change,
+                # not only on the next task-card run.  Best-effort — a
+                # corpus write failure must not block the ledger update.
+                try:
+                    ev["promoted_specs"] = promote_defect(root, d)
+                    stats["promoted"] = stats.get("promoted", 0) + ev["promoted_specs"]
+                except Exception as exc:  # noqa: BLE001
+                    ev["promote_error"] = str(exc)
             elif any_fail and st == "verified":
                 d["status"] = "regression"
                 d["severity"] = "high"
@@ -635,6 +682,381 @@ def reconcile(root: Path, *, run: str) -> Dict[str, Any]:
         snapshot(root, [_backlog_path(root)])
         _atomic_write(_backlog_path(root), backlog)
         return stats
+
+
+# ── Regression corpus promotion ───────────────────────────────────────────
+# The GFX sweep's evidence lives under .ziya/ (gitignored) and is judged by a
+# model.  ``promote`` copies the specs that matter into a COMMITTED corpus at
+# tests/gfx_corpus/, with per-spec expectations derived from the defect's
+# signature, so tests/gfx_render/ can re-render them deterministically on
+# every code change without a task-card run.  Called automatically when
+# reconcile flips a defect to verified (the moment "this used to be broken,
+# now it renders" is known), and by hand for the Stage 1 regression sets.
+
+CORPUS_DIRNAME = "gfx_corpus"
+# Invariants the render suite understands.  Keep this list in sync with
+# tests/gfx_render/test_render_smoke.py::CHECKS.
+INVARIANT_RENDERS = "renders"            # terminal 'complete', no timeout/error
+INVARIANT_NO_CONSOLE_ERRORS = "no_console_errors"
+INVARIANT_INK = "ink_present"            # PNG is not blank
+DEFAULT_INVARIANTS = [INVARIANT_RENDERS, INVARIANT_NO_CONSOLE_ERRORS, INVARIANT_INK]
+
+
+def corpus_root(root: Path) -> Path:
+    """tests/gfx_corpus/ relative to the repo that owns ``root`` (.ziya/gfx-sweep)."""
+    return root.parent.parent / "tests" / CORPUS_DIRNAME
+
+
+def invariants_for_signature(signature: str) -> List[str]:
+    """Map a defect signature to the render-suite invariants it implies.
+
+    Every promoted spec gets the default set.  Signatures whose cause is a
+    missing/blank/timed-out render need nothing more — those ARE the
+    defaults.  Contrast, collision and sizing signatures are recorded as
+    ``visual:*`` tags so a later measured tier can pick them up; the smoke
+    tier ignores tags it does not know rather than failing on them.
+    """
+    inv = list(DEFAULT_INVARIANTS)
+    s = (signature or "").lower()
+    if any(k in s for k in ("contrast", "invisible", "canvas-aware", "hardcoded",
+                            "palette", "background", "foreground", "ink")):
+        inv.append("visual:contrast")
+    if any(k in s for k in ("collide", "overlap", "truncat", "clipped", "crop", "lost")):
+        inv.append("visual:layout")
+    if any(k in s for k in ("subpixel", "illegib", "shrunk", "thumbnail")):
+        inv.append("visual:min_text_size")
+    return inv
+
+
+def promote(root: Path, *, engine: str, spec_id: str, origin: str, signature: str = "",
+            themes: Iterable[str] = ("light", "dark"),
+            corpus: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    """Copy one spec into the committed corpus with expectations.
+
+    Idempotent: an existing corpus entry keeps its spec bytes (the spec is
+    the thing under test; a sweep must not silently rewrite it) and only
+    gains new origins/invariants.  Returns the expectations record, or None
+    when the spec file does not exist on disk (nothing to promote).
+    """
+    src = root / "specs" / engine / f"{spec_id}.json"
+    spec = _read(src)
+    if not isinstance(spec, dict):
+        return None
+    corpus = corpus or corpus_root(root)
+    eng_dir = corpus / engine
+    eng_dir.mkdir(parents=True, exist_ok=True)
+    spec_dst = eng_dir / f"{spec_id}.json"
+    if not spec_dst.exists():
+        _atomic_write(spec_dst, {"type": spec.get("type", engine),
+                                 "definition": spec.get("definition"),
+                                 "intent": spec.get("intent", "")})
+    exp_path = eng_dir / "expectations.json"
+    exp = _read(exp_path)
+    if not isinstance(exp, dict):
+        exp = {"schema": 1, "engine": engine, "specs": {}}
+    rec = exp["specs"].setdefault(spec_id, {
+        "themes": sorted(set(themes)), "invariants": [], "origins": [],
+    })
+    rec["themes"] = sorted(set(rec.get("themes", [])) | set(themes))
+    for i in invariants_for_signature(signature):
+        if i not in rec["invariants"]:
+            rec["invariants"].append(i)
+    origin_rec = {"origin": origin, "signature": signature, "at": _now_iso()}
+    if not any(o.get("origin") == origin and o.get("signature") == signature
+               for o in rec["origins"]):
+        rec["origins"].append(origin_rec)
+    # Carry a validated golden's hash into the committed record so another
+    # machine can recognise the judged image.  Provisional goldens are not
+    # committed: they assert nothing.
+    for theme in rec["themes"]:
+        g = golden_get(root, engine, spec_id, theme)
+        if g and g.get("trust") == "validated":
+            rec.setdefault("golden", {})[theme] = {"hash": g["hash"],
+                                                   "validated_at": g.get("at")}
+    _atomic_write(exp_path, exp)
+    return rec
+
+
+def promote_defect(root: Path, defect: Dict[str, Any],
+                   corpus: Optional[Path] = None) -> int:
+    """Promote every spec a defect names, on every engine it lists."""
+    n = 0
+    for engine, ids in (defect.get("spec_ids") or {}).items():
+        for sid in ids:
+            if promote(root, engine=engine, spec_id=sid, origin=defect.get("id", "?"),
+                       signature=defect.get("signature", ""), corpus=corpus):
+                n += 1
+    return n
+
+
+def promote_regression_sets(root: Path, corpus: Optional[Path] = None) -> Dict[str, int]:
+    """Seed the corpus with the Stage 1 both-theme-passing regression sets.
+
+    These carry only the default invariants: they were never broken, so
+    there is no signature to derive a visual tag from — the point is that
+    they keep rendering.
+    """
+    backlog = _load_backlog(root)
+    out: Dict[str, int] = {}
+    for engine, ids in (backlog.get("regression_sets") or {}).items():
+        out[engine] = sum(
+            1 for sid in ids
+            if promote(root, engine=engine, spec_id=sid, origin="regression_set",
+                       corpus=corpus)
+        )
+    return out
+
+
+def promote_verified(root: Path, corpus: Optional[Path] = None) -> Dict[str, int]:
+    """Promote every currently-verified defect's specs (one-time backfill)."""
+    backlog = _load_backlog(root)
+    stats = {"defects": 0, "specs": 0}
+    for d in backlog["defects"]:
+        if d.get("status") == "verified":
+            stats["defects"] += 1
+            stats["specs"] += promote_defect(root, d, corpus=corpus)
+    return stats
+
+
+# ── goldens (machine-local validated renders) ─────────────────────────────
+#
+# A golden is the PNG a spec rendered to in one theme, plus a sidecar that
+# says how far it can be trusted:
+#
+#   provisional  the render suite captured it because none existed.  It
+#                asserts nothing about correctness — only that later
+#                renders can be compared against it (STABLE / CHANGED).
+#   validated    a judge looked at THESE bytes and recorded status "ok"
+#                (Stage 1/2 `record --light-png/--dark-png`), or the bytes
+#                hash-match a validated render committed in the corpus, or a
+#                human ran `golden rebaseline` with a reason.
+#
+# Goldens live under .ziya/gfx-golden/ (gitignored: ~1.5k PNGs, and the
+# pixels are Chromium-build-specific).  What IS committed is the pixel hash
+# of each validated golden, in tests/gfx_corpus/<engine>/expectations.json,
+# so a fresh clone can tell "you rendered something other than the image a
+# judge approved" — a hint, not a failure — and can trust a local render
+# that hashes identically (identical pixels to a judged-good image ARE
+# judged-good).  Trust only ever moves through the functions below.
+
+GOLDEN_DIRNAME = "gfx-golden"
+GOLDEN_TRUST = ("provisional", "validated")
+
+
+def golden_root(root: Path) -> Path:
+    """.ziya/gfx-golden/ beside the sweep root (.ziya/gfx-sweep/)."""
+    return root.parent / GOLDEN_DIRNAME
+
+
+def golden_paths(root: Path, engine: str, spec_id: str, theme: str) -> Tuple[Path, Path]:
+    """(png, sidecar) for one spec/theme golden."""
+    if theme not in THEMES:
+        raise LedgerError(f"theme must be one of {THEMES}, got {theme!r}")
+    d = golden_root(root) / engine
+    return d / f"{spec_id}.{theme}.png", d / f"{spec_id}.{theme}.json"
+
+
+def pixel_hash(png_bytes: bytes) -> str:
+    """sha256 over the decoded RGBA buffer plus its dimensions.
+
+    Decoded pixels rather than file bytes: two PNG encodings of the same
+    image (different compression level, different chunk order) must hash
+    equal, and two images that differ by one pixel must not.
+    """
+    import hashlib
+    import io
+    from PIL import Image
+    im = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
+    h = hashlib.sha256()
+    h.update(f"{im.width}x{im.height}:".encode())
+    h.update(im.tobytes())
+    return h.hexdigest()
+
+
+def golden_get(root: Path, engine: str, spec_id: str, theme: str) -> Optional[Dict[str, Any]]:
+    """The sidecar for a golden, or None when no golden (png+sidecar) exists."""
+    png, side = golden_paths(root, engine, spec_id, theme)
+    if not (png.exists() and side.exists()):
+        return None
+    rec = _read(side)
+    return rec if isinstance(rec, dict) else None
+
+
+def _expectations_path(corpus: Path, engine: str) -> Path:
+    return corpus / engine / "expectations.json"
+
+
+def _sync_expectations_golden(root: Path, engine: str, spec_id: str, theme: str,
+                              digest: str, *, corpus: Optional[Path] = None) -> bool:
+    """Record a validated golden's hash in the committed corpus, if the spec is there.
+
+    Returns False when the spec is not in the corpus (nothing to sync);
+    the golden is still valid locally.
+    """
+    corpus = corpus or corpus_root(root)
+    exp_path = _expectations_path(corpus, engine)
+    exp = _read(exp_path)
+    if not isinstance(exp, dict) or spec_id not in exp.get("specs", {}):
+        return False
+    rec = exp["specs"][spec_id]
+    g = rec.setdefault("golden", {})
+    g[theme] = {"hash": digest, "validated_at": _now_iso()}
+    _atomic_write(exp_path, exp)
+    return True
+
+
+def golden_capture(root: Path, engine: str, spec_id: str, theme: str, png_bytes: bytes, *,
+                   trust: str, run: str, source: str, note: str = "",
+                   corpus: Optional[Path] = None) -> Dict[str, Any]:
+    """Store a render as the golden for (engine, spec, theme).
+
+    Trust may only stay level or rise here: a provisional capture never
+    replaces a validated golden (the render suite must not silently move a
+    judged baseline), and a validated capture replaces anything.  The
+    previous png/sidecar go to gfx-golden/history/<ts>/ so a rebaseline is
+    reversible.  A validated capture also writes its hash into the corpus
+    expectations when the spec is committed there.
+    """
+    if trust not in GOLDEN_TRUST:
+        raise LedgerError(f"trust must be one of {GOLDEN_TRUST}, got {trust!r}")
+    if not png_bytes or len(png_bytes) < 8:
+        raise LedgerError("golden_capture: empty image bytes")
+    png, side = golden_paths(root, engine, spec_id, theme)
+    groot = golden_root(root)
+    with _locked(groot):
+        prev = golden_get(root, engine, spec_id, theme)
+        if prev is not None and prev.get("trust") == "validated" and trust == "provisional":
+            raise LedgerError(
+                f"{engine}/{spec_id}[{theme}] already has a VALIDATED golden; a "
+                f"provisional capture cannot replace it (use `golden rebaseline`)")
+        digest = pixel_hash(png_bytes)
+        entry = {"at": _now_iso(), "run": run, "source": source, "trust": trust,
+                 "hash": digest, "note": note}
+        history = list(prev.get("history", [])) if prev else []
+        if prev is not None:
+            snapshot(groot, [png, side])
+            history.append({k: prev.get(k) for k in ("at", "run", "source", "trust", "hash")})
+        rec = {"engine": engine, "spec_id": spec_id, "theme": theme,
+               "trust": trust, "hash": digest, "at": entry["at"], "run": run,
+               "source": source, "note": note, "history": history}
+        png.parent.mkdir(parents=True, exist_ok=True)
+        tmp = png.with_suffix(".png.tmp")
+        tmp.write_bytes(png_bytes)
+        os.replace(tmp, png)
+        _atomic_write(side, rec)
+    if trust == "validated":
+        rec["in_corpus"] = _sync_expectations_golden(root, engine, spec_id, theme, digest,
+                                                     corpus=corpus)
+    return rec
+
+
+def golden_set_trust(root: Path, engine: str, spec_id: str, theme: str, *, run: str,
+                     source: str, note: str = "", corpus: Optional[Path] = None
+                     ) -> Dict[str, Any]:
+    """Promote an existing provisional golden to validated without new bytes."""
+    png, side = golden_paths(root, engine, spec_id, theme)
+    groot = golden_root(root)
+    with _locked(groot):
+        rec = golden_get(root, engine, spec_id, theme)
+        if rec is None:
+            raise LedgerError(f"no golden for {engine}/{spec_id}[{theme}]")
+        if rec.get("trust") == "validated":
+            return rec
+        rec.setdefault("history", []).append(
+            {k: rec.get(k) for k in ("at", "run", "source", "trust", "hash")})
+        rec.update({"trust": "validated", "at": _now_iso(), "run": run,
+                    "source": source, "note": note})
+        _atomic_write(side, rec)
+    rec["in_corpus"] = _sync_expectations_golden(root, engine, spec_id, theme, rec["hash"],
+                                                 corpus=corpus)
+    return rec
+
+
+def golden_trust_from_hash(root: Path, *, run: str, corpus: Optional[Path] = None
+                           ) -> Dict[str, Any]:
+    """Validate every provisional golden whose pixels hash-match the committed hash.
+
+    The one shortcut allowed: the corpus hash came from bytes a judge
+    approved, and identical pixels are the same image.  A provisional
+    golden with a DIFFERENT hash stays provisional and is listed so the
+    operator can see what this machine renders differently.
+    """
+    corpus = corpus or corpus_root(root)
+    out = {"validated": 0, "already": 0, "mismatch": [], "no_committed_hash": 0}
+    for side in sorted(golden_root(root).glob("*/*.json")):
+        rec = _read(side)
+        if not isinstance(rec, dict) or "spec_id" not in rec:
+            continue
+        engine, sid, theme = rec["engine"], rec["spec_id"], rec["theme"]
+        if rec.get("trust") == "validated":
+            out["already"] += 1
+            continue
+        exp = _read(_expectations_path(corpus, engine))
+        committed = (((exp or {}).get("specs", {}).get(sid, {}) or {})
+                     .get("golden", {}).get(theme, {}).get("hash"))
+        if not committed:
+            out["no_committed_hash"] += 1
+            continue
+        if committed == rec.get("hash"):
+            golden_set_trust(root, engine, sid, theme, run=run, source="trust-from-hash",
+                             corpus=corpus)
+            out["validated"] += 1
+        else:
+            out["mismatch"].append(f"{engine}/{sid}[{theme}]")
+    return out
+
+
+def golden_rebaseline(root: Path, engine: str, spec_id: str, theme: str, *, png_path: Path,
+                      reason: str, run: str, by: str = "human",
+                      corpus: Optional[Path] = None) -> Dict[str, Any]:
+    """Human decision: these bytes are the new validated golden.
+
+    The only way to move a validated baseline other than a fresh judged
+    `record`.  A drift verdict of "equivalent" is NOT enough on its own —
+    forty equivalents in a row would ratchet a baseline somewhere nobody
+    accepted in one step — so the judge records, and a person calls this.
+    """
+    if not reason.strip():
+        raise LedgerError("rebaseline needs --reason")
+    data = Path(png_path).read_bytes()
+    return golden_capture(root, engine, spec_id, theme, data, trust="validated", run=run,
+                          source=f"rebaseline:{by}", note=reason, corpus=corpus)
+
+
+def golden_status(root: Path, *, corpus: Optional[Path] = None) -> Dict[str, Any]:
+    """Counts per engine: goldens present by trust, corpus cases without one."""
+    corpus = corpus or corpus_root(root)
+    per: Dict[str, Dict[str, int]] = {}
+    for side in golden_root(root).glob("*/*.json"):
+        rec = _read(side)
+        if not isinstance(rec, dict) or "spec_id" not in rec:
+            continue
+        e = per.setdefault(rec["engine"], {"provisional": 0, "validated": 0, "missing": 0})
+        e[rec.get("trust", "provisional")] += 1
+    if corpus.exists():
+        for eng_dir in corpus.iterdir():
+            exp = _read(eng_dir / "expectations.json") if eng_dir.is_dir() else None
+            if not isinstance(exp, dict):
+                continue
+            e = per.setdefault(eng_dir.name, {"provisional": 0, "validated": 0, "missing": 0})
+            for sid, rec in exp.get("specs", {}).items():
+                for theme in rec.get("themes", list(THEMES)):
+                    if golden_get(root, eng_dir.name, sid, theme) is None:
+                        e["missing"] += 1
+    totals = {"provisional": 0, "validated": 0, "missing": 0}
+    for e in per.values():
+        for k in totals:
+            totals[k] += e[k]
+    return {"golden_root": str(golden_root(root)), "engines": per, "totals": totals}
+
+
+def _store_render_evidence(root: Path, engine: str, spec_id: str, theme: str,
+                           png_bytes: bytes, *, run: str) -> Path:
+    """Keep a FAILING render's pixels beside the verdict (never a golden)."""
+    dst = root / "renders" / run / engine / f"{spec_id}.{theme}.png"
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_bytes(png_bytes)
+    return dst
 
 
 def retire(root: Path, *, defect_id: Optional[str] = None, signature: Optional[str] = None,
@@ -785,6 +1207,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--light", required=True, type=_json_arg)
     p.add_argument("--dark", required=True, type=_json_arg)
     p.add_argument("--wave", type=int); p.add_argument("--intent")
+    p.add_argument("--light-png", help="the PNG the light verdict was judged on "
+                                       "(status ok -> validated golden)")
+    p.add_argument("--dark-png", help="the PNG the dark verdict was judged on")
+
+    p = sub.add_parser("golden", help="machine-local validated renders under .ziya/gfx-golden/")
+    p.add_argument("action", choices=("status", "show", "capture", "trust-from-hash",
+                                      "rebaseline"))
+    p.add_argument("--engine"); p.add_argument("--spec"); p.add_argument("--theme")
+    p.add_argument("--png", help="image file (capture / rebaseline)")
+    p.add_argument("--trust", choices=GOLDEN_TRUST, default="provisional",
+                   help="capture only; rebaseline is always validated")
+    p.add_argument("--reason", default="", help="rebaseline: why these bytes are right")
+    p.add_argument("--by", default="human")
+    p.add_argument("--corpus", help="override corpus dir (default tests/gfx_corpus)")
 
     p = sub.add_parser("migrate", help="promote schema-1 blackboards, fold sidecars")
     p.add_argument("--label", default="legacy-2026-09-01")
@@ -811,6 +1247,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--defect"); p.add_argument("--signature")
 
     sub.add_parser("queue", help="print ordered fix groups (JSON)")
+    p = sub.add_parser("promote", help="copy specs into the committed regression corpus "
+                                        "(tests/gfx_corpus/) — automatic on verified; "
+                                        "use --regression-sets / --verified to seed")
+    p.add_argument("--regression-sets", action="store_true",
+                   help="promote every Stage 1 regression_set spec")
+    p.add_argument("--verified", action="store_true",
+                   help="promote every currently-verified defect's specs")
+    p.add_argument("--defect", help="promote one defect's specs")
+    p.add_argument("--corpus", help="override corpus dir (default tests/gfx_corpus)")
     p = sub.add_parser("snapshot"); p.add_argument("--label")
     p = sub.add_parser("show"); p.add_argument("--defect"); p.add_argument("--engine")
 
@@ -820,7 +1265,32 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         if a.cmd == "record":
             out = record(root, a.engine, a.spec_id, run=run, light=a.light, dark=a.dark,
-                         wave=a.wave, intent=a.intent)
+                         wave=a.wave, intent=a.intent,
+                         light_png=Path(a.light_png) if a.light_png else None,
+                         dark_png=Path(a.dark_png) if a.dark_png else None)
+        elif a.cmd == "golden":
+            corpus = Path(a.corpus) if a.corpus else None
+
+            def _need(*names):
+                missing = [n for n in names if not getattr(a, n)]
+                if missing:
+                    raise LedgerError(f"golden {a.action} needs --" + " --".join(missing))
+            if a.action == "status":
+                out = golden_status(root, corpus=corpus)
+            elif a.action == "show":
+                _need("engine", "spec", "theme")
+                out = golden_get(root, a.engine, a.spec, a.theme) or {"golden": None}
+            elif a.action == "capture":
+                _need("engine", "spec", "theme", "png")
+                out = golden_capture(root, a.engine, a.spec, a.theme,
+                                     Path(a.png).read_bytes(), trust=a.trust, run=run,
+                                     source=f"cli:{a.by}", note=a.reason, corpus=corpus)
+            elif a.action == "trust-from-hash":
+                out = golden_trust_from_hash(root, run=run, corpus=corpus)
+            else:  # rebaseline
+                _need("engine", "spec", "theme", "png", "reason")
+                out = golden_rebaseline(root, a.engine, a.spec, a.theme, png_path=Path(a.png),
+                                        reason=a.reason, run=run, by=a.by, corpus=corpus)
         elif a.cmd == "migrate":
             out = migrate(root, run_label=a.label, engines=a.engine)
         elif a.cmd == "merge-triage":
@@ -838,6 +1308,22 @@ def main(argv: Optional[List[str]] = None) -> int:
             out = unretire(root, defect_id=a.defect, signature=a.signature)
         elif a.cmd == "queue":
             out = queue(root)
+        elif a.cmd == "promote":
+            corpus = Path(a.corpus) if a.corpus else None
+            out = {}
+            if a.regression_sets:
+                out["regression_sets"] = promote_regression_sets(root, corpus=corpus)
+            if a.verified:
+                out["verified"] = promote_verified(root, corpus=corpus)
+            if a.defect:
+                backlog = _load_backlog(root)
+                d = next((x for x in backlog["defects"] if x.get("id") == a.defect), None)
+                if d is None:
+                    raise LedgerError(f"no defect {a.defect}")
+                out["defect"] = {a.defect: promote_defect(root, d, corpus=corpus)}
+            if not out:
+                raise LedgerError("promote needs --regression-sets, --verified or --defect")
+            out["corpus"] = str(corpus or corpus_root(root))
         elif a.cmd == "snapshot":
             files = [p for p in root.glob("*.json")] + list((root / "triage").glob("*.json"))
             dest = snapshot(root, files, label=a.label)

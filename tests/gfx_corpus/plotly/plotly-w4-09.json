@@ -1,0 +1,5 @@
+{
+ "type": "plotly",
+ "definition": "{\"data\":[{\"type\":\"bar\",\"x\":[\"one\",\"two\",\"three\",\"four\"],\"y\":[5,9,4,7],\"marker\":{\"color\":[\"rebeccapurple\",\"darkslategray\",\"lightgoldenrodyellow\",\"transparent\"],\"line\":{\"color\":\"grey\",\"width\":1}},\"name\":\"named\"}],\"layout\":{\"title\":{\"text\":\"CSS Colour Names\"},\"paper_bgcolor\":\"transparent\",\"plot_bgcolor\":\"transparent\",\"legend\":{\"bgcolor\":\"transparent\"},\"showlegend\":true}}",
+ "intent": "CSS colour keywords (rebeccapurple, darkslategray, lightgoldenrodyellow, grey) plus 'transparent' as a bar fill and as paper/plot/legend background. Intent: a 4-bar chart on a transparent canvas. Deliberately picks names that are near the light background (lightgoldenrodyellow) and near the dark one (darkslategray)."
+}

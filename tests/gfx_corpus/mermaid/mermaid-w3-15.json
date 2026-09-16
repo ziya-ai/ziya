@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "flowchart LR\n  Start([Request]) --> Auth[Authenticate]\n  Auth --> Cache{Cache hit?}\n  Cache -->|hit| Serve[Serve cached]\n  Cache -->|miss| Fetch[Fetch from origin]\n  Fetch --> Store[(Write cache)]\n  Store --> Serve\n  Serve --> Done([Response])",
+ "intent": "NO COLORS SPECIFIED AT ALL - the control/baseline for this wave. Byte-identical graph to w3-09, w3-10 and w3-14 with every classDef/style/linkStyle removed, so the engine's OWN defaults are the only thing painting. Establishes what 'correct' looks like for this graph in each theme and isolates how much of any w3-09/10/14 failure is caused by the user's palette versus by the engine's default palette. If this baseline itself fails a theme, every hardcoded-palette verdict in the wave has to be read against that."
+}

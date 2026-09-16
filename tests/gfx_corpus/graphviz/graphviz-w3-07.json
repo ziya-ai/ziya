@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph E {\n subgraph cluster_empty { label=\"empty cluster\"; }\n lone [label=\"\"];\n spacer [label=\" \"];\n subgraph cluster_one { label=\"one\"; solo; }\n zero [label=\"0\" width=0 height=0 shape=point];\n}",
+ "intent": "DEGENERATE: an empty subgraph, an isolated node with an empty label, a node whose label is one space, a single-member cluster, and a zero-size point. Tests that emptiness renders rather than erroring or blanking."
+}

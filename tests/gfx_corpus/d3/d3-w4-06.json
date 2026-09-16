@@ -1,0 +1,5 @@
+{
+ "type": "d3",
+ "definition": "const spec = {\n  \"type\": \"bar\",\n  \"data\": [\n    {\"label\": \"alpha\", \"value\": 42},\n    {\"label\": \"bravo\", \"value\": 37},\n    {\"label\": \"charlie\", \"value\": 58}\n  ]\n};",
+ "intent": "RECOVERY: JS statement wrapper 'const spec = {...};' - leading declaration and trailing semicolon around otherwise valid JSON. Intent: 3-bar chart."
+}

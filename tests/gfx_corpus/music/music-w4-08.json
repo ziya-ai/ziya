@@ -1,0 +1,47 @@
+{
+ "type": "music",
+ "definition": {
+  "timeSignature": "4/4",
+  "clef": "treble",
+  "keySignature": "C",
+  "title": "Numbers As Strings",
+  "tempo": "120",
+  "width": "900",
+  "height": "260",
+  "notes": [
+   {
+    "keys": [
+     "c/4"
+    ],
+    "duration": "q",
+    "dots": "1"
+   },
+   {
+    "keys": [
+     "e/4"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "g/4"
+    ],
+    "duration": "q",
+    "dots": "0"
+   },
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "8"
+   },
+   {
+    "keys": [
+     "b/4"
+    ],
+    "duration": "q"
+   }
+  ]
+ },
+ "intent": "every numeric field emitted as a quoted string: tempo, width, height, dots"
+}

@@ -1,0 +1,58 @@
+{
+ "type": "basic-chart",
+ "definition": {
+  "type": "bar",
+  "width": 760,
+  "data": [
+   {
+    "label": "Authentication",
+    "value": 34
+   },
+   {
+    "label": "Authorization",
+    "value": 22
+   },
+   {
+    "label": "Provisioning",
+    "value": 41
+   },
+   {
+    "label": "Reconciliation",
+    "value": 19
+   },
+   {
+    "label": "Observability",
+    "value": 28
+   },
+   {
+    "label": "Notification",
+    "value": 15
+   },
+   {
+    "label": "Archival",
+    "value": 37
+   },
+   {
+    "label": "Compaction",
+    "value": 25
+   },
+   {
+    "label": "Replication",
+    "value": 30
+   },
+   {
+    "label": "Sharding",
+    "value": 12
+   },
+   {
+    "label": "Indexing",
+    "value": 44
+   },
+   {
+    "label": "Compression",
+    "value": 20
+   }
+  ]
+ },
+ "intent": "12 categories with long multi-word labels - band padding and x tick label crowding"
+}

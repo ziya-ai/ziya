@@ -1,0 +1,217 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 460,
+  "height": 240,
+  "padding": 5,
+  "data": [
+   {
+    "name": "series",
+    "values": [
+     {
+      "x": 0,
+      "y": 28,
+      "c": "north"
+     },
+     {
+      "x": 0,
+      "y": 55,
+      "c": "south"
+     },
+     {
+      "x": 0,
+      "y": 12,
+      "c": "west"
+     },
+     {
+      "x": 1,
+      "y": 43,
+      "c": "north"
+     },
+     {
+      "x": 1,
+      "y": 91,
+      "c": "south"
+     },
+     {
+      "x": 1,
+      "y": 30,
+      "c": "west"
+     },
+     {
+      "x": 2,
+      "y": 81,
+      "c": "north"
+     },
+     {
+      "x": 2,
+      "y": 53,
+      "c": "south"
+     },
+     {
+      "x": 2,
+      "y": 44,
+      "c": "west"
+     },
+     {
+      "x": 3,
+      "y": 19,
+      "c": "north"
+     },
+     {
+      "x": 3,
+      "y": 87,
+      "c": "south"
+     },
+     {
+      "x": 3,
+      "y": 25,
+      "c": "west"
+     },
+     {
+      "x": 4,
+      "y": 52,
+      "c": "north"
+     },
+     {
+      "x": 4,
+      "y": 48,
+      "c": "south"
+     },
+     {
+      "x": 4,
+      "y": 60,
+      "c": "west"
+     },
+     {
+      "x": 5,
+      "y": 24,
+      "c": "north"
+     },
+     {
+      "x": 5,
+      "y": 49,
+      "c": "south"
+     },
+     {
+      "x": 5,
+      "y": 38,
+      "c": "west"
+     }
+    ],
+    "transform": [
+     {
+      "type": "stack",
+      "groupby": [
+       "x"
+      ],
+      "sort": {
+       "field": "c"
+      },
+      "field": "y"
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "point",
+    "range": "width",
+    "domain": {
+     "data": "series",
+     "field": "x"
+    }
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "range": "height",
+    "nice": true,
+    "zero": true,
+    "domain": {
+     "data": "series",
+     "field": "y1"
+    }
+   },
+   {
+    "name": "color",
+    "type": "ordinal",
+    "range": "category",
+    "domain": {
+     "data": "series",
+     "field": "c"
+    }
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x",
+    "title": "Period",
+    "zindex": 1
+   },
+   {
+    "orient": "left",
+    "scale": "y",
+    "title": "Volume",
+    "grid": true
+   }
+  ],
+  "legends": [
+   {
+    "fill": "color",
+    "title": "Region",
+    "orient": "right"
+   }
+  ],
+  "marks": [
+   {
+    "type": "group",
+    "from": {
+     "facet": {
+      "name": "facetSeries",
+      "data": "series",
+      "groupby": "c"
+     }
+    },
+    "marks": [
+     {
+      "type": "area",
+      "from": {
+       "data": "facetSeries"
+      },
+      "encode": {
+       "enter": {
+        "interpolate": {
+         "value": "monotone"
+        },
+        "x": {
+         "scale": "x",
+         "field": "x"
+        },
+        "y": {
+         "scale": "y",
+         "field": "y0"
+        },
+        "y2": {
+         "scale": "y",
+         "field": "y1"
+        },
+        "fill": {
+         "scale": "color",
+         "field": "c"
+        },
+        "fillOpacity": {
+         "value": 0.85
+        }
+       }
+      }
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "Stacked area chart via the `stack` transform with an ordinal color scale and a symbol legend. Exercises transforms + legends + area marks."
+}

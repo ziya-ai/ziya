@@ -1,0 +1,194 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 440,
+  "height": 240,
+  "padding": 5,
+  "signals": [
+   {
+    "name": "threshold",
+    "value": 50
+   },
+   {
+    "name": "caption",
+    "update": "join(['SLO', 'breach', 'at', threshold], ' ').toUpperCase()"
+   }
+  ],
+  "data": [
+   {
+    "name": "svc",
+    "values": [
+     {
+      "name": "gateway",
+      "p99": 38
+     },
+     {
+      "name": "authsvc",
+      "p99": 71
+     },
+     {
+      "name": "searchapi",
+      "p99": 44
+     },
+     {
+      "name": "indexer",
+      "p99": 88
+     },
+     {
+      "name": "billing",
+      "p99": 26
+     },
+     {
+      "name": "notifier",
+      "p99": 57
+     }
+    ],
+    "transform": [
+     {
+      "type": "formula",
+      "as": "short",
+      "expr": "datum.name.slice(0, 5).toUpperCase()"
+     },
+     {
+      "type": "formula",
+      "as": "over",
+      "expr": "let(h = datum.p99 - 50, h > 0)"
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "band",
+    "domain": {
+     "data": "svc",
+     "field": "short"
+    },
+    "range": "width",
+    "padding": 0.2
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "domain": {
+     "data": "svc",
+     "field": "p99"
+    },
+    "nice": true,
+    "zero": true,
+    "range": "height"
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x",
+    "title": "Service"
+   },
+   {
+    "orient": "left",
+    "scale": "y",
+    "title": "p99 (ms)",
+    "grid": true
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "from": {
+     "data": "svc"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "short"
+      },
+      "width": {
+       "scale": "x",
+       "band": 1
+      },
+      "y2": {
+       "scale": "y",
+       "value": 0
+      }
+     },
+     "update": {
+      "y": {
+       "scale": "y",
+       "field": "p99"
+      },
+      "fill": {
+       "signal": "datum.over ? '#c1442f' : '#3f7d3f'"
+      }
+     }
+    }
+   },
+   {
+    "type": "rule",
+    "encode": {
+     "update": {
+      "x": {
+       "value": 0
+      },
+      "x2": {
+       "signal": "width"
+      },
+      "y": {
+       "scale": "y",
+       "signal": "threshold"
+      },
+      "stroke": {
+       "value": "#c1442f"
+      },
+      "strokeWidth": {
+       "value": 1.5
+      },
+      "strokeDash": {
+       "value": [
+        6,
+        4
+       ]
+      }
+     }
+    }
+   },
+   {
+    "type": "text",
+    "encode": {
+     "update": {
+      "x": {
+       "signal": "width - 4"
+      },
+      "y": {
+       "scale": "y",
+       "signal": "threshold",
+       "offset": -6
+      },
+      "align": {
+       "value": "right"
+      },
+      "baseline": {
+       "value": "bottom"
+      },
+      "fontSize": {
+       "value": 11
+      },
+      "fontWeight": {
+       "value": "bold"
+      },
+      "fill": {
+       "value": "#c1442f"
+      },
+      "text": {
+       "signal": "caption"
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "Signals + Vega-v5 expression syntax: a signal-driven threshold rule, a `formula` transform, and annotation text built with v5 JS-style method calls (join / toUpperCase / slice) plus a let() binding — exactly what the plugin's rewriteMethodCallsInExpr and rewriteLetExpressions exist to translate for the v6 runtime."
+}

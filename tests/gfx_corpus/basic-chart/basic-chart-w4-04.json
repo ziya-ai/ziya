@@ -1,0 +1,5 @@
+{
+ "type": "d3",
+ "definition": "Here is the chart:\n```json\n{\n  \"type\": \"bar\",\n  \"data\": [\n    {\"label\": \"Alpha\", \"value\": 30},\n    {\"label\": \"Beta\", \"value\": 55},\n    {\"label\": \"Gamma\", \"value\": 18}\n  ]\n}\n```",
+ "intent": "whole spec wrapped in a ```json markdown fence with prose line"
+}

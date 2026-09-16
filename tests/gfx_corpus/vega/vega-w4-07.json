@@ -1,0 +1,40 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 380,
+  "height": 200,
+  "padding": 5,
+  "data": {
+   "values": [
+    {
+     "c": "a",
+     "v": 30
+    },
+    {
+     "c": "b",
+     "v": 52
+    },
+    {
+     "c": "d",
+     "v": 25
+    }
+   ]
+  },
+  "mark": "bar",
+  "encoding": {
+   "x": {
+    "field": "c",
+    "type": "nominal"
+   },
+   "y": {
+    "field": "v",
+    "type": "quantitative"
+   },
+   "color": {
+    "value": "#4c78a8"
+   }
+  }
+ },
+ "intent": "dialect collision: a Vega $schema and Vega-typed render, but a Vega-LITE body (data.values object, singular mark, encoding). Models mix the two constantly; the evident intent is a 3-bar chart"
+}

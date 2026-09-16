@@ -1,0 +1,143 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 420,
+  "height": 220,
+  "padding": 5,
+  "data": [
+   {
+    "name": "table",
+    "values": [
+     {
+      "category": "Alpha",
+      "amount": 28
+     },
+     {
+      "category": "Bravo",
+      "amount": 55
+     },
+     {
+      "category": "Charlie",
+      "amount": 43
+     },
+     {
+      "category": "Delta",
+      "amount": 91
+     },
+     {
+      "category": "Echo",
+      "amount": 81
+     },
+     {
+      "category": "Foxtrot",
+      "amount": 53
+     },
+     {
+      "category": "Golf",
+      "amount": 19
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "xscale",
+    "type": "band",
+    "domain": {
+     "data": "table",
+     "field": "category"
+    },
+    "range": "width",
+    "padding": 0.12,
+    "round": true
+   },
+   {
+    "name": "yscale",
+    "domain": {
+     "data": "table",
+     "field": "amount"
+    },
+    "nice": true,
+    "range": "height"
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "xscale",
+    "title": "Category"
+   },
+   {
+    "orient": "left",
+    "scale": "yscale",
+    "title": "Amount",
+    "grid": true
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "from": {
+     "data": "table"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "xscale",
+       "field": "category"
+      },
+      "width": {
+       "scale": "xscale",
+       "band": 1
+      },
+      "y": {
+       "scale": "yscale",
+       "field": "amount"
+      },
+      "y2": {
+       "scale": "yscale",
+       "value": 0
+      },
+      "fill": {
+       "value": "#4c78a8"
+      }
+     }
+    }
+   },
+   {
+    "type": "text",
+    "from": {
+     "data": "table"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "xscale",
+       "field": "category",
+       "band": 0.5
+      },
+      "y": {
+       "scale": "yscale",
+       "field": "amount",
+       "offset": -6
+      },
+      "text": {
+       "field": "amount"
+      },
+      "align": {
+       "value": "center"
+      },
+      "baseline": {
+       "value": "bottom"
+      },
+      "fontSize": {
+       "value": 11
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "Canonical Vega bar chart: band+linear scales, bottom/left axes, rect marks, data-bound text value labels. Baseline structural + axis-legibility probe."
+}

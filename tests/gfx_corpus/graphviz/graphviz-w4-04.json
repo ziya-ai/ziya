@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph G {\n  rankdir=LR;\n  node [shape=box style=filled];\n  a [label=\"Hot\" fillcolor=\"#f00\" fontcolor=\"#fff\"];\n  b [label=\"Cool\" fillcolor=\"#0af\" fontcolor=\"#000\"];\n  c [label=\"Warn\" fillcolor=\"#ff0\" fontcolor=\"#000\"];\n  a -> b [color=\"#333\"];\n  b -> c [color=\"#333\"];\n}",
+ "intent": "Three-digit CSS shorthand hex colors where graphviz expects six digits"
+}

@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "A \\arrow[r, \"f\"] & |[alias=Bee]| B \\\\\nC & D\n\\arrow[from=2-1, to=1-1, \"u\"']\n\\arrow[from=Bee, to=2-2, \"v\"]\n\\arrow[from=2-1, to=2-2, \"g\"']",
+ "intent": "absolute targeting: from=/to= with row-column coords and |[alias=..]|"
+}

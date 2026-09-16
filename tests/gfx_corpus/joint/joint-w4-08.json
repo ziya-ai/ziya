@@ -1,0 +1,5 @@
+{
+ "type": "joint",
+ "definition": "{\n  // pipeline stages\n  \"elements\": [\n    {\"id\": \"read\", \"type\": \"rect\", \"label\": \"Read\"},   // source\n    {\"id\": \"map\", \"type\": \"rect\", \"label\": \"Map\"},\n    /* terminal stage */\n    {\"id\": \"write\", \"type\": \"rect\", \"label\": \"Write\"}\n  ],\n  \"connections\": [\n    {\"id\": \"j1\", \"source\": \"read\", \"target\": \"map\", \"label\": \"rows\"},\n    {\"id\": \"j2\", \"source\": \"map\", \"target\": \"write\", \"label\": \"rows\"}\n  ]\n}",
+ "intent": "RECOVERY: JS line (//) and block (/* */) COMMENTS inside JSON. Intent: Read->Map->Write."
+}

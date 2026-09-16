@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "gantt\n  title Release 4.1 plan\n  dateFormat YYYY-MM-DD\n  axisFormat %m-%d\n  section Design\n    Spec draft      :done,    d1, 2026-01-05, 7d\n    Review          :done,    d2, after d1, 3d\n  section Build\n    Core engine     :active,  b1, after d2, 14d\n    Plugin layer    :         b2, after b1, 10d\n    Hardening       :crit,    b3, after b2, 5d\n  section Ship\n    RC cut          :milestone, m1, after b3, 0d\n    GA              :         s1, after m1, 4d\n",
+ "intent": "gantt chart with sections, dependencies, milestone, done/active/crit states"
+}

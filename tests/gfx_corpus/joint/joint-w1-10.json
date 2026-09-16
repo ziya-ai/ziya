@@ -1,0 +1,89 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "autoLayout": false,
+  "elements": [
+   {
+    "id": "a",
+    "type": "rect",
+    "label": "Producer",
+    "position": {
+     "x": 40,
+     "y": 40
+    }
+   },
+   {
+    "id": "b",
+    "type": "rect",
+    "label": "Broker",
+    "position": {
+     "x": 400,
+     "y": 40
+    }
+   },
+   {
+    "id": "c",
+    "type": "rect",
+    "label": "Consumer",
+    "position": {
+     "x": 400,
+     "y": 300
+    }
+   }
+  ],
+  "connections": [
+   {
+    "id": "v1",
+    "source": "a",
+    "target": "b",
+    "label": "publish",
+    "vertices": [
+     {
+      "x": 250,
+      "y": 160
+     }
+    ]
+   },
+   {
+    "id": "v2",
+    "source": "b",
+    "target": "c",
+    "label": "deliver",
+    "vertices": [
+     {
+      "x": 600,
+      "y": 170
+     }
+    ],
+    "attrs": {
+     "line": {
+      "strokeDasharray": "8 4"
+     }
+    }
+   },
+   {
+    "id": "v3",
+    "source": "c",
+    "target": "a",
+    "label": "ack",
+    "vertices": [
+     {
+      "x": 240,
+      "y": 380
+     },
+     {
+      "x": 100,
+      "y": 250
+     }
+    ],
+    "attrs": {
+     "line": {
+      "strokeDasharray": "2 3"
+     }
+    }
+   }
+  ]
+ },
+ "intent": "Link vertices (explicit waypoints) plus dashed-line attrs override on the line."
+}

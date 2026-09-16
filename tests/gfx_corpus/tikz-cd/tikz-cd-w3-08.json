@@ -1,0 +1,5 @@
+{
+ "type": "tikz-cd",
+ "definition": "\\definecolor{nearwhite}{HTML}{FDFDFD}\n\\definecolor{lightgrey}{HTML}{DDDDDD}\n\\definecolor{palestroke}{HTML}{CCCCCC}\n\\definecolor{ink333}{HTML}{333333}\n\\begin{tikzcd}[cells={nodes={draw=lightgrey,fill=nearwhite,inner sep=6pt}}]\n\\textcolor{ink333}{\\mathsf{Load}} \\rar[draw=palestroke,\"\\textcolor{ink333}{step}\"] & \\textcolor{ink333}{\\mathsf{Parse}} \\dar[draw=palestroke] \\\\\n\\textcolor{ink333}{\\mathsf{Emit}} \\rar[draw=palestroke,\"\\textcolor{ink333}{done}\"'] & \\textcolor{ink333}{\\mathsf{Store}}\n\\end{tikzcd}",
+ "intent": "hardcoded LIGHT palette: near-white fills #FDFDFD, pale grey strokes #CCCCCC, #333333 text - must still be legible on a dark page"
+}

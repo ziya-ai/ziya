@@ -1,0 +1,5 @@
+{
+ "type": "graphviz",
+ "definition": "digraph G {\n  rankdir=LR;\n  node [shape=box style=filled fillcolor=\"#f0f0f0\" fontcolor=\"#000000\" fontsize=\"14pt\" penwidth=\"3px\" width=\"1.5in\" height=\"0.6in\"];\n  graph [nodesep=\"0.5em\" ranksep=\"1.0rem\"];\n  a [label=\"Sized A\"];\n  b [label=\"Sized B\"];\n  c [label=\"Sized C\"];\n  a -> b -> c;\n}",
+ "intent": "Numbers as strings with CSS units: fontsize=\"14pt\", penwidth=\"3px\", width=\"1.5in\""
+}

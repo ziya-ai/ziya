@@ -1,0 +1,107 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "bar",
+    "name": "2023",
+    "x": [
+     "us-east-1",
+     "us-west-2",
+     "eu-west-1",
+     "ap-south-1"
+    ],
+    "y": [
+     120,
+     95,
+     78,
+     45
+    ],
+    "marker": {
+     "color": "#4c78a8"
+    },
+    "text": [
+     120,
+     95,
+     78,
+     45
+    ],
+    "textposition": "outside"
+   },
+   {
+    "type": "bar",
+    "name": "2024",
+    "x": [
+     "us-east-1",
+     "us-west-2",
+     "eu-west-1",
+     "ap-south-1"
+    ],
+    "y": [
+     148,
+     112,
+     96,
+     71
+    ],
+    "marker": {
+     "color": "#f58518"
+    },
+    "text": [
+     148,
+     112,
+     96,
+     71
+    ],
+    "textposition": "outside"
+   },
+   {
+    "type": "bar",
+    "name": "2025",
+    "x": [
+     "us-east-1",
+     "us-west-2",
+     "eu-west-1",
+     "ap-south-1"
+    ],
+    "y": [
+     163,
+     140,
+     121,
+     104
+    ],
+    "marker": {
+     "color": "#54a24b"
+    },
+    "text": [
+     163,
+     140,
+     121,
+     104
+    ],
+    "textposition": "outside"
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "Fleet Size by Region"
+   },
+   "barmode": "group",
+   "xaxis": {
+    "title": {
+     "text": "Region"
+    }
+   },
+   "yaxis": {
+    "title": {
+     "text": "Instances"
+    },
+    "range": [
+     0,
+     200
+    ]
+   },
+   "height": 460
+  }
+ },
+ "intent": "Grouped bar chart with barmode=group, per-trace colors, value text labels and a vertical legend."
+}

@@ -1,0 +1,70 @@
+{
+ "type": "network",
+ "definition": {
+  "type": "network",
+  "width": 600,
+  "height": 400,
+  "nodes": [
+   {
+    "id": 1,
+    "label": "AS 1"
+   },
+   {
+    "id": 2,
+    "label": "AS 2"
+   },
+   {
+    "id": 3,
+    "label": "AS 3"
+   },
+   {
+    "id": 4,
+    "label": "AS 4"
+   },
+   {
+    "id": 5,
+    "label": "AS 5"
+   },
+   {
+    "id": 6,
+    "label": "AS 6"
+   }
+  ],
+  "links": [
+   {
+    "source": 1,
+    "target": 2
+   },
+   {
+    "source": 2,
+    "target": 3
+   },
+   {
+    "source": 3,
+    "target": 4
+   },
+   {
+    "source": 4,
+    "target": 5
+   },
+   {
+    "source": 5,
+    "target": 6
+   },
+   {
+    "source": 6,
+    "target": 1
+   },
+   {
+    "source": 1,
+    "target": 4
+   }
+  ],
+  "style": {
+   "labelColor": "#7e7e7e",
+   "linkColor": "#7e7e7e",
+   "linkOpacity": 1
+  }
+ },
+ "intent": "Numeric node ids with numeric link endpoints (explicitly supported by isValidNetworkId); the graph must be detected, all 6 nodes drawn and no edge dropped by the strict-equality dangling filter."
+}

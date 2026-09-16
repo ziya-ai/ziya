@@ -1,0 +1,84 @@
+{
+ "type": "music",
+ "definition": {
+  "clef": "treble",
+  "keySignature": "C",
+  "timeSignature": "4/4",
+  "notes": [
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "q",
+    "articulations": [
+     "staccato"
+    ]
+   },
+   {
+    "keys": [
+     "d/5"
+    ],
+    "duration": "q",
+    "articulations": [
+     "accent"
+    ]
+   },
+   {
+    "keys": [
+     "e/5"
+    ],
+    "duration": "q",
+    "articulations": [
+     "tenuto"
+    ]
+   },
+   {
+    "keys": [
+     "f/5"
+    ],
+    "duration": "q",
+    "articulations": [
+     "marcato"
+    ]
+   },
+   {
+    "keys": [
+     "g/5"
+    ],
+    "duration": "q",
+    "ornaments": [
+     "trill"
+    ]
+   },
+   {
+    "keys": [
+     "a/5"
+    ],
+    "duration": "q",
+    "ornaments": [
+     "mordent"
+    ]
+   },
+   {
+    "keys": [
+     "b/4"
+    ],
+    "duration": "q",
+    "ornaments": [
+     "turn"
+    ]
+   },
+   {
+    "keys": [
+     "c/5"
+    ],
+    "duration": "q",
+    "articulations": [
+     "fermata-above"
+    ]
+   }
+  ],
+  "endBar": "final"
+ },
+ "intent": "Articulations (staccato, accent, tenuto, marcato, fermata above/below) and ornaments (trill, mordent, turn) from ARTICULATION_CODES / ORNAMENT_CODES."
+}
