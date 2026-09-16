@@ -504,6 +504,53 @@ export function buildMermaidLightThemeVariables(): Record<string, any> {
     };
 }
 
+/**
+ * D-293 (mermaid-w3-07 / w1-10 dark): explicit DARK gitGraph palette.
+ *
+ * The dark `mermaid.initialize` themeVariables block sets a generic edge
+ * `lineColor` and node palette but NEVER the per-branch git palette
+ * (git0..git7, gitBranchLabel*, commitLabel*). mermaid's built-in `dark` theme
+ * then derives the branch colours self-referentially from a single base hue,
+ * so every branch reads as a near-identical muted slate (w3-07 "flattened to
+ * near-identical hues"), and the commit-id label defaults to a dark-navy on a
+ * mid-slate chip (~1.69:1, w1-10). The universal visibility pass compounded
+ * this by repainting the low-contrast branch strokes to the single theme teal.
+ *
+ * We pin a saturated, canvas-resolved branch palette (mirroring the working
+ * LIGHT `buildMermaidLightThemeVariables` git block, re-toned brighter for the
+ * dark canvas) plus legible commit/tag label colours. Only merged for dark +
+ * gitgraph, so no other diagram type is affected and the light render — which
+ * already passes — is byte-for-byte unchanged.
+ *
+ * Contrast (computed, WCAG):
+ *   branch colours vs dark canvas: git0 5.29 · git1 3.91 · git2 6.20 · git3
+ *     4.24 · git4 5.63 · git5 5.27 · git6 5.24 · git7 5.86 (all >= 3:1 graphic
+ *     floor on #2e3440, and higher on #1e1e1e); on the light canvas the render
+ *     uses the light palette so this block never applies there.
+ *   branch label (#000000) on each branch chip: >= 6.57:1 (text floor 4.5).
+ *   commit-id label #eceff4 on chip #1f2430: 13.46:1 (was ~1.69:1).
+ *   tag label #1a1a1a on #b5cea8: 10.24:1.
+ */
+export function buildGitGraphDarkThemeVariables(): Record<string, string> {
+    return {
+        // Saturated, dark-legible per-branch stroke palette.
+        git0: '#61afef', git1: '#e06c75', git2: '#98c379', git3: '#c678dd',
+        git4: '#e5a04c', git5: '#56b6c2', git6: '#ff79c6', git7: '#abb2bf',
+        // Branch labels sit on the bright branch chip -> black text clears 4.5:1.
+        gitBranchLabel0: '#000000', gitBranchLabel1: '#000000',
+        gitBranchLabel2: '#000000', gitBranchLabel3: '#000000',
+        gitBranchLabel4: '#000000', gitBranchLabel5: '#000000',
+        gitBranchLabel6: '#000000', gitBranchLabel7: '#000000',
+        // Commit-id label: near-white on an opaque dark chip (was dark-on-slate).
+        commitLabelColor: '#eceff4',
+        commitLabelBackground: '#1f2430',
+        // Tag label: dark text on a pale-green plate with a teal border.
+        tagLabelColor: '#1a1a1a',
+        tagLabelBackground: '#b5cea8',
+        tagLabelBorder: '#88c0d0',
+    };
+}
+
 // Add mermaid to window for TypeScript
 declare global {
     interface Window {
@@ -938,7 +985,7 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                 altSectionBkgColor: '#434c5e',
                 gridColor: '#eceff4',
                 todayLineColor: '#88c0d0'
-            }, diagramType === 'timeline' ? buildTimelineDarkThemeVariables() : {}, buildSequenceNoteDarkThemeVariables(), buildPieThemeVariables(true)) : Object.assign({}, buildMermaidLightThemeVariables(), buildPieThemeVariables(false))),
+            }, diagramType === 'timeline' ? buildTimelineDarkThemeVariables() : {}, (diagramType === 'gitgraph' || diagramType === 'git') ? buildGitGraphDarkThemeVariables() : {}, buildSequenceNoteDarkThemeVariables(), buildPieThemeVariables(true)) : Object.assign({}, buildMermaidLightThemeVariables(), buildPieThemeVariables(false))),
             flowchart: {
                 htmlLabels: true,
                 curve: 'basis',
@@ -1110,6 +1157,27 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
         // UNIVERSAL FIX: Apply centralized visibility enhancement with DELAYED execution.
         // Preserve author-specified text colors from either classDef or per-node style
         // declarations instead of overriding them with inferred contrast colors.
+        // D-293 (mermaid-w3-04 sankey ribbons, w1-10 gitGraph branch lines):
+        // sankey link ribbons encode flow MAGNITUDE as their stroke-width and
+        // gitGraph branch lines encode per-branch IDENTITY as their stroke
+        // colour/width. The universal line pass (enhanceSVGVisibility FIX 3)
+        // treats every path as a mere connector: it repaints low-contrast
+        // strokes to the single theme colour and rewrites stroke-width to a
+        // flat ~1.5-2px, destroying the graphical encoding (ribbons collapse
+        // to ~1px near-monochrome, branch lines drop 3px->1px). Exempt those
+        // data-bearing paths so their author/mermaid stroke survives. Gated to
+        // dark: these specs pass in light and light stays byte-unchanged.
+        let lineSkipSelectors: string[] = [];
+        if (isDarkMode) {
+            if (diagramType === 'sankey') {
+                // sankey-beta ribbons are <path>; nodes are <rect> (untouched).
+                lineSkipSelectors = ['path'];
+            } else if (diagramType === 'gitgraph' || diagramType === 'git') {
+                // gitGraph branch/merge lines are <path>/<line>; commit dots
+                // are <circle> and labels are <text> (both still remediated).
+                lineSkipSelectors = ['path', 'line'];
+            }
+        }
         if (shouldEnhanceMermaidVisibility(rawDefinition)) {
             const runVisibilityFix = (phase: string) => {
                 console.log(`🎨 VISIBILITY-FIX (${phase}): Starting universal enhancement`);
@@ -1119,7 +1187,7 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                 // sequence NOTE plate w1-03) can otherwise leave a ~3.1:1 label
                 // that clears 3.0 and is never remediated. Only mermaid opts in;
                 // drawio/graphviz keep the 3.0 default.
-                const result = enhanceSVGVisibility(svgElement, isDarkMode, { debug: true, textMinContrast: 4.5 });
+                const result = enhanceSVGVisibility(svgElement, isDarkMode, { debug: true, textMinContrast: 4.5, skipSelectors: lineSkipSelectors });
                 console.log(`🎨 VISIBILITY-FIX (${phase}): Complete`);
 
                 console.group('🎨 MERMAID-CONTRAST: Visibility Enhancement Results');

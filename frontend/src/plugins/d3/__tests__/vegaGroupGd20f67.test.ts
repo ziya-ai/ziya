@@ -8,6 +8,7 @@ import {
   computeReTickDimensions,
   resolveVegaViewBox,
   coalesceVegaSplitGeometry,
+  buildVegaEmbedOptions,
 } from '../vegaPlugin';
 
 /**
@@ -331,5 +332,57 @@ describe('D-270 coalesceVegaSplitGeometry restores split-geometry marks', () => 
     };
     coalesceVegaSplitGeometry(spec);
     expect('y2' in spec.marks[0].marks[0].encode.update).toBe(true);
+  });
+});
+
+// ── D-267 (regression fix): re-tick vs D-283 flood-clip interaction ──────────
+// The regression that reopened D-267: postRenderSizing fed resolveVegaViewBox
+// the ORIGINAL authored dims even after the view was re-ticked. For a tiny or
+// ultra-tall authored canvas, the re-ticked (legible) bbox then reads as a >3x
+// "flood" of the authored viewport and the good chart is clipped to a sliver.
+// The fix compares the bbox against the EFFECTIVE sizing base (re-tick dims).
+describe('D-267 re-tick output must not trip the D-283 flood-clip', () => {
+  it('w2-09 70x45 → re-tick 700x450: authored dims spuriously clip; re-tick dims do not', () => {
+    const r = computeReTickDimensions(70, 45, 700)!;
+    // A representative re-ticked bbox (chart + axis labels), slightly taller.
+    const bboxW = r.width, bboxH = r.height + 24;
+    // BUG (pre-fix): comparing the re-ticked bbox to the tiny AUTHORED canvas
+    // reports a flood and clips the chart away.
+    expect(resolveVegaViewBox(70, 45, 0, 0, bboxW, bboxH).clip).toBe(true);
+    // FIX: comparing to the re-tick base keeps the full chart (no clip).
+    expect(resolveVegaViewBox(r.width, r.height, 0, 0, bboxW, bboxH).clip).toBe(false);
+  });
+
+  it('w2-08 110x1600 → tall re-tick: authored dims spuriously clip; re-tick dims do not', () => {
+    const r = computeReTickDimensions(110, 1600, 700)!;
+    const bboxW = r.width, bboxH = r.height + 40;
+    expect(resolveVegaViewBox(110, 1600, 0, 0, bboxW, bboxH).clip).toBe(true);
+    expect(resolveVegaViewBox(r.width, r.height, 0, 0, bboxW, bboxH).clip).toBe(false);
+  });
+
+  it('a genuine world-scale flood (no re-tick) still clips against authored dims', () => {
+    // computeReTickDimensions returns null for a normal canvas, so the sizing
+    // base stays authored and the geographic flood-clip (D-283) is preserved.
+    expect(computeReTickDimensions(400, 400, 700)).toBeNull();
+    expect(resolveVegaViewBox(400, 400, -2000, -2000, 4000, 4000).clip).toBe(true);
+  });
+});
+
+// ── D-267 (regression fix): finite axis labelLimit prevents the w2-04 flood ──
+describe('D-267 axis labelLimit is finite (w2-04 long-label flood)', () => {
+  it('labelLimit is a positive finite px, not 0/unlimited, in both themes', () => {
+    for (const dark of [false, true]) {
+      const opts: any = buildVegaEmbedOptions(dark);
+      const limit = opts.config.axis.labelLimit;
+      // PRE-FIX (fails): labelLimit was 0 (unlimited) → 180-char band labels
+      // rendered full-width and flooded the bbox.
+      expect(limit).toBeGreaterThan(0);
+      expect(Number.isFinite(limit)).toBe(true);
+      // Still well above Vega's 180px default so distinct long labels remain
+      // distinguishable (the D-280/D-281 intent is preserved, not reverted).
+      expect(limit).toBeGreaterThan(180);
+      // labelOverlap thinning is retained.
+      expect(opts.config.axis.labelOverlap).toBe(true);
+    }
   });
 });

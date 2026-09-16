@@ -10,6 +10,7 @@ import {
   synthesizeColorLegend,
 } from './vegaLayerDefaults';
 import { computeTextOverflow, growPadding } from './vegaTextOverflow';
+import { computeLegendLabelLimitPx, wrapSpecTitles, VEGA_DEFAULT_LEGEND_LABEL_LIMIT } from './vegaTextFit';
 import { hoistFacetColumns, sinkFacetCellSize, isFacetedSpec } from './vegaFacetLayout';
 import { applyFacetCellWidth, calibrateFacetView } from './vegaFacetFit';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
@@ -632,9 +633,121 @@ export function clipZeroBaselineMarksToDomain(view: any, inheritedEncoding?: any
   return clipped;
 }
 
+// ---------------------------------------------------------------------------
+// Repeat references inside TRANSFORM positions (D-315).
+//
+// Vega-Lite substitutes a `{repeat: "column"|"row"|"repeat"}` reference only in
+// ENCODING field definitions when it expands a `repeat` operator.  A repeat ref
+// sitting in a *transform* position — e.g. `{regression: {repeat: "column"}}`,
+// `{density: {repeat: ...}}`, or a window/aggregate `field` — is left verbatim,
+// so the transform is handed an object where it expects a field name.  The
+// mis-compiled transform then executes against every generated view and the
+// renderer hangs past its timeout (in both themes).
+//
+// The correct, general repair is to perform the substitution the library omits:
+// when a repeat spec carries a transform-position repeat ref, expand the
+// `repeat` operator ourselves into an explicit concat of concrete sub-specs,
+// deep-substituting EVERY `{repeat: <key>}` occurrence (encoding AND transform)
+// with the concrete field string.  This only fires for the unsupported
+// combination; ordinary repeat specs (encoding-only refs) are left untouched so
+// Vega-Lite keeps rendering them natively.
+const isRepeatRef = (node: any): node is { repeat: string } =>
+  !!node && typeof node === 'object' && !Array.isArray(node) &&
+  typeof node.repeat === 'string' &&
+  Object.keys(node).length === 1;
+
+// True when a `{repeat}` reference appears anywhere inside a `transform` array
+// in the subtree — the position Vega-Lite cannot substitute.
+export function specHasRepeatRefInTransform(node: any, insideTransform = false): boolean {
+  if (Array.isArray(node)) {
+    return node.some((child) => specHasRepeatRefInTransform(child, insideTransform));
+  }
+  if (!node || typeof node !== 'object') return false;
+  if (insideTransform && isRepeatRef(node)) return true;
+  for (const [key, value] of Object.entries(node)) {
+    const nowInside = insideTransform || key === 'transform';
+    if (specHasRepeatRefInTransform(value, nowInside)) return true;
+  }
+  return false;
+}
+
+// Deep clone `node`, replacing every `{repeat: <key>}` with substitutions[<key>].
+function substituteRepeatRefs(node: any, substitutions: Record<string, string>): any {
+  if (Array.isArray(node)) {
+    return node.map((child) => substituteRepeatRefs(child, substitutions));
+  }
+  if (!node || typeof node !== 'object') return node;
+  if (isRepeatRef(node) && node.repeat in substitutions) {
+    return substitutions[node.repeat];
+  }
+  const out: any = {};
+  for (const [key, value] of Object.entries(node)) {
+    out[key] = substituteRepeatRefs(value, substitutions);
+  }
+  return out;
+}
+
+export function expandRepeatRefsInTransforms(spec: any): any {
+  if (!spec || typeof spec !== 'object') return spec;
+  const repeat = spec.repeat;
+  const inner = spec.spec;
+  if (!repeat || !inner) return spec;
+  // Only intervene when the library would mishandle the spec.
+  if (!specHasRepeatRefInTransform(inner)) return spec;
+
+  const buildCell = (subs: Record<string, string>): any =>
+    substituteRepeatRefs(JSON.parse(JSON.stringify(inner)), subs);
+
+  // Container keeps everything except the repeat operator and its inner spec
+  // (data/transform/resolve stay at the top so concat children inherit them).
+  const container: any = {};
+  for (const [k, v] of Object.entries(spec)) {
+    if (k === 'repeat' || k === 'spec') continue;
+    container[k] = JSON.parse(JSON.stringify(v));
+  }
+
+  if (Array.isArray(repeat)) {
+    // Wrapping form: refs are `{repeat: "repeat"}`.
+    container.concat = repeat.map((val: string) => buildCell({ repeat: String(val) }));
+    if (spec.columns != null) container.columns = spec.columns;
+    console.log(`🔧 VEGA-PREPROCESS: expanded transform-position repeat (wrapping, ${repeat.length} cells) — D-315`);
+    return container;
+  }
+
+  const cols: string[] | undefined = Array.isArray(repeat.column) ? repeat.column : undefined;
+  const rows: string[] | undefined = Array.isArray(repeat.row) ? repeat.row : undefined;
+
+  if (cols && rows) {
+    container.vconcat = rows.map((rowVal) => ({
+      hconcat: cols.map((colVal) => buildCell({ row: String(rowVal), column: String(colVal) })),
+    }));
+  } else if (cols) {
+    container.hconcat = cols.map((colVal) => buildCell({ column: String(colVal) }));
+  } else if (rows) {
+    container.vconcat = rows.map((rowVal) => buildCell({ row: String(rowVal) }));
+  } else {
+    // Unknown repeat shape — leave untouched rather than guess.
+    return spec;
+  }
+  console.log('🔧 VEGA-PREPROCESS: expanded transform-position repeat (grid) — D-315');
+  return container;
+}
+
 export const vegaLitePlugin: D3RenderPlugin = {
   name: 'vega-lite-renderer',
   priority: 8, // Higher priority than basic chart but lower than mermaid/graphviz
+
+  // The spec handed to render() IS the Vega-Lite document. Its `width` /
+  // `height` are PLOT-AREA properties (and `width` may be the string
+  // 'container'), not a canvas request, so D3Renderer must neither overwrite
+  // them with its 600x400 props nor pin its container to them. The latter is
+  // what produced the "chart followed by a chart-sized blank": a spec with
+  // width:420 got a 420px container, Vega initialised its container-width
+  // signal from that box and emitted a 420-wide SVG with a viewBox; the
+  // container was then widened to 100% and the `svg { width:100% }` CSS
+  // stretched that SVG ~3x, whose inflated height the wrapper height writers
+  // locked in.
+  ownsSpecDimensions: true,
 
   // This was the ONLY diagram plugin in the registry without a sizingConfig,
   // and its absence is what made charts render small-and-centered. D3Renderer
@@ -993,6 +1106,16 @@ export const vegaLitePlugin: D3RenderPlugin = {
       }
 
       console.log('🔧 VEGA-PREPROCESS: Starting comprehensive preprocessing');
+
+      // Fix 0.02 (D-315): a repeat operator whose inner spec places a
+      // `{repeat: ...}` reference in a TRANSFORM position (e.g. a regression /
+      // density / window field) is not substituted by Vega-Lite and hangs the
+      // renderer. Expand such repeats into an explicit concat of concrete,
+      // fully-substituted sub-specs before any other processing runs.
+      const repeatExpanded = expandRepeatRefsInTransforms(spec);
+      if (repeatExpanded !== spec) {
+        return preprocessVegaSpec(repeatExpanded);
+      }
 
       // Fix 0.05: Swap datum/field in primary/secondary encoding channels
       // Vega-Lite requires the primary channel (x, y) to carry the field reference
@@ -4895,6 +5018,13 @@ export const vegaLitePlugin: D3RenderPlugin = {
         );
       }
 
+      // Pane width for text fitting: the live container width D3Renderer
+      // measured (the plugin's own container is detached and reports 0), else
+      // the local measurement with its gutter added back.
+      const fitWidthPx = typeof spec.containerWidth === 'number' && spec.containerWidth > 0
+        ? spec.containerWidth
+        : availableWidth + 40;
+
       // Pre-render legend optimization - configure legends to wrap based on estimated size
       const optimizeLegendLayout = (spec: any) => {
         const chartHeight = spec.height || 400;
@@ -4932,17 +5062,38 @@ export const vegaLitePlugin: D3RenderPlugin = {
           const fieldName = encoding[channel].field;
           const dataArr = Array.isArray(dataObj?.values) ? dataObj.values : [];
           const uniqueCount = countUniqueValues(fieldName, dataArr);
-          // D-313: derive a labelLimit that preserves the distinguishing part of
-          // prefixed labels. When the raw rows carry the field we compute it from
-          // the actual label strings; for generated/transform-derived data the
-          // strings are unknown, so computeLegendLabelLimit falls back to a
-          // generous width instead of the old tight 80px that collapsed distinct
-          // series to an identical visible prefix.
-          const labelLimit = computeLegendLabelLimit(dataArr.map((r: any) => r?.[fieldName]));
+          const labelStrs: string[] = dataArr
+            .map((r: any) => r?.[fieldName])
+            .filter((v: any) => v !== null && v !== undefined)
+            .map(String);
+          // D-313: the width that keeps prefixed labels distinguishable. This
+          // is a FLOOR, not the limit: it only guards prefix collisions, and
+          // when labels share no prefix it collapses to Vega's default 160px
+          // — which is exactly the value that was truncating labels that had
+          // plenty of room. The actual limit is fitted to the longest label,
+          // bounded by the space the legend's orientation leaves in the pane.
+          const disambiguationPx = computeLegendLabelLimit(labelStrs);
+          const authoredLegend = encoding[channel].legend && typeof encoding[channel].legend === 'object'
+            ? encoding[channel].legend : {};
+          const authoredLabelLimit = typeof authoredLegend.labelLimit === 'number';
+          const fitLabelLimit = (orient: string, columns: number): number => {
+            if (authoredLabelLimit) return authoredLegend.labelLimit;
+            // Generated / transform-derived data: strings unknown, keep the
+            // prefix-safe fallback.
+            if (labelStrs.length === 0) return disambiguationPx;
+            return computeLegendLabelLimitPx({
+              labels: labelStrs, containerWidthPx: fitWidthPx,
+              orient, columns, floorPx: disambiguationPx,
+            });
+          };
 
           const applyWrapping = (count: number) => {
             const neededColumns = Math.ceil(count / maxItemsPerColumn);
-            const columns = Math.min(neededColumns, 3); // Cap at 3 columns to prevent horizontal overflow
+            // An authored column count wins; otherwise cap at 3 to prevent horizontal overflow.
+            const columns = typeof authoredLegend.columns === 'number' && authoredLegend.columns > 0
+              ? authoredLegend.columns
+              : Math.min(neededColumns, 3);
+            const labelLimit = fitLabelLimit('bottom', columns);
 
             console.log(`Applying legend wrapping to ${channel} field "${fieldName}": ${count} items -> ${columns} columns (labelLimit=${labelLimit})`);
 
@@ -4954,7 +5105,7 @@ export const vegaLitePlugin: D3RenderPlugin = {
               ...encoding[channel].legend,
               columns: columns,
               symbolLimit: 0, // lift Vega's default 30-entry cap so nothing is dropped
-              labelLimit: labelLimit, // D-313: wide enough to keep distinguishing suffixes
+              labelLimit: labelLimit, // fitted to the longest label within the pane; D-313 floor
               titleLimit: 100,
               orient: 'bottom', // Move to bottom to avoid vertical overflow
               offset: 5,
@@ -4974,6 +5125,19 @@ export const vegaLitePlugin: D3RenderPlugin = {
             const est = estimateLegendCardinality(dataObj, fieldName);
             if (est > VEGA_DEFAULT_SYMBOL_LIMIT) {
               applyWrapping(est);
+            }
+          } else if (!authoredLabelLimit && labelStrs.length > 0) {
+            // The legend fits without wrapping, but Vega still clips every label
+            // at its fixed 160px default. Lift that to what the labels need,
+            // bounded by the pane. Left byte-unchanged when the default already
+            // suffices, so short-labelled legends are untouched.
+            const orient = typeof authoredLegend.orient === 'string' ? authoredLegend.orient : 'right';
+            const columns = typeof authoredLegend.columns === 'number' && authoredLegend.columns > 0
+              ? authoredLegend.columns : 1;
+            const limit = fitLabelLimit(orient, columns);
+            if (limit > VEGA_DEFAULT_LEGEND_LABEL_LIMIT) {
+              encoding[channel].legend = { ...authoredLegend, labelLimit: limit };
+              console.log(`🔧 LEGEND-FIT: ${channel} "${fieldName}" labelLimit ${VEGA_DEFAULT_LEGEND_LABEL_LIMIT} -> ${limit} (orient=${orient}, pane=${fitWidthPx}px)`);
             }
           }
         };
@@ -5047,6 +5211,14 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // theme already whitens guide labels but not text marks or explicit
       // overrides, so this closes the gap without altering legible author colours.
       reconcileThemeColors(vegaSpec, isDarkMode);
+
+      // Under fit-x the SVG is exactly the pane width and Vega neither wraps
+      // nor shrinks a title, so a long one is clipped at both edges. Wrap an
+      // authored string title/subtitle to the pane; an authored array or
+      // `limit` is left alone.
+      if (wrapSpecTitles(vegaSpec, fitWidthPx - 40)) {
+        console.log(`🔧 TITLE-FIT: wrapped title to ${fitWidthPx - 40}px`);
+      }
 
       // G-72 / D-260, D-265: ensure the categorical colour range is adequate.
       // Both active theme palettes are only 10 entries (light 'excel' explicit,

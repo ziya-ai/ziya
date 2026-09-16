@@ -23,18 +23,23 @@ const CATEGORY10 = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd', '#8c5
 
 // ── D-280 / D-281: axis config injected for BOTH themes ─────────────────────
 describe('buildVegaEmbedOptions axis defaults (D-280, D-281)', () => {
-  it('LIGHT now carries config.axis.labelOverlap + labelLimit:0 (pre-fix: light had NO config)', () => {
+  it('LIGHT now carries config.axis.labelOverlap + a FINITE labelLimit (pre-fix: light had NO config)', () => {
     const opts: any = buildVegaEmbedOptions(false);
     // Direction: pre-fix the light branch returned no `config` object at all.
     expect(opts.config).toBeDefined();
     expect(opts.config.axis.labelOverlap).toBe(true); // D-280 thin dense band ticks
-    expect(opts.config.axis.labelLimit).toBe(0);      // D-281 no prefix-collapse truncation
+    // (D-267 regression fix) labelLimit is now a FINITE px, not 0/unlimited:
+    // 0 let ~180-char band labels flood the bbox (vega-w2-04). It stays well
+    // above Vega's 180px default so D-281 prefix-collapse is still avoided.
+    expect(opts.config.axis.labelLimit).toBeGreaterThan(180);
+    expect(Number.isFinite(opts.config.axis.labelLimit)).toBe(true);
   });
 
   it('DARK carries the same axis defaults AND keeps the readable text fill (no D-286 regression)', () => {
     const opts: any = buildVegaEmbedOptions(true);
     expect(opts.config.axis.labelOverlap).toBe(true);
-    expect(opts.config.axis.labelLimit).toBe(0);
+    expect(opts.config.axis.labelLimit).toBeGreaterThan(180);
+    expect(Number.isFinite(opts.config.axis.labelLimit)).toBe(true);
     // D-286 dark text-mark fill must still be present.
     expect(opts.config.text.fill).toBe('#e6e6e6');
   });

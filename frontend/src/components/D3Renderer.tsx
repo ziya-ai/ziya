@@ -496,10 +496,10 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 // and chord, so a registered plugin looked unsupported and
                 // pointed diagnosis away from the real cause (a canHandle
                 // predicate rejecting the spec).
-                const registered = getAvailablePlugins()
+                const registeredList = getAvailablePlugins()
                     .map((p) => p.name.replace(/-(renderer|diagram)$/, ''))
-                    .sort()
-                    .join(', ');
+                    .sort();
+                const registered = registeredList.join(', ');
                 const details = [msg, `Registered renderers: ${registered}`];
                 if (loadDiagnostics.loadFailures.length > 0) {
                     // A chunk that never imported arrives here as an absent
@@ -509,6 +509,18 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     details.push('Renderer chunks that FAILED TO LOAD (likely cause): '
                         + loadDiagnostics.loadFailures.join('; '));
                     details.push('Reload the page to re-fetch the renderer chunk.');
+                } else if (spec?.type && registeredList.includes(spec.type)) {
+                    // The type IS registered; its canHandle declined THIS spec.
+                    // The bare "no compatible plugin" wording contradicts the
+                    // registered list above and misdirects to a missing-renderer
+                    // hunt.  Name the real cause: a spec-SHAPE mismatch, whose
+                    // usual source is invented fields, fields borrowed from a
+                    // different syntax, or an absent/mismatched `type`.
+                    details.push(`The "${spec.type}" renderer IS registered but declined this `
+                        + 'spec because its shape was not recognised. This is a spec problem, '
+                        + 'not a missing renderer: check the field names against the '
+                        + `${spec.type} schema (a common cause is invented fields, or fields `
+                        + `from a different syntax) and that "type" is "${spec.type}".`);
                 } else {
                     details.push('A registered renderer can still decline a spec whose shape it does not recognise.');
                 }
@@ -730,7 +742,9 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 // the requested width/height is laid out (and captured) instead of
                 // being clamped to the sizingConfig default. Null for a spec that
                 // omits dimensions or a 'fixed' plugin -> existing behaviour.
-                const explicitContainerDims = resolveContainerDimensions(parsed, sizingConfig?.sizingStrategy);
+                // Also null for a plugin that owns its spec dimensions (Vega-Lite):
+                // its width/height are plot-area properties, not a canvas.
+                const explicitContainerDims = resolveContainerDimensions(parsed, sizingConfig?.sizingStrategy, currentPlugin);
                 container.style.width = explicitContainerDims
                     ? explicitContainerDims.width
                     : (isFlexible ? '100%' : `${width}px`);
@@ -1035,7 +1049,7 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 // spec asked for a size, adopt it on the container and lift the
                 // width cap / enable scroll so the whole canvas is laid out and
                 // captured. A spec without explicit dims is untouched (null).
-                const explicit = resolveContainerDimensions(spec, 'responsive');
+                const explicit = resolveContainerDimensions(spec, 'responsive', plugin);
                 if (explicit) {
                     return {
                         ...baseStyles,

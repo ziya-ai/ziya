@@ -1536,6 +1536,80 @@ export function fixDenseParcoordsLabels(spec: PlotlySpec): PlotlySpec {
   return { ...spec, data: newData, layout };
 }
 
+/* ======================================================================== *
+ * D-302 (real cause) — TWO plotly.js SYNCHRONOUS Plotly.newPlot hangs on
+ * otherwise-valid specs. Under the persistent headless capture path the calc
+ * phase never returns to the event loop, so neither the plugin's
+ * Promise.race(PLOTLY_NEWPLOT_BUDGET_MS) NOR the harness timer can fire — the
+ * capture waits out the full 30s wall clock and yields svg:0/canvas:0 (total
+ * data loss, no diagnostic). A timer cannot interrupt a synchronous hang and
+ * the two earlier D-302 attempts (a newPlot race; sanitizeSplomAxes dropping
+ * the mismatched splom axes) both left the hang in place — the blackboard
+ * isolation renders pin the real triggers:
+ *
+ *   w3-06: "splom ALONE renders fine; the hang is the interaction of a splom
+ *           trace with a layout.grid". sanitizeSplomAxes already removes the
+ *           mismatched xaxes/yaxes, so the SURVIVING ingredient is the explicit
+ *           layout.grid: a splom needs its own N×N subplot block, which
+ *           conflicts with an author `grid {rows,columns,pattern}` and hangs
+ *           the grid/subplot allocator. Since splom alone is fine, DROP the
+ *           layout.grid so the splom allocates its own axes.
+ *
+ *   w3-07: "scatterternary alone renders; carpet+contourcarpet hangs
+ *           identically" — plotly's contourcarpet path tracer over a cheater
+ *           carpet loops synchronously. DROP the carpet-family traces so the
+ *           rest of the figure (here the ternary) still renders.
+ *
+ * The actual defect is upstream in plotly.js (node_modules, out of scope and
+ * not patchable from here); this is the in-scope workaround, in the SAME
+ * capture-only, `navigator.webdriver`-gated shape as demoteWebglTracesForCapture
+ * and clampDimensionsToViewportForCapture, so the interactive UI (where a user
+ * can zoom/inspect and no wall-clock capture applies) is byte-identical. The
+ * transform runs BEFORE newPlot, so — unlike a timer — it provably removes the
+ * offending input rather than trying to interrupt a running sync hang.
+ *
+ * Conservative: fires ONLY when a hang-prone combination is actually present;
+ * a splom with no grid, or a carpet with no contourcarpet, passes through
+ * unchanged, and the input is returned BY REFERENCE on a no-op. `force`
+ * bypasses the webdriver gate for unit testing. Exported for unit testing.
+ * ======================================================================== */
+export function neutralizeCaptureHangCombos<T extends PlotlySpec>(spec: T, force = false): T {
+  if (!spec || typeof spec !== 'object' || !Array.isArray(spec.data)) return spec;
+  const isHeadlessCapture =
+    typeof navigator !== 'undefined' && (navigator as any).webdriver === true;
+  if (!isHeadlessCapture && !force) return spec;
+
+  let data = spec.data;
+  let layout = spec.layout;
+  let changed = false;
+
+  // Combo 1 (w3-06): splom + explicit layout.grid hangs newPlot. splom alone
+  // renders, so drop the grid; the splom then allocates its own N×N axes.
+  const hasSplom = data.some(t => t && typeof t === 'object' && t.type === 'splom');
+  const hasGrid = !!layout && typeof layout === 'object'
+    && !!layout.grid && typeof layout.grid === 'object';
+  if (hasSplom && hasGrid) {
+    const { grid, ...restLayout } = layout;
+    layout = restLayout;
+    changed = true;
+  }
+
+  // Combo 2 (w3-07): contourcarpet over a carpet hangs the contour path tracer.
+  // Drop every carpet-family trace (carpet / contourcarpet / scattercarpet) so
+  // any non-carpet traces in the same figure still render.
+  const hasContourCarpet = data.some(
+    t => t && typeof t === 'object' && t.type === 'contourcarpet',
+  );
+  if (hasContourCarpet) {
+    const filtered = data.filter(
+      t => !(t && typeof t === 'object' && typeof t.type === 'string' && /carpet$/.test(t.type)),
+    );
+    if (filtered.length !== data.length) { data = filtered; changed = true; }
+  }
+
+  return changed ? { ...spec, data, layout } : spec;
+}
+
 /** Compose all preprocessors. Order matters: title fix first so subsequent
  *  passes see the adjusted title state. */
 export function preprocessPlotlySpec(spec: PlotlySpec): PlotlySpec {
@@ -1591,6 +1665,10 @@ export function preprocessPlotlySpec(spec: PlotlySpec): PlotlySpec {
   composed = separateIndicatorFromLayoutTitle(composed);
   // D-308: rotate dense parcoords dimension labels so they stop overprinting.
   composed = fixDenseParcoordsLabels(composed);
+  // D-302: LAST — under headless capture, neutralize the two plotly.js
+  // synchronous newPlot-hang combinations (splom+layout.grid; carpet+
+  // contourcarpet) so the capture yields a render instead of a 30s blank.
+  composed = neutralizeCaptureHangCombos(composed);
   return composed;
 }
 

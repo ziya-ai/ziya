@@ -76,6 +76,26 @@ export interface GraphvizSpec {
 export const GRAPHVIZ_MIN_SIZE_INCHES = 0.5;
 
 /**
+ * STRESS-GUARD (D-117: viewport-crop-content-lost): maximum drawing size, in
+ * INCHES, that a *forced* (`!`) DOT `size=` may demand before it is treated as
+ * a footgun and dropped.
+ *
+ * Without a trailing `!`, `size` only ever scales the drawing DOWN to fit, so a
+ * large plain `size` is harmless (a small graph is left at natural size). The
+ * `!` force flag is the mirror of the sub-pixel footgun: `size="60,60!"` with
+ * `ratio=fill` blows a tiny 3-node graph UP to 60in (~5760px), spreading its
+ * few nodes to the far corners of a mostly-empty canvas. In the bounded,
+ * overflow-clipped screenshot window that reads as "content lost" — the nodes
+ * are flung past the visible window (graphviz-w2-08) — and even once unclipped
+ * the drawing is a sea of whitespace with a few illegible specks. No legitimate
+ * diagram forces itself to tens of inches for a screenshot; a forced size whose
+ * largest dimension exceeds this ceiling is dropped so the graph lays out at
+ * its natural, legible size. Chosen well above any real authored drawing yet
+ * far below the pathological forced-fill sizes (30..60in) seen in the wild.
+ */
+export const GRAPHVIZ_MAX_SIZE_INCHES = 20;
+
+/**
  * Parse the numeric dimensions out of a DOT `size` value.
  * Accepts "W,H", "W", optional trailing "!" (force flag) and surrounding spaces.
  * Returns the finite, parseable dimensions (may be length 0/1/2).
@@ -86,6 +106,23 @@ function parseGraphvizSizeDims(raw: string): number[] {
         .split(',')
         .map((s) => parseFloat(s.trim()))
         .filter((n) => Number.isFinite(n));
+}
+
+/**
+ * True when a DOT `size` value FORCES the drawing far larger than any sane
+ * screenshot surface — i.e. it carries the `!` force flag AND at least one
+ * positive dimension is at or above `maxInches`. Only the forced form is
+ * flagged: a plain `size="60,60"` merely caps/scales-down and is left alone, so
+ * legitimate large-but-unforced specs pass through unchanged. See
+ * `GRAPHVIZ_MAX_SIZE_INCHES` / D-117 (graphviz-w2-08).
+ */
+export function isOversizeForcedGraphvizSize(
+    raw: string,
+    maxInches: number = GRAPHVIZ_MAX_SIZE_INCHES,
+): boolean {
+    if (!/!/.test(String(raw))) return false; // no force flag -> only scales down, harmless
+    const dims = parseGraphvizSizeDims(raw);
+    return dims.some((d) => d >= maxInches);
 }
 
 /**
@@ -115,13 +152,18 @@ export function isDegenerateGraphvizSize(raw: string, minInches: number = GRAPHV
 export function clampGraphvizSize(dot: string, minInches: number = GRAPHVIZ_MIN_SIZE_INCHES): string {
     if (typeof dot !== 'string' || dot.length === 0) return dot;
     let out = dot;
-    // Quoted form: size="0.01,0.01" / size="6,6!" / size="0.01"
+    // Drop a size that is either a sub-pixel footgun (< minInches, Issue 33) OR
+    // a forced (`!`) oversize footgun (>= GRAPHVIZ_MAX_SIZE_INCHES, D-117
+    // graphviz-w2-08) — both collapse legibility in the bounded capture window.
+    const shouldDrop = (val: string): boolean =>
+        isDegenerateGraphvizSize(val, minInches) || isOversizeForcedGraphvizSize(val);
+    // Quoted form: size="0.01,0.01" / size="6,6!" / size="0.01" / size="60,60!"
     out = out.replace(/(?<![-\w])size\s*=\s*"([^"]*)"/gi, (m, val) =>
-        isDegenerateGraphvizSize(val, minInches) ? '' : m
+        shouldDrop(val) ? '' : m
     );
-    // Unquoted form: size=0.01 / size=0.01,0.01 / size=6,6!
+    // Unquoted form: size=0.01 / size=0.01,0.01 / size=6,6! / size=60,60!
     out = out.replace(/(?<![-\w])size\s*=\s*([0-9]*\.?[0-9]+(?:\s*,\s*[0-9]*\.?[0-9]+)?!?)/gi, (m, val) =>
-        isDegenerateGraphvizSize(val, minInches) ? '' : m
+        shouldDrop(val) ? '' : m
     );
     return out;
 }
@@ -218,6 +260,12 @@ export function planGraphvizViewport(
          *  When known, the shrink floor is raised so this label stays legible;
          *  omit for the historic behaviour (floor presumes a ~16px base). */
         naturalMinFontPx?: number;
+        /** Available viewport HEIGHT in CSS px. When known, the upscale of a
+         *  small graph is clamped so the scaled drawing also fits vertically —
+         *  upscaling purely by width made a small graph TALLER than the capture
+         *  window, pushing content off-screen (D-120/D-126 regression). Omit to
+         *  keep the historic width-only upscale. */
+        maxHeightPx?: number;
     } = {}
 ): GraphvizViewportPlan {
     const baseMinFontScale = opts.minFontScale ?? GRAPHVIZ_MIN_FONT_SCALE;
@@ -267,7 +315,22 @@ export function planGraphvizViewport(
     if (fitScale >= upscaleMin) {
         // Clearly small (<= ~2/3 width): upscale to fill so sub-pixel labels
         // (e.g. from a forced size="1.5,1.5!") become legible; cap the blow-up.
-        const scale = Math.min(fitScale, maxUpscale);
+        let scale = Math.min(fitScale, maxUpscale);
+        // D-120/D-126 regression: upscaling by WIDTH alone can make a small
+        // graph TALLER than the viewport, so the capture window shows only a
+        // sliver (content pushed off-screen / near-blank). When the available
+        // height is known, clamp the upscale so the scaled drawing also fits
+        // vertically. Never clamp BELOW 1 — shrinking is the 'fit'/'natural'
+        // job, and a tall-but-narrow graph should stay at natural size here,
+        // not be shrunk by the upscale branch.
+        const maxH = opts.maxHeightPx;
+        if (typeof maxH === 'number' && Number.isFinite(maxH) && maxH > 0 && naturalHpx > 0) {
+            const hScale = maxH / naturalHpx;
+            if (hScale < scale) scale = Math.max(1, hScale);
+        }
+        if (scale <= 1) {
+            return { mode: 'natural', svgWidthPx: naturalWpx, effectiveScale: 1, scroll: false };
+        }
         return { mode: 'upscale', svgWidthPx: naturalWpx * scale, effectiveScale: scale, scroll: false };
     }
 
@@ -627,6 +690,14 @@ const GRAPHVIZ_COLOR_NAME_FIX: Record<string, string> = {
     slategrey: 'slategray',
 };
 
+/** CSS(4) named colours that are NOT in graphviz's X11 colour scheme, so
+ *  Viz.js rejects them and falls back to solid #000000. Snap them to their
+ *  canonical hex so the authored colour survives (rebeccapurple = #663399 —
+ *  the CSS name graphviz never adopted). Class-level, not spec-specific. */
+const GRAPHVIZ_CSS_ONLY_COLOR: Record<string, string> = {
+    rebeccapurple: '#663399',
+};
+
 /**
  * Colour-form normaliser (D-128). Three targeted, deterministic steps — the
  * antidote to Viz.js's fallback-to-#000000:
@@ -674,7 +745,8 @@ export function normalizeGraphvizColors(input: string): string {
         'gi'
     );
     out = out.replace(nameRe, (m, attr, eq, val, q) => {
-        const fixed = GRAPHVIZ_COLOR_NAME_FIX[val.toLowerCase()];
+        const key = val.toLowerCase();
+        const fixed = GRAPHVIZ_COLOR_NAME_FIX[key] ?? GRAPHVIZ_CSS_ONLY_COLOR[key];
         return fixed ? `${attr}${eq}${fixed}${q}` : m;
     });
 
@@ -1370,11 +1442,22 @@ export const graphvizPlugin: D3RenderPlugin = {
                     } catch {
                         naturalMinFontPx = 0;
                     }
+                    // Available viewport height for the upscale height-clamp
+                    // (D-120/D-126): prefer the live container, fall back to the
+                    // window's inner height (the real capture height in the
+                    // headless renderer), then a conservative 800px.
+                    const containerH =
+                        container.clientHeight ||
+                        (typeof window !== 'undefined' && window.innerHeight) ||
+                        800;
                     const plan = planGraphvizViewport(
                         nat.w,
                         nat.h,
                         containerW,
-                        naturalMinFontPx > 0 ? { naturalMinFontPx } : {}
+                        {
+                            ...(naturalMinFontPx > 0 ? { naturalMinFontPx } : {}),
+                            maxHeightPx: containerH,
+                        }
                     );
                     // Make the SVG fluid: drop the fixed pt width/height and drive
                     // size via CSS so preserveAspectRatio scales the content.

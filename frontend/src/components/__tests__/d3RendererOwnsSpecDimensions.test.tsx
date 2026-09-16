@@ -26,16 +26,22 @@
 
 jest.mock('uuid', () => ({ v4: () => 'test-uuid' }));
 
+// D3Renderer lazily `import('d3')`s before calling the plugin; d3 is ESM-only
+// and the CRA jest transform skips node_modules, so the real import throws
+// "unexpected token" and the render call under test never happens. The stub
+// plugin ignores the d3 argument, so an empty module is sufficient.
+jest.mock('d3', () => ({ __esModule: true }));
+
 jest.mock('../../context/ThemeContext', () => ({
     useTheme: () => ({ isDarkMode: false, toggleTheme: () => {}, setTheme: () => {} }),
 }));
 
-const renderSpy = jest.fn();
-let activePlugin: any;
+const mockRenderSpy = jest.fn();
+let mockActivePlugin: any;
 
 jest.mock('../../plugins/d3/registry', () => ({
-    findPluginForSpec: jest.fn(async () => activePlugin),
-    loadPlugin: jest.fn(async () => activePlugin),
+    findPluginForSpec: jest.fn(async () => mockActivePlugin),
+    loadPlugin: jest.fn(async () => mockActivePlugin),
     getAvailablePlugins: jest.fn(() => [{ name: 'stub', priority: 1 }]),
 }));
 
@@ -50,7 +56,7 @@ const makePlugin = (ownsSpecDimensions: boolean) => ({
     priority: 1,
     ownsSpecDimensions,
     canHandle: () => true,
-    render: renderSpy.mockImplementation(async () => {}),
+    render: mockRenderSpy.mockImplementation(async () => {}),
 });
 
 // Inline Vega-Lite document: no `definition` wrapper, container width, no height.
@@ -65,6 +71,15 @@ const inlineVegaSpec = {
     },
 };
 
+// D3Renderer keeps a module-level render cache keyed on the spec's content
+// hash, so a second test rendering the byte-identical spec is served from
+// cache and its plugin.render never fires. The legacy-path control uses a
+// distinct (but equally dimensionless) document.
+const inlineVegaSpecControl = {
+    ...inlineVegaSpec,
+    data: { values: [{ a: 'y', b: 2 }] },
+};
+
 beforeAll(() => {
     (global as any).ResizeObserver = class {
         observe() {}
@@ -74,7 +89,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
-    renderSpy.mockClear();
+    mockRenderSpy.mockClear();
 });
 
 describe('vegaLitePlugin declares that its spec is the document', () => {
@@ -97,13 +112,13 @@ describe('vegaLitePlugin declares that its spec is the document', () => {
 
 describe('D3Renderer honours ownsSpecDimensions at the render call', () => {
     it('leaves width:"container" and an absent height untouched for a document plugin', async () => {
-        activePlugin = makePlugin(true);
+        mockActivePlugin = makePlugin(true);
         render(
             <D3Renderer spec={inlineVegaSpec} type="d3" isStreaming={false} isMarkdownBlockClosed={true} />,
         );
-        await waitFor(() => expect(renderSpy).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(mockRenderSpy).toHaveBeenCalledTimes(1));
 
-        const passed = renderSpy.mock.calls[0][2];
+        const passed = mockRenderSpy.mock.calls[0][2];
         expect(passed.width).toBe('container');
         expect('height' in passed).toBe(false);
         // Renderer geometry still arrives, under its own key, not the document's.
@@ -113,13 +128,13 @@ describe('D3Renderer honours ownsSpecDimensions at the render call', () => {
     });
 
     it('still injects the 600x400 fallback for an envelope plugin (legacy path unchanged)', async () => {
-        activePlugin = makePlugin(false);
+        mockActivePlugin = makePlugin(false);
         render(
-            <D3Renderer spec={inlineVegaSpec} type="d3" isStreaming={false} isMarkdownBlockClosed={true} />,
+            <D3Renderer spec={inlineVegaSpecControl} type="d3" isStreaming={false} isMarkdownBlockClosed={true} />,
         );
-        await waitFor(() => expect(renderSpy).toHaveBeenCalledTimes(1));
+        await waitFor(() => expect(mockRenderSpy).toHaveBeenCalledTimes(1));
 
-        const passed = renderSpy.mock.calls[0][2];
+        const passed = mockRenderSpy.mock.calls[0][2];
         expect(passed.width).toBe(600);
         expect(passed.height).toBe(400);
     });
