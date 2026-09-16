@@ -1,5 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createScrollActivityTracker } from '../utils/scrollActivity';
+import {
+    createScrollVelocityTracker,
+    setSharedScrollVelocityTracker,
+    jumpToEdge,
+} from '../utils/scrollVelocity';
 
 interface ScrollManagerOptions {
     containerRef: React.RefObject<HTMLElement>;
@@ -14,6 +19,10 @@ interface ScrollManagerState {
     hasNewContentWhileAway: boolean;
     streamCompletedWhileAway: boolean;
     scrollToActiveEnd: () => void;
+    /** Jump straight to the top of the scroll container (no reveal stalls). */
+    scrollToStart: () => void;
+    /** Jump straight to the bottom, re-pinning while shells settle. */
+    scrollToEnd: () => void;
     clearIndicators: () => void;
 }
 
@@ -59,6 +68,19 @@ export function useScrollManager({
             setFollowMode(true);
         });
     }, [containerRef, isTopToBottom]);
+
+    // Direct edge jumps.  Unlike wheel/trackpad travel these do not pass
+    // through every placeholder shell on the way, so they are the fast path
+    // to either end of a very long conversation.
+    const scrollToStart = useCallback(() => {
+        if (!containerRef.current) return;
+        jumpToEdge(containerRef.current, 'start');
+    }, [containerRef]);
+
+    const scrollToEnd = useCallback(() => {
+        if (!containerRef.current) return;
+        jumpToEdge(containerRef.current, 'end');
+    }, [containerRef]);
 
     // Clear all indicators
     const clearIndicators = useCallback(() => {
@@ -121,6 +143,14 @@ export function useScrollManager({
         // and a small grey rectangle is easy to lose against the dark pane.
         const activityTracker = createScrollActivityTracker(container);
 
+        // Publish a velocity tracker so the deferred-mount code in
+        // Conversation.tsx can hold off revealing placeholder shells while
+        // the user is flinging through the conversation.  Revealing
+        // mid-gesture stalls the scroll and reflows the document under the
+        // user; deferring until they stop makes fast travel actually fast.
+        const velocityTracker = createScrollVelocityTracker(container);
+        setSharedScrollVelocityTracker(velocityTracker);
+
         const handleScroll = () => {
             const currentScrollTop = container.scrollTop;
             const isScrollingAway = isTopToBottom 
@@ -140,6 +170,8 @@ export function useScrollManager({
         return () => {
             container.removeEventListener('scroll', handleScroll);
             activityTracker.dispose();
+            velocityTracker.dispose();
+            setSharedScrollVelocityTracker(null);
         };
     }, [containerRef, isStreaming, isTopToBottom]);
 
@@ -212,6 +244,8 @@ export function useScrollManager({
         hasNewContentWhileAway,
         streamCompletedWhileAway,
         scrollToActiveEnd,
+        scrollToStart,
+        scrollToEnd,
         clearIndicators
     };
 }
