@@ -224,11 +224,12 @@ def get_diagram_render_tools() -> List[Type[BaseMCPTool]]:
         return []
     try:
         from app.mcp.tools.diagram_render import (
-            RecallImageTool, RenderDiagramTool,
+            RecallImageTool, RenderDiagramTool, ViewImageTool,
         )
-        # recall_image ships with render_diagram because it is only
-        # reachable via a handle that a render produced.
-        return [RenderDiagramTool, RecallImageTool]
+        # recall_image and view_image ship with render_diagram: one is only
+        # reachable via a handle a render produced, the other reads back
+        # what render_diagram(save_path=...) or the golden tier wrote.
+        return [RenderDiagramTool, RecallImageTool, ViewImageTool]
     except ImportError as e:
         logger.warning(f"Could not import diagram render tools: {e}")
         return []
@@ -301,8 +302,9 @@ def get_task_card_tools() -> List[Type[BaseMCPTool]]:
             TaskCardValidateTool,
         )
         from app.mcp.tools.task_card_stage import TaskCardStageTool
+        from app.mcp.tools.task_card_launch import TaskCardLaunchTool
         return [TaskCardStageTool, TaskCardListTool, TaskCardReadTool,
-                TaskCardWriteTool, TaskCardValidateTool]
+                TaskCardWriteTool, TaskCardValidateTool, TaskCardLaunchTool]
     except ImportError as e:
         logger.warning(f"Could not import task card tools: {e}")
         return []
@@ -325,9 +327,13 @@ def get_shadow_tools() -> List[Type[BaseMCPTool]]:
         from app.mcp.tools.shadow_tools import (
             ShadowListTool, ShadowReadTool, ShadowCommentTool, ShadowSetMetaTool,
             ShadowAttachTool, ShadowDetachTool,
+            ShadowControlTool, ShadowSendTool, ShadowReleaseTool,
+            ShadowSpawnTool, ShadowKillTool,
         )
         return [ShadowListTool, ShadowReadTool, ShadowCommentTool, ShadowSetMetaTool,
-                ShadowAttachTool, ShadowDetachTool]
+                ShadowAttachTool, ShadowDetachTool,
+                ShadowControlTool, ShadowSendTool, ShadowReleaseTool,
+                ShadowSpawnTool, ShadowKillTool]
     except ImportError as e:
         logger.warning(f"Could not import shadow tools: {e}")
         return []

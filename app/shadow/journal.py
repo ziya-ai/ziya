@@ -102,7 +102,7 @@ class JournalWriter:
     set_meta, control records) may append concurrently.
     """
 
-    def __init__(self, path: str):
+    def __init__(self, path: str, redactor: Optional[Redactor] = None):
         self.path = Path(path)
         self._lock = threading.Lock()
         self._seq = 0
@@ -128,7 +128,7 @@ class JournalWriter:
         self._listeners: List[Callable[[Dict], None]] = []
         # Every cmd/output record passes through here before disk (§7):
         # displayed credentials are the gap input-side masking cannot see.
-        self._redactor = Redactor()
+        self._redactor = redactor if redactor is not None else Redactor()
 
     # -- listener plumbing (for the `subscribe` socket request) -------
 
@@ -260,6 +260,32 @@ def compile_search_pattern(pattern: str):
         return None
 
 
+def searchable_text(rec: Dict) -> str:
+    """The text a ``search`` pattern is matched against.
+
+    cmd/output: the text.  meta: the event name plus every string value
+    in its data (an ``ask`` question, a ``comment``, a control verdict's
+    command and reason), so the human's questions and the chat's replies
+    are findable — they were invisible to a regex before.
+    """
+    t = rec.get("t")
+    if t in ("cmd", "output"):
+        return rec.get("text", "") or ""
+    if t == "exit":
+        return f"exit {rec.get('code')}"
+    if t == "meta":
+        parts = [str(rec.get("event") or "")]
+        data = rec.get("data")
+        if isinstance(data, dict):
+            for v in data.values():
+                if isinstance(v, str):
+                    parts.append(v)
+                elif isinstance(v, (int, float, bool)):
+                    parts.append(str(v))
+        return " ".join(parts)
+    return ""
+
+
 class JournalReader:
     """Read-side access; safe from any process (file is append-only)."""
 
@@ -334,9 +360,7 @@ class JournalReader:
         max_hits = max(1, min(int(max_hits), 100))
         hits: List[Dict] = []
         for rec in self._iter():
-            if rec.get("t") not in ("cmd", "output"):
-                continue
-            if rx.search(rec.get("text", "")):
+            if rx.search(searchable_text(rec)):
                 hits.append(rec)
                 if len(hits) >= max_hits:
                     break
