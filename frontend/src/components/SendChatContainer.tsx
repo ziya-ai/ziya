@@ -11,6 +11,7 @@ import { Button, message, Tooltip } from 'antd';
 import { AudioOutlined, SendOutlined, PictureOutlined, PaperClipOutlined } from '@ant-design/icons';
 import { ImageAttachment, DocumentAttachment } from '../utils/types';
 import { DocumentChip } from './FileChip';
+import ShadowSessionChip, { useAttachedShadowSessions } from './ShadowSessionChip';
 import { useTheme } from '../context/ThemeContext';
 import StopStreamButton from './StopStreamButton';
 import BeadTree from './BeadTree';
@@ -93,6 +94,7 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
   const { send } = useSendPayload();
 
   const isCurrentlyStreaming = streamingConversations.has(currentConversationId);
+  const attachedShadowSessions = useAttachedShadowSessions(currentConversationId);
   // isSubmitting is true only when the CURRENT conversation has a send in flight.
   // A send running for a different conversation (user switched tabs) must not block.
   const isSubmitting = submittingConversationId === currentConversationId;
@@ -1365,6 +1367,14 @@ export const SendChatContainer: React.FC<SendChatContainerProps> = ({ fixed }) =
             : (isDarkMode ? '1px solid #333' : '1px solid #e0e0e0'),
         transition: 'all 0.2s'
       }}>
+        {/* Attached shadow terminals (design doc §9): what this chat can see / drive */}
+        {attachedShadowSessions.length > 0 && (
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+            {attachedShadowSessions.map((s) => (
+              <ShadowSessionChip key={s.session_id} session={s} />
+            ))}
+          </div>
+        )}
         {/* Document attachment chips */}
         {attachedDocuments.length > 0 && (
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
