@@ -19,6 +19,23 @@ The critic returns one of three verdicts:
 | `accept` | outcome meets the criterion | loop ends, no edit |
 | `no_improvement` | criterion unmet, but no text edit would meaningfully change the outcome (environmental fault, transient error, text already right) | loop ends, lesson recorded |
 | `revise` | a concrete weakness in the card text caused/contributed, and a specific edit would **tangibly, meaningfully affect the outcome** | patch applied, level restarts |
+| `error` | the judge itself failed — transport error, unparseable reply, unknown verdict | loop ends, no edit; recorded as a judge failure with a bounded excerpt of the raw reply (`error`, `reply_excerpt`, `reply_len`) |
+
+(The shipped implementation names the second row `stop`.)  `error` was
+added after the GFX Stage 1 audit (Sep 2026): the evaluator's fail-safe
+resolved every failure to `accept`, so a ledger of ten records — three
+of them judge outages, zero revisions — badged as 🌱 10.  Pre-fix
+records carrying the old fallback rationale are relabelled `error`
+(`error: legacy_fallback`) at read time.  Two further rules follow:
+
+- **Prior lessons shown to the judge are `revise`/`stop` only.**
+  An `accept` lesson is the prior judge praising its predecessor
+  ("this structure reliably produces…") and primes the next verdict
+  toward accept; later lessons in the GFX ledger literally echoed
+  earlier ones ("continues to reliably produce…").
+- **The deck badge counts edits applied, never verdicts.**  A card
+  with history but no revision shows a dimmed 🌱 0; verdict and
+  judge-error counts live in the tooltip and the panel header.
 
 Only `revise` with a concrete patch triggers a rewrite.  The prompt
 sets the bar explicitly: no style rewrites, no marginal clarity, and —

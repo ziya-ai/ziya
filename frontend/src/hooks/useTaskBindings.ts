@@ -35,10 +35,26 @@ export function useTaskBindings(chatId: string | undefined) {
   const [loading, setLoading] = useState(false);
   const [version, setVersion] = useState(0);
 
+  // Identity of the chat/project whose bindings currently populate
+  // ``bindings``.  Used to distinguish a real chat switch (clear stale
+  // tiles at once) from a ``version`` bump that merely re-fetches the
+  // SAME chat (keep the existing tiles to avoid a flicker).
+  const identityRef = useRef<string>('');
+
   useEffect(() => {
     if (!projectId || !chatId) {
       setBindings([]);
+      identityRef.current = '';
       return;
+    }
+    // On a chat/project switch, drop the previous chat's bindings
+    // synchronously.  Otherwise the outgoing chat's tiles keep rendering
+    // on the new chat until the async fetch below resolves — several
+    // seconds of another conversation's task cards on a fresh chat.
+    const identity = `${projectId}::${chatId}`;
+    if (identityRef.current !== identity) {
+      setBindings([]);
+      identityRef.current = identity;
     }
     let cancelled = false;
     setLoading(true);
