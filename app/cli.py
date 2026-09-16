@@ -4707,13 +4707,20 @@ def cmd_shadow(args):
     argv = list(args.cmd)
     if argv and argv[0] == '--':
         argv = argv[1:]
+    from app.shadow.redaction import build_user_patterns
+    try:
+        redact_patterns = build_user_patterns(args.redact, args.redact_regex)
+    except (FileNotFoundError, ValueError) as e:
+        print(f"\033[31m--redact: {e}\033[0m", file=sys.stderr)
+        sys.exit(2)
     from app.shadow.pty_host import run_interactive
     # The wrapper owns the terminal: undo the title push main() did so the
     # child's own title handling is not fighting ours.
     sys.stdout.write("\033[23;0t")
     sys.stdout.flush()
     code = run_interactive(argv, label=args.label, allow_exec=args.allow_exec,
-                           control_ceiling=args.allow_control, meta=meta)
+                           control_ceiling=args.allow_control, meta=meta,
+                           redact_patterns=redact_patterns)
     sys.exit(code)
 
 
@@ -4796,10 +4803,15 @@ Examples:
     shadow_parser.add_argument('--allow-exec', action='store_true',
                                help='Permit exec requests from chat (handshake lands in phase 2)')
     shadow_parser.add_argument('--allow-control', nargs='?', const='gated',
-                               choices=['gated', 'unrestricted'], default='none',
+                               choices=['supervised', 'gated', 'unrestricted'], default='none',
                                help='Control-lease ceiling (leases land in phase 3)')
     shadow_parser.add_argument('--meta', action='append', default=[], metavar='K=V',
                                help='Freeform session metadata (repeatable)')
+    shadow_parser.add_argument('--redact', action='append', default=[], metavar='SET',
+                               help='Apply the journal redaction set '
+                                    '~/.ziya/shadow/policies/redact/SET.json (repeatable)')
+    shadow_parser.add_argument('--redact-regex', action='append', default=[], metavar='RX',
+                               help='Redact every match of RX from the journal (repeatable)')
     shadow_parser.add_argument('--list', '-l', action='store_true', dest='list_sessions',
                                help='List live shadow sessions and exit')
     shadow_parser.set_defaults(func=cmd_shadow)
@@ -4821,7 +4833,7 @@ def main():
     # Pre-process argv to support flags both before and after subcommand
     # e.g., "ziya --profile x chat" -> "ziya chat --profile x"
     argv = sys.argv[1:]
-    commands = {'chat', 'ask', 'review', 'explain', 'task', 'shadow'}
+    from app.cli_commands import TOP_LEVEL_COMMANDS as commands
     global_flags = {'--model', '-m', '--profile', '--region', '--root', '--no-stream', '--debug'}
     
     # Find command position

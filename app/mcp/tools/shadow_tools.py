@@ -14,7 +14,7 @@ These are same-process builtin tools, not MCP.  They never write to a
 session's PTY: exec and control leases are later phases and the socket
 refuses those requests in this build.
 """
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -284,13 +284,289 @@ class ShadowDetachTool(BaseMCPTool):
     InputSchema = ShadowDetachInput
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
+        conv = kwargs.get("conversation_id")
+        if not conv:
+            return {"ok": False, "error": "no_conversation",
+                    "message": "detach needs a conversation context"}
         session = str(kwargs.get("session", "")).strip()
         if not session:
             return {"ok": False, "error": "bad_request", "message": "session is required"}
         try:
             from app.shadow import client
-            resp = client.detach(session, conversation_id=str(kwargs.get("conversation_id") or "")
-                                 or None, provenance=_provenance(kwargs))
+            resp = client.detach(session, conversation_id=str(conv),
+                                 provenance=_provenance(kwargs))
+            return {"ok": True, **resp}
+        except Exception as e:  # noqa: BLE001
+            return _error(e)
+
+
+# ---------------------------------------------------------------------------
+# Line control (§6.1a / §6.3).  The lease_id and its keepalive are held here,
+# keyed by (conversation_id, session_id), so the model never handles the
+# lease_id and a conversation has at most one lease per session.
+# ---------------------------------------------------------------------------
+
+import threading as _threading
+
+_LEASES: Dict[str, Any] = {}          # key -> {"lease_id", "keepalive", "session_id"}
+_LEASES_LOCK = _threading.Lock()
+
+
+def _lease_key(conversation_id: str, session_id: str) -> str:
+    return f"{conversation_id}::{session_id}"
+
+
+def _forget_lease(key: str) -> None:
+    with _LEASES_LOCK:
+        rec = _LEASES.pop(key, None)
+    if rec and rec.get("keepalive"):
+        rec["keepalive"].stop()
+
+
+class ShadowControlInput(BaseModel):
+    """Input schema for shadow_control."""
+    session: str = Field(..., description="Session id, label, or label:id")
+    restriction: str = Field(
+        "gated",
+        description="Requested restriction: 'gated' (mutating commands need a "
+                    "one-keystroke confirm at the terminal — recommended), "
+                    "'supervised' (EVERY command is confirmed by the human), "
+                    "'strict' (anything off the policy is refused, no prompt), or "
+                    "'unrestricted' (no per-command gate). Clamped to the session's "
+                    "ceiling; you cannot exceed what the session was started with.")
+    policy: str = Field(
+        "builtin",
+        description="Policy set naming allowed commands: 'builtin' (the shipped read-only "
+                    "diagnostics allowlist — default), 'named:<set>' for "
+                    "~/.ziya/shadow/policies/<set>.json, or 'none' (allow everything; "
+                    "accepted only when the effective restriction is 'unrestricted').")
+
+
+class ShadowControlTool(BaseMCPTool):
+    name: str = "shadow_control"
+    description: str = (
+        "[DIRECT] Acquire a line-control lease on a `ziya shadow` session so you can "
+        "run commands in it with shadow_send. Line mode only: one command at a "
+        "time, output read from the journal. On an interactive session the human "
+        "must grant the lease with a keystroke at the terminal (the response says "
+        "pending_grant=true until they do); a headless (spawned) session grants "
+        "implicitly. The lease is kept alive automatically until you shadow_release "
+        "or this process ends. Default restriction 'gated' — opt into 'unrestricted' "
+        "only when you truly need it. " + _UNTRUSTED_NOTE
+    )
+    InputSchema = ShadowControlInput
+
+    async def execute(self, **kwargs) -> Dict[str, Any]:
+        conv = kwargs.get("conversation_id")
+        if not conv:
+            return {"ok": False, "error": "no_conversation",
+                    "message": "control needs a conversation context"}
+        session = str(kwargs.get("session", "")).strip()
+        if not session:
+            return {"ok": False, "error": "bad_request", "message": "session is required"}
+        try:
+            from app.shadow import client
+            entry = client.resolve_one(session)
+            resp = client.control_acquire(
+                session, str(conv), restriction=kwargs.get("restriction", "gated"),
+                policy=kwargs.get("policy", "builtin"), provenance=_provenance(kwargs))
+            key = _lease_key(str(conv), entry.session_id)
+            _forget_lease(key)  # replace any prior lease this conv held here
+            ka = client.LeaseKeepalive(entry, resp["lease_id"], str(conv)).start()
+            with _LEASES_LOCK:
+                _LEASES[key] = {"lease_id": resp["lease_id"], "keepalive": ka,
+                                "session_id": entry.session_id}
+            return {"ok": True, "session_id": entry.session_id, **resp,
+                    "note": ("The human must grant this at the terminal before "
+                             "shadow_send will work." if resp.get("pending_grant")
+                             else "Lease active — use shadow_send to run commands.")}
+        except Exception as e:  # noqa: BLE001
+            return _error(e)
+
+
+class ShadowSendInput(BaseModel):
+    """Input schema for shadow_send."""
+    session: str = Field(..., description="Session id, label, or label:id (must hold a lease)")
+    line: str = Field(..., min_length=1, description="One shell command line to run")
+    quiet_ms: int = Field(800, ge=100, le=5000,
+                          description="Consider the command done after this much output silence.")
+    timeout_ms: int = Field(15000, ge=500, le=120000,
+                            description="Give up waiting for quiescence after this long.")
+    max_chars: int = Field(8000, ge=200, le=40000, description="Cap on returned transcript.")
+
+
+class ShadowSendTool(BaseMCPTool):
+    name: str = "shadow_send"
+    description: str = (
+        "[DIRECT] Run ONE command line in a `ziya shadow` session you hold a control "
+        "lease on (via shadow_control), then wait for the output to settle and "
+        "return the resulting transcript. Under a 'gated' lease a mutating command "
+        "(writes, rm/mv/cp, redirection, anything off the policy) is refused with "
+        "confirm_required until the human confirms at the terminal; read-only "
+        "commands flow. Refuses if the session is in a full-screen program or at a "
+        "password prompt (it will not type blind). " + _UNTRUSTED_NOTE
+    )
+    InputSchema = ShadowSendInput
+
+    async def execute(self, **kwargs) -> Dict[str, Any]:
+        conv = kwargs.get("conversation_id")
+        session = str(kwargs.get("session", "")).strip()
+        line = str(kwargs.get("line", ""))
+        if not conv:
+            return {"ok": False, "error": "no_conversation", "message": "needs a conversation context"}
+        if not session or not line.strip():
+            return {"ok": False, "error": "bad_request", "message": "session and line are required"}
+        try:
+            from app.shadow import client
+            entry = client.resolve_one(session)
+            key = _lease_key(str(conv), entry.session_id)
+            with _LEASES_LOCK:
+                rec = _LEASES.get(key)
+            if rec is None:
+                return {"ok": False, "error": "no_lease",
+                        "message": "no control lease held here; call shadow_control first"}
+            lease_id = rec["lease_id"]
+            sent = client.send_line(session, lease_id, line, provenance=_provenance(kwargs))
+            idle = client.wait_idle(session, quiet_ms=int(kwargs.get("quiet_ms", 800)),
+                                    timeout_ms=int(kwargs.get("timeout_ms", 15000)))
+            frm = sent.get("sent_at_seq") or 1
+            page = client.read(session, from_seq=int(frm), max_records=500)
+            from app.mcp.response_validator import sanitize_text
+            transcript = sanitize_text(
+                client.format_records(page["records"],
+                                      max_chars=int(kwargs.get("max_chars", 8000))),
+                source_tool="shadow_send")
+            return {"ok": True, "session_id": entry.session_id, "sent": line,
+                    "cmd_seq": sent.get("cmd_seq"), "idle": idle.get("idle"),
+                    "timed_out": idle.get("timed_out", False),
+                    "next_seq": page.get("next_seq"), "transcript": transcript or "(no output)"}
+        except Exception as e:  # noqa: BLE001
+            return _error(e)
+
+
+class ShadowReleaseInput(BaseModel):
+    """Input schema for shadow_release."""
+    session: str = Field(..., description="Session id, label, or label:id")
+
+
+class ShadowReleaseTool(BaseMCPTool):
+    name: str = "shadow_release"
+    description: str = (
+        "[DIRECT] Release this conversation's control lease on a `ziya shadow` "
+        "session and stop its keepalive. The session keeps running; you can still "
+        "observe it with shadow_read. Always release when you are done driving a "
+        "session so the human (or another conversation) can take control."
+    )
+    InputSchema = ShadowReleaseInput
+
+    async def execute(self, **kwargs) -> Dict[str, Any]:
+        conv = kwargs.get("conversation_id")
+        session = str(kwargs.get("session", "")).strip()
+        if not session:
+            return {"ok": False, "error": "bad_request", "message": "session is required"}
+        try:
+            from app.shadow import client
+            entry = client.resolve_one(session)
+            key = _lease_key(str(conv or ""), entry.session_id)
+            with _LEASES_LOCK:
+                rec = _LEASES.get(key)
+            if rec is None:
+                return {"ok": True, "released": False, "note": "no lease was held here"}
+            client.control_release(session, rec["lease_id"], provenance=_provenance(kwargs))
+            _forget_lease(key)
+            return {"ok": True, "released": True, "session_id": entry.session_id}
+        except Exception as e:  # noqa: BLE001
+            return _error(e)
+
+
+# ---------------------------------------------------------------------------
+# Headless sessions (§6.2): spawn / kill.
+# ---------------------------------------------------------------------------
+
+class ShadowSpawnInput(BaseModel):
+    """Input schema for shadow_spawn."""
+    argv: List[str] = Field(..., min_length=1,
+                            description="Command to run headless, e.g. [\"ssh\", \"prod-42\"]")
+    label: Optional[str] = Field(None, max_length=120, description="Session label (default: the command)")
+    policy: str = Field("builtin", description="Policy set for the implicit lease: 'builtin' (read-only "
+                                               "diagnostics — default) or 'named:<set>'. Spawned sessions "
+                                               "are always strict: anything the policy does not allow is refused, "
+                                               "never prompted (no human is watching), and 'none' is not "
+                                               "accepted on them.")
+    idle_timeout_s: Optional[int] = Field(None, ge=30, le=7 * 24 * 3600,
+                                          description="Self-shutdown after this much inactivity (default 24 h)")
+
+
+class ShadowSpawnTool(BaseMCPTool):
+    name: str = "shadow_spawn"
+    description: str = (
+        "[DIRECT] Start a headless `ziya shadow` session running a command with no human "
+        "terminal, detached so it outlives this turn. argv[0] must be on the spawn "
+        "allowlist (shipped: ssh; the user extends it in ~/.ziya/shadow/policies/spawn.json) "
+        "and an ssh argv may name only options and a destination — no remote command, "
+        "no ProxyCommand/LocalCommand/-F/-O (spawn_denied otherwise). "
+        "This conversation becomes its authority and receives an implicit line-control "
+        "lease, so shadow_send works immediately. The lease is always 'strict': the "
+        "policy is the entire control (mutating/off-policy commands are refused, not "
+        "prompted). The session appears in shadow_list for every chat; only this "
+        "conversation may shadow_kill it. It shuts itself down after the idle timeout."
+    )
+    InputSchema = ShadowSpawnInput
+
+    async def execute(self, **kwargs) -> Dict[str, Any]:
+        conv = kwargs.get("conversation_id")
+        if not conv:
+            return {"ok": False, "error": "no_conversation", "message": "spawn needs a conversation context"}
+        argv = [str(a) for a in (kwargs.get("argv") or []) if str(a)]
+        if not argv:
+            return {"ok": False, "error": "bad_request", "message": "argv is required"}
+        try:
+            from app.shadow import client
+            sid = client.spawn_headless(argv, label=kwargs.get("label"), ceiling="gated",
+                                        spawned_by={"conversation_id": str(conv)},
+                                        idle_timeout_s=kwargs.get("idle_timeout_s"))
+            # Implicit lease at spawn (§6.2) — the human already approved this tool call.
+            entry = client.resolve_one(sid)
+            resp = client.control_acquire(sid, str(conv), restriction="strict",
+                                          policy=kwargs.get("policy", "builtin"),
+                                          provenance=_provenance(kwargs))
+            key = _lease_key(str(conv), sid)
+            _forget_lease(key)
+            ka = client.LeaseKeepalive(entry, resp["lease_id"], str(conv)).start()
+            with _LEASES_LOCK:
+                _LEASES[key] = {"lease_id": resp["lease_id"], "keepalive": ka, "session_id": sid}
+            return {"ok": True, "session_id": sid, "label": entry.label, "restriction": resp["restriction"],
+                    "policy": resp["policy"], "granted": resp["granted"],
+                    "note": "Headless session running; use shadow_send to drive it and shadow_kill to end it."}
+        except Exception as e:  # noqa: BLE001
+            return _error(e)
+
+
+class ShadowKillInput(BaseModel):
+    """Input schema for shadow_kill."""
+    session: str = Field(..., description="Session id or label of a session THIS conversation spawned")
+
+
+class ShadowKillTool(BaseMCPTool):
+    name: str = "shadow_kill"
+    description: str = (
+        "[DIRECT] Terminate a headless `ziya shadow` session that this conversation "
+        "spawned with shadow_spawn. The wrapped command is hung up and the session's "
+        "journal is removed. Refuses interactive sessions (the human at the terminal "
+        "ends those) and sessions spawned by another conversation."
+    )
+    InputSchema = ShadowKillInput
+
+    async def execute(self, **kwargs) -> Dict[str, Any]:
+        conv = kwargs.get("conversation_id")
+        session = str(kwargs.get("session", "")).strip()
+        if not session:
+            return {"ok": False, "error": "bad_request", "message": "session is required"}
+        try:
+            from app.shadow import client
+            entry = client.resolve_one(session)
+            resp = client.kill_session(session, conversation_id=str(conv) if conv else None)
+            _forget_lease(_lease_key(str(conv or ""), entry.session_id))
             return {"ok": True, **resp}
         except Exception as e:  # noqa: BLE001
             return _error(e)

@@ -44,7 +44,9 @@ def test_tools_are_registered_in_builtin_category():
     assert "shadow" in BUILTIN_TOOL_CATEGORIES
     names = {t().name for t in get_builtin_tools_for_category("shadow")}
     assert names == {"shadow_list", "shadow_read", "shadow_comment", "shadow_set_meta",
-                     "shadow_attach", "shadow_detach"}
+                     "shadow_attach", "shadow_detach",
+                     "shadow_control", "shadow_send", "shadow_release",
+                     "shadow_spawn", "shadow_kill"}
 
 
 def test_list_empty_gives_hint(home):

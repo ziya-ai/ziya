@@ -306,7 +306,8 @@ def test_overlay_never_forwards_control_sequences_from_chat_text(home):
     out = os.read(r, 65536)
     os.close(r)
     core.entry.remove()
-    body = out.replace(b"\x1b[2m", b"").replace(b"\x1b[0m", b"")  # our own dim/reset
+    from app.shadow import pty_host as _ph
+    body = out.replace(_ph._DIM.encode(), b"").replace(_ph._RESET.encode(), b"")  # our own colour/reset
     assert b"\x1b" not in body, out
     assert b"\x9b" not in body and "\u202e".encode() not in body
     assert b"hello" in body and b"evil" in body  # printable content survives

@@ -194,6 +194,7 @@ def test_frontend_menu_prefix_handling(home):
         def __init__(self):
             self.typed = b""
             self.frontend = None
+            self.server = None   # no socket server: menu shows no lease state
 
         def handle_input(self, data):
             self.typed += data

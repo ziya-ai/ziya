@@ -45,10 +45,27 @@ from app.shadow.title import TitleRewriter
 
 MENU_PREFIX = b"\x18"   # C-x
 MENU_KEY = b"\x1a"      # C-z
-_DIM = "\x1b[2m"
+# Overlay colour.  Not SGR 2 (dim): ghostty and some other emulators fade
+# dim text almost to the background while the ⏺ emoji ignores the
+# attribute, leaving a bright dot with unreadable text after it.  An
+# explicit mid-grey reads as "secondary" on dark and light themes alike.
+_DIM = "\x1b[38;5;245m"
 _RESET = "\x1b[0m"
 _TICK_S = 0.2
+# Yield-to-human (§6.1a): a control-lease write starts only when the human
+# has been quiet this long, has no partial line typed, and the child's
+# output has settled.  No pause state, no keys to learn — the model simply
+# waits its turn like a colleague reaching for your keyboard.
+HUMAN_QUIET_S = 1.5
+OUTPUT_QUIET_S = 0.3
+SEND_WAIT_S = 10.0
 _LINE_TERM_RE = re.compile(rb"(\r\n|\r|\n)")
+# DECSET/DECRST 2004: the child (its line editor) asked the terminal to
+# bracket pastes.  Tracked from output so a multi-statement snippet we type
+# on the human's behalf can be delivered as one paste rather than a burst
+# of keystrokes that a configured ZLE (p10k, autosuggest) would mangle.
+_BRACKETED_PASTE_RE = re.compile(rb"\x1b\[\?2004([hl])")
+_PASTE_BEGIN, _PASTE_END = b"\x1b[200~", b"\x1b[201~"
 
 # On-demand OSC 133 instrumentation (§4.1).  Typed visibly into the PTY at
 # the human's request.  Opportunistic: nothing depends on it working.
@@ -83,7 +100,8 @@ class ShadowCore:
     def __init__(self, argv: List[str], *, label: Optional[str] = None,
                  allow_exec: bool = False, control_ceiling: str = "none",
                  meta: Optional[Dict[str, str]] = None, headless: bool = False,
-                 spawned_by: Optional[Dict[str, object]] = None):
+                 spawned_by: Optional[Dict[str, object]] = None,
+                 redact_patterns: Optional[List] = None):
         self.argv = list(argv) or [os.environ.get("SHELL", "/bin/sh")]
         # What is *recorded* (registry, journal, shadow_list) is the
         # redacted argv; the child receives self.argv unchanged.
@@ -92,7 +110,8 @@ class ShadowCore:
             label or " ".join(self.safe_argv), self.safe_argv, allow_exec=allow_exec,
             control_ceiling=control_ceiling, meta=meta, headless=headless,
             spawned_by=spawned_by)
-        self.journal = JournalWriter(self.entry.journal)
+        from app.shadow.redaction import Redactor
+        self.journal = JournalWriter(self.entry.journal, Redactor(redact_patterns))
         self.segmenter = Segmenter(self.journal, on_mode_change=self._on_mode_change)
         self.master_fd: int = -1
         self.child_pid: int = -1
@@ -100,8 +119,10 @@ class ShadowCore:
         self.gate: Optional[MaskGate] = None
         self.server: Optional[ShadowSocketServer] = None
         self.frontend: Optional["InteractiveFrontend"] = None
+        self.bracketed_paste = False
         self._write_lock = threading.Lock()
         self._closed = False
+        self._last_human_key_at = 0.0
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -121,7 +142,9 @@ class ShadowCore:
         self.server = ShadowSocketServer(
             self.entry, self.journal,
             on_comment=self._render_comment, on_meta_change=self._on_meta_change,
-            on_attach=self._on_attach)
+            on_attach=self._on_attach, on_send_line=self.send_line_to_child,
+            on_control=self._on_control, on_confirm=self._on_confirm,
+            on_confirm_timeout=self._on_confirm_timeout)
         self.server.start()
         self.journal.meta("start", {"argv": self.safe_argv, "label": self.entry.label,
                                     "pid": pid, "headless": self.entry.headless})
@@ -156,13 +179,76 @@ class ShadowCore:
 
     def write_to_child(self, data: bytes) -> None:
         with self._write_lock:
-            view = memoryview(data)
-            while view:
-                try:
-                    n = os.write(self.master_fd, view)
-                except InterruptedError:
-                    continue
-                view = view[n:]
+            self._write_locked(data)
+
+    def _write_locked(self, data: bytes) -> None:
+        """Write to the PTY; caller holds ``_write_lock``."""
+        view = memoryview(data)
+        while view:
+            try:
+                n = os.write(self.master_fd, view)
+            except InterruptedError:
+                continue
+            view = view[n:]
+
+    def terminal_busy(self) -> Optional[str]:
+        """Why a control write must wait right now, or None if the terminal
+        is free: the human typed recently, has an unfinished line, or the
+        child is still producing output."""
+        now = time.monotonic()
+        if now - self._last_human_key_at < HUMAN_QUIET_S:
+            return "human typing"
+        seg = self.segmenter
+        with seg._lock:
+            if seg._typed or seg._typed_lines:
+                return "human has a partial line typed"
+            if now - seg._last_output_at < OUTPUT_QUIET_S:
+                return "output still arriving"
+        return None
+
+    def send_line_to_child(self, text: str, wait_s: float = SEND_WAIT_S) -> Dict[str, object]:
+        """Write a control-lease line to the PTY (§6.1a).  Core-side half of
+        the ``send_line`` op: the server has already checked the lease and
+        the policy verdict; this enforces the guards that depend on live PTY
+        state and then writes.
+
+        Never types blind: refuses while the child is in the alternate
+        screen (a TUI we cannot see) or has ECHO off (a password prompt).
+        Never types over the human: waits up to ``wait_s`` for the terminal
+        to be free (see ``terminal_busy``), then reports ``terminal_busy`` so
+        the model tries again later.  Two typists can therefore never share
+        a line; the human needs no pause key and no precedence model.
+        Returns {"cmd_seq": None|int, "sent_at_seq": int} on success or
+        {"error": code, ...} for a rejection.
+        """
+        from app.shadow.masking import echo_off
+        deadline = time.monotonic() + max(0.0, wait_s)
+        payload = text.rstrip("\r\n").encode("utf-8", errors="replace")
+        while True:
+            if self.master_fd < 0:
+                return {"error": "no_child"}
+            if self.segmenter.altscreen:
+                return {"error": "altscreen_active"}
+            if echo_off(self.master_fd):
+                return {"error": "echo_off"}
+            # The decisive check and the write are one critical section:
+            # ``handle_input`` records the keystroke, then takes this same
+            # lock to write it, so a human byte can land wholly before this
+            # check (→ busy, we wait) or wholly after our "\r" (→ a fresh
+            # line), never between the check and our write.
+            with self._write_lock:
+                busy = self.terminal_busy()
+                if busy is None:
+                    sent_at = self.journal._seq
+                    # Feed the segmenter first (same ordering as human
+                    # input, so the cmd record precedes its output).
+                    self.segmenter.feed_input(payload)
+                    cmd_seq = self.segmenter.on_enter(masked=False)
+                    self._write_locked(payload + b"\r")
+                    return {"cmd_seq": cmd_seq, "sent_at_seq": sent_at}
+            if time.monotonic() >= deadline:
+                return {"error": "terminal_busy", "detail": busy}
+            time.sleep(0.05)
 
     def handle_input(self, data: bytes) -> None:
         """The human typed ``data``: account for it, then forward it.
@@ -178,6 +264,7 @@ class ShadowCore:
         """
         if not data:
             return
+        self._last_human_key_at = time.monotonic()
         # Split into lines so each terminator gets its own on_enter().  Only
         # the FIRST line can be checked against the gate: termios reflects
         # the prompt on screen now, and the child has not yet run anything
@@ -209,6 +296,8 @@ class ShadowCore:
         """Bytes from the child: display (frontend) then journal."""
         if self.frontend is not None:
             self.frontend.write_child_output(data)
+        for m in _BRACKETED_PASTE_RE.finditer(data):
+            self.bracketed_paste = m.group(1) == b"h"
         self.segmenter.feed_output(data)
         if self.gate is not None:
             self.gate.feed_output(data.decode("utf-8", errors="replace"))
@@ -246,6 +335,22 @@ class ShadowCore:
         self.frontend.overlay(f"attached to chat {str(conv)[:8]}" if conv
                               else "detached from chat")
         self.frontend.refresh_title()
+
+    def _on_control(self, lease) -> None:
+        """Lease requested / released (§6.1): the human at the canvas decides."""
+        if self.frontend is not None:
+            self.frontend.control_event(lease)
+
+    def _on_confirm(self, text: str, reason: str, conversation_id: str,
+                    confirm_id: str = "") -> None:
+        """A gated command needs the human's keystroke (§6.3)."""
+        if self.frontend is not None:
+            self.frontend.confirm_request(text, reason, conversation_id, confirm_id)
+
+    def _on_confirm_timeout(self, confirm_id: str) -> None:
+        """The gated command timed out at the banner; release the keystroke mode."""
+        if self.frontend is not None:
+            self.frontend.confirm_timeout(confirm_id)
 
     def _render_comment(self, text: str, provenance: Dict) -> bool:
         if self.frontend is None:
@@ -326,6 +431,10 @@ class InteractiveFrontend:
         self._mode = None
         self._compose_purpose = ""
         self._compose_buf: List[str] = []
+        # What the last grant / confirm banner named, so the keystroke that
+        # answers it cannot be redirected to a request that arrived later.
+        self._grant_lease_id: Optional[str] = None
+        self._confirm_id: Optional[str] = None
         core.frontend = self
         self.titles = TitleRewriter(self._title_prefix())
 
@@ -375,6 +484,12 @@ class InteractiveFrontend:
     # -- input ------------------------------------------------------------------
 
     def handle_keys(self, data: bytes) -> None:
+        if self._mode in ("grant", "confirm"):
+            mode, self._mode = self._mode, None
+            (self._grant_key if mode == "grant" else self._confirm_key)(data[:1])
+            if len(data) > 1:
+                self.handle_keys(data[1:])
+            return
         if self._mode == "menu":
             self._mode = None
             self._menu_key(data[:1])
@@ -413,10 +528,19 @@ class InteractiveFrontend:
 
     def _open_menu(self) -> None:
         e = self.core.entry
-        exec_state = "on" if e.allow_exec else "off"
+        conv = (e.attached or {}).get("conversation_id")
+        bound = f"chat {str(conv)[:8]}" if conv else "no chat attached"
+        lease = self.core.server.current_lease() if self.core.server else None
+        if lease is not None:
+            state = "active" if lease.granted else "pending grant"
+            ctl = (f"control: chat {lease.conversation_id[:8]} ({lease.restriction}, "
+                   f"{lease.policy_set}, {state}) · [r] revoke control · ")
+        else:
+            ctl = ""
         self.overlay(
-            f'shadow {e.session_id} ("{e.label}") · seg={e.segmentation} · '
-            f"[a] ask · [l] relabel · [i] instrument shell · [x] exec {exec_state} · "
+            f'shadow {e.session_id} ("{e.label}") · seg={e.segmentation} · {bound} · {ctl}'
+            f"[a] ask · [l] relabel · [i] instrument shell · "
+            f"[c] control ceiling: {e.control_ceiling} · "
             f"[q] end session · other key: cancel")
         self._mode = "menu"
 
@@ -428,17 +552,89 @@ class InteractiveFrontend:
             self._start_compose("label", f'new label [{e.label}]: ')
         elif key == b"i":
             self._start_compose("instrument", "instrument which shell? [b]ash / [z]sh: ")
-        elif key == b"x":
-            e.allow_exec = not e.allow_exec
+        elif key == b"c":
+            # Cycle the shadow-side control ceiling (§6.1) on a live session:
+            # none → supervised → gated → unrestricted → none.  (strict is the
+            # headless/chat-requestable tier and is not offered here.)  Persisted
+            # so a chat's next shadow_control sees it without a restart.
+            # Lowering to none also ends any live lease, so the human can
+            # always turn control off with one keystroke.
+            order = ["none", "supervised", "gated", "unrestricted"]
+            e.control_ceiling = (order[(order.index(e.control_ceiling) + 1) % len(order)]
+                                 if e.control_ceiling in order else "none")
             e.save()
-            self.core.journal.meta("allow_exec", {"enabled": e.allow_exec})
-            self.overlay(f"exec requests {'enabled' if e.allow_exec else 'disabled'} "
-                         f"(exec handshake lands in phase 2)")
+            self.core.journal.meta("control_ceiling", {"ceiling": e.control_ceiling})
+            revoked = (e.control_ceiling == "none" and self.core.server is not None
+                       and self.core.server.revoke_lease())
+            self.overlay(f"control ceiling: {e.control_ceiling}"
+                         + (" — live lease revoked" if revoked else "")
+                         + ("  (a chat may now request control with shadow_control; "
+                            "you grant with [g])" if e.control_ceiling != "none" else ""))
+            self.refresh_title()
+        elif key == b"r":
+            if self.core.server and self.core.server.revoke_lease():
+                self.overlay("control lease revoked")
+            else:
+                self.overlay("no control lease to revoke")
         elif key == b"q":
             self.overlay("ending shadow session (SIGHUP to child)")
             self.core.terminate_child()
         else:
             self.overlay("cancelled")
+
+    # -- control grant / gated confirm (§6.1, §6.3) ----------------------------------
+
+    def control_event(self, lease) -> None:
+        """Server callback: a lease was requested (pending) or ended (None)."""
+        if lease is None:
+            self.overlay("control lease ended")
+            return
+        if lease.granted:
+            return  # implicit grant (headless) never reaches a frontend
+        self.overlay(
+            f"chat {lease.conversation_id[:8]} requests line control · "
+            f"{lease.restriction} · policy {lease.policy_set} · "
+            f"[g] grant · [n] deny · other key: deny")
+        self._grant_lease_id = lease.lease_id
+        self._mode = "grant"
+
+    def _grant_key(self, key: bytes) -> None:
+        srv = self.core.server
+        expected, self._grant_lease_id = self._grant_lease_id, None
+        if key == b"g" and srv is not None and srv.grant_active_lease(expected):
+            self.overlay("control granted — this chat can now run commands here "
+                         "(C-x C-z, r to revoke)")
+        else:
+            if srv is not None:
+                srv.revoke_lease()
+            self.overlay("control request denied")
+
+    def confirm_request(self, text: str, reason: str, conversation_id: str,
+                        confirm_id: Optional[str] = None) -> None:
+        """Server callback: a gated command awaits the human's decision."""
+        self.overlay(f"chat {conversation_id[:8]} wants to run: {text}")
+        self.overlay(f"  ({reason}) · [y] run · [n] deny · other key: deny")
+        self._confirm_id = confirm_id
+        self._mode = "confirm"
+
+    def confirm_timeout(self, confirm_id: Optional[str]) -> None:
+        """Server callback: the banner's command was denied by timeout.  Only
+        leaves confirm mode if that banner is still the one on screen."""
+        if self._mode == "confirm" and self._confirm_id == confirm_id:
+            self._mode = None
+            self._confirm_id = None
+            self.overlay("no confirmation — command denied")
+
+    def _confirm_key(self, key: bytes) -> None:
+        srv = self.core.server
+        shown, self._confirm_id = self._confirm_id, None
+        ok = srv is not None and srv.resolve_confirm(key == b"y", shown)
+        if not ok:
+            self.overlay("nothing awaiting confirmation")
+        elif key == b"y":
+            self.overlay("approved")
+        else:
+            self.overlay("denied")
 
     # -- one-line composer -----------------------------------------------------------
 
@@ -494,10 +690,16 @@ class InteractiveFrontend:
             if shell is None:
                 self.overlay("cancelled")
                 return
-            snippet = INSTRUMENT_SNIPPETS[shell]
-            core.journal.meta("instrument", {"shell": shell})
-            # Typed visibly, exactly as the human would — §6 principle.
-            core.handle_input(snippet.encode("utf-8") + b"\r")
+            snippet = INSTRUMENT_SNIPPETS[shell].encode("utf-8")
+            core.journal.meta("instrument", {"shell": shell,
+                                             "bracketed_paste": core.bracketed_paste})
+            # Typed visibly, exactly as the human would — §6 principle.  When
+            # the line editor has bracketed paste on, deliver it as a paste:
+            # a bare burst of ``;``, ``{`` and quotes trips ZLE widgets
+            # (p10k, autosuggest) and the snippet arrives mangled.
+            if core.bracketed_paste:
+                snippet = _PASTE_BEGIN + snippet + _PASTE_END
+            core.handle_input(snippet + b"\r")
 
     # -- run ----------------------------------------------------------------------
 
@@ -533,10 +735,12 @@ class InteractiveFrontend:
 
 def run_interactive(argv: List[str], *, label: Optional[str] = None,
                     allow_exec: bool = False, control_ceiling: str = "none",
-                    meta: Optional[Dict[str, str]] = None) -> int:
+                    meta: Optional[Dict[str, str]] = None,
+                    redact_patterns: Optional[List] = None) -> int:
     """Entry point for ``ziya shadow`` (§2).  Returns the child's exit code."""
     core = ShadowCore(argv, label=label, allow_exec=allow_exec,
-                      control_ceiling=control_ceiling, meta=meta)
+                      control_ceiling=control_ceiling, meta=meta,
+                      redact_patterns=redact_patterns)
     return InteractiveFrontend(core).run()
 
 

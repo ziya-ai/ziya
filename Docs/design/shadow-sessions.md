@@ -94,9 +94,27 @@ e.g. `a3f21e`):
 - `headless` marks agent-spawned sessions (§6.2); `spawned_by` carries
   the spawning conversation's provenance (`{conversation_id, turn}`)
   and is null for interactive sessions.
-- Registry hygiene: every reader MUST verify liveness (`os.kill(pid, 0)`)
-  and unlink stale entries. The shadow process also removes its entry on
-  clean exit (SIGTERM/SIGHUP handlers + atexit).
+- Registry hygiene: every reader MUST verify liveness and unlink stale
+  entries. Liveness is **not** `os.kill(pid, 0)` alone: pids are reused,
+  and after a reboot every entry a SIGKILLed or power-cut host left
+  behind names a pid that may now be an unrelated process. A foreign pid
+  must also answer `ping` on the entry's socket with the matching
+  `session_id`; a socket that is missing, refuses, or answers as another
+  session marks the entry stale. A socket that *times out* is
+  indeterminate and treated as live (reaping unlinks the journal, which
+  must never happen to a busy host), as is an entry written less than
+  `STARTUP_GRACE_S` (5 s) ago with no socket yet — the host saves before
+  it binds. The current process's own entries are trivially live.
+  Reaping unlinks only the entry's *own* `<id>.sock` / `<id>.journal`
+  inside a shadow directory, never a sibling's files an entry happens
+  to name. The shadow process also removes its entry on clean exit
+  (SIGTERM/SIGHUP handlers + atexit).
+- At rest the entry is one ALE line (`!ale1:…`, the journal's envelope)
+  when application-level encryption is enabled for `session_data`;
+  readers accept both forms. Label, argv, cwd and meta are user- and
+  model-authored text that routinely carries hostnames and, despite
+  `redact_argv`, sometimes credentials. An entry encrypted under a key
+  the reader does not hold is skipped, not reaped.
 - Socket and registry files are mode 0600; the sessions directory 0700.
   Same-user access only — this is the entire local authn model in v1.
 - *Impl note:* `AF_UNIX` paths are capped at 104 bytes (macOS) / 108
@@ -172,7 +190,7 @@ requests carry `"v": 1`.
 | `info` | — | registry entry + journal head/tail seq |
 | `read` | `from_seq`, `max_records` (≤500) | `{records: [...], next_seq}` |
 | `tail` | `last_n_commands` (≤50) | last N cmd groups with outputs |
-| `search` | `pattern` (regex), `max_hits` | matching records ± 1 group context |
+| `search` | `pattern` (regex), `max_hits` | matching records ± 1 group context. Matches cmd/output text and, for `meta` records, the event name plus the string values of its data (an `ask` question, a `comment`, a control verdict's command and reason) — keys and nested provenance are not searched |
 | `exec` | `command`, `provenance` | see §6 — async, returns `exec_id` |
 | `exec_status` | `exec_id` | `pending \| approved \| denied \| done` + result seqs |
 | `control_acquire` | `provenance`, `mode` (`line\|screen`), `restriction` (`gated\|unrestricted`) | see §6.1 — async, returns `lease_id` + effective restriction |
@@ -309,28 +327,37 @@ never be broader than the session's ceiling.
    restriction is recorded in the lease and journaled with every
    `send_line`/`send_keys` it governs.
 
-Human precedence (the dead-man switch, both tiers):
+Shared terminal — no precedence model (decided 2026-09-12; supersedes
+the soft-pause / buffered-handoff design that stood here):
 
-- **Soft pause with buffered handoff.** While a lease is active, the
-  human's printable keystrokes are buffered locally (rendered dim by
-  the overlay renderer) — not yet written to the PTY. **Enter** commits
-  the buffer and triggers the pause: queued model writes are dropped,
-  subsequent `send_line`/`send_keys` return `control_paused`, and only
-  then is the buffered line delivered to the PTY intact. One clean
-  handoff; human and model input never interleave within a line.
-- **Interrupt-class keys (^C, ^Z, ^D, ^\)** pause immediately and pass
-  through right away — an interrupt means *now*, not after composing a
-  line. Stray uncommitted keys sit in the buffer (Esc clears it) and
-  never disturb the operation.
-- **Resume from either side**: from the §8 menu, or by the chat side
-  re-requesting via `control_acquire` (fresh banner, fresh keystroke
-  grant at the shadow terminal — authority never moves). Pause is the
-  *normal resting state*: a human may work solo in the canvas for hours
-  with the lease paused, then wave the controller back in.
-- The §8 menu key revokes the lease outright.
-- Pause/resume/revoke and every model-sent byte are journaled as `meta`
-  records with conversation provenance — the session remains fully
-  auditable and replayable.
+- Once granted, the lease is a **shared terminal**, exactly like two
+  people attached to one tmux session. The human types whenever they
+  like and it goes straight to the PTY; the controller's `send_line`
+  writes go to the same PTY and echo on the human's screen as they are
+  typed, so each side can see the other is active. There is no pause
+  state, no keystroke buffering, no resume handshake, nothing the human
+  has to be aware of or operate.
+- The only control is **revoke** (§8 menu `[r]`), and the human only
+  touches it if they want the delegation to end. Release from the chat
+  side and heartbeat death end it too.
+- The one hazard a shared PTY has is two parties typing into the *same
+  line* at the same instant. It is closed on the **controller's** side
+  only, so the human never sees a mechanism: `send_line` waits its turn
+  (`pty_host.terminal_busy`) until the human has typed nothing for
+  `HUMAN_QUIET_S` (1.5 s), has no unfinished line in the segmenter's
+  typed buffer, and the child's output has been quiet for
+  `OUTPUT_QUIET_S` (0.3 s). If the terminal does not free up within
+  `SEND_WAIT_S` (10 s) the write is refused with `terminal_busy` and the
+  model retries later. The human's keystrokes are never delayed,
+  buffered or gated — exactly like a colleague waiting for you to stop
+  typing before reaching for your keyboard. The residual race (a write
+  already in flight in the same instant as the human's first keystroke)
+  is accepted. A buffered-handoff / soft-pause scheme was prototyped on
+  paper and rejected: it made the human think about a locking model to
+  use a feature whose whole point is not having to.
+- Every model-sent byte is journaled as a `meta` record with
+  conversation provenance — the session remains fully auditable.
+  (`Lease.paused` remains in the data model as an inert field.)
 
 Narration: a controller can render notes on the canvas via the
 `comment` request (§5) — "⏺ restarting service B next" — without
@@ -381,8 +408,13 @@ a shadow terminal, so the **spawning conversation is the authority**
 sets the ceiling, and the spawning conversation receives an
 **implicit lease at spawn**: no banner, no keystroke — that grant
 already happened in the chat terminal. `shadow_spawn` is therefore
-the chat-side-gated action (it passes through normal tool approval
-once); `shadow_send` then rides the lease as usual (§9, E3).
+the chat-side-gated action; `shadow_send` then rides the lease as
+usual (§9, E3). *As built (§10.2 C16):* there is no per-call approval
+step for builtin tools, so the gate is structural — `argv[0]` must be
+on the spawn allowlist (`~/.ziya/shadow/policies/spawn.json`, shipped
+as `ssh` only) and an `ssh` argv may name only options and a
+destination, never a remote command or a local-exec option. A spawned
+session's lease is always `strict` and may never hold policy `none`.
 
 Lifecycle: the registry entry records `spawned_by` provenance. A
 headless session with no live lease heartbeat and no subscriber for
@@ -409,7 +441,7 @@ set on both sides (shadow ceiling, controller request) and the
 |---|---|
 | `inherit` | The persisted local shell allowlist (`mcp_config.json` shell config: allowed commands, git read-only/write tier, aws/curl/IaC blocks). The shadow host **reads this itself**; it never trusts an allowlist sent over the socket. Per-chat *session grants* (task-scope escalations) are process-local and unverifiable by the host, so they do **not** inherit. The local **yolo flag does not inherit** — yolo on the workstation never becomes yolo on a remote host; `unrestricted` is always an explicit per-lease choice. |
 | `named:<set>` | An explicit policy file `~/.ziya/shadow/policies/<set>.json`, same schema as the shell config so the existing editor works and the file can be checked into a repo and shared across a team (`prod-readonly.json`). |
-| `none` | Everything is allowed; only meaningful with mode `unrestricted`. |
+| `none` | Everything is allowed; only meaningful with mode `unrestricted` — and **enforced** so: `control_acquire` refuses `none` unless the effective (post-clamp) restriction is `unrestricted` (§10.2 C9). An absent policy is `builtin`, never `none`. |
 
 **Mode — what happens to a command the policy does not allow.**
 
@@ -447,7 +479,13 @@ under a *remote profile* with two substitutions: command substitutions
 (`$(...)`, backticks) are **not resolved** — resolving them would
 execute on the wrong machine — and are simply disallowed; and path-based
 write policy is replaced by "paths are opaque": a write is disallowed
-unless the command itself is allowlisted.  `get_allowed_commands_
+unless the command itself is allowlisted. The remote profile also
+classifies per shell segment (quote-aware split on `; | & && ||` and
+line terminators, env-assignment prefixes peeled) and treats as not
+allowed anything whose effect it cannot see: command wrappers (`xargs`,
+`time`, `timeout`, `env`, `sudo`, …), interpreters and shells, `find`
+with `-delete`/`-exec`, `awk` programs that call `system(` or redirect,
+and any text containing a control character (§10.2 C1–C8).  `get_allowed_commands_
 description` supplies the banner summary and the model's context block.
 
 **What the validator cannot see** (stated plainly in the tool
@@ -474,6 +512,20 @@ Non-negotiable before any release:
 - Echo-off detection is the primary mechanism (it is how sudo/ssh/gpg
   actually behave); the regex set is belt-and-braces for prompts that
   read with echo on.
+- **User redaction sets.** The output-side redactor's built-in shapes
+  (§10.1 F4) are generic; each environment has leaks only its user can
+  name — a lab ssh banner that prints a temporary credential on every
+  login, an internal token format. These live as
+  `~/.ziya/shadow/policies/redact/<set>.json`
+  (`{"patterns": [{"kind": "lab-cred", "regex": "…"}]}`) so they can be
+  shared like a policy file, and are applied per session with
+  `ziya shadow --redact <set>` (repeatable) or inline with
+  `--redact-regex RX`. Matches become `[REDACTED:<kind>]`. A user regex
+  runs on every byte the child prints inside the human's terminal
+  wrapper, so it passes the same guard as a model-supplied `search`
+  pattern (length cap, no quantified group), may not match the empty
+  string, and at most 64 patterns apply; a missing or malformed set
+  refuses to start the session rather than silently starting without it.
 - **"Echo off" means `ECHO` clear *and* `ICANON` set.** `ECHO` alone is
   not a signal: zsh (ZLE) and bash (readline) clear `ECHO` at every
   prompt and paint their own echo, in raw mode (`ICANON` clear). A real
@@ -494,7 +546,12 @@ Non-negotiable before any release:
 - One reserved control sequence (default `C-x C-z`, configurable) opens
   a one-line shadow menu: toggle exec, show session id/label, detach
   notice, edit label/metadata, instrument shell (§4.1 osc133 snippet),
-  quit. Chosen to avoid common shell/tmux
+  quit. The instrument snippet is typed visibly, as the human would; when
+  the child's line editor has bracketed paste on (DECSET 2004, tracked
+  from its output) it is delivered as one `ESC[200~…ESC[201~` paste,
+  because a bare burst of `;`, `{` and quotes trips ZLE widgets (p10k,
+  autosuggest) and arrives mangled. The journaled `cmd` is the snippet
+  itself — the paste markers are input escapes the segmenter strips. Chosen to avoid common shell/tmux
   bindings; passthrough
   of the literal sequence available via double-press.
 - On start, one dim line: `⏺ shadow session a3f21e ("ssh prod-42") —
@@ -579,6 +636,19 @@ same-process, same codebase):
   last-writer-wins on the single display slot and journals the takeover;
   detach only clears the association (reads still work), and a
   conversation may only detach its own binding.
+- **Per-turn context tag** (`app/shadow/context.py`). Attached sessions are
+  surfaced to the model every turn as an `<AttachedShadowSessions>` tag
+  (id, label, segmentation, record count, last activity, and a loud
+  `PENDING QUESTION` marker when the human has asked from the terminal),
+  plus a bare count of other live sessions. The tag is injected onto the
+  **current user message**, riding the same relocation as
+  `CurrentDateTime`, because it changes every turn and the system-prompt
+  session block is a cached prefix. Unattached sessions contribute only a
+  count — never content — so attaching is what opts a terminal into a
+  conversation's context. One `info` round-trip per attached session
+  (0.3 s timeout); any failure degrades to registry-only text, never an
+  error. The `C-x C-z` menu header and `ziya shadow --list` (`CHAT`
+  column) show the same binding on the terminal side.
 - `shadow_spawn(argv, label=None, ceiling="gated")` → fork a headless
   session (§6.2): daemonized shadow host running `argv`. Returns the
   session id; the spawning conversation holds an implicit lease at the
@@ -622,7 +692,7 @@ auto-injects a `shadow_read` tail of the matching session.
 | Control authorization | §6.1: two-sided — shadow-side ceiling (`none\|gated\|unrestricted`) ∧ per-lease human grant at or below it; gated leases confirm mutating commands per-keystroke; human keystrokes auto-pause the lease; menu revoke; every model-sent byte journaled with provenance and effective restriction |
 | Headless authorization | §6.2: `shadow_spawn` is chat-side gated (normal tool approval); spawning conversation holds an implicit lease bounded by the spawn-time ceiling; later attachers grant in their own chat terminal; idle shutdown (24 h default); `spawned_by` provenance in registry and journal |
 | Secrets at rest | Echo-off + prompt-regex masking before journal write |
-| Journal exposure | Local file, 0600, unlinked on exit; rotation cap. **Encrypted at rest when ALE is active** for `session_data`: each line is an independent `!ale1:<base64 envelope>` (per-line, not per-file, because the journal is append-only and read while written). Readers decode both forms; a reader without key material raises rather than presenting the journal as empty; a writer whose policy requires encryption but cannot encrypt refuses to journal in plaintext. The registry entry (`<id>.json`: label, redacted argv, meta) stays plaintext — it is the discovery index and carries no terminal content. Without ALE the file is plaintext, documented as shell-history-equivalent |
+| Journal exposure | Local file, 0600, unlinked on exit; rotation cap. **Encrypted at rest when ALE is active** for `session_data`: each line is an independent `!ale1:<base64 envelope>` (per-line, not per-file, because the journal is append-only and read while written). Readers decode both forms; a reader without key material raises rather than presenting the journal as empty; a writer whose policy requires encryption but cannot encrypt refuses to journal in plaintext. The registry entry (`<id>.json`: label, redacted argv, cwd, meta) is likewise one ALE line when encryption is active (§3); its liveness fields are recovered by decrypting, so a reader without key material skips the entry rather than reaping it. Without ALE both files are plaintext, documented as shell-history-equivalent |
 | Model exposure | Chat side sends journal excerpts to the model — same trust boundary as the user pasting terminal output, but automated; excerpt size bounded by tool params |
 
 ### 10.1 Phase 1 security review (implemented controls)
@@ -648,6 +718,51 @@ human's terminal emulator).
 | F9 | A model-supplied `search` regex runs inside the human's terminal wrapper; `(a+)+$b` hung a handler thread for >60 s | Patterns are capped at 256 chars and any quantified group (`(…)+`, `(…)*`, `(…){n}`) or count ≥ 100 is refused |
 | F10 | The transcript is remote-host-controlled bytes headed for the model but was classified `trust="medium"` and not sanitized | `shadow_read` is `trust="low"` (same as fetched web content); the transcript passes the SDO-183 hidden-character sanitizer and the encoded-payload scanner (`source="shadow_read"`) |
 | F11 | In `osc133` mode `on_enter` returned before consulting `masked`, so with an instrumented shell the echo between markers B and C — the secret — was recorded verbatim as the *command* at C | Masking is handled first in every mode; a masked line yields no `cmd` at marker C |
+
+### 10.2 Line-control security review (§6.1–6.3 audit, implemented controls)
+
+Same method as §10.1: `tests/test_shadow_security_control.py`, one test
+per finding, each written to fail against the tree as it stood after
+step 6 (72 tests; the policy findings were found by feeding the
+classifier the obvious shell tricks and reading the verdicts).  The
+threat model adds the fourth byte source this phase creates: the chat
+model holding, or wanting, a lease.  It is untrusted for control — the
+policy bounds what it may *ask for*, and the lease/grant/confirm
+machinery bounds *when* a request becomes bytes on the PTY.
+
+| # | Finding | Control |
+|---|---|---|
+| C1 | `FOO=x rm -rf /` was *allowed*: the engine peels the env prefix, the remote-profile destructive check read the raw first token | Segment heads are taken after peeling `NAME=value` prefixes |
+| C2 | `xargs rm`, `time rm x`, `timeout 5 rm x` allowed — the wrapper is allowlisted and its argument is a command the classifier never sees | Command wrappers (`xargs time timeout nohup nice env command builtin exec eval sudo doas watch stdbuf setsid …`) are not allowed under the remote profile |
+| C3 | `ls & rm -rf /` and `ls & wget …` allowed: neither `first_words` nor the engine split on a lone `&` | Quote-aware `split_segments` on `; \| & && \|\| \|&` and line terminators; the destructive check *and* the allowlist engine run per segment |
+| C4 | `ls\nrm -rf /`, `ls\rrm -rf /` allowed and, at the PTY, are two commands | Any C0 control or DEL is `not_allowed`; independently, `send_line` refuses such text with `bad_request` **before** the policy, so even `unrestricted`+`none` sends exactly one printable line (ESC would drive readline, ^C/^D interrupt the child, TAB completes) |
+| C5 | `echo hi>f`, `echo hi>>f`, `echo hi &>f`, `cat <(rm x)` allowed: the redirection regex required leading whitespace and knew no process substitution | Any unquoted `>` or `<(` is a redirection |
+| C6 | `sed -ni`, `sed -Ei` allowed: in-place detection matched only a bare `-i` | Flag clusters containing `i` on `sed`/`perl`/`gawk` |
+| C7 | `python3 -c …`, `ruby -e`, `node -e`, `python3 script.py` allowed (locally they are "computation") | Interpreters and shells are not allowed remotely — arbitrary code the classifier cannot see into |
+| C8 | `find . -delete`, `find -exec rm`, `awk 'BEGIN{system("…")}'`, `awk '{print > "f"}'` allowed | `find` with a mutating/executing action; `awk` programs containing `system(`, `>` or `\|` |
+| C9 | The socket caller chose the policy axis, defaulting to **`none`**; `strict`+`none` and `gated`+`none` disabled the mode table while the banner still said strict/gated — and on a **spawned** session (clamped strict, implicit grant) `policy=none` was total control with no human anywhere. `test_shadow_spawn` had encoded this as "the explicit escape hatch" | Absent policy ⇒ `builtin`; `none` is refused (`policy_requires_unrestricted`) unless the *effective* (post-clamp) restriction is `unrestricted` — so never on a spawned session; the policy is resolved at acquire (`named:` typo, `inherit`, unknown ⇒ `bad_request`) rather than failing closed only after the human has granted |
+| C10 | `control_status` returned the `lease_id`, which is the bearer token for `send_line`/`release`, to any socket peer | Status omits the lease_id |
+| C11 | Confirm keystroke was not bound to a command: A times out at the banner, B takes the slot, the human's late `y` for A ran B | Each confirm slot carries a `confirm_id`, handed to the frontend with the banner; `resolve_confirm` refuses a mismatched id |
+| C12 | After the confirm wait the lease was not re-checked: released/expired/superseded during the 60 s, a `y` still typed the command | Lease re-validated (same id, live, granted) after the wait ⇒ `no_lease`, journaled `control_denied` |
+| C13 | `grant_active_lease` granted whatever was current: a same-conversation re-acquire with a looser restriction between banner and `g` was granted under the old banner | The frontend passes the lease_id its banner named; a superseded lease stays pending |
+| C14 | Yield-to-human race: `terminal_busy()` passed, a human byte landed, then our line was written after it (`x` + `ls⏎` ⇒ `xls`) | The decisive busy check and the PTY write are one critical section under `_write_lock`, which `handle_input` also takes to write — a human byte lands wholly before (⇒ busy) or wholly after our `\r` |
+| C15 | `kill_session(conversation_id=None)` skipped the owner check — a tool call with no conversation context could kill any headless session; and SIGTERM went to the registry pid, which is plaintext and reusable | Ownership requires a conversation id; the host must answer `ping` on its socket with the matching `session_id` before its pid is signalled (`unreachable` / `not_session` otherwise) |
+| C16 | `shadow_spawn` ran **any local argv** (`bash -c …`) with no allowlist and no keystroke. §6.2 assumed it "passes through normal tool approval"; no such approval step exists for builtin tools | `argv[0]` must be a bare name on the spawn allowlist — shipped as `["ssh"]`, user-extended in `~/.ziya/shadow/policies/spawn.json` — and an `ssh` argv may carry only options and a destination: a remote command, `--`, `-F`, `-O`, `-W`, or `-o ProxyCommand/LocalCommand/PermitLocalCommand/KnownHostsCommand/Include/Match/…` is `spawn_denied` |
+| C17 | Acquire truncated `conversation_id` to 64 chars, heartbeat compared the raw value: a long id could never keep its own lease alive | Same normalisation on both |
+| C18 | After a gated confirm timed out, the frontend stayed in confirm mode: the human's next keystroke was swallowed ("nothing awaiting confirmation") instead of reaching the shell | The server calls `on_confirm_timeout(confirm_id)`; the frontend leaves confirm mode only if that banner is still the one on screen, and says so |
+| C19 | `detach` with no `conversation_id` cleared any attachment — an anonymous force path over a socket every same-UID process can speak; the tool sent exactly that when it had no conversation context | `conversation_id` is required over the socket (`bad_request`); only the attached conversation may detach; the tool refuses without a conversation (`no_conversation`). The shadow side clears `entry.attached` directly, never via the socket |
+| C20 | The headless daemon inherited every `sys.path` entry as `PYTHONPATH`, including cwd-derived ones | Pinned to the directory containing the `app` package plus the user's own `PYTHONPATH`; third-party imports resolve through the interpreter's site |
+
+Accepted and documented: the lease's `conversation_id`, `provenance`,
+and `spawned_by` are asserted by a same-UID socket peer (§10.1 F-note
+applies — same-user is the whole local authn model); a wrapper the
+remote shell resolves as an alias (`ls` → `rm`) is outside the
+classifier's sight as §6.3 states; `$((6*7))` still classifies as
+substitution (conservative); the remote-profile denials are deliberately
+broad (`time ls`, `python3 --version` now need a confirm under gated),
+because a false confirm costs a keystroke and a false allow costs a host.
+The enterprise policy-gate hook on `shadow_read`/`shadow_send` is not
+part of this pass.
 
 Known v1 gaps (accepted, documented): encryption at rest depends on ALE
 being enabled (`ZIYA_ENCRYPTION_KEY` or an enterprise KEK provider) —
