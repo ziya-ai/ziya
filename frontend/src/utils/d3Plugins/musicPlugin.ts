@@ -2926,12 +2926,33 @@ export function drawLyricLayer(
     const verse = verseOf(lyric);
     const y = baselineForVerse(verse);
 
+    // D-165 (music-w2-07): reserve horizontal room per syllable so a long word
+    // cannot overprint its neighbours.  The note-spacing estimator
+    // (lyricWidthWeight) widens the system to spread lyric-bearing notes, but a
+    // pathologically long syllable can still exceed the gap VexFlow's
+    // justification actually produced -- a run of 12-25-char words then merged
+    // into one unbroken band.  Clip (ellipsis) each syllable to the room
+    // between this note and its nearest rendered neighbour: two adjacent
+    // centred syllables each capped to their shared gap can touch but never
+    // overlap.  An isolated lyric (no neighbour) keeps its full text, so a
+    // sparse-lyric score is byte-identical (fitTextToWidth returns unchanged
+    // when the text already fits).
+    const leftX = i > 0 ? xOf(renderedNotes[i - 1]) : null;
+    const rightX = i + 1 < renderedNotes.length ? xOf(renderedNotes[i + 1]) : null;
+    const lyricGaps: number[] = [];
+    if (leftX != null) lyricGaps.push(Math.abs(x - leftX));
+    if (rightX != null) lyricGaps.push(Math.abs(rightX - x));
+    const lyricAvail = lyricGaps.length ? Math.min(...lyricGaps) : Infinity;
+    const shownLyric = Number.isFinite(lyricAvail)
+      ? fitTextToWidth(lyric.text, lyricAvail, LYRIC_FONT, 12)
+      : lyric.text;
+
     svg.append('text')
       .attr('x', x).attr('y', y)
       .attr('text-anchor', 'middle')
       .attr('fill', textFill)
       .style('font', LYRIC_FONT)
-      .text(lyric.text);
+      .text(shownLyric);
 
     // Hyphen joining a split word to its next syllable, centred in the gap --
     // the standard engraving of "lo-ver".  Only for begin/middle syllables,
@@ -3099,6 +3120,66 @@ function measureTempoNameWidth(text: string): number {
 }
 
 /**
+ * Width in px of `text` rendered in `font`, measured on a detached canvas.
+ * Falls back to a character-count estimate (avg glyph ~= 0.55em) when no
+ * canvas 2d context is available (jsdom), which is enough to keep the
+ * title-block truncation deterministic in tests and headless renders.
+ */
+function measureTextWidth(text: string, font: string, fontSizePx: number): number {
+  try {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      ctx.font = font;
+      const w = ctx.measureText(text).width;
+      if (Number.isFinite(w) && w > 0) return w;
+    }
+  } catch {
+    /* jsdom / no canvas -- fall through to the estimate. */
+  }
+  return text.length * fontSizePx * 0.55;
+}
+
+/**
+ * Truncate `text` with a trailing ellipsis (U+2026) so its rendered width in
+ * `font` never exceeds `maxWidth`.
+ *
+ * The title block (drawTitleBlock) draws title/subtitle centred and
+ * composer/lyricist credits anchored to the page margins.  Nothing measured
+ * the text against the canvas, so a 300-char title or subtitle ran off BOTH
+ * edges with no wrap or ellipsis (D-165: music-w2-07/08).  This is the missing
+ * horizontal fit: measure in the SAME font the overlay draws in and drop the
+ * longest suffix that keeps the string (plus the ellipsis) inside `maxWidth`.
+ * A string that already fits is returned unchanged (byte-identical), so the
+ * ordinary short-title path is untouched.
+ */
+export function fitTextToWidth(
+  text: string,
+  maxWidth: number,
+  font: string,
+  fontSizePx: number,
+): string {
+  if (!text || maxWidth <= 0) return text;
+  if (measureTextWidth(text, font, fontSizePx) <= maxWidth) return text;
+  const ellipsis = '\u2026';
+  const ellW = measureTextWidth(ellipsis, font, fontSizePx);
+  // Largest prefix whose width + ellipsis fits.  Binary search over the
+  // character count keeps this O(log n) even for a pathological 300-char title.
+  let lo = 0;
+  let hi = text.length;
+  while (lo < hi) {
+    const mid = Math.ceil((lo + hi) / 2);
+    const w = measureTextWidth(text.slice(0, mid), font, fontSizePx) + ellW;
+    if (w <= maxWidth) lo = mid;
+    else hi = mid - 1;
+  }
+  // Trim a trailing space so the ellipsis reads as "...", not "... ", and emit
+  // the ellipsis even when not one glyph fits so the clip is visibly
+  // intentional rather than a mid-word cut running off the edge.
+  return text.slice(0, lo).replace(/\s+$/, '') + ellipsis;
+}
+
+/**
  * Tempo NAME drawn as a d3 overlay, left of the VexFlow-drawn metronome.
  *
  * VexFlow's StaveTempo chains the "(♩ = N)" metronome group off
@@ -3140,6 +3221,15 @@ export function drawTitleBlock(
   // Left/right margins match the system inset (factory.System uses width-20,
   // i.e. a 10px inset each side).
   const margin = 12;
+  // A centred line may spread `margin` px each side of centre before it clips
+  // an edge, so its usable width is the full canvas minus both margins.
+  const centredMaxWidth = Math.max(0, width - 2 * margin);
+  // The two credits share the line (lyricist left, composer right); give each
+  // just under half so a long pair cannot collide in the middle either.
+  const creditMaxWidth = Math.max(0, width / 2 - margin - 8);
+  const TITLE_FONT = '700 20px "Times New Roman", Georgia, serif';
+  const SUBTITLE_FONT = '400 13px "Times New Roman", Georgia, serif';
+  const CREDIT_FONT = 'italic 400 12px "Times New Roman", Georgia, serif';
   let y = 22;
 
   if (spec.title) {
@@ -3147,8 +3237,8 @@ export function drawTitleBlock(
       .attr('x', centre).attr('y', y)
       .attr('text-anchor', 'middle')
       .attr('fill', textFill)
-      .style('font', '700 20px "Times New Roman", Georgia, serif')
-      .text(spec.title);
+      .style('font', TITLE_FONT)
+      .text(fitTextToWidth(spec.title, centredMaxWidth, TITLE_FONT, 20));
     y += 26;
   }
   if (spec.subtitle) {
@@ -3156,19 +3246,18 @@ export function drawTitleBlock(
       .attr('x', centre).attr('y', y)
       .attr('text-anchor', 'middle')
       .attr('fill', textFill)
-      .style('font', '400 13px "Times New Roman", Georgia, serif')
-      .text(spec.subtitle);
+      .style('font', SUBTITLE_FONT)
+      .text(fitTextToWidth(spec.subtitle, centredMaxWidth, SUBTITLE_FONT, 13));
     y += 18;
   }
   if (spec.composer || spec.lyricist) {
-    const CREDIT_FONT = 'italic 400 12px "Times New Roman", Georgia, serif';
     if (spec.lyricist) {
       svg.append('text')
         .attr('x', margin).attr('y', y)
         .attr('text-anchor', 'start')
         .attr('fill', textFill)
         .style('font', CREDIT_FONT)
-        .text(spec.lyricist);
+        .text(fitTextToWidth(spec.lyricist, creditMaxWidth, CREDIT_FONT, 12));
     }
     if (spec.composer) {
       svg.append('text')
@@ -3176,7 +3265,7 @@ export function drawTitleBlock(
         .attr('text-anchor', 'end')
         .attr('fill', textFill)
         .style('font', CREDIT_FONT)
-        .text(spec.composer);
+        .text(fitTextToWidth(spec.composer, creditMaxWidth, CREDIT_FONT, 12));
     }
   }
 }
@@ -4064,6 +4153,39 @@ function noteWidthWeight(duration: string | number): number {
 }
 
 /**
+ * Horizontal room a note's LYRIC syllable demands, as a fraction of a slot
+ * (D-165, music-w2-07).
+ *
+ * The lyric layer (drawLyricLayer) is a post-format overlay: each syllable is
+ * drawn text-anchored middle at its note's resolved x.  Note spacing, however,
+ * was driven purely by duration weight, so a run of long words (12-25 chars)
+ * left the noteheads ~78px apart while a 12px Times syllable is 80-160px wide
+ * -- the syllables overprinted into one unbroken band with all word boundaries
+ * lost.  Charging each lyric-bearing note at least the room its own syllable
+ * needs (measured width + a min inter-syllable gap, expressed in slots) makes
+ * the estimator widen the system so VexFlow justification spreads the notes
+ * far enough apart that adjacent centred syllables clear each other.
+ *
+ * This is the "per-glyph advance-width feeding note spacing" the triage asked
+ * for.  Width is estimated from character count (no DOM: this runs in the pure
+ * layout path and is unit-tested headless) using a conservative 12px-Times
+ * advance, and capped so a pathologically long single syllable cannot explode
+ * the canvas.  A note WITHOUT a lyric returns 0, so every lyric-free score --
+ * including the pinned wrap/parity fixtures -- keeps its exact previous layout.
+ */
+const LYRIC_CHAR_ADVANCE_PX = 6.2; // ~12px Times/serif average glyph advance
+const LYRIC_MIN_GAP_PX = 12; // clearance between adjacent syllables
+const LYRIC_MAX_SLOTS = 6; // cap one syllable's demand (~468px)
+function lyricWidthWeight(note: MusicNoteSpec | undefined): number {
+  const l = note?.lyric;
+  if (l == null) return 0;
+  const text = typeof l === 'string' ? l : l.text;
+  if (!text) return 0;
+  const px = text.length * LYRIC_CHAR_ADVANCE_PX + LYRIC_MIN_GAP_PX;
+  return Math.min(LYRIC_MAX_SLOTS, px / MEASURE_NOTE_PX);
+}
+
+/**
  * Duration-weighted width estimate for one measure's notes.
  *
  * Sums each note's slot fraction rather than counting notes, so a bar of
@@ -4074,7 +4196,13 @@ function noteWidthWeight(duration: string | number): number {
  */
 function estimateMeasureWidthFromNotes(notes: MusicNoteSpec[]): number {
   if (!notes || notes.length === 0) return MEASURE_NOTE_PX;
-  const slots = notes.reduce((sum, n) => sum + noteWidthWeight(n.duration), 0);
+  // Each note claims the GREATER of its duration slot and the room its lyric
+  // syllable needs (D-165): a lyric-free note is unchanged (lyricWidthWeight
+  // returns 0), so scores without lyrics keep their exact previous width.
+  const slots = notes.reduce(
+    (sum, n) => sum + Math.max(noteWidthWeight(n.duration), lyricWidthWeight(n)),
+    0,
+  );
   return Math.max(1, slots) * MEASURE_NOTE_PX;
 }
 
@@ -5782,8 +5910,19 @@ export async function renderMusicSpec(
         // parens via the `parenthesis` flag StaveTempo.draw honours without a
         // `name`.  This matches how every other fragile-VexFlow-placement layer
         // here (title, dynamics, lyrics, nav overflow) is hand-drawn.
-        const nameWidth = measureTempoNameWidth(tempoSpec.name);
         const nameX = topStave.x;
+        // D-165 (music-w2-08): reserve horizontal room for the tempo NAME so a
+        // pathologically long name (the stress spec's ~200-char tempo) cannot
+        // run off the right edge.  Clip (ellipsis) to the room between the
+        // name's start and the canvas edge, leaving METRO_RESERVE_PX for the
+        // parenthesised metronome group VexFlow draws to its right; the
+        // metronome is then positioned off the CLIPPED name's measured width
+        // (below) so the two stay adjacent and on-canvas.  A normal short name
+        // fits and is returned unchanged (byte-identical).
+        const METRO_RESERVE_PX = 96;
+        const nameAvail = Math.max(0, width - nameX - METRO_RESERVE_PX);
+        const tempoName = fitTextToWidth(tempoSpec.name, nameAvail, TEMPO_NAME_FONT, 15);
+        const nameWidth = measureTempoNameWidth(tempoName);
         const NAME_METRO_GAP = 8;
         // VexFlow draws the metronome's "(" at this.x + getModifierXShift +
         // xShift(10).  Solving for this.x so the "(" lands NAME_METRO_GAP past
@@ -5803,7 +5942,7 @@ export async function renderMusicSpec(
         const topTextY = typeof topStave.getYForTopText === 'function'
           ? topStave.getYForTopText(1)
           : 0;
-        tempoNamePlan = { text: tempoSpec.name, x: nameX, y: topTextY + tempoShiftY };
+        tempoNamePlan = { text: tempoName, x: nameX, y: topTextY + tempoShiftY };
       } else {
         // Name-only or bpm-only: VexFlow renders each correctly on its own, so
         // keep the single-modifier path exactly as before (byte-identical).
@@ -5994,7 +6133,18 @@ export async function renderMusicSpec(
     const scalar = sanitizeMeasureNumber(spec.measureNumber);
     if (scalar != null) topStave.setMeasure(scalar);
   }
-  if (spec.section) topStave.setSection(spec.section, 0);
+  if (spec.section) {
+    // D-165 (music-w2-08): a rehearsal `section` mark is normally 1-3 chars
+    // ("A"), but VexFlow's StaveSection reserves no horizontal room and grows
+    // its box with the text, so the stress spec's ~90-char section label ran
+    // off the right edge.  Clip (ellipsis) to about half the canvas width; a
+    // real short mark fits and is returned unchanged (byte-identical).
+    const SECTION_FONT = 'bold 14px "Times New Roman", Georgia, serif';
+    const sectionText = fitTextToWidth(
+      spec.section, Math.max(0, width / 2), SECTION_FONT, 14,
+    );
+    topStave.setSection(sectionText, 0);
+  }
 
   // Barlines must be set on EVERY staff of the system they belong to, or a
   // grand staff's repeat signs appear on the top line only and the system

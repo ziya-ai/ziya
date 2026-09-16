@@ -629,6 +629,21 @@ export function enhanceSVGVisibility(
     let shapesFixed = 0;
     let linesFixed = 0;
 
+    // Shared skip predicate. `skipClasses`/`skipSelectors` were historically only
+    // honoured by the text pass (FIX 1b); the shape (FIX 2) and line (FIX 3)
+    // passes ignored them. That let a caller protect a label but never a
+    // data-bearing STROKE. Callers that encode data in stroke width/colour
+    // (mermaid sankey ribbons carry flow magnitude as stroke-width; gitGraph
+    // branch lines carry per-branch identity as colour) need to exempt those
+    // elements from the aggressive line-flattening below, so the predicate is
+    // now applied uniformly across all three passes.
+    const isSkipped = (el: Element): boolean => {
+        if (skipClasses.some(cls => el.classList.contains(cls))) return true;
+        return skipSelectors.some(sel => {
+            try { return el.matches(sel); } catch { return false; }
+        });
+    };
+
     log('🔍 UNIVERSAL-SVG-FIX: Starting visibility enhancement');
 
     // FIX 1a: Check for foreignObject HTML text (Mermaid v10+)
@@ -747,6 +762,7 @@ export function enhanceSVGVisibility(
     // FIX 2: ALL shapes - ensure visible strokes ONLY (preserve fill colors)
     const shapes = svgElement.querySelectorAll('rect, ellipse, polygon, circle, path[fill]');
     shapes.forEach((shape) => {
+        if (isSkipped(shape)) return;
         const fill = shape.getAttribute('fill');
         const stroke = shape.getAttribute('stroke');
 
@@ -784,6 +800,7 @@ export function enhanceSVGVisibility(
     log(`🔍 LINE-SCAN: Found ${lines.length} line elements to check`);
     
     lines.forEach((line) => {
+        if (isSkipped(line)) return;
         const stroke = line.getAttribute('stroke');
         const currentStrokeWidth = parseFloat(line.getAttribute('stroke-width') || '0');
 

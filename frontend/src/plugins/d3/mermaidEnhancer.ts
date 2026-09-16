@@ -933,12 +933,23 @@ export function ensureShapeBordersAgainstCanvas(
   };
 
   const forceStroke = (el: Element) => {
+    // D-155 (dark thick-edge regression): only the COLOR is at fault when a
+    // stroke blends into the canvas. A mermaid thick edge (`==>`) carries a
+    // wider stroke-width (via its inline style, the `stroke-width` attribute,
+    // or the SVG's embedded `.edge-thickness-thick` stylesheet). Unconditionally
+    // rewriting stroke-width to 1.5px here flattened thick edges to thin-edge
+    // weight in dark mode, destroying the deliberate graphical encoding. Read
+    // the effective width (readPaint also resolves the class-based stylesheet
+    // value) and PRESERVE it when it is thicker than our 1.5px visibility floor.
+    const existingWidthRaw = readPaint(el, 'stroke-width');
+    const parsedWidth = existingWidthRaw ? parseFloat(existingWidthRaw) : NaN;
+    const widthPx = !isNaN(parsedWidth) && parsedWidth > 1.5 ? parsedWidth : 1.5;
     const styleAttr = (el.getAttribute('style') || '')
       .replace(/stroke\s*:[^;]*;?/gi, '')
       .replace(/stroke-width\s*:[^;]*;?/gi, '')
       .replace(/^;+|;+$/g, '');
     const prefix = styleAttr ? styleAttr.replace(/;?$/, ';') : '';
-    el.setAttribute('style', `${prefix}stroke:${outline} !important;stroke-width:1.5px !important;`);
+    el.setAttribute('style', `${prefix}stroke:${outline} !important;stroke-width:${widthPx}px !important;`);
     el.setAttribute('stroke', outline);
   };
 
