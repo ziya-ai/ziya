@@ -44,9 +44,40 @@ _PROJECT_ROOT: ContextVar[Optional[str]] = ContextVar(
 )
 
 
+class _CwdState:
+    """Candidate working directories for one command segment.
+
+    ``cands`` is the set of absolute directories the segment may run in, as
+    derived by ``_simulate_cwds`` from the ``cd`` segments preceding it.
+    ``None`` means the cwd is not statically known (``cd $VAR``, ``cd -``,
+    a ``cd`` inside a loop body or brace group); ``note`` names the segment
+    that made it unknown so the denial can say so.
+    """
+    __slots__ = ("cands", "note")
+
+    def __init__(self, cands: Optional[frozenset], note: str = ""):
+        self.cands = cands
+        self.note = note
+
+
+# Per-segment cwd state, set by ``check`` while it validates each segment.
+# Default None means no simulation is in progress: relative targets then
+# resolve against the project root, which is what direct callers of
+# ``_is_write_allowed`` (outside ``check``) have always relied on.
+_CWD_STATE: ContextVar[Optional[_CwdState]] = ContextVar(
+    "ziya_shell_cwd_state", default=None
+)
+
+
 class ShellWriteChecker:
     def __init__(self, pm: WritePolicyManager):
         self.pm = pm
+        # Extractor for command-substitution bodies (``$(...)``/backticks),
+        # returning the outermost bodies of a segment. Wired by the shell
+        # server from its quote- and nesting-aware finder; the checker
+        # cannot import it directly (the server imports this module). When
+        # unset, bodies are opaque to the write policy.
+        self.subst_fn: Optional[Callable[[str], List[str]]] = None
         # Reset the context's task scope at construction. Previously the
         # scope was an instance attribute initialized to {}, so a fresh
         # checker always started with no grant. Moving the state to a
@@ -110,27 +141,72 @@ class ShellWriteChecker:
     def policy(self):
         return self.pm.policy
 
-    def check(self, command: str, split_fn: Callable) -> Tuple[bool, str]:
+    def check(self, command: str, split_fn: Callable,
+              subst_fn: Optional[Callable[[str], List[str]]] = None) -> Tuple[bool, str]:
+        """Validate *command* against the write policy.
+
+        *subst_fn* (default: ``self.subst_fn``) extracts command-substitution
+        bodies from a segment; each body is validated as a command in its
+        own right, starting from the enclosing segment's working directory.
+        Without an extractor bodies are not inspected.
+        """
+        return self._check(command, split_fn, subst_fn or self.subst_fn, None)
+
+    def _check(self, command: str, split_fn: Callable,
+               subst_fn: Optional[Callable[[str], List[str]]],
+               start: "Optional[_CwdState]") -> Tuple[bool, str]:
         # Heredoc bodies are stdin *data*, not commands. Strip them before
         # splitting so body lines containing words like ``rm`` or ``sudo``
-        # aren't mistaken for command segments. The redirection scan below
-        # still receives the original command (it strips bodies itself).
+        # aren't mistaken for command segments.
         scan_command = _strip_heredoc_bodies(command)
         # ``split_fn`` (the server's operator splitter) does not break on
         # newlines, so a command hidden after a heredoc terminator —
         # e.g. ``cat <<EOF\n..\nEOF\nrm /etc/passwd`` — would otherwise
         # collapse into a single unchecked segment. Split on newlines too.
+        # A line boundary separates commands like ``;`` and is recorded as
+        # one, so the cwd simulation knows a command on the next line runs
+        # whether or not the ``cd`` before it succeeded.
+        segments: List[Tuple[str, str]] = []
         for raw_line in scan_command.split('\n'):
             line = raw_line.strip()
             if not line or line.startswith('#'):
                 continue
-            for _op, seg in split_fn(line):
+            for op, seg in split_fn(line):
+                op = op or ""
+                if segments and not op:
+                    op = ";"
+                segments.append((op, seg))
+        # The executor applies ``cd`` in-process, so a relative write target
+        # after one resolves against the new directory, not the project
+        # root. Judge each segment against the directory it will actually
+        # run in; otherwise ``cd /tmp && cp a b`` is refused while
+        # ``cd ~ && cp x .ziya/y`` is waved through.
+        states = _simulate_cwds(segments, self._project_root, start)
+        token = _CWD_STATE.set(None)
+        try:
+            for (_op, seg), state in zip(segments, states):
+                _CWD_STATE.set(state)
                 for fn in (self._always_blocked, self._destructive,
-                           self._inplace_edit, self._interpreter):
+                           self._inplace_edit, self._interpreter,
+                           self._redirection):
                     ok, reason = fn(seg)
                     if not ok:
                         return False, reason
-        return self._redirection(command)
+                # A substitution body is a command the segment runs (in a
+                # subshell, in the segment's cwd). The allowlist admits
+                # cp/rm/sed expecting this gate to vet their targets, so a
+                # body must get the same scrutiny as a top-level segment;
+                # otherwise ``echo $(cp x app/main.py)`` writes unchecked.
+                if subst_fn is not None:
+                    for body in subst_fn(seg):
+                        if not body.strip():
+                            continue
+                        ok, reason = self._check(body, split_fn, subst_fn, state)
+                        if not ok:
+                            return False, f"(in command substitution) {reason}"
+        finally:
+            _CWD_STATE.reset(token)
+        return True, ""
 
     def _always_blocked(self, cmd: str) -> Tuple[bool, str]:
         tok = _tokenize(cmd)
@@ -164,7 +240,8 @@ class ShellWriteChecker:
             return False, f"Command '{tok[0]}' requires a target path."
         for t in targets:
             if not self._is_write_allowed(t):
-                return False, f"'{tok[0]} {t}' blocked — use git diffs for project file changes."
+                return False, (f"'{tok[0]} {t}' blocked — use git diffs for project file changes."
+                               + self._target_detail(t))
         return True, ""
 
     def _inplace_edit(self, cmd: str) -> Tuple[bool, str]:
@@ -188,11 +265,10 @@ class ShellWriteChecker:
             # write policy (safe_write_paths / allowed_write_patterns) or
             # active task scope already approves -- the same config gate
             # cp/mv/rm already respect via _destructive/_is_write_allowed.
-            # Conservative: the leading non-flag token is treated as the
-            # script/pattern argument (e.g. sed's "s#..#..#"); everything
-            # after it is treated as file target(s) and must be approved.
-            non_flag = [t for t in tok[1:] if not t.startswith('-')]
-            targets = non_flag[1:] if len(non_flag) > 1 else []
+            # Redirections are dropped first (as _destructive does) so
+            # ``2>/dev/null`` is not mistaken for a file; their targets are
+            # policed by _redirection.
+            targets = _inplace_targets(prog, _strip_redirections(tok))
             if not targets:
                 return False, f"In-place editing with '{prog} {matched_flag}' is not allowed. Use git diffs."
             for t in targets:
@@ -200,6 +276,7 @@ class ShellWriteChecker:
                     return False, (
                         f"In-place editing with '{prog} {matched_flag}' targeting '{t}' is not allowed. "
                         f"Use git diffs, or target a path approved by write policy."
+                        + self._target_detail(t)
                     )
         return True, ""
 
@@ -305,7 +382,8 @@ class ShellWriteChecker:
                     if i < ln:
                         target, end = _extract_target(command, i)
                         if target and not self._is_write_allowed(target):
-                            return False, f"Redirection to '{target}' blocked."
+                            return False, (f"Redirection to '{target}' blocked."
+                                           + self._target_detail(target))
                         i = end
                 continue
             i += 1
@@ -321,15 +399,62 @@ class ShellWriteChecker:
         already allows the write, we return True without consulting
         the task scope.  Only when the base check fails do we fall
         back to the task grant.
+
+        A relative *target_path* is first resolved against the segment's
+        candidate working directories (``_CWD_STATE``); the write must be
+        permitted under every candidate, and is refused when the cwd is
+        not statically known.
         """
         # Special device files are not real filesystem writes — writing
         # or redirecting to them is always permitted (matches the DEVNULL
         # handling in shell_server.py).
         if _is_special_device(target_path):
             return True
-        if self.pm.is_write_allowed(target_path, self._project_root):
-            return True
-        return self._task_scope_grants_write(target_path)
+        candidates = self._resolve_targets(target_path)
+        if candidates is None:
+            return False
+        for path in candidates:
+            if self.pm.is_write_allowed(path, self._project_root):
+                continue
+            if self._task_scope_grants_write(path):
+                continue
+            return False
+        return True
+
+    def _resolve_targets(self, target_path: str) -> Optional[List[str]]:
+        """Absolute path(s) *target_path* may denote in the current segment.
+
+        Returns ``None`` when the target is relative and the segment's cwd
+        is unknown. Outside a ``check`` run (no cwd state) the target is
+        returned as given so the policy manager resolves it against the
+        project root exactly as before.
+        """
+        raw = (target_path or "").strip().strip("'\"")
+        expanded = os.path.expanduser(raw)
+        state = _CWD_STATE.get()
+        if state is None or os.path.isabs(expanded):
+            return [raw]
+        if state.cands is None:
+            return None
+        return sorted(
+            os.path.normpath(os.path.join(c, expanded)) for c in state.cands
+        )
+
+    def _target_detail(self, target_path: str) -> str:
+        """Suffix for a denial: the path the target actually resolved to."""
+        state = _CWD_STATE.get()
+        if state is None:
+            return ""
+        raw = (target_path or "").strip().strip("'\"")
+        if os.path.isabs(os.path.expanduser(raw)):
+            return ""
+        if state.cands is None:
+            return (f" (cwd after '{state.note}' is not statically known — "
+                    f"use an absolute path)")
+        resolved = self._resolve_targets(target_path) or []
+        if len(resolved) == 1:
+            return f" (resolves to {resolved[0]})"
+        return f" (may resolve to any of: {', '.join(resolved)})"
 
     def _task_scope_grants_write(self, target_path: str) -> bool:
         if not self._task_scope:
@@ -352,11 +477,17 @@ class ShellWriteChecker:
         )
         target_norm = os.path.normpath(target_abs)
         root_norm = os.path.normpath(project_root) if project_root else ""
-        rel = (
-            target_norm[len(root_norm):].lstrip(os.sep)
-            if root_norm and target_norm.startswith(root_norm)
-            else raw
-        )
+        # Project-relative form of the target, or None when it lies outside
+        # the project (a sibling "<root>2/" is outside). Glob grants are
+        # project-scoped, like allowed_write_patterns, so None never
+        # matches one; explicit path grants below use target_norm directly
+        # and may point anywhere.
+        rel: Optional[str] = None
+        if root_norm:
+            if target_norm == root_norm:
+                rel = ""
+            elif target_norm.startswith(root_norm + os.sep):
+                rel = target_norm[len(root_norm) + 1:]
         for entry in entries:
             try:
                 # Glob grant (CLI task write_patterns, e.g. "*.toml"): match the
@@ -364,7 +495,10 @@ class ShellWriteChecker:
                 # WritePolicyManager.allowed_write_patterns semantics.
                 pat = (entry.get("pattern") or "").strip()
                 if pat:
-                    if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(os.path.basename(rel), pat):
+                    if rel is not None and (
+                        fnmatch.fnmatch(rel, pat)
+                        or fnmatch.fnmatch(os.path.basename(rel), pat)
+                    ):
                         return True
                     continue
                 ep = (entry.get("path") or "").strip()
@@ -504,6 +638,65 @@ def _strip_heredoc_bodies(command: str) -> str:
     return result
 
 
+# Options through which sed/perl/awk accept their program text. When one is
+# present, the positional "first non-flag token is the script" rule does not
+# apply and every remaining operand is a file being edited.
+_INPLACE_SCRIPT_OPTS: Dict[str, Tuple[str, Tuple[str, ...], str]] = {
+    # prog: (script letters, long script options, other value-taking letters)
+    "sed": ("ef", ("--expression", "--file"), "l"),
+    "perl": ("eE", (), ""),
+    "awk": ("f", ("--file",), "ivF"),
+}
+
+
+def _inplace_targets(prog: str, tok: List[str]) -> List[str]:
+    """Files an in-place ``prog`` invocation edits, given its argv tokens.
+
+    The script may be positional (``sed -i s/a/b/ FILE``) or supplied by an
+    option in separate (``-e S``, ``--expression S``), glued (``-eS``) or
+    ``--expression=S`` form; a short-option cluster whose last letter is a
+    script letter takes the next token (``perl -pe S``); other value-taking
+    letters (gawk ``-i inplace``, ``-v x=1``) consume theirs the same way
+    without being a script. If any option form
+    is seen, every operand is a file. Otherwise the first operand is the
+    script and the rest are files. ``--`` ends option parsing.
+
+    Misreading a suffix cluster such as ``-ie`` as "script given" only
+    widens the target list, so the outcome errs toward refusing.
+    """
+    short, longs, valued = _INPLACE_SCRIPT_OPTS.get(prog, ("", (), ""))
+    operands: List[str] = []
+    script_given = False
+    i = 1
+    while i < len(tok):
+        t = tok[i]
+        i += 1
+        if t == "--":
+            operands.extend(tok[i:])
+            break
+        if t.startswith("--"):
+            name, eq, _val = t.partition("=")
+            if name in longs:
+                script_given = True
+                if not eq:
+                    i += 1  # separate value
+            continue
+        if t.startswith("-") and len(t) > 1:
+            cluster = t[1:]
+            for pos, ch in enumerate(cluster):
+                if ch in short or ch in valued:
+                    if ch in short:
+                        script_given = True
+                    if pos == len(cluster) - 1:
+                        i += 1  # value is the next token
+                    break
+            continue
+        operands.append(t)
+    if script_given:
+        return operands
+    return operands[1:] if len(operands) > 1 else []
+
+
 def _tokenize(cmd: str) -> List[str]:
     try:
         return shlex.split(cmd)
@@ -608,3 +801,116 @@ def _extract_write_target_paths(command: str) -> Tuple[List[str], bool]:
         paths.append(m.group(2))
     complete = _DESTRUCTIVE_SCRIPT_RE.search(command) is None
     return paths, complete
+
+
+# -- cwd simulation --------------------------------------------------------
+
+# Characters in a ``cd`` argument whose expansion happens at run time
+# (variables, command substitution, globs); the resulting directory cannot
+# be known statically.
+_CD_DYNAMIC_CHARS = frozenset("$`*?[")
+
+
+def _apply_cd(cands: Optional[frozenset], args: List[str]) -> Optional[frozenset]:
+    """Map candidate cwds through ``cd <args>``; ``None`` when unpredictable."""
+    if cands is None:
+        return None
+    rest = list(args)
+    while rest and rest[0].startswith('-') and rest[0] != '-':
+        if rest.pop(0) == '--':
+            break
+    if not rest:
+        return frozenset({os.path.expanduser('~')})
+    if len(rest) != 1 or rest[0] == '-':
+        # ``cd -`` (OLDPWD) or bash's two-argument substitution form.
+        return None
+    target = rest[0]
+    if any(ch in _CD_DYNAMIC_CHARS for ch in target):
+        return None
+    target = os.path.expanduser(target)
+    if target.startswith('~'):
+        return None  # ``~nosuchuser`` was left unexpanded
+    return frozenset(os.path.normpath(os.path.join(c, target)) for c in cands)
+
+
+def _simulate_cwds(segments: List[Tuple[str, str]], project_root: str,
+                   start: Optional[_CwdState] = None) -> List[_CwdState]:
+    """Candidate working directory of each segment of an operator-split command.
+
+    *start* seeds the simulation with an enclosing segment's state (used for
+    command-substitution bodies, which run where their segment runs);
+    otherwise the first segment runs in *project_root*.
+
+    Mirrors how ``shell_server._execute_pipeline`` applies ``cd`` in-process
+    for the segments after it, as a static over-approximation:
+
+    * ``cd`` with a literal target maps every candidate through it.
+    * A segment reached from the ``cd`` purely via ``&&`` sees only the new
+      directory. Once a ``||`` appears in the chain, or across ``;`` and
+      line breaks, later segments may run whether or not the ``cd``
+      succeeded, so they see the union of every directory the chain has
+      visited.
+    * A ``cd`` that is a member of a pipeline has no effect: a shell runs
+      each pipeline element in a subshell, and the in-process orchestrator
+      mirrors that.
+    * ``cd $VAR``, ``cd -``, or a ``cd`` that is not in command position
+      (``do cd x``, ``{ cd x``, ``(cd x``) makes the cwd unknown for the
+      rest of the command.
+
+    A relative write target is then judged under every candidate, so the
+    outcome can only be stricter than a single-directory guess, never looser.
+    """
+    if start is not None:
+        initial: Optional[frozenset] = start.cands
+        note = start.note
+    else:
+        initial = frozenset(
+            {os.path.normpath(project_root) if project_root else ""}
+        )
+        note = ""
+    cands = initial
+    group_union = initial   # every state visited in the current ``;``-group
+    all_and = True          # no ``||`` seen yet in this group
+    pipe_base = initial     # cwd at the head of the current pipeline
+    out: List[_CwdState] = []
+    n = len(segments)
+    for i, (op, seg) in enumerate(segments):
+        op = op or ""
+        if op in ("", ";"):
+            if i:
+                cands = group_union
+            group_union = cands
+            all_and = True
+        elif op == "&&":
+            if not all_and:
+                cands = group_union
+        elif op == "||":
+            all_and = False
+            cands = group_union
+        elif op == "|":
+            cands = pipe_base
+        if op != "|":
+            pipe_base = cands
+        out.append(_CwdState(cands, note))
+
+        tokens = _strip_redirections(_tokenize(seg))
+        if not tokens:
+            continue
+        if tokens[0] == 'cd':
+            in_pipeline = op == "|" or (
+                i + 1 < n and (segments[i + 1][0] or "") == "|"
+            )
+            if in_pipeline:
+                continue
+            cands = _apply_cd(cands, tokens[1:])
+        elif any(t.lstrip('({') == 'cd' for t in tokens):
+            cands = None
+        else:
+            continue
+        if cands is None:
+            group_union = None
+            if not note:
+                note = seg
+        elif group_union is not None:
+            group_union = group_union | cands
+    return out

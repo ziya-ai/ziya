@@ -100,7 +100,12 @@ def _popen_group(argv: list, timeout: float, cwd: Optional[str],
         stdout=stdout,
         stderr=stderr,
         text=True,
-        env=env if env is not None else _clean_child_env(),
+        # A child that reads PWD from its environment (rather than calling
+        # getcwd) must see the directory it actually runs in, not the one
+        # this server process was launched from.  Callers that build their
+        # own env are responsible for PWD themselves (an explicit
+        # ``PWD=x cmd`` prefix must win, as in a shell).
+        env=env if env is not None else _clean_child_env({'PWD': cwd} if cwd else None),
         cwd=cwd,
         start_new_session=True,
     )
@@ -125,6 +130,29 @@ def _popen_group(argv: list, timeout: float, cwd: Optional[str],
 def _run_sh_group(command: str, timeout: float, cwd: Optional[str]) -> subprocess.CompletedProcess:
     """Run *command* via ``sh -c`` in its own process group (see _popen_group)."""
     return _popen_group(['sh', '-c', command], timeout, cwd)
+
+
+# Read-only ``git tag``. A bare operand (``git tag v1.0``) CREATES a tag, so
+# a pattern that only refuses known mutating flags cannot express "read-only";
+# this one admits only the listing/verification grammar instead. Operands are
+# accepted only when an option that implies ``--list`` (git-tag(1)) or
+# ``--verify`` is present, where they are patterns or tag names to read.
+_GIT_TAG_LIST_OPTS = (
+    r"-l|--list|-n\d*|--contains|--no-contains|--points-at|--merged"
+    r"|--no-merged|--sort(?:=\S*)?|--format(?:=\S*)?|-v|--verify"
+)
+# Display-only options: valid alone (they list), but they do not imply
+# ``--list``, so ``git tag --column v1.0`` would still create ``v1.0``.
+_GIT_TAG_DISPLAY_OPTS = (
+    r"-i|--ignore-case|--column(?:=\S*)?|--no-column|--color(?:=\S*)?"
+    r"|--no-color|--omit-empty"
+)
+_GIT_TAG_OPERAND = r"""'[^']*'|"[^"]*"|[^\s'"-]\S*"""
+GIT_TAG_READ_ONLY_PATTERN = (
+    rf"^git\s+tag(?:(?:\s+(?:{_GIT_TAG_DISPLAY_OPTS}))*"
+    rf"|(?=(?:\s+\S+)*\s+(?:{_GIT_TAG_LIST_OPTS})(?:\s|$))"
+    rf"(?:\s+(?:{_GIT_TAG_LIST_OPTS}|{_GIT_TAG_DISPLAY_OPTS}|{_GIT_TAG_OPERAND}))+)\s*$"
+)
 
 
 def _consume_assignment_with_subst(segment: str) -> str | None:
@@ -524,6 +552,9 @@ class ShellServer:
         self.wp_manager = WritePolicyManager()
         self.wp_manager.merge_env_overrides(self._scope_env)
         self.write_checker = ShellWriteChecker(self.wp_manager)
+        # Let the write policy see inside ``$(...)``/backtick bodies with the
+        # same finder the allowlist validator uses.
+        self.write_checker.subst_fn = _extract_command_substitutions
 
         # Get configuration from environment
         # Read via _scope_env, per the invariant stated above. This var is
@@ -583,7 +614,15 @@ class ShellServer:
 
         # Add git operations if enabled
         if self.git_operations_enabled:
-            safe_git_ops = self._scope_env.get('SAFE_GIT_OPERATIONS', 'status,log,show,diff,grep,branch,remote,ls-files,blame,cat-file,check-ignore').split(',')
+            # The floor is the config's list -- the same source scope_canonical
+            # derives its floor from -- not a second hand-maintained literal.
+            # An explicit (verified) SAFE_GIT_OPERATIONS still narrows or
+            # widens it; only its absence lands here.
+            _git_ops_raw = self._scope_env.get('SAFE_GIT_OPERATIONS')
+            if _git_ops_raw is None:
+                safe_git_ops = list(self._effective_config.get('safeGitOperations', []))
+            else:
+                safe_git_ops = _git_ops_raw.split(',')
             safe_git_ops = [op.strip() for op in safe_git_ops if op.strip()]
             
             self.git_patterns = {
@@ -604,7 +643,7 @@ class ShellServer:
                 'blame': r'^git\s+blame(\s+.*)?$',
                 'cat-file': r'^git\s+cat-file(\s+.*)?$',
                 'check-ignore': r'^git\s+check-ignore(\s+.*)?$',
-                'tag': r'^git\s+tag(\s+(?!-[dD]|--delete).*)?$',  # Allow tag listing, not deletion
+                'tag': GIT_TAG_READ_ONLY_PATTERN,  # listing/verification only; see module constant
                 'stash list': r'^git\s+stash\s+list(\s+.*)?$',
                 'reflog': r'^git\s+reflog(\s+.*)?$',
                 'rev-parse': r'^git\s+rev-parse(\s+.*)?$',
@@ -958,21 +997,22 @@ class ShellServer:
                                extra_env: dict | None = None) -> str:
         """Resolve $(...) and backtick command substitutions by executing them."""
         def _run_substitution(inner_cmd: str) -> str:
-            # Resolve any nested substitutions in the body first (inner-first),
-            # then execute. Each level has already been validated: the
-            # validator recurses into nested bodies via is_command_allowed.
-            inner_cmd = self._resolve_substitutions(inner_cmd, timeout, cwd, extra_env)
-            args = self._expand_and_tokenize(inner_cmd, extra_env)
-            if not args:
+            # A body is a command list, not one argv: ``$(a || b)`` must run
+            # ``a`` and then ``b`` on failure, not ``a`` with ``||``/``b`` as
+            # arguments. Run it through the pipeline orchestrator, which
+            # resolves nested substitutions, honours ``&&``/``||``/``;``/``|``,
+            # applies ``cd`` in-process and redirections, and starts with a
+            # copy of the enclosing pipeline-local variables (a subshell:
+            # nothing it sets leaks back). PWD is excluded: it is a property
+            # of each segment's directory, which the body derives itself.
+            # Each level has already been validated: both gates recurse
+            # into nested bodies.
+            if not inner_cmd.strip():
                 return ""
+            inherited = {k: v for k, v in (extra_env or {}).items() if k != 'PWD'}
             try:
-                # _popen_group: stdin=DEVNULL (protocol-pipe protection) and
-                # a dedicated process group so a grandchild can't hold the
-                # capture pipes — and the server — hostage past the timeout.
-                r = _popen_group(
-                    args, timeout,
-                    cwd if cwd and os.path.isdir(cwd) else None,
-                    env=_clean_child_env(extra_env),
+                r = self._execute_pipeline(
+                    inner_cmd, timeout, cwd, shell_vars=inherited or None,
                 )
                 return r.stdout.rstrip("\n")
             except Exception as exc:
@@ -1030,11 +1070,14 @@ class ShellServer:
             cmd_segment,
         )
 
-    def _execute_pipeline(self, command: str, timeout: float, cwd: str) -> subprocess.CompletedProcess:
+    def _execute_pipeline(self, command: str, timeout: float, cwd: str,
+                          shell_vars: dict | None = None) -> subprocess.CompletedProcess:
         """Execute a command pipeline with shell=False for all subprocess calls.
 
         Handles pipes (|), conditional chaining (&&, ||), and sequential
         execution (;) by orchestrating individual subprocess.run() calls.
+        *shell_vars* seeds the pipeline-local variables (used when the
+        pipeline is a command-substitution body inheriting its parent's).
         """
         effective_cwd = cwd if cwd and os.path.isdir(cwd) else None
         segments = self._split_by_shell_operators(command)
@@ -1073,11 +1116,32 @@ class ShellServer:
         # stay local to this command invocation and are used for expansion
         # only (not injected into child env) to match a shell's treatment
         # of non-exported variables.
-        shell_vars: dict = {}
+        shell_vars = dict(shell_vars) if shell_vars else {}
 
         for idx, (operator, cmd_segment) in enumerate(segments):
-            # Resolve command substitutions first
-            resolved = self._resolve_substitutions(cmd_segment, timeout, cwd, shell_vars)
+            # Conditional chaining: decide whether this segment runs at all
+            # before doing any per-segment work. A shell evaluates nothing
+            # of a skipped segment -- not its command substitutions, and not
+            # a ``cd`` -- and leaves ``$?`` as the predecessor's status.
+            # Previously this check sat below the ``cd`` handler, so
+            # ``false && cd DIR && cp a b`` changed directory and then ran
+            # ``cp`` in it.
+            if operator == "&&" and last_result and last_result.returncode != 0:
+                continue
+            if operator == "||" and last_result and last_result.returncode == 0:
+                continue
+            next_is_pipe = (idx + 1 < len(segments) and segments[idx + 1][0] == "|")
+
+            # The segment's view of the environment: PWD is a property of
+            # the directory this segment runs in (after any in-process
+            # ``cd``), never the server's inherited value.  Pipeline-local
+            # assignments and, later, the segment's own VAR=value prefix
+            # layer on top so an explicit ``PWD=x`` still wins.
+            seg_cwd = effective_cwd or os.getcwd()
+            seg_vars = {'PWD': seg_cwd, **shell_vars}
+            # Resolve command substitutions first -- in the segment's cwd,
+            # so ``cd sub && echo $(pwd)`` runs ``pwd`` inside ``sub``.
+            resolved = self._resolve_substitutions(cmd_segment, timeout, seg_cwd, seg_vars)
             # Expand shell special parameters ($?, $$, $!) using the previous
             # segment's exit status. Bash treats $? as 0 before any command has
             # run, so default to 0 for the first segment. Must happen before
@@ -1091,7 +1155,8 @@ class ShellServer:
             resolved, segment_env, _ = self._peel_env_prefix(resolved)
             # Expand using pipeline-local vars plus this segment's own inline
             # VAR=value cmd prefix (the latter wins for the segment).
-            args = self._expand_and_tokenize(resolved, {**shell_vars, **segment_env})
+            seg_vars = {**seg_vars, **segment_env}
+            args = self._expand_and_tokenize(resolved, seg_vars)
             if not args:
                 # A bare assignment (no command): record it for later
                 # segments rather than discarding it, then move on.
@@ -1102,6 +1167,10 @@ class ShellServer:
             # Handle `cd` in-process: update effective_cwd for subsequent
             # segments instead of spawning a subprocess (which would change
             # directory only in its own process and immediately exit).
+            # A ``cd`` that is a member of a pipeline runs in a subshell in
+            # a real shell and has no effect on the parent; report its
+            # status but leave effective_cwd alone so this route agrees
+            # with the ``sh -c`` route used for heredoc/compound commands.
             if args[0] == 'cd':
                 target = args[1] if len(args) > 1 else os.path.expanduser('~')
                 # Resolve relative paths against the current effective cwd.
@@ -1109,7 +1178,8 @@ class ShellServer:
                     target = os.path.join(effective_cwd or os.getcwd(), target)
                 target = os.path.normpath(target)
                 if os.path.isdir(target):
-                    effective_cwd = target
+                    if operator != "|" and not next_is_pipe:
+                        effective_cwd = target
                     last_result = subprocess.CompletedProcess(args=args, returncode=0, stdout='', stderr='')
                 else:
                     last_result = subprocess.CompletedProcess(args=args, returncode=1, stdout='', stderr=f'cd: {target}: No such file or directory\n')
@@ -1125,15 +1195,9 @@ class ShellServer:
             args, redir_kwargs = self._extract_redirections(
                 args,
                 _unquoted_redirect_words(
-                    self._expand_vars(resolved, {**shell_vars, **segment_env})
+                    self._expand_vars(resolved, seg_vars)
                 ),
             )
-
-            # Conditional chaining: skip based on previous result
-            if operator == "&&" and last_result and last_result.returncode != 0:
-                continue
-            if operator == "||" and last_result and last_result.returncode == 0:
-                continue
 
             stdin_data = None
             if operator == "|" and last_result:
@@ -1176,7 +1240,7 @@ class ShellServer:
             try:
                 last_result = _popen_group(
                     args, timeout, effective_cwd,
-                    env=_clean_child_env(segment_env) if segment_env else None,
+                    env=_clean_child_env({'PWD': seg_cwd, **segment_env}) if segment_env else None,
                     input_data=stdin_data,
                     stdout=stdout_target,
                     stderr=stderr_target,
@@ -1186,7 +1250,6 @@ class ShellServer:
                     handle.close()
 
             # Check if the next segment will pipe from this one
-            next_is_pipe = (idx + 1 < len(segments) and segments[idx + 1][0] == "|")
             if next_is_pipe:
                 # A middle/first stage of a pipe: its stdout feeds the next
                 # stage via stdin_data, not the caller. Only keep stderr.
