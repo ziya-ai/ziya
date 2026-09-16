@@ -18,6 +18,7 @@ updating the registry entry.
 """
 import json
 import os
+import secrets
 import socket
 import stat
 import struct
@@ -28,14 +29,21 @@ from typing import Any, Callable, Dict, Optional
 
 from app.shadow import SHADOW_PROTOCOL_VERSION
 from app.shadow.journal import JournalReader, JournalWriter
+from app.shadow.lease import LeaseSlot, HEARTBEAT_TIMEOUT_S as _HEARTBEAT_TIMEOUT_S
 
 MAX_REQUEST_BYTES = 64 * 1024
 MAX_COMMENT_CHARS = 2000
 MAX_LABEL_CHARS = 120
+# A gated command waits this long for the human's keystroke, then is denied.
+CONFIRM_TIMEOUT_S = 60.0
 
 
 def _err(code: str, msg: str) -> Dict[str, Any]:
     return {"error": {"code": code, "msg": msg}}
+
+
+def _now() -> float:
+    return time.monotonic()
 
 
 def _peer_uid(conn: socket.socket) -> Optional[int]:
@@ -104,18 +112,34 @@ class ShadowSocketServer:
     def __init__(self, entry, journal: JournalWriter, *,
                  on_comment: Optional[Callable[[str, Dict[str, Any]], None]] = None,
                  on_meta_change: Optional[Callable[[], None]] = None,
-                 on_attach: Optional[Callable[[], None]] = None):
+                 on_attach: Optional[Callable[[], None]] = None,
+                 on_control: Optional[Callable[[object], None]] = None,
+                 on_send_line: Optional[Callable[[str], Dict[str, Any]]] = None,
+                 on_confirm: Optional[Callable[[str, str, str], None]] = None,
+                 on_confirm_timeout: Optional[Callable[[str], None]] = None):
         self.entry = entry
         self.journal = journal
         self.reader = JournalReader(entry.journal)
         self.on_comment = on_comment
         self.on_meta_change = on_meta_change
         self.on_attach = on_attach
+        self.on_control = on_control
+        self.on_send_line = on_send_line
+        self.on_confirm = on_confirm
+        self.on_confirm_timeout = on_confirm_timeout
+        # Gated-lease per-command confirm (§6.3): at most one outstanding.
+        # {"text", "reason", "lease_id", "event", "decision"}
+        self._confirm: Optional[Dict[str, Any]] = None
+        self._confirm_lock = threading.Lock()
         self._sock: Optional[socket.socket] = None
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._subscribers = 0
         self._sub_lock = threading.Lock()
+        # Single control lease per session (§6.1).  Guarded by _lease_lock;
+        # the state machine itself is pure (app/shadow/lease.py).
+        self._leases = LeaseSlot()
+        self._lease_lock = threading.Lock()
 
     # -- lifecycle ------------------------------------------------------------
 
@@ -292,7 +316,23 @@ class ShadowSocketServer:
                 rendered = bool(self.on_comment(text, provenance))
             except Exception:  # noqa: BLE001
                 rendered = False
-        return {"seq": seq, "rendered": rendered}
+        # A comment is the chat speaking to the terminal, which is exactly
+        # what a shadow-initiated ask (§8) was waiting for.  Clearing the
+        # flag here is the phase-2 answer to "answered asks stay pending":
+        # once the chat has replied on the canvas, the human is no longer
+        # waiting.  Journaled + reflected into the registry so shadow_list
+        # and the context tag stop reporting a stale question.
+        cleared_ask = False
+        if self.entry.pending_ask:
+            self.entry.pending_ask = False
+            self.entry.save()
+            cleared_ask = True
+            if self.on_meta_change is not None:
+                try:
+                    self.on_meta_change()
+                except Exception:  # noqa: BLE001
+                    pass
+        return {"seq": seq, "rendered": rendered, "cleared_ask": cleared_ask}
 
     def _op_set_meta(self, req: Dict[str, Any]) -> Dict[str, Any]:
         changed: Dict[str, Any] = {}
@@ -356,11 +396,18 @@ class ShadowSocketServer:
         return {"seq": seq, "attached": dict(self.entry.attached), "replaced": prev}
 
     def _op_detach(self, req: Dict[str, Any]) -> Dict[str, Any]:
-        """Clear the attachment.  A conversation may only detach itself
-        (or force with no conversation_id, e.g. shadow-side revoke)."""
+        """Clear the attachment.  A conversation may only detach itself.
+
+        There is no anonymous force path over the socket: the shadow side
+        clears ``entry.attached`` directly when it needs to.  Detaching a
+        session nobody is attached to is a no-op success.
+        """
         cur = self.entry.attached or {}
         conv = req.get("conversation_id")
-        if cur and conv and cur.get("conversation_id") != conv:
+        if not isinstance(conv, str) or not conv.strip():
+            return _err("bad_request", "conversation_id is required")
+        conv = conv.strip()[:64]
+        if cur and cur.get("conversation_id") != conv:
             return _err("not_attached", "session is attached to a different conversation")
         self.entry.attached = None
         self.entry.save()
@@ -379,15 +426,339 @@ class ShadowSocketServer:
     _op_exec_status = _op_exec
 
     def _op_control_acquire(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """Request a control lease (§6.1).  Line mode only in this build.
+
+        The lease is granted immediately for a headless session (the
+        spawning conversation is the authority, §6.2); for an interactive
+        session it is created *pending* and the human grants it with a
+        keystroke at the terminal (a later phase wires that key).  Screen
+        mode is refused until phase 4.
+        """
         if self.entry.control_ceiling == "none":
             return _err("control_disabled", "session was not started with --allow-control")
-        return _err("not_implemented", "control leases are not available in this build")
+        conv = req.get("conversation_id")
+        if not isinstance(conv, str) or not conv.strip():
+            return _err("bad_request", "conversation_id is required")
+        conv = conv.strip()[:64]
+        mode = req.get("mode", "line")
+        if mode == "screen":
+            return _err("not_implemented", "screen-mode control is not available in this build")
+        if mode != "line":
+            return _err("bad_request", f"invalid mode: {mode!r}")
+        restriction = req.get("restriction", "gated")
+        if restriction not in ("supervised", "strict", "gated", "unrestricted"):
+            return _err("bad_request", f"invalid restriction: {restriction!r}")
+        # Fail closed: an absent policy axis is the shipped read-only set,
+        # never "everything".
+        policy_set = req.get("policy") or "builtin"
+        if not isinstance(policy_set, str):
+            return _err("bad_request", "policy must be a string")
+        # An agent-spawned session has no human at a banner, so a lease on
+        # it may only ever be strict (§6.3): the policy is the whole control.
+        if self.entry.spawned_by:
+            restriction = "strict"
+        # Resolve the policy now, not on the first send: the grant banner
+        # must name something that exists, and a typo must not fail closed
+        # only after the human has already granted.
+        try:
+            from app.shadow.policy import resolve_policy, clamp_restriction_for
+            effective = clamp_restriction_for(restriction, self.entry.control_ceiling)
+            resolve_policy(policy_set, effective or restriction)
+        except (ValueError, NotImplementedError, FileNotFoundError, OSError) as e:
+            return _err("bad_request", f"policy {policy_set!r}: {e}")
+        # ``none`` disables the policy axis entirely, which is only honest
+        # when the mode axis is already "run everything".  Under strict or
+        # gated it would silently switch the mode table off while the
+        # banner still says strict/gated — and on a spawned session
+        # (clamped strict, implicit grant) it would be total control with
+        # no human anywhere.
+        if policy_set == "none" and effective != "unrestricted":
+            return _err("policy_requires_unrestricted",
+                        "policy 'none' is only available with an effective "
+                        "restriction of 'unrestricted'")
+        with self._lease_lock:
+            lease, err = self._leases.acquire(
+                conv, "line", restriction, policy_set, self.entry.control_ceiling,
+                implicit_grant=bool(self.entry.headless))
+            if err is not None:
+                return _err(err, {
+                    "lease_held": "another conversation holds the control lease",
+                    "control_disabled": "session ceiling permits no control lease",
+                }.get(err, err))
+        self.journal.meta("control_acquire", {
+            "lease_id": lease.lease_id, "conversation_id": conv, "mode": "line",
+            "restriction": lease.restriction, "policy": policy_set,
+            "granted": lease.granted, "provenance": req.get("provenance") or {}})
+        if self.on_control is not None:
+            try:
+                self.on_control(lease)
+            except Exception:  # noqa: BLE001 — a display error must not fail the op
+                pass
+        return {"lease_id": lease.lease_id, "restriction": lease.restriction,
+                "mode": "line", "policy": policy_set, "granted": lease.granted,
+                "heartbeat_timeout_s": _HEARTBEAT_TIMEOUT_S,
+                "pending_grant": (not lease.granted)}
 
-    _op_control_release = _op_control_acquire
-    _op_send_line = _op_control_acquire
-    _op_send_keys = _op_control_acquire
-    _op_screen = _op_control_acquire
-    _op_wait_idle = _op_control_acquire
+    def _op_control_heartbeat(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        lease_id = req.get("lease_id")
+        conv = str(req.get("conversation_id") or "").strip()[:64]  # as in acquire
+        with self._lease_lock:
+            ok = self._leases.heartbeat(str(lease_id or ""), conv)
+            ls = self._leases.current(_now())
+        if not ok:
+            return _err("no_lease", "no live lease matches this id/conversation")
+        return {"ok": True, "granted": ls.granted if ls else False,
+                "paused": ls.paused if ls else False}
+
+    def _op_control_release(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        lease_id = str(req.get("lease_id") or "")
+        with self._lease_lock:
+            ok = self._leases.release(lease_id)
+        if ok:
+            self.journal.meta("control_release", {
+                "lease_id": lease_id, "provenance": req.get("provenance") or {}})
+            if self.on_control is not None:
+                try:
+                    self.on_control(None)
+                except Exception:  # noqa: BLE001
+                    pass
+        return {"ok": ok}
+
+    def _op_control_status(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        with self._lease_lock:
+            ls = self._leases.current(_now())
+        if ls is None:
+            return {"lease": None}
+        # The lease_id is the bearer token for send_line/release; status is
+        # readable by any socket peer, so it is not echoed here.
+        return {"lease": {"conversation_id": ls.conversation_id,
+                          "mode": ls.mode, "restriction": ls.restriction,
+                          "policy": ls.policy_set, "granted": ls.granted,
+                          "paused": ls.paused}}
+
+    def grant_active_lease(self, expected_lease_id: Optional[str] = None) -> Optional[str]:
+        """Human grant at the terminal (called by the frontend keystroke).
+
+        Returns the granted lease_id, or None if there is nothing pending.
+        Kept as a method (not a socket op) so a lease can only be granted
+        from the physical terminal, never over the socket (§6.1 authority).
+
+        ``expected_lease_id`` is the lease the banner named; a re-acquire
+        (possibly looser) that superseded it between banner and keystroke
+        is not what the human granted, so it stays pending.
+        """
+        with self._lease_lock:
+            ls = self._leases.current(_now())
+            if ls is None:
+                return None
+            if expected_lease_id is not None and ls.lease_id != expected_lease_id:
+                return None
+            self._leases.grant(ls.lease_id)
+        self.journal.meta("control_grant", {"lease_id": ls.lease_id,
+                                             "conversation_id": ls.conversation_id})
+        return ls.lease_id
+
+    def revoke_lease(self) -> bool:
+        """Shadow-side revoke (menu key)."""
+        with self._lease_lock:
+            ok = self._leases.revoke()
+        if ok:
+            self.journal.meta("control_revoke", {})
+            if self.on_control is not None:
+                try:
+                    self.on_control(None)
+                except Exception:  # noqa: BLE001
+                    pass
+        return ok
+
+    def current_lease(self):
+        """The live lease (pending or active) or None — for the frontend."""
+        with self._lease_lock:
+            return self._leases.current(_now())
+
+    def pending_confirm(self) -> Optional[Dict[str, Any]]:
+        with self._confirm_lock:
+            c = self._confirm
+            return ({"text": c["text"], "reason": c["reason"],
+                     "confirm_id": c["confirm_id"]} if c else None)
+
+    def resolve_confirm(self, approve: bool, confirm_id: Optional[str] = None) -> bool:
+        """Human keystroke at the terminal decides the outstanding gated
+        command.  Never reachable over the socket (§6.1 authority).
+
+        ``confirm_id`` names the banner the keystroke answers.  If the
+        command it was shown for has since timed out and another took the
+        slot, the stale keystroke must not approve the newcomer.
+        """
+        with self._confirm_lock:
+            c = self._confirm
+            if c is None or c["decision"] is not None:
+                return False
+            if confirm_id is not None and c["confirm_id"] != confirm_id:
+                return False
+            c["decision"] = bool(approve)
+            c["event"].set()
+        return True
+
+    def _op_wait_idle(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """Resolve when journal output quiesces for ``quiet_ms`` (§6.1a).
+
+        Journal-quiescence based (no screen state): the control loop is
+        send_line -> wait_idle -> tail.  Bounded by ``timeout_ms`` so a
+        chatty stream cannot hang the caller.
+        """
+        try:
+            quiet_ms = int(req.get("quiet_ms", 800))
+        except (TypeError, ValueError):
+            return _err("bad_request", "quiet_ms must be an integer")
+        quiet_ms = max(50, min(quiet_ms, 5000))
+        try:
+            timeout_ms = int(req.get("timeout_ms", 15000))
+        except (TypeError, ValueError):
+            timeout_ms = 15000
+        timeout_ms = max(quiet_ms, min(timeout_ms, 120000))
+        deadline = _now() + timeout_ms / 1000.0
+        quiet_s = quiet_ms / 1000.0
+        last_seq = self.reader.bounds().get("tail_seq")
+        last_change = _now()
+        while _now() < deadline:
+            time.sleep(min(0.05, quiet_s / 2))
+            seq = self.reader.bounds().get("tail_seq")
+            now = _now()
+            if seq != last_seq:
+                last_seq, last_change = seq, now
+                continue
+            if (now - last_change) >= quiet_s:
+                return {"idle": True, "tail_seq": seq}
+        return {"idle": False, "tail_seq": last_seq, "timed_out": True}
+
+    def _op_send_line(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        """Run one command under an active line-control lease (§6.1a, §6.3).
+
+        Enforcement is here (any same-UID process can speak the socket):
+        validate the lease, classify the command against the lease's
+        policy, apply the mode table, and only then hand the write to the
+        core.  Guards that need live PTY state (altscreen / echo-off) are
+        checked by the core callback.
+        """
+        if self.entry.control_ceiling == "none":
+            return _err("control_disabled", "session was not started with --allow-control")
+        text = req.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return _err("bad_request", "text is required")
+        # Exactly one printable line, whatever the policy says: an embedded
+        # CR/LF is a second command, ESC drives the line editor, ^C/^D
+        # interrupt or hang up the child, TAB completes.  Checked before the
+        # policy so even unrestricted+none cannot smuggle a second line.
+        from app.shadow.policy import has_control_chars
+        if has_control_chars(text.rstrip("\r\n")):
+            return _err("bad_request",
+                        "text must be a single line without control characters")
+        lease_id = str(req.get("lease_id") or "")
+        with self._lease_lock:
+            ls = self._leases.current(_now())
+            if ls is None or ls.lease_id != lease_id:
+                return _err("no_lease", "no live lease matches this id")
+            if not ls.granted:
+                return _err("lease_pending", "lease has not been granted at the terminal")
+            if ls.paused:
+                return _err("control_paused", "control is paused; the human has the terminal")
+            restriction, policy_set = ls.restriction, ls.policy_set
+
+        # Policy verdict (§6.3).  A verdict error must never fall open.
+        try:
+            from app.shadow.policy import resolve_policy
+            verdict, reason = resolve_policy(policy_set, restriction).decide(text)
+        except Exception as e:  # noqa: BLE001
+            self.journal.meta("control_denied", {"lease_id": lease_id,
+                              "text": text[:200], "reason": f"policy error: {e}"})
+            return _err("policy_error", str(e))
+        from app.shadow.policy import RUN, CONFIRM, DENY
+        if verdict == DENY:
+            self.journal.meta("control_denied", {"lease_id": lease_id,
+                              "text": text[:200], "reason": reason})
+            return _err("command_denied", reason)
+        if verdict == CONFIRM:
+            # gated: one keystroke at the shadow terminal decides (§6.3).
+            # With no terminal to ask (headless), refuse — never type a
+            # not-allowed command without a human's confirm.
+            if self.on_confirm is None or self.entry.headless:
+                self.journal.meta("control_confirm_required", {"lease_id": lease_id,
+                                  "text": text[:200], "reason": reason})
+                return _err("confirm_required", reason)
+            with self._confirm_lock:
+                if self._confirm is not None:
+                    return _err("confirm_pending",
+                                "another command is awaiting confirmation at the terminal")
+                slot = {"text": text, "reason": reason, "lease_id": lease_id,
+                        "confirm_id": secrets.token_hex(4),
+                        "event": threading.Event(), "decision": None}
+                self._confirm = slot
+            self.journal.meta("control_confirm_request", {"lease_id": lease_id,
+                              "conversation_id": ls.conversation_id,
+                              "text": text[:200], "reason": reason})
+            try:
+                try:
+                    self.on_confirm(text, reason, ls.conversation_id, slot["confirm_id"])
+                except Exception:  # noqa: BLE001 — banner failure = deny, below
+                    pass
+                slot["event"].wait(CONFIRM_TIMEOUT_S)
+                approved = slot["decision"] is True
+                outcome = ("approved" if approved else
+                           "denied" if slot["decision"] is False else "timeout")
+            finally:
+                with self._confirm_lock:
+                    self._confirm = None
+            self.journal.meta("control_confirm", {"lease_id": lease_id, "text": text[:200],
+                              "outcome": outcome})
+            if outcome == "timeout" and self.on_confirm_timeout is not None:
+                # The banner is still on screen and the frontend is still in
+                # confirm mode; tell it so the human's next key is not eaten.
+                try:
+                    self.on_confirm_timeout(slot["confirm_id"])
+                except Exception:  # noqa: BLE001
+                    pass
+            if not approved:
+                return _err("command_denied",
+                            f"{'denied' if outcome == 'denied' else 'no confirmation'} "
+                            f"at the terminal: {reason}")
+            # The lease may have expired, been released or been superseded
+            # while the command sat at the banner; a "y" that arrives after
+            # that must not type under a dead lease.
+            with self._lease_lock:
+                ls2 = self._leases.current(_now())
+                if ls2 is None or ls2.lease_id != lease_id or not ls2.granted:
+                    self.journal.meta("control_denied", {"lease_id": lease_id,
+                                      "text": text[:200],
+                                      "reason": "lease ended during confirmation"})
+                    return _err("no_lease", "lease ended while awaiting confirmation")
+
+        if self.on_send_line is None:
+            return _err("no_child", "session has no writable child (headless core not wired)")
+        result = self.on_send_line(text)
+        if "error" in result:
+            self.journal.meta("control_send_blocked", {"lease_id": lease_id,
+                              "reason": result["error"]})
+            return _err(result["error"], {
+                "altscreen_active": "child is in a full-screen program; input refused",
+                "echo_off": "child has echo off (password prompt); input refused",
+                "no_child": "session has no live child",
+                "terminal_busy": f"the human is using the terminal ({result.get('detail', 'busy')}); "
+                                 "try again shortly",
+            }.get(result["error"], result["error"]))
+        self.journal.meta("control_send", {"lease_id": lease_id,
+                          "conversation_id": ls.conversation_id, "text": text[:500],
+                          "restriction": restriction, "policy": policy_set})
+        return {"ok": True, "sent_at_seq": result.get("sent_at_seq"),
+                "cmd_seq": result.get("cmd_seq")}
+
+    # send_keys / screen (screen-mode control) land in phase 4.
+    def _op_send_keys(self, req: Dict[str, Any]) -> Dict[str, Any]:
+        if self.entry.control_ceiling == "none":
+            return _err("control_disabled", "session was not started with --allow-control")
+        return _err("not_implemented", "screen-mode send_keys lands in phase 4")
+
+    _op_screen = _op_send_keys
 
     # -- subscribe --------------------------------------------------------------
 

@@ -17,8 +17,10 @@ Replacement is ``[REDACTED:<kind>]`` so a reader knows a value was there.
 This is defense in depth, not a guarantee: an arbitrary password printed
 without any surrounding hint is indistinguishable from prose.
 """
+import json
 import re
-from typing import List, Optional, Tuple
+from pathlib import Path
+from typing import Iterable, List, Optional, Sequence, Tuple
 
 REDACTED = "[REDACTED:{kind}]"
 
@@ -51,17 +53,104 @@ _PEM_END_RE = re.compile(r"-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----")
 _CLI_P_RE = re.compile(r"(?<!\S)-p(?![0-9]+(?!\S))(\S+)")
 
 
-class Redactor:
-    """Stateful redactor: remembers an unterminated PEM block across chunks."""
+# --- user-supplied patterns (per session / shareable) --------------------------
+#
+# The built-in shapes are generic.  A given environment has its own leaks —
+# a lab ssh banner that prints a temporary credential on every login, an
+# internal token format — that only its user can name.  Those live as
+# ``~/.ziya/shadow/policies/redact/<set>.json``::
+#
+#     {"patterns": [{"kind": "lab-cred", "regex": "l2Cwv4W[A-Za-z0-9]+"}]}
+#
+# and are applied with ``ziya shadow --redact <set>`` (repeatable), or
+# inline with ``--redact-regex RX``.  A user regex runs on every byte the
+# child prints, inside the human's terminal wrapper, so it is bounded the
+# same way a model-supplied search pattern is (see journal.compile_search_
+# pattern): length-capped and no quantified groups.
 
-    def __init__(self) -> None:
+MAX_USER_PATTERNS = 64
+_PATTERN_NAME_RE = re.compile(r"[A-Za-z0-9_.-]+")
+
+
+def redact_sets_dir() -> Path:
+    from app.shadow.policy import policies_dir
+    d = policies_dir() / "redact"
+    d.mkdir(exist_ok=True)
+    return d
+
+
+def compile_user_pattern(kind: str, regex: str) -> Tuple[str, re.Pattern]:
+    """Validate and compile one user redaction pattern.  Raises ValueError."""
+    from app.shadow.journal import compile_search_pattern
+    if not isinstance(kind, str) or not _PATTERN_NAME_RE.fullmatch(kind or ""):
+        raise ValueError(f"redact pattern kind must be [A-Za-z0-9_.-]+, got {kind!r}")
+    if not isinstance(regex, str) or not regex:
+        raise ValueError(f"redact pattern {kind!r}: regex is required")
+    rx = compile_search_pattern(regex)
+    if rx is None:
+        raise ValueError(f"redact pattern {kind!r}: regex is invalid, too long, or has a "
+                         f"quantified group (catastrophic-backtracking shape)")
+    if rx.search(""):
+        raise ValueError(f"redact pattern {kind!r}: regex matches the empty string")
+    return kind, rx
+
+
+def load_redact_set(name: str) -> List[Tuple[str, re.Pattern]]:
+    """Load ``~/.ziya/shadow/policies/redact/<name>.json``.
+
+    Raises ``FileNotFoundError`` / ``ValueError``; the CLI surfaces a clear
+    error rather than starting a session that silently lacks the set.
+    """
+    if not _PATTERN_NAME_RE.fullmatch(name or ""):
+        raise ValueError(f"invalid redact set name: {name!r}")
+    path = redact_sets_dir() / f"{name}.json"
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    pats = data.get("patterns") if isinstance(data, dict) else None
+    if not isinstance(pats, list):
+        raise ValueError(f"redact set {name!r}: 'patterns' must be a list")
+    if len(pats) > MAX_USER_PATTERNS:
+        raise ValueError(f"redact set {name!r}: more than {MAX_USER_PATTERNS} patterns")
+    out = []
+    for i, item in enumerate(pats):
+        if not isinstance(item, dict):
+            raise ValueError(f"redact set {name!r}: pattern #{i} must be an object")
+        out.append(compile_user_pattern(str(item.get("kind") or f"{name}-{i}"),
+                                        item.get("regex")))
+    return out
+
+
+def build_user_patterns(sets: Sequence[str] = (),
+                        regexes: Sequence[str] = ()) -> List[Tuple[str, re.Pattern]]:
+    """Resolve ``--redact`` set names and ``--redact-regex`` values."""
+    out: List[Tuple[str, re.Pattern]] = []
+    for name in sets:
+        out.extend(load_redact_set(name))
+    for i, rx in enumerate(regexes):
+        out.append(compile_user_pattern(f"custom-{i + 1}", rx))
+    if len(out) > MAX_USER_PATTERNS:
+        raise ValueError(f"more than {MAX_USER_PATTERNS} redact patterns in total")
+    return out
+
+
+class Redactor:
+    """Stateful redactor: remembers an unterminated PEM block across chunks.
+
+    ``extra`` are user patterns (see ``build_user_patterns``), applied
+    after the built-in shapes and before the generic key/value rule.
+    """
+
+    def __init__(self, extra: Optional[Iterable[Tuple[str, re.Pattern]]] = None) -> None:
         self._in_pem = False
+        self._extra: List[Tuple[str, re.Pattern]] = list(extra or [])
 
     def redact(self, text: str, *, command: bool = False) -> str:
         if not text:
             return text
         text = self._pem_state(text)
         for kind, rx in _SHAPES:
+            text = rx.sub(REDACTED.format(kind=kind), text)
+        for kind, rx in self._extra:
             text = rx.sub(REDACTED.format(kind=kind), text)
         text = _BEARER_RE.sub(lambda m: m.group(1) + REDACTED.format(kind="bearer"), text)
         text = _KV_RE.sub(lambda m: m.group(1) + m.group(2) + REDACTED.format(kind="value"), text)

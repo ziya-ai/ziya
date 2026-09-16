@@ -2,7 +2,8 @@
 # This must be the very first thing to ensure logging is configured correctly
 import sys
 import os
-if any(cmd in sys.argv for cmd in ['chat', 'ask', 'review', 'explain', 'task', 'shadow']):
+from app.cli_commands import TOP_LEVEL_COMMANDS
+if any(cmd in sys.argv for cmd in TOP_LEVEL_COMMANDS):
     os.environ["ZIYA_MODE"] = "chat"
     os.environ.setdefault("ZIYA_LOG_LEVEL", "WARNING")
 
@@ -683,10 +684,8 @@ def check_auth(args):
 
 def main():
     # Check if running as CLI subcommand (ziya chat, ziya ask, etc.)
-    cli_commands = {'chat', 'ask', 'review', 'explain', 'task', 'shadow'}
-    
     # Check if any argument is a CLI command (handles both "ziya chat" and "ziya --profile x chat")
-    if any(arg in cli_commands for arg in sys.argv[1:]):
+    if any(arg in TOP_LEVEL_COMMANDS for arg in sys.argv[1:]):
         # Hand off to CLI module
         # CRITICAL: Set chat mode BEFORE importing CLI module
         # This ensures all loggers created during import respect chat mode
