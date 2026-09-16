@@ -15,6 +15,7 @@ import { db } from '../utils/db';
 import { folderIsEffectivelyGlobal, conversationIsEffectivelyGlobal, globalMenuItemState } from '../utils/folderUtil';import { v4 as uuidv4 } from 'uuid';
 import { sortComparator } from '../utils/chatTreeSort';
 import { computeStructuralHash, fnv1a } from '../utils/chatTreeHash';
+import { folderBadge, countDirectSubfolders, isTargetFolderRow, withParentExpanded } from '../utils/chatTreeFolderBadge';
 import {
   chatListItemCount,
   isChatListFooterRow,
@@ -75,6 +76,12 @@ import {
   CheckSquareOutlined as AntCheckSquareOutlined,
   FlagOutlined as AntFlagOutlined,
 } from '@ant-design/icons';
+
+// Ids already reported by the current-conversation consistency check in
+// treeDataRaw, so each state is logged once rather than on every render.
+// Module-level because the check runs inside a useMemo body.
+const reportedMissingCurrentIds = new Set<string>();
+const reportedInactiveCurrentIds = new Set<string>();
 
 // Spinning animation for the loading icon
 const SpinningSync = styled(SyncIcon)(({ theme }) => ({
@@ -140,6 +147,12 @@ interface ChatTreeItemProps {
   taskStatusCounts?: Record<string, number>;
   hasUnreadResponse?: boolean;
   conversationCount?: number;
+  // Direct child folders (folder rows only) — shown in the trailing badge so
+  // a folder containing only subfolders is distinguishable from an empty one.
+  subfolderCount?: number;
+  // This folder is currentFolderId: where New chat / New folder will land.
+  // Distinct from isCurrentItem (the open conversation).
+  isTargetFolder?: boolean;
   // Open-work indicators (conversation rows only): parked+active beads and
   // open work items.  openWorkItemCount is a correct shell — always 0 until
   // the work-item queue is built (design/work-primitives-taxonomy.md).
@@ -206,6 +219,8 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
     taskStatusCounts,
     hasUnreadResponse = false,
     conversationCount = 0,
+    subfolderCount = 0,
+    isTargetFolder = false,
     openBeadCount = 0,
     openWorkItemCount = 0,
     flags = [],
@@ -308,9 +323,17 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
         transition: 'background-color 0.15s',
         backgroundColor: props.isCurrentItem
           ? (isDarkMode ? '#177ddc' : '#e6f7ff')
+          : isTargetFolder
+            ? (isDarkMode ? 'rgba(23,125,220,0.16)' : 'rgba(24,144,255,0.08)')
+            : undefined,
+        // Outline rather than fill: the target folder is a pointer, not a
+        // selection, and must not read as "this is what I'm looking at".
+        boxShadow: isTargetFolder && !props.isCurrentItem
+          ? `inset 0 0 0 1px ${isDarkMode ? '#177ddc' : '#1890ff'}`
           : undefined,
         color: props.isCurrentItem && isDarkMode ? '#fff' : undefined,
       }}
+      data-target-folder={isTargetFolder ? 'true' : undefined}
     >
       <div style={{ flex: 1, minWidth: 0 }}>
         <div
@@ -445,11 +468,15 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
                     </span>
                   </Tooltip>
                 )}
-                {isFolder && conversationCount > 0 ? (
-                  <Typography variant="caption" sx={{ ml: 0.5, color: 'text.secondary' }}>({conversationCount})</Typography>
-                ) : isFolder && !isTaskPlanFolder && !hasChildren ? (
-                  <Typography variant="caption" sx={{ ml: 0.5, color: 'text.secondary', fontStyle: 'italic', opacity: 0.7 }}>(empty)</Typography>
-                ) : null}
+                {isFolder && (() => {
+                  const badge = folderBadge({ conversationCount, subfolderCount, hasChildren: !!hasChildren, isTaskPlanFolder });
+                  if (!badge) return null;
+                  return badge.kind === 'count' ? (
+                    <Typography variant="caption" sx={{ ml: 0.5, color: 'text.secondary' }}>{badge.text}</Typography>
+                  ) : (
+                    <Typography variant="caption" sx={{ ml: 0.5, color: 'text.secondary', fontStyle: 'italic', opacity: 0.7 }}>{badge.text}</Typography>
+                  );
+                })()}
                 {isTaskPlanFolder && taskPlanProgress && (
                   <Typography variant="caption" sx={{ ml: 0.5, px: 0.5, borderRadius: '8px', backgroundColor: '#52c41a', color: '#fff', fontWeight: 600, fontSize: 10 }}>{taskPlanProgress}</Typography>
                 )}
@@ -2493,7 +2520,9 @@ const MUIChatHistory = () => {
   const swarmRecoveryFolder = swarmRecoveryFolderId ? folders.find(f => f.id === swarmRecoveryFolderId) : null;
 
   // Handle creating a subfolder
-  const handleCreateSubfolder = async (parentFolderId: string) => {
+  // Shared by the row context menu and the toolbar "New folder" button.  A
+  // null parent creates at the root.
+  const handleCreateSubfolder = async (parentFolderId: string | null) => {
     try {
       // Create a new subfolder with default name and settings
       const createdFolderId = await createFolder('New Folder', parentFolderId);
@@ -2502,10 +2531,9 @@ const MUIChatHistory = () => {
       // Tell the scroll effect to focus on the new folder instead of the active conversation
       scrollToNodeIdRef.current = newFolderId;
 
-      // Ensure parent folder is expanded to show the new subfolder
-      if (!expandedNodes.includes(parentFolderId)) {
-        setExpandedNodes(prev => [...prev, parentFolderId]);
-      }
+      // Ensure parent folder is expanded to show the new subfolder.  Without
+      // this a collapsed parent swallows the new child with no visible change.
+      setExpandedNodes(prev => withParentExpanded(prev.map(String), parentFolderId));
 
       message.success('New folder created successfully');
 
@@ -3049,10 +3077,28 @@ const MUIChatHistory = () => {
     // Map conv.id → tree node, for reparenting TaskPlan folders under source conversation
     const convNodeMap = new Map<string, any>();
 
-    // Debug: Log if current conversation is missing from active list
-    if (currentConversationId && !activeConversations.find(c => c.id === currentConversationId)) {
-      console.error('🚨 HISTORY_CORRUPTION: Current conversation missing from active list:', currentConversationId);
-      console.error('🚨 Current conversation state:', safeConversations.find(c => c.id === currentConversationId));
+    // Consistency check on the selected conversation.  Two distinct states:
+    //  - Present but isActive === false: genuinely inconsistent (the user is
+    //    looking at a soft-deleted chat).  Error, once per id.
+    //  - Absent entirely: expected, not corruption.  ChatContext mints a bare
+    //    id for an empty project and only creates the Conversation object on
+    //    the first message; the id is also legitimately absent while a
+    //    project-switch preload or server sync is still landing.  Logging this
+    //    as HISTORY_CORRUPTION on every render buried real signals.
+    if (currentConversationId && !activeConversations.some(c => c.id === currentConversationId)) {
+      const record = safeConversations.find(c => c.id === currentConversationId);
+      if (record) {
+        if (!reportedInactiveCurrentIds.has(currentConversationId)) {
+          reportedInactiveCurrentIds.add(currentConversationId);
+          console.error('🚨 HISTORY_CORRUPTION: Current conversation is present but inactive:', currentConversationId, record);
+        }
+      } else if (!reportedMissingCurrentIds.has(currentConversationId)) {
+        reportedMissingCurrentIds.add(currentConversationId);
+        console.debug('📝 Current conversation not yet in list (blank chat or load in flight):', currentConversationId);
+      }
+    } else if (currentConversationId) {
+      reportedMissingCurrentIds.delete(currentConversationId);
+      reportedInactiveCurrentIds.delete(currentConversationId);
     }
 
     activeConversations.forEach(conv => {
@@ -3813,12 +3859,7 @@ const MUIChatHistory = () => {
           <Tooltip title="New folder">
             <IconButton
               size="small"
-              onClick={async () => {
-                const newId = await createFolder('New Folder', currentFolderId);
-                // Focus the virtual list on the new folder
-                scrollToNodeIdRef.current = String(newId);
-                message.success('Folder created');
-              }}
+              onClick={() => handleCreateSubfolder(currentFolderId)}
               sx={{
                 color: '#1890ff',
                 border: '1px solid #1890ff',
@@ -4078,6 +4119,7 @@ const MUIChatHistory = () => {
                 const isPinned = isFolder && pinnedFolders.has(nodeId);
                 const isCurrentItem = isFolder
                   ? false : nodeId.startsWith('conv-') && nodeId.substring(5) === currentConversationId;
+                const isTargetFolder = isTargetFolderRow(isFolder, nodeId, currentFolderId);
                 // Effective-global: the globe affordance and "This project only"
                 // menu label reflect inherited globalness (own flag OR any
                 // ancestor folder global), matching the visibility model — a
@@ -4113,6 +4155,7 @@ const MUIChatHistory = () => {
                 const rowTaskCounts = convId
                   ? runStatusIndex.conversations[convId] : undefined;
                 const conversationCount = isFolder ? node.conversationCount : 0;
+                const subfolderCount = isFolder ? countDirectSubfolders(node.children) : 0;
                 const openBeadCount = isFolder ? 0 : (node.conversation?.openBeadCount || 0);
                 const openWorkItemCount = isFolder ? 0 : (node.conversation?.openWorkItemCount || 0);
                 const rowFlags = isFolder ? [] : (node.conversation?.flags || []);
@@ -4192,7 +4235,8 @@ const MUIChatHistory = () => {
                       taskStatusCounts={rowTaskCounts}
                       isGlobalByInheritanceOnly={isGlobalByInheritanceOnly}
                       openBeadCount={openBeadCount} openWorkItemCount={openWorkItemCount}
-                      conversationCount={conversationCount}
+                      conversationCount={conversationCount} subfolderCount={subfolderCount}
+                      isTargetFolder={isTargetFolder}
                       flags={rowFlags} flagColor={rowFlagColor}
                       onToggleFlag={handleToggleFlag} onSetFlagColor={handleSetFlagColor}
                       onEdit={handleEdit} onDelete={handleDelete} onInfo={handleShowInfo} onAddChat={handleAddChat}
