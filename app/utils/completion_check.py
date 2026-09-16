@@ -54,6 +54,10 @@ Rules:
   * ``rationale`` is one short sentence, grounded in the instructions
     you were given.  Be honest; the answer is not used to grade you,
     it is used to surface failures the user would otherwise miss.
+  * Scope: judge ONLY the deliverables this block's own instructions
+    ask of you.  Iteration context, shared contracts and prior results
+    describe the surrounding run; work they leave outstanding is not
+    your shortfall and must not make you answer ``partial``.
 """.strip()
 
 

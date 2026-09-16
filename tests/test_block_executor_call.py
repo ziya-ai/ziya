@@ -250,6 +250,49 @@ def test_depth_cap_enforced_on_acyclic_chain(monkeypatch, ctx, recorder):
     assert "depth limit" in art.summary
 
 
+def _nested_chain(monkeypatch, n_callees: int):
+    """Resolver table for a root Call whose callee calls the next, n deep.
+
+    The call stack holds CALLEES only (the launching card is not a frame),
+    so a self-chaining sequence of ``n_callees + 1`` cards nests exactly
+    ``n_callees`` frames.  The last callee is a plain task so the chain can
+    actually succeed when it fits under the cap.
+    """
+    table = {}
+    for i in range(n_callees):
+        last = i == n_callees - 1
+        table[f"c{i}"] = ResolvedCall(
+            kind="card", key=f"card:{i}", label=f"c{i}",
+            root=_task(f"leaf-{i}") if last else _call(f"call-{i}", f"c{i + 1}"),
+        )
+    _stub_resolver(monkeypatch, table)
+
+
+def test_depth_cap_is_a_boundary_not_a_ceiling_below_it(monkeypatch, ctx, recorder):
+    """The cap must equal the number of nested CALLEES that still succeed.
+
+    This pins the exact meaning the task-card skill documents ("a self-
+    chaining sequence of up to MAX_CALL_DEPTH + 1 cards fits; anything
+    longer must be split or flattened").  Without this, the constant and
+    the guidance drift independently: the docs-remediation chain of seven
+    cards passed validation and then failed at its sixth Call under the
+    old cap of 5, with nothing in the tests to say which side was wrong.
+    """
+    assert MAX_CALL_DEPTH == 8
+
+    _nested_chain(monkeypatch, MAX_CALL_DEPTH)
+    art = _run(execute_block(_call("call-root", "c0"), ctx))
+    assert art.failed is False, art.summary
+    assert [s["id"] for s in recorder] == [f"leaf-{MAX_CALL_DEPTH - 1}"]
+
+    recorder.clear()
+    _nested_chain(monkeypatch, MAX_CALL_DEPTH + 1)
+    art = _run(execute_block(_call("call-root", "c0"), ctx))
+    assert art.failed is True
+    assert "depth limit" in art.summary
+    assert recorder == []          # refused before any leaf work ran
+
+
 # ── audit trail (run map + side-effect reporting) ────────────────────────
 
 class _FakeStorage:

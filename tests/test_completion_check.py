@@ -208,3 +208,17 @@ class TestPromptInstruction:
     def test_describes_verdict_values(self):
         text = SELF_ASSESSMENT_INSTRUCTION.lower()
         assert "true" in text and "false" in text and "partial" in text
+
+    def test_scopes_verdict_to_the_blocks_own_instructions(self):
+        """A step inside a loop must not grade itself against the loop's goal.
+
+        GFX Stage 2's rebuild step ran one npm command successfully, then
+        answered ``partial`` because the iteration context said 28 defects
+        elsewhere still needed verification -- which failed the step and
+        skipped the rest of the iteration, three runs in a row.  The prompt
+        must tell the model that surrounding context is not its deliverable.
+        """
+        text = SELF_ASSESSMENT_INSTRUCTION.lower()
+        assert "this block's own instructions" in text
+        assert "iteration context" in text
+        assert "must not make you answer ``partial``" in text

@@ -29,10 +29,12 @@ NOT a stall:
 Neither signal alone is sufficient, because each has a legitimate reading.
 The corrected rule requires evidence that is unambiguous:
 
-    stalled = objective_met == "partial"          # the agent itself reports an
-                                                  # obstacle, explicitly
-              OR (failed AND summary unchanged)   # it failed AND told us
-                                                  # nothing new
+    stalled = summary unchanged AND (objective_met == "partial" OR failed)
+
+i.e. the agent either reported an obstacle or failed, AND told us nothing it
+had not already said.  (``partial`` alone was originally sufficient; that
+stopped GFX Stage 2 three runs in a row while its ledger was advancing --
+see TestPartialWhileProgressingIsNotAStall.)
 
 This file pins BOTH directions.  The first class would pass against a breaker
 that had simply been deleted, so the second class -- proving the breaker still
@@ -171,21 +173,57 @@ class TestExplicitBudgetIsHonoured:
         assert not any("stall breaker" in d for d in art.decisions)
 
 
+class TestPartialWhileProgressingIsNotAStall:
+    """Regression for GFX Stage 2 runs 066f898f / 2a13b4f5 / 78907040 / 56cc9e6b.
+
+    In a repair loop, ``partial`` is the honest step-level answer whenever
+    work remains -- the residue step is INSTRUCTED to leave attempts<3
+    defects for the next cycle.  Every one of those runs reported ``partial``
+    on three consecutive iterations while the ledger advanced
+    (verified 206 -> 234 -> 235), and the breaker stopped the loop at
+    iteration 2 of 3.  A changing summary is the evidence of progress; a
+    lone ``partial`` must not override it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_partial_with_new_information_runs_to_until_max(
+        self, storage, until_run,
+    ):
+        ctx = ExecutionContext(run_id=until_run.id, storage=storage)
+        calls, art = await _run(_block(6, condition="c"), ctx,
+                                summary=UNIQUE, objective_met="partial",
+                                failed=False)
+        assert calls == 6, (
+            "partial + a changing summary is a loop that is still moving; "
+            "the breaker must not shorten its budget"
+        )
+        assert not any("stall breaker" in d for d in art.decisions)
+
+
 # ---------------------------------------------------------------------------
 # direction 2: the breaker must STILL fire -- without these, deleting it passes
 # ---------------------------------------------------------------------------
 
 class TestBreakerStillFires:
     @pytest.mark.asyncio
-    async def test_three_partial_reports_stop_the_loop(
+    async def test_three_partial_reports_with_no_new_information_stop_the_loop(
         self, storage, until_run,
     ):
-        """The agent itself reporting an obstacle is unambiguous evidence."""
+        """The agent reporting the SAME obstacle three times is unambiguous.
+
+        ``partial`` is paired with a repeated summary, mirroring the rule
+        already applied to ``failed``.  A lone ``partial`` is deliberately
+        no longer enough -- see TestPartialWhileProgressingIsNotAStall.
+        """
         ctx = ExecutionContext(run_id=until_run.id, storage=storage)
         calls, art = await _run(_block(20, condition="c"), ctx,
-                                summary=UNIQUE, objective_met="partial",
+                                summary=CONSTANT, objective_met="partial",
                                 failed=False)
-        assert calls == 3, "three consecutive obstacle reports must stop it"
+        # "Repeated" needs a prior summary to compare against, so the first
+        # iteration can never count: three identical reports are detected
+        # at iterations 2, 3 and 4 -- the same arithmetic the failed+repeated
+        # test below already pins.
+        assert calls == 4, "three identical obstacle reports must stop it"
         assert any("stall breaker" in d for d in art.decisions)
 
     @pytest.mark.asyncio

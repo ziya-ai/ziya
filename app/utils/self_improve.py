@@ -72,6 +72,24 @@ is 9 executions of the inner subtree.  The per-block budget bounds each
 level; this bounds the product."""
 
 MAX_RETAINED_LESSONS = 2000
+
+# Verdict recorded when the judge itself failed (transport error,
+# unparseable reply, unknown verdict).  Recorded as its own verdict —
+# never as "accept" — so a judge outage cannot masquerade as a
+# considered approval in the ledger or the UI.
+JUDGE_ERROR_VERDICT = "error"
+
+# Verdicts whose lesson is worth showing a later run's judge.  An
+# "accept" lesson is self-congratulation ("this structure reliably
+# produces...") and primes the next judge toward accept; an error
+# record carries no lesson at all.  Only a revise (a weakness found)
+# or a stop (a non-text cause found) teaches anything.
+PRIOR_LESSON_VERDICTS = ("revise", "stop")
+
+# Rationale string the pre-fix evaluator recorded (under verdict
+# "accept") whenever it failed.  Records carrying it are re-labelled
+# at read time so historical judge failures stop counting as accepts.
+LEGACY_FALLBACK_RATIONALE = "judge unavailable or unparseable — no revision"
 """Ledger cap — oldest records dropped past this (same pattern as
 task_card_refusals.MAX_RETAINED_REFUSALS)."""
 
@@ -233,6 +251,43 @@ def run_improve_ceiling() -> int:
 
 # ── Lesson ledger ───────────────────────────────────────────────
 
+def normalize_lesson_record(rec: Dict[str, Any]) -> Dict[str, Any]:
+    """Re-label a pre-fix judge-failure record as a judge error.
+
+    The original evaluator resolved every failure to verdict "accept"
+    with LEGACY_FALLBACK_RATIONALE, so the ledger on disk holds judge
+    outages counted as approvals.  Relabelling happens on read (and is
+    therefore persisted by the next append's read-modify-write); it is
+    idempotent, so a relabelled record passing through again is a
+    no-op.  Records that already carry an error verdict, or any other
+    rationale, are returned untouched.
+    """
+    if (rec.get("verdict") == "accept"
+            and rec.get("rationale") == LEGACY_FALLBACK_RATIONALE):
+        rec = dict(rec)
+        rec["verdict"] = JUDGE_ERROR_VERDICT
+        rec["error"] = "legacy_fallback"
+    return rec
+
+
+def prior_lessons_for_judge(
+    records: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """The subset of ledger records a later run's judge should see.
+
+    Keeps only PRIOR_LESSON_VERDICTS records that carry a lesson or
+    rationale.  Accept lessons are dropped because they are the
+    judge praising its own predecessor and measurably prime the next
+    verdict toward accept; error records are dropped because they
+    describe the judge, not the task.
+    """
+    return [
+        r for r in records
+        if r.get("verdict") in PRIOR_LESSON_VERDICTS
+        and (r.get("lesson") or r.get("rationale"))
+    ]
+
+
 class LessonLedger:
     """Append-only JSONL ledger of improvement verdicts and lessons.
 
@@ -268,7 +323,7 @@ class LessonLedger:
                         continue
         except OSError as e:
             logger.warning(f"LessonLedger: unreadable {self.path}: {e}")
-        return out
+        return [normalize_lesson_record(r) for r in out]
 
     def record(self, rec: Dict[str, Any]) -> None:
         """Append a record (best-effort; never raises)."""
@@ -325,11 +380,14 @@ class LessonLedger:
             if not cid:
                 continue
             agg = out.setdefault(cid, {
-                "count": 0, "edits_applied": 0, "last_ts": 0.0,
+                "count": 0, "edits_applied": 0, "judge_errors": 0,
+                "last_ts": 0.0,
             })
             agg["count"] += 1
             if r.get("applied"):
                 agg["edits_applied"] += 1
+            if r.get("verdict") == JUDGE_ERROR_VERDICT:
+                agg["judge_errors"] += 1
             ts = r.get("ts") or 0.0
             if isinstance(ts, (int, float)) and ts > agg["last_ts"]:
                 agg["last_ts"] = ts

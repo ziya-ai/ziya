@@ -582,7 +582,7 @@ file task by its name in `tasks.yaml`:
 }
 ```
 
-Three constraints to author within:
+Four constraints to author within:
 - **Permissions do not cross the call.** The callee runs with its OWN
   approved scope; the caller's grants are not visible to it, and the
   caller cannot lend it permissions.  Do not put a scope on the Call block
@@ -598,6 +598,37 @@ Three constraints to author within:
   and directory order decides which runs, so an orchestrator can silently
   call a stale duplicate.  Prefer distinct names, and delete superseded
   copies rather than leaving them saved alongside.
+- **Calls nest at most 8 deep, so a self-chaining sequence caps at 9
+  cards.** The executor refuses a Call once 8 callee frames are already on
+  the stack.  A card whose LAST block calls the next card, whose last
+  block calls the next, is a nested chain even though it reads as a
+  sequence: card 1 → card 9 fits, card 10 is refused with `call depth
+  limit reached` — and because that failure propagates up through every
+  parent Call under `on_failure: "stop"`, EVERY card in the chain then
+  shows its terminal block failed, although all of their work succeeded.
+  A sequence of more than 9 cards must be split into two chains, or
+  flattened (below).
+
+**Prefer one orchestrator over cascading callers for a plain sequence.**
+When cards simply run one after another, do not have each card call the
+next.  Write one orchestrator card whose body is the Calls as SIBLINGS,
+with `on_failure: "stop"`:
+
+```
+{ "block_type": "group", "name": "Docs remediation", "on_failure": "stop",
+  "body": [
+    { "block_type": "call", "name": "WS0", "call_target": "Docs remediation WS0" },
+    { "block_type": "call", "name": "WS1", "call_target": "Docs remediation WS1" },
+    { "block_type": "call", "name": "WS2", "call_target": "Docs remediation WS2" }
+  ] }
+```
+
+Every Call is then at depth 1 regardless of how long the sequence is; a
+failed step still halts the run and stays attributed to the one step that
+failed instead of marking every upstream card failed; and each stage card
+remains launchable on its own (a stage that ends with a Call to its
+successor cannot be re-run in isolation without re-running the tail).
+Reserve a Call inside a stage card for genuinely shared sub-work.
 
 **Ask** — a human-in-the-loop checkpoint.  A leaf (empty `body`) like State:
 it invokes no model of its own.  It holds the RUN at this block boundary
@@ -950,6 +981,18 @@ Two ways to hand the card to the user; both end with the USER launching it:
 Never state that the card is running; you staged it.  If any block
 escalates, the tile says so before the user commits, and Start asks for
 confirmation — so escalate only where the work genuinely requires it.
+
+**Launching a card yourself.**  `task_card_launch(card_id)` STARTS a saved
+card's run and returns the run id — use it when a card should run now and
+you are not merely handing it over (e.g. re-running a stage after a fix, or
+kicking off the next card once its inputs exist).  It is gated: the model
+may launch only a NON-ESCALATING card (no shell grants, no writes outside
+`.ziya/`/`/tmp/`).  An escalating card is refused, and you should ask the
+user to press Run, because launch is the point at which a human commits a
+run's use of a signed privilege.  So: `task_card_stage` when the USER
+should launch (an escalating card, or a card you want them to review
+first); `task_card_launch` when a non-escalating card should just run.
+Prefer stage for a card that escalates — launch will only refuse it.
 
 ## Choosing a root block — decision guide
 
@@ -1817,6 +1860,86 @@ Rules of thumb:
             'wrong, so do not rewrite it.'
         ),
         'color': '#7c3aed',
+    },
+    {
+        'id': 'fretboard_diagrams',
+        'visibility': MODEL_DISCOVERABLE,
+        'catalog_description': 'Render guitar / ukulele / bass chord-diagram boxes (fretboard grids with dots, barres, fingering)',
+        'name': 'Chord Diagrams (fretboard)',
+        'description': 'Generate the dotted fretboard chord boxes used on chord charts and lead sheets',
+        'keywords': ['guitar', 'ukulele', 'uke', 'bass', 'banjo', 'mandolin', 'chord',
+                     'chord diagram', 'chord box', 'chord chart', 'fretboard', 'fret',
+                     'barre', 'fingering', 'shape', 'voicing', 'capo'],
+        # Fence markers are assembled from chr(96): a literal triple backtick
+        # in this source terminates the enclosing fence when quoted by tooling.
+        #
+        # Every form below was verified by compiling it through the real
+        # renderer (tests/test_latex_fretboard.py).
+        'prompt': (
+            'Render chord-diagram boxes (the dotted fretboard grid a chord chart\n'
+            'shows for C, Am, F ...) with a ' + chr(96) * 3 + 'fretboard fence.\n'
+            'This is for the SHAPE of a chord on a fretted instrument.  For\n'
+            'melody, rhythm or a score use the music renderer; for a chord\n'
+            'SYMBOL over a note (Cmaj7 above a staff) use music chordSymbol.\n'
+            '\n'
+            'Simplest form: one chord per line, name then shape, strings LOW to\n'
+            'HIGH, one character per string.  x = muted, 0 = open, digit = fret.\n'
+            '\n'
+            '  Am x02210\n'
+            '  C  x32010\n'
+            '  F  133211 barre=1 fingers=134211\n'
+            '  A  577655\n'
+            '\n'
+            'The string count is inferred from the shape: 6 characters draw a\n'
+            'guitar box, 4 a ukulele (or bass) box, 5 a banjo.  Ukulele shapes\n'
+            'are written G-C-E-A low to high: C is 0003, G7 is 0212, Am is 2000.\n'
+            '\n'
+            'Frets 10 and above cannot be written compactly: use commas,\n'
+            '  D  x,x,12,14,14,12\n'
+            '\n'
+            'Automatic behaviour (no option needed):\n'
+            '  base fret   a shape that fits frets 1-4 gets a thick nut; one that\n'
+            '              does not (A 577655) is drawn from its lowest fret with\n'
+            '              a "5fr" label, exactly as published charts do\n'
+            '  rows        4 frets shown, more if the shape needs them\n'
+            '  accidentals write F# / Bb / F♯ / E♭ in the name freely; # and the\n'
+            '              Unicode glyphs are typeset as real sharp/flat signs\n'
+            '\n'
+            'Options, as key=value after the shape (or in [...] on \\chord):\n'
+            '  barre=N     thick bar across every string stopped at fret N\n'
+            '  fingers=... which finger on each string, same order as the shape,\n'
+            '              0 where none (134211); printed under the box\n'
+            '  fret=N      force the base fret (overrides the automatic choice)\n'
+            '  frets=N     force the number of fret rows shown\n'
+            '\n'
+            'The equivalent LaTeX macro form is accepted too and is what the\n'
+            'shorthand expands to:\n'
+            '  \\chord[barre=1,fingers={1,3,4,2,1,1}]{F}{1,3,3,2,1,1}\n'
+            'Do not mix the two forms in one fence: a body containing any\n'
+            'backslash command is taken as LaTeX and its bare lines are not\n'
+            'expanded.\n'
+            '\n'
+            'Layout: all chords in one fence render as ONE ROW.  For a chord\n'
+            'chart of several rows use one fence per row.  Do not write\n'
+            '\\begin{tikzpicture}, \\documentclass or \\usepackage -- the\n'
+            'preamble (xcolor, tikz, amsmath/amssymb) is supplied by the\n'
+            'profile, and TikZ is the only TeX Live dependency, so this works\n'
+            'on any install where ' + chr(96) * 3 + 'tikz works.\n'
+            '\n'
+            'Pairing with a score: a fretboard row of the chord shapes plus a\n'
+            + chr(96) * 3 + 'music fence of the strumming rhythm is a great\n'
+            'answer to "how do I play X" -- BUT the music fence is a DIFFERENT\n'
+            'renderer with its own JSON schema, which is NOT this skill.  Load\n'
+            'the music_notation skill FIRST and follow its schema; do not guess\n'
+            'it.  In particular the music spec needs "type": "music", its notes\n'
+            'are objects ({"keys":["a/3"],"duration":"q"}), and a chord label is\n'
+            '"chordSymbol" PER NOTE -- there is no "tracks" or "chordSymbols"\n'
+            'field, and the "A3/q" slash-string is the inline music: codespan\n'
+            'grammar, not the JSON-block grammar.  A music fence in the wrong\n'
+            'shape is silently declined ("No compatible plugin"), so get it from\n'
+            'the music_notation skill rather than from memory.\n'
+        ),
+        'color': '#b45309',
     },
     {
         'id': 'music_notation',
