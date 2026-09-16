@@ -72,6 +72,46 @@ def _restore_environ():
             os.environ[key] = before[key]
 
 
+@pytest.fixture(autouse=True)
+def _restore_request_contextvars():
+    """Undo request-scoped ContextVar writes a test leaves behind.
+
+    ``app.context`` holds the per-request project root, conversation id, and
+    task-scope grants in module-level ContextVars.  In production the request
+    (or task) that sets them ends, and the context dies with it.  In pytest a
+    *sync* fixture or test body runs in the main thread's one long-lived
+    context, so ``set_project_root(...)`` with no token reset survives the
+    test -- and every later test that asks ``get_project_root_or_none()``
+    gets a tmp_path from a module that finished minutes ago.
+
+    Traced live: ``test_chat_history_tools.py``'s ``env`` fixture left its
+    project root set, and ``test_write_policy_prompt_consistency``'s shell
+    block summary (which is root-addressed) then described *that* project --
+    an unregistered tmp dir -- instead of the fixture's, reporting the bare
+    defaults.  Only reproducible with both modules in one run, in that order.
+
+    Snapshot every ContextVar defined on ``app.context`` before the test and
+    restore it after.  Async test bodies run in a copied context and cannot
+    leak, so this only matters for the sync path -- which is exactly where
+    the leak lived.  Every var on ``app.context`` declares ``default=None``,
+    so "unset" and ``None`` are indistinguishable to readers and a plain
+    ``set(prior)`` is a faithful restore.  (A ``Token`` cannot help here: it
+    restores the value from before *that* ``set``, i.e. the leaked one.)
+    """
+    import contextvars
+    try:
+        from app import context as _ctx
+    except Exception:  # pragma: no cover - app.context always importable
+        yield
+        return
+    cvars = [v for v in vars(_ctx).values() if isinstance(v, contextvars.ContextVar)]
+    before = {v: v.get() for v in cvars}
+    yield
+    for v in cvars:
+        if v.get() is not before[v]:
+            v.set(before[v])
+
+
 @pytest.fixture
 def temp_config_dir(tmp_path):
     """Create a temporary config directory for testing."""

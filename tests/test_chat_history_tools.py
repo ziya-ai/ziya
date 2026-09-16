@@ -140,11 +140,17 @@ def env(tmp_path, monkeypatch):
     from app.storage import chat_index
     chat_index.invalidate()
 
-    from app.context import set_conversation_id, set_project_root
-    set_conversation_id(ids["cur"])
-    set_project_root(str(project_root.resolve()))
+    # Request-scoped ContextVars, set in the main thread's context (this is a
+    # sync fixture) -- restore them on teardown or they outlive the test and
+    # every later root-addressed reader sees this tmp project.
+    from app import context as _ctx
+    conv_token = _ctx._request_conversation_id.set(ids["cur"])
+    root_token = _ctx._request_project_root.set(str(project_root.resolve()))
 
-    return {"ziya_home": ziya_home, "pid_a": pid_a, "pid_b": pid_b, **ids}
+    yield {"ziya_home": ziya_home, "pid_a": pid_a, "pid_b": pid_b, **ids}
+
+    _ctx._request_project_root.reset(root_token)
+    _ctx._request_conversation_id.reset(conv_token)
 
 
 # ── turn assignment ────────────────────────────────────────────────
