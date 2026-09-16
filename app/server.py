@@ -422,6 +422,20 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
         else:
             processed_chat_history.append(msg)
 
+    # Rewrite rendered tool-result blocks in assistant history.  The
+    # ````tool:…|…|syntax fences and TOOL_BLOCK_START JSON the frontend
+    # persists into message.content are a display encoding; replayed
+    # verbatim, turn after turn, they teach the model to *write* tool
+    # output as text instead of calling the tool (df488630 turn 47).
+    # Bodies are kept whole — only the encoding changes — and the rewrite
+    # is a pure function of each message, so cached history prefixes are
+    # unaffected.  See app/utils/tool_history_rewrite.py.
+    try:
+        from app.utils.tool_history_rewrite import rewrite_tool_history
+        processed_chat_history = rewrite_tool_history(processed_chat_history)
+    except Exception as e:
+        logger.warning(f"Tool-history rewrite failed (non-fatal): {e}")
+
     # Inject task-run results as synthetic system messages so the model
     # can see what task cards were launched in this chat and how they
     # finished.  Without this, task results live only in the inline
@@ -650,16 +664,24 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Task-run reconciliation skipped: {e}")
 
-    # Cross-project chat-integrity self-detection.  Surfaces shadow copies
-    # (the same chat cloned into multiple project dirs by the pre-guard
-    # bulk-sync bug) in the logs at boot.  Warn-only by default; deletes
-    # files only when ZIYA_AUTO_RECONCILE_CHATS is set.  Never blocks startup.
+    # Background warm-up of the chat summary caches, followed by the
+    # cross-project chat-integrity check (shadow-copy detection; warn-only
+    # unless ZIYA_AUTO_RECONCILE_CHATS is set).  Both walk every chat file
+    # in every project.  The integrity check used to run synchronously here,
+    # BEFORE `yield`, so on a large workspace (1.7k encrypted chats, 459MB)
+    # the server accepted no connections until a full scan finished — and
+    # then the first /chats request repeated the whole scan against a cold
+    # _summary_cache and blew the client's 25s deadline, leaving an empty
+    # sidebar.  Now: connections are accepted immediately, the caches warm
+    # in a daemon thread so the first list request is cheap, and the
+    # integrity walk follows once they are.  See app/utils/startup_warmup.py.
     try:
         from app.utils.chat_integrity import run_startup_check
         from app.utils.paths import get_ziya_home as _get_ziya_home_ci
-        run_startup_check(_get_ziya_home_ci())
+        from app.utils.startup_warmup import start_background_warmup
+        start_background_warmup(_get_ziya_home_ci(), integrity_check=run_startup_check)
     except Exception as e:
-        logger.warning(f"Chat-integrity startup check skipped: {e}")
+        logger.warning(f"Chat summary warm-up / integrity check skipped: {e}")
 
     # Register deferred plugin routes (plugins may have loaded before server)
     if ziya_env('ZIYA_LOAD_INTERNAL_PLUGINS'):
@@ -1504,6 +1526,9 @@ app.include_router(debug_router)
 
 from app.routes.usage_routes import router as usage_router
 app.include_router(usage_router)
+
+from app.routes.shadow_routes import router as shadow_router
+app.include_router(shadow_router)
 
 from app.routes.diff_routes import router as diff_router
 app.include_router(diff_router)

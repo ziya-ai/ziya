@@ -338,6 +338,34 @@ def _dispatch_fake_tool_block(block_text: str, ts: str) -> List[Dict[str, Any]]:
         })
         return events
 
+    # A fabricated *outcome*.  A fence in the UI's tool-display format whose
+    # body is a tool-result dict is the model reporting a result for a call
+    # it never made (df488630 turn 47: a file_write "success" with a guessed
+    # bytes_written).  Passing that through as a plain code block launders
+    # the fabrication into something that reads as a legitimate sample and
+    # hides it from Layer C, whose result-shape check deliberately does not
+    # look inside fences.  Same classifier Layer C uses; body-shape only,
+    # so a fake fence with a prose or code body still passes through and
+    # the model can quote the format when discussing it.
+    shape = detect_fake_tool_result(syntax, body_no_sentinel)
+    if shape is not None and shape.confidence in ('high', 'medium'):
+        logger.warning(
+            "🚨 HALLUCINATION_FAKE_RESULT_FENCE: tool=%r normalized=%r "
+            "confidence=%s keys=%s body_preview=%r",
+            tool_name, normalized, shape.confidence, shape.matched_keys,
+            body_no_sentinel[:160],
+        )
+        events.append({
+            'type': 'hallucination_recovery',
+            'reason': 'fabricated_tool_result_fence',
+            'pattern': f'fake_fence:{normalized}:{shape.confidence}',
+            'message': (
+                'Model wrote a tool result instead of calling the tool '
+                '— retrying.'
+            ),
+        })
+        return events
+
     # Heuristic failed — passthrough as plain code block so the user still
     # sees the content but no fake widget is rendered.
     logger.info(
@@ -347,7 +375,11 @@ def _dispatch_fake_tool_block(block_text: str, ts: str) -> List[Dict[str, Any]]:
         len(nonempty_lines), body[:160],
     )
     fence = open_ticks
-    rewritten = f"{fence}{syntax}\n{body_no_sentinel}\n{fence}"
+    # Trailing blank line is load-bearing: the closer regex in
+    # process_text_delta consumes the newlines after the fence, so the
+    # trailing text (often another fake fence) would otherwise be glued
+    # directly onto this closer, producing ````````text.
+    rewritten = f"{fence}{syntax}\n{body_no_sentinel}\n{fence}\n\n"
     events.append({'type': 'text', 'content': rewritten, 'timestamp': ts})
     return events
 
@@ -495,6 +527,13 @@ def process_text_delta(
             len(block_text), len(trailing),
         )
         events.extend(_dispatch_fake_tool_block(block_text, ts))
+        # A fabricated result aborts the iteration for retry.  The block was
+        # buffered, never appended to assistant_text, so nothing to trim;
+        # the trailing text belongs to a response about to be discarded.
+        if any(_ev.get('type') == 'hallucination_recovery' for _ev in events):
+            state.hallucination_detected = True
+            executor._block_opening_buffer = ""
+            return events
         # Track whether a real dispatch fired.  ``_dispatch_fake_tool_block``
         # emits a ``fake_tool_detected`` event only when the heuristic
         # decides to execute (vs. passthrough as documentation).
