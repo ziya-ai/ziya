@@ -242,6 +242,34 @@ The sanitizer runs at the point where `result_text` is determined in the streami
 
 See `Enterprise.md` for registering custom `ToolResultFilterProvider` plugins.
 
+### Tool Results in Replayed History
+
+Tool results survive a turn only as text inside the assistant message the
+frontend persisted — the four-backtick `tool:NAME|header|syntax` fence (or,
+for search-type tools, a `TOOL_BLOCK_START` HTML comment carrying JSON) that
+`MarkdownRenderer` turns into the collapsible tool widget.  That encoding
+exists for the renderer, not the model.  Replayed verbatim, turn after
+turn, it accumulates into dozens of in-context examples of "what my output
+looks like after a tool call", and late in long conversations the model
+starts *writing* that format instead of calling the tool.
+
+`app/utils/tool_history_rewrite.py` runs on assistant history in
+`build_messages_for_streaming` (the choke point shared by web, CLI and
+delegates) and rewrites each block into the same `‹tool_result trust=…
+tool=… label=…›` envelope the live path uses.  Bodies are kept whole — the
+model's recall of earlier output is deliberately not traded for tokens —
+and the search JSON is unpacked to its summary and result text.  The
+rewrite is a pure function of each message, so cached history prefixes
+stay stable.  Kill switch: `ZIYA_DISABLE_TOOL_HISTORY_REWRITE=1`.
+
+On the detection side, a model-written fence in the tool-display format
+whose body has the shape of a tool *result* (the Layer C dict signature:
+`success`/`message`/`path`/`bytes_written`…) is treated as a fabricated
+outcome and aborts the iteration for retry, rather than being passed
+through as a plain code block where it would read as a legitimate sample.
+A fake fence with a prose or code body still passes through, so the
+format can be quoted when discussing it.
+
 ---
 
 ## File Tree & Context
