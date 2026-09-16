@@ -288,7 +288,17 @@
      "signature": "json-repair-semicolons-not-handled",
      "at": "2026-09-15T08:56:14.661038Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "89192148e001bcbf1671b9512e81c835f834cc64d8cdcf0e674f2e3953776030",
+     "validated_at": "2026-09-16T07:06:10.997890Z"
+    },
+    "dark": {
+     "hash": "da069d9181a15370bfb85e0d410ab293135900fcdafa6a03707d7d25f78ef2a3",
+     "validated_at": "2026-09-16T07:06:11.008189Z"
+    }
+   }
   },
   "vega-lite-w4-10": {
    "themes": [
@@ -747,7 +757,17 @@
      "signature": "missing-encoding-type-infers-quantitative-as-nominal",
      "at": "2026-09-15T08:56:14.709885Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "48c36128a97d3910a714459524adfca70685c360d47420632cbbf3a42dd3aca5",
+     "validated_at": "2026-09-16T07:05:13.000153Z"
+    },
+    "dark": {
+     "hash": "dc68e1618e5a0d07a42b339f976e4118af7fb95eba2efab46928780409b0dcf3",
+     "validated_at": "2026-09-16T07:05:13.016701Z"
+    }
+   }
   },
   "vega-lite-w4-15": {
    "themes": [
