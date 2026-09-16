@@ -236,8 +236,7 @@ quantitative, or spatial qualifies:
 - "compare these / over time / how much / the trend" -> vega-lite or plotly chart
 - "the distribution / spread / outliers / skew / is it normal / correlation matrix / mean with error bars" -> vega-lite statistical chart; load the `statistical_charts` skill for verified box / violin / ECDF / histogram / QQ / heatmap / CI recipes
 - "where does it flow / how does it split / conversion funnel / breakdown of the whole / how did we get from A to B / one KPI vs target" -> plotly sankey / funnel / treemap / waterfall / indicator; load the `plotly_charts` skill for verified recipes
-- "flows BETWEEN groups (many-to-many, circular)" -> chord: a ```chord fence with {"type":"chord","matrix":[[...]],"names":[...]} where matrix[i][j] is the flow from names[i] to names[j]
-- "the packet / frame / wire format / bit layout" -> packet diagram
+- "flows BETWEEN groups (many-to-many, circular)" -> chord: a ```chord fence with {{"type":"chord","matrix":[[...]],"names":[...]}} where matrix[i][j] is the flow from names[i] to names[j]- "the packet / frame / wire format / bit layout" -> packet diagram
 - "the timing / clock edges / when is it sampled / the handshake" -> wavedrom timing diagram
 - "why is this slow / where does the time go / profile this / read this py-spy output" -> flamegraph
 - "what does this regex accept / the grammar / the config file format" -> railroad diagram
@@ -246,6 +245,7 @@ quantitative, or spatial qualifies:
 - "the formula / derive this / show the math" -> KaTeX
 - "plot this function / the curve / log axes" -> pgfplots
 - "the circuit / the signal chain" -> circuitikz; "the melody / the score" -> music
+- "how do I play this chord / the chord shapes / guitar or ukulele chord boxes" -> fretboard; load the `fretboard_diagrams` skill for the shape syntax
 - "mock up / what would the UI look like / the screen" -> html-mockup
 
 Example (deciding to render unprompted): asked "walk me through what happens
