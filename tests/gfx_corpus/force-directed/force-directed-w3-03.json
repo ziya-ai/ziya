@@ -1,0 +1,59 @@
+{
+ "type": "force-directed",
+ "definition": {
+  "nodes": [
+   {
+    "id": "dup",
+    "label": "dup A",
+    "group": 0
+   },
+   {
+    "id": "dup",
+    "label": "dup B",
+    "group": 1
+   },
+   {
+    "id": "dup",
+    "label": "dup C",
+    "group": 2
+   },
+   {
+    "id": "x",
+    "label": "x",
+    "group": 3
+   },
+   {
+    "id": "y",
+    "label": "y",
+    "group": 4
+   }
+  ],
+  "links": [
+   {
+    "source": "dup",
+    "target": "dup"
+   },
+   {
+    "source": "x",
+    "target": "x"
+   },
+   {
+    "source": "x",
+    "target": "y"
+   },
+   {
+    "source": "x",
+    "target": "y"
+   },
+   {
+    "source": "x",
+    "target": "y"
+   },
+   {
+    "source": "dup",
+    "target": "x"
+   }
+  ]
+ },
+ "intent": "DEGENERATE: duplicate node ids (dup x3), self-referencing edges, and 3 parallel edges between the same pair."
+}

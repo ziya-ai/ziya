@@ -17,6 +17,7 @@ import {
   isDarkBackground,
   namedColorToHex,
   truncateLabel,
+  truncateLabelMiddle,
 } from './chartTheme';
 import JSON5 from 'json5';
 
@@ -175,10 +176,16 @@ export function readableStroke(
   const target = dark ? '#ffffff' : '#000000';
   // Try the requested colour first, then blend toward the canvas-opposite.
   const parse = (h: string): [number, number, number] | null => {
-    const m = /^#?([0-9a-f]{6})$/i.exec(h.trim());
-    if (!m) return null;
-    const v = m[1];
-    return [parseInt(v.slice(0, 2), 16), parseInt(v.slice(2, 4), 16), parseInt(v.slice(4, 6), 16)];
+    // Accept BOTH 3-digit (#468) and 6-digit (#446688) hex. A 6-digit-only regex
+    // dropped 3-digit strokes: classifyColor returns the raw 3-digit hex verbatim
+    // ({hex:'#468'}), parse then returned null and `if (!start) return hex` emitted
+    // the un-lifted short hex, so a low-contrast link stroke (e.g. #468 on #1f1f1f
+    // = 2.69:1) skipped the dark-theme contrast lift entirely (D-400). Node fills
+    // route through hexToRgb which already expands 3-digit, so only strokes leaked.
+    let s = h.trim().replace(/^#/, '');
+    if (/^[0-9a-f]{3}$/i.test(s)) s = s.split('').map((ch) => ch + ch).join('');
+    if (!/^[0-9a-f]{6}$/i.test(s)) return null;
+    return [parseInt(s.slice(0, 2), 16), parseInt(s.slice(2, 4), 16), parseInt(s.slice(4, 6), 16)];
   };
   const start = parse(hex);
   const goal = parse(target)!;
@@ -317,9 +324,16 @@ export function rotateHue(hex: string, deg: number): string {
  * distinct groups no longer collapse onto the same colour at %10 recycling.
  * Pure/testable.
  */
-export function groupColor(group: number | undefined, effectiveBg: string): string {
+export function groupColor(group: number | string | undefined, effectiveBg: string): string {
   const n = DEFAULT_GROUP_COLORS.length;
-  const gi = Number.isFinite(group as number) ? Math.max(0, Math.trunc(group as number)) : 0;
+  // Coerce a numeric-STRING group ('1') to its number before indexing (D-399).
+  // The wave-4 preprocessor coerces numeric strings for size/value/width/etc. but
+  // NOT node.group, so a string group reached here and Number.isFinite('1') is
+  // false -> gi fell to 0 and every node collapsed to DEFAULT_GROUP_COLORS[0],
+  // destroying colour grouping. toFiniteOrUndefined parses "1"/"2" while still
+  // rejecting NaN/Infinity/non-numeric.
+  const gv = toFiniteOrUndefined(group as any);
+  const gi = gv !== undefined ? Math.max(0, Math.trunc(gv)) : 0;
   const idx = gi % n;
   const cycle = Math.floor(gi / n);
   let base = DEFAULT_GROUP_COLORS[idx];
@@ -340,7 +354,7 @@ export function groupColor(group: number | undefined, effectiveBg: string): stri
  * The palette branch is itself reconciled via groupColor (D-020). Pure/testable.
  */
 export function resolveNodeFill(
-  d: { color?: string; group?: number },
+  d: { color?: string; group?: number | string },
   style: ForceStyle,
   effectiveBg: string,
 ): string {
@@ -547,6 +561,102 @@ export function effectiveLabelFontSize(
 }
 
 /**
+ * Minimum on-screen pixel RADIUS a node disc must render at AFTER the
+ * fit-to-extent zoom scale `fit.k` is applied (D-369/D-393). computeFitTransform
+ * scales the whole zoom group by k, so a disc authored at radius `r` renders
+ * on-screen at `r * k`. For a large settled extent fitted into the frame (k can
+ * fall below 0.01) every node collapses to a sub-pixel dot and the topology /
+ * 20-group palette becomes unreadable — the label floor
+ * (effectiveLabelFontSize) already counter-scales labels but nothing did the
+ * same for the discs. This is the disc analog of FORCE_MIN_LABEL_ON_SCREEN_PX.
+ */
+export const FORCE_MIN_NODE_RADIUS_ON_SCREEN_PX = 2.5;
+
+/**
+ * Compute the pre-scale (user-space) radius to APPLY to a node disc so that,
+ * once the fit scale `fitK` is applied, the on-screen radius clears
+ * FORCE_MIN_NODE_RADIUS_ON_SCREEN_PX. A larger authored radius is never shrunk;
+ * we only enlarge to meet the floor.
+ *
+ *   applied = max(baseR, floor / k)   →   on-screen = applied * k >= floor
+ *
+ * At k≈1 (a small graph that is not scaled down) this is a no-op, so ordinary
+ * output is untouched; it only fires when a large extent forces a tiny k. Pure/
+ * testable.
+ */
+export function effectiveNodeRadius(
+  baseR: number,
+  fitK: number,
+  floorPx = FORCE_MIN_NODE_RADIUS_ON_SCREEN_PX,
+): number {
+  const r = Number.isFinite(baseR) && baseR > 0 ? baseR : 0;
+  const k = Number.isFinite(fitK) && fitK > 0 ? fitK : 1;
+  return Math.max(r, floorPx / k);
+}
+
+/**
+ * Minimum on-screen pixel STROKE-WIDTH a link must render at after the fit scale
+ * is applied (D-369/D-393). A link stroke authored at `w` renders on-screen at
+ * `w * k`; at tiny k the edges dissolve into sub-pixel hairlines so which node
+ * links to which is unrecoverable and the graph reads as a floating word cloud.
+ */
+export const FORCE_MIN_LINK_STROKE_ON_SCREEN_PX = 0.75;
+
+/**
+ * Pre-scale stroke-width to APPLY to a link so on-screen width clears
+ * FORCE_MIN_LINK_STROKE_ON_SCREEN_PX. Larger authored strokes are never thinned.
+ * No-op at k≈1. Pure/testable.
+ */
+export function effectiveLinkStrokeWidth(
+  baseW: number,
+  fitK: number,
+  floorPx = FORCE_MIN_LINK_STROKE_ON_SCREEN_PX,
+): number {
+  const w = Number.isFinite(baseW) && baseW > 0 ? baseW : 1;
+  const k = Number.isFinite(fitK) && fitK > 0 ? fitK : 1;
+  return Math.max(w, floorPx / k);
+}
+
+/**
+ * True when a link's endpoints are the same node (a self-loop). Endpoints may be
+ * raw ids (before d3-force resolves them) or node objects (after), so compare by
+ * identity and by resolved id. Pure/testable (D-397).
+ */
+export function isSelfLoopLink(link: any): boolean {
+  if (!link) return false;
+  const s = link.source;
+  const t = link.target;
+  if (s == null || t == null) return false;
+  if (s === t) return true;
+  const sid = typeof s === 'object' ? s.id : s;
+  const tid = typeof t === 'object' ? t.id : t;
+  return sid != null && tid != null && String(sid) === String(tid);
+}
+
+/**
+ * SVG path for a self-loop drawn as a small arc that bulges up-and-right off the
+ * node rim and returns to the rim, so a source===target edge reads as a visible
+ * loop rather than a degenerate zero-length arrowhead stub at the rim (D-397).
+ * The arc starts near the top of the disc and ends near the right of the disc so
+ * the fixed-size arrowhead (marker-end) sits at the returning rim. Pure/testable.
+ */
+export function selfLoopPath(cx: number, cy: number, r: number): string {
+  const x = Number.isFinite(cx) ? cx : 0;
+  const y = Number.isFinite(cy) ? cy : 0;
+  const rr = Number.isFinite(r) && r > 0 ? r : 8;
+  const loop = Math.max(rr * 1.8, rr + 12);
+  const x0 = x - rr * 0.35;
+  const y0 = y - rr * 0.94;
+  const x1 = x + rr * 0.94;
+  const y1 = y - rr * 0.35;
+  const c1x = x - loop * 0.7;
+  const c1y = y - loop * 1.9;
+  const c2x = x + loop * 1.9;
+  const c2y = y - loop * 0.7;
+  return `M${x0},${y0} C${c1x},${c1y} ${c2x},${c2y} ${x1},${y1}`;
+}
+
+/**
  * Fraction of the shorter canvas dimension that a node radius may occupy. A
  * node radius past this is disproportionate to the drawing area regardless of
  * the absolute FORCE_MAX_NODE_RADIUS cap.
@@ -658,6 +768,7 @@ export function labelRightExtent(len: number, r: number, fontSize: number): numb
  */
 export function selectVisibleLabels(
   boxes: Array<{ x0: number; y0: number; x1: number; y1: number; priority: number }>,
+  discBoxes?: Array<{ x0: number; y0: number; x1: number; y1: number }>,
 ): boolean[] {
   const n = boxes.length;
   const vis = new Array(n).fill(false);
@@ -665,12 +776,28 @@ export function selectVisibleLabels(
     .map((_, i) => i)
     .sort((a, b) => (boxes[b].priority - boxes[a].priority) || (a - b));
   const shown: number[] = [];
+  const overlaps = (
+    a: { x0: number; y0: number; x1: number; y1: number },
+    b: { x0: number; y0: number; x1: number; y1: number },
+  ) => a.x0 < b.x1 && a.x1 > b.x0 && a.y0 < b.y1 && a.y1 > b.y0;
   for (const i of order) {
     const b = boxes[i];
     let ok = true;
+    // label-vs-label declutter (D-093)
     for (const j of shown) {
-      const s = boxes[j];
-      if (b.x0 < s.x1 && b.x1 > s.x0 && b.y0 < s.y1 && b.y1 > s.y0) { ok = false; break; }
+      if (overlaps(b, boxes[j])) { ok = false; break; }
+    }
+    // label-vs-disc declutter (D-395): a label drawn at a blind fixed offset can
+    // overprint an ADJACENT node's DISC (not just another label). label-on-label
+    // declutter above never caught that, so a light label overprinted a pale disc
+    // at ~1.7:1. Hide a label whose box overlaps any OTHER node's disc; the hidden
+    // label keeps its hover <title>, exactly like the label-on-label case. i's own
+    // disc (discBoxes[i]) is skipped since the label is anchored just off its rim.
+    if (ok && discBoxes) {
+      for (let j = 0; j < discBoxes.length; j++) {
+        if (j === i) continue;
+        if (overlaps(b, discBoxes[j])) { ok = false; break; }
+      }
     }
     if (ok) { vis[i] = true; shown.push(i); }
   }
@@ -715,9 +842,11 @@ export function toFiniteOrUndefined(v: any): number | undefined {
  *
  * Returns NEW node objects (does not mutate the input).
  */
+export const FORCE_PIN_DEJITTER_STEP = 10;
+
 export function sanitizeForceNodes<T extends Record<string, any>>(nodes: T[]): T[] {
   if (!Array.isArray(nodes)) return [];
-  return nodes.map((raw) => {
+  const out = nodes.map((raw) => {
     const n: Record<string, any> = { ...raw };
 
     // Fixed-position pins: drop any non-finite pin outright.
@@ -746,6 +875,31 @@ export function sanitizeForceNodes<T extends Record<string, any>>(nodes: T[]): T
 
     return n as T;
   });
+
+  // De-collide FULLY-PINNED coincident nodes (D-398). Multiple nodes pinned to
+  // the SAME (fx, fy) stack exactly on top of one another and render as a single
+  // disc — forceCollide cannot separate them because the positions are FIXED, so
+  // N distinct nodes appear as one and their edges converge to a point. Keep the
+  // first at its authored pin and fan the rest onto a small deterministic golden-
+  // angle spiral around it, so each keeps a distinct fixed position near the
+  // requested location (fit-to-extent then frames them all). Nodes with only one
+  // axis pinned are not coincident points and are left untouched.
+  const seen = new Map<string, number>();
+  const GOLDEN = 2.399963229728653; // radians
+  for (const n of out as Array<Record<string, any>>) {
+    if (typeof n.fx !== 'number' || typeof n.fy !== 'number') continue;
+    const key = `${n.fx},${n.fy}`;
+    const m = seen.get(key) ?? 0;
+    if (m > 0) {
+      const r = FORCE_PIN_DEJITTER_STEP * Math.sqrt(m);
+      const theta = m * GOLDEN;
+      n.fx = n.fx + r * Math.cos(theta);
+      n.fy = n.fy + r * Math.sin(theta);
+    }
+    seen.set(key, m + 1);
+  }
+
+  return out;
 }
 
 /**
@@ -1122,11 +1276,28 @@ export const forceDirectedPlugin: D3RenderPlugin = {
     // Clear container
     d3.select(container).selectAll('*').remove();
 
+    // Shrink-to-container like every other d3 plugin (graphviz / mermaid /
+    // joint / d2): the SVG's INTRINSIC width/height is the declared/normalised
+    // canvas, which routinely exceeds the capture viewport (a declared
+    // 900x700 / 1000x800 / 1400x1000 canvas vs the ~632x464 window). Sized at
+    // fixed pixels with no responsive scaling, the container's overflow:hidden
+    // then CROPS the right/bottom off — and the fit-to-extent transform below
+    // fits the nodes into the DECLARED CANVAS, not into the viewport, so it can
+    // never prevent this crop (G-2ca2a0: D-107/D-108/D-110/D-368,
+    // "fixed-pixel-svg-exceeds-render-viewport-cropped" /
+    // "no-fit-to-extent-nodes-clipped-offscreen"). viewBox + preserveAspectRatio
+    // 'xMidYMid meet' plus max-width:100% / height:auto scale the WHOLE logical
+    // canvas (with the fit-centred graph inside it) down to fit the viewport, so
+    // nothing is clipped. Matches the renderer's documented expectation that
+    // plugin SVGs use max-width:100%/height:auto to shrink-to-container.
     const svg = d3.select(container)
       .append('svg')
       .attr('width', width)
       .attr('height', height)
       .attr('viewBox', [0, 0, width, height])
+      .attr('preserveAspectRatio', 'xMidYMid meet')
+      .style('max-width', '100%')
+      .style('height', 'auto')
       .style('border-radius', '6px');
     // Only paint a background when the caller pins one; otherwise inherit the
     // page/theme surface so a dark canvas does not render a two-tone split panel
@@ -1183,18 +1354,38 @@ export const forceDirectedPlugin: D3RenderPlugin = {
       .force('collision', d3.forceCollide().radius((d: ForceNode) =>
         collideRadius !== undefined ? collideRadius : radiusOf(d) + 4));
 
-    // Links
+    // Split self-loops (source===target) out of the straight-line edges: a
+    // self-loop routed through the straight-segment + rim-shorten path collapses
+    // to a zero-length degenerate arrowhead stub at the rim, not a visible loop
+    // (D-397). Straight edges stay <line>; self-loops render as arc <path>s below.
+    const straightLinks = links.filter((d: any) => !isSelfLoopLink(d));
+    const selfLinks = links.filter((d: any) => isSelfLoopLink(d));
+
+    // Links (non-self)
     const link = g.append('g')
       .attr('stroke', linkColor)
       .attr('stroke-opacity', linkOpacity)
       .selectAll('line')
-      .data(links)
+      .data(straightLinks)
       .join('line')
       // Per-link stroke: a link's own `color` (a declared ForceLink option) was
       // dropped because stroke was set ONCE on the parent <g> from the global
       // linkColor, so per-edge colours / ok-warn-err semantics were lost (D-121).
       // resolveLinkStroke contrast-reconciles a per-link colour against the
       // effective canvas and falls back to the resolved default when absent.
+      .attr('stroke', (d: any) => resolveLinkStroke(d, effectiveBg, linkOpacity, linkColor))
+      .attr('stroke-width', (d: any) => Math.sqrt(d.value || 1))
+      .attr('marker-end', 'url(#fd-arrow)');
+
+    // Self-loop edges as curved arc paths bulging off the node rim (D-397).
+    const selfLoop = g.append('g')
+      .attr('fill', 'none')
+      .attr('stroke', linkColor)
+      .attr('stroke-opacity', linkOpacity)
+      .selectAll('path')
+      .data(selfLinks)
+      .join('path')
+      .attr('fill', 'none')
       .attr('stroke', (d: any) => resolveLinkStroke(d, effectiveBg, linkOpacity, linkColor))
       .attr('stroke-width', (d: any) => Math.sqrt(d.value || 1))
       .attr('marker-end', 'url(#fd-arrow)');
@@ -1234,7 +1425,11 @@ export const forceDirectedPlugin: D3RenderPlugin = {
     // would perturb the settled/fitted geometry; the halo + truncation restore
     // legibility without moving anything.
     const labelText = node.append('text')
-      .text((d: ForceNode) => truncateLabel(String(d.label || d.id), FORCE_MAX_LABEL_CHARS))
+      // Middle-truncate (keep head AND tail) so distinct labels that share a long
+      // common prefix don't all collapse to the same 'prefix…' string — the
+      // discriminating suffix survives on-screen, not only in the hover <title>
+      // (D-396). Full text is preserved in the <title> below.
+      .text((d: ForceNode) => truncateLabelMiddle(String(d.label || d.id), FORCE_MAX_LABEL_CHARS))
       .attr('x', (d: ForceNode) => radiusOf(d) + 4)
       .attr('y', 3)
       .attr('fill', labelColor)
@@ -1262,6 +1457,10 @@ export const forceDirectedPlugin: D3RenderPlugin = {
           shortenToTarget(d.source.x, d.source.y, d.target.x, d.target.y, radiusOf(d.target)).x)
         .attr('y2', (d: any) =>
           shortenToTarget(d.source.x, d.source.y, d.target.x, d.target.y, radiusOf(d.target)).y);
+
+      // Self-loops: draw an arc off the node rim (D-397).
+      selfLoop.attr('d', (d: any) =>
+        selfLoopPath(d.source.x, d.source.y, radiusOf(d.source)));
 
       node.attr('transform', (d: any) => `translate(${d.x},${d.y})`);
     });
@@ -1299,6 +1498,20 @@ export const forceDirectedPlugin: D3RenderPlugin = {
     const appliedFont = effectiveLabelFontSize(fontSize, fit.k);
     labelText.attr('font-size', `${appliedFont}px`);
 
+    // Discs and link strokes are scaled by the same fit.k as everything in the
+    // zoom group, so at a tiny fit scale (large settled extent) nodes collapse to
+    // sub-pixel dots and links to hairlines that dissolve — the topology and the
+    // group palette become unreadable (D-369/D-393). Counter-scale the DRAWN disc
+    // radius and link stroke-width so their on-screen size clears the legibility
+    // floors, exactly as appliedFont does for labels. No-op at k≈1, so ordinary
+    // (small/medium) graphs are untouched. Re-set here — after the fit is known —
+    // rather than at join time, mirroring the label re-size.
+    const drawRadius = (d: ForceNode): number => effectiveNodeRadius(radiusOf(d), fit.k);
+    node.select('circle').attr('r', (d: any) => drawRadius(d));
+    labelText.attr('x', (d: any) => drawRadius(d) + 4);
+    link.attr('stroke-width', (d: any) => effectiveLinkStrokeWidth(Math.sqrt(d.value || 1), fit.k));
+    selfLoop.attr('stroke-width', (d: any) => effectiveLinkStrokeWidth(Math.sqrt(d.value || 1), fit.k));
+
     // Declutter overlapping labels (D-093): at density every label was drawn
     // unconditionally, overprinting into an unreadable mat. Keep a label only
     // when its box does not overlap an already-kept, higher-priority
@@ -1319,7 +1532,17 @@ export const forceDirectedPlugin: D3RenderPlugin = {
         priority: rr,
       };
     });
-    const labelVisible = selectVisibleLabels(declutterBoxes);
+    // Disc bounding boxes (in the same user space as the label boxes) so the
+    // declutter can also hide a label overprinting an ADJACENT node's disc (D-395),
+    // not only another label. Uses the DRAWN (counter-scaled) radius so the test
+    // matches what is painted.
+    const discBoxes = nodes.map((d) => {
+      const rr = drawRadius(d);
+      const cx = d.x as number;
+      const cy = d.y as number;
+      return { x0: cx - rr, y0: cy - rr, x1: cx + rr, y1: cy + rr };
+    });
+    const labelVisible = selectVisibleLabels(declutterBoxes, discBoxes);
     labelText.attr('display', (_d: any, i: number) => (labelVisible[i] ? null : 'none'));
 
     // Cleanup function — stop simulation when component unmounts

@@ -1,0 +1,130 @@
+{
+ "type": "force-directed",
+ "definition": {
+  "nodes": [
+   {
+    "id": "c0",
+    "label": "collide-0",
+    "group": 0,
+    "size": 12,
+    "fx": 350,
+    "fy": 250
+   },
+   {
+    "id": "c1",
+    "label": "collide-1",
+    "group": 1,
+    "size": 12,
+    "fx": 350,
+    "fy": 250
+   },
+   {
+    "id": "c2",
+    "label": "collide-2",
+    "group": 2,
+    "size": 12,
+    "fx": 350,
+    "fy": 250
+   },
+   {
+    "id": "c3",
+    "label": "collide-3",
+    "group": 3,
+    "size": 12,
+    "fx": 350,
+    "fy": 250
+   },
+   {
+    "id": "c4",
+    "label": "collide-4",
+    "group": 4,
+    "size": 12,
+    "fx": 350,
+    "fy": 250
+   },
+   {
+    "id": "c5",
+    "label": "collide-5",
+    "group": 5,
+    "size": 12,
+    "fx": 350,
+    "fy": 250
+   },
+   {
+    "id": "c6",
+    "label": "collide-6",
+    "group": 6,
+    "size": 12,
+    "fx": 350,
+    "fy": 250
+   },
+   {
+    "id": "c7",
+    "label": "collide-7",
+    "group": 7,
+    "size": 12,
+    "fx": 350,
+    "fy": 250
+   },
+   {
+    "id": "c8",
+    "label": "collide-8",
+    "group": 8,
+    "size": 12,
+    "fx": 350,
+    "fy": 250
+   },
+   {
+    "id": "c9",
+    "label": "collide-9",
+    "group": 9,
+    "size": 12,
+    "fx": 350,
+    "fy": 250
+   }
+  ],
+  "links": [
+   {
+    "source": "c0",
+    "target": "c1"
+   },
+   {
+    "source": "c1",
+    "target": "c2"
+   },
+   {
+    "source": "c2",
+    "target": "c3"
+   },
+   {
+    "source": "c3",
+    "target": "c4"
+   },
+   {
+    "source": "c4",
+    "target": "c5"
+   },
+   {
+    "source": "c5",
+    "target": "c6"
+   },
+   {
+    "source": "c6",
+    "target": "c7"
+   },
+   {
+    "source": "c7",
+    "target": "c8"
+   },
+   {
+    "source": "c8",
+    "target": "c9"
+   },
+   {
+    "source": "c9",
+    "target": "c0"
+   }
+  ]
+ },
+ "intent": "DEGENERATE: 10 nodes all pinned via fx/fy to the exact same coordinate (350,250) - total positional collision."
+}
