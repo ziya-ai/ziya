@@ -24,6 +24,12 @@ class ContextManagementSettings(BaseModel):
     # let a token badge show <100k while the submitted prompt exceeded 1M.
     # 0 disables the limit.
     auto_add_aggregate_budget: int = 100000
+    # Replay-time elision of tool-result bodies that are provably redundant
+    # with a LATER result in the same history (contained in a later read of
+    # the same file, or an identical body recurring).  The record is never
+    # modified; only what is replayed to the model changes.  See
+    # app/utils/tool_history_rewrite.py and design/tool-result-aging.md.
+    elide_redundant_tool_results: bool = True
 
 class ProjectSettings(BaseModel):
     defaultContextIds: List[str] = []
