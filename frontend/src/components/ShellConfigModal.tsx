@@ -31,6 +31,10 @@ interface ShellConfig {
     alwaysBlocked: string[];
     signatureStatus?: SignatureStatus;
     sessionPending?: boolean;
+    // Beyond-floor entries of the staged temporary request, computed
+    // server-side from the pending file with the same canonical code as
+    // signatureStatus.pendingDelta, so the two banners list like for like.
+    sessionPendingDelta?: Record<string, string[]>;
     // Applied temporary grant (verified server-side against the current
     // session nonce). Powers the "Temporary grant active" indicator.
     sessionGrant?: {
@@ -54,6 +58,8 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
     // pending file (via "Apply (this session)"), so the post-sign "Apply now"
     // activator is surfaced. Independent of the durable config's pendingDelta.
     const [sessionStaged, setSessionStaged] = useState(false);
+    // What the staged request asks for beyond the floor (see sessionPendingDelta).
+    const [sessionStagedDelta, setSessionStagedDelta] = useState<Record<string, string[]>>({});
     const [newWritePath, setNewWritePath] = useState('');
     const [newWritePattern, setNewWritePattern] = useState('');
     const [newInterpreter, setNewInterpreter] = useState('');
@@ -86,6 +92,7 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                 // state, so a modal close/reopen must restore it from the
                 // server's sessionPending flag rather than losing it.
                 setSessionStaged(!!data.sessionPending);
+                setSessionStagedDelta(data.sessionPendingDelta ?? {});
                 return normalized;
             }
         } catch (error) {
@@ -154,7 +161,27 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                     detail: { serverName: 'shell', enabled: true }
                 }));
             } else {
-                message.error(result.message || 'No session grant found — run `sudo ziya-approve --session`');
+                // Durable, not a toast. Every refusal here means a step in the
+                // out-of-process ceremony was skipped or went stale (no grant
+                // minted, grant bound to a previous server session, signature
+                // did not verify), and the remedy is the command itself — the
+                // same instruction that proved too easy to miss as a toast.
+                Modal.error({
+                    title: 'Session grant not applied',
+                    width: 560,
+                    content: (
+                        <div>
+                            <p style={{ marginBottom: 8 }}>
+                                {result.message || 'No session grant was found.'}
+                            </p>
+                            <p style={{ marginBottom: 4 }}>
+                                Run this in a terminal while this Ziya server is
+                                running, then click <b>Apply now</b> again:
+                            </p>
+                            <CommandBlock cmd="sudo ziya-approve --session" />
+                        </div>
+                    ),
+                });
             }
         } catch (error) {
             message.error('Failed to apply session grant');
@@ -192,6 +219,51 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
         });
     };
 
+    // Post-stage acknowledgement. The staged banner below persists in the
+    // modal body, but the immediate feedback used to be a transient toast
+    // carrying the only statement of what to do next — gone in seconds, and
+    // easy to miss while looking at a terminal. Staging is inert until the
+    // user leaves this UI to run a sudo command, so the handoff has to be
+    // explicit: a dialog that cannot be dismissed without a click, with the
+    // command as a copyable block rather than prose. OK doubles as the
+    // activator so the round trip can finish here; Later leaves the banner
+    // (and its own Apply now button) in place.
+    const acknowledgeSessionStaged = () => {
+        Modal.confirm({
+            title: 'Staged — two more steps before anything is active',
+            icon: <WarningOutlined style={{ color: '#faad14' }} />,
+            width: 560,
+            content: (
+                <div>
+                    <p style={{ marginBottom: 8 }}>
+                        Nothing has changed yet. The temporary grant is staged and
+                        waits for a signature you must provide from a terminal.
+                    </p>
+                    <ol style={{ paddingLeft: 20, marginBottom: 8 }}>
+                        <li>
+                            In a terminal, run:
+                            <CommandBlock cmd="sudo ziya-approve --session" />
+                        </li>
+                        <li style={{ marginTop: 6 }}>
+                            Come back and click{' '}
+                            <b>I've signed for this session — Apply now</b>: the
+                            button below, or the same button in the yellow banner
+                            at the top of Shell Configuration, which stays there
+                            until you apply or discard.
+                        </li>
+                    </ol>
+                    <p style={{ marginBottom: 0, fontSize: 12, opacity: 0.75 }}>
+                        Temporary: voided when the Ziya server restarts; nothing is
+                        written to the persistent config.
+                    </p>
+                </div>
+            ),
+            okText: "I've signed for this session — Apply now",
+            cancelText: "I'll do it later",
+            onOk: () => applySessionGrant(),
+        });
+    };
+
     // Stage an EPHEMERAL escalation request: write the current fields to the
     // transient pending file (~/.ziya/pending_session_shell.json) WITHOUT
     // touching the durable config. This is the ephemeral sibling of Save — the
@@ -210,10 +282,8 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
             const result = await response.json();
             if (response.ok && result.success) {
                 setSessionStaged(true);
-                message.success(
-                    result.message ||
-                    'Staged for this session. Run `sudo ziya-approve --session`, then Apply now.'
-                );
+                setSessionStagedDelta(result.pendingDelta ?? {});
+                acknowledgeSessionStaged();
             } else {
                 message.error(result.message || 'Failed to stage session escalation');
             }
@@ -236,6 +306,7 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
             const result = await response.json();
             if (response.ok && result.success) {
                 setSessionStaged(false);
+                setSessionStagedDelta({});
                 message.success(result.message || 'Staged session escalation discarded');
             } else {
                 message.error(result.message || 'Failed to discard staged escalation');
@@ -518,11 +589,27 @@ const ShellConfigModal: React.FC<ShellConfigModalProps> = ({ visible, onClose })
                         message="Temporary grant staged — this session only"
                         description={
                             <div>
-                                Your requested escalation is staged but <b>not yet
-                                active</b>. It is <b>temporary</b>: nothing is written to
-                                the persistent config, and once active it is voided the
-                                next time the Ziya server restarts. To activate it, run
-                                this in a terminal…
+                                <div style={{ marginBottom: 6 }}>
+                                    Your requested escalation is staged but <b>not yet
+                                    active</b>. It is <b>temporary</b>: nothing is written to
+                                    the persistent config, and once active it is voided the
+                                    next time the Ziya server restarts.
+                                </div>
+                                {Object.keys(sessionStagedDelta).length > 0 ? (
+                                    Object.entries(sessionStagedDelta).map(([field, vals]) => (
+                                        <div key={field} style={{ fontFamily: 'monospace', fontSize: 12 }}>
+                                            {field}: {vals.join(', ')}
+                                        </div>
+                                    ))
+                                ) : (
+                                    <div style={{ fontSize: 12, opacity: 0.75 }}>
+                                        The staged request contains nothing beyond the default
+                                        floor — signing it would grant no additional privileges.
+                                    </div>
+                                )}
+                                <div style={{ marginTop: 10 }}>
+                                    <b>To activate</b> (this session only): run this in a terminal…
+                                </div>
                                 <CommandBlock cmd="sudo ziya-approve --session" />
                                 <Button
                                     size="small"

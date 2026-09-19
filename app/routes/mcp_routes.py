@@ -60,6 +60,33 @@ def _compute_signature_status(server_env: dict) -> dict:
         return {"hasEscalation": True, "authorized": False, "pendingDelta": {}}
 
 
+def _session_pending_status(ziya_home: Path) -> dict:
+    """Report the staged-but-unsigned temporary shell request, if any.
+
+    Reads the transient pending file written by request-session-grant and
+    computes its beyond-floor delta with the same canonical code the
+    persistent banner uses, so the staged banner can list WHAT is being
+    requested rather than only that something is.
+
+    Returns {"pending": bool, "delta": {field: [values]}}. Never raises: a
+    present-but-unreadable file still reports pending=True (with an empty
+    delta) so the Apply/Discard affordances stay reachable for a file the
+    signer would also see.
+    """
+    path = ziya_home / "pending_session_shell.json"
+    if not path.exists():
+        return {"pending": False, "delta": {}}
+    try:
+        env = json.loads(path.read_text())
+        if not isinstance(env, dict):
+            return {"pending": True, "delta": {}}
+        delta = _compute_signature_status(env).get("pendingDelta", {})
+        return {"pending": True, "delta": delta}
+    except Exception as e:  # noqa: BLE001 — never break config GET over this
+        logger.warning(f"pending session status compute failed: {e}")
+        return {"pending": True, "delta": {}}
+
+
 class MCPServerConfig(BaseModel):
     model_config = {"extra": "allow"}
     name: str
@@ -648,7 +675,8 @@ async def get_shell_config():
             # pending file (by "Apply (this session)") but not yet activated.
             # Lets the UI rehydrate the "Apply now" affordance after a modal
             # close/reopen, since that staging lives on disk, not in the config.
-            _pending_session = (Path.home() / ".ziya" / "pending_session_shell.json").exists()
+            # The delta lets the staged banner list the request, not just flag it.
+            _pending_status = _session_pending_status(Path.home() / ".ziya")
 
             # Applied temporary grant, if any. The manager stashes it in
             # _session_grants and forwards it at every shell spawn; report it
@@ -675,7 +703,8 @@ async def get_shell_config():
                 "allowedInterpreters": allowed_interpreters,
                 "alwaysBlocked": always_blocked,
                 "signatureStatus": _compute_signature_status(_file_env),
-                "sessionPending": _pending_session,
+                "sessionPending": _pending_status["pending"],
+                "sessionPendingDelta": _pending_status["delta"],
                 "sessionGrant": _session_grant,
             }
         else:
@@ -907,6 +936,10 @@ async def request_session_grant(config: ShellConfig):
             "success": True,
             "message": "Session escalation staged. Run `sudo ziya-approve "
                        "--session`, then click \"Apply for this session\".",
+            # Same delta the GET reports, so the banner can list the request
+            # immediately without re-fetching (a re-fetch would reset the
+            # modal's edited fields to the persisted config).
+            "pendingDelta": _compute_signature_status(pending_env).get("pendingDelta", {}),
         }
     except Exception as e:
         logger.error(f"Error staging session grant request: {e}")
