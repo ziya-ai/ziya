@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\\draw (0,0) -- (0,66);\n\\foreach \\y in {0,...,59}{\n  \\draw (0,{1.1*\\y+1.1}) to[R=$R_{\\y}$] (5,{1.1*\\y+1.1});\n  \\draw (5,{1.1*\\y+1.1}) to[short,-o] (6.2,{1.1*\\y+1.1});\n}\n\\node[ground] at (0,0) {};\n\\node at (3,-1.6) {fan-out degree 60 from one bus};",
+ "intent": "Wide fan-out: a single bus node driving 60 parallel labelled resistor branches, each terminated in an open circle. Fan-out degree stress without the wide-aspect confound of w2-03."
+}

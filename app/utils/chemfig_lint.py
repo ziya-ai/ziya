@@ -792,6 +792,108 @@ def strip_statement_terminators(body: str) -> tuple[str, tuple[str, ...]]:
     )
 
 
+#: A top-level ``\chemfig`` molecule call: the macro, an optional bracketed
+#: option group (``\chemfig[...]{...}``), then the opening brace of its molecule
+#: body.  ``\b`` after the macro name keeps this from matching a longer control
+#: word, and the backslash-then-``chemfig`` anchor means a ``\setchemfig`` setter
+#: (whose ``chemfig`` is NOT preceded by a backslash) is never matched.
+_CHEMFIG_CALL_RE = re.compile(r"\\chemfig\b\s*(?:\[[^\]]*\]\s*)?\{")
+
+
+def _brace_depth_at(body: str, pos: int) -> int:
+    r"""Net unescaped-brace depth of ``body[:pos]`` (``{`` +1, ``}`` -1).
+
+    An escaped ``\{`` / ``\}`` (and any other control-symbol pair) is skipped so
+    a literal brace in a label does not skew the count.  Used to tell a
+    TOP-LEVEL ``\chemfig`` (depth 0) from one nested inside another group -- e.g.
+    ``\chemname{\chemfig{...}}{name}`` -- which must not be separated.
+    """
+    depth = 0
+    i = 0
+    n = len(body)
+    while i < pos:
+        ch = body[i]
+        if ch == "\\":                 # skip an escaped char / control-symbol
+            i += 2
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        i += 1
+    return depth
+
+
+def separate_adjacent_chemfig(body: str) -> tuple[str, tuple[str, ...]]:
+    r"""Insert a paragraph break between two abutting top-level ``\chemfig`` molecules.
+
+    A model emitting a sequence of independent molecules writes them as
+    consecutive top-level statements with only whitespace between --
+    ``\chemfig{*6(-=-=-=)}\n\chemfig{A-[:30]B}`` (D-338, chemfig-w4-09).  The
+    chemfig profile has no wrapping environment, so the body lands straight in
+    the ``standalone`` document, whose crop box typesets it in LR/paragraph mode
+    with only the inter-token space between the two molecule boxes.  Their bonds
+    reach the box edge, so the pair abuts and reads as ONE bonded molecule --
+    the second structure appears fused to the first with no gap.
+
+    The recovery is to break the run into separate paragraphs: after a top-level
+    ``\chemfig{...}`` that is followed only by whitespace before the NEXT
+    top-level ``\chemfig``, insert ``\par\medskip`` so the two structures stack
+    vertically with a modest gap and read as the two distinct molecules the
+    author wrote.
+
+    Deliberately narrow so a legitimate layout is never disturbed:
+
+      * only ``\chemfig`` calls at BRACE-DEPTH ZERO are considered, so a
+        ``\chemfig`` nested in a ``\chemname``/node argument (which is already
+        positioned by its host) is left alone;
+      * a break is inserted ONLY when the gap between two molecules is pure
+        whitespace -- any intentional content between them (text, a ``\par``
+        already present, an ``\hspace``, another macro) means the author has
+        arranged the layout and it is kept verbatim;
+      * a single top-level molecule (the overwhelmingly common case) is a no-op.
+
+    Returns ``(new_body, applied)``; a no-op with empty ``applied`` when there
+    are fewer than two adjacent bare molecules, so it is safe to run on every
+    chemfig body.
+    """
+    spans: list[tuple[int, int]] = []       # (macro_start, close_index)
+    for m in _CHEMFIG_CALL_RE.finditer(body):
+        if _brace_depth_at(body, m.start()) != 0:
+            continue                        # nested inside another group
+        open_idx = m.end() - 1
+        close_idx = _match(body, open_idx)
+        if close_idx is None:               # unbalanced: do not guess a span
+            continue
+        spans.append((m.start(), close_idx))
+
+    if len(spans) < 2:
+        return body, ()
+
+    out = body
+    inserted = 0
+    # Right-to-left so each insertion leaves the earlier indices valid.
+    for (_start, close), (nxt_start, _nxt_close) in reversed(
+        list(zip(spans, spans[1:]))
+    ):
+        gap = body[close + 1:nxt_start]
+        if gap.strip():                     # intentional content between them
+            continue
+        if "\\par" in gap or "\\\\" in gap:  # already separated
+            continue
+        out = out[:close + 1] + "\\par\\medskip\n" + out[close + 1:]
+        inserted += 1
+
+    if not inserted:
+        return body, ()
+    plural = "" if inserted == 1 else "s"
+    return out, (
+        f"inserted {inserted} paragraph break{plural} between adjacent "
+        "top-level \\chemfig molecules (with no separator they abut in the "
+        "standalone crop and read as one bonded structure)",
+    )
+
+
 def _alternating_continuation(pattern: str, size: int, deficit: int) -> Optional[str]:
     """The unambiguous next bond for a Kekule ring, or None if ambiguous.
 

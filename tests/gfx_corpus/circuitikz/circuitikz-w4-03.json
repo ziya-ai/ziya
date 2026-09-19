@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\\definecolor{plate}{HTML}{16324A}\n\\definecolor{plateink}{HTML}{F2F6FA}\n\\definecolor{plateaccent}{HTML}{5FD4E4}\n\\fill[plate] (-0.9,-1.5) rectangle (7.3,1.9);\n\\draw[color=plateink, thick,]\n  (0,0) to[R=$R_1$, ] (2.4,0) to[L=$L_1$,,] (4.8,0) node[ocirc,]{};\n\\node[plateink, anchor=center, ] at (2.4,1.4) {Trailing commas};\n\\draw[color=plateaccent,] (0,0) to[short,] (0,-1.1) node[ground,]{};\n",
+ "intent": "RECOVERY: trailing commas in every option list -- after the last key, and with stray whitespace. Models emit these constantly from JSON habits. pgfkeys may or may not tolerate an empty final segment."
+}

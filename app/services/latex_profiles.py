@@ -199,6 +199,19 @@ class LatexProfile:
 
         if fmt == "svg":
             lines.append("\\def\\pgfsysdriver{pgfsys-dvisvgm.def}")
+        else:
+            # D-472: TeX Live 2026 pdfTeX writes the page dict -- and its
+            # /MediaBox -- inside a compressed cross-reference object stream
+            # (/ObjStm), so the renderer's plaintext /MediaBox scan finds
+            # nothing, cannot learn the natural page size, and silently ignores
+            # an explicit width/height request (a 4000x3000 ask rasterises at
+            # the natural ~150dpi 224x175).  Disable object-stream compression
+            # (\pdfobjcompresslevel=0) so the page dict stays an uncompressed
+            # top-level object and /MediaBox is readable again; stream/content
+            # compression (\pdfcompresslevel) is untouched, so the PDF is barely
+            # larger.  Only for the PDF (raster) path -- the SVG path goes
+            # through the DVI driver and never reads a MediaBox.
+            lines.append("\\pdfobjcompresslevel=0\\relax")
 
         # Shared packages the profile did not declare itself.  Deduped because
         # a profile-level load with options (amsmath[intlimits], or
@@ -238,6 +251,25 @@ class LatexProfile:
         lines.append(
             r"\ifdefined\SIUnitSymbolMicro"
             r"\RenewDocumentCommand{\SIUnitSymbolMicro}{}{\ensuremath{\mu}}\fi")
+        # D-348: the \SIUnitSymbolMicro renew above covers siunitx v2, but
+        # siunitx v3's \micro (and \ohm, \celsius, \degree) no longer route
+        # through those symbol macros -- they emit the TS1 text-companion
+        # glyphs \textmu / \textohm / \textcelsius / \textdegree directly,
+        # whose Type1 font ``tcrm*`` is absent from the TeX Live basic tree and
+        # CANNOT be generated on demand inside the render sandbox ("Font
+        # tcrm1000 at 600 not found -> no output PDF"), fataling every schematic
+        # with a microfarad / kilo-ohm value (circuitikz-w1-03).  Redefine the
+        # offending UNITS themselves to their maths-font equivalents (cmmi/cmr
+        # \mu, \Omega, \circ -- shipped by every install), so the TS1 companion
+        # font is never touched regardless of the siunitx major version.
+        # Guarded by \ifdefined\DeclareSIUnit so it is a no-op when siunitx is
+        # absent, and emitted after the load so it wins over the defaults.
+        lines.append(
+            r"\ifdefined\DeclareSIUnit"
+            r"\DeclareSIUnit\micro{\ensuremath{\mu}}"
+            r"\DeclareSIUnit\ohm{\ensuremath{\Omega}}"
+            r"\DeclareSIUnit\celsius{\ensuremath{{}^\circ}C}"
+            r"\DeclareSIUnit\degree{\ensuremath{{}^\circ}}\fi")
         # Profile libraries plus any the body requested via a (now-stripped)
         # body-level \usetikzlibrary (D-005).  De-duplicated, profile order
         # first.  Emitted for a TikZ-family profile even when it declares no
@@ -279,9 +311,94 @@ class LatexProfile:
             if theme == "dark":
                 lines.append("\\pagecolor[HTML]{1F1F1F}")
                 lines.append("\\color[HTML]{EDEDED}")
+                # Per-engine dark remaps.  Some library-internal masks/fills
+                # default to white (or black) and do NOT inherit the document
+                # \color, so on the baked #1F1F1F page they render at the wrong
+                # end of the surface.  Each override resolves FROM the theme
+                # (the page #1F1F1F / ink #EDEDED just baked above) rather than
+                # substituting an unrelated constant, and is emitted only on the
+                # dark path so the light render is byte-identical.  Named
+                # colours so the library keys can reference them; xcolor is
+                # always loaded here (every TikZ-family profile and chemfig
+                # pull it in).
+                lines.append("\\definecolor{ziyathemepage}{HTML}{1F1F1F}")
+                lines.append("\\definecolor{ziyathemeink}{HTML}{EDEDED}")
+                if self.key == "tikz-cd":
+                    # D-465: tikz-cd's ``background color`` (the double/equal
+                    # arrow gap, the crossing-over preaction mask, and
+                    # description-label fills) defaults WHITE, so #FFFFFF on the
+                    # dark page = 1.17:1 -- equal signs collapse to one slab, a
+                    # white bar erases a passing-behind crossing, and label text
+                    # vanishes on a white patch.  Point it at the page colour so
+                    # the gap/mask/fill match #1F1F1F.  #EDEDED ink on #1F1F1F =
+                    # 14.08:1 dark; light is untouched (white gap on a white page
+                    # is the correct invisible default).
+                    lines.append("\\tikzcdset{background color=ziyathemepage}")
+                elif self.key == "circuitikz":
+                    # D-350: circuitikz open-terminal poles (``ocirc``) fill
+                    # WHITE by default, so an open contact renders as a solid
+                    # light dot indistinguishable from a filled ``*`` junction
+                    # on the dark page -- open-terminal semantics lost.  Fill
+                    # them with the page colour so the open ring reads as open
+                    # again (the ring stroke is #EDEDED = 14.08:1 dark).  Light
+                    # is untouched (white fill on a white page is the correct
+                    # open look).
+                    lines.append("\\ctikzset{open poles fill=ziyathemepage}")
+                elif self.key == "chemfig":
+                    # D-330: chemfig's Lewis lone-pair dots do NOT inherit the
+                    # document \color -- they render #000000 (1.27:1 on #1F1F1F,
+                    # invisible) while the bonds correctly pick up #EDEDED.  Set
+                    # the tikzpicture default colour (chemfig draws structures in
+                    # a tikzpicture) to the theme ink so the dots pick it up:
+                    # #EDEDED on #1F1F1F = 14.08:1 dark.  An explicit body-level
+                    # \color still wins, and light is untouched (black dots on a
+                    # white page = 21:1).
+                    lines.append(
+                        "\\tikzset{every picture/.append style={color=ziyathemeink}}")
+                # D-494: a pgf ``patterns`` fill tile is drawn in the pattern's
+                # OWN default colour (black) -- the document \color does not
+                # reach it -- so on the baked #1F1F1F page the pattern ink is
+                # black at 1.27:1 (effectively invisible; only the auto-lifted
+                # swatch borders survive).  Default the pattern colour to the
+                # theme ink so the tiles read as #EDEDED on #1F1F1F = 14.08:1.
+                # ``every path`` runs before a path's own options, so a body's
+                # explicit ``pattern color=`` still wins, and the key is a
+                # harmless no-op on a path that draws no pattern.  Emitted only
+                # when the ``patterns`` library is actually loaded (profile
+                # default or a body-level \usetikzlibrary), so a profile without
+                # it never references an undefined key; dark-only, so the light
+                # render (black tiles on white = 21:1) is byte-identical.
+                if "patterns" in merged_libraries:
+                    lines.append(
+                        "\\tikzset{every path/.append style={pattern color=ziyathemeink}}")
             else:
-                lines.append("\\pagecolor[HTML]{FFFFFF}")
-                lines.append("\\color[HTML]{000000}")
+                # D-357: a model frequently emits a self-contained "card" whose
+                # background is an author-drawn DARK plate (``\fill[plate] ...
+                # rectangle``) with light ink on top -- but the plate does not
+                # cover the full drawing bbox, so leads/grounds spilling past it
+                # land on the WHITE page still in that light plate-ink and
+                # vanish (circuitikz-w4-*: #5FD4E4 on #FFFFFF = 1.75:1).  When a
+                # SOLE dark plate is detected, match the light page to it so the
+                # whole cropped canvas is the plate surface and the off-plate
+                # ink stays legible (#F2F6FA -> 12.17:1, #5FD4E4 -> 7.57:1,
+                # default ink #EDEDED -> 11.29:1 on #16324A); the plate rectangle
+                # is then redundant but harmless.  The dark render is untouched
+                # (it already passes: light ink on the #1F1F1F page, on or off
+                # the plate), and a body WITHOUT such a plate keeps the plain
+                # white page, so every other light render is byte-identical.
+                plate_rgb = None
+                try:
+                    from app.utils.latex_color import detect_dark_plate
+                    plate_rgb = detect_dark_plate(body)
+                except Exception:          # pragma: no cover - defensive
+                    plate_rgb = None
+                if plate_rgb is not None:
+                    r, g, b = plate_rgb
+                    lines.append("\\pagecolor[RGB]{%d,%d,%d}" % (r, g, b))
+                    lines.append("\\color[HTML]{EDEDED}")
+                else:
+                    lines.append("\\pagecolor[HTML]{FFFFFF}")
+                    lines.append("\\color[HTML]{000000}")
 
         lines.append(self._wrap(body))
         lines.append("\\end{document}")
@@ -302,11 +419,22 @@ class LatexProfile:
         # the environment allowing optional trailing chars (``*``, ``-``) so the
         # common variants are recognised, and also pass through when the body
         # already carries any known drawing environment.
-        if re.search(r"\\begin\s*\{" + re.escape(self.wrap_env) + r"[*-]?\}", body):
-            return body
-        for env in _DRAWING_ENVS:
-            if re.search(r"\\begin\s*\{" + re.escape(env) + r"\}", body):
+        # D-466: the passthrough above matched a drawing-environment ``\begin``
+        # ANYWHERE in the body, which misfires when the body's OUTER structure
+        # is not itself a picture but a matrix row that NESTS one in a cell
+        # (``L_{3} \arrow[r] & \begin{tikzcd}...``, tikz-cd-w2-06).  Treating
+        # that as already-wrapped emits the outer row bare, so it lands in
+        # horizontal text mode and aborts pre-raster with "Missing $ inserted".
+        # If a drawing ``\begin`` is preceded, at brace/bracket depth 0, by
+        # matrix-cell syntax (an unescaped ``&``, a ``\\`` row break, or a
+        # ``\arrow``/``\ar`` command) then that ``\begin`` is nested and the
+        # body still needs its own outer wrap -- so skip the passthrough.
+        if not _drawing_env_is_nested(body, self.wrap_env):
+            if re.search(r"\\begin\s*\{" + re.escape(self.wrap_env) + r"[*-]?\}", body):
                 return body
+            for env in _DRAWING_ENVS:
+                if re.search(r"\\begin\s*\{" + re.escape(env) + r"\}", body):
+                    return body
         opts = f"[{self.env_options}]" if self.env_options else ""
         return (
             f"\\begin{{{self.wrap_env}}}{opts}\n"
@@ -323,6 +451,54 @@ class LatexProfile:
 #: ``\begin{scope}`` inside a body that DOES still need wrapping is not mistaken
 #: for a self-supplied top-level environment.
 _DRAWING_ENVS: tuple[str, ...] = ("tikzpicture", "circuitikz", "tikzcd", "chemfig")
+
+
+def _drawing_env_is_nested(body: str, wrap_env: str) -> bool:
+    """True when the first drawing ``\\begin`` sits behind matrix-cell content.
+
+    The ``_wrap`` passthrough must fire only when the body's OUTER structure is
+    itself a picture/matrix environment.  A body whose top level is a matrix row
+    that nests a picture in a cell -- e.g. ``L_{3} \\arrow[r] & \\begin{tikzcd}
+    ...`` (tikz-cd-w2-06) -- contains a drawing ``\\begin`` but is NOT already
+    wrapped; passing it through drops it into horizontal text mode.  Detect that
+    case by scanning the text before the first drawing ``\\begin`` and reporting
+    any matrix-cell token (an unescaped ``&``, a ``\\\\`` row break, or a
+    ``\\arrow``/``\\ar`` command) seen at brace/bracket depth 0 -- all of which
+    are only legal INSIDE such an environment, so their presence before the
+    ``\\begin`` proves it is nested.
+    """
+    envs = [wrap_env] + [e for e in _DRAWING_ENVS if e != wrap_env]
+    m = re.search(r"\\begin\s*\{(" + "|".join(re.escape(e) for e in envs) + r")[*-]?\}", body)
+    if not m:
+        return False
+    prefix = body[:m.start()]
+    depth = 0
+    i = 0
+    n = len(prefix)
+    while i < n:
+        c = prefix[i]
+        if c == "\\":
+            if i + 1 < n and prefix[i + 1] == "\\":  # ``\\`` row break
+                if depth == 0:
+                    return True
+                i += 2
+                continue
+            word = re.match(r"\\[A-Za-z@]+", prefix[i:])
+            if word:
+                if depth == 0 and word.group(0) in (r"\arrow", r"\ar"):
+                    return True
+                i += len(word.group(0))
+                continue
+            i += 2  # escaped single char (e.g. ``\&``, ``\%``) -- skip both
+            continue
+        if c in "{[":
+            depth += 1
+        elif c in "}]":
+            depth = max(0, depth - 1)
+        elif c == "&" and depth == 0:
+            return True
+        i += 1
+    return False
 
 
 def _circuitikz_block_alias(name: str) -> str:

@@ -86,6 +86,96 @@ _NUMERIC_DIM_RE = re.compile(
     r"(?:pt|mm|cm|in|ex|em|bp|pc|dd|cc|sp|mu)?\s*$"
 )
 
+#: One-word "american<part>" bipole keys a model guesses by analogy (D-359,
+#: circuitikz-w4-13: ``to[americanresistor=$R_3$]``).  circuitikz has no such
+#: single-token key -- the real spelling is the two-word ``american resistor``
+#: or the canonical short form ``R``/``L``/``C`` -- so pgfkeys aborts the whole
+#: compile on the unknown key, yielding no image at all.  The intent is
+#: unambiguous (the author wrote the component name run together), so the
+#: canonical short key recovers it.  Kept exact and tiny: only the run-together
+#: american* forms map, and only when the token is the bipole key of a
+#: ``to[...]`` list, so a valid body is never touched.
+_BIPOLE_KEY_ALIASES = {
+    "americanresistor": "R",
+    "americaninductor": "L",
+    "americancapacitor": "C",
+}
+
+
+def _fix_bipole_key_aliases(body: str) -> tuple[str, list[str]]:
+    r"""Rewrite an unknown one-word ``american<part>`` bipole key to its short key.
+
+    A circuitikz bipole is written ``to[<key>...]`` where ``<key>`` is the first
+    option-list segment's key (``to[R=$R_1$]``, ``to[short]``).  A model that
+    guesses ``to[americanresistor=$R_3$]`` names a key circuitikz does not
+    define, and pgfkeys aborts before any component is drawn -- a fatal compile,
+    not a silent mis-draw.  This pass looks only at the FIRST segment key of an
+    option list that directly follows a ``to`` token and, when it is one of the
+    known run-together american* spellings, replaces just that key token with
+    the canonical short key (``R``/``L``/``C``), leaving the value and every
+    other segment byte-for-byte intact.
+
+    Pure and best-effort; returns the (possibly rewritten) body and fix notes.
+    """
+    edits: list[tuple[int, int, str, str]] = []
+    i = 0
+    n = len(body)
+    while i < n:
+        ch = body[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch != "[":
+            i += 1
+            continue
+        # Only option lists that directly follow a ``to`` token carry a bipole
+        # key; skip every other ``[...]`` so node/style lists are untouched.
+        j = i - 1
+        while j >= 0 and body[j] in " \t":
+            j -= 1
+        is_to = (
+            j >= 1
+            and body[j] == "o"
+            and body[j - 1] == "t"
+            and (j - 2 < 0 or not (body[j - 2].isalpha() or body[j - 2] == "\\"))
+        )
+        if not is_to:
+            i += 1
+            continue
+        close = _match_bracket(body, i)
+        if close is None:
+            i += 1
+            continue
+        inner_start = i + 1
+        inner = body[inner_start:close]
+        spans = _split_top_level_commas(inner)
+        if spans:
+            seg_start, seg_end = spans[0]
+            segment = inner[seg_start:seg_end]
+            eq = _first_top_level_eq(segment)
+            key_part = segment if eq < 0 else segment[:eq]
+            key_stripped = key_part.strip()
+            repl = _BIPOLE_KEY_ALIASES.get(key_stripped.lower())
+            if repl is not None and repl != key_stripped:
+                lead_ws = len(key_part) - len(key_part.lstrip())
+                k_start = inner_start + seg_start + lead_ws
+                k_end = k_start + len(key_stripped)
+                edits.append((k_start, k_end, repl, key_stripped))
+        i = close + 1
+
+    if not edits:
+        return body, []
+
+    out = body
+    fixes: list[str] = []
+    for k_start, k_end, repl, original in sorted(edits, key=lambda t: t[0], reverse=True):
+        out = out[:k_start] + repl + out[k_end:]
+        fixes.append(
+            f"rewrote unknown bipole key {original!r} -> {repl!r} (not a valid "
+            f"circuitikz component key; pgfkeys would abort the compile)."
+        )
+    return out, list(reversed(fixes))
+
 
 def _strip_numeric_quotes(body: str) -> tuple[str, list[str]]:
     r"""Remove quotes a model wrapped around numeric option / coordinate values.
@@ -364,6 +454,19 @@ def _autofix(body: str) -> tuple[str, tuple[str, ...], tuple[str, ...]]:
         logger.exception("circuitikz semicolon insertion failed; body unchanged")
         semi_fixes = ()
     quote_fixes = tuple(quote_fixes) + tuple(semi_fixes)
+
+    # Rewrite unknown one-word american* bipole keys to their canonical short
+    # form (D-359, circuitikz-w4-13).  Runs after semicolon insertion (so path
+    # structure is settled) and before the brace-wrap scan below, which then
+    # sees the canonical key; the pass is byte-identical on a body that names
+    # only valid keys.
+    alias_fixes: list[str] = []
+    try:
+        body, alias_fixes = _fix_bipole_key_aliases(body)
+    except Exception:                      # pragma: no cover - defensive
+        logger.exception("circuitikz bipole-alias fix failed; body unchanged")
+        alias_fixes = []
+    quote_fixes = tuple(quote_fixes) + tuple(alias_fixes)
 
     # (value_core_start, value_core_end) spans in the ORIGINAL body to wrap.
     wraps: list[tuple[int, int]] = []
