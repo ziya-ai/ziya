@@ -1,0 +1,30 @@
+{
+ "type": "chord",
+ "definition": {
+  "type": "chord",
+  "matrix": [
+   [
+    0,
+    0,
+    0
+   ],
+   [
+    0,
+    0,
+    0
+   ],
+   [
+    0,
+    0,
+    0
+   ]
+  ],
+  "names": [
+   "Alpha",
+   "Beta",
+   "Gamma"
+  ],
+  "directed": true
+ },
+ "intent": "DEGENERATE ALL-ZERO: every cell 0, so every group angle is 0/0. Blank-canvas / NaN-path risk. Wave-1 backlog. Also probes whether names still render when geometry is undefined."
+}
