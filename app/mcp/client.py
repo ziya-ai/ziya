@@ -242,6 +242,10 @@ class MCPClient:
             server_config: Configuration for the MCP server
         """
         self.server_config = server_config
+        # Same alias as the manager's config loader: restart_server() hands a
+        # freshly written registry stanza straight here, bypassing the loader.
+        if not server_config.get("url") and server_config.get("remote_url"):
+            server_config["url"] = server_config["remote_url"]
         self.process: Optional[subprocess.Popen] = None
         self.request_id = 0
         self.is_connected = False
@@ -313,6 +317,11 @@ class MCPClient:
             )
             self.is_connected = False
             return False
+
+        # Unlike preflight_failure, a startup failure describes ONE attempt
+        # (expired mwinit, missing bindle grant). Clear it so a reconnect that
+        # succeeds is not still reported as failed in the GUI details pane.
+        self.startup_failure = None
 
         try:
             self.startup_stage = "spawn"
@@ -869,23 +878,68 @@ class MCPClient:
         if auth_token:
             headers.setdefault("Authorization", f"Bearer {auth_token}")
 
+        # "bearer" is engine-native (a header, resolved by the manager into
+        # auth_token above). Any other auth type is delegated to a registered
+        # RemoteAuthProvider, which builds the httpx client the SDK transport
+        # will use -- e.g. an Amazon-internal plugin running the Midway SSO
+        # handshake so the client already holds the server's session cookie.
+        # Registry bundles persist this as {"type": "<name>"}; a bare string
+        # is accepted for hand-written configs.
+        auth_config = self.server_config.get("auth")
+        auth_type = (auth_config.get("type") if isinstance(auth_config, dict)
+                     else auth_config if isinstance(auth_config, str) else None)
+        auth_handler = None
+        if auth_type and auth_type != "bearer":
+            from app.plugins import get_remote_auth_provider
+            auth_handler = get_remote_auth_provider(auth_type)
+            if auth_handler is None:
+                self.startup_failure = {
+                    "code": "remote_auth_unsupported",
+                    "summary": f"No handler for auth type '{auth_type}'",
+                    "detail": (
+                        f"'{server_name}' requires '{auth_type}' authentication, "
+                        f"but no plugin providing it is loaded, so the connection "
+                        f"was not attempted."
+                    ),
+                    "hint": (
+                        "Run the Ziya edition that ships this auth handler, or "
+                        "change 'auth' in the server config."
+                    ),
+                }
+                logger.error(f"{self.startup_failure['summary']} — {self.startup_failure['detail']}")
+                self.logs.append(f"ERROR: {self.startup_failure['summary']}")
+                self.is_connected = False
+                return False
+
+        from app.plugins.interfaces import RemoteAuthError
+        stack = None
         try:
+            import httpx
             from mcp.client.session import ClientSession
 
             stack = contextlib.AsyncExitStack()
             await stack.__aenter__()
 
+            timeout = httpx.Timeout(30, read=300)
+            if auth_handler is not None:
+                http_client = await auth_handler.build_http_client(
+                    url, self.server_config, headers=headers, timeout=timeout
+                )
+            else:
+                http_client = httpx.AsyncClient(headers=headers or {}, timeout=timeout)
+            # The SDK does not close a caller-supplied client; own its lifetime
+            # here so disconnect() releases the connection pool.
+            stack.push_async_callback(http_client.aclose)
+
             if transport_type == "sse":
                 from mcp.client.sse import sse_client
-                transport_cm = sse_client(url, headers=headers or None, timeout=30, sse_read_timeout=300)
+                transport_cm = sse_client(
+                    url, headers=headers or None, timeout=30, sse_read_timeout=300,
+                    httpx_client_factory=lambda **_kw: http_client,
+                )
             else:
                 # Default: StreamableHTTP (the modern MCP transport)
-                import httpx
                 from mcp.client.streamable_http import streamable_http_client
-                http_client = httpx.AsyncClient(
-                    headers=headers or {},
-                    timeout=httpx.Timeout(30, read=300),
-                )
                 transport_cm = streamable_http_client(url, http_client=http_client)
 
             read_stream, write_stream, *_rest = await stack.enter_async_context(transport_cm)
@@ -908,17 +962,47 @@ class MCPClient:
 
             self.is_connected = True
             self._last_successful_call = time.time()
+            # A fresh session starts healthy; otherwise the failures that
+            # triggered this reconnect keep _is_process_healthy() False and the
+            # next call reconnects again (rate-limited to once per 30s).
+            self._consecutive_failures = 0
 
             # Load tools, resources, prompts via the SDK session
             await self._load_remote_capabilities()
             logger.info(f"Remote MCP: {server_name} — {len(self.tools)} tools, {len(self.resources)} resources")
             return True
 
-        except (ImportError, OSError, RuntimeError, asyncio.TimeoutError, ConnectionError) as e:
+        except RemoteAuthError as e:
+            # A diagnosed auth failure (expired mwinit, missing bindle grant,
+            # refused redirect). One line, no traceback: the message already
+            # names the remedy, and the record is what the GUI surfaces.
+            self.startup_failure = {
+                "code": "remote_auth_failed",
+                "summary": f"Authentication failed for {server_name}",
+                "detail": str(e),
+                "hint": getattr(e, "hint", None),
+            }
+            logger.error(f"Remote MCP auth failed for {server_name}: {e}")
+            self.logs.append(f"ERROR: Authentication failed — {e}")
+            self.is_connected = False
+            await self._close_stack(stack)
+            return False
+        except Exception as e:  # noqa: BLE001 — SDK surface: httpx errors, anyio groups, McpError
             logger.error(f"Failed to connect to remote MCP server {server_name}: {e}", exc_info=True)
             self.logs.append(f"ERROR: Remote connection failed — {e}")
             self.is_connected = False
+            await self._close_stack(stack)
             return False
+
+    @staticmethod
+    async def _close_stack(stack) -> None:
+        """Release a partially-entered transport stack after a failed connect."""
+        if stack is None:
+            return
+        try:
+            await stack.aclose()
+        except (OSError, RuntimeError):
+            pass  # nothing further to recover; the connection already failed
 
     async def _load_remote_capabilities(self):
         """Load tools/resources/prompts from a remote MCP session."""
@@ -982,9 +1066,13 @@ class MCPClient:
     
     def _is_process_healthy(self) -> bool:
         """Check if the MCP server process is still healthy."""
-        # Remote servers don't have a process — check session
+        # Remote servers don't have a process — check session. Consecutive
+        # failures stand in for a dead process: an expired Midway/SSO session
+        # fails every call, and the manager only reconnects (re-running the
+        # auth handshake) when this returns False.
         if self._is_remote:
-            return self._sdk_session is not None and self.is_connected
+            return (self._sdk_session is not None and self.is_connected
+                    and self._consecutive_failures < 3)
 
         if not self.process:
             return False
@@ -1222,6 +1310,17 @@ class MCPClient:
                 is_external_server = any(keyword in server_name.lower() 
                                        for keyword in ['fetch', 'web', 'http', 'api', 'external'])
                 timeout_duration = 60.0 if is_external_server else 30.0
+                # A server may declare its own ceiling in mcp_config.json
+                # ("tool_timeout": 120). Servers that proxy a slow backend
+                # (leolens-mcp streams from AgentCore for 20-60 s) are
+                # otherwise abandoned here while the answer is still arriving,
+                # and nothing about their name matches the heuristic above.
+                try:
+                    cfg_timeout = self.server_config.get('tool_timeout')
+                    if cfg_timeout is not None:
+                        timeout_duration = max(timeout_duration, float(cfg_timeout))
+                except (ValueError, TypeError):
+                    logger.warning(f"Ignoring non-numeric tool_timeout for server {server_name}")
 
                 # For tool calls, extract the tool's own timeout so long-running
                 # commands aren't killed by the readline timeout before the
@@ -1626,7 +1725,7 @@ class MCPClient:
                 self._record_call_result(not result.get("error", False))
                 return result
 
-            except (OSError, RuntimeError, asyncio.TimeoutError, ConnectionError) as e:
+            except Exception as e:  # noqa: BLE001 — httpx/anyio/McpError are not in the stdlib hierarchy
                 logger.error(f"Remote tool call failed for {name}: {e}")
                 self._record_call_result(False)
                 return {"error": True, "message": f"Remote tool call failed: {e}", "code": -32603}

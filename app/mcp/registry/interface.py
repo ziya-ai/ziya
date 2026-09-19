@@ -152,10 +152,15 @@ class InstallationResult:
     installation_path: Optional[str] = None
     config_entries: Dict[str, Any] = None
     error_message: Optional[str] = None
+    # Non-fatal problems the install tolerated (e.g. a best-effort registry
+    # CLI step that failed while the tool was already present locally).
+    warnings: List[str] = None
     
     def __post_init__(self):
         if self.config_entries is None:
             self.config_entries = {}
+        if self.warnings is None:
+            self.warnings = []
 
 
 class RegistryProvider(ABC):

@@ -28,8 +28,7 @@ _KNOWN_SERVER_KEYS = frozenset({
     "command", "args", "env", "url", "auth", "enabled", "disabled",
     "builtin", "trusted", "installation_path", "timeout", "max_retries",
     "external_server", "enable_response_cleaning", "description",
-    "workspace_scoped", "name",
-
+    "workspace_scoped", "name", "remote_url", "transport",
     # Provenance written by mcp/registry_manager.py when it installs a service
     # from a registry, and read back by it to render the installed-services
     # list.  Not consumed by the launch path, but Ziya wrote them, so flagging
@@ -41,8 +40,7 @@ _KNOWN_SERVER_KEYS = frozenset({
 
 # Keys whose absence makes an entry unusable: the loader needs at least one way
 # to reach the server.
-_LAUNCH_KEYS = ("command", "url", "installation_path")
-
+_LAUNCH_KEYS = ("command", "url", "remote_url", "installation_path")
 # Explicit aliases for mistakes difflib does not catch: abbreviations share too
 # few characters to score, and case differences score as unrelated strings.
 # Lowering the difflib cutoff instead would produce confidently wrong guesses,
