@@ -41,6 +41,12 @@ The most useful contributions tend to fall into three categories:
 - Match the existing code style. The project uses Python type hints and Pydantic models.
 - Update `Docs/FeatureInventory.md` if you add or change a user-visible feature.
 
+## Documentation Conventions
+
+A changelog entry or doc paragraph for a new capability must name the **user-facing vocabulary** a reader would actually search for — not only the class or module name that implements it. If a competitor product has an established term for the same thing, use that term too (as an "Also called:" alias or inline), so a reader coming from that vocabulary can find the capability here. "Implemented `TreeSitterParser`" tells a contributor something; "multi-language code intelligence (tree-sitter, 25+ languages)" is what a reader searching the docs is looking for.
+
+`tests/test_docs_ledger_conformance.py` enforces the reader-facing half of this mechanically: for every capability in the internal capability ledger at or above a "mature" maturity level, the id, its name, or at least one alias must appear (case-insensitively) somewhere under `Docs/` or in `README.md`. A capability that ships but is undiscoverable in the docs fails that test. If you add a mature capability without updating the docs, expect this test to name it.
+
 ## Reporting Issues
 
 Use [GitHub Issues](https://github.com/ziya-ai/ziya/issues). Include:
