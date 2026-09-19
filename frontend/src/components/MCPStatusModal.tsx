@@ -3,6 +3,7 @@ import { Modal, Tag, Space, Button, Spin, Alert, Descriptions, Switch, message, 
 import { useTheme } from '../context/ThemeContext';
 import MCPRegistryModal from './MCPRegistryModal';
 import MarkdownRenderer from './MarkdownRenderer';
+import { summarizeServiceDescription } from '../utils/mcpDescriptionSummary';
 import {
     CheckCircleOutlined,
     CloseCircleOutlined,
@@ -491,8 +492,11 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
 
     const getServerDisplayName = (serverName: string) => {
         const serverConfig = status?.server_configs?.[serverName];
-        if (serverConfig?.description && serverConfig.description.trim()) {
-            return serverConfig.description;
+        // A registry install can leave an entire README in `description`;
+        // the panel header needs one line, not the tool catalogue.
+        const headline = summarizeServiceDescription(serverConfig?.description);
+        if (headline) {
+            return headline;
         }
         if (serverConfig?.service_id) {
             return serverConfig.service_id;
