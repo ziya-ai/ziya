@@ -283,6 +283,77 @@ def test_export_document_pdf_seam(tmp_path, monkeypatch):
     assert call['footer_template'], 'default export must carry the per-page footer'
 
 
+def test_export_document_pdf_drives_document_aesthetics(monkeypatch):
+    """The SEAM for the aesthetic layer (app/utils/document_print_decor):
+    export_document_pdf must render under PRINT media (table headers repeat
+    only there), at a viewport matched to the printable box, inject the
+    document stylesheet, run the decoration pass with the front-matter
+    knobs, format the date once for BOTH title block and footer, and use the
+    document footer (title · author · date) instead of the transcript one."""
+    import app.services.pdf_exporter as pe
+    from app.utils.document_print_decor import (
+        DOCUMENT_PRINT_CSS, DEFAULT_DOCUMENT_MARGIN, page_content_box_px,
+    )
+    fake = _FakeSession()
+
+    async def fake_get_session(port=6969):
+        return fake
+
+    monkeypatch.setattr(pe, 'get_render_session', fake_get_session)
+    doc = (
+        "---\ntitle: Aesthetics\nsubtitle: Sub line\nauthor: dcohn\n"
+        "date: 2026-09-19\nlayout: titlepage\nnumbering:\n  sections: true\n"
+        "---\n# A\n\nbody\n"
+    )
+    asyncio.run(pe.export_document_pdf(
+        markdown=doc, version='0.9', model='fable', provider='bedrock',
+    ))
+    call = fake.calls[0]
+
+    assert call['media'] == 'print'
+    # No front-matter margin -> the document default, and the viewport is
+    # the printable box for exactly that margin.
+    assert call['margin'] == DEFAULT_DOCUMENT_MARGIN
+    assert tuple(call['viewport']) == page_content_box_px(DEFAULT_DOCUMENT_MARGIN)
+    assert call['pre_capture_css'] is DOCUMENT_PRINT_CSS
+
+    (js, opts), = call['pre_capture_js']
+    assert callable(getattr(js, 'strip', None)) and '(opts)' in js
+    assert opts['numbering'] == {'sections': True, 'figures': True, 'tables': True}
+    assert opts['layout'] == 'titlepage'
+    assert opts['subtitle'] == 'Sub line' and opts['author'] == 'dcohn'
+    assert opts['date'] == 'September 19, 2026'
+    assert opts['pageHeightPx'] == page_content_box_px(DEFAULT_DOCUMENT_MARGIN)[1]
+
+    # Payload carries the same DISPLAY date and the new title-block fields.
+    assert call['payload']['date'] == 'September 19, 2026'
+    assert call['payload']['subtitle'] == 'Sub line'
+    assert call['payload']['numbering'] == {'sections': True}
+
+    footer = call['footer_template']
+    assert 'Aesthetics · dcohn · September 19, 2026' in footer
+    assert 'orchestration harness' not in footer   # transcript tagline gone
+    assert 'fable (Bedrock)' in footer and 'v0.9' in footer
+
+
+def test_export_document_pdf_explicit_margin_sizes_viewport(monkeypatch):
+    import app.services.pdf_exporter as pe
+    from app.utils.document_print_decor import page_content_box_px
+    fake = _FakeSession()
+
+    async def fake_get_session(port=6969):
+        return fake
+
+    monkeypatch.setattr(pe, 'get_render_session', fake_get_session)
+    asyncio.run(pe.export_document_pdf(
+        markdown="---\npage:\n  margin: 10mm\n---\n# A\n", include_footer=False,
+    ))
+    call = fake.calls[0]
+    m = {s: '10mm' for s in ('top', 'bottom', 'left', 'right')}
+    assert call['margin'] == m
+    assert tuple(call['viewport']) == page_content_box_px(m)
+
+
 def test_export_document_pdf_footer_opt_out(monkeypatch):
     """include_footer=False is the only way to drop the footer."""
     import app.services.pdf_exporter as pe
