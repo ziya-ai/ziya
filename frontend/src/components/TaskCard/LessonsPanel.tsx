@@ -23,6 +23,7 @@ import { Button, Tag, message } from 'antd';
 import {
   taskCardApi, type CardLessons, type LessonRecord,
 } from '../../services/taskCardApi';
+import { formatStreakSpan, groupStreakRows } from './lessonStreaks';
 import './task-card-editor.css';
 
 interface Props {
@@ -38,7 +39,7 @@ interface Props {
 }
 
 const VERDICT_COLOR: Record<string, string> = {
-  revise: 'cyan', accept: 'green', stop: 'orange',
+  revise: 'cyan', accept: 'green', stop: 'orange', error: 'red',
 };
 
 function formatWhen(ts?: number): string {
@@ -77,6 +78,57 @@ const PatchDiff: React.FC<{ rec: LessonRecord }> = ({ rec }) => {
     </div>
   );
 };
+
+/** One ledger record as a row.  Shared by the flat list and the
+ *  expanded members of a streak. */
+const LessonRow: React.FC<{
+  rec: LessonRecord;
+  reverting: string | null;
+  onRevert: (rec: LessonRecord) => void;
+}> = ({ rec, reverting, onRevert }) => (
+  <div className="tc-lesson-row">
+    <div className="tc-lesson-head">
+      <Tag color={VERDICT_COLOR[rec.verdict ?? ''] ?? 'default'}
+           style={{ fontSize: 10, lineHeight: '16px' }}>
+        {rec.verdict === 'error' ? `judge error: ${rec.error ?? 'unknown'}` : (rec.verdict ?? '?')}
+      </Tag>
+      {rec.applied && (
+        <Tag color="cyan" style={{ fontSize: 10, lineHeight: '16px' }}>
+          revision applied
+        </Tag>
+      )}
+      <span className="tc-lesson-when">{formatWhen(rec.ts)}</span>
+      {rec.applied && rec.patch_hash && rec.block_id && (
+        <Button
+          size="small"
+          danger
+          loading={reverting === rec.patch_hash}
+          disabled={!rec.pre_image}
+          title={rec.pre_image
+            ? 'Restore the text this revision replaced (permissions are untouched either way)'
+            : 'This revision predates pre-image capture and cannot be auto-reverted'}
+          onClick={() => onRevert(rec)}
+        >
+          Revert
+        </Button>
+      )}
+    </div>
+    {(rec.lesson || rec.rationale) && (
+      <div className="tc-lesson-text">
+        {rec.lesson || rec.rationale}
+      </div>
+    )}
+    {rec.verdict === 'error' && rec.reply_excerpt && (
+      // The raw reply is what makes a judge failure diagnosable
+      // (a reply cut off mid-patch is a token-ceiling problem,
+      // not a judge problem).  Bounded server-side.
+      <pre className="tc-lesson-diff-before" title={`raw judge reply (${rec.reply_len ?? '?'} chars)`}>
+        {rec.reply_excerpt}
+      </pre>
+    )}
+    {rec.applied && rec.patch && <PatchDiff rec={rec} />}
+  </div>
+);
 
 export const LessonsPanel: React.FC<Props> = ({
   projectId, cardId, lessonCount, onReverted,
@@ -147,48 +199,56 @@ export const LessonsPanel: React.FC<Props> = ({
             {data.edits_applied} revision{data.edits_applied === 1 ? '' : 's'} applied to this card
           </span>
         )}
+        {data && data.judge_errors > 0 && (
+          <span className="tc-lessons-edits-note">
+            · {data.judge_errors} judge error{data.judge_errors === 1 ? '' : 's'}
+          </span>
+        )}
+        {data && Object.keys(data.stop_streaks ?? {}).length > 0 && (
+          <span className="tc-lessons-edits-note tc-lessons-streak-note">
+            · blocked by environment {Object.values(data.stop_streaks)
+              .reduce((m, s) => Math.max(m, s.count), 0)} runs running
+          </span>
+        )}
       </summary>
       <div className="tc-lessons-body">
         {loading && <div className="tc-lessons-loading">Loading…</div>}
-        {data?.lessons.map((rec, i) => (
-          <div
-            key={`${rec.patch_hash ?? rec.run_id ?? i}-${rec.revision ?? i}`}
-            className="tc-lesson-row"
-          >
-            <div className="tc-lesson-head">
-              <Tag color={VERDICT_COLOR[rec.verdict ?? ''] ?? 'default'}
-                   style={{ fontSize: 10, lineHeight: '16px' }}>
-                {rec.verdict ?? '?'}
-              </Tag>
-              {rec.applied && (
-                <Tag color="cyan" style={{ fontSize: 10, lineHeight: '16px' }}>
-                  revision applied
+        {data && groupStreakRows(data.lessons, data.stop_streaks).map((row, i) => {
+          if (row.kind === 'record') {
+            const rec = row.rec;
+            return (
+              <LessonRow
+                key={`${rec.patch_hash ?? rec.run_id ?? i}-${rec.revision ?? i}`}
+                rec={rec} reverting={reverting}
+                onRevert={r => void handleRevert(r)}
+              />
+            );
+          }
+          // A streak: one finding, N members.  The newest wording leads
+          // because it is what a reader would see at the top anyway;
+          // the rest are one click away, nothing is hidden.
+          const { streak, members, blockId } = row;
+          return (
+            <details key={`streak-${blockId}`} className="tc-lesson-row tc-lesson-streak">
+              <summary className="tc-lesson-head">
+                <Tag color="orange" style={{ fontSize: 10, lineHeight: '16px' }}>
+                  stopped {streak.count} runs in a row
                 </Tag>
-              )}
-              <span className="tc-lesson-when">{formatWhen(rec.ts)}</span>
-              {rec.applied && rec.patch_hash && rec.block_id && (
-                <Button
-                  size="small"
-                  danger
-                  loading={reverting === rec.patch_hash}
-                  disabled={!rec.pre_image}
-                  title={rec.pre_image
-                    ? 'Restore the text this revision replaced (permissions are untouched either way)'
-                    : 'This revision predates pre-image capture and cannot be auto-reverted'}
-                  onClick={() => void handleRevert(rec)}
-                >
-                  Revert
-                </Button>
-              )}
-            </div>
-            {(rec.lesson || rec.rationale) && (
-              <div className="tc-lesson-text">
-                {rec.lesson || rec.rationale}
+                <span className="tc-lesson-when">
+                  block {blockId.slice(0, 10)} · {formatStreakSpan(streak)} · not fixable by editing task text
+                </span>
+              </summary>
+              <div className="tc-lesson-text">{streak.rationales[0]}</div>
+              <div className="tc-lesson-streak-members">
+                {members.map((rec, j) => (
+                  <LessonRow key={`${rec.run_id ?? j}-${rec.revision ?? j}`}
+                             rec={rec} reverting={reverting}
+                             onRevert={r => void handleRevert(r)} />
+                ))}
               </div>
-            )}
-            {rec.applied && rec.patch && <PatchDiff rec={rec} />}
-          </div>
-        ))}
+            </details>
+          );
+        })}
         {data && data.lessons.length === 0 && (
           <div className="tc-lessons-loading">No records.</div>
         )}

@@ -42,9 +42,11 @@ from ..context import (
 )
 from ..storage.task_runs import TaskRunStorage
 from ..utils.roster_keys import derive_item_key, roster_key_problems
+from ..utils.run_time import now_ms
 from . import task_templating
 from .task_executor import TaskExecutorError, execute_task_block
 from . import task_run_stream_relay as _relay
+from ..utils.self_improve import stage_counts, stage_evidence
 from .until_evaluator import evaluate_condition as _evaluate_until_condition_with_model
 
 logger = logging.getLogger(__name__)
@@ -821,7 +823,7 @@ def _call_failure(summary: str) -> Artifact:
     tearing down the whole run either way.
     """
     logger.warning("📞 CALL: %s", summary)
-    return Artifact(summary=summary, failed=True, created_at=time.time())
+    return Artifact(summary=summary, failed=True, created_at=now_ms())
 
 
 def _sequence_child_failure(child: Block, exc: Exception) -> Artifact:
@@ -861,7 +863,7 @@ def _sequence_child_failure(child: Block, exc: Exception) -> Artifact:
         summary=f"{label} raised {type(exc).__name__}: {err}",
         decisions=[f"child {label!r} raised, not returned: {err}"],
         failed=True,
-        created_at=time.time(),
+        created_at=now_ms(),
     )
 
 
@@ -1144,7 +1146,7 @@ async def _replay_artifact(block: Block, ctx: ExecutionContext) -> Artifact:
     if replayed is None:
         artifact = Artifact(
             summary=f"(skipped on resume: no recorded result for {block.id})",
-            created_at=time.time(),
+            created_at=now_ms(),
         )
     elif replayed.failed:
         artifact = replayed.model_copy(update={"failed": False})
@@ -1398,13 +1400,17 @@ async def _execute_sequence(
       feeding failed input into later stages.
     """
     if not blocks:
-        return Artifact(summary="", created_at=time.time())
+        return Artifact(summary="", created_at=now_ms())
     last: Optional[Artifact] = None
     # Accumulated across siblings; folded into the returned artifact.
     # Kept separate from ``last`` so the stop-path model_copy below
     # cannot clobber them.
     acc_outputs: List[ArtifactPart] = []
     acc_decisions: List[str] = []
+    # One stage entry per child, in order — the sequence's OWN children,
+    # set explicitly on the returned artifact so a nested loop's
+    # iterations do not leak upward through the last-wins model_copy.
+    stages: List[Dict[str, Any]] = []
     ctx.sibling_stack.append(None)
     try:
         for i, child in enumerate(blocks):
@@ -1455,6 +1461,8 @@ async def _execute_sequence(
                 last = _sequence_child_failure(child, exc)
             acc_outputs.extend(last.outputs or [])
             acc_decisions.extend(last.decisions or [])
+            stages.append(stage_evidence(
+                child.name or child.id or child.block_type, last, index=i))
             # Make this sibling's result visible to the next sibling.
             ctx.sibling_stack[-1] = last
             if on_failure == "stop" and last.failed and i < len(blocks) - 1:
@@ -1471,6 +1479,11 @@ async def _execute_sequence(
                 # distinguish them from queued/failed blocks.
                 for rest in blocks[i + 1:]:
                     await _mark_block_status(ctx, rest, "skipped")
+                    stages.append(stage_evidence(
+                        rest.name or rest.id or rest.block_type,
+                        Artifact(summary="(skipped: on_failure=stop)"),
+                        index=blocks.index(rest), status="skipped",
+                    ))
                 break
     finally:
         ctx.sibling_stack.pop()
@@ -1480,6 +1493,7 @@ async def _execute_sequence(
     return last.model_copy(update={
         "outputs": acc_outputs,
         "decisions": acc_decisions,
+        "stages": stages,
     })
 
 
@@ -1489,7 +1503,7 @@ async def _execute_parallel(
     """Run all body blocks concurrently.  Returns a composite Artifact
     whose outputs are the children's outputs concatenated in order."""
     if not block.body:
-        return Artifact(summary="(empty parallel block)", created_at=time.time())
+        return Artifact(summary="(empty parallel block)", created_at=now_ms())
     start = time.time()
     # Bound concurrency: a Parallel block with many model-invoking
     # children hits the same provider rate limit as a parallel Repeat.
@@ -1525,15 +1539,21 @@ async def _execute_parallel(
     outputs: List[ArtifactPart] = []
     decisions: List[str] = []
     any_failed = False
+    stages: List[Dict[str, Any]] = []
     for idx, result in enumerate(children):
+        label = block.body[idx].name or block.body[idx].id or "child"
         if isinstance(result, BaseException):
             any_failed = True
             decisions.append(f"child[{idx}] failed: {result}")
+            stages.append(stage_evidence(
+                label, Artifact(summary=f"raised {result}"), index=idx,
+                status="failed"))
             continue
         if result.failed:
             any_failed = True
         outputs.extend(result.outputs)
         decisions.extend(result.decisions)
+        stages.append(stage_evidence(label, result, index=idx))
     elapsed_ms = int((time.time() - start) * 1000)
     summary = f"Parallel of {len(block.body)} child block(s)"
     return Artifact(
@@ -1541,7 +1561,8 @@ async def _execute_parallel(
         decisions=decisions,
         outputs=outputs,
         duration_ms=elapsed_ms,
-        created_at=time.time(),
+        stages=stages,
+        created_at=now_ms(),
         failed=any_failed,
     )
 
@@ -1564,7 +1585,7 @@ async def _execute_repeat(
             summary=summary,
             decisions=[f"for_each source unresolved for block {block.id!r}"],
             failed=True,
-            created_at=time.time(),
+            created_at=now_ms(),
         )
     except RosterAssertionError as e:
         # The roster cannot satisfy its own completeness assertion — a
@@ -1581,12 +1602,12 @@ async def _execute_repeat(
                 f"block {block.id!r}"
             ],
             failed=True,
-            created_at=time.time(),
+            created_at=now_ms(),
         )
     if not iterations:
         # An EMPTY resolved list is legitimate (a planner that found
         # nothing to do), unlike an unresolvable source above.
-        return Artifact(summary="(repeat with 0 iterations)", created_at=time.time())
+        return Artifact(summary="(repeat with 0 iterations)", created_at=now_ms())
 
     start = time.time()
     propagate = block.repeat_propagate or "none"
@@ -1599,6 +1620,21 @@ async def _execute_repeat(
     # completeness assertion at loop exit diffs the planned keys against
     # this rather than re-reading storage.
     iter_outcomes: Dict[int, str] = {}
+    # Per-iteration evidence, keyed like iter_outcomes and written at
+    # the same four sites (executed, banked, synthesized, replayed) so
+    # the two can never disagree.  Emitted in index order as the
+    # block artifact's ``stages``.
+    iter_stages: Dict[int, Dict[str, Any]] = {}
+
+    def _iter_label(i: int) -> str:
+        if 0 <= i < len(iterations):
+            key = iterations[i].get("item_key")
+            if key:
+                return str(key)
+            item = iterations[i].get("item")
+            if item is not None:
+                return str(item)[:80]
+        return f"#{i}"
 
     # Persist the roster size for for_each loops before announcing the
     # block: the run map renders loop progress as "n/m", and for_each is
@@ -1720,6 +1756,8 @@ async def _execute_repeat(
             artifact.duration_ms = int((time.time() - iter_start) * 1000)
         await _record_iteration(block, ctx, index, artifact, item_key=item_key)
         iter_outcomes[index] = "failed" if artifact.failed else "passed"
+        iter_stages[index] = stage_evidence(
+            _iter_label(index), artifact, index=index)
         await _emit(ctx, {
             "type": "iteration_completed",
             "block_id": block.id, "index": index,
@@ -1755,6 +1793,8 @@ async def _execute_repeat(
         for _i in sorted(_banked):
             _art = _banked[_i]
             iter_outcomes[_i] = "passed"
+            iter_stages[_i] = stage_evidence(
+                _iter_label(_i), _art, index=_i, status="passed")
             last_artifact = _art
             outputs.extend(_art.outputs)
             await _emit(ctx, {
@@ -1908,7 +1948,7 @@ async def _execute_repeat(
                     ),
                     decisions=[err_text],
                     duration_ms=0,
-                    created_at=time.time(),
+                    created_at=now_ms(),
                     failed=not _cancelled,
                 )
                 synth.signature = _derive_signature(synth)
@@ -1925,6 +1965,8 @@ async def _execute_repeat(
                     "tokens": 0,
                 })
                 last_artifact = synth
+                iter_stages[idx] = stage_evidence(
+                    _iter_label(idx), synth, index=idx, status=_iter_status)
         # Now that every iteration is on record, re-raise so the run holds
         # rather than being reported as a failure of the work.  Order
         # matters: raising before the loop above left the run map with no
@@ -1950,6 +1992,10 @@ async def _execute_repeat(
             if i < resume_at:
                 iter_outcomes[i] = "passed"
                 replayed = _replay_iteration(i)
+                iter_stages[i] = stage_evidence(
+                    _iter_label(i),
+                    replayed or Artifact(summary="(replayed; no record)"),
+                    index=i, status="passed")
                 if replayed is not None:
                     last_artifact = replayed
                     outputs.extend(replayed.outputs)
@@ -2053,7 +2099,7 @@ async def _execute_repeat(
                 ],
                 outputs=outputs,
                 duration_ms=elapsed_ms,
-                created_at=time.time(),
+                created_at=now_ms(),
                 failed=True,
             )
     # Scope reduction, surfaced on the block's own artifact.  The loop
@@ -2088,8 +2134,9 @@ async def _execute_repeat(
         summary=(last_artifact.summary if last_artifact else "(no iterations completed)"),
         decisions=_decisions,
         outputs=outputs,
+        stages=[iter_stages[k] for k in sorted(iter_stages)],
         duration_ms=elapsed_ms,
-        created_at=time.time(),
+        created_at=now_ms(),
         failed=bool(last_artifact and last_artifact.failed),
     )
 
@@ -2463,6 +2510,7 @@ async def _record_iteration(
         tokens=artifact.tokens,
         has_artifact=keep_full,
         item_key=item_key,
+        model=artifact.model,
     )
     ctx.storage.append_iteration_summary(ctx.run_id, block.id, summary)
 
@@ -2511,6 +2559,7 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
     last_artifact: Optional[Artifact] = None
     outputs: List[ArtifactPart] = []
     decisions: List[str] = []
+    stages: List[Dict[str, Any]] = []
     signatures: List[str] = []  # for convergence backstop
     # Stall-breaker state.  Unlike ``signatures`` these are maintained even
     # when an explicit condition is set, which is the case the breaker exists
@@ -2554,6 +2603,8 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
                     if got.failed else got
                 )
                 outputs.extend(last_artifact.outputs)
+                stages.append(stage_evidence(
+                    f"iteration {i}", last_artifact, index=i, status="passed"))
                 if not condition:
                     # Keep the signature history aligned with the replayed
                     # prefix so convergence detection compares executed
@@ -2601,6 +2652,7 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
         })
         last_artifact = artifact
         outputs.extend(artifact.outputs)
+        stages.append(stage_evidence(f"iteration {i}", artifact, index=i))
 
         # ---------- Exit-condition layer 1: agent self-assessment ----------
         # The task executor parses <self_assessment objective_met="..."
@@ -2723,7 +2775,8 @@ async def _execute_until(block: Block, ctx: ExecutionContext) -> Artifact:
         summary=(last_artifact.summary if last_artifact else "(until ran 0 iterations)"),
         decisions=(last_artifact.decisions if last_artifact else []) + decisions,
         outputs=outputs, duration_ms=elapsed_ms,
-        created_at=time.time(),
+        stages=stages,
+        created_at=now_ms(),
         failed=bool(last_artifact and last_artifact.failed),
     )
 
@@ -2736,7 +2789,7 @@ async def _execute_schedule_passthrough(
     scheduled card behave intuitively and keeps tests simple.
     """
     if not block.body:
-        return Artifact(summary="(empty schedule block)", created_at=time.time())
+        return Artifact(summary="(empty schedule block)", created_at=now_ms())
     logger.info(f"schedule block {block.id} executed directly (passthrough)")
     return await _execute_sequence(
         block.body, ctx, on_failure=(block.on_failure or "continue"),
@@ -2793,7 +2846,7 @@ async def _execute_state(block: Block, ctx: ExecutionContext) -> Artifact:
     })
     return Artifact(
         summary=f"Initialized state: {names}",
-        created_at=time.time(),
+        created_at=now_ms(),
     )
 
 # How often the wait-loop re-reads the record.  Coarser than the pause
@@ -2878,7 +2931,7 @@ async def _execute_ask(block: Block, ctx: ExecutionContext) -> Artifact:
                 f"human rejected at {label}: {answer or 'no reason given'}"
             ],
             failed=True,
-            created_at=time.time(),
+            created_at=now_ms(),
         )
 
     if block.ask_variable:
@@ -2892,7 +2945,7 @@ async def _execute_ask(block: Block, ctx: ExecutionContext) -> Artifact:
         summary=f"{label}: approved by {who}"
                 + (f" - {answer}" if answer else ""),
         decisions=[f"human approved at {label}"],
-        created_at=time.time(),
+        created_at=now_ms(),
     )
 
 
@@ -2968,7 +3021,7 @@ async def _maybe_self_improve(block: Block, ctx: ExecutionContext,
             current, artifact, criterion=criterion, drift=drift,
             lessons=lessons, revision=revision,
         )
-        v = verdict.get("verdict") or "accept"
+        v = verdict.get("verdict") or si.JUDGE_ERROR_VERDICT
         patch = verdict.get("patch") or {}
         rec: Dict[str, Any] = {
             "run_id": ctx.run_id, "card_id": card_id,
@@ -2976,9 +3029,22 @@ async def _maybe_self_improve(block: Block, ctx: ExecutionContext,
             "rationale": verdict.get("rationale", ""),
             "lesson": verdict.get("lesson", ""),
             "drift": drift, "applied": False, "persisted": False,
+            # What the judge was shown, in counts — so a ledger reader
+            # can tell an accept over 20/20 passed from one over 17/20.
+            "stages": stage_counts(getattr(artifact, "stages", None) or []),
         }
+        if v == si.JUDGE_ERROR_VERDICT:
+            # A failed judge is ledgered as a failure, with enough of
+            # the raw reply to diagnose it — not as an accept.
+            rec.update({
+                "error": verdict.get("error") or "unknown",
+                "reply_excerpt": verdict.get("reply_excerpt") or "",
+                "reply_len": verdict.get("reply_len") or 0,
+            })
         stop_reason: Optional[str] = None
-        if v != "revise" or not patch:
+        if v == si.JUDGE_ERROR_VERDICT:
+            stop_reason = "judge_error"
+        elif v != "revise" or not patch:
             stop_reason = v if v in ("accept", "stop") else "accept"
         elif revision >= improve_max:
             stop_reason = "budget_exhausted"
@@ -2986,7 +3052,14 @@ async def _maybe_self_improve(block: Block, ctx: ExecutionContext,
             stop_reason = "run_ceiling"
         else:
             subtree = current.model_dump()
-            errors = si.validate_improve_patch(patch, subtree)
+            # Targeted ops (replace/append) are expanded to full text
+            # here, so everything below — validation, the oscillation
+            # hash, pre-image, apply, persist, the ledger record — sees
+            # one format.  A patch that resolves with errors is never
+            # partially applied.
+            patch, errors = si.resolve_improve_patch(patch, subtree)
+            if not errors:
+                errors = si.validate_improve_patch(patch, subtree)
             if errors:
                 stop_reason = "invalid_patch"
                 rec["errors"] = errors[:5]

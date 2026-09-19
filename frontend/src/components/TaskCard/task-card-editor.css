@@ -774,6 +774,14 @@ body:not(.dark) .tc-chip { background: rgba(0,0,0,0.05); }
   padding: 2px 0 2px 8px;
 }
 .tc-lesson-head { display: flex; align-items: center; gap: 6px; }
+.tc-lesson-streak { border-left-color: rgba(250, 140, 22, 0.7); }
+.tc-lesson-streak > summary { cursor: pointer; list-style: none; }
+.tc-lesson-streak > summary::-webkit-details-marker { display: none; }
+.tc-lesson-streak-members {
+  margin-top: 6px;
+  padding-left: 6px;
+  opacity: 0.85;
+}
 .tc-lesson-when { font-size: 10px; opacity: 0.55; }
 .tc-lesson-text { margin-top: 2px; opacity: 0.85; }
 .tc-lesson-diff { margin-top: 4px; }

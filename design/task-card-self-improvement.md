@@ -37,6 +37,35 @@ records carrying the old fallback rationale are relabelled `error`
   with history but no revision shows a dimmed 🌱 0; verdict and
   judge-error counts live in the tooltip and the panel header.
 
+## What the judge is shown
+
+The same audit found the judge evidence-starved.  A repeat block's
+artifact carries `summary = last iteration's summary` and `failed =
+last iteration's failed` (last-wins is load-bearing for `{{previous}}`
+and `on_failure`, so it stays); a group inherits the same single
+summary from its last child.  The GFX Stage 1 judge was therefore
+asked whether *every* engine met a 20-engine criterion while seeing
+one engine's self-authored prose, `self_assessment: (none)` (leaf-only),
+and no outputs at all.
+
+Container artifacts now carry **`stages`** — one entry per iteration
+(repeat/until), branch (parallel) or child (group), built by
+`self_improve.stage_evidence`: `{index, label, status, summary (capped
+at 600 chars), self_assessment, outputs}`.  Status mirrors the loop's
+own `iter_outcomes` at every site an iteration concludes (executed,
+banked, synthesized-failure, replayed), so the two cannot disagree; a
+group sets its own children explicitly so a nested loop's iterations
+never leak upward through the last-wins `model_copy`.
+
+The judge prompt lists every non-passed stage in full (passed stages
+are capped at 24 then counted, so a wide fan-out cannot push its own
+failures out of the prompt), names the file parts in `outputs`, and is
+told that the `failed` flag is last-stage-only, that a stage summary is
+the agent's claim rather than a measurement, and that an objective
+naming deliverables is unmet when `OUTPUTS` shows none.  The ledger
+record carries the stage counts (`stages: {total, passed, failed,
+other}`) so a reader can tell an accept over 20/20 from one over 17/20.
+
 Only `revise` with a concrete patch triggers a rewrite.  The prompt
 sets the bar explicitly: no style rewrites, no marginal clarity, and —
 the anti-drift clause — *never expand the card's scope or ambition
@@ -89,6 +118,37 @@ Two independent layers:
 A critic hallucinating a block id from elsewhere in the card is caught
 by the `allowed_ids` bound (the improving block's subtree only).
 
+## Patch format — targeted ops, resolved before the fence
+
+A `revise` originally had to carry the **full replacement text** of
+every field it touched, and the judge reply was capped at 2,000
+tokens.  Against the GFX Stage 1 card the largest editable field alone
+is ~1,100 raw tokens (more once JSON-escaped); a reply that touched
+two fields plus rationale and lesson could not fit, so the replies
+most likely to be truncated into a judge `error` were exactly the ones
+that tried to revise.
+
+A field value may now be a **list of ops** instead of a string:
+
+| op | shape | rule |
+|---|---|---|
+| `replace` | `{"op":"replace","find":"…","with":"…"}` | `find` must occur **exactly once** in the field's current text — zero means the judge is editing text it did not read; more than one is ambiguous; both refuse the patch rather than guess |
+| `append` | `{"op":"append","text":"…"}` | added after a blank line |
+
+Ops apply in order, each against the text as edited so far.
+`resolve_improve_patch` expands them to full text against the current
+subtree *before* validation, so the fence above and everything behind
+it — `validate_improve_patch`, the oscillation hash, pre-image
+capture, apply, persist, the ledger record — see only the full-text
+form.  Consequences: the same edit written as ops or as a full string
+has the same `patch_hash` (a judge cannot alternate forms to walk
+around the oscillation guard), and the ledger/revert path is unchanged
+because it never sees an op.  A patch with any unresolvable op is
+refused whole (`invalid_patch`); nothing is partially applied.  The
+prompt tells the judge to prefer ops; the reply ceiling is
+`JUDGE_MAX_TOKENS` (8,000) so a full replacement still fits when most
+of a field must change.
+
 ## Durability — two artifacts
 
 - **The patched live card** — what makes run N+1 better.  Applied
@@ -108,6 +168,34 @@ A→B→A oscillation — without it the card doesn't converge, it wanders.
 Run records stay honest for free: `card_snapshot` freezes what each
 run *launched with*; mid-run revisions are visible via `block_improved`
 events and ledger entries rather than by rewriting the snapshot.
+
+## Repeated stops — one finding, not N rows
+
+A `stop` verdict means "deficient for a reason text cannot fix".  When a
+block stops run after run, the ledger is telling a *person* something
+— the environment is broken — and telling them once per run in
+different words buries it.  GFX Stage 2's `b-5cc1081c` stopped six
+runs in a row (Sep 1–14, stale headless render server) and the panel
+showed six orange rows.
+
+`self_improve.stop_streaks(records)` computes, per block, the TRAILING
+run of consecutive `stop` verdicts: an `error` record is transparent
+(the judge failed, the run did not pass), any `accept`/`revise` resets.
+Streaks of length `>= STOP_STREAK_MIN` (2) are returned as
+`{block_id: {count, first_ts, last_ts, run_ids, rationales}}`.
+
+Grouping is **positional, not textual**.  No string comparison groups
+"does not reload the new bundle" with "stale headless-render-server
+environment issue", and a model call to cluster ledger rows is not
+worth its cost or its non-determinism.  "Stopped N runs in a row and
+nothing has passed since" is the finding regardless of wording.
+
+Surfaces: `GET /task-cards/{id}/lessons` carries `stop_streaks` as an
+overlay (every row is still returned — nothing a user could read or
+revert is hidden); the panel folds a streak's members into one
+expandable row (`lessonStreaks.groupStreakRows`); the deck summary
+carries `stop_streak` (max over blocks) and the badge turns orange
+with `⛔N`, since this is the one ledger state that needs a human.
 
 ## Control flow
 
