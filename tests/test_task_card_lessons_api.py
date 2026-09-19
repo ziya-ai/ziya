@@ -310,9 +310,12 @@ class TestSummaryByCard:
                        "verdict": "stop", "applied": False, "ts": 5.0})
         summary = ledger.summary_by_card()
         assert summary["c1"] == {
-            "count": 2, "edits_applied": 1, "judge_errors": 0, "last_ts": 20.0}
+            "count": 2, "edits_applied": 1, "judge_errors": 0,
+            "stop_streak": 0, "last_ts": 20.0}
+        # one stop is a row, not a streak (STOP_STREAK_MIN = 2)
         assert summary["c2"] == {
-            "count": 1, "edits_applied": 0, "judge_errors": 0, "last_ts": 5.0}
+            "count": 1, "edits_applied": 0, "judge_errors": 0,
+            "stop_streak": 0, "last_ts": 5.0}
 
     def test_records_without_card_id_are_skipped(self, ziya_home, project_dir):
         ledger = LessonLedger(_proj_dir(ziya_home, project_dir))
