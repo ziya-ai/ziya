@@ -1016,3 +1016,69 @@ export function repairGluedFenceOpeners(markdown: string): string {
     }
     return current;
 }
+
+/**
+ * Reabsorb a short run of content leaked past the LAST closing fence of a
+ * message (the model closed a code block one line early; e.g. `});` after
+ * the fence, then EOF). Unrepaired, that orphan flips fence parity for every
+ * fence that follows on re-render.
+ *
+ * Only the final 1000 chars are examined: a leak is at most 120 chars, and
+ * this must stay cheap because it runs on every lexedTokens recompute.
+ *
+ * The regex is written so each line repetition MUST consume its newline. The
+ * previous form, `(?:[^\n]{0,80}\n?){1,5}$`, made the newline optional, so a
+ * long line could be tiled into ≤80-char chunks in a combinatorial number of
+ * ways; when the tail could not reach `$` within five chunks V8 tried every
+ * tiling before failing. A message ending in a 270-char line, a blank, and a
+ * 135-char line took 39.5 s in this pass alone (2026-09-18 profile, 23 s
+ * main-thread block on conversation switch); a 200-char line takes 16 s.
+ * With the newline mandatory there is exactly one parse per line, and the
+ * same input takes <1 ms. The per-line cap is 120 so that any leak the
+ * 120-char guard below would accept still matches; longer lines are not a
+ * leak and are rejected at the regex.
+ *
+ * Anchored at the start of the text FOLLOWING a fence run; the caller picks
+ * the run. An unanchored leftmost match landed on a bare opener (a "```"
+ * line with no language) before the closing fence: its "leak" then held the
+ * real close and failed the inner-fence guard, so a bare-fenced block never
+ * had its leak reabsorbed while a lang-tagged one did.
+ */
+const LEAKED_TAIL_RE = /^([ \t]*\n)((?:[^\n]{0,120}\n){0,4}[^\n]{0,120}\n?)$/;
+
+export function reabsorbLeakedTailContent(markdown: string): string {
+    const TAIL_LEN = 1000;
+    const tailStart = Math.max(0, markdown.length - TAIL_LEN);
+    const tail = markdown.slice(tailStart);
+    // Walk fence runs from the END: the pass targets the LAST close. Only the
+    // nearest matching run can qualify -- any earlier run's leak contains
+    // this fence line and is rejected by the inner-fence guard -- so the
+    // first regex match decides, whichever way the guards go.
+    let p = tail.lastIndexOf('```');
+    while (p >= 0) {
+        // Skip a run that is the tail of a longer fence (```` tool blocks).
+        if (p === 0 || tail[p - 1] !== '`') {
+            const m = LEAKED_TAIL_RE.exec(tail.slice(p + 3));
+            if (m) {
+                const newline = m[1];
+                const leaked = m[2];
+                const trimmed = leaked.trim();
+                // Legitimate prose after a code block has blank-line
+                // separation; a captured fence marker means the match
+                // spanned a block boundary.
+                if (!trimmed || trimmed.length > 120) return markdown;
+                if ((newline + leaked).includes('\n\n')) return markdown;
+                if (leaked.includes('```')) return markdown;
+                console.debug('🔧 Fence fix (tail): reabsorbed leaked content:', trimmed);
+                return (
+                    markdown.slice(0, tailStart) +
+                    tail.slice(0, p) +
+                    trimmed + '\n```'
+                );
+            }
+        }
+        if (p === 0) break;
+        p = tail.lastIndexOf('```', p - 1);
+    }
+    return markdown;
+}
