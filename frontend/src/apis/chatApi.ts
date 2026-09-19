@@ -8,7 +8,7 @@ import { Project } from '../types/project';
 import { projectSync } from '../utils/projectSync';
 import { escapeHtml } from '../utils/htmlSanitize';
 
-import { extractSingleFileDiff } from '../utils/diffUtils';
+import { extractSingleFileDiff, buildDiffRejectionNotice } from '../utils/diffUtils';
 import { drainSseFrames } from './sseFramer';
 import { applyContinuationRewind } from './continuationProtocol';
 import { resolveModelPin, ResolvedModelPin } from '../utils/modelPins';
@@ -771,7 +771,13 @@ export const sendPayload = async (
     setReasoningContentMap?: Dispatch<SetStateAction<Map<string, ThinkingBlockData[]>>>,
     throttlingRecoveryDataRef?: { toolResults?: any[]; partialContent?: string },
     currentProject?: { id: string; name: string; path: string } | null,
-    resolvedModelPin?: ResolvedModelPin | null
+    resolvedModelPin?: ResolvedModelPin | null,
+    // Reattach to a turn the server is already running (or recently
+    // finished) for this conversation, instead of submitting a new one.
+    // The response is GET /api/chat/turn/{id}/stream — a replay of what
+    // was missed followed by the live tail, in the same SSE shape — so
+    // everything after the fetch is shared with a fresh send.
+    reattach: boolean = false
 ): Promise<string> => {
     let eventSource: any = null;
     let currentContent = '';
@@ -966,7 +972,12 @@ export const sendPayload = async (
         const messagesToSend = messages.filter(isValidMessage);
 
         setIsStreaming(true);
-        let response = await getApiResponse(messagesToSend, question, checkedItems, conversationId, signal, currentProject, activeSkillPrompts, undefined, undefined, resolvedModelPin);
+        let response = reattach
+            ? await fetch(`/api/chat/turn/${encodeURIComponent(conversationId)}/stream`, {
+                method: 'GET',
+                signal,
+            })
+            : await getApiResponse(messagesToSend, question, checkedItems, conversationId, signal, currentProject, activeSkillPrompts, undefined, undefined, resolvedModelPin);
         console.log("Initial API response:", response.status, response.statusText);
 
         if (!response.ok) {
@@ -1192,12 +1203,14 @@ export const sendPayload = async (
                     }
                 }
 
-                // Live UI sync for model-staged task cards.  task_card_stage
-                // creates the card + a staged binding server-side mid-turn;
-                // useTaskBindings only re-fetches on this event, so without
-                // it the tile would not appear until a reload.
+                // Live UI sync for model-staged / model-launched task cards.
+                // task_card_stage creates a card + a staged binding, and
+                // task_card_launch a run + a bound binding, server-side
+                // mid-turn; useTaskBindings only re-fetches on this event,
+                // so without it the tile would not appear until a reload.
                 if (unwrappedData.type === 'tool_display'
-                    && unwrappedData.tool_name === 'task_card_stage') {
+                    && (unwrappedData.tool_name === 'task_card_stage'
+                        || unwrappedData.tool_name === 'task_card_launch')) {
                     try {
                         const raw = unwrappedData.result;
                         const result = typeof raw === 'string'
@@ -1211,10 +1224,25 @@ export const sendPayload = async (
                     }
                 }
 
-                // Handle diff validation status (informational only - no rewind)
+                // The server refused one or more diffs and is asking the model
+                // for a correction. Record which fences (by content hash) so
+                // the renderer greys and disables exactly those, and tell the
+                // reader why the stream paused. This event used to be logged
+                // and discarded: the failed diff stayed appliable, the pause
+                // was unexplained, and the correction's relationship to the
+                // original was left to a heuristic that misses re-anchored or
+                // merged hunks.
+                if (unwrappedData.type === 'validation_retry') {
+                    console.log('📝 validation_retry:', unwrappedData);
+                    const rejected = Array.isArray(unwrappedData.rejected) ? unwrappedData.rejected : [];
+                    currentContent += buildDiffRejectionNotice(rejected, unwrappedData.content);
+                    flushStreamedContent();
+                    return;
+                }
+
+                // Per-diff validation status (informational only - no rewind)
                 if (unwrappedData.type === 'diff_validation_failed' ||
-                    unwrappedData.type === 'diff_validation_status' ||
-                    unwrappedData.type === 'validation_retry') {
+                    unwrappedData.type === 'diff_validation_status') {
                     console.log(`📝 ${unwrappedData.type}:`, unwrappedData);
                     return;
                 }
