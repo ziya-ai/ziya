@@ -193,8 +193,18 @@ export function getOptimalTextColor(backgroundColor: string): string {
         return '#000000'; // Light pastel colors need black text
     }
     
-    // Use WCAG-based threshold as final fallback: luminance > 0.5 is considered light
-    return lum > 0.5 ? '#000000' : '#ffffff';
+    // Final fallback: pick the text colour (black/white) that yields the HIGHER
+    // WCAG contrast against this background, rather than a luminance THRESHOLD
+    // proxy. The old `lum > 0.5` heuristic mis-fired on saturated mid-tone fills
+    // whose luminance sits just below 0.5 yet which still read far better with
+    // black text — e.g. amber #f9a825 (lum 0.483): white 1.97:1 vs black 10.66:1,
+    // so the threshold returned WHITE and left the label illegible (D-326).
+    // Black wins for every background luminance above 0.179 (the exact black/
+    // white contrast crossover); comparing the two contrasts encodes that
+    // crossover precisely instead of guessing a threshold.
+    const contrastBlack = (lum + 0.05) / 0.05;   // black text (L = 0)
+    const contrastWhite = 1.05 / (lum + 0.05);   // white text (L = 1)
+    return contrastBlack >= contrastWhite ? '#000000' : '#ffffff';
 }
 
 

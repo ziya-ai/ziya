@@ -126,7 +126,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.081846Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "31106a71d4b18e4b312de2eb0c44cdf57b2bed089fdc2232deba2066c28d3025",
+     "validated_at": "2026-09-16T12:30:31.222421Z"
+    },
+    "dark": {
+     "hash": "f9518aad293a6c313de8e6d6549c92832e4972ecef2c0859f782626b341a3100",
+     "validated_at": "2026-09-16T12:30:31.229412Z"
+    }
+   }
   },
   "basic-chart-w4-02": {
    "themes": [
@@ -144,7 +154,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.085141Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "31106a71d4b18e4b312de2eb0c44cdf57b2bed089fdc2232deba2066c28d3025",
+     "validated_at": "2026-09-16T12:30:31.361580Z"
+    },
+    "dark": {
+     "hash": "f9518aad293a6c313de8e6d6549c92832e4972ecef2c0859f782626b341a3100",
+     "validated_at": "2026-09-16T12:30:31.368604Z"
+    }
+   }
   },
   "basic-chart-w4-03": {
    "themes": [
@@ -162,7 +182,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.088174Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "31106a71d4b18e4b312de2eb0c44cdf57b2bed089fdc2232deba2066c28d3025",
+     "validated_at": "2026-09-16T12:30:31.505319Z"
+    },
+    "dark": {
+     "hash": "f9518aad293a6c313de8e6d6549c92832e4972ecef2c0859f782626b341a3100",
+     "validated_at": "2026-09-16T12:30:31.511260Z"
+    }
+   }
   },
   "basic-chart-w4-06": {
    "themes": [
@@ -180,7 +210,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.102766Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "31106a71d4b18e4b312de2eb0c44cdf57b2bed089fdc2232deba2066c28d3025",
+     "validated_at": "2026-09-16T12:30:32.065138Z"
+    },
+    "dark": {
+     "hash": "f9518aad293a6c313de8e6d6549c92832e4972ecef2c0859f782626b341a3100",
+     "validated_at": "2026-09-16T12:30:32.073207Z"
+    }
+   }
   },
   "basic-chart-w2-08": {
    "themes": [
@@ -504,7 +544,17 @@
      "signature": "preprocessor-string-never-parses-timeout",
      "at": "2026-09-15T08:56:11.942995Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "31106a71d4b18e4b312de2eb0c44cdf57b2bed089fdc2232deba2066c28d3025",
+     "validated_at": "2026-09-16T12:30:31.695357Z"
+    },
+    "dark": {
+     "hash": "f9518aad293a6c313de8e6d6549c92832e4972ecef2c0859f782626b341a3100",
+     "validated_at": "2026-09-16T12:30:31.704530Z"
+    }
+   }
   },
   "basic-chart-w4-05": {
    "themes": [
@@ -522,7 +572,17 @@
      "signature": "preprocessor-string-never-parses-timeout",
      "at": "2026-09-15T08:56:11.951098Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "31106a71d4b18e4b312de2eb0c44cdf57b2bed089fdc2232deba2066c28d3025",
+     "validated_at": "2026-09-16T12:30:31.909378Z"
+    },
+    "dark": {
+     "hash": "f9518aad293a6c313de8e6d6549c92832e4972ecef2c0859f782626b341a3100",
+     "validated_at": "2026-09-16T12:30:31.915820Z"
+    }
+   }
   },
   "basic-chart-w4-07": {
    "themes": [
@@ -540,7 +600,17 @@
      "signature": "preprocessor-string-never-parses-timeout",
      "at": "2026-09-15T08:56:11.954930Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "31106a71d4b18e4b312de2eb0c44cdf57b2bed089fdc2232deba2066c28d3025",
+     "validated_at": "2026-09-16T12:30:32.266970Z"
+    },
+    "dark": {
+     "hash": "f9518aad293a6c313de8e6d6549c92832e4972ecef2c0859f782626b341a3100",
+     "validated_at": "2026-09-16T12:30:32.277823Z"
+    }
+   }
   },
   "basic-chart-w4-08": {
    "themes": [
@@ -558,7 +628,17 @@
      "signature": "preprocessor-string-never-parses-timeout",
      "at": "2026-09-15T08:56:11.972673Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "31106a71d4b18e4b312de2eb0c44cdf57b2bed089fdc2232deba2066c28d3025",
+     "validated_at": "2026-09-16T12:30:32.507904Z"
+    },
+    "dark": {
+     "hash": "f9518aad293a6c313de8e6d6549c92832e4972ecef2c0859f782626b341a3100",
+     "validated_at": "2026-09-16T12:30:32.527525Z"
+    }
+   }
   },
   "basic-chart-w4-15": {
    "themes": [
@@ -576,7 +656,17 @@
      "signature": "preprocessor-string-never-parses-timeout",
      "at": "2026-09-15T08:56:11.977757Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "5479837b7750d541ca86c364d5108bd11ebbf35bbff5de150394191b6304625c",
+     "validated_at": "2026-09-16T12:30:33.864037Z"
+    },
+    "dark": {
+     "hash": "460167802e7fe55c2344495079ea04241968610f2cf76c1f6579d2d5a09bed6b",
+     "validated_at": "2026-09-16T12:30:33.874635Z"
+    }
+   }
   },
   "basic-chart-w4-09": {
    "themes": [
@@ -612,7 +702,17 @@
      "signature": "plugin-declines-or-throws-now-recovered-at-plugin",
      "at": "2026-09-15T08:56:11.987897Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "31106a71d4b18e4b312de2eb0c44cdf57b2bed089fdc2232deba2066c28d3025",
+     "validated_at": "2026-09-16T12:30:32.894099Z"
+    },
+    "dark": {
+     "hash": "f9518aad293a6c313de8e6d6549c92832e4972ecef2c0859f782626b341a3100",
+     "validated_at": "2026-09-16T12:30:32.903553Z"
+    }
+   }
   },
   "basic-chart-w4-11": {
    "themes": [
@@ -630,7 +730,17 @@
      "signature": "plugin-declines-or-throws-now-recovered-at-plugin",
      "at": "2026-09-15T08:56:11.991279Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "31106a71d4b18e4b312de2eb0c44cdf57b2bed089fdc2232deba2066c28d3025",
+     "validated_at": "2026-09-16T12:30:33.101393Z"
+    },
+    "dark": {
+     "hash": "f9518aad293a6c313de8e6d6549c92832e4972ecef2c0859f782626b341a3100",
+     "validated_at": "2026-09-16T12:30:33.107621Z"
+    }
+   }
   },
   "basic-chart-w4-12": {
    "themes": [
@@ -648,7 +758,17 @@
      "signature": "caller-color-passed-to-fill-unvalidated",
      "at": "2026-09-15T08:56:11.994439Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "d973172b6df12fa52f4051f011cc3eecc384b4fe0208c07f725facc2f05f6eaa",
+     "validated_at": "2026-09-16T12:30:33.334146Z"
+    },
+    "dark": {
+     "hash": "49a79fa43b3a95f4bc2c11e53e835fdc7b3bec1b7ae5f5ceb83fe3d8e44a22c3",
+     "validated_at": "2026-09-16T12:30:33.343366Z"
+    }
+   }
   },
   "basic-chart-w4-13": {
    "themes": [
@@ -684,7 +804,17 @@
      "signature": "caller-color-passed-to-fill-unvalidated",
      "at": "2026-09-15T08:56:12.000824Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "ff59e79682574e30e8a065c788536da88c64d9317c0aed63becfffe80fa5746c",
+     "validated_at": "2026-09-16T12:30:33.637864Z"
+    },
+    "dark": {
+     "hash": "9385c7d9400ea6bad97b820654c8287bd2dc179b45ef3d07d3295ce192a496d4",
+     "validated_at": "2026-09-16T12:30:33.647582Z"
+    }
+   }
   }
  }
 }

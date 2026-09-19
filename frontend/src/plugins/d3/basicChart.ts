@@ -4,6 +4,7 @@ import {
     ensureReadableFill,
     planBandLabels,
     truncateLabel,
+    truncateLabelMiddle,
     type BandLabelPlan,
 } from './chartTheme';
 
@@ -104,6 +105,35 @@ function looksLikeCategoryValueRows(rows: any[]): boolean {
  *  - bubble (rows carry `size`) -> an area/count-aware max so N points share the
  *    plot without fully occluding one another, still clamped to a sane [6,40].
  */
+/**
+ * Number of y-axis ticks that actually fit in `plotHeight` px (D-373 /
+ * d3-w2-05). d3.axisLeft with no `.ticks()` argument targets ~10 ticks
+ * regardless of the plot height, so a tiny chart (e.g. a requested 130x100 →
+ * ~50px plot) still got ~8 numeric labels stacked at ~10px font into an
+ * unreadable overprinted column. Tie the tick COUNT to the available height:
+ * reserve ~`fontSize`+8px of vertical room per label so labels never collide,
+ * clamped to a sane [2, 10]. A generous plot keeps the default ~10 (no change
+ * to previously-verified renders); only a cramped plot is thinned.
+ */
+export function heightAwareTickCount(plotHeight: number, fontSize: number = 10): number {
+    const perLabel = Math.max(1, (typeof fontSize === 'number' ? fontSize : 10) + 8);
+    const fit = Math.floor((plotHeight > 0 ? plotHeight : 0) / perLabel);
+    return Math.max(2, Math.min(10, fit));
+}
+
+/**
+ * Apply the height-aware tick count (D-373) to a d3 axis generator, returning
+ * the generator for `.call()`. Defensive: if the object has no `.ticks` (a test
+ * shim), it is returned unchanged so the axis still renders. Real d3 axes always
+ * carry `.ticks`, so production always gets the thinned tick count.
+ */
+export function withHeightAwareTicks(axis: any, plotHeight: number, fontSize: number = 10): any {
+    if (axis && typeof axis.ticks === 'function') {
+        return axis.ticks(heightAwareTickCount(plotHeight, fontSize));
+    }
+    return axis;
+}
+
 export function radiusRange(hasSize: boolean, plotW: number, plotH: number, n: number): { min: number; max: number } {
     if (!hasSize) return { min: 5, max: 5 };
     const areaPerPoint = Math.max(1, plotW * plotH) / Math.max(1, n);
@@ -122,9 +152,10 @@ function applyBandAxis(axisG: any, labels: string[], plan: BandLabelPlan, axisCo
     const texts = axisG.selectAll('.tick text');
     texts.style('fill', axisColor);
 
-    // Truncate long labels with an ellipsis (keeps the leading, most-distinctive
-    // characters) and expose the full value as a <title> for hover.
-    texts.text((d: any) => truncateLabel(String(d), plan.maxChars));
+    // Truncate long labels with a MIDDLE ellipsis so category names that share a
+    // long common prefix keep their distinguishing tail instead of collapsing to
+    // an identical string (D-371). Short labels are returned unchanged.
+    texts.text((d: any) => truncateLabelMiddle(String(d), plan.maxChars));
 
     if (plan.rotate) {
         texts
@@ -219,6 +250,12 @@ export const basicChartPlugin: D3RenderPlugin = {
                 if (bandPlan.reservedBottom > margin.bottom) {
                     margin.bottom = bandPlan.reservedBottom;
                 }
+                // Rotated labels also extend LEFT of their tick; widen the left
+                // gutter so the first (leftmost) category label is not clipped at
+                // the canvas edge (D-371).
+                if (bandPlan.reservedLeft && bandPlan.reservedLeft > margin.left) {
+                    margin.left = bandPlan.reservedLeft;
+                }
             } else {
                 // Continuous charts place a label ABOVE each marker (y - r - 4);
                 // reserve top headroom = largest marker radius + one label line so
@@ -291,7 +328,9 @@ export const basicChartPlugin: D3RenderPlugin = {
                     .style('color', colors.axis)
                     .selectAll('text').style('fill', colors.axis);
                 svg.append('g')
-                    .call(d3.axisLeft(y))
+                    // D-373: scale y tick count to the plot height so a cramped
+                    // chart does not stack ~8 overprinted labels.
+                    .call(withHeightAwareTicks(d3.axisLeft(y), height, colors.fontSize))
                     .style('color', colors.axis)
                     .selectAll('text').style('fill', colors.axis);
 
@@ -357,9 +396,11 @@ export const basicChartPlugin: D3RenderPlugin = {
                 .call(d3.axisBottom(x));
             applyBandAxis(xAxisG, data.map((d: any) => String(d?.label ?? '')), bandPlan!, colors.axis);
 
-            // Add Y axis
+            // Add Y axis. D-373: scale the tick count to the plot height so a
+            // short chart (e.g. requested 130x100) does not stack ~8 numeric
+            // labels into an unreadable overprinted column.
             svg.append('g')
-                .call(d3.axisLeft(y))
+                .call(withHeightAwareTicks(d3.axisLeft(y), height, colors.fontSize))
                 .style('color', colors.axis)
                 .selectAll('text').style('fill', colors.axis);
 

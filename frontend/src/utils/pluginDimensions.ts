@@ -123,3 +123,44 @@ export function resolveContainerDimensions(
     if (!dims) return null;
     return { width: `${dims.width}px`, height: `${dims.height}px` };
 }
+
+/**
+ * Above this many px an explicit 'fixed'-plugin canvas is WIDER than the headless
+ * capture frame (~632px) and must have its width adopted on the container
+ * (D-043). Kept at the historical 600px chord baseline so normal/small canvases
+ * (which already fit) take the unchanged path and stay byte-identical.
+ */
+export const FIXED_WIDTH_ADOPT_THRESHOLD_PX = 600;
+
+/**
+ * D-043 (regression): width-axis analog of ``needsDynamicHeight`` for a 'fixed'
+ * plugin whose spec canvas is wider than the host capture frame.
+ *
+ * ``needsDynamicHeight`` gives the render container ``height:auto`` so a tall
+ * canvas grows and is captured whole. There is no width equivalent: a 'fixed'
+ * plugin (chord) leaves the inner render container at ``width:100%`` +
+ * ``overflow:auto``, so a canvas WIDER than the ~632px capture frame
+ * (chord-w1-14 860px, w2-10 1400px, w2-14 2000px) is clipped on the RIGHT — real
+ * arcs and labels are lost. The capture-fit unclip in diagram_renderer.py only
+ * relaxes the container's ANCESTORS; it never reaches this inner wrapper, and a
+ * ``width:100%`` inner box collapses (rather than holding the canvas width) once
+ * the ancestor shrink-wrap fires, so the clip persists.
+ *
+ * Adopting the explicit px width on the container makes it hold the full canvas
+ * so the ancestor unclip then reveals it. Only fires for a 'fixed' plugin whose
+ * spec supplies BOTH explicit numeric dimensions AND a width beyond the frame
+ * threshold; every normal/small fixed canvas (and every non-'fixed' plugin)
+ * returns null and is unchanged.
+ *
+ * Exported for regression testing.
+ */
+export function resolveFixedContainerWidth(
+    spec: any,
+    sizingStrategy: string | undefined,
+): string | null {
+    if (sizingStrategy !== 'fixed') return null;
+    const dims = extractExplicitDimensions(spec);
+    if (!dims) return null;
+    if (dims.width <= FIXED_WIDTH_ADOPT_THRESHOLD_PX) return null;
+    return `${dims.width}px`;
+}

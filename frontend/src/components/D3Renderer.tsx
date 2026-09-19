@@ -7,7 +7,8 @@ import { isDiagramDefinitionComplete, stripToolCallArtifacts } from '../utils/di
 import { ContainerSizingManager } from '../utils/containerSizing';
 import { isSafari } from '../utils/browserUtils';
 import { parseD3Spec } from '../utils/d3SpecParser';
-import { pluginDimensionProps, resolveContainerDimensions } from '../utils/pluginDimensions';
+import { unwrapDiagramEnvelope } from '../utils/d3EnvelopeUnwrap';
+import { pluginDimensionProps, resolveContainerDimensions, resolveFixedContainerWidth } from '../utils/pluginDimensions';
 
 type RenderType = 'auto' | 'vega-lite' | 'd3';
 
@@ -16,6 +17,56 @@ const globalRenderCache = new Map<string, {
     rendered: boolean;
     timestamp: number;
 }>();
+
+// Rendered DOM handed across a STRUCTURAL remount.  At stream end the live
+// message moves from StreamedContent's React subtree to Conversation's, so
+// every D3Renderer under it unmounts and a fresh instance mounts for the same
+// spec.  globalRenderCache lets the new instance skip decisions, but the DOM
+// was destroyed, so it redid the render -- for WebGL-backed Plotly figures
+// that meant a new GL context per chart and the page-wide eviction cascade.
+// Instead, an unmounting instance with a finished render parks its node (and
+// the cleanups that own it); the next instance with the same key and theme
+// adopts it.  WebGL contexts survive canvas detach/re-attach, so an adopted
+// chart needs no new context.  Unclaimed nodes are cleaned up after the TTL.
+const PARKED_RENDER_TTL_MS = 15000;
+interface ParkedRender {
+    node: HTMLElement;
+    cleanups: (() => void)[];
+    isDarkMode: boolean;
+    timer: ReturnType<typeof setTimeout>;
+}
+const parkedRenders = new Map<string, ParkedRender>();
+
+function runRenderCleanups(cleanups: (() => void)[]): void {
+    cleanups.forEach(cleanup => {
+        try { cleanup(); } catch (e) { console.warn('Error during parked render cleanup:', e); }
+    });
+}
+
+function parkRender(key: string, node: HTMLElement, cleanups: (() => void)[], isDarkMode: boolean): void {
+    const prior = parkedRenders.get(key);
+    if (prior) {
+        clearTimeout(prior.timer);
+        runRenderCleanups(prior.cleanups);
+    }
+    const timer = setTimeout(() => {
+        const entry = parkedRenders.get(key);
+        if (!entry || entry.node !== node) return;
+        parkedRenders.delete(key);
+        runRenderCleanups(entry.cleanups);
+    }, PARKED_RENDER_TTL_MS);
+    parkedRenders.set(key, { node, cleanups, isDarkMode, timer });
+}
+
+// Returns the parked render for `key` if its theme matches, removing it from
+// the park; the caller now owns the node and its cleanups.
+function claimParkedRender(key: string, isDarkMode: boolean): ParkedRender | null {
+    const entry = parkedRenders.get(key);
+    if (!entry || entry.isDarkMode !== isDarkMode) return null;
+    clearTimeout(entry.timer);
+    parkedRenders.delete(key);
+    return entry;
+}
 
 interface D3RendererProps {
     spec: any;
@@ -148,6 +199,9 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             return JSON.stringify(spec);
         }
     }, [spec]);
+    // Live copy for the empty-deps unmount cleanup below.
+    const cacheKeyRef = useRef<string>(cacheKey);
+    cacheKeyRef.current = cacheKey;
 
     // New state for size reservation and rendering control
     const cleanupFunctionsRef = useRef<(() => void)[]>([]);
@@ -252,6 +306,18 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             }
             mounted.current = false;
             console.debug('D3Renderer cleanup triggered');
+
+            // Hand a finished render to the instance that replaces this one
+            // (see parkedRenders).  Live force simulations are not parked.
+            const host = d3ContainerRef.current;
+            const first = host?.firstElementChild;
+            const parkable = hasSuccessfulRenderRef.current && !simulationRef.current
+                && first instanceof HTMLElement ? first : null;
+            if (parkable) {
+                parkable.remove();
+                parkRender(cacheKeyRef.current, parkable, cleanupFunctionsRef.current, isDarkModeRef.current);
+                cleanupFunctionsRef.current = [];
+            }
 
             // Execute all cleanup functions
             cleanupFunctionsRef.current.forEach(cleanup => {
@@ -371,6 +437,30 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
             ? spec
             : (spec && spec.definition ? spec.definition : JSON.stringify(spec));
 
+        // Adopt the DOM an unmounting instance parked for this spec (the
+        // StreamedContent -> Conversation handoff at stream end) instead of
+        // rendering it again.
+        if (!forceRender) {
+            const host = d3ContainerRef.current;
+            const parked = host ? claimParkedRender(cacheKey, isDarkModeRef.current) : null;
+            if (parked && host) {
+                console.log('🔧 D3RENDERER: Adopting parked render across remount');
+                host.innerHTML = '';
+                host.appendChild(parked.node);
+                cleanupFunctionsRef.current.push(...parked.cleanups);
+                hasSuccessfulRenderRef.current = true;
+                if (mounted.current) {
+                    setIsLoading(false);
+                    setRenderError(null);
+                    setHasSuccessfulRender(true);
+                    setShowRawContent(false);
+                }
+                onLoad?.();
+                globalRenderCache.set(cacheKey, { rendered: true, timestamp: Date.now() });
+                return;
+            }
+        }
+
         // Check global cache to avoid duplicate work across component instances
         const cacheEntry = globalRenderCache.get(cacheKey);
         const wasCachedRecently = cacheEntry && (Date.now() - cacheEntry.timestamp) < 5000;
@@ -424,27 +514,12 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                 }
             }
 
-            // Unwrap {type: 'd3', definition: <spec>} envelopes used by
-            // DiagramRenderPage / external callers.  The inner definition
-            // contains the actual plugin-targeted spec (e.g. type:
-            // 'force-directed', 'network', etc.); plugin canHandle() checks
-            // run against that inner spec.  The inner definition may be
-            // either a JSON/JS string OR an already-parsed object.
-            if (
-                typeof spec === 'object' &&
-                spec !== null &&
-                spec.type === 'd3' &&
-                spec.definition != null
-            ) {
-                if (typeof spec.definition === 'string') {
-                    const innerParsed = parseD3Spec(spec.definition);
-                    if (innerParsed && typeof innerParsed === 'object' && innerParsed.type) {
-                        spec = innerParsed;
-                    }
-                } else if (typeof spec.definition === 'object' && spec.definition.type) {
-                    spec = spec.definition;
-                }
-            }
+            // Unwrap {type: 'd3'|'basic-chart', definition: <spec>} envelopes
+            // used by DiagramRenderPage / render_diagram / external callers.
+            // The inner definition holds the real plugin-targeted spec.  See
+            // unwrapDiagramEnvelope for why only 'd3'/'basic-chart' unwrap here
+            // (D-320) and why a typeless inner is now substituted (D-321).
+            spec = unwrapDiagramEnvelope(spec);
 
             // Collects the reason any plugin chunk failed to import, so that a
             // load failure below is not reported as "no compatible plugin",
@@ -1073,6 +1148,27 @@ export const D3Renderer: React.FC<D3RendererProps> = ({
                     ...baseStyles,
                     width: '100%'
                 };
+            }
+
+            // D-043 (regression): a 'fixed'-strategy plugin (chord) with an
+            // explicit spec canvas WIDER than the ~632px capture frame was
+            // clipped on the right — the inner render container defaulted to
+            // width:100% + overflow:auto, and the capture-fit unclip only relaxes
+            // the container's ancestors, never this inner wrapper. Adopt the
+            // explicit width on the container (the width-axis analog of
+            // needsDynamicHeight) so it holds the full canvas and the ancestor
+            // unclip reveals it. Normal/small fixed canvases return null and are
+            // byte-identical.
+            if (plugin.sizingConfig.sizingStrategy === 'fixed') {
+                const fixedWidth = resolveFixedContainerWidth(spec, 'fixed');
+                if (fixedWidth) {
+                    return {
+                        ...baseStyles,
+                        width: fixedWidth,
+                        maxWidth: 'none',
+                        overflow: baseStyles.overflow || 'auto',
+                    };
+                }
             }
 
             return baseStyles;
