@@ -61,9 +61,12 @@ describe('D-058 sizingConfig.needsDynamicHeight — container follows the SVG he
     expect(chordPlugin.sizingConfig?.needsDynamicHeight).toBe(true);
   });
 
-  it('the fixed strategy and hidden-overflow default are otherwise preserved (minimal change)', () => {
+  it('the fixed strategy is preserved; containerStyles.overflow is auto (D-035/D-043 width axis)', () => {
     expect(chordPlugin.sizingConfig?.sizingStrategy).toBe('fixed');
-    expect(chordPlugin.sizingConfig?.containerStyles?.overflow).toBe('hidden');
+    // D-035/D-043: the width-axis analog of needsDynamicHeight relaxed the
+    // wrapper clip from 'hidden' to 'auto' so a wide canvas is scrolled, not
+    // silently clipped. This assertion tracks that deliberate change.
+    expect(chordPlugin.sizingConfig?.containerStyles?.overflow).toBe('auto');
   });
 });
 
