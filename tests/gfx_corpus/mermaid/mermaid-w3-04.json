@@ -1,0 +1,5 @@
+{
+ "type": "mermaid",
+ "definition": "sankey-beta\n\nCoal,Electricity,120\nGas,Electricity,80\nElectricity,Residential,90\nElectricity,Industry,70\nElectricity,Losses,40\nGas,Heating,25",
+ "intent": "Less-travelled dialect: sankey-beta. Wave 1 covered none of the beta dialects except xychart. Probes whether the type normaliser knows sankey-beta at all (wave 1 found stateDiagram-v2 had NO normaliser registered), and whether sankey's auto-assigned node/link colors are theme-aware - sankey links are drawn semi-transparent by default, which is exactly the alpha-blend case this wave targets."
+}
