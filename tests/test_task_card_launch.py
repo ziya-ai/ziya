@@ -123,6 +123,88 @@ def test_clean_card_launches_and_returns_run_id(monkeypatch):
     assert "kwargs" in called  # helper WAS reached
 
 
+# ── the seam: a launched run must be BOUND into the launching chat ────────
+#
+# The chat renders task monitors from TaskBindings, not from runs.  Every
+# human launch path records one; the tool originally did not, so a
+# model-launched run executed with no tile anywhere.  This exercises the
+# REAL TaskBindingStorage against a tmp project dir, so it asserts the
+# binding the chat would actually read back — not a flag the test set.
+
+def _real_binding_storage(monkeypatch, tmp_path):
+    from app.storage.task_bindings import TaskBindingStorage
+    monkeypatch.setattr(
+        "app.utils.paths.get_project_dir", lambda project_id: tmp_path)
+    return TaskBindingStorage(tmp_path)
+
+
+def test_launch_binds_run_into_current_conversation(monkeypatch, tmp_path):
+    card = _Card()
+    _stub_resolution(monkeypatch, card)
+    monkeypatch.setattr(tcl, "_escalation_rows_for", lambda c, p: [])
+    _stub_launch(monkeypatch)
+    monkeypatch.setattr(
+        "app.context.get_conversation_id_or_none", lambda: "chat-1")
+    store = _real_binding_storage(monkeypatch, tmp_path)
+
+    out = asyncio.get_event_loop().run_until_complete(
+        tcl.TaskCardLaunchTool().execute(card_id="card-1"))
+
+    assert out["success"] is True
+    bound = store.list_for_chat("chat-1")
+    assert len(bound) == 1, "exactly one monitor tile in the launching chat"
+    b = bound[0]
+    assert b.card_id == "card-1"
+    assert b.run_id == "run-9"          # bound, not staged
+    assert b.anchor_message_id is None  # mid-turn: renders at the tail
+    # The result names the binding so the frontend can key its refresh.
+    assert out["binding_id"] == b.id
+    assert "binding_id" in out and out["binding_id"]
+
+
+def test_launch_without_conversation_binds_nothing(monkeypatch, tmp_path):
+    """CLI / headless: no chat to bind into.  Launch still succeeds, and
+    the result says so rather than claiming a tile exists."""
+    card = _Card()
+    _stub_resolution(monkeypatch, card)
+    monkeypatch.setattr(tcl, "_escalation_rows_for", lambda c, p: [])
+    _stub_launch(monkeypatch)
+    monkeypatch.setattr(
+        "app.context.get_conversation_id_or_none", lambda: None)
+    _real_binding_storage(monkeypatch, tmp_path)
+
+    out = asyncio.get_event_loop().run_until_complete(
+        tcl.TaskCardLaunchTool().execute(card_id="card-1"))
+
+    assert out["success"] is True
+    assert out["launched"] is True
+    assert out.get("binding_id") is None
+    assert not list(tmp_path.glob("**/*.bindings.json"))
+
+
+def test_binding_failure_does_not_unlaunch(monkeypatch, tmp_path):
+    """The run is already executing when the binding is written; a
+    storage fault there must degrade to 'no tile', not report failure."""
+    card = _Card()
+    _stub_resolution(monkeypatch, card)
+    monkeypatch.setattr(tcl, "_escalation_rows_for", lambda c, p: [])
+    _stub_launch(monkeypatch)
+    monkeypatch.setattr(
+        "app.context.get_conversation_id_or_none", lambda: "chat-1")
+
+    def _boom(project_id):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("app.utils.paths.get_project_dir", _boom)
+
+    out = asyncio.get_event_loop().run_until_complete(
+        tcl.TaskCardLaunchTool().execute(card_id="card-1"))
+
+    assert out["success"] is True
+    assert out["run_id"] == "run-9"
+    assert out.get("binding_id") is None
+
+
 def test_escalating_card_is_refused_without_launching(monkeypatch):
     card = _Card()
     _stub_resolution(monkeypatch, card)
