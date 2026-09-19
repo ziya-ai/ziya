@@ -47,6 +47,13 @@ VALID_ROOT = {
 
 
 def _cards(env):
+    """Every persisted card, including conversation-only drafts."""
+    from app.storage.task_cards import TaskCardStorage
+    return TaskCardStorage(env["project_dir"]).list(include_drafts=True)
+
+
+def _deck(env):
+    """What the Task Cards library shows: drafts excluded."""
     from app.storage.task_cards import TaskCardStorage
     return TaskCardStorage(env["project_dir"]).list()
 
@@ -105,6 +112,97 @@ async def test_valid_root_saves_and_stages_in_current_chat(env):
     assert "running" not in out["message"].lower() or "do not claim" in out["message"]
 
 
+# ── lifecycle: conversation-only by default ──────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_staged_card_is_conversation_only_by_default(env):
+    """Models are pushed to stage sub-task cards freely; each one landing
+    in the permanent deck was noise.  Default: unlisted draft, reachable
+    only through its binding."""
+    from app.mcp.tools.task_card_stage import TaskCardStageTool
+    from app.context import set_conversation_id
+    from app.storage.task_cards import TaskCardStorage
+
+    chat_id = "c_" + uuid.uuid4().hex[:8]
+    set_conversation_id(chat_id)
+    out = await TaskCardStageTool().execute(root=VALID_ROOT, name="Sub-task")
+    assert out.get("success") is True, out
+    assert out["conversation_only"] is True
+    assert out["staged"] is True
+    assert "deck" in out["message"].lower(), "must tell the model where the card lives"
+
+    storage = TaskCardStorage(env["project_dir"])
+    assert _deck(env) == [], "a conversation-only card must not appear in the deck"
+    # ...but it is persisted and resolvable by id (tile, run, launch).
+    card = storage.get(out["card_id"])
+    assert card is not None and card.draft is True
+    assert [b["card_id"] for b in _bindings(env, chat_id)] == [card.id]
+
+
+@pytest.mark.asyncio
+async def test_persist_true_files_the_card_in_the_deck(env):
+    from app.mcp.tools.task_card_stage import TaskCardStageTool
+    from app.context import set_conversation_id
+
+    chat_id = "c_" + uuid.uuid4().hex[:8]
+    set_conversation_id(chat_id)
+    out = await TaskCardStageTool().execute(
+        root=VALID_ROOT, name="Keeper", persist=True)
+    assert out.get("success") is True, out
+    assert out["conversation_only"] is False
+    assert out["staged"] is True  # persisting does not skip the tile
+    assert [c.name for c in _deck(env)] == ["Keeper"]
+    assert _deck(env)[0].draft is False
+    assert len(_bindings(env, chat_id)) == 1
+
+
+@pytest.mark.asyncio
+async def test_binding_failure_promotes_rather_than_strands(env, monkeypatch):
+    """The binding is the only thing that makes an unlisted card reachable.
+    If it cannot be created, the card must land in the deck instead of
+    existing nowhere the user can see."""
+    from app.mcp.tools.task_card_stage import TaskCardStageTool
+    from app.context import set_conversation_id
+    from app.storage import task_bindings as tb
+
+    set_conversation_id("c_" + uuid.uuid4().hex[:8])
+
+    def _boom(self, **_kw):
+        raise OSError("disk full")
+    monkeypatch.setattr(tb.TaskBindingStorage, "create", _boom)
+
+    out = await TaskCardStageTool().execute(root=VALID_ROOT, name="Orphan?")
+    assert out.get("success") is True, out
+    assert out["staged"] is False
+    assert out["conversation_only"] is False
+    assert [c.name for c in _deck(env)] == ["Orphan?"]
+
+
+@pytest.mark.asyncio
+async def test_bound_listing_includes_conversation_only_cards(env):
+    """Seam: stage a card, then ask task_card_list for this chat's cards.
+    The deck filter must not hide the card the model just staged — that
+    is the 'fix the card above' path."""
+    from app.mcp.tools.task_card_stage import TaskCardStageTool
+    from app.mcp.tools.task_card_tools import TaskCardListTool
+    from app.context import set_conversation_id
+
+    set_conversation_id("c_" + uuid.uuid4().hex[:8])
+    staged = await TaskCardStageTool().execute(root=VALID_ROOT, name="Here")
+    assert staged.get("success") is True, staged
+
+    bound = await TaskCardListTool().execute(bound_to_current_chat=True)
+    assert bound.get("success") is True, bound
+    rows = {c["id"]: c for c in bound["cards"]}
+    assert staged["card_id"] in rows
+    assert rows[staged["card_id"]]["conversation_only"] is True
+
+    # Positive control for the other direction: the project-wide listing
+    # is the deck view and still hides it.
+    everything = await TaskCardListTool().execute()
+    assert staged["card_id"] not in {c["id"] for c in everything["cards"]}
+
+
 @pytest.mark.asyncio
 async def test_invalid_root_is_rejected_and_nothing_saved(env):
     from app.mcp.tools.task_card_stage import TaskCardStageTool
@@ -145,6 +243,10 @@ async def test_no_conversation_saves_to_deck_only(env, monkeypatch):
     assert out["staged"] is False
     assert out["binding_id"] is None
     assert [c.name for c in _cards(env)] == ["Deck only"]
+    # Nothing to bind to → the card must be a real deck card, or it would
+    # exist nowhere anyone can find it.
+    assert [c.name for c in _deck(env)] == ["Deck only"]
+    assert out["conversation_only"] is False
     assert not list((env["project_dir"] / "chats").glob("*.bindings.json"))
 
 

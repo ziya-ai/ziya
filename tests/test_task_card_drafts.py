@@ -141,6 +141,50 @@ class TestPruning:
         assert storage.prune_stale_drafts() == 0
         assert storage.get(card.id) is not None
 
+    def test_stale_draft_bound_to_a_conversation_is_kept(self, storage, tmp_path):
+        # task_card_stage files its cards as conversation-only drafts.  A
+        # tile the user has not clicked for a week still points at the
+        # card; pruning it would leave that tile dangling.  Reachability,
+        # not age, decides.
+        from app.storage.task_bindings import TaskBindingStorage
+        card = storage.create(TaskCardCreate(
+            name="Staged, unlaunched", root=_plain_task(), draft=True))
+        TaskBindingStorage(tmp_path).create(
+            chat_id="chat-1", card_id=card.id, run_id=None)
+        aged = storage.get(card.id)
+        aged.updated_at = int(time.time() * 1000) - (30 * 24 * 3600 * 1000)
+        storage._write_json(storage._card_file(card.id), aged.model_dump())
+
+        assert storage.prune_stale_drafts() == 0
+        assert storage.get(card.id) is not None
+
+    def test_binding_removal_makes_a_stale_draft_prunable(self, storage, tmp_path):
+        # Positive control for the guard above: once nothing references the
+        # draft it is eligible again — the guard must key on the binding,
+        # not on the card having been bound at some point.
+        from app.storage.task_bindings import TaskBindingStorage
+        card = storage.create(TaskCardCreate(
+            name="Discarded", root=_plain_task(), draft=True))
+        bs = TaskBindingStorage(tmp_path)
+        b = bs.create(chat_id="chat-1", card_id=card.id, run_id=None)
+        aged = storage.get(card.id)
+        aged.updated_at = int(time.time() * 1000) - (30 * 24 * 3600 * 1000)
+        storage._write_json(storage._card_file(card.id), aged.model_dump())
+        assert storage.prune_stale_drafts() == 0
+
+        bs.delete("chat-1", b.id)
+        assert storage.prune_stale_drafts() == 1
+        assert storage.get(card.id) is None
+
+    def test_all_bound_card_ids_scans_every_chat(self, tmp_path):
+        from app.storage.task_bindings import TaskBindingStorage
+        bs = TaskBindingStorage(tmp_path)
+        assert bs.all_bound_card_ids() == set()
+        bs.create(chat_id="a", card_id="card-1")
+        bs.create(chat_id="b", card_id="card-2", run_id="run-x")
+        bs.create(chat_id="b", card_id="card-1")
+        assert bs.all_bound_card_ids() == {"card-1", "card-2"}
+
     def test_deck_card_is_never_pruned(self, storage):
         card = storage.create(TaskCardCreate(name="Deck", root=_plain_task()))
         aged = storage.get(card.id)

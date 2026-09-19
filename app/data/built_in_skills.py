@@ -970,9 +970,12 @@ errors is refused at launch, so presenting one wastes the user's turn.
 
 Two ways to hand the card to the user; both end with the USER launching it:
 
-- **`task_card_stage(root, name)`** — validates, saves to the deck, and
-  stages an inline tile with a Run button in this chat.  Prefer this when
-  you are already in a tool-calling turn.
+- **`task_card_stage(root, name)`** — validates, saves, and stages an
+  inline tile with a Run button in this chat.  Prefer this when you are
+  already in a tool-calling turn.  The card is **conversation-only** by
+  default — runnable from its tile, absent from the deck — which is the
+  right lifecycle for sub-task and one-off cards; pass `persist: true`
+  only when the user wants a reusable card in the Task Cards library.
 - **A fenced JSON block with language tag `task-card`** — the user can
   preview it, **Save to deck** (persists it without running — also the
   prerequisite for signing any escalation, since signatures key on

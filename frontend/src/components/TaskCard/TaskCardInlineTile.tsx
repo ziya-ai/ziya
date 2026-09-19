@@ -1658,6 +1658,7 @@ const StagedCardTile: React.FC<{ binding: TaskBinding }> = ({ binding }) => {
   const projectId = binding.project_id ?? currentProject?.id ?? '';
   const [card, setCard] = useState<TaskCard | null>(null);
   const [launching, setLaunching] = useState(false);
+  const [promoting, setPromoting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // A staged card IS persisted — /goal creates it before staging, and a
   // deck copy was persisted long before — so the by-id status endpoint
@@ -1737,6 +1738,25 @@ const StagedCardTile: React.FC<{ binding: TaskBinding }> = ({ binding }) => {
     }
   };
 
+  // A model-staged card is CONVERSATION-ONLY (an unlisted draft): runnable
+  // from here, absent from the deck.  Promotion is an UPDATE of the same
+  // card, not a re-create — a fresh create would assign fresh block ids
+  // and strand any signature already obtained against this one.
+  const handleSaveToDeck = async () => {
+    if (!projectId) return;
+    setPromoting(true);
+    setError(null);
+    try {
+      const updated = await taskCardApi.update(
+        projectId, binding.card_id, { draft: false });
+      setCard(updated);
+    } catch (e: any) {
+      setError(String(e));
+    } finally {
+      setPromoting(false);
+    }
+  };
+
   const instructions = useMemo(() => {
     if (!card) return '';
     const root: any = card.root;
@@ -1751,6 +1771,11 @@ const StagedCardTile: React.FC<{ binding: TaskBinding }> = ({ binding }) => {
             synthesis or a card copied in from the deck. */}
         <strong>{card?.name ?? 'Task card'}</strong>
         <Tag color="default">staged</Tag>
+        {card?.draft && (
+          <Tooltip title="Lives in this conversation only; not filed in the Task Cards deck">
+            <Tag color="default">conversation-only</Tag>
+          </Tooltip>
+        )}
         {unsignedCount > 0 && (
           <Tag color="warning">Needs signing · {unsignedCount}</Tag>
         )}
@@ -1774,6 +1799,13 @@ const StagedCardTile: React.FC<{ binding: TaskBinding }> = ({ binding }) => {
         <Button type="primary" loading={launching} onClick={handleRun}>
           Run
         </Button>
+        {card?.draft && (
+          <Tooltip title="Keep this card in the Task Cards deck for reuse">
+            <Button loading={promoting} onClick={handleSaveToDeck} disabled={launching}>
+              Save to deck
+            </Button>
+          </Tooltip>
+        )}
         <Button onClick={handleDiscard} disabled={launching}>
           Discard
         </Button>
