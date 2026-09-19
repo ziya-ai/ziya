@@ -4248,6 +4248,128 @@ export function parseMeterCounts(
 }
 
 /**
+ * Diatonic index of a VexFlow key string (`"c/4"`, `"f#/8"`, `"bb/2"`).
+ *
+ * Letter + octave collapse to a single monotonic integer (`octave*7 + step`,
+ * c=0..b=6) so two pitches can be compared and their line distance measured;
+ * the accidental is irrelevant to staff position and is ignored.  Returns null
+ * for a key that does not parse, so a malformed entry contributes nothing to
+ * the extent maths rather than poisoning it with NaN.  Exported pure for
+ * regression testing.
+ */
+export function diatonicIndexOfKey(key: string): number | null {
+  const m = /^\s*([a-gA-G])[#bns]*\/(-?\d+)\s*$/.exec(String(key));
+  if (!m) return null;
+  const STEP: Record<string, number> = { c: 0, d: 1, e: 2, f: 3, g: 4, a: 5, b: 6 };
+  const step = STEP[m[1].toLowerCase()];
+  const octave = parseInt(m[2], 10);
+  if (step == null || !Number.isFinite(octave)) return null;
+  return octave * 7 + step;
+}
+
+/** Diatonic index of each clef's bottom and top stave line. */
+const CLEF_LINE_INDEX: Record<string, { bottom: number; top: number }> = {
+  // treble: bottom line E4, top line F5.
+  treble: { bottom: 4 * 7 + 2, top: 5 * 7 + 3 },
+  // bass: bottom line G2, top line A3.
+  bass: { bottom: 2 * 7 + 4, top: 3 * 7 + 5 },
+  // alto (C clef, middle line C4): bottom F3, top G4.
+  alto: { bottom: 3 * 7 + 3, top: 4 * 7 + 4 },
+  // tenor (C clef, 4th line C4): bottom D3, top E4.
+  tenor: { bottom: 3 * 7 + 1, top: 4 * 7 + 2 },
+};
+/** One diatonic step (line->adjacent space) is half a stave-space (~5px). */
+const DIATONIC_STEP_PX = 5;
+
+/**
+ * How far a set of keys reaches ABOVE the top stave line and BELOW the bottom
+ * line, in pixels, for the given clef (D-436).
+ *
+ * VexFlow anchors a notehead relative to the stave, so a chord whose highest
+ * key sits 21 diatonic steps above the top line (e.g. `f/8` in treble) is drawn
+ * ~105px above that line -- but the stacked-system layout reserves nothing for
+ * that reach, so the topmost combs are pushed off the canvas top and, between
+ * systems, an extreme-high chord in the lower system collides with the
+ * extreme-low chord in the upper one.  This measures the reach so the layout
+ * can reserve it.  A key inside the staff contributes 0.  Exported pure for
+ * regression testing.
+ */
+export function noteBandExtentPx(
+  keys: string[] | undefined,
+  clef: string | undefined,
+): { above: number; below: number } {
+  const lines = CLEF_LINE_INDEX[String(clef ?? 'treble')] ?? CLEF_LINE_INDEX.treble;
+  let maxIdx = -Infinity;
+  let minIdx = Infinity;
+  for (const k of keys ?? []) {
+    const idx = diatonicIndexOfKey(k);
+    if (idx == null) continue;
+    if (idx > maxIdx) maxIdx = idx;
+    if (idx < minIdx) minIdx = idx;
+  }
+  if (!Number.isFinite(maxIdx)) return { above: 0, below: 0 };
+  return {
+    above: Math.max(0, maxIdx - lines.top) * DIATONIC_STEP_PX,
+    below: Math.max(0, lines.bottom - minIdx) * DIATONIC_STEP_PX,
+  };
+}
+
+/**
+ * VexFlow / the existing tail already clear a few ledger lines; only the reach
+ * BEYOND this baseline needs extra canvas reserved.  Keeping this subtraction
+ * means an ordinary-register score (notes within ~4 ledger lines of the staff)
+ * reserves nothing extra and stays byte-identical -- the extra room appears
+ * only for the deep-ledger stress case the fix targets.
+ */
+const LEDGER_BASELINE_PX = 40;
+
+/**
+ * Extra above/below canvas reserve (px) demanded by the deepest ledger reach
+ * across every note of every staff, past the baseline VexFlow already handles
+ * (D-436).  Both bands are the global maximum because a stacked-system gap must
+ * clear the current system's lowest reach AND the next system's highest reach.
+ * Returns {above:0, below:0} for a score that stays near the staff, so those
+ * layouts are unchanged.  Exported pure for regression testing.
+ */
+export function ledgerReservePx(
+  staves: Array<{ clef?: string; keys?: string[][] }>,
+): { above: number; below: number } {
+  let above = 0;
+  let below = 0;
+  for (const s of staves) {
+    for (const keys of s.keys ?? []) {
+      const ext = noteBandExtentPx(keys, s.clef);
+      above = Math.max(above, ext.above);
+      below = Math.max(below, ext.below);
+    }
+  }
+  return {
+    above: Math.max(0, above - LEDGER_BASELINE_PX),
+    below: Math.max(0, below - LEDGER_BASELINE_PX),
+  };
+}
+
+/**
+ * Whether any staff carries an ABOVE-staff chord symbol or an above annotation
+ * (D-438).  These VexFlow modifiers are engraved above the top stave line but
+ * were omitted from the `needsRoomAbove` test, so a score built entirely from
+ * them reserved zero top margin and the symbols were clipped off the canvas
+ * top.  A below-position chord symbol is excluded (it is handled by the
+ * below-staff reserve).  Exported pure for regression testing.
+ */
+export function hasAboveStaffChordOrAnnotation(
+  staves: Array<{ notes?: MusicNoteSpec[] }>,
+  notesReader: (s: { notes?: MusicNoteSpec[] }) => MusicNoteSpec[],
+): boolean {
+  return staves.some((s) => notesReader(s).some((n) => {
+    const chordAbove = n.chordSymbol != null
+      && !(typeof n.chordSymbol === 'object' && n.chordSymbol?.position === 'below');
+    const annAbove = normalizeNoteAnnotations(n).some((a) => a.position !== 'below');
+    return chordAbove || annAbove;
+  }));
+}
+
+/**
  * Split a FLAT note list into measures at meter boundaries (D-138).
  *
  * A top-level `notes[]` staff is treated by measuresOf as a single indivisible
@@ -4619,6 +4741,39 @@ function applyHouseBeamSlope(beam: any): void {
 }
 
 /**
+ * Split a measure's notes into maximal runs of notes that are NOT in
+ * `excluded`, dropping the excluded notes as run boundaries.
+ *
+ * This exists for cross-staff beams (D-428, music-w1-04): a note named in
+ * `crossStaffBeams` is beamed by the cross-staff Beam, so it must NOT also be
+ * beamed by its own staff's per-measure auto-beamer.  When both happen the
+ * same notehead carries two beams -- the within-staff beam plus the cross-staff
+ * beam over the same notes -- and VexFlow draws conflicting stems/flags: the
+ * "elongated stems running into one thick bar" grand-staff artefact.  Feeding
+ * the auto-beamer only the un-claimed runs (split AT each claimed note, so two
+ * eighths on either side of a claimed one are never merged into one group)
+ * leaves the cross-staff notes for the cross-staff beam alone.
+ *
+ * With an empty `excluded` set the whole note list is returned as a single run
+ * (or no run when empty), so ordinary scores -- which have no cross-staff
+ * beams -- group byte-identically to before this change.
+ */
+export function splitBeamRunsExcluding<T>(notes: T[], excluded: ReadonlySet<T>): T[][] {
+  if (!excluded || excluded.size === 0) return notes.length ? [notes] : [];
+  const runs: T[][] = [];
+  let run: T[] = [];
+  for (const n of notes) {
+    if (excluded.has(n)) {
+      if (run.length) { runs.push(run); run = []; }
+    } else {
+      run.push(n);
+    }
+  }
+  if (run.length) runs.push(run);
+  return runs;
+}
+
+/**
  * Render a MusicSpec into an SVG-capable container using VexFlow.
  */
 export async function renderMusicSpec(
@@ -4853,11 +5008,32 @@ export async function renderMusicSpec(
   const tempoAboveMark = Boolean(
     spec.tempo && (spec.mark || (spec.marks?.length ?? 0) > 0),
   );
-  const roomAbove = needsRoomAbove
+  // Deep-ledger reach (D-436) and above-staff chord-symbol / annotation band
+  // (D-438): both are engraved above the top stave line but were absent from
+  // the reserve above, so extreme-high combs and dense chord symbols were
+  // pushed off the canvas top.  ledgerReservePx returns 0 for an ordinary
+  // register, so scores that stay near the staff are unchanged.
+  const ledgerReserve = ledgerReservePx(
+    staffSpecs.map((s) => ({
+      clef: (s as any).clef ?? (spec as any).clef ?? 'treble',
+      keys: notesOf(s).map((n) => n.keys ?? []),
+    })),
+  );
+  const aboveChordAnn = hasAboveStaffChordOrAnnotation(staffSpecs, notesOf);
+  /** One text row of chord-symbol / above-annotation ink above the top line. */
+  const CHORD_ANNOTATION_BAND_PX = 40;
+  const baseRoomAbove = needsRoomAbove
     ? (tempoAboveMark
         ? 76
         : spec.tempo && staffSpecs.some((s) => (s.brackets?.length ?? 0) > 0) ? 60 : 46)
     : 0;
+  // The above-staff band and the ledger reach stack on top of whatever the
+  // marks/tempo already claimed, so take the greatest single demand.
+  const roomAbove = Math.max(
+    baseRoomAbove,
+    aboveChordAnn ? CHORD_ANNOTATION_BAND_PX : 0,
+    ledgerReserve.above,
+  );
   // The title block sits above everything else, so its height is added to the
   // canvas and the whole system is pushed down by the same amount -- see
   // titleY below.  Computed once so the reserve and the draw agree.
@@ -4953,6 +5129,12 @@ export async function renderMusicSpec(
     // The pedal band is the deepest below-staff marking, so it drives the tail
     // when present rather than sharing the shallower mark depth.
     hasPedal ? PEDAL_DEPTH : 0,
+    // Deep-ledger reach (D-436): the inter-system gap must clear this system's
+    // lowest notes' reach below the staff AND the next system's highest notes'
+    // reach above it, so reserve the greater of the two extreme bands.  Zero
+    // for an ordinary-register score, so those layouts are unchanged.
+    ledgerReserve.below,
+    ledgerReserve.above,
   );
   /**
    * Advance between stacked systems: every stave of this system, plus the tail
@@ -6435,6 +6617,27 @@ export async function renderMusicSpec(
   // opposite ordering from hairpins below, which need the resolved x-positions
   // that only exist after formatting.
   const beams: any[] = [];
+  // Notes claimed by a cross-staff beam must be withheld from the per-staff
+  // auto-beamer: the cross-staff Beam already beams them, and letting a staff's
+  // own auto-beam pass beam them a second time double-beams the same noteheads
+  // (the degenerate grand-staff artefact in D-428 / music-w1-04, which sets
+  // autoBeam:true on both staves AND names those same eighths in
+  // crossStaffBeams).  Collected once by StaveNote object identity -- the same
+  // instances live in both perStaff[].notes and each `built` entry's byMeasure
+  // -- so splitBeamRunsExcluding can drop them from the grouping below.  Empty
+  // when the spec has no crossStaffBeams, so ordinary scores are unaffected.
+  const crossStaffBeamMembers = new Set<any>();
+  for (const csb of spec.crossStaffBeams ?? []) {
+    for (const pair of csb.notes ?? []) {
+      const si = Array.isArray(pair) ? pair[0] : undefined;
+      const ni = Array.isArray(pair) ? pair[1] : undefined;
+      const staff = si != null ? perStaff[si] : undefined;
+      if (staff && Number.isInteger(ni)
+          && (ni as number) >= 0 && (ni as number) < staff.notes.length) {
+        crossStaffBeamMembers.add(staff.notes[ni as number]);
+      }
+    }
+  }
   // autoBeam runs per `built` entry: byMeasure is already the per-system slice,
   // and beaming is per measure anyway, so each system beams its own bars.
   //
@@ -6466,14 +6669,20 @@ export async function renderMusicSpec(
       const groups = explicitGroups
         ?? beamGroupsByMeasure?.[localMi]
         ?? defaultBeamGroups;
-      const generated = Beam.generateBeams(measureNotes, {
-        ...(groups ? { groups } : {}),
-        // A rest breaks a beam group in ordinary engraving; beaming over one
-        // is a deliberate stylistic choice, not a default.
-        beamRests: false,
-      });
-      generated.forEach(applyHouseBeamSlope);
-      beams.push(...generated);
+      // Beam each maximal run of notes NOT owned by a cross-staff beam; a
+      // claimed note breaks the run so the auto-beamer never re-beams it (see
+      // splitBeamRunsExcluding / D-428).  Ordinary scores have an empty set and
+      // so beam the whole measure as one run, byte-identically to before.
+      for (const runNotes of splitBeamRunsExcluding(measureNotes, crossStaffBeamMembers)) {
+        const generated = Beam.generateBeams(runNotes, {
+          ...(groups ? { groups } : {}),
+          // A rest breaks a beam group in ordinary engraving; beaming over one
+          // is a deliberate stylistic choice, not a default.
+          beamRests: false,
+        });
+        generated.forEach(applyHouseBeamSlope);
+        beams.push(...generated);
+      }
     });
   }
   // Explicit beams address the staff's FLAT note list, so they resolve against

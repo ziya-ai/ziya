@@ -10,6 +10,7 @@ import {
   isMusicSpec, resolveMusicSpec, renderMusicSpec, degenerateMusicBody, type MusicSpec,
 } from '../../utils/d3Plugins/musicPlugin';
 import { escapeXml } from '../../utils/d3Plugins/packetPlugin';
+import { lenientParse } from '../../utils/d3SpecParser';
 
 /**
  * Draw a titled, empty staff for a well-formed but ZERO-CONTENT music spec
@@ -110,8 +111,18 @@ async function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode:
       && rawSpec.definition.trim() !== ''
       && rawSpec.definition.trimStart()[0] === '{'
       && !isMusicSpec(rawSpec)) {
-    try { JSON.parse(rawSpec.definition); }
-    catch { renderError(container, 'Invalid JSON in definition', rawSpec, isDarkMode); return; }
+    // Recover with the SHARED lenient parser (trailing commas, unquoted keys,
+    // single/smart quotes, comments, semicolon separators, Python literals) --
+    // the very recovery `resolveMusicSpec` performs below. A strict JSON.parse
+    // here fires FIRST and rejects every lenient-recoverable spec before the
+    // recovery path ever runs (D-174 regression: music-w4-01/02/03/05/06/07,
+    // signature strict-json-guard-preempts-lenient-parse). Only a definition
+    // that even the lenient parser cannot recover is a genuine "Invalid JSON"
+    // error worth reporting explicitly rather than as a "requires notes" one.
+    // Recovery is theme-independent, so this behaves identically in both themes.
+    if (lenientParse(rawSpec.definition) === null) {
+      renderError(container, 'Invalid JSON in definition', rawSpec, isDarkMode); return;
+    }
   }
   const spec: MusicSpec = resolveMusicSpec(rawSpec) as MusicSpec;
 

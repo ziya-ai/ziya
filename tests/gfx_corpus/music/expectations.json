@@ -18,7 +18,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.485359Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "c78ca6af6771c3d99dd4149b91ec72e04a85d3a18386549ecaf66928820a8a49",
+     "validated_at": "2026-09-19T08:45:13.793261Z"
+    },
+    "dark": {
+     "hash": "b8ce346c6e26d7a9269592885f889339e5596ae98edac17af1378c8aee7b9874",
+     "validated_at": "2026-09-19T08:45:13.806969Z"
+    }
+   }
   },
   "music-w1-02": {
    "themes": [
@@ -35,8 +45,23 @@
      "origin": "regression_set",
      "signature": "",
      "at": "2026-09-15T08:56:11.487855Z"
+    },
+    {
+     "origin": "D-430",
+     "signature": "staccato-dot-missing-stem-down",
+     "at": "2026-09-19T08:52:33.249578Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "8f3653e9770ff55b22ecbbcd3e387ccc1bf0e6fffd46b577ce62a3115a036023",
+     "validated_at": "2026-09-19T08:45:14.030354Z"
+    },
+    "dark": {
+     "hash": "f48f16b227066a61bec8f44b22587cbe308c43b9b15c9f5b358ed751a50edf1f",
+     "validated_at": "2026-09-19T08:45:14.040948Z"
+    }
+   }
   },
   "music-w1-11": {
    "themes": [
@@ -54,7 +79,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.491223Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "724b6a77d8d3a5640419e6b9e7890a60f22bfd12dd08ffb2cad75343022574a3",
+     "validated_at": "2026-09-19T08:46:07.758622Z"
+    },
+    "dark": {
+     "hash": "eabdc47fa52808d09c12532ded2d5b82d3e19a5875f5d935186024a0024462fa",
+     "validated_at": "2026-09-19T08:46:07.770717Z"
+    }
+   }
   },
   "music-w2-02": {
    "themes": [
@@ -72,7 +107,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.494920Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "a3facf103bb37c25019742963e50a154ce4bcac88e2f680eaf3da8547b607f1a",
+     "validated_at": "2026-09-19T08:47:15.670331Z"
+    },
+    "dark": {
+     "hash": "f6c01694a4dee8f8d23e5f7c052344e6228571f3afae515e22d2a8e45444e0ef",
+     "validated_at": "2026-09-19T08:47:15.704436Z"
+    }
+   }
   },
   "music-w3-08": {
    "themes": [
@@ -90,7 +135,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.497324Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "24a4be06f6d430d65071f1f7f4beb23a1888d01bce5246dc3ce4f9a0d2bc1d08",
+     "validated_at": "2026-09-19T08:50:16.929210Z"
+    },
+    "dark": {
+     "hash": "629a9ccaf2736e5e729fa4e6869d359339e3c9cd166fa6424ca55e2cda7c570c",
+     "validated_at": "2026-09-19T08:50:16.937902Z"
+    }
+   }
   },
   "music-w3-12": {
    "themes": [
@@ -108,7 +163,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.500020Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "fd422324bd0064e7b01d6fea5241eab74ffb19224d5cdc7e077c05bf5a1c1d38",
+     "validated_at": "2026-09-19T08:51:12.713728Z"
+    },
+    "dark": {
+     "hash": "72c8088320d67f7d1003eb8ce22b31c0832adf0b80140062b7a662326dc51021",
+     "validated_at": "2026-09-19T08:51:12.721425Z"
+    }
+   }
   },
   "music-w3-14": {
    "themes": [
@@ -126,7 +191,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.503566Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "8366b99f82fa6bcf4fae8ab1e578bfae6e9f43134ca39336528fb1258707422b",
+     "validated_at": "2026-09-19T08:52:24.543571Z"
+    },
+    "dark": {
+     "hash": "ccc6aa2cfac0d5209c64e6c8405d5d9895a3c213166472594341f2da11d7fd41",
+     "validated_at": "2026-09-19T08:52:24.554959Z"
+    }
+   }
   },
   "music-w3-15": {
    "themes": [
@@ -144,7 +219,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.505923Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "a0d7eeff101876635bcb0b9c421a17f3286ad2602c7f5ee651fa384dde88405a",
+     "validated_at": "2026-09-19T08:52:24.789654Z"
+    },
+    "dark": {
+     "hash": "ce092edd45c10c4b3b1150333aacf078124c695ab0f79f265578f204164838be",
+     "validated_at": "2026-09-19T08:52:24.797322Z"
+    }
+   }
   },
   "music-w4-11": {
    "themes": [
@@ -162,7 +247,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.508820Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "ef0f42ea26fedbf3e0dd642ca98a966f177f0eb589046fb9b3ed118d72b96977",
+     "validated_at": "2026-09-19T08:52:24.988566Z"
+    },
+    "dark": {
+     "hash": "b7d100bdf9561acdb9fcd3fb90090543a315855b240654c9e86ed827770f44aa",
+     "validated_at": "2026-09-19T08:52:24.995634Z"
+    }
+   }
   },
   "music-w4-14": {
    "themes": [
@@ -180,7 +275,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.510845Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "7364b06a7a2cadd15edb5930945e49bfdb9df959730e79e41ab8a6c0087fefca",
+     "validated_at": "2026-09-19T08:51:12.948314Z"
+    },
+    "dark": {
+     "hash": "440bbf7095af79e25b1d6945bee05b79dc34157de319ab1bff5436a9985f7dbc",
+     "validated_at": "2026-09-19T08:51:12.959991Z"
+    }
+   }
   },
   "music-w2-01": {
    "themes": [
@@ -198,7 +303,17 @@
      "signature": "wrapping-only-between-measures+explicit-width-disables-wrap",
      "at": "2026-09-15T08:56:13.375542Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "222103ea9d31b234c0b10f0f3967527262e40121869b870b95532bdb91b2345c",
+     "validated_at": "2026-09-19T08:25:43.215149Z"
+    },
+    "dark": {
+     "hash": "784d78e73ed8d98ac6fbabe179ef08ff08259dafe7cc8a3cd78bf05697b540f5",
+     "validated_at": "2026-09-19T08:25:43.251790Z"
+    }
+   }
   },
   "music-w2-03": {
    "themes": [
@@ -216,7 +331,17 @@
      "signature": "wrapping-only-between-measures+explicit-width-disables-wrap",
      "at": "2026-09-15T08:56:13.382128Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "2fe8ff03dadb9af9b8884a634b53550e7b5f655d4f239903713bfe692afae520",
+     "validated_at": "2026-09-19T08:27:02.898955Z"
+    },
+    "dark": {
+     "hash": "57b3338480d4041e8bd653ec56d026241486e03cded1e95ba94c0108341122fe",
+     "validated_at": "2026-09-19T08:27:02.939397Z"
+    }
+   }
   },
   "music-w2-05": {
    "themes": [
@@ -234,7 +359,17 @@
      "signature": "wrapping-only-between-measures+explicit-width-disables-wrap",
      "at": "2026-09-15T08:56:13.386967Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "5c96b987ee31985a3e45d8b3dcfeaafc0e8082716e6579a9e7b07cfaea0d45c3",
+     "validated_at": "2026-09-19T08:27:49.944118Z"
+    },
+    "dark": {
+     "hash": "fdf833ecc36d2f6890e217675962c2d92f65653d252acb44982282dbeeac5118",
+     "validated_at": "2026-09-19T08:27:49.982044Z"
+    }
+   }
   },
   "music-w2-14": {
    "themes": [
@@ -257,7 +392,17 @@
      "signature": "stave-line-vanishes-at-scale:light",
      "at": "2026-09-15T08:56:13.601228Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "f467dc25fdf8ec0ab5d4957aa09a8a578199484a52503f8151ba1f1076c49748",
+     "validated_at": "2026-09-19T08:29:20.553393Z"
+    },
+    "dark": {
+     "hash": "b0285bfa34fa6b81952747edec7421ad8e59c7efaaa9911b87c77ef9659caa76",
+     "validated_at": "2026-09-19T08:29:20.594173Z"
+    }
+   }
   },
   "music-w2-04": {
    "themes": [
@@ -276,7 +421,17 @@
      "signature": "vertical-canvas-misallocation-truncates-content",
      "at": "2026-09-15T08:56:13.401878Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "f297dcce2f18d9780862ebb76c7f3ac989a83560f009bfb116184490f110db67",
+     "validated_at": "2026-09-19T08:48:16.701269Z"
+    },
+    "dark": {
+     "hash": "64cdb24fb7c90056d34ebc2ba74a19c123f5db4b1f9d96512fec900936e9f96c",
+     "validated_at": "2026-09-19T08:48:16.721326Z"
+    }
+   }
   },
   "music-w2-12": {
    "themes": [
@@ -295,7 +450,17 @@
      "signature": "vertical-canvas-misallocation-truncates-content",
      "at": "2026-09-15T08:56:13.405316Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "f0e0995a46d5dbf43fbd1d4da7db9e479746075e36df0b80ad90b409bf2308af",
+     "validated_at": "2026-09-16T10:48:11.454545Z"
+    },
+    "dark": {
+     "hash": "c541ab17a6b18702c635f5a9b278e7da33ec890ed2dc51e7a075b05961e7d2d3",
+     "validated_at": "2026-09-16T10:48:11.513215Z"
+    }
+   }
   },
   "music-w2-15": {
    "themes": [
@@ -314,7 +479,17 @@
      "signature": "vertical-canvas-misallocation-truncates-content",
      "at": "2026-09-15T08:56:13.409157Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "7414226bc5c6165a9946127e7bc28389b4ba2afa8336f5cadc79ed82ba1ce180",
+     "validated_at": "2026-09-16T10:53:01.646793Z"
+    },
+    "dark": {
+     "hash": "9438b4da68bfe3bac5e1636d310839d05e887cdd6af3e46e12c6b120695a6e24",
+     "validated_at": "2026-09-16T10:53:01.676875Z"
+    }
+   }
   },
   "music-w2-06": {
    "themes": [
@@ -350,7 +525,17 @@
      "signature": "undersized-author-dimension-destroys-content",
      "at": "2026-09-15T08:56:13.425619Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "5aac60836c8b1b1ee967138f102484d1ec4ba47a46e9fcf4e33c225d2b7175d7",
+     "validated_at": "2026-09-19T08:30:57.434102Z"
+    },
+    "dark": {
+     "hash": "07374ea08c04d76e2f4d13413ac91f072aee4a0f9d2e5770099f20ff7c9aa16b",
+     "validated_at": "2026-09-19T08:30:57.449094Z"
+    }
+   }
   },
   "music-w1-06": {
    "themes": [
@@ -386,7 +571,17 @@
      "signature": "overlay-band-placement-and-negotiation",
      "at": "2026-09-15T08:56:13.471848Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "1f8520a099dbe65f301f722459cacd4d8dbaa637f084f5956ca32e6191e0cff7",
+     "validated_at": "2026-09-19T08:32:43.326206Z"
+    },
+    "dark": {
+     "hash": "1d17211d27363027d4ca54e2f04cc50be6b123989b8e7a90ba9fd34bd7b0c6d6",
+     "validated_at": "2026-09-19T08:32:43.336553Z"
+    }
+   }
   },
   "music-w1-08": {
    "themes": [
@@ -404,7 +599,17 @@
      "signature": "overlay-band-placement-and-negotiation",
      "at": "2026-09-15T08:56:13.488894Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "e85bf5be652ed8a7d93470998657c516ac9176e79f8854383523b11813f9b231",
+     "validated_at": "2026-09-19T08:33:16.224571Z"
+    },
+    "dark": {
+     "hash": "f091c3e9492819a69e9ff88a5988de74c53740279de1172253b52dfee5d59728",
+     "validated_at": "2026-09-19T08:33:16.235544Z"
+    }
+   }
   },
   "music-w2-09": {
    "themes": [
@@ -421,8 +626,23 @@
      "origin": "D-166",
      "signature": "overlay-band-placement-and-negotiation",
      "at": "2026-09-15T08:56:13.505962Z"
+    },
+    {
+     "origin": "D-438",
+     "signature": "above-band-overprint",
+     "at": "2026-09-19T08:52:33.271625Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "3387251cc1b3902f3d45c19b010a7a424c4c0a0f56925e04a42b103d046e3c51",
+     "validated_at": "2026-09-19T08:34:28.505050Z"
+    },
+    "dark": {
+     "hash": "920b7e996f3d5ab486191677abe70021d63e8c69aaaa27aa6629facc664ee2bd",
+     "validated_at": "2026-09-19T08:34:28.523198Z"
+    }
+   }
   },
   "music-w3-06": {
    "themes": [
@@ -440,7 +660,17 @@
      "signature": "overlay-band-placement-and-negotiation",
      "at": "2026-09-15T08:56:13.521035Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "d7b4b5848dca2b95b89d0d5d3a7f9bcdfba0902663ed168a449f2b4b53452c49",
+     "validated_at": "2026-09-19T08:35:12.394013Z"
+    },
+    "dark": {
+     "hash": "4166f75ee98f8b38a382ff356a5ad3c67d777f05e058a4727cec76fe0a382ffd",
+     "validated_at": "2026-09-19T08:35:12.402116Z"
+    }
+   }
   },
   "music-w1-12": {
    "themes": [
@@ -512,7 +742,17 @@
      "signature": "per-measure-barline-modifiers-dropped",
      "at": "2026-09-15T08:56:13.573745Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "71bbdf87a1982d01924bce63f7948a36d856c6f38ad7727c332a196afb1f2846",
+     "validated_at": "2026-09-16T10:21:53.574430Z"
+    },
+    "dark": {
+     "hash": "09e1510445511d4dbf241a15a52a9364a60cdeca4e6c87ba1879ba911251bb2e",
+     "validated_at": "2026-09-16T10:21:53.584834Z"
+    }
+   }
   },
   "music-w1-14": {
    "themes": [
@@ -530,7 +770,17 @@
      "signature": "per-measure-barline-modifiers-dropped",
      "at": "2026-09-15T08:56:13.588306Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "39d51d12bd3bffcb8a8f52926ef04df2cba8aa320fb8918d2ba3410072c678e3",
+     "validated_at": "2026-09-19T08:46:07.935822Z"
+    },
+    "dark": {
+     "hash": "70724620e4024fbdb086018887ef9c97de8d3160e4a783e415d91d483b3d2487",
+     "validated_at": "2026-09-19T08:46:07.949229Z"
+    }
+   }
   },
   "music-w4-01": {
    "themes": [
@@ -547,8 +797,23 @@
      "origin": "D-174",
      "signature": "strict-json-parse-no-lenient-fallback",
      "at": "2026-09-15T08:56:13.608323Z"
+    },
+    {
+     "origin": "D-432",
+     "signature": "strict-json-guard-preempts-lenient-parse",
+     "at": "2026-09-19T08:52:33.252709Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "b172162067470f32f6375ed5296c3fece65f227c73be6f664cdb4e1e9f9d00cc",
+     "validated_at": "2026-09-19T08:42:34.099730Z"
+    },
+    "dark": {
+     "hash": "1ebeaacebc3c51225d318e3f153db4a09d9ae3e293acadafee2a9a49f4363bb8",
+     "validated_at": "2026-09-19T08:42:34.105785Z"
+    }
+   }
   },
   "music-w4-02": {
    "themes": [
@@ -565,8 +830,23 @@
      "origin": "D-174",
      "signature": "strict-json-parse-no-lenient-fallback",
      "at": "2026-09-15T08:56:13.621321Z"
+    },
+    {
+     "origin": "D-432",
+     "signature": "strict-json-guard-preempts-lenient-parse",
+     "at": "2026-09-19T08:52:33.255247Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "28cdcfa72a8ff152b69c7afae4618b9bd1c3c9dd16349e233c3a50b9fe927be6",
+     "validated_at": "2026-09-19T08:42:34.291009Z"
+    },
+    "dark": {
+     "hash": "51b980b4c0c904a1d6821dda1a2f681fad81ddd687e8df883b683d647fdef1e1",
+     "validated_at": "2026-09-19T08:42:34.297159Z"
+    }
+   }
   },
   "music-w4-03": {
    "themes": [
@@ -583,8 +863,23 @@
      "origin": "D-174",
      "signature": "strict-json-parse-no-lenient-fallback",
      "at": "2026-09-15T08:56:13.631312Z"
+    },
+    {
+     "origin": "D-432",
+     "signature": "strict-json-guard-preempts-lenient-parse",
+     "at": "2026-09-19T08:52:33.257876Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "3e6be6b72adb2d4a06c91ee260f57d251cf44cd0e6317a87da4a04a3b272b4ae",
+     "validated_at": "2026-09-19T08:43:20.391371Z"
+    },
+    "dark": {
+     "hash": "cba7906b96e7f23e06290f90538c1272304953cf68d438f8063e1766f0513597",
+     "validated_at": "2026-09-19T08:43:20.398001Z"
+    }
+   }
   },
   "music-w4-05": {
    "themes": [
@@ -601,8 +896,23 @@
      "origin": "D-174",
      "signature": "strict-json-parse-no-lenient-fallback",
      "at": "2026-09-15T08:56:13.637581Z"
+    },
+    {
+     "origin": "D-432",
+     "signature": "strict-json-guard-preempts-lenient-parse",
+     "at": "2026-09-19T08:52:33.260261Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "49d0ad681b26790bf5f8bfee87420848480a805d7611546b9bc8c3d3bdd8cca0",
+     "validated_at": "2026-09-19T08:43:20.582973Z"
+    },
+    "dark": {
+     "hash": "db127e94ad002a28af7ee4809b583ff1d3c86f2f1205e950ab74233ddb97b243",
+     "validated_at": "2026-09-19T08:43:20.588648Z"
+    }
+   }
   },
   "music-w4-06": {
    "themes": [
@@ -619,8 +929,23 @@
      "origin": "D-174",
      "signature": "strict-json-parse-no-lenient-fallback",
      "at": "2026-09-15T08:56:13.650104Z"
+    },
+    {
+     "origin": "D-432",
+     "signature": "strict-json-guard-preempts-lenient-parse",
+     "at": "2026-09-19T08:52:33.262668Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "5e94b3c2feb9bb6fa9ea566457637dd1e86f98867edda23888e650dff463a21e",
+     "validated_at": "2026-09-19T08:43:58.456372Z"
+    },
+    "dark": {
+     "hash": "151e4c6fb87a91b4ade453ae9a23d26a72e6e0e2c23c019195e455377d481c66",
+     "validated_at": "2026-09-19T08:43:58.465489Z"
+    }
+   }
   },
   "music-w4-07": {
    "themes": [
@@ -637,8 +962,23 @@
      "origin": "D-174",
      "signature": "strict-json-parse-no-lenient-fallback",
      "at": "2026-09-15T08:56:13.657742Z"
+    },
+    {
+     "origin": "D-432",
+     "signature": "strict-json-guard-preempts-lenient-parse",
+     "at": "2026-09-19T08:52:33.264955Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "b42f8150344ee4b541d70ee5ff194b0808f010e4af4e2b14c22e2bad7abafe28",
+     "validated_at": "2026-09-19T08:43:58.717681Z"
+    },
+    "dark": {
+     "hash": "1ece3ab420add267be3d1614b3451b247e96033db439c982111ac46e9dbb0978",
+     "validated_at": "2026-09-19T08:43:58.727364Z"
+    }
+   }
   },
   "music-w4-04": {
    "themes": [
@@ -656,7 +996,17 @@
      "signature": "definition-must-start-with-brace",
      "at": "2026-09-15T08:56:13.666060Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "b6187e1e11e3115b9d5c986de1a08ed82414d2acd2644341068bdb24a1b8a44b",
+     "validated_at": "2026-09-16T11:02:47.969721Z"
+    },
+    "dark": {
+     "hash": "a14940b136c20c7d695f0158eac6f804a8d31490c118a0ca1b26c25e3851ce60",
+     "validated_at": "2026-09-16T11:02:47.976624Z"
+    }
+   }
   },
   "music-w4-09": {
    "themes": [
@@ -674,7 +1024,17 @@
      "signature": "no-field-alias-layer-degrades-silently",
      "at": "2026-09-15T08:56:13.675615Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "afcf471320a9b729201dfcfce5476ad8d0c9af7f8a0858c1caa7a96d947adc02",
+     "validated_at": "2026-09-16T11:05:02.813357Z"
+    },
+    "dark": {
+     "hash": "46257ee63fd7b9a029ad195a4d927126bb2670c58805c9e1d70c620912037d91",
+     "validated_at": "2026-09-16T11:05:02.819890Z"
+    }
+   }
   },
   "music-w4-10": {
    "themes": [
@@ -692,7 +1052,17 @@
      "signature": "no-field-alias-layer-degrades-silently",
      "at": "2026-09-15T08:56:13.688572Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "74cb050bc2b790c5d30a1f8235132d09e78d875d02d35b8056f766ebee7647fe",
+     "validated_at": "2026-09-16T11:08:50.437752Z"
+    },
+    "dark": {
+     "hash": "1ecdec1a806b1ab15af49c1aafd58a55802c867181022685da23397edb2f8d88",
+     "validated_at": "2026-09-16T11:08:50.443645Z"
+    }
+   }
   },
   "music-w4-15": {
    "themes": [
@@ -710,7 +1080,17 @@
      "signature": "no-field-alias-layer-degrades-silently",
      "at": "2026-09-15T08:56:13.695214Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "2c9a4ae14b5cf8f2a8c5ed5a4884d0f81b34e4aab2bc396ff8fdef71458306fb",
+     "validated_at": "2026-09-16T11:11:23.016255Z"
+    },
+    "dark": {
+     "hash": "758d9f028d2b890b3a4ea5ddbb1388644bacdd431d5e934ca93e7cfd6abd3d1e",
+     "validated_at": "2026-09-16T11:11:23.028209Z"
+    }
+   }
   },
   "music-w4-12": {
    "themes": [
@@ -728,7 +1108,17 @@
      "signature": "weak-content-gate-scalar-keys-hangs",
      "at": "2026-09-15T08:56:13.702571Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "5070b22027516dd05b6befad7d1bc67b86378b56916c3491d2a2318f565b9936",
+     "validated_at": "2026-09-16T11:10:13.534586Z"
+    },
+    "dark": {
+     "hash": "3fc83b583ae7d11497075c82d2cf2871419a9f572d4903d11804fb1395869437",
+     "validated_at": "2026-09-16T11:10:13.540304Z"
+    }
+   }
   },
   "music-w4-08": {
    "themes": [
@@ -746,7 +1136,45 @@
      "signature": "scalar-shorthand-not-lifted-to-object",
      "at": "2026-09-15T08:56:13.707964Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "83d58d67412ebbb32543861b7793817b9730d174473c8876fc78b60e8dcb5ec5",
+     "validated_at": "2026-09-16T11:05:02.625414Z"
+    },
+    "dark": {
+     "hash": "c8dca44ee7e4cfb7bd20e5698d27436e2959a56e6529d495bc1eb8a967fe265d",
+     "validated_at": "2026-09-16T11:05:02.638084Z"
+    }
+   }
+  },
+  "music-w2-11": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-436",
+     "signature": "chords-dropped-at-count",
+     "at": "2026-09-19T08:52:33.268543Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "c9890a4577e49a19f1c8fa00b6abfa15b7040dae8550621ed8a6437f036a42c1",
+     "validated_at": "2026-09-19T08:39:31.415415Z"
+    },
+    "light": {
+     "hash": "67db4027326b012ec22a72c8d5c8ddf4bad3c02f3db7c1610c954a37b55fa707",
+     "validated_at": "2026-09-19T08:39:31.389399Z"
+    }
+   }
   }
  }
 }
