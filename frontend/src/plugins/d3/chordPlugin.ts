@@ -714,6 +714,73 @@ export function chordRibbonStrokeColor(edgeCount: number, arcStroke: string, own
 }
 
 /**
+ * Arc boundary stroke width, scaled down as the ring gets crowded (D-341).
+ *
+ * The arc stroke was a hardcoded 1px regardless of how thin the arcs became.
+ * At high N each arc's tangential footprint shrinks toward the stroke width, so
+ * the neutral separator stroke (#555555 light / #cfcfcf dark) swamps the fill
+ * and the ring reads as a monochrome grey/pale band — the per-arc HUE, the only
+ * channel distinguishing hundreds of nodes, is destroyed (worst measured
+ * fill-vs-stroke 1.64 light / 1.03 dark at N=300, chord-w2-05). The separator is
+ * only meant to delimit adjacent arcs, so cap it at ~10% of the arc's tangential
+ * footprint (`2π·outerRadius / N`) — a thin line, never enough to cover the hue.
+ * Floored at 0.2px so it never vanishes, and never above the historical 1px, so
+ * any ring whose arcs are ≥10px wide (N small / radius large — the common case)
+ * keeps the exact 1px stroke and is byte-identical. Theme-independent (it scales
+ * the WIDTH, not the colour, so it fixes both themes at once).
+ *
+ * Exported for regression testing.
+ */
+export function chordArcStrokeWidth(nGroups: number, outerRadius: number): number {
+  if (nGroups <= 0 || outerRadius <= 0) return 1;
+  const arcFootprintPx = (2 * Math.PI * outerRadius) / nGroups;
+  return Math.max(0.2, Math.min(1, arcFootprintPx * 0.1));
+}
+
+/**
+ * Total flow across a chord matrix (D-343).
+ *
+ * A degenerate all-zero matrix (every link value 0, or a matrix of zeros) makes
+ * d3.chord() give every group a zero angular span, so all arcs collapse to
+ * hairlines stacked at 12 o'clock and every label is drawn at the same angle in
+ * an illegible pile. Detecting a zero total lets the render path fall back to an
+ * even ring + empty-state message instead. Returns the finite sum of all cells.
+ *
+ * Exported for regression testing.
+ */
+export function chordTotalFlow(matrix: number[][]): number {
+  if (!Array.isArray(matrix)) return 0;
+  let total = 0;
+  for (const row of matrix) {
+    if (!Array.isArray(row)) continue;
+    for (const cell of row) {
+      const v = Number(cell);
+      if (Number.isFinite(v)) total += v;
+    }
+  }
+  return total;
+}
+
+/**
+ * An n×n layout matrix that lays arcs out on an EVEN ring, independent of value
+ * (D-343).
+ *
+ * Fed to d3.chord() in place of an all-zero matrix, the equal diagonal gives
+ * every group an identical angular span so the arcs (and their labels) spread
+ * evenly around the circle rather than piling at one angle. The off-diagonal is
+ * zero, so the only chords produced are self-chords, which the render path does
+ * NOT draw in the empty state — the ring shows the group identities plus a
+ * 'no data' affordance instead of an unreadable stack.
+ *
+ * Exported for regression testing.
+ */
+export function chordEvenLayoutMatrix(n: number): number[][] {
+  const size = n > 0 ? Math.floor(n) : 0;
+  return Array.from({ length: size }, (_, i) =>
+    Array.from({ length: size }, (_, j) => (i === j ? 1 : 0)));
+}
+
+/**
  * Clamp the outer/inner ring radii so a small custom canvas never produces a
  * NEGATIVE radius (D-059).
  *
@@ -1006,7 +1073,17 @@ export const chordPlugin: D3RenderPlugin = {
     chordLayout.padAngle(chordPadAngle(matrix.length)).sortSubgroups(d3.descending);
     if (directed) chordLayout.sortChords(d3.descending);
 
-    const chords = chordLayout(matrix);
+    // D-343: a degenerate all-zero matrix makes d3.chord() give every group a
+    // zero angular span, so all arcs collapse to hairlines stacked at 12 o'clock
+    // and every label is drawn at the same angle in an illegible pile. Detect a
+    // zero total flow and lay the arcs out on an EVEN ring (angles independent of
+    // value) so the group identities stay readable; the (meaningless self-)
+    // ribbons are suppressed and a 'no data' affordance is drawn below. For any
+    // matrix with flow this is a strict no-op (layoutMatrix === matrix).
+    const totalFlow = chordTotalFlow(matrix);
+    const isEmptyFlow = totalFlow === 0 && matrix.length > 0;
+    const layoutMatrix = isEmptyFlow ? chordEvenLayoutMatrix(matrix.length) : matrix;
+    const chords = chordLayout(layoutMatrix);
 
     // Sizing — reserve a label gutter proportional to the longest label so long
     // labels are no longer clipped asymmetrically at the viewBox edge (D-060);
@@ -1047,7 +1124,10 @@ export const chordPlugin: D3RenderPlugin = {
     group.append('path')
       .attr('fill', (d: any) => colors[d.index])
       .attr('stroke', arcStroke)
-      .attr('stroke-width', 1)
+      // Scale the separator stroke down as the ring gets crowded so a thin arc's
+      // hue is not swamped by a fixed 1px stroke (D-341: N=300 read as a
+      // monochrome band, worst 1.64 light / 1.03 dark). ≥10px arcs keep 1px.
+      .attr('stroke-width', chordArcStrokeWidth(matrix.length, outerRadius))
       .attr('d', arc as any);
 
     // Group labels — placed just outside the arc, rotated to be readable.
@@ -1098,7 +1178,9 @@ export const chordPlugin: D3RenderPlugin = {
     const ribbons = svg.append('g')
       .attr('fill-opacity', ribbonOpacity)
       .selectAll('path')
-      .data(chords)
+      // D-343: in the zero-flow empty state the only chords are self-chords from
+      // the synthetic even-ring layout — meaningless, so draw none.
+      .data(isEmptyFlow ? [] : chords)
       .join('path')
       .attr('d', ribbon as any)
       .attr('fill', (d: any) => ribbonColors[d.target.index])
@@ -1113,6 +1195,19 @@ export const chordPlugin: D3RenderPlugin = {
       + (d.source.value !== d.target.value
         ? `\n${names[d.target.index]} → ${names[d.source.index]}: ${d.target.value}`
         : ''));
+
+    // D-343: an explicit empty-state affordance at the centre of the even ring
+    // so a zero-flow diagram reads as intentional 'no data' rather than a broken
+    // pile. Uses the theme-resolved label colour (readable in both themes).
+    if (isEmptyFlow) {
+      svg.append('text')
+        .attr('text-anchor', 'middle')
+        .attr('dy', '0.35em')
+        .attr('fill', labelColor)
+        .attr('font-size', `${fontSize}px`)
+        .attr('font-family', 'system-ui, -apple-system, sans-serif')
+        .text('No flows to display');
+    }
 
     // Hover behaviour — fade ribbons not connected to the hovered group.
     group.on('mouseover', function (this: any, _evt: any, hovered: any) {
