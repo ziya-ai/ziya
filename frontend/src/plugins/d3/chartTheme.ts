@@ -138,11 +138,38 @@ export function classifyColor(input: any): { hex?: string; named?: string } | nu
     // rejected by the /\s/ guard and dropped as "absent", so the colour skipped
     // ensureReadableFill/readableStroke reconciliation entirely (D-001). The
     // regex already tolerates the internal whitespace.
-    const rgba = lower.match(/^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)$/);
-    if (rgba) {
-        const alpha = rgba[4] === undefined ? 1 : parseFloat(rgba[4]);
+    // Accept the full range of rgb()/rgba() channel notations, not only integer
+    // triples: percentage channels rgb(60%,35%,65%) and the CSS4 space-separated
+    // form rgb(153 90 166 / 0.8) are valid colours that the old integer-only
+    // regex rejected, dropping them to `null` -> a wrong default fill (D-444).
+    const rgbFn = lower.match(/^rgba?\(\s*([^)]*)\)$/);
+    if (rgbFn) {
+        // CSS4 slash separates the alpha; normalise it to a plain separator so a
+        // single tokeniser handles both "r,g,b,a" and "r g b / a".
+        const parts = rgbFn[1].trim().replace(/\//g, ' ').split(/[\s,]+/).filter(Boolean);
+        if (parts.length < 3) return null;
+        const parseChan = (p: string): number | null => {
+            const pm = /^([\d.]+)%$/.exec(p);
+            if (pm) {
+                const v = parseFloat(pm[1]);
+                return Number.isFinite(v) ? Math.round(Math.max(0, Math.min(100, v)) * 255 / 100) : null;
+            }
+            const im = /^(\d+)$/.exec(p);
+            if (im) return Math.max(0, Math.min(255, parseInt(im[1], 10)));
+            return null;
+        };
+        const r = parseChan(parts[0]);
+        const g = parseChan(parts[1]);
+        const b = parseChan(parts[2]);
+        if (r === null || g === null || b === null) return null;
+        let alpha = 1;
+        if (parts.length >= 4) {
+            const am = /^([\d.]+)%$/.exec(parts[3]);
+            alpha = am ? parseFloat(am[1]) / 100 : parseFloat(parts[3]);
+            if (!Number.isFinite(alpha)) alpha = 1;
+        }
         if (!(alpha > 0)) return null; // fully transparent -> absent
-        return { hex: rgbToHex([parseInt(rgba[1], 10), parseInt(rgba[2], 10), parseInt(rgba[3], 10)]) };
+        return { hex: rgbToHex([r, g, b]) };
     }
     if (lower.startsWith('rgb')) return null; // malformed rgb(...)
     // Unresolvable design-system tokens: CSS functions we can't resolve, sigils,
@@ -296,13 +323,31 @@ export interface BandLabelPlan {
     maxChars: number;
     /** Bottom margin (px) to reserve so rotated/kept labels are not clipped. */
     reservedBottom: number;
+    /** Left margin (px) to reserve so the leftmost rotated label is not clipped. */
+    reservedLeft?: number;
 }
 
-/** Truncate with a single-character ellipsis. */
+/** Truncate with a single-character ellipsis, keeping the leading characters. */
 export function truncateLabel(label: string, maxChars: number): string {
     if (!isFinite(maxChars) || label.length <= maxChars) return label;
     if (maxChars <= 1) return '\u2026';
     return label.slice(0, maxChars - 1) + '\u2026';
+}
+
+/**
+ * Truncate with a MIDDLE ellipsis, keeping both ends. Category labels that share
+ * a long common prefix (e.g. 'service-authentication-…-00',
+ * 'service-payment-…-01') collapse to an identical string under leading-only
+ * truncation, destroying the categorical axis (D-371). Keeping a head AND a tail
+ * preserves the distinguishing suffix (here the unique -NN index).
+ */
+export function truncateLabelMiddle(label: string, maxChars: number): string {
+    if (!isFinite(maxChars) || label.length <= maxChars) return label;
+    if (maxChars <= 1) return '\u2026';
+    if (maxChars <= 3) return label.slice(0, maxChars - 1) + '\u2026';
+    const head = Math.ceil((maxChars - 1) / 2);
+    const tail = (maxChars - 1) - head;
+    return label.slice(0, head) + '\u2026' + label.slice(label.length - tail);
 }
 
 /**
@@ -323,25 +368,36 @@ export function planBandLabels(
     const charPx = Math.max(4, fontSize * 0.6);
     const slot = plotWidth / n;                       // px available per category
     const maxLen = labels.reduce((m, l) => Math.max(m, (l || '').length), 0);
-    const horizontalRoom = Math.floor(slot / charPx); // chars that fit upright in one slot
 
-    // Thin ticks when even a single character will not fit per slot.
-    const minSlot = charPx + 2;
-    const keepEvery = slot < minSlot ? Math.ceil(minSlot / slot) : 1;
-
-    // Rotate when horizontal labels would collide (the whole label does not fit
-    // in its slot). Kept-every thinning widens the effective slot.
-    const effectiveSlot = slot * keepEvery;
-    const rotate = maxLen * charPx > effectiveSlot * 0.95;
+    // Would the whole (untruncated) label fit upright within one category slot?
+    const rotate = maxLen * charPx > slot * 0.95;
 
     if (!rotate) {
-        // Upright: truncate to what fits in the (thinned) slot.
+        // Upright labels fit. Still thin if even a single glyph won't fit per slot.
+        const minSlot = charPx + 2;
+        const keepEvery = slot < minSlot ? Math.ceil(minSlot / slot) : 1;
+        const effectiveSlot = slot * keepEvery;
         const maxChars = keepEvery > 1 ? Math.max(1, Math.floor((effectiveSlot * 0.95) / charPx)) : Infinity;
-        return { rotate: false, keepEvery, maxChars, reservedBottom: baseBottom };
+        return { rotate: false, keepEvery, maxChars, reservedBottom: baseBottom, reservedLeft: 0 };
     }
-    // Rotated -45deg: labels descend diagonally; cap length so they do not run
-    // off the bottom, and reserve headroom proportional to the kept length.
+
+    // Rotated -45deg. Adjacent kept labels are parallel diagonal lines that
+    // over-print unless the PERPENDICULAR distance between neighbouring baselines
+    // clears the text line-height. That perpendicular distance is pitch*sin(45),
+    // so the required horizontal pitch is lineHeight / sin(45). Deriving keepEvery
+    // from THIS (not from a fixed "one glyph fits per slot" stride) is what stops
+    // dense numeric ticks interleaving glyph-on-glyph (D-372): the old stride left
+    // ~10-12px pitch (perpendicular gap ~7-9px) where ~19px pitch (gap ~13px) is
+    // needed to separate 11px text lines.
+    const lineHeight = fontSize * 1.2;
+    const requiredPitch = lineHeight / Math.SQRT1_2; // = lineHeight * 1.414
+    const keepEvery = Math.max(1, Math.ceil(requiredPitch / slot));
     const maxChars = Math.min(maxLen, 16);
-    const reservedBottom = Math.max(baseBottom, Math.round(maxChars * charPx * 0.72) + 12);
-    return { rotate: true, keepEvery, maxChars, reservedBottom };
+    // Rotated labels extend down-AND-left from their tick, so reserve room on both
+    // the bottom and the left; the first (leftmost) label would otherwise clip at
+    // the canvas edge (D-371).
+    const reach = Math.round(maxChars * charPx * 0.72) + 12;
+    const reservedBottom = Math.max(baseBottom, reach);
+    const reservedLeft = reach;
+    return { rotate: true, keepEvery, maxChars, reservedBottom, reservedLeft };
 }

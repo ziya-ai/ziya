@@ -1,0 +1,47 @@
+/* D-022 (unblocks the D-013 / D-014 regression on w2-11, w2-14, w2-15):
+ * markdown table gridline contrast in chat messages.
+ *
+ * index.css sets NO border rule for markdown tables under
+ * `.message .message-content` (only `.diff-table` rules exist), so a plain
+ * markdown <table> falls back to the UA/AntD default gridline colour. In LIGHT
+ * that default is a very faint grey against the white cell fill (~#d0d7de on
+ * #ffffff = 1.45:1, on #f6f8fa = 1.36:1 — well below the 3:1 WCAG 1.4.11 floor
+ * for a UI-component boundary), so a dense table's gridlines are effectively
+ * invisible and the grid stops being load-bearing. In DARK the same default
+ * renders near-white and reads fine — the opposite asymmetry — which is why the
+ * fix is theme-scoped: it corrects the light gridlines WITHOUT disturbing the
+ * dark surface that already passes.
+ *
+ * The colour is resolved per theme rather than substituting one constant:
+ *   - light gridline #6e7681 → 4.59:1 on #ffffff, 4.32:1 on #f6f8fa
+ *   - dark  gridline #8b949e → 4.92:1 on #262626, 5.36:1 on #1f1f1f
+ * both comfortably above the 3:1 boundary floor on their own background.
+ *
+ * index.css leaves border/border-collapse UNSET for these selectors, so there
+ * is no competing declaration and cascade order is irrelevant; the selectors
+ * carry the same `.message .message-content` specificity index.css uses.
+ * Diff tables (`.diff-table`, rendered by MarkdownRenderer with their own
+ * borders) are excluded via :not(.diff-table) so this touches only plain
+ * markdown tables.
+ */
+
+/* Collapse to single 1px gridlines so a dense table reads as a grid rather than
+ * doubled/spaced UA borders. Structural and theme-independent. */
+.message .message-content table:not(.diff-table) {
+  border-collapse: collapse;
+}
+
+/* Light theme: legible gridlines on the white/near-white cell fill. */
+body:not(.dark) .message .message-content table:not(.diff-table),
+body:not(.dark) .message .message-content table:not(.diff-table) th,
+body:not(.dark) .message .message-content table:not(.diff-table) td {
+  border: 1px solid #6e7681;
+}
+
+/* Dark theme: keep strong, legible gridlines (the default already passed; this
+ * makes the value explicit rather than relying on a UA fallback). */
+body.dark .message .message-content table:not(.diff-table),
+body.dark .message .message-content table:not(.diff-table) th,
+body.dark .message .message-content table:not(.diff-table) td {
+  border: 1px solid #8b949e;
+}

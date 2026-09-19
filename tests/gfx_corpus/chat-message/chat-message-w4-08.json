@@ -1,0 +1,5 @@
+{
+ "type": "chat-message",
+ "definition": "```mermaid\nflowchart LR\n  A[Hot] --> B[Cold]\n  style A fill:#f00,stroke:#900,color:#fff\n  style B fill:#00f,stroke:#009,color:#fff\n```\n",
+ "intent": "Three-digit hex in style directives (#f00, #00f, #fff) where six-digit is conventional. Recovery = colors applied correctly."
+}

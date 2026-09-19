@@ -1,0 +1,40 @@
+/* D-323: light-theme Prism token colours below the 4.5:1 text floor.
+ *
+ * Two token classes ship a colour that is too light for the light code surface
+ * (#f6f8fa; also the #ededed blockquote tint when a fence is quoted):
+ *
+ *   .token.variable  — index.css:1314 sets `body:not(.dark) .token.variable`
+ *                      to #e36209 = 3.28:1 on #f6f8fa (bash parameter/option
+ *                      tokens such as `--format`, `-eu`).
+ *   .token.atrule    — index.css has NO light override, so it falls through to
+ *                      prism-tomorrow.css's #cc99cd = 2.19:1 on #f6f8fa (YAML
+ *                      keys such as `stage:`/`retries:`).
+ *
+ * The dark palette (`.dark .token.*`) already clears the floor for the same
+ * tokens (variable #7ec699 = 9.16, atrule #cc99cd = 7.07 on #1f1f1f), so this
+ * is a LIGHT-ONLY theme defect. index.css / prism-tomorrow.css are outside the
+ * writable scope, so the corrected light values live here and are wired in via
+ * MarkdownRenderer.tsx. The selectors are scoped to `body:not(.dark)` (light
+ * theme only, dark is untouched) and add a `pre` ancestor so they out-specify
+ * both index.css's `body:not(.dark) .token.variable` (0,3,1) and
+ * prism-tomorrow's `.token.atrule` (0,2,0) regardless of import order.
+ *
+ * The colours are pulled toward the existing light palette rather than being
+ * arbitrary: #6f42c1 is already the light value for `.token.class-name` and
+ * `.token.builtin` (index.css:1302/1318), and #9a4600 is a darkened member of
+ * the same orange family as the sweep-era #e36209.
+ *
+ * Measured WCAG contrast ratios (fg on light code/quote surfaces):
+ *   variable #9a4600 on #f6f8fa = 6.07:1, on #ededed = 5.52:1  (>= 4.5 text)
+ *   atrule   #6f42c1 on #f6f8fa = 6.12:1, on #ededed = 5.56:1  (>= 4.5 text)
+ * (sweep-era values, both below the floor: #e36209 = 3.28 / 2.98,
+ *  #cc99cd = 2.19 / 1.99.)
+ */
+
+body:not(.dark) pre .token.variable {
+  color: #9a4600;
+}
+
+body:not(.dark) pre .token.atrule {
+  color: #6f42c1;
+}
