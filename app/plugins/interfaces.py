@@ -662,3 +662,53 @@ class DirectoryScanProvider(ABC):
     def should_apply(self) -> bool:
         """Return True if this provider should be consulted."""
         return True
+
+
+class RemoteAuthError(RuntimeError):
+    """A remote-MCP authentication handler could not establish a session.
+
+    Raised by RemoteAuthProvider.build_http_client for DIAGNOSED failures
+    (expired SSO session, missing authorization grant, refused redirect).
+    The message names the cause; ``hint`` names the remedy. MCPClient turns
+    it into a ``startup_failure`` record rather than a traceback.
+    """
+
+    def __init__(self, message: str, *, hint: Optional[str] = None):
+        super().__init__(message)
+        self.hint = hint
+
+
+class RemoteAuthProvider(ABC):
+    """
+    Authentication handler for remote (HTTP) MCP servers.
+
+    A remote server's config selects a handler with ``"auth": {"type": X}``.
+    ``bearer`` is engine-native (a static header); every other type is
+    delegated to the provider registered for it, which builds the
+    ``httpx.AsyncClient`` the MCP SDK transport will send requests through.
+    That gives the plugin full control over cookies, redirects, signing,
+    and any pre-connection handshake (e.g. an SSO cookie exchange).
+
+    The engine owns the returned client's lifetime and closes it on
+    disconnect. The provider must close it itself only when it raises.
+    """
+
+    provider_id: str = "default"
+    auth_type: str = ""
+
+    @abstractmethod
+    async def build_http_client(
+        self,
+        url: str,
+        server_config: Dict[str, Any],
+        *,
+        headers: Optional[Dict[str, str]] = None,
+        timeout: Any = None,
+    ):
+        """Return an authenticated ``httpx.AsyncClient`` for ``url``.
+
+        ``headers`` are the server's configured static headers; ``timeout``
+        is an ``httpx.Timeout`` the engine would otherwise have used. Raise
+        RemoteAuthError for any failure the user can act on.
+        """
+        pass
