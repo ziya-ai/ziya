@@ -595,31 +595,47 @@ _EMPTY_HEADER_TEMPLATE = "<span></span>"
 # landing in the PDF as its literal spec text).  Run from the driver instead,
 # after the render has settled and no further React state update occurs —
 # the same position the outline sentinels already occupy safely.
+#
+# WHAT IS BOUND.  A heading is grouped with any headings that immediately
+# follow it (an `h1` directly over an `h2` must move as one) and then with the
+# first content block after them, when that block is short enough to be worth
+# carrying: a paragraph, list, quote, table, code block, figure wrapper or
+# display-math block.  A block taller than MAX_PX is left to Chromium's
+# `break-after: avoid`, since moving it whole would strand more space than it
+# saves.
 _KEEP_WITH_NEXT_JS = r"""
 () => {
-  const MAX_PX = 160;
+  const MAX_PX = 200;
   const root = document.getElementById('print-render-content')
              || document.getElementById('print-render-root');
   if (!root) return 0;
+  const BLOCK_TAGS = ['P', 'UL', 'OL', 'BLOCKQUOTE', 'TABLE', 'PRE', 'FIGURE'];
+  const isHeading = (el) => /^H[1-6]$/.test(el.tagName);
+  const isBlock = (el) => BLOCK_TAGS.includes(el.tagName)
+    || el.classList.contains('print-doc-figure')
+    || el.classList.contains('d3-container')
+    || el.classList.contains('math-display');
   const heads = Array.from(root.querySelectorAll('h1, h2, h3, h4, h5, h6'));
   let wrapped = 0;
   for (const h of heads) {
     if (h.closest('[data-print-keep-with-next]')) continue;
     if (h.closest('.print-footer, .print-doc-titleblock')) continue;
-    const next = h.nextElementSibling;
-    if (!next) continue;
-    if (!['P', 'UL', 'OL', 'BLOCKQUOTE'].includes(next.tagName)) continue;
+    // Stacked headings travel together with the block that follows them.
+    const group = [h];
+    let next = h.nextElementSibling;
+    while (next && isHeading(next)) { group.push(next); next = next.nextElementSibling; }
+    if (!next || !isBlock(next)) continue;
     const rect = next.getBoundingClientRect();
     if (rect.height <= 0 || rect.height > MAX_PX) continue;
+    group.push(next);
     const parent = h.parentElement;
     if (!parent) continue;
     const wrap = document.createElement('div');
-    wrap.setAttribute('data-print-keep-with-next', 'true');
+    wrap.setAttribute('data-print-keep-with-next', String(group.length));
     wrap.style.setProperty('break-inside', 'avoid');
     wrap.style.setProperty('page-break-inside', 'avoid');
     parent.insertBefore(wrap, h);
-    wrap.appendChild(h);
-    wrap.appendChild(next);
+    for (const el of group) wrap.appendChild(el);
     wrapped++;
   }
   return wrapped;
@@ -952,6 +968,10 @@ class ConversationRenderSession:
         metadata: Optional[Dict[str, str]] = None,
         outline_mode: str = "messages",
         footer_template: Optional[str] = None,
+        media: str = "screen",
+        viewport: Optional[Tuple[int, int]] = None,
+        pre_capture_css: Optional[str] = None,
+        pre_capture_js: Optional[List[Tuple[str, Any]]] = None,
     ) -> bytes:
         """Render the conversation and return PDF bytes.
 
@@ -974,6 +994,21 @@ class ConversationRenderSession:
         ``outline_mode`` selects the sentinel targets: ``"messages"`` (default,
         one bookmark per conversation message) or ``"headings"`` (document mode
         — a nested bookmark tree mirroring the h1-h4 section structure).
+
+        ``media`` is the CSS media type emulated for the render and capture.
+        Transcripts keep ``"screen"`` (the chat UI's real styling).  Documents
+        pass ``"print"``: Chromium repeats a table's ``<thead>`` on every page
+        a table spans ONLY under print media (verified — under screen
+        emulation the header appears once), and the served bundle carries no
+        ``@media print`` rule that would change anything else.
+
+        ``viewport`` (``(width, height)`` px) sizes the page to the printable
+        box so in-page measurements (keep-with-next, figure fit, table flow)
+        see the same geometry Chromium paginates.  ``pre_capture_css`` is
+        injected as a ``<style>`` and each ``(js, arg)`` in ``pre_capture_js``
+        is evaluated, both after the render settles and BEFORE keep-with-next
+        and the outline passes, so every capture shares one pagination.  All
+        three are best-effort: a failure logs and the export proceeds.
         """
         async with self._lock:
             await self._ensure_browser()
@@ -988,17 +1023,37 @@ class ConversationRenderSession:
             provider=payload.get("provider"),
         )
 
-        # page.pdf() requires headless Chromium and the "print" media emulation
-        # off (we want screen styles, which is what the chat UI uses).
-        page = await self._browser.new_page()
+        # Transcripts render under screen media (the chat UI's styling);
+        # documents opt into print media via ``media`` (see docstring).
+        page_kwargs: Dict[str, Any] = {}
+        if viewport:
+            page_kwargs["viewport"] = {"width": int(viewport[0]),
+                                       "height": int(viewport[1])}
+        page = await self._browser.new_page(**page_kwargs)
         try:
             await self._open_and_render(page, payload, timeout_ms=timeout_ms)
-            # Use screen media so the rendered-as-on-screen styling is kept;
-            # the /print component itself applies print-friendly light theme.
-            await page.emulate_media(media="screen")
+            # Screen media keeps the rendered-as-on-screen styling; the /print
+            # component itself applies the print-friendly light theme.
+            await page.emulate_media(media=media)
             pdf_margin = margin or {
                 "top": "12mm", "bottom": "16mm", "left": "10mm", "right": "10mm",
             }
+
+            # Document-mode decoration (stylesheet + numbering/caption pass)
+            # runs first so keep-with-next and the outline see the final DOM.
+            if pre_capture_css:
+                try:
+                    await page.add_style_tag(content=pre_capture_css)
+                except Exception:  # pragma: no cover - defensive
+                    logger.warning("pre-capture stylesheet injection failed",
+                                   exc_info=True)
+            for js, arg in (pre_capture_js or []):
+                try:
+                    result = await page.evaluate(js, arg)
+                    logger.debug("pre-capture pass result: %s", result)
+                except Exception:  # pragma: no cover - defensive
+                    logger.warning("pre-capture pass failed; continuing",
+                                   exc_info=True)
 
             # Bind headings to their short following block BEFORE any capture,
             # so the probe and clean outline passes share one pagination.
@@ -1285,14 +1340,20 @@ def build_document_print_payload(
 
     Unlike :func:`build_print_payload` (conversation transcript), the document
     payload carries ``kind: "document"`` plus the pagebreak-split ``sections``
-    and the front-matter presentation knobs (``author``, ``layout``).  The
-    /print page renders each section on its own page with NO message chrome.
+    and the front-matter presentation knobs (``author``, ``subtitle``,
+    ``date``, ``layout``, ``numbering``).  The /print page renders each
+    section on its own page with NO message chrome.  ``date`` is the
+    DISPLAY string (already formatted by document_print_decor), not the raw
+    front-matter value.
     """
     payload: Dict[str, Any] = {
         "kind": "document",
         "title": title or meta.get("title") or "Ziya Document",
+        "subtitle": meta.get("subtitle"),
         "author": meta.get("author"),
+        "date": meta.get("date"),
         "layout": meta.get("layout") or "plain",
+        "numbering": meta.get("numbering"),
         "sections": sections,
         "options": {"includeFooter": bool(footer_html)},
     }
@@ -1326,10 +1387,22 @@ async def export_document_pdf(
     ``include_footer`` defaults to True, matching the conversation export;
     callers pass False explicitly to omit the per-page footer.
 
+    Aesthetics come from ``app/utils/document_print_decor``: the render runs
+    under PRINT media at a viewport matched to the printable box, the document
+    stylesheet is injected, and the decoration pass numbers figures/tables
+    (with ``Figure:``/``Table:`` caption lines), optionally numbers sections,
+    lets page-tall tables flow with a repeating header, and reconciles the
+    title block.  The footer names the document, not the export tool.
+
     Raises ImportError (Playwright absent), FileNotFoundError / ValueError
     (bad ``name``), mirroring export_conversation_pdf's error surface.
     """
     from app.utils.document_ir import parse_document, split_sections, load_document
+    from app.utils.document_print_decor import (
+        DEFAULT_DOCUMENT_MARGIN, DOCUMENT_PRINT_CSS,
+        build_document_decorate_js, build_document_footer_template,
+        format_document_date, page_content_box_px,
+    )
 
     if markdown is None:
         if not name:
@@ -1343,15 +1416,23 @@ async def export_document_pdf(
 
     sections = split_sections(body)
     doc_title = title or meta.get("title") or (name or "Ziya Document")
+    display_date = format_document_date(meta.get("date"))
+    margin = (meta.get("page") or {}).get("margin") or dict(DEFAULT_DOCUMENT_MARGIN)
+    content_w, content_h = page_content_box_px(margin)
 
-    # Per-page footer (same treatment as the conversation export): drawn in
-    # the bottom margin of every page rather than appended to the body.
+    # Per-page footer drawn in the bottom margin: the DOCUMENT'S running
+    # footer (title · author · date, page N of M) with the tool credit on a
+    # lighter second line — not the conversation export's tagline.
     footer_template = None
     if include_footer:
-        footer_template = build_pdf_footer_template(
-            version=version, model=model, provider=provider,
+        footer_template = build_document_footer_template(
+            title=doc_title, author=meta.get("author") or "",
+            date=display_date, version=version, model=model, provider=provider,
         )
 
+    # The payload carries the display date so the title block shows the same
+    # string as the footer; the raw front-matter value never reaches the page.
+    meta = {**meta, "date": display_date}
     payload = build_document_print_payload(
         meta, sections, footer_html=None, title=doc_title,
     )
@@ -1363,7 +1444,12 @@ async def export_document_pdf(
         # The document names its own author; model/provider is a fallback only.
         doc_metadata["/Author"] = meta["author"]
 
-    margin = (meta.get("page") or {}).get("margin")
+    decorate_js, decorate_opts = build_document_decorate_js(
+        numbering=meta.get("numbering"), title=doc_title,
+        subtitle=meta.get("subtitle"), author=meta.get("author"),
+        date=display_date, layout=meta.get("layout") or "plain",
+        page_height_px=content_h,
+    )
 
     session = await get_render_session(server_port)
     pdf_bytes = await session.capture_pdf(
@@ -1373,6 +1459,10 @@ async def export_document_pdf(
         metadata=doc_metadata,
         outline_mode="headings",
         footer_template=footer_template,
+        media="print",
+        viewport=(content_w, content_h),
+        pre_capture_css=DOCUMENT_PRINT_CSS,
+        pre_capture_js=[(decorate_js, decorate_opts)],
     )
 
     out_meta = {

@@ -1722,6 +1722,157 @@ Rules of thumb:
         'color': '#f97316',
     },
     {
+        'id': 'spatial_charts',
+        'visibility': MODEL_DISCOVERABLE,
+        'catalog_description': 'Plotly recipes for 3D and spatial figures: surface/loss landscapes, 3D scatter, topographic contours, meshes, vector fields, animated dynamics with Play/slider',
+        'name': '3D, Spatial & Dynamics Charts (Plotly)',
+        'description': 'Render interactive 3D surfaces, 3D scatter, topographic contour maps, meshes, vector fields and time-animated figures in Plotly',
+        'keywords': ['3d', 'surface', 'landscape', 'loss landscape', 'terrain', 'elevation',
+                     'topographic', 'topography', 'contour', 'contour map', 'heightmap',
+                     'scatter3d', 'point cloud', 'embedding', 'pca', 't-sne', 'umap',
+                     'mesh', 'mesh3d', 'vector field', 'flow field', 'cone', 'streamtube',
+                     'phase portrait', 'phase space', 'trajectory', 'dynamics', 'animate',
+                     'animation', 'over time', 'time slider', 'play button', 'frames',
+                     'rotate', 'interactive 3d', 'plotly'],
+        # Every recipe below was verified through the headless render pipeline
+        # (tests/test_spatial_charts_skill_recipes_e2e.py re-checks them): the
+        # WebGL families produce a canvas, not the grey "WebGL is not supported"
+        # panel, and the frames recipe registers its frames so Play/slider work.
+        # Fences are assembled from chr(96) so a literal triple backtick in this
+        # source cannot terminate an enclosing markdown fence. Recipes are
+        # strict JSON on purpose: the test parses them with json.loads.
+        'prompt': (
+            'Render 3D, spatial and animated figures with a ' + chr(96) * 3
+            + 'plotly fence containing {"data": [...], "layout": {...}} (plus\n'
+            '"frames": [...] for animation). These render interactively: the\n'
+            'user can rotate a 3D scene, hover a point, and scrub a slider, so\n'
+            'prefer them to a static pgfplots surface unless the labels are\n'
+            'mathematical typesetting.\n'
+            '\n'
+            'WHICH SHAPE FOR WHICH QUESTION\n'
+            '- "loss landscape / response surface / z = f(x,y)" -> surface (+ projected contours)\n'
+            '- "terrain / elevation / topographic map / heightmap in 2D" -> contour, coloring "heatmap"\n'
+            '- "embedding / point cloud / 3 numeric dims per item" -> scatter3d\n'
+            '- "a solid / a shape / a hull from vertices" -> mesh3d\n'
+            '- "vector field / flow direction at points" -> cone (3D). No 2D quiver trace exists;\n'
+            '  for 2D use a vega-lite layer of rule + point instead.\n'
+            '- "how it evolves / trajectory over time / phase portrait" -> frames + slider + Play\n'
+            'Do NOT use choropleth / scattergeo / mapbox: they need network basemaps\n'
+            'and hang the renderer here.\n'
+            '\n'
+            'SURFACE -- z is a 2D array (rows = y, cols = x). x/y are optional\n'
+            '1D arrays of the same lengths; omit them for index axes. The gotcha:\n'
+            'a ragged or 1D z renders an empty scene with no error. Projected\n'
+            'contours (contours.z.project.z) put a topo map on the floor so the\n'
+            'minimum is readable from any camera angle.\n'
+            + chr(96) * 3 + 'plotly\n'
+            '{"data": [{"type": "surface",\n'
+            '  "z": [[1, 2, 3, 2, 1], [2, 4, 6, 4, 2], [3, 6, 9, 6, 3], [2, 4, 6, 4, 2], [1, 2, 3, 2, 1]],\n'
+            '  "colorscale": "Viridis",\n'
+            '  "contours": {"z": {"show": true, "usecolormap": true, "project": {"z": true}}}}],\n'
+            ' "layout": {"title": {"text": "Loss landscape"},\n'
+            '  "scene": {"xaxis": {"title": {"text": "w1"}}, "yaxis": {"title": {"text": "w2"}}, "zaxis": {"title": {"text": "loss"}}}}}\n'
+            + chr(96) * 3 + '\n'
+            'Axis titles live under layout.scene.{x,y,z}axis, NOT layout.xaxis;\n'
+            'the 2D keys are silently ignored for a 3D scene.\n'
+            '\n'
+            'CONTOUR AS TOPOGRAPHY -- same z grid as surface, drawn flat.\n'
+            'contours.coloring "heatmap" fills between lines; showlabels prints\n'
+            'the level on each line like a paper map. yaxis.scaleanchor "x"\n'
+            'keeps ground distance isotropic so slopes are not distorted.\n'
+            + chr(96) * 3 + 'plotly\n'
+            '{"data": [{"type": "contour",\n'
+            '  "z": [[10, 10.6, 12.5, 15.1, 20.2], [10.4, 11.3, 13.8, 17.5, 22.8], [11.2, 12.9, 16.2, 20.9, 26.1], [12.4, 14.9, 19.4, 25.3, 30.4], [14.0, 17.4, 23.4, 30.1, 35.0]],\n'
+            '  "x": [-2, -1, 0, 1, 2], "y": [-2, -1, 0, 1, 2],\n'
+            '  "colorscale": "Earth",\n'
+            '  "contours": {"coloring": "heatmap", "showlabels": true, "labelfont": {"size": 10}},\n'
+            '  "line": {"width": 1}}],\n'
+            ' "layout": {"title": {"text": "Elevation (m)"}, "xaxis": {"title": {"text": "east"}}, "yaxis": {"title": {"text": "north"}, "scaleanchor": "x"}}}\n'
+            + chr(96) * 3 + '\n'
+            '\n'
+            'SCATTER3D -- x, y, z are parallel arrays; the k-th entry of each is\n'
+            'the same item. Put the label in "text" so hover names the point.\n'
+            'Colour by a fourth variable via marker.color (an array) + colorscale;\n'
+            'a colorbar title says what it encodes. Keep marker.size <= 8; plotly\n'
+            'does not thin overlapping 3D markers.\n'
+            + chr(96) * 3 + 'plotly\n'
+            '{"data": [{"type": "scatter3d", "mode": "markers",\n'
+            '  "x": [1, 2, 3, 4, 5, 6], "y": [2, 1, 4, 3, 6, 5], "z": [5, 6, 2, 4, 1, 3],\n'
+            '  "text": ["a", "b", "c", "d", "e", "f"],\n'
+            '  "marker": {"size": 6, "color": [5, 6, 2, 4, 1, 3], "colorscale": "Viridis", "colorbar": {"title": {"text": "z"}}}}],\n'
+            ' "layout": {"title": {"text": "Embedding (PCA-3)"},\n'
+            '  "scene": {"xaxis": {"title": {"text": "PC1"}}, "yaxis": {"title": {"text": "PC2"}}, "zaxis": {"title": {"text": "PC3"}}}}}\n'
+            + chr(96) * 3 + '\n'
+            'For a 3D line/trajectory use mode "lines" on the same trace.\n'
+            '\n'
+            'MESH3D -- x/y/z are the vertices; i/j/k are three parallel arrays\n'
+            'of vertex INDICES, one triangle per position. The gotcha: an index\n'
+            '>= vertex count drops the whole mesh silently. Omit i/j/k and set\n'
+            'alphahull 0 to let plotly build the convex hull.\n'
+            + chr(96) * 3 + 'plotly\n'
+            '{"data": [{"type": "mesh3d",\n'
+            '  "x": [0, 1, 1, 0, 0.5], "y": [0, 0, 1, 1, 0.5], "z": [0, 0, 0, 0, 1],\n'
+            '  "i": [0, 0, 0, 0, 0, 1], "j": [1, 2, 1, 2, 3, 2], "k": [2, 3, 4, 4, 4, 4],\n'
+            '  "opacity": 0.8, "intensity": [0, 0, 0, 0, 1], "colorscale": "Portland"}],\n'
+            ' "layout": {"title": {"text": "Pyramid mesh"}}}\n'
+            + chr(96) * 3 + '\n'
+            '\n'
+            'CONE (vector field) -- x/y/z anchor each arrow, u/v/w are its\n'
+            'components. sizemode "absolute" + sizeref keeps arrows comparable\n'
+            'across the field; the default scales by the largest vector.\n'
+            + chr(96) * 3 + 'plotly\n'
+            '{"data": [{"type": "cone",\n'
+            '  "x": [0, 0, 0, 1, 1, 1], "y": [0, 1, 2, 0, 1, 2], "z": [0, 0, 0, 0, 0, 0],\n'
+            '  "u": [1, 1, 1, 0, 0, 0], "v": [0, 0, 0, 1, 1, 1], "w": [0.2, 0.4, 0.6, 0.2, 0.4, 0.6],\n'
+            '  "sizemode": "absolute", "sizeref": 0.5, "colorscale": "Blues"}],\n'
+            ' "layout": {"title": {"text": "Flow field"}}}\n'
+            + chr(96) * 3 + '\n'
+            '\n'
+            'ANIMATION (frames) -- "data" is frame 0 drawn at load; "frames" is\n'
+            'a top-level array of {"name", "data", "layout"} deltas, one per time\n'
+            'step. The Play button is layout.updatemenus with method "animate"\n'
+            'and args [null, ...]; the slider is layout.sliders whose steps call\n'
+            'method "animate" with [["<frame name>"], ...]. The gotcha: frame\n'
+            'names are STRINGS and every slider step must name an existing\n'
+            'frame, or the slider moves and nothing changes. Fix axis ranges in\n'
+            'layout so the view does not jump between frames. Put "frames" at\n'
+            'the spec root, never inside layout.\n'
+            + chr(96) * 3 + 'plotly\n'
+            '{"data": [{"type": "scatter", "mode": "lines+markers", "x": [0], "y": [0], "name": "trajectory"}],\n'
+            ' "layout": {"title": {"text": "Phase portrait, t = 0"},\n'
+            '  "xaxis": {"range": [-1.5, 1.5], "title": {"text": "x"}},\n'
+            '  "yaxis": {"range": [-1.5, 1.5], "title": {"text": "v"}},\n'
+            '  "updatemenus": [{"type": "buttons", "showactive": false, "x": 0, "y": -0.15, "xanchor": "left",\n'
+            '    "buttons": [{"label": "Play", "method": "animate",\n'
+            '                 "args": [null, {"frame": {"duration": 300}, "fromcurrent": true, "transition": {"duration": 0}}]},\n'
+            '                {"label": "Pause", "method": "animate",\n'
+            '                 "args": [[null], {"mode": "immediate", "frame": {"duration": 0}}]}]}],\n'
+            '  "sliders": [{"x": 0.15, "len": 0.85, "y": -0.15, "currentvalue": {"prefix": "t = "},\n'
+            '    "steps": [{"label": "0", "method": "animate", "args": [["0"], {"mode": "immediate", "frame": {"duration": 0}}]},\n'
+            '              {"label": "1", "method": "animate", "args": [["1"], {"mode": "immediate", "frame": {"duration": 0}}]},\n'
+            '              {"label": "2", "method": "animate", "args": [["2"], {"mode": "immediate", "frame": {"duration": 0}}]}]}]},\n'
+            ' "frames": [\n'
+            '  {"name": "0", "data": [{"x": [1.0], "y": [0.0]}], "layout": {"title": {"text": "Phase portrait, t = 0"}}},\n'
+            '  {"name": "1", "data": [{"x": [1.0, 0.54], "y": [0.0, -0.84]}], "layout": {"title": {"text": "Phase portrait, t = 1"}}},\n'
+            '  {"name": "2", "data": [{"x": [1.0, 0.54, -0.42], "y": [0.0, -0.84, -0.91]}], "layout": {"title": {"text": "Phase portrait, t = 2"}}}]}\n'
+            + chr(96) * 3 + '\n'
+            'A growing trajectory (as above) appends to x/y each frame; a moving\n'
+            'particle replaces them. Keep frame count <= ~60; frames are stored\n'
+            'in the page, not streamed.\n'
+            '\n'
+            'CROSS-CUTTING\n'
+            '- All arrays in a trace are parallel (x[i], y[i], z[i], text[i],\n'
+            '  marker.color[i] are one item). Count them before emitting.\n'
+            '- Do not set layout.width/height or paper/plot background; the\n'
+            '  renderer sizes and themes the chart for the current surface.\n'
+            '- One scene per fence. For side-by-side 3D views use scene/scene2\n'
+            '  with domain.x splits, not two fences.\n'
+            '- Grids larger than ~200x200 for surface/contour, or >50k points for\n'
+            '  scatter3d, get slow to rotate; downsample first.'
+        ),
+        'color': '#8b5cf6',
+    },
+    {
         'id': 'structure_trees',
         'visibility': MODEL_DISCOVERABLE,
         'catalog_description': 'Render labelled trees (forest) and proof trees (bussproofs) in field-standard notation',
