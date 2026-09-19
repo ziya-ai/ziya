@@ -204,16 +204,26 @@ def _rescan_core_for_encoding(conversation_id, core) -> None:
         pass  # Replay re-scan must never break prompt assembly
 
 
-def get_memory_prompt_section() -> str:
+def get_memory_prompt_sections() -> "tuple[str, str]":
     """
-    Build the memory context block for the system prompt.
+    Build the memory context for the prompt as ``(stable, volatile)``.
 
-    Returns an empty string if the memory category is disabled or
-    no memories exist.
+    ``stable`` is the header plus behavioural guidance -- identical on every
+    turn, so it can live in the cached system-prompt prefix.  ``volatile`` is
+    everything derived from live memory state: domain handles and their
+    counts, the core-fact dump, "N total memories", "N on probation".  Those
+    change as memories promote mid-conversation; when they sat in the system
+    block, a 137-token drift rewrote a 200K cached prefix on the second turn
+    of a two-message conversation (usage ledger, conv 91acef70).  The prompt
+    assembler appends ``volatile`` to the current user message instead.
+
+    Both are empty when the memory category is disabled or storage fails.
+    ``volatile`` begins with a blank line when non-empty so it can be
+    appended directly.
     """
     from app.mcp.builtin_tools import is_builtin_category_enabled
     if not is_builtin_category_enabled("memory"):
-        return ""
+        return "", ""
 
     try:
         from app.storage.memory import get_memory_storage
@@ -229,7 +239,9 @@ def get_memory_prompt_section() -> str:
         mindmap_nodes = store.list_mindmap_nodes()
     except Exception as e:
         logger.debug(f"Could not load memories for prompt: {e}")
-        return ""
+        return "", ""
+
+    stable = "\n".join(["", "## Persistent Memory", "", _BEHAVIORAL_GUIDANCE])
 
     # ── Progressive loading (Phase 1) ──────────────────────────────
     # If a mind-map exists, load Level 0 handles (~500 tokens) instead
@@ -238,10 +250,6 @@ def get_memory_prompt_section() -> str:
     if mindmap_nodes:
         root_nodes = store.get_root_nodes()
         lines = [
-            "",
-            "## Persistent Memory",
-            "",
-            _BEHAVIORAL_GUIDANCE,
             "",
             "### Domain Overview (use `memory_context`/`memory_expand` for detail)",
             "",
@@ -258,16 +266,12 @@ def get_memory_prompt_section() -> str:
         lines.append(f"*{len(memories)} total memories across {len(root_nodes)} domains.*")
         if pending_count > 0:
             lines.append(f"*{pending_count} memory proposal(s) on probation — these promote or expire automatically; no review needed.*")
-        return "\n".join(lines)
+        return stable, "\n" + "\n".join(lines)
 
     # ── Flat dump (Phase 0 fallback) ───────────────────────────────
-    # No mind-map configured — load all memories directly.
-    lines = [
-        "",
-        "## Persistent Memory",
-        "",
-        _BEHAVIORAL_GUIDANCE,
-    ]
+    # No mind-map configured — load all memories directly.  Everything
+    # from here on is live state and therefore volatile.
+    lines: list = []
 
     if memories:
         lines.append("")
@@ -329,7 +333,17 @@ def get_memory_prompt_section() -> str:
     if pending_count > 0:
         lines.append(f"*{pending_count} memory proposal(s) on probation — these promote or expire automatically; no review needed.*")
 
-    return "\n".join(lines)
+    return stable, ("\n" + "\n".join(lines)) if lines else ""
+
+
+def get_memory_prompt_section() -> str:
+    """Combined single-block form (``stable + volatile``).
+
+    Byte-identical to the pre-split output.  Kept for callers and tests
+    that want one block; the prompt assembler uses the split form.
+    """
+    stable, volatile = get_memory_prompt_sections()
+    return stable + volatile if stable else ""
 
 
 _LAYER_LABELS = {

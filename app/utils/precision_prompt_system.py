@@ -235,19 +235,45 @@ class PrecisionPromptSystem:
                 except (ImportError, RuntimeError, OSError) as e:
                     logger.debug("Skill catalog unavailable: %s", e)
 
+            # Per-turn VOLATILE prompt pieces.  The system block is the
+            # prompt-cache prefix, so anything that legitimately changes
+            # from one turn to the next (live memory counts, the bead-check
+            # nudge, parked-bead lists) must not live in it: a 137-token
+            # wobble in a 200K system block rewrote the whole cache on the
+            # second turn of a two-message conversation (usage ledger,
+            # conv 91acef70).  Such pieces are collected here and appended
+            # to the CURRENT user message at the end of build_messages,
+            # after the cache boundary, alongside the relocated timestamps.
+            volatile_tail: list = []
+
             # Inject persistent memory context so the model is informed
-            # by knowledge from prior sessions.
+            # by knowledge from prior sessions.  The behavioural guidance
+            # and domain handles are stable; the "N total memories" /
+            # "N on probation" counts are not and go to the tail.
             if messages and messages[0]["role"] == "system":
                 try:
-                    from app.memory import get_memory_prompt_section
-                    memory_section = get_memory_prompt_section()
-                    if memory_section:
-                        messages[0]["content"] += memory_section
+                    try:
+                        from app.memory.prompt import get_memory_prompt_sections
+                    except ImportError:
+                        get_memory_prompt_sections = None
+                    if get_memory_prompt_sections is not None:
+                        stable_mem, volatile_mem = get_memory_prompt_sections()
+                    else:
+                        from app.memory import get_memory_prompt_section
+                        stable_mem, volatile_mem = get_memory_prompt_section(), ""
+                    if stable_mem:
+                        messages[0]["content"] += stable_mem
+                    if volatile_mem:
+                        volatile_tail.append(volatile_mem)
                 except (ImportError, RuntimeError, OSError) as e:
                     logger.debug("Memory prompt section unavailable: %s", e)
 
             # Inject bead (task-tree) directive and status summary so the
             # model knows to track subtasks and is aware of parked threads.
+            # The directive is static and stays in the system block; the
+            # status summary changes as beads are parked/completed and as
+            # the turn count crosses the nudge threshold, so it goes to the
+            # tail.
             if messages and messages[0]["role"] == "system":
                 try:
                     from app.utils.bead_prompt import get_bead_directive, get_bead_status_summary
@@ -265,7 +291,7 @@ class PrecisionPromptSystem:
                     )
                     bead_status = get_bead_status_summary(turn_count)
                     if bead_status:
-                        messages[0]["content"] += bead_status
+                        volatile_tail.append(bead_status)
                 except (ImportError, RuntimeError, OSError) as e:
                     logger.debug("Bead directive unavailable: %s", e)
 
@@ -292,22 +318,25 @@ class PrecisionPromptSystem:
                     "If the user asks a question that requires a tool, call the tool in your FIRST response."
                 )
             
+            # Explain the hidden per-message time tags to the model.  Appended
+            # UNCONDITIONALLY: the system block is the prompt-cache prefix, and
+            # gating this paragraph on ``chat_history`` made the turn-1 and
+            # turn-2 system prompts differ by ~120 tokens, so the second turn
+            # of every conversation was a guaranteed cache miss.
+            if messages and messages[0]["role"] == "system":
+                messages[0]["content"] += (
+                    "\n\n## Message Timing\n"
+                    "Each prior message below is prefixed with a hidden "
+                    "<MessageTime value=\"YYYY-MM-DD HH:MM:SS\" /> tag recording when "
+                    "it was sent. Combine these with <CurrentDateTime> to reason about "
+                    "elapsed time between turns (how long a task took, how stale prior "
+                    "context is, etc.). These tags are invisible to the user — never "
+                    "repeat, quote, or echo them in your responses."
+                )
+
             # Add chat history before the question
             if chat_history:
                 import datetime as _dt
-                # Explain the hidden per-message time tags to the model once.
-                # The frontend strips these from display; they exist only so
-                # the model can reason about elapsed time between turns.
-                if messages and messages[0]["role"] == "system":
-                    messages[0]["content"] += (
-                        "\n\n## Message Timing\n"
-                        "Each prior message below is prefixed with a hidden "
-                        "<MessageTime value=\"YYYY-MM-DD HH:MM:SS\" /> tag recording when "
-                        "it was sent. Combine these with <CurrentDateTime> to reason about "
-                        "elapsed time between turns (how long a task took, how stale prior "
-                        "context is, etc.). These tags are invisible to the user — never "
-                        "repeat, quote, or echo them in your responses."
-                    )
 
                 def _with_time_tag(content, ts):
                     """Prepend a hidden <MessageTime> tag to a history message.
@@ -347,7 +376,28 @@ class PrecisionPromptSystem:
                             messages.append(msg)
                 if question_msg:
                     messages.append(question_msg)
-            
+
+            # Attach the per-turn volatile pieces (memory counts, bead
+            # status) to the END of the current user message.  This is
+            # after every cache breakpoint, so their turn-to-turn drift
+            # costs nothing; appending (rather than prepending ahead of
+            # the relocated timestamp tags) keeps the question text and
+            # its tags exactly where the timestamp-relocation code and its
+            # tests expect them.
+            if volatile_tail:
+                tail_text = "".join(volatile_tail)
+                for current_message in reversed(messages):
+                    if current_message.get("role") != "user":
+                        continue
+                    content = current_message.get("content", "")
+                    if isinstance(content, str):
+                        current_message["content"] = content + tail_text
+                    elif isinstance(content, list):
+                        current_message["content"] = content + [
+                            {"type": "text", "text": tail_text}
+                        ]
+                    break
+
             return messages
             
         except Exception as e:
