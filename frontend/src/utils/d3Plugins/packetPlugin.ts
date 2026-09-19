@@ -17,6 +17,7 @@ import {
   getOptimalTextColor,
   hexToRgb,
   luminance,
+  calculateContrastRatio,
 } from '../colorUtils';
 
 // ── Built-in semantic color themes ──────────────────────────────────────────
@@ -304,10 +305,31 @@ export function resolveColor(
     return palette[autoIndex % palette.length];
   }
   if (typeof color === 'object') {
-    // Explicit triple — adapt text color if needed for contrast
+    // Explicit triple — adapt the BORDER for contrast against the ACTIVE theme
+    // canvas (D-454). An author who hardcodes a near-white fill (#FAFAFA/#DDD
+    // border) is legible on the light page but dissolves into the #1e1e1e dark
+    // canvas — and a near-black palette (#1A1A1A/#333) is the mirror on dark.
+    // The FILL is left as authored (their intent), but when the border fails
+    // the 3:1 graphical-object floor BOTH against the themed canvas AND against
+    // its own fill, the cell has no visible boundary in that theme, so its
+    // extents/separators vanish. Substitute a theme outline that clears 3:1 on
+    // the current canvas so cell geometry is always drawn. Per-theme and
+    // asymmetric: the theme where the author border already clears 3:1 (light
+    // for #333, dark for #DDD) is returned unchanged.
+    const canvas = isDarkMode ? PACKET_PAGE_BG_DARK : PACKET_PAGE_BG_LIGHT;
+    let border = color.border;
+    if (border) {
+      const vsCanvas = calculateContrastRatio(border, canvas);
+      const vsFill = color.bg ? calculateContrastRatio(border, color.bg) : 0;
+      if (!(vsCanvas >= 3 || vsFill >= 3)) {
+        // #6B7280 clears 4.83:1 on white / 4.63:1 on #FAFAFA (light);
+        // #a0a0a0 clears 6.38:1 on #1e1e1e / 6.66:1 on #1A1A1A (dark).
+        border = isDarkMode ? '#a0a0a0' : '#6B7280';
+      }
+    }
     return {
       bg: color.bg,
-      border: color.border,
+      border,
       // D-208: a transparent/none fill shows the THEME page, not a white page —
       // resolve the label colour against the theme background so it stays
       // readable in dark as well as light.
@@ -392,20 +414,80 @@ function sectionsBlockHeight(sections: PacketSection[], L: LayoutConfig): number
     0);
 }
 
-export function computeDimensions(spec: PacketSpec): { width: number; height: number; layout: LayoutConfig } {
-  // Coerce to a positive integer so the grid width (bits * BIT_W) and the ruler
-  // agree with the plugin (which sanitizes identically) — a fractional/degenerate
-  // bitWidth can never drive geometry.
+/**
+ * Widest ROW, in bits: the maximum over every row of the sum of its (sanitized)
+ * field bit-widths. A row whose fields sum to MORE than the declared `bitWidth`
+ * (a `packet-beta` field wider than the row, a JSON spec that omits bitWidth so
+ * it defaults to 8 while its rows carry 16/32 bits) draws field rects out to
+ * `sum * BIT_W` — past `bits * BIT_W`. Pure / DOM-free.
+ */
+export function maxRowBits(sections: PacketSection[] | undefined): number {
+  let m = 0;
+  for (const sec of sections ?? []) {
+    const rows = normalizeSectionRows(sec?.rows);
+    for (const row of rows) {
+      let sum = 0;
+      for (const f of row) sum += sanitizeFieldBits((f as any)[1]);
+      if (sum > m) m = sum;
+    }
+  }
+  return m;
+}
+
+/**
+ * Hard ceiling (px) on the packet GRID width. A grid wider than this is not
+ * downscaled reliably by the headless element-screenshot path (a surface past
+ * ~6000px, or a single multi-thousand-px field rect, returns a blank
+ * viewport-wide strip — D-451). Capping the grid here keeps the whole diagram
+ * inside a capturable, paintable surface WITHOUT relying on post-capture
+ * downscale: the bit-cell width shrinks (to a fractional px if need be) so
+ * `gridBits * BIT_W <= PACKET_MAX_GRID_PX`.
+ */
+export const PACKET_MAX_GRID_PX = 6000;
+
+/**
+ * Single source of truth for the packet grid geometry, shared by
+ * computeDimensions (SVG/viewBox width) and the render plugin (field/ruler
+ * placement) so the declared viewBox can NEVER be narrower than the drawn
+ * content (the D-451 "content outside the viewBox → blank capture" family) and
+ * can never exceed the capture ceiling (D-451 wide-surface blank strips).
+ *
+ * - `bits`     — the declared/sanitized row bit-width (drives the ruler labels).
+ * - `gridBits` — max(bits, widest row): how many bit-cells the grid must span
+ *                to enclose every field rect.
+ * - `BIT_W`    — per-bit pixel width; shrunk (fractional allowed) only when
+ *                `gridBits * baseBIT_W` would exceed PACKET_MAX_GRID_PX.
+ * - `GRID_W`   — `gridBits * BIT_W`, always <= PACKET_MAX_GRID_PX.
+ *
+ * Pure / DOM-free. A strict no-op for well-formed specs whose rows fill exactly
+ * `bitWidth` and whose grid is under the ceiling: gridBits === bits and BIT_W
+ * is unchanged, so `GRID_W === bits * baseBIT_W` exactly as before.
+ */
+export function computeGridMetrics(spec: PacketSpec): { bits: number; gridBits: number; BIT_W: number; GRID_W: number } {
   const bits = sanitizePacketBitWidth(spec.bitWidth);
-  const L = defaultLayout(bits);
+  const baseBIT_W = defaultLayout(bits).BIT_W;
+  const gridBits = Math.max(1, Math.max(bits, maxRowBits(spec.sections)));
+  let BIT_W = baseBIT_W;
+  if (gridBits * BIT_W > PACKET_MAX_GRID_PX) {
+    BIT_W = PACKET_MAX_GRID_PX / gridBits;
+  }
+  return { bits, gridBits, BIT_W, GRID_W: gridBits * BIT_W };
+}
+
+export function computeDimensions(spec: PacketSpec): { width: number; height: number; layout: LayoutConfig } {
+  // Coerce to a positive integer so the grid width and the ruler agree with the
+  // plugin (which sanitizes identically) — a fractional/degenerate bitWidth can
+  // never drive geometry. The grid may be WIDER than bits*BIT_W (a row wider
+  // than bitWidth) and its BIT_W may be shrunk to hold the capture ceiling; the
+  // shared computeGridMetrics is the single source both consume.
+  const { bits, GRID_W, BIT_W } = computeGridMetrics(spec);
+  const L: LayoutConfig = { ...defaultLayout(bits), BIT_W };
 
   const sections = spec.sections ?? [];
   const numSections = sections.length;
   // Gutter widths on each side (shared with the renderer via a single helper
   // so layout sizing and drawing can never drift out of agreement).
   const { left: bracketLeftW, right: bracketRightW } = computeBracketGutters(sections, L);
-
-  const GRID_W = bits * L.BIT_W;
   const width = L.LEFT_PAD + bracketLeftW + L.LABEL_W + GRID_W + bracketRightW + L.LEFT_PAD;
   const subtitleH = spec.subtitle ? L.SUBTITLE_H + 6 : 6;
   const height =

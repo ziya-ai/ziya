@@ -1,0 +1,55 @@
+{
+ "type": "packet",
+ "definition": {
+  "type": "packet",
+  "title": "Bad brackets",
+  "sections": [
+   {
+    "label": "Sec",
+    "rows": [
+     [
+      [
+       "f0",
+       8
+      ]
+     ],
+     [
+      [
+       "f1",
+       8
+      ]
+     ],
+     [
+      [
+       "f2",
+       8
+      ]
+     ]
+    ],
+    "brackets": [
+     {
+      "start_row": 2,
+      "end_row": 0,
+      "label": "inverted"
+     },
+     {
+      "start_row": 0,
+      "end_row": 2,
+      "label": "outer"
+     },
+     {
+      "start_row": 1,
+      "end_row": 1,
+      "label": "mid"
+     },
+     {
+      "start_row": 0,
+      "end_row": 2,
+      "label": "outer2"
+     }
+    ]
+   }
+  ]
+ },
+ "intent": "Degenerate/overlapping brackets: inverted start>end and colliding co-extensive spans"
+}
