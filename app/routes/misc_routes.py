@@ -294,12 +294,17 @@ async def abort_stream(request: Request):
                 content={"error": "conversation_id is required"}
             )
             
-        # Stream lifecycle is managed by the SSE generator and the
-        # frontend AbortController; the server has no state to clean up.
-        # This endpoint is retained so the client's abort POST lands in
-        # the server log, which is useful for debugging.
-        logger.info(f"Explicitly aborting stream for conversation: {conversation_id}")
-        return JSONResponse(content={"status": "success", "message": "Stream aborted"})
+        # The turn is a server-owned task (app.agents.chat_turn_relay), and
+        # a dropped socket deliberately does NOT cancel it — that is what
+        # makes reload/cross-window reattach possible.  So this POST, which
+        # the frontend has always sent on Stop, is now the cancel.
+        from app.agents import chat_turn_relay
+        cancelled = await chat_turn_relay.cancel_turn(conversation_id, reason="client stop")
+        logger.info(f"Explicitly aborting stream for conversation: {conversation_id} "
+                    f"(relayed turn cancelled={cancelled})")
+        return JSONResponse(content={
+            "status": "success", "message": "Stream aborted", "cancelled": cancelled,
+        })
     except Exception as e:
         logger.error(f"Error aborting stream: {str(e)}")
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -318,9 +323,15 @@ async def retry_throttled_request(request: Request):
         
         # Forward to the main streaming endpoint with fresh retry attempts
         from app.server import _keepalive_wrapper, stream_chunks
+        from app.agents import chat_turn_relay
+
+        # Same relay hand-off as /api/chat, so a retried turn can be
+        # reattached after a reload exactly like a first attempt.
+        _conv = body.get("conversation_id")
+        await chat_turn_relay.start_turn(_conv, stream_chunks(body))
 
         return StreamingResponse(
-            _keepalive_wrapper(stream_chunks(body)),
+            _keepalive_wrapper(chat_turn_relay.subscribe(_conv)),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
