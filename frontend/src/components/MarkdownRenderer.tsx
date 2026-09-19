@@ -38,6 +38,17 @@ import '../styles/messageContentOverflow.css';
 // stroke at all, so quoted text is indistinguishable from an indented
 // paragraph. See styles/blockquoteAffordance.css.
 import '../styles/blockquoteAffordance.css';
+// D-323: light-theme Prism token colours below the 4.5:1 text floor. The
+// `.token.variable` (#e36209=3.28:1) and `.token.atrule` (#cc99cd=2.19:1)
+// tokens are illegible on the light code surface; index.css/prism-tomorrow.css
+// are out of scope so the corrected light values live in a writable stylesheet.
+import '../styles/prismLightTokenContrast.css';
+// D-022 (unblocks D-013/D-014 on w2-11/w2-14/w2-15): markdown table gridline
+// contrast. index.css sets no border rule for `.message .message-content`
+// markdown tables, so light gridlines fall to a faint UA default (~1.45:1,
+// below the 3:1 boundary floor). This adds theme-resolved gridline colours
+// (#6e7681 light, #8b949e dark) in a writable stylesheet.
+import '../styles/messageTableGridlineContrast.css';
 // The LaTeX normalisation and KaTeX options live in a dependency-free
 // CommonJS module because the HTML exporter's Node subprocess requires the
 // same file (see app/utils/conversation_exporter.py).  Sharing the file is
@@ -53,13 +64,13 @@ import {
     undoDiff,
     parseHunkStatuses
 } from '../apis/chatApi';
-import { extractAllFilesFromDiff, checkFilesInContext, findSupersededDiffParts } from '../utils/diffUtils';
+import { extractAllFilesFromDiff, checkFilesInContext, findSupersededDiffParts, findRejectedDiffIndices } from '../utils/diffUtils';
 import { formatMCPOutput } from '../utils/mcpFormatter';
 import { useProject } from '../context/ProjectContext';
 import { useSendPayload } from '../hooks/useSendPayload';
 import { useStreamingContext } from '../context/StreamingContext';
 import { parseD3Spec } from '../utils/d3SpecParser';
-import { escapeNestedBacktickFences, stripBareProseFences, matchFenceOpen, applyOutsideFences, applyOutsideCodeSpans, splitJsonSpecTrailingContent, upgradeNestedFences, repairAtomicFenceRuns, repairGluedFenceOpeners, isPreformattedTextToken, isFenceClosed } from './fenceScanner';
+import { escapeNestedBacktickFences, stripBareProseFences, matchFenceOpen, applyOutsideFences, applyOutsideCodeSpans, splitJsonSpecTrailingContent, upgradeNestedFences, repairAtomicFenceRuns, repairGluedFenceOpeners, isPreformattedTextToken, isFenceClosed, reabsorbLeakedTailContent } from './fenceScanner';
 import { convertLatexDelimiterDialects } from '../utils/latexDelimiterDialects';
 import { convertMarkdownDialects } from '../utils/markdownDialects';
 import {
@@ -72,7 +83,7 @@ import {
 } from '../utils/inlineMathClassifier';
 import { protectThinkingMath, restoreThinkingMath, hasThinkingMathMarkers } from '../utils/thinkingMath';
 import { THINKING_MARKED_OPTIONS } from '../utils/thinkingHtml';
-import { applyMusicDarkTheme, VALID_DURATION_BASES, MIN_OCTAVE, MAX_OCTAVE } from '../utils/d3Plugins/musicPlugin';
+import { applyMusicDarkTheme, applyMusicLightTheme, VALID_DURATION_BASES, MIN_OCTAVE, MAX_OCTAVE } from '../utils/d3Plugins/musicPlugin';
 
 /**
  * Split a text run into literal text and rendered inline-math, decoding each
@@ -4751,6 +4762,10 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
     // Pre-scan diff tokens to detect superseded individual file sections.
     // Map: rendered token index → superseded file-section indices.
     const supersededParts = new Map<number, Set<number>>();
+    // Token indices of fences the SERVER refused at validation time (see
+    // buildDiffRejectionNotice). Authoritative: no range/body heuristic can
+    // un-supersede one of these.
+    const rejectedDiffIndices = new Set<number>();
     // headed diff.  LLMs (especially Opus) sometimes emit multiple ```diff
     const absorbedDiffIndices = new Set<number>();
 
@@ -4777,6 +4792,13 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
             diffTokenIdx.push(i);
             diffTokenTexts.push(tok.text);
         }
+        // Hash the RAW bodies, before chaining/header synthesis rewrite them:
+        // the server hashed what the model emitted. The rejection markers are
+        // HTML-comment tokens elsewhere in the same message.
+        const messageRaw = tokens.map(t => (t as TokenWithText).raw || '').join('\n');
+        findRejectedDiffIndices(messageRaw, diffTokenTexts).forEach(k => {
+            rejectedDiffIndices.add(diffTokenIdx[k]);
+        });
         const chained = chainHeaderlessContinuationDiffs(diffTokenTexts);
         diffTokenIdx.forEach((tokIdx, k) => {
             if (chained[k] !== diffTokenTexts[k]) {
@@ -4884,7 +4906,8 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                     }
 
                     const supersededFileIndices = supersededParts.get(index);
-                    const singleFileSuperseded = forcedSuperseded || supersededFileIndices?.has(0) === true;
+                    const serverRejected = rejectedDiffIndices.has(index);
+                    const singleFileSuperseded = forcedSuperseded || serverRejected || supersededFileIndices?.has(0) === true;
                     // Gate the Apply button on THIS block's fence being closed
                     // rather than on the whole response having finished.  The
                     // decision lives in isApplyGated (see there for why the
@@ -4919,7 +4942,12 @@ const renderTokens = (tokens: (Tokens.Generic | TokenWithText)[], enableCodeAppl
                         const fileDiffs = splitMultiFileDiffs(cleanedDiff);
                         if (fileDiffs.length > 1) {
                             console.log('🎨 MarkdownRenderer - Rendering multi-file diff');
-                            return renderMultiFileDiff(diffToken, index, enableCodeApply, isDarkMode, onOpenShellConfig, supersededFileIndices, isStreaming, fenceClosed);
+                            // A server rejection covers the whole fence, so every
+                            // file section in it is superseded, not just index 0.
+                            const sectionSuperseded = serverRejected
+                                ? new Set(fileDiffs.map((_, i) => i))
+                                : (supersededFileIndices ?? new Set<number>());
+                            return renderMultiFileDiff(diffToken, index, enableCodeApply, isDarkMode, onOpenShellConfig, sectionSuperseded, isStreaming, fenceClosed);
                         }
                     }
 
@@ -6432,6 +6460,15 @@ export const MusicInlineRenderer: React.FC<{ dsl: string; isDarkMode: boolean }>
                 // being recoloured do not exist until then.
                 if (isDarkMode) {
                     applyMusicDarkTheme(containerRef.current?.querySelector('svg') ?? null);
+                } else {
+                    // Light mode: VexFlow draws the stave/barline rules at
+                    // #999999 (2.85:1 on white -- below the 3:1 graphical floor,
+                    // D-173), so the thin lines drop under the anti-alias
+                    // threshold as the inline snippet scales down.  Mirror the
+                    // fenced-block path (renderMusicSpec) and darken just those
+                    // rules to #6b6b6b (5.33:1 on white; still 3.09:1 on the
+                    // dark surface, so the value is safe on either background).
+                    applyMusicLightTheme(containerRef.current?.querySelector('svg') ?? null);
                 }
                 if (!cancelled) setIsReady(true);
             } catch (error) {
@@ -6898,8 +6935,13 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
     // the existing raw-HTML token path renders through DOMPurify. Done OUTSIDE
     // fenced code (so a literal [^1]/": " line/<details> in code survives) and
     // BEFORE the "[" ReDoS guards below (footnote syntax contains "[").
+    // convertMarkdownDialects handles inline-code-span protection INTERNALLY:
+    // <details>/definition-list transforms run outside code spans, while
+    // footnotes run on the full segment so a footnote definition body ending in
+    // an inline `code` span is not truncated (D-328 w3-05). It must therefore
+    // NOT be wrapped in applyOutsideCodeSpans here.
     processedMarkdown = applyOutsideFences(processedMarkdown, part =>
-        applyOutsideCodeSpans(part, convertMarkdownDialects));
+        convertMarkdownDialects(part));
     // Split by code fences first so we don't replace $$ inside them.
     // Odd-indexed segments are code blocks; only process even segments.
     {
@@ -7075,39 +7117,13 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = memo(({ markdow
         }
     );
 
-    // Pass 2: End-of-string — short orphaned content after last closing fence
-    // Restrict the regex to a small tail window to avoid catastrophic
-    // backtracking on long markdown.  The pattern
-    //   (?:[^\n]{0,80}\n?){1,5}
-    // with no start anchor and a `$` end anchor is O(N · 2^k) on
-    // strings that don't match — observed at 13s on a 113KB message.
-    // The leak guard caps content at 120 chars, so a 1000-char tail
-    // window is more than enough to find any real leak (5 lines × 80
-    // chars + fence = ~410 chars worst case).
-    {
-        const TAIL_LEN = 1000;
-        const tailStart = Math.max(0, processedMarkdown.length - TAIL_LEN);
-        const tail = processedMarkdown.slice(tailStart);
-        // (?<!`) lookbehind prevents matching ``` inside longer fences
-        // like ```` (4-backtick tool blocks).
-        const tailRe = /(?<!`)```([ \t]*\n)((?:[^\n]{0,80}\n?){1,5})$/;
-        const m = tail.match(tailRe);
-        if (m && typeof m.index === 'number') {
-            const newline = m[1];
-            const leaked = m[2];
-            const trimmed = leaked.trim();
-            const tooLong = !trimmed || trimmed.length > 120;
-            const hasBlankLine = (newline + leaked).includes('\n\n');
-            const hasInnerFence = leaked.includes('```');
-            if (!tooLong && !hasBlankLine && !hasInnerFence) {
-                console.debug('🔧 Fence fix (tail): reabsorbed leaked content:', trimmed);
-                processedMarkdown =
-                    processedMarkdown.slice(0, tailStart) +
-                    tail.slice(0, m.index) +
-                    trimmed + '\n```';
-            }
-        }
-    }
+    // Pass 2: End-of-string — short orphaned content after last closing fence.
+    // Lives in fenceScanner so its regex can be unit-tested for time as well
+    // as output: the inline version's optional-newline repetition was
+    // exponential on a long final line (39.5 s on a real 40 KB message —
+    // the 23 s conversation-switch freeze), which the 1000-char tail window
+    // did not bound. See reabsorbLeakedTailContent.
+    processedMarkdown = reabsorbLeakedTailContent(processedMarkdown);
 
     // Fix code fences with invalid language tags.
     // LLMs sometimes produce fences like 

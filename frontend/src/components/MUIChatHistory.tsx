@@ -324,12 +324,16 @@ const ChatTreeItem = memo<ChatTreeItemProps>((props) => {
         backgroundColor: props.isCurrentItem
           ? (isDarkMode ? '#177ddc' : '#e6f7ff')
           : isTargetFolder
-            ? (isDarkMode ? 'rgba(23,125,220,0.16)' : 'rgba(24,144,255,0.08)')
+            ? (isDarkMode ? 'rgba(23,125,220,0.16)' : 'rgba(0,0,0,0.05)')
             : undefined,
-        // Outline rather than fill: the target folder is a pointer, not a
-        // selection, and must not read as "this is what I'm looking at".
-        boxShadow: isTargetFolder && !props.isCurrentItem
-          ? `inset 0 0 0 1px ${isDarkMode ? '#177ddc' : '#1890ff'}`
+        // The target folder is a pointer, not a selection, and must rank
+        // below the open conversation's fill.  A 1px edge is a higher-
+        // contrast feature than a wash whatever its colour, so on a light
+        // surface it out-ranks the pale #e6f7ff fill; there the folder gets a
+        // neutral grey wash only.  In dark mode the fill is saturated and the
+        // outline sits comfortably beneath it.
+        boxShadow: isTargetFolder && !props.isCurrentItem && isDarkMode
+          ? 'inset 0 0 0 1px #177ddc'
           : undefined,
         color: props.isCurrentItem && isDarkMode ? '#fff' : undefined,
       }}

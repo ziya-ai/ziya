@@ -20,6 +20,10 @@ export type SyncMessageType =
   | 'streaming-chunk'
   | 'streaming-state'
   | 'streaming-ended'
+  // "Is any tab streaming this conversation?"  A tab that owns the turn
+  // replies by re-posting 'streaming-state'.  Used by ChatTurnReattachWatcher
+  // to avoid reattaching to a turn this browser is already mirroring.
+  | 'streaming-probe'
   | 'folders-changed'
   | 'delegate-status-changed';
 
