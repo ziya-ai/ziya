@@ -187,6 +187,10 @@ class AnthropicDirectProvider(LLMProvider):
         Cache the conversation boundary (second-to-last message) so that
         on multi-turn conversations prior turns get reused.
 
+        Applied on every call including iteration 0 — the first call of
+        each user turn — otherwise history is never cache-read at turn
+        start.  Same fix as BedrockProvider.prepare_cache_control.
+
         The Anthropic Messages API allows at most 4 cache breakpoints per
         request — the same limit Bedrock enforces, and BedrockMantleProvider
         inherits this method while talking to Bedrock behind the gateway.
@@ -198,7 +202,7 @@ class AnthropicDirectProvider(LLMProvider):
             logger.info("🧪 PROMPT_CACHE: disabled via ZIYA_DISABLE_PROMPT_CACHE=1")
             return messages
 
-        if iteration == 0 or len(messages) < 3:
+        if len(messages) < 3:
             return messages
 
         import copy
