@@ -23,8 +23,10 @@ function makeContainer(opts: { scrollHeight?: number; clientHeight?: number } = 
     return {
         el,
         setScrollHeight: (h: number) => { scrollHeight = h; },
-        /** Simulate the browser: move scrollTop then dispatch 'scroll'. */
-        scrollTo: (top: number) => { el.scrollTop = top; el.dispatchEvent(new Event('scroll')); },
+        /** Simulate a USER scroll: the wheel input that drives it, then the
+         *  browser moving scrollTop and dispatching 'scroll'.  Programmatic
+         *  scrolls (no input) are covered in scrollVelocityProgrammatic.test.ts. */
+        scrollTo: (top: number) => { el.dispatchEvent(new Event('wheel')); el.scrollTop = top; el.dispatchEvent(new Event('scroll')); },
     };
 }
 
