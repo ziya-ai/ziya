@@ -18,7 +18,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.576162Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "56b0eb52ca52f5242335a00e6ad960dac2656871ffd3ade814341c98ae1e7602",
+     "validated_at": "2026-09-19T03:27:35.638778Z"
+    },
+    "dark": {
+     "hash": "b7e5064afb008a8ef2a012040784391309943334b930c91d4c89a751c2be167c",
+     "validated_at": "2026-09-19T03:27:35.664899Z"
+    }
+   }
   },
   "plotly-w1-02": {
    "themes": [
@@ -36,7 +46,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.579158Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "0f08887f78a2a922ad9909e202fbd0b1a9de1dde5aeb93d2a2b138acee7363cd",
+     "validated_at": "2026-09-19T03:28:19.438885Z"
+    },
+    "dark": {
+     "hash": "bea7d4b87bf1cf96787d28bec1d2549568843d7aa66610c978a516c744408537",
+     "validated_at": "2026-09-19T03:28:19.462244Z"
+    }
+   }
   },
   "plotly-w1-06": {
    "themes": [
@@ -54,7 +74,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.582261Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "ff23595037cb73ee5a19a0744c2e0c82e85898c6084ff10dcab2e9ee5297dfa1",
+     "validated_at": "2026-09-19T03:29:02.158758Z"
+    },
+    "dark": {
+     "hash": "c33e8f240aae69b0c91d002d96ded87e19a09ef49bb22c6433b7a56df517fd56",
+     "validated_at": "2026-09-19T03:29:02.173904Z"
+    }
+   }
   },
   "plotly-w1-07": {
    "themes": [
@@ -72,7 +102,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.584912Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "61dd8a8979360f34db489e3dfb04bc71070162f2b0dc96aa280543d1aa0d5c7d",
+     "validated_at": "2026-09-19T03:29:51.055466Z"
+    },
+    "dark": {
+     "hash": "1057af6c0a4b28d46e00bd75cbdac80b080bfda67f5f6612199df6b73afda9a0",
+     "validated_at": "2026-09-19T03:29:51.071507Z"
+    }
+   }
   },
   "plotly-w1-11": {
    "themes": [
@@ -90,7 +130,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.587474Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "3f76a4ee49f07370678c8a6f3cda52a84b7837861619d12056aef734eb5b2d62",
+     "validated_at": "2026-09-19T03:30:34.491266Z"
+    },
+    "dark": {
+     "hash": "1e7e0c0c452ba9cdb103170fc2970ea0166c7205c13c96b16c2a29869ed1afa1",
+     "validated_at": "2026-09-19T03:30:34.523304Z"
+    }
+   }
   },
   "plotly-w1-12": {
    "themes": [
@@ -108,7 +158,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.589516Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "1bc0712d1dc6e5c21cd0f878ede5c22874a16b84c24416e994b3d129902ab0b9",
+     "validated_at": "2026-09-19T03:31:18.826418Z"
+    },
+    "dark": {
+     "hash": "7798f472920616373b0e525362933bd5511716a214a324aaffeb43f54d80b70b",
+     "validated_at": "2026-09-19T03:31:18.854095Z"
+    }
+   }
   },
   "plotly-w1-13": {
    "themes": [
@@ -137,7 +197,17 @@
      "signature": "annotation-arrow-unthemed:dark",
      "at": "2026-09-15T08:56:14.260951Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "76d46dba1eae97f55befbcb64ed91c64e0ee3675773f322b236bb0cd8e33f2af",
+     "validated_at": "2026-09-19T03:32:08.282723Z"
+    },
+    "dark": {
+     "hash": "015ec2ee67e24ffe564a17b7bb421d9952ff0276f4799f81a8657bdf737b2571",
+     "validated_at": "2026-09-19T03:32:08.299702Z"
+    }
+   }
   },
   "plotly-w2-01": {
    "themes": [
@@ -160,7 +230,17 @@
      "signature": "string-title-silently-dropped",
      "at": "2026-09-15T08:56:14.195590Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "a9e1000904e81933cf56151de120f3418093d04735eb7e40454f0998abc06ac5",
+     "validated_at": "2026-09-19T03:35:36.696721Z"
+    },
+    "dark": {
+     "hash": "4302e79f64a9a65da59f0ff9f3ea4815738d7618af4599d808b429f46ae6a4fa",
+     "validated_at": "2026-09-19T03:35:36.713085Z"
+    }
+   }
   },
   "plotly-w2-06": {
    "themes": [
@@ -183,8 +263,23 @@
      "origin": "D-215",
      "signature": "in-shape-text-autoshrink-below-legibility",
      "at": "2026-09-15T08:56:14.176967Z"
+    },
+    {
+     "origin": "D-456",
+     "signature": "auto-insidetext-below-floor-on-colorway-fill",
+     "at": "2026-09-19T03:50:58.388665Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "4cc8b80ba977861b12105ab7240026121c9bf58dc6c222e57c127aba845c9b23",
+     "validated_at": "2026-09-19T03:23:33.159035Z"
+    },
+    "dark": {
+     "hash": "b765014ef7659ee1f3d36ed108b067efe6caefd0c835d5c2ace53d6a6102232e",
+     "validated_at": "2026-09-19T03:23:33.185847Z"
+    }
+   }
   },
   "plotly-w2-08": {
    "themes": [
@@ -202,7 +297,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.606946Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "b8310b920861be093e59f7ed555e8502d15da85e01b9bfce31589dec3a274cb6",
+     "validated_at": "2026-09-19T03:38:02.828506Z"
+    },
+    "dark": {
+     "hash": "7121ab80f671b78bacee38654c3fc8036a491cb6493c77e48f1b514843adc825",
+     "validated_at": "2026-09-19T03:38:02.860277Z"
+    }
+   }
   },
   "plotly-w2-09": {
    "themes": [
@@ -220,7 +325,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.610487Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "c99ab93d7851e9a24684c525b35b3a89115059fff7d665944897f752703ff556",
+     "validated_at": "2026-09-19T03:40:20.472501Z"
+    },
+    "dark": {
+     "hash": "e935df2c2f0d3fb5426343e4b98e08bfcc15f08b94233f2553a44ba097b046d4",
+     "validated_at": "2026-09-19T03:40:20.489581Z"
+    }
+   }
   },
   "plotly-w2-14": {
    "themes": [
@@ -244,7 +359,17 @@
      "signature": "hardcoded-fixed-margin-no-automargin",
      "at": "2026-09-15T08:56:14.156402Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "17fa64b311589b4ee7f3f5f8b56e5c461d908ac376ab1e62fec41e89e39a1cf3",
+     "validated_at": "2026-09-19T03:43:17.497311Z"
+    },
+    "dark": {
+     "hash": "369e552be6ed059ef5d5594985802ef973684a50caa73ec54ab6605f3f773c19",
+     "validated_at": "2026-09-19T03:43:17.527260Z"
+    }
+   }
   },
   "plotly-w3-01": {
    "themes": [
@@ -262,7 +387,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.617716Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "03c72dcdf62bb5007dee922591be9f672d29938f3c077b34ec36ac5070ffa9c5",
+     "validated_at": "2026-09-19T03:44:22.094029Z"
+    },
+    "dark": {
+     "hash": "e95e48be760c28c28d7f2bac094d8411c554e575040dada795c0730cea59ce67",
+     "validated_at": "2026-09-19T03:44:22.109285Z"
+    }
+   }
   },
   "plotly-w3-08": {
    "themes": [
@@ -280,7 +415,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.620671Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "b8f45381e2341010e968addc246efc449236094eaa0f6ff300ead5007b4778b2",
+     "validated_at": "2026-09-19T03:45:43.639994Z"
+    },
+    "dark": {
+     "hash": "c19acb4bca55bdabb93e0b4b5bf9488b5f543b3c5e714795ddcd0209ec3cfda7",
+     "validated_at": "2026-09-19T03:45:43.656071Z"
+    }
+   }
   },
   "plotly-w4-01": {
    "themes": [
@@ -303,7 +448,17 @@
      "signature": "render-timeout-30s-malformed-json-no-repair",
      "at": "2026-09-15T08:56:14.052367Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "d37a09bc91cddae9aae6b61f42b989dba6a333c1ca78fe07b73bb2c736d02778",
+     "validated_at": "2026-09-19T03:47:34.250564Z"
+    },
+    "dark": {
+     "hash": "215e2d18e32d2f90bf923b903bd786c7d5663d6de76378a89a2ad0fe7cd54099",
+     "validated_at": "2026-09-19T03:47:34.278186Z"
+    }
+   }
   },
   "plotly-w4-06": {
    "themes": [
@@ -321,7 +476,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.631493Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "852ed193a4bd8c83960878ec10e995ec66829f7d9fb36ceb9a7c92a541b2db78",
+     "validated_at": "2026-09-19T03:48:25.926545Z"
+    },
+    "dark": {
+     "hash": "89e8e83136464e76aabbaf7a85aa417586b45b641efa197ae5eac120d3fd9172",
+     "validated_at": "2026-09-19T03:48:25.942697Z"
+    }
+   }
   },
   "plotly-w4-09": {
    "themes": [
@@ -339,7 +504,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.635845Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "2120e053bc95043ed2143128b1bf623f251843da7218b8e47089ec6967964376",
+     "validated_at": "2026-09-19T03:49:46.257232Z"
+    },
+    "dark": {
+     "hash": "8ef27bde36316f27e08c44fc5bd575bbe966528358c7240d9519ca11d0cf6c3e",
+     "validated_at": "2026-09-19T03:49:46.273447Z"
+    }
+   }
   },
   "plotly-w4-15": {
    "themes": [
@@ -362,7 +537,17 @@
      "signature": "render-timeout-30s-malformed-json-no-repair",
      "at": "2026-09-15T08:56:14.081357Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "cc899a55eeba02ad7d841b82eb404a9608a03daf4433c663b814cae5a0a1aa2a",
+     "validated_at": "2026-09-19T03:50:44.882819Z"
+    },
+    "dark": {
+     "hash": "232b9bc36072ccfd53256848dbddc4b33995f25fbe45f63bafc1c3efb39b946a",
+     "validated_at": "2026-09-19T03:50:44.899005Z"
+    }
+   }
   },
   "plotly-w4-02": {
    "themes": [
@@ -380,7 +565,17 @@
      "signature": "render-timeout-30s-malformed-json-no-repair",
      "at": "2026-09-15T08:56:14.054887Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "249ec50a62914b49997d429230be30caa6a4067053568b5d348c2a45aeb52aac",
+     "validated_at": "2026-09-16T08:23:47.229016Z"
+    },
+    "dark": {
+     "hash": "ab92efa7f3c9c4a2514236d5122e686e5fbbce44ec96fe1a7c8a01782c4921fc",
+     "validated_at": "2026-09-16T08:23:47.242894Z"
+    }
+   }
   },
   "plotly-w4-03": {
    "themes": [
@@ -398,7 +593,17 @@
      "signature": "render-timeout-30s-malformed-json-no-repair",
      "at": "2026-09-15T08:56:14.058453Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "cc7e5cf2921cb7c0db3394086f989a4ea0cb312be9bac393ba8a72db5c7c382b",
+     "validated_at": "2026-09-16T08:23:47.441591Z"
+    },
+    "dark": {
+     "hash": "5f377a8fed696d8f702a9b9483407e5fbc592fbf02f127de0fc06a9a1808513e",
+     "validated_at": "2026-09-16T08:23:47.459889Z"
+    }
+   }
   },
   "plotly-w4-04": {
    "themes": [
@@ -416,7 +621,17 @@
      "signature": "render-timeout-30s-malformed-json-no-repair",
      "at": "2026-09-15T08:56:14.063027Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "ff039cd51e661328f9e6202e134938c02666393d3f8eabc68b00fb4661e2e5ad",
+     "validated_at": "2026-09-16T08:26:57.475095Z"
+    },
+    "dark": {
+     "hash": "2b5fe888686c3523a4a03e63ecb314e050fcebc42619c4c6b0b2e9b833cd0ae8",
+     "validated_at": "2026-09-16T08:26:57.497946Z"
+    }
+   }
   },
   "plotly-w4-05": {
    "themes": [
@@ -434,7 +649,17 @@
      "signature": "render-timeout-30s-malformed-json-no-repair",
      "at": "2026-09-15T08:56:14.069064Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "f403462b3f227f960f3c38c7ebc6d7379e4b49ac87c0a3eb70d1669c3123f0db",
+     "validated_at": "2026-09-16T08:25:12.618623Z"
+    },
+    "dark": {
+     "hash": "165c98a4e53fd9f6b09cc255567304c2fa9c3716b97548ff4f0f150460b045a6",
+     "validated_at": "2026-09-16T08:25:12.633673Z"
+    }
+   }
   },
   "plotly-w4-14": {
    "themes": [
@@ -452,7 +677,17 @@
      "signature": "render-timeout-30s-malformed-json-no-repair",
      "at": "2026-09-15T08:56:14.074245Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "bb6a11d57d98143644dd25b1d0b1b0028810ed8ed8c2e78c56889571182f5970",
+     "validated_at": "2026-09-16T08:35:10.066913Z"
+    },
+    "dark": {
+     "hash": "5da251026b8b9089298d88d2a707589699bfa284b9eb76be7f9e86fd1d88edf4",
+     "validated_at": "2026-09-16T08:35:10.084023Z"
+    }
+   }
   },
   "plotly-w1-04": {
    "themes": [
@@ -470,7 +705,17 @@
      "signature": "webgl-unavailable-3d-not-rendered",
      "at": "2026-09-15T08:56:14.087901Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "ce76674ac722ddf3d3783834f55cafa498c73f7b229e3cb12c38fce780b4a053",
+     "validated_at": "2026-09-17T22:00:55.017813Z"
+    },
+    "dark": {
+     "hash": "5295c7793aea3724105f821b94faf05b4fa844d09cf3d6c914f9265e3627c16d",
+     "validated_at": "2026-09-17T22:00:55.048783Z"
+    }
+   }
   },
   "plotly-w1-05": {
    "themes": [
@@ -488,7 +733,17 @@
      "signature": "webgl-unavailable-3d-not-rendered",
      "at": "2026-09-15T08:56:14.091104Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "e014a7910bbd91467a7a20ee3a1733f01c582d31ffcdd146a25b2140b2623581",
+     "validated_at": "2026-09-17T22:01:10.374269Z"
+    },
+    "dark": {
+     "hash": "184aa7beddd48cc730a0955606a84c75a0e7fa26afb39cd8ccd7083258585af1",
+     "validated_at": "2026-09-17T22:01:10.389800Z"
+    }
+   }
   },
   "plotly-w2-13": {
    "themes": [
@@ -506,7 +761,17 @@
      "signature": "webgl-unavailable-3d-not-rendered",
      "at": "2026-09-15T08:56:14.096241Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "57ac704d3c63b50dbc5854b9374df3152b54d0b150904098eb4cbbbf43674d88",
+     "validated_at": "2026-09-18T00:36:05.198767Z"
+    },
+    "dark": {
+     "hash": "e50b270ccd0cd7d37ede7cb54674d0097d272b1802257f4a6627e3ef341ac001",
+     "validated_at": "2026-09-18T00:36:05.216236Z"
+    }
+   }
   },
   "plotly-w1-10": {
    "themes": [
@@ -531,7 +796,17 @@
      "signature": "indicator-title-overlaps-layout-title",
      "at": "2026-09-15T08:56:15.027509Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "418623098d72a8e1096ea0f36465388c0f9916ae7c75e8cd8aa11df041a124bb",
+     "validated_at": "2026-09-18T04:51:02.655318Z"
+    },
+    "dark": {
+     "hash": "477e5a8c4fd7bbd9791ef7139fa42047647db11763cf240b5fcb1707ecddebd2",
+     "validated_at": "2026-09-18T04:51:02.675499Z"
+    }
+   }
   },
   "plotly-w2-03": {
    "themes": [
@@ -550,7 +825,17 @@
      "signature": "hardcoded-fixed-margin-no-automargin",
      "at": "2026-09-15T08:56:14.123798Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "dcc5d20b43d8c80ad08042626f43315f10bf3856985368a15e085116ee5408e3",
+     "validated_at": "2026-09-18T05:13:49.536895Z"
+    },
+    "dark": {
+     "hash": "b917f780e69d02bc82fec6db160309099f6d8a8d53cdcd4eca3b679ffcfb171c",
+     "validated_at": "2026-09-18T05:13:49.556653Z"
+    }
+   }
   },
   "plotly-w2-04": {
    "themes": [
@@ -574,8 +859,23 @@
      "origin": "D-305",
      "signature": "long-text-unwrapped-clipped",
      "at": "2026-09-15T08:56:15.034344Z"
+    },
+    {
+     "origin": "D-462",
+     "signature": "wrapped-yaxis-title-clipped-at-top-edge",
+     "at": "2026-09-18T05:32:18.643570Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "3ffa4d16aec7214d3ddb2ddbf7d19025c6defa09ecbf7653e5e9adc26892f5cd",
+     "validated_at": "2026-09-18T04:58:23.450285Z"
+    },
+    "dark": {
+     "hash": "bc34da3dce512a37dda4a17943c9b05e1f8d19da6c7895203a514ef1bb4d8763",
+     "validated_at": "2026-09-18T04:58:23.467315Z"
+    }
+   }
   },
   "plotly-w2-12": {
    "themes": [
@@ -594,7 +894,17 @@
      "signature": "hardcoded-fixed-margin-no-automargin",
      "at": "2026-09-15T08:56:14.151055Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "92ce2323dd073555eb24852b90ca363732b340584a5b15099c16a402427ed56a",
+     "validated_at": "2026-09-18T04:52:59.323360Z"
+    },
+    "dark": {
+     "hash": "ad7849c2839fead27b08f77e2c95e8b5959db9582c0b8443c776e8f5cebe016c",
+     "validated_at": "2026-09-18T04:52:59.342162Z"
+    }
+   }
   },
   "plotly-w1-14": {
    "themes": [
@@ -617,7 +927,17 @@
      "signature": "trace-geometry-stale-after-container-resize",
      "at": "2026-09-15T08:56:15.010108Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "49d089460409205f00214012d7a6190b8e5b706348c3bba1900c063ec88d7be4",
+     "validated_at": "2026-09-19T03:18:28.269558Z"
+    },
+    "dark": {
+     "hash": "e67fc3d35ac030a9927bca9ae44eeca55e666e40f3175b0b1b3d092e97bb1d54",
+     "validated_at": "2026-09-19T03:18:28.283253Z"
+    }
+   }
   },
   "plotly-w1-15": {
    "themes": [
@@ -635,7 +955,17 @@
      "signature": "dark-font-on-unthemed-light-surface:dark",
      "at": "2026-09-15T08:56:14.164195Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "e6d367be22b327349974b756ba74c051a492c571ab60680a88c4fd3f7b9b603e",
+     "validated_at": "2026-09-16T07:30:58.720697Z"
+    },
+    "dark": {
+     "hash": "30eb9fadfa5763da7f817dfb4c37e895a3649f37a938843f1cf5eafeee26fa6e",
+     "validated_at": "2026-09-16T07:30:58.734825Z"
+    }
+   }
   },
   "plotly-w4-07": {
    "themes": [
@@ -659,7 +989,17 @@
      "signature": "colorscale-endpoint-equals-surface-cell-invisible",
      "at": "2026-09-15T08:56:14.256164Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "2bfcb3f8a8bfc00ad6921de3d3ceb6767aec1a953afc7195d8b88370c3701924",
+     "validated_at": "2026-09-16T08:26:58.009404Z"
+    },
+    "dark": {
+     "hash": "954220223201c50331480b92987690849092ee772fa0b63f3f703ac906aa9c2d",
+     "validated_at": "2026-09-16T08:26:58.033641Z"
+    }
+   }
   },
   "plotly-w2-05": {
    "themes": [
@@ -682,8 +1022,23 @@
      "origin": "D-300",
      "signature": "trace-geometry-stale-after-container-resize",
      "at": "2026-09-15T08:56:15.012971Z"
+    },
+    {
+     "origin": "D-456",
+     "signature": "auto-insidetext-below-floor-on-colorway-fill",
+     "at": "2026-09-19T03:50:58.382513Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "58e5391225f1a504f781e4ca4e9ddd3a8e307cf0874f9173190408a26de059d7",
+     "validated_at": "2026-09-19T03:21:05.018979Z"
+    },
+    "dark": {
+     "hash": "d6a004c077d70fa921dfe434d99556dd90088348a7dc10b7060b5d3f4d29a4bb",
+     "validated_at": "2026-09-19T03:21:05.033054Z"
+    }
+   }
   },
   "plotly-w2-15": {
    "themes": [
@@ -707,7 +1062,17 @@
      "signature": "trace-geometry-stale-after-container-resize",
      "at": "2026-09-15T08:56:15.017203Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "6b38a6a8a861aa13decd862182e70eda23f6832b56b5adfd56c20c3925063c82",
+     "validated_at": "2026-09-18T05:08:06.338109Z"
+    },
+    "dark": {
+     "hash": "fcaec5b1a0bb94b6ded089b8da4a0997d3b64593bcd66b4bd88324617dcc6263",
+     "validated_at": "2026-09-18T05:08:06.353460Z"
+    }
+   }
   },
   "plotly-w2-10": {
    "themes": [
@@ -731,7 +1096,17 @@
      "signature": "render-div-vertical-misalignment-clips-figure",
      "at": "2026-09-15T08:56:15.022362Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "6c92c02aab6685550195c3cf1706c4ef58ec8a375deb20e9868d366b92243e30",
+     "validated_at": "2026-09-19T03:41:30.415534Z"
+    },
+    "dark": {
+     "hash": "0b95df7704ee30bded2e436dc3489979a052ef41a6c993ecf12eb00edec2314e",
+     "validated_at": "2026-09-19T03:41:30.451987Z"
+    }
+   }
   },
   "plotly-w2-11": {
    "themes": [
@@ -755,7 +1130,17 @@
      "signature": "render-div-vertical-misalignment-clips-figure",
      "at": "2026-09-15T08:56:15.025254Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "47741844c59024936b8a1c10a408aa2409cd34393ff2432a2b655540658830b5",
+     "validated_at": "2026-09-18T05:08:06.026849Z"
+    },
+    "dark": {
+     "hash": "e3822f6d5cb100b6a39933e6faca2192544cc3b14af04e3b162a71537ba191a0",
+     "validated_at": "2026-09-18T05:08:06.048689Z"
+    }
+   }
   },
   "plotly-w4-12": {
    "themes": [
@@ -772,8 +1157,23 @@
      "origin": "D-217",
      "signature": "string-title-silently-dropped",
      "at": "2026-09-15T08:56:14.201267Z"
+    },
+    {
+     "origin": "D-457",
+     "signature": "author-color-not-theme-repaired:dark",
+     "at": "2026-09-18T05:32:18.598159Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "7ca361693967bb25e760cfa8e4483aabd5140347b365177e7e22278177899ca9",
+     "validated_at": "2026-09-18T05:06:40.519657Z"
+    },
+    "dark": {
+     "hash": "38dcb123f733d9f061c70d1f17d275898110de27698cec50037aa22ba631ba03",
+     "validated_at": "2026-09-18T05:06:40.538398Z"
+    }
+   }
   },
   "plotly-w4-11": {
    "themes": [
@@ -791,7 +1191,17 @@
      "signature": "root-level-layout-keys-silently-dropped",
      "at": "2026-09-15T08:56:14.208014Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "2b1d398b5e1fe6738627f66f31b555708bf083ec22e303dcef8fbd4bcb0be276",
+     "validated_at": "2026-09-16T08:31:02.967538Z"
+    },
+    "dark": {
+     "hash": "6a1c92821949bd51d1f3858055835987f407794275d48fa24a2b649444bdbb6e",
+     "validated_at": "2026-09-16T08:31:02.984717Z"
+    }
+   }
   },
   "plotly-w4-10": {
    "themes": [
@@ -809,7 +1219,17 @@
      "signature": "invalid-color-token-unvalidated-fallback",
      "at": "2026-09-15T08:56:14.212395Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "7c35924eff27c4b5758a63c57cf1b59e0f13e01d901e03ac1733900c53c9c328",
+     "validated_at": "2026-09-16T08:30:06.628273Z"
+    },
+    "dark": {
+     "hash": "2a46d03c844becd4301f75265308be330571da6934a29841de1cda1671623c74",
+     "validated_at": "2026-09-16T08:30:06.640652Z"
+    }
+   }
   },
   "plotly-w4-08": {
    "themes": [
@@ -827,7 +1247,17 @@
      "signature": "four-arg-rgb-alpha-silently-dropped",
      "at": "2026-09-15T08:56:14.216955Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "4b72edf18aa9be30eb43625f6bac695ac7df93ecfb3c1731b3f02dc5a8833d20",
+     "validated_at": "2026-09-16T08:28:52.083108Z"
+    },
+    "dark": {
+     "hash": "a72fc4d2b3a492af27d6de65467225b790e0b5cce56ce0693f4c4ec325545231",
+     "validated_at": "2026-09-16T08:28:52.101424Z"
+    }
+   }
   },
   "plotly-w4-13": {
    "themes": [
@@ -845,7 +1275,17 @@
      "signature": "missing-x-appends-index-categories-series-not-aligned",
      "at": "2026-09-15T08:56:14.223872Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "30808372aa20e80559e4f097d0cd699a8c7a4947ef441fccc6b2e3bb4347b698",
+     "validated_at": "2026-09-16T08:33:44.114577Z"
+    },
+    "dark": {
+     "hash": "76dfd5562c3c4693e16370d4ef4b61217555d72a6cd5f7e385cdc4120b421357",
+     "validated_at": "2026-09-16T08:33:44.131506Z"
+    }
+   }
   },
   "plotly-w2-02": {
    "themes": [
@@ -887,8 +1327,23 @@
      "origin": "D-223",
      "signature": "sankey-node-labels-collide-no-declutter",
      "at": "2026-09-15T08:56:14.243136Z"
+    },
+    {
+     "origin": "D-461",
+     "signature": "sankey-node-labels-collide",
+     "at": "2026-09-18T05:32:18.633151Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "1edfd2a114c1511270e21732c03a22c1d9373409450f55ed7f71a6ef35147d1b",
+     "validated_at": "2026-09-18T05:21:09.981048Z"
+    },
+    "dark": {
+     "hash": "95af1cacb8d84ed6cb904b899b5478285aeb36b002be45e70dc52b76b3251fad",
+     "validated_at": "2026-09-18T05:21:10.021489Z"
+    }
+   }
   },
   "plotly-w1-03": {
    "themes": [
@@ -906,7 +1361,17 @@
      "signature": "category-axis-date-coerced",
      "at": "2026-09-15T08:56:14.250684Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "abca98472ca372cc1a57d824e1a8a007918b73731fb2720f637c038ab202796f",
+     "validated_at": "2026-09-16T07:23:51.454691Z"
+    },
+    "dark": {
+     "hash": "658e4664b32563bfe197c2626a1682d19c1dfdcc83f49b60fdfdcb7197f1cc52",
+     "validated_at": "2026-09-16T07:23:51.468167Z"
+    }
+   }
   },
   "plotly-w1-08": {
    "themes": [
@@ -924,7 +1389,17 @@
      "signature": "trace-geometry-stale-after-container-resize",
      "at": "2026-09-15T08:56:15.001976Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "94b44a521c51507b3e95be2a0d9529db194113bcff2e4c06d16af5db15a19c8c",
+     "validated_at": "2026-09-19T03:17:06.252767Z"
+    },
+    "dark": {
+     "hash": "945c6246b60e7f0bd5c21a44eb2dad9d76abd9a3b310a911f1a4e3e8fba4cfde",
+     "validated_at": "2026-09-19T03:17:06.269209Z"
+    }
+   }
   },
   "plotly-w1-09": {
    "themes": [
@@ -942,7 +1417,158 @@
      "signature": "trace-geometry-stale-after-container-resize",
      "at": "2026-09-15T08:56:15.007844Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "5e289625d8c420f72fc843e228221efa074f0843459eb4e9e5360b2c70353aea",
+     "validated_at": "2026-09-19T03:17:46.799029Z"
+    },
+    "dark": {
+     "hash": "90eccfe66f43a9ea97ce3ad6735655c15a7516f5664eb0645256a2e528f2d4bc",
+     "validated_at": "2026-09-19T03:17:46.815352Z"
+    }
+   }
+  },
+  "plotly-w3-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-212",
+     "signature": "webgl-unavailable-3d-not-rendered",
+     "at": "2026-09-18T04:46:24.808415Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "23772923c398f1b19dda233b5d08a480f355b420266eb9ba7a0ee9234a393c6d",
+     "validated_at": "2026-09-18T00:36:05.521745Z"
+    },
+    "light": {
+     "hash": "d44232f53f765b78996b370b74b3cac1a7fec51a2830dfec46f0de8f5ec95b85",
+     "validated_at": "2026-09-18T00:36:05.505997Z"
+    }
+   }
+  },
+  "plotly-w3-15": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-457",
+     "signature": "author-color-not-theme-repaired:dark",
+     "at": "2026-09-18T05:32:18.590023Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "3129d78c7360f42108d2630097156d210e90dc617d8f602b46025457f5a8e1b1",
+     "validated_at": "2026-09-18T05:03:06.158586Z"
+    },
+    "light": {
+     "hash": "b040bfdf8e3c45dc00f818ecd5cd6d70a62512e8eeaa87155c5f3f15c044a98c",
+     "validated_at": "2026-09-18T05:03:06.142806Z"
+    }
+   }
+  },
+  "plotly-w3-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-458",
+     "signature": "named-template-string-ignored",
+     "at": "2026-09-18T05:32:18.613735Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "d08094794fef6fd9132656ad2eb4230bc8d78bce048997dabd29e8be7090bcc5",
+     "validated_at": "2026-09-18T05:03:05.910877Z"
+    },
+    "light": {
+     "hash": "1a04d6d76b60410b88a20c93f0090e6a1b6bbc220e00bebaa2390c640d28af75",
+     "validated_at": "2026-09-18T05:03:05.890219Z"
+    }
+   }
+  },
+  "plotly-w3-13": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-459",
+     "signature": "author-text-on-fill-no-contrast-repair",
+     "at": "2026-09-18T05:32:18.625601Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "1295e9595b03bcb9d55ab83e518e41cb9224f759a86db4f3df8495fb18e5841c",
+     "validated_at": "2026-09-18T05:01:51.389560Z"
+    },
+    "light": {
+     "hash": "e0f50da8e99c06f920143551f801419c8ebb85b5331034b8e71d18739067c130",
+     "validated_at": "2026-09-18T05:01:51.375797Z"
+    }
+   }
+  },
+  "plotly-w3-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-456",
+     "signature": "auto-insidetext-below-floor-on-colorway-fill",
+     "at": "2026-09-19T03:50:58.394230Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "44a670be0e276cfc93a224a22be718f697050dde6e7df34608959632f0be6675",
+     "validated_at": "2026-09-19T03:25:51.867326Z"
+    },
+    "light": {
+     "hash": "01f3093a0e2c6fd9c9c59eae771177faaa3e78cc09ac79fd88ce89adc61f3533",
+     "validated_at": "2026-09-19T03:25:51.850677Z"
+    }
+   }
   }
  }
 }
