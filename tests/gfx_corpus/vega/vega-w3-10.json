@@ -1,0 +1,191 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 780,
+  "height": 470,
+  "padding": 5,
+  "autosize": {
+   "type": "fit",
+   "contains": "padding"
+  },
+  "background": "#12161c",
+  "title": {
+   "text": "Hardcoded DARK palette: #12161c bg, #1e242c fills, #eeeeee text",
+   "fontSize": 13,
+   "color": "#eeeeee"
+  },
+  "config": {
+   "axis": {
+    "labelColor": "#eeeeee",
+    "titleColor": "#eeeeee",
+    "domainColor": "#3a4450",
+    "tickColor": "#3a4450",
+    "gridColor": "#22282f"
+   },
+   "legend": {
+    "labelColor": "#eeeeee",
+    "titleColor": "#eeeeee"
+   }
+  },
+  "data": [
+   {
+    "name": "t",
+    "values": [
+     {
+      "c": "alpha",
+      "v": 31
+     },
+     {
+      "c": "beta",
+      "v": 58
+     },
+     {
+      "c": "gamma",
+      "v": 24
+     },
+     {
+      "c": "delta",
+      "v": 47
+     },
+     {
+      "c": "epsilon",
+      "v": 66
+     },
+     {
+      "c": "zeta",
+      "v": 39
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "band",
+    "domain": {
+     "data": "t",
+     "field": "c"
+    },
+    "range": "width",
+    "padding": 0.2
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "domain": {
+     "data": "t",
+     "field": "v"
+    },
+    "range": "height",
+    "nice": true
+   },
+   {
+    "name": "col",
+    "type": "ordinal",
+    "domain": {
+     "data": "t",
+     "field": "c"
+    },
+    "range": [
+     "#1e242c",
+     "#232a33",
+     "#28303a",
+     "#1a2028",
+     "#2d3641",
+     "#161b22"
+    ]
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x",
+    "title": "category"
+   },
+   {
+    "orient": "left",
+    "scale": "y",
+    "grid": true,
+    "title": "value"
+   }
+  ],
+  "legends": [
+   {
+    "fill": "col",
+    "title": "near-black series"
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "c"
+      },
+      "width": {
+       "scale": "x",
+       "band": 1
+      },
+      "y": {
+       "scale": "y",
+       "field": "v"
+      },
+      "y2": {
+       "scale": "y",
+       "value": 0
+      },
+      "fill": {
+       "scale": "col",
+       "field": "c"
+      },
+      "stroke": {
+       "value": "#3a4450"
+      },
+      "strokeWidth": {
+       "value": 1
+      }
+     }
+    }
+   },
+   {
+    "type": "text",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "c",
+       "band": 0.5
+      },
+      "y": {
+       "scale": "y",
+       "field": "v",
+       "offset": -8
+      },
+      "text": {
+       "field": "v"
+      },
+      "align": {
+       "value": "center"
+      },
+      "fill": {
+       "value": "#eeeeee"
+      },
+      "fontSize": {
+       "value": 12
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "COLOR/THEME: a deliberately dark-appropriate hardcoded palette - #12161c panel background, #eeeeee text, near-black #1e242c fills with #3a4450 strokes - which must still be legible when the page around it is light."
+}

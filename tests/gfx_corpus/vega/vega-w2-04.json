@@ -1,0 +1,116 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 520,
+  "height": 300,
+  "padding": 5,
+  "autosize": "pad",
+  "data": [
+   {
+    "name": "t",
+    "values": [
+     {
+      "k": "Aggregate end-to-end p99 request latency for the primary customer-facing ingress tier measured across all availability zones in the us-east-1 region during peak business hours",
+      "v": 91
+     },
+     {
+      "k": "Aggregate end-to-end p99 request latency for the secondary internal service mesh sidecar proxy layer measured across all availability zones in eu-west-2 during off-peak maintenance windows",
+      "v": 74
+     },
+     {
+      "k": "Cumulative count of retried idempotent write operations against the sharded metadata keyspace after transient leader-election failures",
+      "v": 63
+     },
+     {
+      "k": "Ninety-fifth percentile cold-start initialisation duration for on-demand serverless function invocations with provisioned concurrency disabled",
+      "v": 58
+     },
+     {
+      "k": "Total bytes egressed through the content delivery edge to unauthenticated anonymous clients over the trailing twenty-eight day window",
+      "v": 44
+     },
+     {
+      "k": "Mean queue residency time for low-priority asynchronous batch reconciliation jobs awaiting a free worker slot",
+      "v": 31
+     },
+     {
+      "k": "Number of distinct upstream dependency version pins invalidated by the last transitive lockfile regeneration",
+      "v": 22
+     },
+     {
+      "k": "Rate of checksum mismatch events detected during background scrub of cold archival storage volumes",
+      "v": 9
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "y",
+    "type": "band",
+    "domain": {
+     "data": "t",
+     "field": "k"
+    },
+    "range": "height",
+    "padding": 0.2
+   },
+   {
+    "name": "x",
+    "type": "linear",
+    "domain": {
+     "data": "t",
+     "field": "v"
+    },
+    "range": "width",
+    "nice": true
+   }
+  ],
+  "axes": [
+   {
+    "orient": "left",
+    "scale": "y",
+    "title": "Extremely verbose fully-qualified telemetry metric identifier as reported by the collection agent"
+   },
+   {
+    "orient": "bottom",
+    "scale": "x",
+    "title": "Observed magnitude in engine-defined normalised units",
+    "grid": true
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "enter": {
+      "y": {
+       "scale": "y",
+       "field": "k"
+      },
+      "height": {
+       "scale": "y",
+       "band": 1
+      },
+      "x": {
+       "scale": "x",
+       "value": 0
+      },
+      "x2": {
+       "scale": "x",
+       "field": "v"
+      },
+      "fill": {
+       "value": "#4c78a8"
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "SCALE/LABEL LENGTH: 8 bars whose category names are 120-190 characters each, on a left band axis, with long axis and legend titles. Probes label truncation, overflow past the frame, and post-render bbox behaviour."
+}

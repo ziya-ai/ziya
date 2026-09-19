@@ -1,0 +1,209 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 780,
+  "height": 470,
+  "padding": 5,
+  "autosize": {
+   "type": "fit",
+   "contains": "padding"
+  },
+  "title": {
+   "text": "sequence → formula → filter → impute → window (cumulative)",
+   "fontSize": 14
+  },
+  "data": [
+   {
+    "name": "src",
+    "transform": [
+     {
+      "type": "sequence",
+      "start": 0,
+      "stop": 60,
+      "step": 1,
+      "as": "i"
+     },
+     {
+      "type": "formula",
+      "as": "v",
+      "expr": "20 + 15*sin(datum.i/6) + (datum.i%7)"
+     },
+     {
+      "type": "filter",
+      "expr": "datum.i % 9 !== 4"
+     }
+    ]
+   },
+   {
+    "name": "imp",
+    "source": "src",
+    "transform": [
+     {
+      "type": "impute",
+      "field": "v",
+      "key": "i",
+      "keyvals": {
+       "signal": "sequence(0,60,1)"
+      },
+      "method": "value",
+      "value": 0
+     },
+     {
+      "type": "collect",
+      "sort": {
+       "field": "i"
+      }
+     },
+     {
+      "type": "window",
+      "ops": [
+       "sum"
+      ],
+      "fields": [
+       "v"
+      ],
+      "as": [
+       "cum"
+      ]
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "linear",
+    "domain": [
+     0,
+     59
+    ],
+    "range": "width"
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "domain": {
+     "data": "imp",
+     "field": "v"
+    },
+    "range": "height",
+    "nice": true
+   },
+   {
+    "name": "yc",
+    "type": "linear",
+    "domain": {
+     "data": "imp",
+     "field": "cum"
+    },
+    "range": "height",
+    "nice": true
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x",
+    "title": "i"
+   },
+   {
+    "orient": "left",
+    "scale": "y",
+    "grid": true,
+    "title": "v (imputed)"
+   },
+   {
+    "orient": "right",
+    "scale": "yc",
+    "title": "cumulative"
+   }
+  ],
+  "marks": [
+   {
+    "type": "area",
+    "from": {
+     "data": "imp"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "i"
+      },
+      "y": {
+       "scale": "y",
+       "field": "v"
+      },
+      "y2": {
+       "scale": "y",
+       "value": 0
+      },
+      "fill": {
+       "value": "#7fb3d5"
+      },
+      "fillOpacity": {
+       "value": 0.6
+      }
+     }
+    }
+   },
+   {
+    "type": "line",
+    "from": {
+     "data": "imp"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "i"
+      },
+      "y": {
+       "scale": "yc",
+       "field": "cum"
+      },
+      "stroke": {
+       "value": "#c0392b"
+      },
+      "strokeWidth": {
+       "value": 2
+      }
+     }
+    }
+   },
+   {
+    "type": "rule",
+    "from": {
+     "data": "imp"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "i"
+      },
+      "y": {
+       "scale": "y",
+       "value": 0
+      },
+      "y2": {
+       "scale": "y",
+       "field": "v"
+      },
+      "stroke": {
+       "value": "#2c3e50"
+      },
+      "strokeWidth": {
+       "value": 0.4
+      },
+      "strokeOpacity": {
+       "value": 0.5
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "INTERACTION/DIALECT: `sequence` generator feeding `formula`, then a gap-punching `filter`, then `impute` to restore the holes, then `window` for a cumulative sum - four less-travelled transforms chained, drawn as area + line + rule."
+}

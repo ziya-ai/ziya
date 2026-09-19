@@ -225,6 +225,102 @@ export function sanitizeVegaGeoshapeData(spec: any): number {
 }
 
 /**
+ * (D-510) Planar signed area of a linear ring in lon/lat, using the shoelace
+ * sum Σ(x₂−x₁)(y₂+y₁). In lon/lat (latitude increasing north = "up") a POSITIVE
+ * sum is a CLOCKWISE ring and a NEGATIVE sum is counter-clockwise.
+ */
+function ringSignedArea(ring: any): number {
+  if (!Array.isArray(ring) || ring.length < 4) return 0;
+  let s = 0;
+  for (let i = 0; i < ring.length - 1; i++) {
+    const p1 = ring[i], p2 = ring[i + 1];
+    if (!Array.isArray(p1) || !Array.isArray(p2)) return 0;
+    s += (p2[0] - p1[0]) * (p2[1] + p1[1]);
+  }
+  return s;
+}
+
+/**
+ * (D-510) Rewind ONE GeoJSON geometry's rings to d3-geo's winding convention:
+ * an exterior ring must be CLOCKWISE (planar area > 0) and holes
+ * counter-clockwise. d3-geo (used by Vega's `geoshape`) does NOT follow the
+ * RFC 7946 counter-clockwise-exterior rule; fed a CCW exterior ring it treats
+ * the polygon as the COMPLEMENT and fills (almost) the whole sphere — a solid
+ * flood over the panel that buries every other feature (vega-w1-11). Reversing
+ * a mis-wound ring is geometrically identity for the shape it describes, so it
+ * only ever CORRECTS a flood; a correctly-wound polygon is left untouched.
+ */
+function rewindGeometry(geom: any): void {
+  if (!geom || typeof geom !== 'object') return;
+  if (geom.type === 'Polygon' && Array.isArray(geom.coordinates)) {
+    geom.coordinates.forEach((ring: any, idx: number) => {
+      if (!Array.isArray(ring)) return;
+      const area = ringSignedArea(ring);
+      // exterior (idx 0) wants CW (area > 0); holes want CCW (area < 0).
+      const wantClockwise = idx === 0;
+      if (wantClockwise ? area < 0 : area > 0) ring.reverse();
+    });
+  } else if (geom.type === 'MultiPolygon' && Array.isArray(geom.coordinates)) {
+    for (const poly of geom.coordinates) {
+      if (!Array.isArray(poly)) continue;
+      poly.forEach((ring: any, idx: number) => {
+        if (!Array.isArray(ring)) return;
+        const area = ringSignedArea(ring);
+        const wantClockwise = idx === 0;
+        if (wantClockwise ? area < 0 : area > 0) ring.reverse();
+      });
+    }
+  } else if (geom.type === 'GeometryCollection' && Array.isArray(geom.geometries)) {
+    geom.geometries.forEach(rewindGeometry);
+  }
+}
+
+/**
+ * (D-510) Rewind every polygon in a dataset consumed by a `geoshape` transform
+ * so d3-geo does not read a mis-wound exterior ring as the whole-sphere
+ * complement. Handles the three shapes a Vega geo dataset takes: a bare
+ * `values` array of Feature / geometry rows, a single `FeatureCollection`
+ * object, and a single Feature / geometry object. Returns the number of rings
+ * reversed. No-op for a spec with no geoshape-bound polygon data.
+ */
+export function rewindVegaGeoshapePolygons(spec: any): void {
+  if (!spec || typeof spec !== 'object') return;
+  const datasetNames = new Set<string>();
+  const collect = (marks: any[]): void => {
+    if (!Array.isArray(marks)) return;
+    for (const mark of marks) {
+      if (!mark || typeof mark !== 'object') continue;
+      const transforms: any[] = Array.isArray(mark.transform) ? mark.transform : [];
+      if (transforms.some((t) => t && t.type === 'geoshape') && mark.from && typeof mark.from.data === 'string') {
+        datasetNames.add(mark.from.data);
+      }
+      if (Array.isArray(mark.marks)) collect(mark.marks);
+    }
+  };
+  collect(Array.isArray(spec.marks) ? spec.marks : []);
+  if (datasetNames.size === 0) return;
+
+  const rewindRow = (row: any): void => {
+    if (!row || typeof row !== 'object') return;
+    if (row.type === 'FeatureCollection' && Array.isArray(row.features)) {
+      row.features.forEach((f: any) => rewindGeometry(f && f.geometry));
+    } else if (row.type === 'Feature') {
+      rewindGeometry(row.geometry);
+    } else if (typeof row.type === 'string') {
+      rewindGeometry(row);
+    }
+  };
+
+  const datasets: any[] = Array.isArray(spec.data) ? spec.data : [];
+  for (const name of datasetNames) {
+    const ds = datasets.find((d) => d && d.name === name);
+    if (!ds) continue;
+    if (Array.isArray(ds.values)) ds.values.forEach(rewindRow);
+    else if (ds.values && typeof ds.values === 'object') rewindRow(ds.values);
+  }
+}
+
+/**
  * Apply every Vega graph/geometry sanitizer to a spec IN PLACE and return the
  * spec. Safe to call on any spec: it no-ops when the spec has no force/geoshape
  * transforms.
@@ -233,5 +329,95 @@ export function sanitizeVegaSpec(spec: any): any {
   if (!spec || typeof spec !== 'object') return spec;
   sanitizeVegaForceLinks(spec);
   sanitizeVegaGeoshapeData(spec);
+  rewindVegaGeoshapePolygons(spec);
+  sanitizeVegaFacetGroupTitles(spec);
   return spec;
+}
+
+/**
+ * (D-511) In a native Vega group mark that is faceted (`from.facet`), a `title`
+ * whose text expression reads the facet key via `datum.<field>` renders the
+ * literal "undefined" (e.g. 'pundefined'). Vega evaluates a mark title's text
+ * in the TITLE's own single-row data scope, where `datum` is the title datum —
+ * NOT the enclosing group's facet datum. The facet datum is reachable from a
+ * title expression only through the `parent` reference. Confusingly, the same
+ * group's `encode` blocks DO see the facet datum as `datum`, so specs commonly
+ * (and reasonably) write `datum.col` in `encode.update` and `datum.panel` in
+ * the title — only the latter is wrong, and it silently yields the undefined
+ * label rather than an error.
+ *
+ * This rewrites `datum.<f>` / `datum['<f>']` / `datum["<f>"]` to the matching
+ * `parent` form INSIDE such a group's title text signal(s), for each `<f>`
+ * named in the facet `groupby`. Scoped to (a) faceted groups, (b) their title
+ * text signals only (never `encode`, where `datum` is correct), and (c) fields
+ * that are actually facet keys — so a title referencing a genuine title-scope
+ * field, or any non-faceted title, is left untouched. Returns the number of
+ * title signals rewritten.
+ */
+export function sanitizeVegaFacetGroupTitles(spec: any): number {
+  if (!spec || typeof spec !== 'object') return 0;
+  let count = 0;
+
+  const groupbyFields = (facet: any): string[] => {
+    const gb = facet?.groupby;
+    if (!gb) return [];
+    const arr = Array.isArray(gb) ? gb : [gb];
+    const out: string[] = [];
+    for (const g of arr) {
+      if (typeof g === 'string') out.push(g);
+      else if (g && typeof g === 'object' && typeof g.field === 'string') out.push(g.field);
+    }
+    return out;
+  };
+
+  const rewriteExpr = (expr: string, fields: string[]): string => {
+    let next = expr;
+    for (const f of fields) {
+      const esc = f.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      // datum.field  -> parent.field  (dot access, whole-word field name)
+      next = next.replace(new RegExp(`\\bdatum\\.${esc}\\b`, 'g'), `parent.${f}`);
+      // datum['field'] / datum["field"] -> parent['field']
+      next = next.replace(new RegExp(`\\bdatum\\[(['"])${esc}\\1\\]`, 'g'), `parent['${f}']`);
+    }
+    return next;
+  };
+
+  // Rewrite every `signal` string that produces title TEXT: the shorthand
+  // `title.text.signal`, and any `title.encode.<set>.text.signal`. Both are
+  // evaluated in the title's data scope, so both mis-see the facet key as
+  // `datum`. Non-text title signals (e.g. an offset) are deliberately left
+  // alone to keep the rewrite narrow.
+  const rewriteTitleTextSignals = (title: any, fields: string[]): void => {
+    if (!title || typeof title !== 'object') return;
+    const t = title.text;
+    if (t && typeof t === 'object' && typeof t.signal === 'string') {
+      const r = rewriteExpr(t.signal, fields);
+      if (r !== t.signal) { t.signal = r; count++; }
+    }
+    const enc = title.encode;
+    if (enc && typeof enc === 'object') {
+      for (const setName of Object.keys(enc)) {
+        const txt = enc[setName]?.text;
+        if (txt && typeof txt === 'object' && typeof txt.signal === 'string') {
+          const r = rewriteExpr(txt.signal, fields);
+          if (r !== txt.signal) { txt.signal = r; count++; }
+        }
+      }
+    }
+  };
+
+  const walk = (marks: any[]): void => {
+    if (!Array.isArray(marks)) return;
+    for (const mark of marks) {
+      if (!mark || typeof mark !== 'object') continue;
+      const fields = groupbyFields(mark?.from?.facet);
+      if (fields.length && mark.title && typeof mark.title === 'object') {
+        rewriteTitleTextSignals(mark.title, fields);
+      }
+      if (Array.isArray(mark.marks)) walk(mark.marks);
+    }
+  };
+
+  walk(Array.isArray(spec.marks) ? spec.marks : []);
+  return count;
 }

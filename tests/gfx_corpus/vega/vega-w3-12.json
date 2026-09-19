@@ -1,0 +1,223 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 780,
+  "height": 470,
+  "padding": 5,
+  "autosize": {
+   "type": "fit",
+   "contains": "padding"
+  },
+  "title": {
+   "text": "Gradient fills: linear (→#ffffff), radial, plus gradient legend",
+   "fontSize": 14
+  },
+  "data": [
+   {
+    "name": "t",
+    "values": [
+     {
+      "c": "one",
+      "v": 40
+     },
+     {
+      "c": "two",
+      "v": 62
+     },
+     {
+      "c": "three",
+      "v": 28
+     },
+     {
+      "c": "four",
+      "v": 51
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "band",
+    "domain": {
+     "data": "t",
+     "field": "c"
+    },
+    "range": "width",
+    "padding": 0.25
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "domain": [
+     0,
+     70
+    ],
+    "range": "height",
+    "nice": true
+   },
+   {
+    "name": "ramp",
+    "type": "linear",
+    "domain": [
+     0,
+     70
+    ],
+    "range": {
+     "scheme": "lightgreyred"
+    }
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x",
+    "title": "bar"
+   },
+   {
+    "orient": "left",
+    "scale": "y",
+    "grid": true,
+    "title": "value"
+   }
+  ],
+  "legends": [
+   {
+    "fill": "ramp",
+    "type": "gradient",
+    "title": "lightgreyred ramp"
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "c"
+      },
+      "width": {
+       "scale": "x",
+       "band": 1
+      },
+      "y": {
+       "scale": "y",
+       "field": "v"
+      },
+      "y2": {
+       "scale": "y",
+       "value": 0
+      },
+      "fill": {
+       "value": {
+        "gradient": "linear",
+        "x1": 0,
+        "y1": 0,
+        "x2": 0,
+        "y2": 1,
+        "stops": [
+         {
+          "offset": 0,
+          "color": "#2c3e50"
+         },
+         {
+          "offset": 0.6,
+          "color": "#dfe6e9"
+         },
+         {
+          "offset": 1,
+          "color": "#ffffff"
+         }
+        ]
+       }
+      },
+      "stroke": {
+       "value": "#cccccc"
+      }
+     }
+    }
+   },
+   {
+    "type": "arc",
+    "encode": {
+     "enter": {
+      "x": {
+       "signal": "width*0.5"
+      },
+      "y": {
+       "signal": "height*0.3"
+      },
+      "startAngle": {
+       "value": 0
+      },
+      "endAngle": {
+       "value": 6.283
+      },
+      "outerRadius": {
+       "value": 52
+      },
+      "innerRadius": {
+       "value": 0
+      },
+      "fill": {
+       "value": {
+        "gradient": "radial",
+        "stops": [
+         {
+          "offset": 0,
+          "color": "#ffffff"
+         },
+         {
+          "offset": 1,
+          "color": "#f1c40f"
+         }
+        ]
+       }
+      },
+      "stroke": {
+       "value": "#e0e0e0"
+      }
+     }
+    }
+   },
+   {
+    "type": "text",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "c",
+       "band": 0.5
+      },
+      "y": {
+       "scale": "y",
+       "field": "v",
+       "offset": 16
+      },
+      "text": {
+       "field": "v"
+      },
+      "align": {
+       "value": "center"
+      },
+      "fill": {
+       "value": "#ffffff"
+      },
+      "fontSize": {
+       "value": 13
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "COLOR: linear and radial gradient fills on rect and arc marks, plus a gradient-filled area and a gradient legend, where every stop is a hardcoded light-anchored colour ending in #ffffff."
+}

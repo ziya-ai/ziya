@@ -1,0 +1,163 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 780,
+  "height": 470,
+  "padding": 5,
+  "autosize": {
+   "type": "fit",
+   "contains": "padding"
+  },
+  "title": {
+   "text": "Unicode ⇄ RTL ⇄ emoji label shaping — 日本語 / العربية / 🚀",
+   "fontSize": 14
+  },
+  "data": [
+   {
+    "name": "t",
+    "values": [
+     {
+      "c": "日本語テスト",
+      "v": 21
+     },
+     {
+      "c": "한국어",
+      "v": 28
+     },
+     {
+      "c": "العربية للقراءة",
+      "v": 35
+     },
+     {
+      "c": "עברית",
+      "v": 42
+     },
+     {
+      "c": "🚀🔥💧🌍",
+      "v": 49
+     },
+     {
+      "c": "Ω±≈∞≠√",
+      "v": 56
+     },
+     {
+      "c": "Ελληνικά",
+      "v": 63
+     },
+     {
+      "c": "Русский текст",
+      "v": 70
+     },
+     {
+      "c": "ไทยภาษา",
+      "v": 77
+     },
+     {
+      "c": "Zażółć gęślą jaźń",
+      "v": 84
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "band",
+    "domain": {
+     "data": "t",
+     "field": "c"
+    },
+    "range": "width",
+    "padding": 0.15
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "domain": {
+     "data": "t",
+     "field": "v"
+    },
+    "range": "height",
+    "nice": true
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x",
+    "labelAngle": -35,
+    "labelAlign": "right",
+    "labelFontSize": 11,
+    "title": "カテゴリ / الفئة / категория"
+   },
+   {
+    "orient": "left",
+    "scale": "y",
+    "grid": true,
+    "title": "値"
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "c"
+      },
+      "width": {
+       "scale": "x",
+       "band": 0.9
+      },
+      "y": {
+       "scale": "y",
+       "field": "v"
+      },
+      "y2": {
+       "scale": "y",
+       "value": 0
+      },
+      "fill": {
+       "value": "#4c78a8"
+      }
+     }
+    }
+   },
+   {
+    "type": "text",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "c",
+       "band": 0.45
+      },
+      "y": {
+       "scale": "y",
+       "field": "v",
+       "offset": -6
+      },
+      "text": {
+       "field": "c"
+      },
+      "align": {
+       "value": "center"
+      },
+      "fontSize": {
+       "value": 9
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "INTERACTION: unicode / CJK / RTL / emoji / combining-mark category labels on a rotated band axis PLUS data-bound text marks carrying the same strings, to test shaping, direction and measurement of non-Latin text."
+}

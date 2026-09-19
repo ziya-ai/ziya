@@ -2,7 +2,7 @@ import { type EmbedOptions } from 'vega-embed';
 import { D3RenderPlugin } from '../../types/d3';
 import { getZoomScript } from '../../utils/popupScriptUtils';
 import { sanitizeVegaSpec } from './vegaGraphSanitizer';
-import { tolerantParseVegaSpec, KNOWN_VEGA_SCHEMES, reconcileThemeColors } from './vegaRecovery';
+import { tolerantParseVegaSpec, KNOWN_VEGA_SCHEMES, reconcileThemeColors, reconcileNativeVegaTextInk } from './vegaRecovery';
 import { classifyColor, isDarkBackground } from './chartTheme';
 
 /**
@@ -42,6 +42,28 @@ export function isVegaLiteBody(spec: any): boolean {
     spec.encoding && typeof spec.encoding === 'object' &&
     !Array.isArray(spec.marks)
   );
+}
+
+/**
+ * (D-514) Strip a misleading Vega `$schema` from a spec already identified as a
+ * Vega-Lite BODY so it compiles in Vega-Lite mode. We pass mode:'vega-lite' to
+ * vega-embed, but vega-embed's internal guessMode reads the `$schema`, sees
+ * "/vega/", warns ("written in Vega, but mode argument sets Vega-Lite") and
+ * compiles the VL body with the VEGA parser anyway — an empty scenegraph / blank
+ * canvas (vega-w4-07). The `$schema` is NOT inert; it OVERRIDES the mode.
+ * Deleting it (rather than rewriting to a VL URL) lets guessMode fall back to
+ * the requested Vega-Lite mode with no version-mismatch warning. Returns true
+ * iff a schema was stripped. PURE (mutates spec) + exported for unit testing.
+ */
+export function reconcileVlBodySchema(spec: any): boolean {
+  if (!spec || typeof spec !== 'object') return false;
+  if (typeof spec.$schema === 'string' &&
+      spec.$schema.includes('/vega/') &&
+      !spec.$schema.includes('vega-lite')) {
+    delete spec.$schema;
+    return true;
+  }
+  return false;
 }
 
 // Detect a full-Vega spec (as opposed to Vega-Lite or other diagram types).
@@ -355,6 +377,79 @@ export function extendRecycledOrdinalSchemes(spec: any): number {
 }
 
 /**
+ * (D-513) Give a native-Vega ordinal COLOUR scale a default categorical range
+ * when it has none.
+ *
+ * A `scales[]` entry of type 'ordinal' that a legend references for a colour
+ * role (`fill` / `stroke` / `color`) but that carries NO `range` — and no
+ * `scheme` — resolves every domain entry to `undefined`: the legend renders its
+ * labels with an EMPTY swatch column and any mark filled through the scale
+ * falls back to Vega's single default hue. This is exactly vega-w3-14, a chart
+ * that authored no colour anywhere: its `col` ordinal scale drives a `series`
+ * legend but has no range. Vega-Lite auto-assigns a categorical scheme to such
+ * a scale; native Vega does not, so we inject Vega's default categorical scheme
+ * here — the legend gets swatches and the scale becomes injective.
+ *
+ * Strictly scoped so a correct spec is a no-op:
+ *  - only scales a legend uses as a colour role,
+ *  - only type 'ordinal',
+ *  - only when neither an array/string `range` nor a `range.scheme` is present
+ *    (a scale that already has colours, including via sanitizeVegaSchemes'
+ *    default-scheme fallback, is left alone).
+ * PURE + exported for unit testing. Returns the number of scales given a range.
+ */
+export function injectRangelessOrdinalColorScaleRange(spec: any): number {
+  if (!spec || typeof spec !== 'object' || !Array.isArray(spec.scales)) return 0;
+  const legends = Array.isArray(spec.legends) ? spec.legends : [];
+  const colourScaleNames = new Set<string>();
+  for (const lg of legends) {
+    if (!lg || typeof lg !== 'object') continue;
+    for (const role of ['fill', 'stroke', 'color']) {
+      if (typeof lg[role] === 'string') colourScaleNames.add(lg[role]);
+    }
+  }
+  // (D-515) A colour scale also becomes rangeless-and-fatal when it drives MARK
+  // fills/strokes with NO legend at all: vega-w4-14's `col` ordinal scale is
+  // referenced only by `rect.encode.update.fill = {scale:'col', field:'c'}`, so
+  // after sanitizeVegaSchemes drops its bespoke `{scheme:'ziyaDark'}` the scale
+  // is left with no range and every bar fill resolves to undefined — no bars.
+  // Collect the colour scales referenced by mark fill/stroke encoders too, so
+  // such a scale gets the same default categorical range the legend path grants.
+  const collectFromMarks = (marks: any): void => {
+    if (!Array.isArray(marks)) return;
+    for (const m of marks) {
+      if (!m || typeof m !== 'object') continue;
+      const enc = m.encode && typeof m.encode === 'object' ? m.encode : null;
+      if (enc) {
+        for (const phase of Object.values(enc)) {
+          if (!phase || typeof phase !== 'object') continue;
+          for (const role of ['fill', 'stroke']) {
+            const d = (phase as any)[role];
+            if (d && typeof d === 'object' && typeof d.scale === 'string') colourScaleNames.add(d.scale);
+          }
+        }
+      }
+      if (Array.isArray(m.marks)) collectFromMarks(m.marks);
+    }
+  };
+  collectFromMarks(spec.marks);
+  if (colourScaleNames.size === 0) return 0;
+
+  let injected = 0;
+  for (const sc of spec.scales) {
+    if (!sc || typeof sc !== 'object' || sc.type !== 'ordinal') continue;
+    if (typeof sc.name !== 'string' || !colourScaleNames.has(sc.name)) continue;
+    const r = sc.range;
+    const hasScheme = r && typeof r === 'object' && !Array.isArray(r) && typeof r.scheme === 'string';
+    const hasRange = Array.isArray(r) || typeof r === 'string' || hasScheme;
+    if (hasRange) continue;
+    sc.range = { scheme: 'category10' };
+    injected += 1;
+  }
+  return injected;
+}
+
+/**
  * (D-248) Reconcile a HARDCODED monochrome text-label fill against the
  * categorical fill it actually sits on.
  *
@@ -513,6 +608,181 @@ export function thinDenseDataBoundTextMarks(spec: any, maxLegibleLabels = 150): 
   };
   walk(spec.marks);
   return suppressed;
+}
+
+/**
+ * (D-509) Count the DISTINCT band categories a native-Vega axis will draw:
+ * resolve the axis' scale, then its `domain` — an explicit array's length, or
+ * the distinct values of `{data, field}` over an inline `data[].values` array.
+ * Returns null when the count is not statically knowable (a transform-generated
+ * or external domain). PURE + exported for unit testing.
+ */
+export function estimateVegaAxisBandCount(spec: any, axis: any): number | null {
+  if (!spec || typeof spec !== 'object' || !axis || typeof axis !== 'object') return null;
+  if (!Array.isArray(spec.scales)) return null;
+  const scale = spec.scales.find((s: any) => s && typeof s === 'object' && s.name === axis.scale);
+  if (!scale || typeof scale !== 'object') return null;
+  const dom = scale.domain;
+  if (Array.isArray(dom)) return dom.length || null;
+  if (!dom || typeof dom !== 'object' || typeof dom.data !== 'string' || typeof dom.field !== 'string') return null;
+  if (!Array.isArray(spec.data)) return null;
+  const dataDef = spec.data.find((d: any) => d && typeof d === 'object' && d.name === dom.data);
+  if (!dataDef || !Array.isArray(dataDef.values)) return null; // transform/external: unknowable
+  const seen = new Set<any>();
+  for (const row of dataDef.values) {
+    if (row && typeof row === 'object' && dom.field in row) seen.add(row[dom.field]);
+  }
+  return seen.size || null;
+}
+
+/**
+ * (D-509) Restore Vega's NATIVE `labelOverlap:false` on a band axis whose
+ * labels the author explicitly rotated on a DIAGONAL (a labelAngle that is not
+ * 0 / ±90 / 180) to fit them, when the band count is modest.
+ *
+ * buildVegaEmbedOptions injects a `config.axis.labelOverlap:true` DEFAULT so a
+ * high-cardinality horizontal band axis thins instead of smearing (D-280/D-281).
+ * But for a diagonally-rotated axis Vega measures each label's ROTATED bounding
+ * box, and wide CJK/emoji/RTL glyphs (vega-w3-01: 日本語テスト, 한국어, עברית,
+ * 🚀🔥💧🌍, Ω±≈∞≠√ …) over-report their extent, so the greedy overlap filter drops
+ * 5 of 10 labels even though the rotation already fanned them apart — the exact
+ * case rotation exists to solve. Setting `labelOverlap:false` on that specific
+ * axis (a per-axis prop that overrides the config default) shows every label
+ * again; a modest-count cap keeps a genuinely dense rotated axis on the thinning
+ * default. Vega's OWN default for a band/point scale is `labelOverlap:false`, so
+ * this only reverses our own over-eager global default for the rotated case.
+ *
+ * Only fires when (a) axes[] is present, (b) the axis has a numeric diagonal
+ * labelAngle, (c) it does not already set labelOverlap (author intent wins),
+ * and (d) its band count resolves to <= `maxBands`. Every other axis — a
+ * horizontal band axis, a 90° vertical-label axis, a dense rotated axis, an
+ * axis with an author labelOverlap — is left byte-for-byte unchanged. PURE +
+ * exported for unit testing. Returns the number of axes relaxed.
+ */
+export function relaxRotatedAxisLabelOverlap(spec: any, maxBands = 80): number {
+  if (!spec || typeof spec !== 'object' || !Array.isArray(spec.axes)) return 0;
+  let relaxed = 0;
+  for (const axis of spec.axes) {
+    if (!axis || typeof axis !== 'object') continue;
+    if (typeof axis.labelAngle !== 'number') continue;
+    if (Object.prototype.hasOwnProperty.call(axis, 'labelOverlap')) continue; // author intent
+    // Diagonal rotation only: 0 / ±90 / 180 are the axis-aligned cases the
+    // overlap default handles correctly; a diagonal angle is the author's own
+    // anti-collision measure that the rotated-bbox filter then over-thins.
+    const a = ((axis.labelAngle % 180) + 180) % 180; // → [0,180)
+    const isDiagonal = a > 1 && Math.abs(a - 90) > 1 && a < 179;
+    if (!isDiagonal) continue;
+    const count = estimateVegaAxisBandCount(spec, axis);
+    if (count == null || count > maxBands) continue; // unknowable / genuinely dense → keep thinning
+    axis.labelOverlap = false;
+    relaxed += 1;
+  }
+  return relaxed;
+}
+
+/**
+ * (D-508) Largest category-label length (in characters) a native-Vega axis will
+ * draw: resolve the axis' scale, then its `domain` — an explicit array's widest
+ * `String(value)`, or the widest distinct value of `{data, field}` over an
+ * inline `data[].values` array. Returns null when the domain is not statically
+ * knowable (transform-generated / external). Sibling of
+ * estimateVegaAxisBandCount. PURE + exported for unit testing.
+ */
+export function estimateVegaAxisMaxLabelChars(spec: any, axis: any): number | null {
+  if (!spec || typeof spec !== 'object' || !axis || typeof axis !== 'object') return null;
+  if (!Array.isArray(spec.scales)) return null;
+  const scale = spec.scales.find((s: any) => s && typeof s === 'object' && s.name === axis.scale);
+  if (!scale || typeof scale !== 'object') return null;
+  const measure = (v: any): number => String(v ?? '').length;
+  const dom = scale.domain;
+  if (Array.isArray(dom)) {
+    let max = 0;
+    for (const v of dom) max = Math.max(max, measure(v));
+    return max || null;
+  }
+  if (!dom || typeof dom !== 'object' || typeof dom.data !== 'string' || typeof dom.field !== 'string') return null;
+  if (!Array.isArray(spec.data)) return null;
+  const dataDef = spec.data.find((d: any) => d && typeof d === 'object' && d.name === dom.data);
+  if (!dataDef || !Array.isArray(dataDef.values)) return null; // transform/external: unknowable
+  let max = 0;
+  for (const row of dataDef.values) {
+    if (row && typeof row === 'object' && dom.field in row) max = Math.max(max, measure(row[dom.field]));
+  }
+  return max || null;
+}
+
+/** True when a Vega axis `title` prop carries visible text. */
+export function hasVegaAxisTitle(title: any): boolean {
+  if (typeof title === 'string') return title.trim().length > 0;
+  if (Array.isArray(title)) return title.some((t) => typeof t === 'string' && t.trim().length > 0);
+  if (title && typeof title === 'object' && typeof title.text === 'string') return title.text.trim().length > 0;
+  return false;
+}
+
+/**
+ * (D-508) Push a native-Vega LEFT/RIGHT band-axis TITLE clear of a wide label
+ * band.
+ *
+ * A band/point axis on the LEFT with long category labels (vega-w2-04: eight
+ * 120-190 char names) reserves a wide label column, capped at the effective
+ * `labelLimit` (the config default is 320px — see buildVegaEmbedOptions). Vega's
+ * automatic axis-title placement UNDER-measures that reserved band on the
+ * headless path: the rotated title lands only ~its own default offset from the
+ * axis line — i.e. THROUGH the middle of the truncated labels, overprinting
+ * every one (in dark, white title over white label text, illegible where they
+ * cross; the plot is also letterboxed). Vega exposes no "beyond the labels,
+ * whatever they take" title anchor, so we set an explicit `titleX` (LEFT →
+ * negative, RIGHT → positive) placing the title beyond the label band's
+ * guaranteed-maximum rendered width.
+ *
+ * The offset is sized from the labels themselves: the widest category string
+ * (bounded by the axis' effective labelLimit, since Vega truncates past it) at a
+ * conservative per-char width, plus the tick + label-padding + a gap. A
+ * SHORT-label band axis therefore stays below the `longBandLabelPx` threshold
+ * and is left byte-for-byte unchanged (no regression — Vega's own default title
+ * placement already clears short labels); only a genuinely long-label axis is
+ * repositioned.
+ *
+ * Strictly scoped so a correct spec is a no-op:
+ *  - only axes with orient left/right (a rotated, collision-prone title);
+ *  - only a band/point scale (categorical labels that can be long);
+ *  - only when the axis carries a non-empty title;
+ *  - only when the axis does not already set titleX (author intent wins);
+ *  - only when the estimated label band exceeds `longBandLabelPx`.
+ * Theme-independent (a geometry change, no colour touched). PURE (mutates spec)
+ * + exported for unit testing. Returns the number of axis titles repositioned.
+ */
+export function reserveSideBandAxisTitleGap(
+  spec: any,
+  configLabelLimit = 320,
+  opts?: { charPx?: number; tickExtentPx?: number; labelPaddingPx?: number; titleGapPx?: number; longBandLabelPx?: number },
+): number {
+  if (!spec || typeof spec !== 'object' || !Array.isArray(spec.axes)) return 0;
+  if (!Array.isArray(spec.scales)) return 0;
+  const CHAR_PX = opts?.charPx ?? 6.5;
+  const TICK_EXTENT = opts?.tickExtentPx ?? 7;
+  const LABEL_PADDING = opts?.labelPaddingPx ?? 2;
+  const TITLE_GAP = opts?.titleGapPx ?? 10;
+  const LONG_BAND_LABEL_PX = opts?.longBandLabelPx ?? 120;
+  let repositioned = 0;
+  for (const axis of spec.axes) {
+    if (!axis || typeof axis !== 'object') continue;
+    if (axis.orient !== 'left' && axis.orient !== 'right') continue;
+    if (Object.prototype.hasOwnProperty.call(axis, 'titleX')) continue; // author intent
+    if (!hasVegaAxisTitle(axis.title)) continue;
+    const scale = spec.scales.find((s: any) => s && typeof s === 'object' && s.name === axis.scale);
+    if (!scale || (scale.type !== 'band' && scale.type !== 'point')) continue;
+    const maxChars = estimateVegaAxisMaxLabelChars(spec, axis);
+    if (maxChars == null) continue; // unknowable label width → leave Vega's default
+    const effectiveLimit =
+      typeof axis.labelLimit === 'number' && axis.labelLimit > 0 ? axis.labelLimit : configLabelLimit;
+    const estWidthPx = Math.min(effectiveLimit, maxChars * CHAR_PX);
+    if (estWidthPx <= LONG_BAND_LABEL_PX) continue; // short labels → Vega default already clears
+    const reserve = Math.ceil(TICK_EXTENT + LABEL_PADDING + estWidthPx + TITLE_GAP);
+    axis.titleX = axis.orient === 'left' ? -reserve : reserve;
+    repositioned += 1;
+  }
+  return repositioned;
 }
 
 /**
@@ -755,6 +1025,50 @@ const VEGA_DATA_MARK_TYPES = new Set([
  *
  * Every branch no-ops unless its precise precondition holds. PURE + exported.
  */
+/**
+ * (D-505) Normalise a native-Vega `autosize:"none"` to Vega's responsive
+ * default so the scenegraph participates in layout and the runtime emits a
+ * proper responsive `viewBox`.
+ *
+ * `autosize:"none"` (string) or `{type:"none"}` tells Vega to skip layout
+ * fitting ENTIRELY: it sizes the SVG to the bare `width`×`height` signals, does
+ * not reserve axis/legend/title extent, and — crucially for the headless path —
+ * does NOT emit the responsive geometry that {@link postRenderSizing} and the
+ * Playwright capture measurement (`merge_declared_svg_extent` /
+ * `compute_capture_fit` in diagram_renderer.py) rely on to fit the content to
+ * the capture window. The visible symptom is a complete-but-native-size chart
+ * (donut vega-w1-05 340², sunburst w1-06 400², circle-pack w1-09 420²,
+ * force/fan w2-12 700×560) pinned to the corner of a much larger delivered
+ * canvas, ~65-93% blank in BOTH themes — a pure layout/sizing defect, the marks
+ * themselves render correctly.
+ *
+ * Replacing `none` with `{type:"pad", contains:"padding"}` (Vega's default
+ * autosize) makes the runtime lay the view out, reserve guide extent and emit a
+ * viewBox, after which the existing responsive wrapper scales the chart to the
+ * container and the capture fit enlarges an undersize surface to the legibility
+ * floor — exactly the path every native spec that already fills the frame takes.
+ *
+ * Strictly scoped so a correct spec is a no-op:
+ *  - only an `autosize` of `"none"` / `{type:"none"}` is rewritten;
+ *  - `"pad"`, `"fit"`, `"fit-x"`, `"fit-y"` (string or object) and an ABSENT
+ *    autosize are left byte-for-byte unchanged (a spec that already fits, or an
+ *    author who deliberately fit/padded, is respected);
+ *  - `width`/`height`/`padding` and all marks are untouched, so the authored
+ *    geometry (radial centres at `width/2` etc.) is preserved.
+ * Theme-independent (a sizing change, no colour touched). PURE (mutates spec) +
+ * exported for unit testing. Returns true iff the autosize was rewritten.
+ */
+export function normalizeNativeVegaAutosize(spec: any): boolean {
+  if (!spec || typeof spec !== 'object') return false;
+  const a = spec.autosize;
+  const isNone =
+    a === 'none' ||
+    (a && typeof a === 'object' && !Array.isArray(a) && a.type === 'none');
+  if (!isNone) return false;
+  spec.autosize = { type: 'pad', contains: 'padding' };
+  return true;
+}
+
 export function applyVegaMinimalDefaults(spec: any): any {
   if (!spec || typeof spec !== 'object') return spec;
 
@@ -825,6 +1139,20 @@ export function applyVegaMinimalDefaults(spec: any): any {
         s.range = scaleAxis[s.name] === 'x' ? 'width' : 'height';
       }
     }
+  }
+
+  // (2b, D-278) A width/height-ranged scale is meaningless without a top-level
+  // width/height: the range resolves to the 0-length signal, every positional
+  // channel collapses and the chart renders empty (vega-w4-15 authors scales +
+  // marks + axes but NO width/height). When a scale's range is the 'width' /
+  // 'height' signal (authored or just inferred above) and that dimension is
+  // absent, give it a sensible default plot box so the scales have a real
+  // extent to map into. A spec that already sizes itself is untouched.
+  if (Array.isArray(spec.scales)) {
+    const usesWidth = spec.scales.some((s: any) => s && s.range === 'width');
+    const usesHeight = spec.scales.some((s: any) => s && s.range === 'height');
+    if (usesWidth && spec.width === undefined) spec.width = 400;
+    if (usesHeight && spec.height === undefined) spec.height = 300;
   }
 
   // (3) bind a from-less DATA mark that references a scale to the sole dataset.
@@ -1300,13 +1628,23 @@ export const vegaPlugin: D3RenderPlugin = {
     // match the installed runtime. (D-273) Widened from a v5-only test to "any
     // /vega/ schema that isn't already v6" so a v2 dialect spec no longer keeps
     // a stale schema URL that trips a version mismatch before the mechanical
-    // v2→v3 rewrites below can help it. (D-229) Skipped for a Vega-Lite body —
-    // its schema must NOT be rewritten to a Vega URL; it is compiled in
-    // Vega-Lite mode where the (unchanged) $schema is inert.
+    // v2→v3 rewrites below can help it.
     if (!vlBody && (!vegaSpec.$schema || (typeof vegaSpec.$schema === 'string' &&
         vegaSpec.$schema.includes('/vega/') &&
         !vegaSpec.$schema.includes('vega-lite') && !vegaSpec.$schema.includes('v6')))) {
       vegaSpec.$schema = 'https://vega.github.io/schema/vega/v6.json';
+    }
+    // (D-514) A Vega-LITE body carrying a Vega `$schema` (data.values + singular
+    // `mark` + `encoding`, but $schema says /vega/v5). We ask vega-embed for
+    // mode:'vega-lite' below, but vega-embed's guessMode reads the $schema, sees
+    // "vega", warns ("written in Vega, but mode argument sets Vega-Lite") and
+    // compiles the VL body with the Vega parser anyway → an empty scenegraph, a
+    // silent blank canvas (vega-w4-07). The $schema is NOT inert; it WINS over
+    // the mode. Strip the misleading Vega schema so guessMode honours the
+    // Vega-Lite mode. Deleting (rather than rewriting to a VL URL) avoids any
+    // VL-version-mismatch warning against the installed compiler.
+    else if (vlBody) {
+      reconcileVlBodySchema(vegaSpec);
     }
     // (D-273) Rewrite the mechanical Vega v2 dialect shapes (marks.properties →
     // encode, axes.type → orient) BEFORE the runtime sees them. No-op for v3–v6.
@@ -1320,6 +1658,16 @@ export const vegaPlugin: D3RenderPlugin = {
     // range-less scale, from-less data mark). Both no-op for a correct spec.
     vegaSpec = normalizeVegaEncodeLifecycle(vegaSpec);
     vegaSpec = applyVegaMinimalDefaults(vegaSpec);
+
+    // (D-505) An `autosize:"none"` native spec sizes the SVG to the bare
+    // width×height, reserves no guide extent and does not emit the responsive
+    // viewBox the headless sizing/capture path relies on, so a complete chart
+    // renders at native size in the corner of a much larger delivered canvas
+    // (donut w1-05, sunburst w1-06, pack w1-09, force/fan w2-12). Rewrite it to
+    // Vega's default {type:'pad'} so the runtime lays the view out and emits a
+    // viewBox, after which the wrapper fills the container. No-op for pad/fit/
+    // absent autosize.
+    normalizeNativeVegaAutosize(vegaSpec);
 
     // (D-270) Coalesce split positional geometry so a mark whose driving bound
     // lives in `update` and its baseline only in `enter` (a valid, common
@@ -1386,6 +1734,17 @@ export const vegaPlugin: D3RenderPlugin = {
       extendRecycledOrdinalSchemes(vegaSpec);
     } catch { /* palette extension must never itself break a render */ }
 
+    // (D-513) Give a legend-referenced ordinal COLOUR scale a default
+    // categorical range when it has none — otherwise its swatches are empty and
+    // marks fall back to a single default hue (vega-w3-14, a chart authoring no
+    // colour). Vega-Lite auto-assigns a scheme to such scales; native Vega does
+    // not. Runs AFTER sanitizeVegaSchemes so a dropped bad scheme is already
+    // gone, and only touches scales with neither range nor scheme. No-op for a
+    // spec whose colour scales already have colours.
+    try {
+      injectRangelessOrdinalColorScaleRange(vegaSpec);
+    } catch { /* range injection must never itself break a render */ }
+
     // (D-248) Reconcile a hardcoded monochrome text-label fill against the
     // categorical fill beneath it, so labels (e.g. a treemap's per-cell names)
     // stay legible on both the light and dark cells of a categorical scheme in
@@ -1397,6 +1756,24 @@ export const vegaPlugin: D3RenderPlugin = {
       reconcileVegaTextLabelContrast(vegaSpec);
     } catch { /* label reconciliation must never itself break a render */ }
 
+    // (D-517) Reconcile an AUTHORED constant text ink on the native Vega path
+    // against the effective theme canvas. reconcileVegaGuideColors's
+    // reconcileTextMarkColors only understands the Vega-Lite mark shape and
+    // reconcileNativeVegaFills skips text marks, so a native
+    // `marks[].encode.<phase>.fill.value` (a #333333 value label on a dropped
+    // light card, an #eeeeee label on white, a #b03a2e / rgba(20,20,20,.9)
+    // caption, a #000 @0.45 overlay annotation) reached the runtime verbatim and
+    // fell below the 4.5 text floor on one theme's surface. Runs AFTER
+    // reconcileVegaTextLabelContrast so a backdrop-relative label already
+    // rewritten to a `fill.signal` is skipped (this pass only touches a constant
+    // `fill.value`); composites each ink over the resolved canvas at its own
+    // fillOpacity and repaints only a sub-floor ink with the themed readable
+    // ink. A label already legible on THIS canvas is untouched, so neither theme
+    // regresses. No-op for a spec with no native text marks.
+    try {
+      reconcileNativeVegaTextInk(vegaSpec, isDarkMode);
+    } catch { /* text-ink reconciliation must never itself break a render */ }
+
     // (D-268) Suppress a data-bound text-label layer whose bound row count
     // (inline `values` length or a `sequence` transform's derivable count)
     // exceeds what can EVER be legibly placed in a content column — 400 value
@@ -1406,6 +1783,30 @@ export const vegaPlugin: D3RenderPlugin = {
     try {
       thinDenseDataBoundTextMarks(vegaSpec);
     } catch { /* label thinning must never itself break a render */ }
+
+    // (D-509) Restore Vega's native labelOverlap:false on a modest-count band
+    // axis whose labels the author rotated diagonally (labelAngle not 0/±90/180)
+    // to fit them. The global config.axis.labelOverlap:true default (D-280/D-281)
+    // otherwise lets Vega's rotated-bbox overlap filter drop wide CJK/emoji/RTL
+    // labels (vega-w3-01: 5 of 10 axis labels dropped) even though the rotation
+    // already fanned them apart. Per-axis override; no-op for horizontal, 90°,
+    // dense, or author-labelOverlap axes.
+    try {
+      relaxRotatedAxisLabelOverlap(vegaSpec);
+    } catch { /* axis-overlap relaxation must never itself break a render */ }
+
+    // (D-508) Push a LEFT/RIGHT band-axis TITLE clear of a wide label band.
+    // Long category labels (vega-w2-04: eight 120-190 char names) reserve a wide
+    // label column (capped at the config labelLimit, 320px). Vega's automatic
+    // axis-title placement UNDER-measures that band on the headless path, so the
+    // rotated title lands through the MIDDLE of the truncated labels, overprinting
+    // every one (white-on-white in dark). Set an explicit titleX beyond the band's
+    // guaranteed-maximum width. No-op for short-label / horizontal / non-band axes,
+    // or an author-set titleX. Passes the same 320px labelLimit default
+    // buildVegaEmbedOptions injects so the reserved-band estimate matches.
+    try {
+      reserveSideBandAxisTitleGap(vegaSpec, 320);
+    } catch { /* title-gap reservation must never itself break a render */ }
 
     container.innerHTML = '';
     container.style.position = 'relative';
