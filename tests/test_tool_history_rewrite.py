@@ -145,6 +145,147 @@ class TestRewrite:
         assert out.splitlines()[0].endswith("label=\"Shell: echo 'hi'\"›")
 
 
+class TestRedundantElision:
+    """Replay-time elision of bodies provably redundant with a LATER result.
+
+    Every case here is chosen so that the elided bytes are still present
+    verbatim further down the history — that is the whole guarantee.
+    """
+
+    FULL = "\n".join(f"line {i:03d}: some content here" for i in range(60))  # ~1.8K
+    HEAD = "\n".join(FULL.splitlines()[:20])
+    TAIL = "\n".join(FULL.splitlines()[40:])
+
+    @staticmethod
+    def _read(path, body):
+        return fence("mcp_file_read", f"🔐 file read: {path}", "python", body)
+
+    @staticmethod
+    def _sh(cmd, out):
+        return fence("mcp_run_shell_command", f"🔐 Shell: {cmd}", "sh", f"$ {cmd}\n{out}")
+
+    def _ai(self, *blocks):
+        return {"type": "ai", "content": "\n\n".join(("Text.",) + blocks)}
+
+    def _run(self, hist):
+        return rewrite_tool_history(hist, elide_redundant=True)
+
+    def test_partial_read_contained_in_later_full_read_is_elided(self):
+        hist = [self._ai(self._read("a.py", self.HEAD)),
+                {"type": "human", "content": "more"},
+                self._ai(self._read("a.py", self.FULL))]
+        out = self._run(hist)
+        assert self.HEAD not in out[0]["content"]
+        assert "elided on replay" in out[0]["content"]
+        assert "(a.py)" in out[0]["content"]
+        assert self.FULL in out[2]["content"]          # the later copy is whole
+        assert 'tool="mcp_file_read"' in out[0]["content"]  # envelope/label kept
+
+    def test_disjoint_partial_reads_of_same_file_are_NOT_elided(self):
+        # Header is "file read: PATH" with no range: two different ranges
+        # look identical by header.  Only containment may elide.
+        hist = [self._ai(self._read("a.py", self.HEAD)),
+                self._ai(self._read("a.py", self.TAIL))]
+        out = self._run(hist)
+        assert self.HEAD in out[0]["content"]
+        assert self.TAIL in out[1]["content"]
+
+    def test_changed_file_reread_is_NOT_elided(self):
+        # Stale copy is NOT provably redundant (indistinguishable from a
+        # different range), so it stays.
+        changed = self.FULL.replace("line 010", "line XXX")
+        hist = [self._ai(self._read("a.py", self.FULL)),
+                self._ai(self._read("a.py", changed))]
+        out = self._run(hist)
+        assert self.FULL in out[0]["content"]
+
+    def test_same_content_different_path_is_NOT_contained_but_IS_duplicate(self):
+        # Same tool, identical body → duplicate rule applies regardless of path.
+        hist = [self._ai(self._read("a.py", self.FULL)),
+                self._ai(self._read("b.py", self.FULL))]
+        out = self._run(hist)
+        assert "identical result body appears again later" in out[0]["content"]
+        assert self.FULL in out[1]["content"]
+
+    def test_last_occurrence_never_elided(self):
+        hist = [self._ai(self._read("a.py", self.FULL)),
+                self._ai(self._read("a.py", self.FULL)),
+                self._ai(self._read("a.py", self.FULL))]
+        out = self._run(hist)
+        assert self.FULL not in out[0]["content"]
+        assert self.FULL not in out[1]["content"]
+        assert self.FULL in out[2]["content"]
+
+    def test_shell_sed_range_contained_in_later_cat(self):
+        hist = [self._ai(self._sh("sed -n 1,20p a.py", self.HEAD)),
+                self._ai(self._sh("cat a.py", self.FULL))]
+        out = self._run(hist)
+        assert self.HEAD not in out[0]["content"]
+        assert "(a.py)" in out[0]["content"]
+
+    def test_shell_with_pipe_is_not_treated_as_file_read(self):
+        # "cat a.py | grep x" output is not the file; only the duplicate
+        # rule could ever apply, and the bodies differ here.
+        hist = [self._ai(self._sh("cat a.py | head -20", self.HEAD)),
+                self._ai(self._sh("cat a.py", self.FULL))]
+        out = self._run(hist)
+        assert self.HEAD in out[0]["content"]
+
+    def test_identical_shell_output_rerun_elides_earlier(self):
+        out_text = "\n".join(f"pkg-{i}  1.0.{i}" for i in range(40))
+        hist = [self._ai(self._sh("pip list", out_text)),
+                self._ai(self._sh("pip list", out_text))]
+        out = self._run(hist)
+        assert out_text not in out[0]["content"]
+        assert out_text in out[1]["content"]
+
+    def test_small_bodies_never_elided(self):
+        small = "x = 1\ny = 2"
+        hist = [self._ai(self._read("a.py", small)),
+                self._ai(self._read("a.py", small))]
+        out = self._run(hist)
+        assert small in out[0]["content"] and small in out[1]["content"]
+
+    def test_same_message_does_not_supersede_itself(self):
+        # Two reads in ONE assistant turn: neither is "later" than the other.
+        hist = [self._ai(self._read("a.py", self.HEAD), self._read("a.py", self.FULL))]
+        out = self._run(hist)
+        assert self.HEAD in out[0]["content"]
+
+    def test_elision_in_multimodal_text_segment(self):
+        hist = [{"type": "assistant", "content": [
+                    {"type": "text", "text": f"see\n\n{self._read('a.py', self.FULL)}"},
+                    {"type": "image", "source": {"type": "base64", "data": "AAA"}}]},
+                self._ai(self._read("a.py", self.FULL))]
+        out = self._run(hist)
+        assert self.FULL not in out[0]["content"][0]["text"]
+        assert out[0]["content"][1]["source"]["data"] == "AAA"
+
+    def test_disabled_keeps_everything(self):
+        hist = [self._ai(self._read("a.py", self.FULL)),
+                self._ai(self._read("a.py", self.FULL))]
+        out = rewrite_tool_history(hist, elide_redundant=False)
+        assert self.FULL in out[0]["content"] and self.FULL in out[1]["content"]
+
+    def test_env_kill_switch_disables_elision_only(self, monkeypatch):
+        monkeypatch.setenv("ZIYA_DISABLE_TOOL_RESULT_ELISION", "1")
+        hist = [self._ai(self._read("a.py", self.FULL)),
+                self._ai(self._read("a.py", self.FULL))]
+        out = rewrite_tool_history(hist)          # resolves setting → env wins
+        assert self.FULL in out[0]["content"]
+        assert "‹tool_result " in out[0]["content"]  # re-encoding still on
+
+    def test_plan_is_pure_and_addresses_right_block(self):
+        from app.utils.tool_history_rewrite import plan_elisions
+        other = "\n".join(f"unrelated {i}" for i in range(60))
+        hist = [self._ai(self._read("z.py", other), self._read("a.py", self.HEAD)),
+                self._ai(self._read("a.py", self.FULL))]
+        plan = plan_elisions(hist)
+        assert list(plan.keys()) == [(0, 0)]
+        assert list(plan[(0, 0)].keys()) == [1]   # second block of msg 0, not the first
+        assert plan_elisions(hist) == plan
+
+
 class TestHistory:
 
     def _hist(self):

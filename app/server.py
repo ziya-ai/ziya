@@ -427,9 +427,11 @@ def build_messages_for_streaming(question: str, chat_history: List, files: List,
     # persists into message.content are a display encoding; replayed
     # verbatim, turn after turn, they teach the model to *write* tool
     # output as text instead of calling the tool (df488630 turn 47).
-    # Bodies are kept whole — only the encoding changes — and the rewrite
-    # is a pure function of each message, so cached history prefixes are
-    # unaffected.  See app/utils/tool_history_rewrite.py.
+    # Bodies are kept whole except where provably redundant with a LATER
+    # result (contextManagement.elide_redundant_tool_results); with that
+    # off the rewrite is a pure function of each message and cached history
+    # prefixes are unaffected.  See app/utils/tool_history_rewrite.py and
+    # design/tool-result-aging.md.
     try:
         from app.utils.tool_history_rewrite import rewrite_tool_history
         processed_chat_history = rewrite_tool_history(processed_chat_history)
