@@ -122,3 +122,102 @@ export function isKnownConnector(raw: any): boolean {
     const name = extractName(raw);
     return name !== null && KNOWN_JOINT_CONNECTORS.has(name);
 }
+
+// ---------------------------------------------------------------------------
+// Link endpoint identity, self-loop routing and label de-collision.
+//
+// D-411 (self-loop-zero-length-invisible): a link whose source and target are
+// the SAME element was anchored modelCenter->modelCenter with a boundary
+// connectionPoint, so both ends resolved to the node centre and the whole link
+// (and its label) collapsed to zero length inside the body — invisible. A
+// self-loop must instead terminate on two DIFFERENT sides of the node so it
+// draws as a visible arc that bows out past the boundary.
+//
+// D-131 / D-407 (link-overdraw-no-label-background / link-label-collision-
+// overdraw): labels were placed at `position: 0.5` centred ON the stroke, so
+// every label was bisected lengthwise by its own line, and parallel links
+// between the same node pair (e.g. the a<->b 2-cycle) stacked their labels at
+// the identical midpoint into an unreadable pile. Labels must be lifted
+// perpendicular OFF the stroke and, when several links share a node pair,
+// staggered along the link and to alternating sides so they separate.
+// ---------------------------------------------------------------------------
+
+/** Extract the element id from a link endpoint (string or `{ id }` object). */
+export function endpointId(raw: any): string | null {
+    if (typeof raw === 'string') return raw || null;
+    if (raw && typeof raw === 'object' && typeof raw.id === 'string') return raw.id || null;
+    return null;
+}
+
+/** True when a link's source and target resolve to the same element id (self-loop). */
+export function isSelfLoop(source: any, target: any): boolean {
+    const s = endpointId(source);
+    const t = endpointId(target);
+    return s !== null && t !== null && s === t;
+}
+
+/**
+ * An unordered key for the node pair a link connects, so antiparallel links
+ * (a->b and b->a) and true parallels share one bucket for label staggering.
+ */
+export function linkPairKey(source: any, target: any): string {
+    const s = endpointId(source) ?? '';
+    const t = endpointId(target) ?? '';
+    return s <= t ? `${s}\u0000${t}` : `${t}\u0000${s}`;
+}
+
+/**
+ * Anchors + connector for a self-loop so it draws as a visible arc instead of
+ * collapsing to the node centre. Source leaves the top, target re-enters the
+ * right side; a smooth connector bows the segment out past the corner. The
+ * boundary connectionPoint clamps each end to the node edge so no stroke runs
+ * under the body.
+ */
+export function selfLoopEndpointConfig(): {
+    sourceAnchor: { name: string };
+    targetAnchor: { name: string };
+    connectionPoint: { name: string };
+    connector: { name: string; args?: any };
+} {
+    return {
+        sourceAnchor: { name: 'top' },
+        targetAnchor: { name: 'right' },
+        connectionPoint: { name: 'boundary' },
+        connector: { name: 'smooth' },
+    };
+}
+
+/** Perpendicular distance (px) a label is lifted off its own link stroke. */
+export const LABEL_STROKE_OFFSET = 14;
+
+/**
+ * Compute a JointJS label `position` ({ distance, offset }) that keeps the
+ * label off the stroke and, when a node pair carries several links, staggers
+ * the labels so they do not pile up at one midpoint.
+ *
+ * - `offset` is the perpendicular distance from the connection (a number is
+ *   interpreted by JointJS as an offset normal to the link), so a non-zero
+ *   value always lifts the text clear of the line it labels.
+ * - `distance` is the fractional position along the link (0..1).
+ *
+ * With a single link the label sits at mid-link, lifted above the stroke. With
+ * `count > 1` the labels spread across the middle of the link and alternate
+ * sides, so antiparallel/parallel links separate.
+ */
+export function computeLabelPlacement(
+    index: number = 0,
+    count: number = 1
+): { distance: number; offset: number } {
+    const off = LABEL_STROKE_OFFSET;
+    if (!Number.isFinite(count) || count <= 1) {
+        return { distance: 0.5, offset: -off };
+    }
+    const i = Number.isFinite(index) ? Math.max(0, Math.min(index, count - 1)) : 0;
+    // Spread label anchors across the central 40% of the link.
+    const distance = 0.3 + (0.4 * i) / (count - 1);
+    // Alternate sides and grow the magnitude slightly per pair member so labels
+    // that share a distance band still separate.
+    const side = i % 2 === 0 ? -1 : 1;
+    const magnitude = off + Math.floor(i / 2) * 6;
+    return { distance, offset: side * magnitude };
+}
