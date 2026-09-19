@@ -882,17 +882,29 @@ export const TaskCardsLibrary: React.FC<Props> = ({
           })()}
           {(() => {
             // 🌱 learning badge: cards with self-improvement history.
-            // Edits-applied is the number that matters (the card's text
-            // has durably changed); verdict-only history still badges,
-            // dimmer, so an observe-only trial is visible too.
+            // The number is ALWAYS edits applied — the count of times
+            // the card's text durably changed.  Verdict-only history
+            // badges as a dimmed 🌱 0 so an observe-only trial is
+            // visible without reading as ten improvements (the former
+            // count fallback showed 🌱 10 for a card that had never
+            // once revised).  Verdicts and judge errors go in the tip.
             const ls = lessonsMap[c.id];
             if (!ls || ls.count === 0) return null;
+            const errs = ls.judge_errors ?? 0;
+            const streak = ls.stop_streak ?? 0;
+            const tip = `${ls.edits_applied} self-revision(s) applied · `
+              + `${ls.count} judge verdict(s)`
+              + (errs > 0 ? ` · ${errs} judge error(s)` : '')
+              + (streak > 0
+                ? ` · a block has stopped ${streak} runs in a row for a reason task text cannot fix`
+                : '')
+              + ' — click the card, then open “Lessons learned”';
+            // Orange when the environment is what's blocking the card:
+            // that is the one ledger finding a person must act on.
             return (
-              <Tooltip title={ls.edits_applied > 0
-                ? `${ls.edits_applied} self-revision(s) applied · ${ls.count} judge verdict(s) — click the card, then open “Lessons learned”`
-                : `${ls.count} judge verdict(s), no edits applied yet`}>
-                <Tag color="cyan" style={{ marginInlineEnd: 0, fontSize: 10, lineHeight: '16px', padding: '0 5px', opacity: ls.edits_applied > 0 ? 1 : 0.7 }}>
-                  🌱 {ls.edits_applied > 0 ? ls.edits_applied : ls.count}
+              <Tooltip title={tip}>
+                <Tag color={streak > 0 ? 'orange' : 'cyan'} style={{ marginInlineEnd: 0, fontSize: 10, lineHeight: '16px', padding: '0 5px', opacity: (ls.edits_applied > 0 || streak > 0) ? 1 : 0.7 }}>
+                  🌱 {ls.edits_applied}{streak > 0 ? ` ⛔${streak}` : ''}
                 </Tag>
               </Tooltip>
             );

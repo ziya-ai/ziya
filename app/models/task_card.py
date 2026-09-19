@@ -14,6 +14,7 @@ Only instructions flow down and artifacts flow up.
 
 from pydantic import BaseModel, Field
 from typing import Optional, List, Literal, Dict, Any
+from ..utils.run_time import EpochMs
 
 
 # ── Scope (what a task is allowed to touch) ────────────────
@@ -244,7 +245,9 @@ class Artifact(BaseModel):
     tokens: int = 0
     tool_calls: int = 0
     duration_ms: int = 0
-    created_at: float = 0.0
+    # Epoch ms.  A caller passing ``time.time()`` (seconds) is upgraded at
+    # validation; see app.utils.run_time.EpochMs.
+    created_at: EpochMs = 0
     # Optional error-identity hash — populated only on failure,
     # enables clustering similar failures by signature.  Null on
     # success.  See design/task-cards.md §Runtime semantics.
@@ -261,6 +264,28 @@ class Artifact(BaseModel):
     # a tag was present but the verdict value wasn't recognised.
     # See ``app/utils/completion_check.py``.
     self_assessment: Optional[Dict[str, str]] = None
+    # Per-stage evidence on CONTAINER artifacts: one entry per iteration
+    # (repeat/until) or branch (parallel) or child (group), shaped by
+    # ``app.utils.self_improve.stage_evidence`` — {index, label, status,
+    # summary (capped), self_assessment, outputs}.  ``summary`` and
+    # ``failed`` above stay last-wins for the sequencing semantics that
+    # depend on them (on_failure, {{previous}}); this is what lets a
+    # reader — the self-improvement judge in particular — see that
+    # iteration 3 of 20 failed when the last one reported success.
+    # Empty on leaf artifacts.  A group sets its OWN children here
+    # rather than inheriting a nested loop's iterations.
+    stages: List[Dict[str, Any]] = []
+    # Which model the block actually ran on.  A scope's ``model_tier``
+    # resolves to a concrete model per endpoint, and an inheriting block
+    # runs on whatever the launch resolved to, so the card definition
+    # alone cannot answer "what model was this?" — recorded here so the
+    # run UI can.  ``context_limit`` is the effective input ceiling the
+    # executor measured context notices against.  None on container
+    # artifacts and records written before these fields existed.
+    model: Optional[str] = None
+    model_id: Optional[str] = None
+    endpoint: Optional[str] = None
+    context_limit: Optional[int] = None
 
 
 # ── The recursive Block type ──────────────────────────────

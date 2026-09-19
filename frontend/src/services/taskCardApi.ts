@@ -182,10 +182,17 @@ export interface LessonRecord {
   card_id?: string;
   block_id?: string;
   revision?: number;
-  verdict?: 'accept' | 'revise' | 'stop' | string;
+  /** 'error' = the judge itself failed; never counts as an accept. */
+  verdict?: 'accept' | 'revise' | 'stop' | 'error' | string;
   rationale?: string;
   lesson?: string;
   drift?: string;
+  /** Present on verdict 'error': transport | unparseable | bad_verdict
+   *  | legacy_fallback (a pre-fix record relabelled on read). */
+  error?: string;
+  /** Bounded head+tail of the raw judge reply, on error records. */
+  reply_excerpt?: string;
+  reply_len?: number;
   applied?: boolean;
   persisted?: boolean;
   /** {block_id: {field: new_text}} — present on applied revisions. */
@@ -199,10 +206,26 @@ export interface LessonRecord {
   ts?: number;
 }
 
+/** A block's trailing run of consecutive `stop` verdicts (length >= 2).
+ *  Positional grouping, server-derived: "this block has stopped N runs
+ *  in a row and none has passed since" — the finding six differently-
+ *  worded environment stops actually amount to. */
+export interface StopStreak {
+  count: number;
+  first_ts: number | null;
+  last_ts: number | null;
+  run_ids: (string | undefined)[];
+  /** Newest first, capped at 5. */
+  rationales: string[];
+}
+
 export interface CardLessons {
   card_id: string;
   count: number;
   edits_applied: number;
+  judge_errors: number;
+  /** {block_id: streak} — only blocks currently in a streak. */
+  stop_streaks: Record<string, StopStreak>;
   /** Newest first (the server reverses the oldest-first ledger). */
   lessons: LessonRecord[];
 }
@@ -211,5 +234,8 @@ export interface CardLessons {
 export interface LessonCardSummary {
   count: number;
   edits_applied: number;
+  judge_errors: number;
+  /** Longest trailing stop streak over the card's blocks; 0 = none. */
+  stop_streak: number;
   last_ts: number;
 }

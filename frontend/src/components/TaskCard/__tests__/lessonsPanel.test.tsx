@@ -165,4 +165,32 @@ describe('LessonsPanel', () => {
     expect(screen.queryByText('accept')).toBeNull();
     expect(screen.queryByText('Revert')).toBeNull();
   });
+
+  it('folds consecutive stop verdicts into one streak row that expands to its members', async () => {
+    // The GFX Stage 2 shape: one block, N stops, N wordings, one cause.
+    const stops = [3, 2, 1].map(i => ({
+      card_id: 'c1', block_id: 'b-5cc1081c', run_id: `r${i}`, revision: 0,
+      verdict: 'stop', rationale: `wording ${i}`, ts: 1700000000 + i * 86400,
+    }));
+    mockLessons.mockResolvedValue({
+      card_id: 'c1', count: 3, edits_applied: 0, judge_errors: 0,
+      stop_streaks: {
+        'b-5cc1081c': {
+          count: 3, first_ts: stops[2].ts, last_ts: stops[0].ts,
+          run_ids: ['r1', 'r2', 'r3'],
+          rationales: ['wording 3', 'wording 2', 'wording 1'],
+        },
+      },
+      lessons: stops,
+    });
+    const { container } = mount({ lessonCount: 3 });
+    openPanel(container);
+    expect(await screen.findByText('stopped 3 runs in a row')).toBeInTheDocument();
+    expect(screen.getByText(/blocked by environment 3 runs running/)).toBeInTheDocument();
+    // one streak row, not three plain rows
+    expect(container.querySelectorAll('.tc-lesson-streak')).toHaveLength(1);
+    // the members are all present (inside the details), nothing hidden
+    expect(screen.getAllByText(/^wording [123]$/)).toHaveLength(4); // 3 members + lead
+    expect(screen.getAllByText('stop')).toHaveLength(3);
+  });
 });

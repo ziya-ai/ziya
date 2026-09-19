@@ -422,13 +422,20 @@ async def get_card_lessons(
     """
     if not _get_storage(project_id).get(card_id):
         raise HTTPException(status_code=404, detail="Task card not found")
-    from ..utils.self_improve import LessonLedger
+    from ..utils.self_improve import (
+        JUDGE_ERROR_VERDICT, LessonLedger, stop_streaks,
+    )
     records = LessonLedger(get_project_dir(project_id)).for_card(
         card_id, limit=limit)
     return {
         "card_id": card_id,
         "count": len(records),
         "edits_applied": sum(1 for r in records if r.get("applied")),
+        "judge_errors": sum(
+            1 for r in records if r.get("verdict") == JUDGE_ERROR_VERDICT),
+        # Per-block trailing runs of consecutive stops — an overlay the
+        # panel folds onto the rows; the rows themselves are all kept.
+        "stop_streaks": stop_streaks(records),
         # Newest first for display; the ledger stores oldest-first.
         "lessons": list(reversed(records)),
     }
