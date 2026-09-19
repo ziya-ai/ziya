@@ -6,6 +6,7 @@ import {
 import MarkdownRenderer from './MarkdownRenderer';
 import ServiceCard from './ServiceCard';
 import { useConfig } from '../context/ConfigContext';
+import { summarizeServiceDescription } from '../utils/mcpDescriptionSummary';
 import type { McpRegistryPreset } from '../types/config';
 import {
     SearchOutlined,
@@ -424,6 +425,90 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
         return () => clearTimeout(timeoutId);
     }, [searchQuery, activeTab]);
     
+    const installTextStyle: React.CSSProperties = {
+        whiteSpace: 'pre-wrap', wordBreak: 'break-word', fontSize: 12, maxHeight: 260,
+        overflow: 'auto', padding: '8px 10px', margin: '8px 0', borderRadius: 6,
+        background: 'rgba(128, 128, 128, 0.15)', border: '1px solid rgba(128, 128, 128, 0.35)',
+        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+    };
+
+    // A failed install answers HTTP 400 whose `detail` is a structured record
+    // {message, error, detail, hint, logs, failure_code} — or, from an older
+    // server, a flat string. The first line of `error` is the headline; the
+    // rest is verbatim output from whatever failed (the registry CLI's
+    // "Access denied while resolving version set …" plus its remediation
+    // link, a launcher's stderr). That text is the only statement of WHY, so
+    // it is rendered in a dialog the user can read and copy from, not a toast
+    // that truncates multi-line text and vanishes.
+    const showInstallFailure = (serviceId: string, payload: any) => {
+        const rec = (payload && typeof payload === 'object')
+            ? payload
+            : { message: String(payload ?? '') };
+        const raw = String(rec.error || rec.message || 'Unknown error');
+        const [headline, ...restLines] = raw.split('\n');
+        const body = restLines.join('\n').trim();
+        const logs: string[] = Array.isArray(rec.logs) ? rec.logs : [];
+        Modal.error({
+            title: `Installation failed: ${serviceId}`,
+            width: 680,
+            content: (
+                <div>
+                    <div style={{ fontWeight: 600, marginBottom: 6 }}>{headline}</div>
+                    {body && <pre style={installTextStyle}>{body}</pre>}
+                    {rec.detail && <div style={{ marginBottom: 6 }}>{rec.detail}</div>}
+                    {rec.hint && (
+                        <Alert type="info" showIcon message={rec.hint} style={{ marginBottom: 8 }} />
+                    )}
+                    {logs.length > 0 && (
+                        <Collapse ghost size="small">
+                            <Panel header={`Server log tail (${logs.length} lines)`} key="logs">
+                                <pre style={installTextStyle}>{logs.join('\n')}</pre>
+                            </Panel>
+                        </Collapse>
+                    )}
+                    <div style={{ marginTop: 8, fontSize: 12, opacity: 0.75 }}>
+                        Nothing was added to your MCP config. Fix the cause above and install again.
+                    </div>
+                </div>
+            ),
+        });
+    };
+
+    // The install succeeded, but a best-effort step (the registry CLI install)
+    // failed and was tolerated because the tool was already present locally.
+    // The server IS running; the user still needs to know the registry step
+    // failed and why — that text used to reach only the server log.
+    const showInstallWarnings = (serverName: string, warnings: string[]) => {
+        Modal.warning({
+            title: `Installed with warnings: ${serverName}`,
+            width: 680,
+            content: (
+                <div>
+                    <div style={{ marginBottom: 6 }}>
+                        The server started using a tool already present on this machine,
+                        but {warnings.length === 1 ? 'an install step' : `${warnings.length} install steps`}{' '}
+                        failed. It may not update or may be missing registry metadata
+                        until the cause below is fixed.
+                    </div>
+                    {warnings.map((w, i) => (
+                        <pre key={i} style={installTextStyle}>{w}</pre>
+                    ))}
+                </div>
+            ),
+        });
+    };
+
+    // Parse an error body that may not be JSON (proxies, 502s) without
+    // throwing away the status we already know.
+    const readErrorPayload = async (response: Response): Promise<any> => {
+        try {
+            const parsed = await response.json();
+            return parsed?.detail ?? parsed?.error ?? parsed;
+        } catch {
+            return `HTTP ${response.status} ${response.statusText}`;
+        }
+    };
+
     const installService = async (serviceId: string) => {
         // Handle builtin services differently
         if (serviceId.startsWith('builtin_')) {
@@ -448,21 +533,25 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                 const result = await response.json();
                 if (result.status === 'success') {
                     const serviceName = result.server_name || result.service_id || serviceId;
-                    message.success(`Successfully installed ${serviceName}`);
+                    const warnings: string[] = Array.isArray(result.warnings) ? result.warnings : [];
+                    if (warnings.length > 0) {
+                        showInstallWarnings(serviceName, warnings);
+                    } else {
+                        message.success(`Successfully installed ${serviceName}`);
+                    }
                 } else {
-                    message.error(`Installation failed: ${result.error || 'Unknown error'}`);
+                    showInstallFailure(serviceId, result);
                 }
                 await loadInstalledServices();
 
                 // Refresh MCP status
                 window.dispatchEvent(new Event('mcpStatusChanged'));
             } else {
-                const error = await response.json();
-                message.error(`Installation failed: ${error.error || error.detail || 'Unknown error'}`);
+                showInstallFailure(serviceId, await readErrorPayload(response));
             }
         } catch (error) {
             console.error('Installation error:', error);
-            message.error('Installation failed');
+            showInstallFailure(serviceId, error instanceof Error ? error.message : String(error));
         } finally {
             setInstalling(prev => ({ ...prev, [serviceId]: false }));
         }
@@ -766,7 +855,7 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
                 description={
                     <div>
                         <Paragraph ellipsis={{ rows: 1 }} style={{ marginBottom: 8 }}>
-                            {result.service.serviceDescription}
+                            {summarizeServiceDescription(result.service.serviceDescription)}
                         </Paragraph>
                         <Text type="secondary" style={{ fontSize: '12px', display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
                             <span>ID: {result.service.serviceId}</span>
@@ -1637,9 +1726,9 @@ const MCPRegistryModal: React.FC<MCPRegistryModalProps> = ({ visible, onClose })
 
                             <div>
                                 <Text strong>Description:</Text>
-                                <Paragraph style={{ marginTop: 8 }}>
-                                    {previewService.serviceDescription}
-                                </Paragraph>
+                                <div style={{ marginTop: 8, fontSize: '13px' }}>
+                                    <MarkdownRenderer markdown={previewService.serviceDescription || ''} enableCodeApply={false} />
+                                </div>
                             </div>
 
                             {previewService.tags && previewService.tags.length > 0 && (

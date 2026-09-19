@@ -17,6 +17,8 @@ import {
     ClockCircleOutlined, EyeOutlined, HeartOutlined, HeartFilled, DownOutlined, UpOutlined,
 } from '@ant-design/icons';
 import { safeOpenExternal } from '../utils/safeExternalUrl';
+import { summarizeServiceDescription } from '../utils/mcpDescriptionSummary';
+import MarkdownRenderer from './MarkdownRenderer';
 
 const { Text, Paragraph } = Typography;
 
@@ -107,6 +109,10 @@ const ServiceCard: React.FC<ServiceCardProps> = ({
     const isBuiltin = service.serviceId.startsWith('builtin_');
     const supportLevel = service.supportLevel || 'Community';
     const description = service.serviceDescription || service.serviceName || '';
+    // Registry descriptions are sometimes a whole README. Collapsed, show a
+    // one-line headline; expanded, render the full text as markdown.
+    const headline = summarizeServiceDescription(description);
+    const hasLongForm = description.trim() !== headline;
 
     /* ---- Install button label ---- */
     const installLabel = (() => {
@@ -186,12 +192,18 @@ const ServiceCard: React.FC<ServiceCardProps> = ({
             {/* A caret on the description itself reads as "expand this text";
                 the circled-i in the action row did not. */}
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 4, marginBottom: 8 }}>
-                <Paragraph
-                    ellipsis={isExpanded ? false : { rows: 2 }}
-                    style={{ marginBottom: 0, flex: 1 }}
-                >
-                    {description}
-                </Paragraph>
+                {isExpanded && hasLongForm ? (
+                    <div style={{ flex: 1, fontSize: '13px' }}>
+                        <MarkdownRenderer markdown={description} enableCodeApply={false} />
+                    </div>
+                ) : (
+                    <Paragraph
+                        ellipsis={isExpanded ? false : { rows: 2 }}
+                        style={{ marginBottom: 0, flex: 1 }}
+                    >
+                        {headline}
+                    </Paragraph>
+                )}
                 <Tooltip title={isExpanded ? 'Show less' : 'Show more'}>
                     <Button
                         type="text"
