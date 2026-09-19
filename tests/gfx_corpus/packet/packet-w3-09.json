@@ -1,0 +1,59 @@
+{
+ "type": "packet",
+ "definition": {
+  "type": "packet",
+  "title": "Hardcoded light palette",
+  "sections": [
+   {
+    "label": "Near-white",
+    "color": {
+     "bg": "#FAFAFA",
+     "border": "#DDDDDD",
+     "text": "#333333"
+    },
+    "rows": [
+     [
+      [
+       "alpha",
+       8
+      ],
+      [
+       "beta",
+       8
+      ],
+      [
+       "gamma",
+       8
+      ],
+      [
+       "delta",
+       8
+      ]
+     ]
+    ]
+   },
+   {
+    "label": "Pale",
+    "color": {
+     "bg": "#F5F5F5",
+     "border": "#CCCCCC",
+     "text": "#444444"
+    },
+    "rows": [
+     [
+      [
+       "one",
+       16
+      ],
+      [
+       "two",
+       16
+      ]
+     ]
+    ]
+   }
+  ],
+  "bitWidth": 32
+ },
+ "intent": "Hardcoded light palette (near-white fills, pale grey borders, dark grey text) — legible on dark page?"
+}

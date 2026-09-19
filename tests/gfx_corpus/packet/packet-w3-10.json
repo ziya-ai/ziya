@@ -1,0 +1,59 @@
+{
+ "type": "packet",
+ "definition": {
+  "type": "packet",
+  "title": "Hardcoded dark palette",
+  "sections": [
+   {
+    "label": "Near-black",
+    "color": {
+     "bg": "#1A1A1A",
+     "border": "#333333",
+     "text": "#EEEEEE"
+    },
+    "rows": [
+     [
+      [
+       "alpha",
+       8
+      ],
+      [
+       "beta",
+       8
+      ],
+      [
+       "gamma",
+       8
+      ],
+      [
+       "delta",
+       8
+      ]
+     ]
+    ]
+   },
+   {
+    "label": "Charcoal",
+    "color": {
+     "bg": "#2B2B2B",
+     "border": "#444444",
+     "text": "#DDDDDD"
+    },
+    "rows": [
+     [
+      [
+       "one",
+       16
+      ],
+      [
+       "two",
+       16
+      ]
+     ]
+    ]
+   }
+  ],
+  "bitWidth": 32
+ },
+ "intent": "Hardcoded dark palette (near-black fills, light text) — legible on light page?"
+}

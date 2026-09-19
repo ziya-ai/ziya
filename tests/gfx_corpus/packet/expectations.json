@@ -18,7 +18,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.544667Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "b59666157a33dc4054fa8b99e44e1ef619830460ec3de3f9f8b678d8a5b34fe9",
+     "validated_at": "2026-09-19T05:05:17.319433Z"
+    },
+    "dark": {
+     "hash": "a7280f9697e13a8cca4ac6ec629d35ad423820d5e4bd5a04d0c2328dbdeedc31",
+     "validated_at": "2026-09-19T05:05:17.336045Z"
+    }
+   }
   },
   "packet-w1-05": {
    "themes": [
@@ -36,7 +46,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.546632Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "f86f6973982ae9c42bcf046ae1d361059737b60ad36c6e2d65e973d98deb013d",
+     "validated_at": "2026-09-19T05:05:17.653167Z"
+    },
+    "dark": {
+     "hash": "7cf9d26a850cb47c2d2b8f64e7491bfba4b240d347d00bd0137e75a3d53e89f1",
+     "validated_at": "2026-09-19T05:05:17.676734Z"
+    }
+   }
   },
   "packet-w1-08": {
    "themes": [
@@ -54,7 +74,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.549386Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "0e9230fcb410c40c07b8ffa4d2935b8ae0d8aa9c398af06199ddbaac68b14167",
+     "validated_at": "2026-09-19T05:05:17.982019Z"
+    },
+    "dark": {
+     "hash": "9bc97ba01b36a96a40156f4c1bcbbc72af025e6596e8460ced40222cd930a1e2",
+     "validated_at": "2026-09-19T05:05:18.005072Z"
+    }
+   }
   },
   "packet-w1-11": {
    "themes": [
@@ -72,7 +102,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.553107Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "526cca9d275b9f53a24b4dc725bcacddb3e37d123c463c9f7c431de6f3d06d64",
+     "validated_at": "2026-09-19T05:05:18.296100Z"
+    },
+    "dark": {
+     "hash": "a87f1eea41aff1c88b18a3fa78ccd9441b44d5b230c121e6b70f72342a7c7342",
+     "validated_at": "2026-09-19T05:05:18.309591Z"
+    }
+   }
   },
   "packet-w1-13": {
    "themes": [
@@ -90,7 +130,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.555518Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "99c048f14c5ccb324a16b38741eb02a448b790f6c1d1d3d26962664f7732f451",
+     "validated_at": "2026-09-19T05:07:22.444540Z"
+    },
+    "dark": {
+     "hash": "b12bad8e1f6c791f07a9164747a348af1d6bfc0296043f53f584b0c068e23d0a",
+     "validated_at": "2026-09-19T05:07:22.461226Z"
+    }
+   }
   },
   "packet-w2-05": {
    "themes": [
@@ -108,7 +158,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.559091Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "162c1a429998fbfe1ca5df4f49124abea191a504e773b4a64ac0f9ac3e4fbae8",
+     "validated_at": "2026-09-19T05:07:23.190666Z"
+    },
+    "dark": {
+     "hash": "b69cfda7957360052a9ed0fb7cfb3eb5c5b2dc365d5b49bacee4445933a9eb9b",
+     "validated_at": "2026-09-19T05:07:23.202545Z"
+    }
+   }
   },
   "packet-w2-06": {
    "themes": [
@@ -126,7 +186,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.562930Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "17bafad22e5b3726efb2d26b08ef8b1e3de7a42cf9a818b56d4427ee40315258",
+     "validated_at": "2026-09-19T05:09:29.102718Z"
+    },
+    "dark": {
+     "hash": "86949bc0216061585e978cb6ec9e3e950795ff6c134ba9a04c73d41990d1412a",
+     "validated_at": "2026-09-19T05:09:29.121040Z"
+    }
+   }
   },
   "packet-w2-15": {
    "themes": [
@@ -144,7 +214,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.565777Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "676db098273f1870eda6319202b796d64745eb0ca2006f52c19fac5febd231f2",
+     "validated_at": "2026-09-19T05:09:29.322086Z"
+    },
+    "dark": {
+     "hash": "a32973080a40fee5165c2d2c8f9d0b1f7aca9d22e844c41679fd3872bb64c2d3",
+     "validated_at": "2026-09-19T05:09:29.333875Z"
+    }
+   }
   },
   "packet-w4-07": {
    "themes": [
@@ -162,7 +242,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.570275Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "6b7243bdd58c66c0378c68e65bc356df32ab0b94d5f0b3b4711edea3700d2920",
+     "validated_at": "2026-09-19T05:10:43.142768Z"
+    },
+    "dark": {
+     "hash": "544100f392bab452316b182a898dae584960a83cf631aecaa8902da62903e704",
+     "validated_at": "2026-09-19T05:10:43.170988Z"
+    }
+   }
   },
   "packet-w4-08": {
    "themes": [
@@ -180,7 +270,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.572756Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "7f455d98f31c5334321efeb28f592c124bfae6444dc4014bd27e116f84271ca0",
+     "validated_at": "2026-09-19T05:10:43.509256Z"
+    },
+    "dark": {
+     "hash": "76d0ddfa5165c4eddeb75478bcf48e9fb4fbfe9c7312e707602b26ea38ed4c20",
+     "validated_at": "2026-09-19T05:10:43.522039Z"
+    }
+   }
   },
   "packet-w4-01": {
    "themes": [
@@ -198,7 +298,17 @@
      "signature": "no-lenient-json-parse",
      "at": "2026-09-15T08:56:13.970418Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "5c427357c4ef5181eb8b1bcc2570422f1170ff3b1ebfda5502b6b328f622efc4",
+     "validated_at": "2026-09-19T05:10:42.862437Z"
+    },
+    "dark": {
+     "hash": "04d8b3335be934352664deb6db5c6c0920b9b1c37048201698cbca0a084dded6",
+     "validated_at": "2026-09-19T05:10:42.874671Z"
+    }
+   }
   },
   "packet-w4-02": {
    "themes": [
@@ -216,7 +326,17 @@
      "signature": "no-lenient-json-parse",
      "at": "2026-09-15T08:56:13.973085Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "cb8d0d280ae100eea698dbb1ac22ce87a4bdf20457e988313bca1b82ad201366",
+     "validated_at": "2026-09-16T09:12:24.728584Z"
+    },
+    "dark": {
+     "hash": "f931f5a9a6880e337f41e045ea69fb62d43e3bbb0f952fd15e6401f26255d9af",
+     "validated_at": "2026-09-16T09:12:24.747960Z"
+    }
+   }
   },
   "packet-w4-03": {
    "themes": [
@@ -234,7 +354,17 @@
      "signature": "no-lenient-json-parse",
      "at": "2026-09-15T08:56:13.976469Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "c943ad4201367c5c4415c15820700f8de75f64264f0af672ce5ef1630b21a3c9",
+     "validated_at": "2026-09-16T09:12:25.066398Z"
+    },
+    "dark": {
+     "hash": "4fd1f9b714d89fbc63f3f5ef81fe6166895028e2d888c7eb24055f6aecb5ff3e",
+     "validated_at": "2026-09-16T09:12:25.088463Z"
+    }
+   }
   },
   "packet-w4-12": {
    "themes": [
@@ -252,7 +382,17 @@
      "signature": "no-lenient-json-parse",
      "at": "2026-09-15T08:56:13.979362Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "0546b6e8ba7e8111e9f8bba237c879a6299420bd27427cc57fc672548a56c0a7",
+     "validated_at": "2026-09-16T09:19:55.793087Z"
+    },
+    "dark": {
+     "hash": "31cd30b85fa6d15b59c86ef0730d799afc820cf66d8aa53bb1a47327e5c397b0",
+     "validated_at": "2026-09-16T09:19:55.807610Z"
+    }
+   }
   },
   "packet-w4-14": {
    "themes": [
@@ -270,7 +410,17 @@
      "signature": "no-lenient-json-parse",
      "at": "2026-09-15T08:56:13.981517Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "74bebb83a4ed3e236e8f4242a93447a79a45d6554713de1379d367e536d96505",
+     "validated_at": "2026-09-16T09:20:35.399874Z"
+    },
+    "dark": {
+     "hash": "b2f600309612db57a204ad8e1d0b4b359d520a0853307aaab4fd71478429111f",
+     "validated_at": "2026-09-16T09:20:35.415558Z"
+    }
+   }
   },
   "packet-w4-04": {
    "themes": [
@@ -288,7 +438,17 @@
      "signature": "markdown-fence-not-stripped",
      "at": "2026-09-15T08:56:13.985507Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "19a56b88b4c7864dbeaf841b1f570b56b062ce3d3369743608039f3889c3fb6c",
+     "validated_at": "2026-09-18T07:00:58.796443Z"
+    },
+    "dark": {
+     "hash": "260f084007b75a472e3754d614df83618ea7bbad20af4bb568d1dd4aa0a129b7",
+     "validated_at": "2026-09-18T07:00:58.814879Z"
+    }
+   }
   },
   "packet-w4-05": {
    "themes": [
@@ -306,7 +466,17 @@
      "signature": "markdown-fence-not-stripped",
      "at": "2026-09-15T08:56:13.989337Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "a8588cefe35be9c2f6625df3e98c85fdbdb3d78d22cbb39b77cf212fb02c39e7",
+     "validated_at": "2026-09-19T05:02:25.109195Z"
+    },
+    "dark": {
+     "hash": "1f5f23723bb263ea4b59af741ee9d322816dd05229c6e7f76f6c151d7aa02465",
+     "validated_at": "2026-09-19T05:02:25.123164Z"
+    }
+   }
   },
   "packet-w4-06": {
    "themes": [
@@ -324,7 +494,17 @@
      "signature": "dsl-relative-width-syntax-unsupported",
      "at": "2026-09-15T08:56:13.992527Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "d7f77604b2c7a5ccd3d7c9624a3ad142e7abba9c353dbbdd220f0c9a8e7b4c0f",
+     "validated_at": "2026-09-19T05:02:25.371730Z"
+    },
+    "dark": {
+     "hash": "dde592a5a07b1872209533c253a52a3c722e66d98d70ce88d41f9cbc22dd1fed",
+     "validated_at": "2026-09-19T05:02:25.385957Z"
+    }
+   }
   },
   "packet-w4-13": {
    "themes": [
@@ -342,7 +522,17 @@
      "signature": "row-nesting-off-by-one-kills-render",
      "at": "2026-09-15T08:56:13.994639Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "b02d738b7e21d4acfa03b07713980c03350408a64093d3151244d2b98082b447",
+     "validated_at": "2026-09-16T09:20:35.047094Z"
+    },
+    "dark": {
+     "hash": "772cc6d798e7aec51503d4eda8eea1b3422d9a7f381f4c2e31f354af6b389522",
+     "validated_at": "2026-09-16T09:20:35.059189Z"
+    }
+   }
   },
   "packet-w4-15": {
    "themes": [
@@ -360,7 +550,17 @@
      "signature": "section-cells-alias-dropped-to-placeholder",
      "at": "2026-09-15T08:56:13.997591Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "106f748804b732cf89b45f062d4d73b817c4a52e0a18848b62e14ee90b7282ea",
+     "validated_at": "2026-09-16T09:21:09.588557Z"
+    },
+    "dark": {
+     "hash": "44d0e60af0ed4aca9e9e605897163d9f7b7338d9664a6f201e1afd74121a9fd7",
+     "validated_at": "2026-09-16T09:21:09.623012Z"
+    }
+   }
   },
   "packet-w2-01": {
    "themes": [
@@ -379,7 +579,17 @@
      "signature": "tall-canvas-vertically-cropped",
      "at": "2026-09-15T08:56:14.002536Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "57752db60961b031207d40ab5d08847767f473ab1696b46a77a83b19fbab23a3",
+     "validated_at": "2026-09-19T05:07:22.705742Z"
+    },
+    "dark": {
+     "hash": "788648b967f647e7929e351f362ed15f5230edd0cec8bc9d0d96b7e5be905ff4",
+     "validated_at": "2026-09-19T05:07:22.758683Z"
+    }
+   }
   },
   "packet-w2-02": {
    "themes": [
@@ -404,7 +614,17 @@
      "signature": "auto-palette-same-hue-collision",
      "at": "2026-09-15T08:56:14.045069Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "fd08a8d772fcde75955e10fe502ee02b9e073fdab1a1037518b256ede3bf450d",
+     "validated_at": "2026-09-18T07:07:26.954342Z"
+    },
+    "dark": {
+     "hash": "242f17879e88a8017ba138864c80ae17d6b318213c096adc239c49e47f379ecd",
+     "validated_at": "2026-09-18T07:07:26.999888Z"
+    }
+   }
   },
   "packet-w2-04": {
    "themes": [
@@ -429,7 +649,17 @@
      "signature": "auto-palette-same-hue-collision",
      "at": "2026-09-15T08:56:14.047261Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "ed37fe2ced68744cf2200c3c8d25ce2bb73a6dffd54976df839b78d16a6e0328",
+     "validated_at": "2026-09-19T05:07:22.941927Z"
+    },
+    "dark": {
+     "hash": "dc39e821cf33d40246975b673da967da9d17bb01df82330e449bd737ef26eb96",
+     "validated_at": "2026-09-19T05:07:22.966487Z"
+    }
+   }
   },
   "packet-w2-09": {
    "themes": [
@@ -448,7 +678,17 @@
      "signature": "tall-canvas-vertically-cropped",
      "at": "2026-09-15T08:56:14.013321Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "c47fad8639b9faa7c0d9f5013467a560709b8ba28bf2c43d001034f8ea7e269f",
+     "validated_at": "2026-09-19T05:00:15.053657Z"
+    },
+    "dark": {
+     "hash": "56506947e55827ca40b0956e32ace8a01ea350f86726a994637d3cbcec069718",
+     "validated_at": "2026-09-19T05:00:15.083165Z"
+    }
+   }
   },
   "packet-w2-12": {
    "themes": [
@@ -467,7 +707,17 @@
      "signature": "tall-canvas-vertically-cropped",
      "at": "2026-09-15T08:56:14.017399Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "70fa2d385662ac8dd5dc36917eb4cd55e2f72c1553247f9a5f0783541f237222",
+     "validated_at": "2026-09-18T07:09:24.743949Z"
+    },
+    "dark": {
+     "hash": "28be11c97de320a789910b51178bc73d58999aec65979f4d9a9283a576fde32c",
+     "validated_at": "2026-09-18T07:09:24.809213Z"
+    }
+   }
   },
   "packet-w2-13": {
    "themes": [
@@ -492,7 +742,17 @@
      "signature": "auto-palette-same-hue-collision",
      "at": "2026-09-15T08:56:14.049966Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "a5c42d8abfdeddb65e347c454ed337c18dd1aaa848365aa9bee52c29fb242662",
+     "validated_at": "2026-09-18T07:10:38.064396Z"
+    },
+    "dark": {
+     "hash": "1d7b231a6965e59137c139543c969e96462aee397d4818037efdc31efdd5b1b6",
+     "validated_at": "2026-09-18T07:10:38.113362Z"
+    }
+   }
   },
   "packet-w2-03": {
    "themes": [
@@ -530,7 +790,17 @@
      "signature": "section-label-clipped-at-canvas-edge",
      "at": "2026-09-15T08:56:14.035232Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "343038971b03fc5c7e077731d911a48cd65221e860aaa6fe4c2d96a395ab1e54",
+     "validated_at": "2026-09-16T08:39:00.798327Z"
+    },
+    "dark": {
+     "hash": "d1a40d6119fe6b52a99617b0e71636da1d12465896e2b733dea3a7fd36fe470d",
+     "validated_at": "2026-09-16T08:39:00.808382Z"
+    }
+   }
   },
   "packet-w2-11": {
    "themes": [
@@ -548,7 +818,17 @@
      "signature": "multiline-label-overflows-section-height",
      "at": "2026-09-15T08:56:14.038810Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "513a604107f18fbcb43d7a70e6cb1a24bd7df9b0de74541f78fb8319cb88c293",
+     "validated_at": "2026-09-16T08:53:25.337118Z"
+    },
+    "dark": {
+     "hash": "5031c2314cec9d700b8b51475c22ce4f5962938e01ba01ef52fce86cc9fc3cdc",
+     "validated_at": "2026-09-16T08:53:25.364206Z"
+    }
+   }
   },
   "packet-w4-11": {
    "themes": [
@@ -566,7 +846,103 @@
      "signature": "transparent-fill-assumes-white-page:dark",
      "at": "2026-09-15T08:56:14.042540Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "b1476e037bd4b837ac759004129f1045993932e4676b4a3ef45df648559249a4",
+     "validated_at": "2026-09-19T05:10:43.849509Z"
+    },
+    "dark": {
+     "hash": "912986b8dc1e3a1e31d1b02591e8d86d394431145de156d6ea1e3d3759c9d76c",
+     "validated_at": "2026-09-19T05:10:43.878345Z"
+    }
+   }
+  },
+  "packet-w3-06": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-452",
+     "signature": "coextensive-bracket-labels-overprint",
+     "at": "2026-09-18T07:25:17.593015Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "5d59f14f080e034b9fe52a74ca4a3518712cbc82edda239f6bcce17be3289d26",
+     "validated_at": "2026-09-18T07:03:24.869113Z"
+    },
+    "light": {
+     "hash": "aaa78bace5def1ee0c222bb46371d67e066128c60d18219f1af431ea4b2a2256",
+     "validated_at": "2026-09-18T07:03:24.857858Z"
+    }
+   }
+  },
+  "packet-w3-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-454",
+     "signature": "hardcoded-fill-merges-into-canvas",
+     "at": "2026-09-19T05:10:44.064766Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "f71aab7ce386f0951c2997e7e534b5106c979aaa988eeb33d2716fac306f2c2c",
+     "validated_at": "2026-09-19T05:03:48.711128Z"
+    },
+    "light": {
+     "hash": "aad6c1c688d365faa3d792dcda93d7f1fbde11d4cd78480d03a66f6cda210fa3",
+     "validated_at": "2026-09-19T05:03:48.701069Z"
+    }
+   }
+  },
+  "packet-w3-10": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-454",
+     "signature": "hardcoded-fill-merges-into-canvas",
+     "at": "2026-09-19T05:10:44.078298Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "ffb191b96269351901e55e5fe6adb3e98c6e44048db5ba3819b21f0379e69056",
+     "validated_at": "2026-09-19T05:03:48.968359Z"
+    },
+    "light": {
+     "hash": "3f9f19311acc41938acbaa7fea2b193b2a69054f6aed66d51313bc691a8c6523",
+     "validated_at": "2026-09-19T05:03:48.953667Z"
+    }
+   }
   }
  }
 }
