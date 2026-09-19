@@ -1,0 +1,253 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 780,
+  "height": 470,
+  "padding": 5,
+  "autosize": {
+   "type": "fit",
+   "contains": "padding"
+  },
+  "title": {
+   "text": "kde + regression + loess layered over a scatter",
+   "fontSize": 14
+  },
+  "data": [
+   {
+    "name": "pts",
+    "transform": [
+     {
+      "type": "sequence",
+      "start": 0,
+      "stop": 220,
+      "step": 1,
+      "as": "k"
+     },
+     {
+      "type": "formula",
+      "as": "u",
+      "expr": "50 + 22*sin(datum.k*2.399) + 6*cos(datum.k*0.77)"
+     },
+     {
+      "type": "formula",
+      "as": "v",
+      "expr": "0.8*datum.u + 10 + 11*sin(datum.k*1.61) + 5*cos(datum.k*3.11)"
+     }
+    ]
+   },
+   {
+    "name": "dens",
+    "source": "pts",
+    "transform": [
+     {
+      "type": "kde",
+      "field": "u",
+      "extent": [
+       0,
+       100
+      ],
+      "as": [
+       "ku",
+       "kd"
+      ]
+     }
+    ]
+   },
+   {
+    "name": "reg",
+    "source": "pts",
+    "transform": [
+     {
+      "type": "regression",
+      "x": "u",
+      "y": "v",
+      "method": "linear",
+      "as": [
+       "ru",
+       "rv"
+      ]
+     }
+    ]
+   },
+   {
+    "name": "lo",
+    "source": "pts",
+    "transform": [
+     {
+      "type": "loess",
+      "x": "u",
+      "y": "v",
+      "bandwidth": 0.4,
+      "as": [
+       "lu",
+       "lv"
+      ]
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "linear",
+    "domain": [
+     0,
+     100
+    ],
+    "range": "width"
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "domain": {
+     "data": "pts",
+     "field": "v"
+    },
+    "range": "height",
+    "nice": true
+   },
+   {
+    "name": "d",
+    "type": "linear",
+    "domain": {
+     "data": "dens",
+     "field": "kd"
+    },
+    "range": [
+     {
+      "signal": "height"
+     },
+     {
+      "signal": "height*0.72"
+     }
+    ]
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x",
+    "grid": true,
+    "title": "u"
+   },
+   {
+    "orient": "left",
+    "scale": "y",
+    "grid": true,
+    "title": "v"
+   }
+  ],
+  "marks": [
+   {
+    "type": "area",
+    "from": {
+     "data": "dens"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "ku"
+      },
+      "y": {
+       "scale": "d",
+       "field": "kd"
+      },
+      "y2": {
+       "signal": "height"
+      },
+      "fill": {
+       "value": "#9b59b6"
+      },
+      "fillOpacity": {
+       "value": 0.35
+      }
+     }
+    }
+   },
+   {
+    "type": "symbol",
+    "from": {
+     "data": "pts"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "u"
+      },
+      "y": {
+       "scale": "y",
+       "field": "v"
+      },
+      "size": {
+       "value": 28
+      },
+      "fill": {
+       "value": "#34495e"
+      },
+      "fillOpacity": {
+       "value": 0.55
+      }
+     }
+    }
+   },
+   {
+    "type": "line",
+    "from": {
+     "data": "reg"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "ru"
+      },
+      "y": {
+       "scale": "y",
+       "field": "rv"
+      },
+      "stroke": {
+       "value": "#e67e22"
+      },
+      "strokeWidth": {
+       "value": 2.5
+      }
+     }
+    }
+   },
+   {
+    "type": "line",
+    "from": {
+     "data": "lo"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "lu"
+      },
+      "y": {
+       "scale": "y",
+       "field": "lv"
+      },
+      "stroke": {
+       "value": "#16a085"
+      },
+      "strokeWidth": {
+       "value": 2
+      },
+      "strokeDash": {
+       "value": [
+        5,
+        3
+       ]
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "INTERACTION: three statistical transforms layered in one spec - `kde` density curve, `regression` (linear) fit line, and `loess` smooth - over a 220-point scatter, each on its own scale."
+}

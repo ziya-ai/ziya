@@ -1,0 +1,163 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 800,
+  "height": 320,
+  "padding": 5,
+  "autosize": "pad",
+  "data": [
+   {
+    "name": "raw",
+    "transform": [
+     {
+      "type": "sequence",
+      "start": 0,
+      "stop": 20000,
+      "step": 1,
+      "as": "i"
+     },
+     {
+      "type": "formula",
+      "as": "v",
+      "expr": "(datum.i % 997) / 997 * 100 + 8*sin(datum.i)"
+     },
+     {
+      "type": "extent",
+      "field": "v",
+      "signal": "vext"
+     }
+    ]
+   },
+   {
+    "name": "binned",
+    "source": "raw",
+    "transform": [
+     {
+      "type": "bin",
+      "field": "v",
+      "extent": {
+       "signal": "vext"
+      },
+      "maxbins": 250,
+      "as": [
+       "b0",
+       "b1"
+      ]
+     },
+     {
+      "type": "aggregate",
+      "groupby": [
+       "b0",
+       "b1"
+      ],
+      "ops": [
+       "count"
+      ],
+      "as": [
+       "cnt"
+      ]
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "linear",
+    "domain": {
+     "signal": "vext"
+    },
+    "range": "width"
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "domain": {
+     "data": "binned",
+     "field": "cnt"
+    },
+    "range": "height",
+    "nice": true
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x",
+    "title": "value (250 bins over 20000 samples)"
+   },
+   {
+    "orient": "left",
+    "scale": "y",
+    "title": "count",
+    "grid": true,
+    "gridOpacity": 0.15
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "from": {
+     "data": "binned"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "b0"
+      },
+      "x2": {
+       "scale": "x",
+       "field": "b1"
+      },
+      "y": {
+       "scale": "y",
+       "field": "cnt"
+      },
+      "y2": {
+       "scale": "y",
+       "value": 0
+      },
+      "fill": {
+       "value": "#6a8caf"
+      },
+      "stroke": {
+       "value": "#33475b"
+      },
+      "strokeWidth": {
+       "value": 0.25
+      }
+     }
+    }
+   },
+   {
+    "type": "rule",
+    "encode": {
+     "enter": {
+      "x": {
+       "value": 0
+      },
+      "x2": {
+       "signal": "width"
+      },
+      "y": {
+       "scale": "y",
+       "value": 60
+      },
+      "stroke": {
+       "value": "#888888"
+      },
+      "strokeWidth": {
+       "value": 0.5
+      },
+      "strokeOpacity": {
+       "value": 0.25
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "SCALE/DENSITY + HAIRLINE STROKES: 250-bin histogram over 20000 values, bars outlined at 0.25px and a 0.5px low-opacity reference rule. Probes stroke thinning and low-opacity survival in dark."
+}

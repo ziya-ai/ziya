@@ -8,6 +8,7 @@ import {
   deduplicateLegendDomains,
   sinkSecondaryChannels,
   synthesizeColorLegend,
+  transposeLongLabelBarChart,
 } from './vegaLayerDefaults';
 import { computeTextOverflow, growPadding } from './vegaTextOverflow';
 import { computeLegendLabelLimitPx, wrapSpecTitles, VEGA_DEFAULT_LEGEND_LABEL_LIMIT } from './vegaTextFit';
@@ -28,6 +29,7 @@ import {
   enhanceArcChartsWithTextLabels,
   sanitizeResolveScale,
   applyCategoricalPaletteFix,
+  liftLowOpacityLightCategorical,
   sanitizeThemeTokens,
   fixBogusColorNameValues,
 } from './vegaRecovery';
@@ -393,13 +395,72 @@ function alreadyDecluttered(node: any): boolean {
   );
 }
 
-function applyDeclutterToNode(node: any, dataObj: any, cap: number): boolean {
+// D-262 / D-501: resolve the quantitative POSITION fields the text mark is
+// plotted at, from the layer's own x/y encoding or the shared top-level one.
+// Only a plain field reference (no aggregate/bin) is usable as a datum property
+// in a declutter transform; returns null for either axis when it is not a bare
+// field, in which case the caller falls back to the index-stride sample.
+function resolvePositionFields(node: any, sharedEnc: any): { x: string; y: string } | null {
+  const pick = (channel: any): string | null => {
+    if (!channel || typeof channel !== 'object') return null;
+    if (channel.aggregate || channel.bin) return null;
+    return typeof channel.field === 'string' && channel.field.length > 0 ? channel.field : null;
+  };
+  const enc = node?.encoding && typeof node.encoding === 'object' ? node.encoding : {};
+  const xf = pick(enc.x) ?? pick(sharedEnc?.x);
+  const yf = pick(enc.y) ?? pick(sharedEnc?.y);
+  if (!xf || !yf) return null;
+  return { x: xf, y: yf };
+}
+
+// D-501: build a COLLISION-based declutter. The old policy kept every Nth label
+// by row_number (a uniform sample over datum INDEX, blind to where labels
+// actually land), so isolated points lost their label while clustered ones kept
+// overlapping. Instead, partition the plot into a `side`×`side` grid over the
+// observed x/y range and keep the FIRST label to fall in each cell — one label
+// per cell means no two survivors sit in the same grid square, so overlap is
+// bounded by cell size while every occupied region keeps a representative label.
+// The grid is derived purely from data values available post-transform
+// (joinaggregate min/max + a bucket calculate), so it needs no rendered
+// geometry. `side` is ~sqrt(cap) so the survivor count tracks the same readable
+// density the index policy targeted.
+const TEXT_MARK_DECLUTTER_CX = '__declutterCx';
+const TEXT_MARK_DECLUTTER_CY = '__declutterCy';
+
+function buildGridDeclutterTransforms(xField: string, yField: string, cap: number): any[] {
+  const side = Math.max(4, Math.round(Math.sqrt(cap)));
+  const xmin = '__declutterXmin', xmax = '__declutterXmax';
+  const ymin = '__declutterYmin', ymax = '__declutterYmax';
+  const dx = (f: string) => `datum[${JSON.stringify(f)}]`;
+  // min(side-1, floor(norm*side)) clamps the datum sitting exactly at the max
+  // edge (norm===1) back into the last cell rather than an out-of-range bucket.
+  return [
+    { joinaggregate: [
+      { op: 'min', field: xField, as: xmin }, { op: 'max', field: xField, as: xmax },
+      { op: 'min', field: yField, as: ymin }, { op: 'max', field: yField, as: ymax },
+    ] },
+    { calculate: `min(${side - 1}, floor((${dx(xField)}-datum.${xmin})/max(1e-9,datum.${xmax}-datum.${xmin})*${side}))`, as: TEXT_MARK_DECLUTTER_CX },
+    { calculate: `min(${side - 1}, floor((${dx(yField)}-datum.${ymin})/max(1e-9,datum.${ymax}-datum.${ymin})*${side}))`, as: TEXT_MARK_DECLUTTER_CY },
+    { window: [{ op: 'row_number', as: TEXT_MARK_DECLUTTER_IDX }], groupby: [TEXT_MARK_DECLUTTER_CX, TEXT_MARK_DECLUTTER_CY] },
+    { filter: `datum.${TEXT_MARK_DECLUTTER_IDX} === 1` },
+  ];
+}
+
+function applyDeclutterToNode(node: any, dataObj: any, cap: number, sharedEnc?: any): boolean {
   if (!isDataLabelTextMark(node) || alreadyDecluttered(node)) return false;
   const count = estimateLegendCardinality(dataObj) || 0;
   if (count <= TEXT_MARK_DECLUTTER_MIN || count <= cap) return false;
+  const transforms = Array.isArray(node.transform) ? node.transform : [];
+  const pos = resolvePositionFields(node, sharedEnc);
+  if (pos) {
+    // Position-aware, collision-based grid cull (preferred).
+    node.transform = transforms.concat(buildGridDeclutterTransforms(pos.x, pos.y, cap));
+    return true;
+  }
+  // Fallback: uniform index sample when position fields are not plain fields
+  // (aggregated/binned/absent) — better than unbounded overplot.
   const stride = Math.ceil(count / cap);
   if (stride <= 1) return false;
-  const transforms = Array.isArray(node.transform) ? node.transform : [];
   transforms.push({ window: [{ op: 'row_number', as: TEXT_MARK_DECLUTTER_IDX }] });
   transforms.push({ filter: `(datum.${TEXT_MARK_DECLUTTER_IDX} % ${stride}) === 1` });
   node.transform = transforms;
@@ -409,16 +470,17 @@ function applyDeclutterToNode(node: any, dataObj: any, cap: number): boolean {
 export function declutterDenseTextMarks(spec: any): number {
   if (!spec || typeof spec !== 'object') return 0;
   const cap = computeTextMarkReadableCap(spec.height);
+  const sharedEnc = spec.encoding && typeof spec.encoding === 'object' ? spec.encoding : {};
   let changed = 0;
   // Top-level single text mark.
   if (spec.mark) {
-    if (applyDeclutterToNode(spec, spec.data || {}, cap)) changed++;
+    if (applyDeclutterToNode(spec, spec.data || {}, cap, sharedEnc)) changed++;
   }
   // Layered text marks (the common data-label-over-points case).
   if (Array.isArray(spec.layer)) {
     for (const layer of spec.layer) {
       const dataObj = layer.data || spec.data || {};
-      if (applyDeclutterToNode(layer, dataObj, cap)) changed++;
+      if (applyDeclutterToNode(layer, dataObj, cap, sharedEnc)) changed++;
     }
   }
   return changed;
@@ -3613,6 +3675,15 @@ export const vegaLitePlugin: D3RenderPlugin = {
         vegaSpec.height = Math.min(availableHeight * 0.8, 500);
       }
 
+      // D-309/D-500: a bar chart with a few but VERY LONG nominal x labels is
+      // transposed to horizontal bars BEFORE axis defaulting — the long labels
+      // move to the y axis where they lie flat, so the rotation/overlap/title-
+      // collision failure of the vertical form never arises. No-op for every
+      // other chart shape (guarded on mark, channel types, cardinality, length).
+      if (transposeLongLabelBarChart(vegaSpec)) {
+        console.log('🔧 VEGA-POST-PROCESS: transposed long-label bar chart to horizontal (D-309/D-500)');
+      }
+
       // Axis label defaults, injected ONCE per channel. Extracted to
       // ./vegaLayerDefaults, which additionally handles
       // resolve.axis:'independent' — where layers draw separate axes, so a
@@ -5227,6 +5298,16 @@ export const vegaLitePlugin: D3RenderPlugin = {
       // themed config.range.category only when needed and never over an
       // author-supplied colour scale/palette (see applyCategoricalPaletteFix).
       applyCategoricalPaletteFix(vegaSpec, isDarkMode);
+
+      // D-258 (regression): the saturated palette keeps the LEGEND swatches
+      // separable, but under the LIGHT theme a low-opacity categorical scatter
+      // still washes together in the PLOT — compositing over #fff floods the
+      // channels toward white and compresses between-group ΔE (16.6 on the dark
+      // canvas vs 12.4 on white at opacity 0.35). Lift the effective light
+      // opacity to the floor that restores dark-parity separability. Light-only
+      // and categorical-only; the dark theme (which already survives) is
+      // untouched, so the themes stay a matched pair.
+      liftLowOpacityLightCategorical(vegaSpec, isDarkMode);
 
       // Apply theme
       const embedOptions: EmbedOptions = {

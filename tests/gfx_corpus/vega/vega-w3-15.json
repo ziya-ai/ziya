@@ -1,0 +1,214 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 780,
+  "height": 470,
+  "padding": 5,
+  "autosize": {
+   "type": "fit",
+   "contains": "padding"
+  },
+  "title": {
+   "text": "Spec fights the theme: white-on-white config + polarised custom range",
+   "fontSize": 14,
+   "color": "#808080"
+  },
+  "config": {
+   "background": "#ffffff",
+   "axis": {
+    "labelColor": "#ffffff",
+    "titleColor": "#f5f5f5",
+    "gridColor": "#fbfbfb",
+    "domainColor": "#fdfdfd"
+   },
+   "legend": {
+    "labelColor": "#fefefe",
+    "titleColor": "#fefefe"
+   }
+  },
+  "signals": [
+   {
+    "name": "scheme",
+    "value": "greys"
+   }
+  ],
+  "data": [
+   {
+    "name": "t",
+    "values": [
+     {
+      "c": "n1",
+      "v": 22
+     },
+     {
+      "c": "n2",
+      "v": 44
+     },
+     {
+      "c": "n3",
+      "v": 61
+     },
+     {
+      "c": "n4",
+      "v": 33
+     },
+     {
+      "c": "n5",
+      "v": 55
+     },
+     {
+      "c": "n6",
+      "v": 18
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "band",
+    "domain": {
+     "data": "t",
+     "field": "c"
+    },
+    "range": "width",
+    "padding": 0.2
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "domain": {
+     "data": "t",
+     "field": "v"
+    },
+    "range": "height",
+    "nice": true
+   },
+   {
+    "name": "col",
+    "type": "ordinal",
+    "domain": {
+     "data": "t",
+     "field": "c"
+    },
+    "range": [
+     "#fdfdfd",
+     "#0a0a0a",
+     "#fbfbfb",
+     "#111111",
+     "#f9f9f9",
+     "#080808"
+    ]
+   },
+   {
+    "name": "ramp",
+    "type": "linear",
+    "domain": [
+     0,
+     61
+    ],
+    "range": {
+     "scheme": {
+      "signal": "scheme"
+     }
+    }
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x",
+    "title": "node"
+   },
+   {
+    "orient": "left",
+    "scale": "y",
+    "grid": true,
+    "title": "value (axis text is #ffffff)"
+   }
+  ],
+  "legends": [
+   {
+    "fill": "col",
+    "title": "polarised range"
+   },
+   {
+    "fill": "ramp",
+    "type": "gradient",
+    "title": "signal scheme"
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "c"
+      },
+      "width": {
+       "scale": "x",
+       "band": 1
+      },
+      "y": {
+       "scale": "y",
+       "field": "v"
+      },
+      "y2": {
+       "scale": "y",
+       "value": 0
+      },
+      "fill": {
+       "scale": "col",
+       "field": "c"
+      },
+      "stroke": {
+       "value": "#ffffff"
+      },
+      "strokeWidth": {
+       "value": 1.5
+      }
+     }
+    }
+   },
+   {
+    "type": "text",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "c",
+       "band": 0.5
+      },
+      "y": {
+       "scale": "y",
+       "field": "v",
+       "offset": 14
+      },
+      "text": {
+       "field": "v"
+      },
+      "align": {
+       "value": "center"
+      },
+      "fill": {
+       "value": "#ffffff"
+      },
+      "fontSize": {
+       "value": 12
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "COLOR/CONFLICT: a spec that fights the theme on purpose - config.background #ffffff with config.axis.labelColor #ffffff (self-cancelling in light), a custom ordinal range of near-white and near-black fills, a signal-selected scheme, and marks whose stroke is #ffffff."
+}
