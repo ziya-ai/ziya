@@ -697,6 +697,13 @@ class MCPManager:
                         logger.info(f"MCP server '{name}' skipped: config must be a JSON object, got {type(user_cfg).__name__}")
                         continue
 
+                    # Registry installs (amazon_registry, official_mcp) persist the
+                    # endpoint as "remote_url"; every consumer below keys on "url".
+                    # Aliased BEFORE the launch-key check, or a stanza with only
+                    # remote_url is skipped here as having no way to start.
+                    if not user_cfg.get("url") and user_cfg.get("remote_url"):
+                        user_cfg["url"] = user_cfg["remote_url"]
+
                     if "command" not in user_cfg and "url" not in user_cfg and "installation_path" not in user_cfg:
                         logger.info(f"MCP server '{name}' skipped: missing 'command' (or 'url') in config")
                         continue
@@ -839,8 +846,10 @@ class MCPManager:
                     enhanced_config = server_config.copy()
                     enhanced_config["name"] = server_name
                     # Apply auth token if configured
+                    # A bare string ("auth": "midway") is valid for the client;
+                    # str.get would raise here and demote the entry to a stub.
                     auth_config = server_config.get("auth")
-                    if auth_config and auth_config.get("type") == "bearer":
+                    if isinstance(auth_config, dict) and auth_config.get("type") == "bearer":
                         token = _resolve_bearer_token(server_name, auth_config)
                         if token:
                             enhanced_config["auth_token"] = token
@@ -955,7 +964,7 @@ class MCPManager:
                 # Config:  "auth": {"type": "bearer", "token": "..."}
                 # Or env:  "auth": {"type": "bearer", "token_env": "MY_TOKEN_VAR"}
                 auth_config = server_config.get("auth")
-                if auth_config and auth_config.get("type") == "bearer":
+                if isinstance(auth_config, dict) and auth_config.get("type") == "bearer":
                     token = _resolve_bearer_token(server_name, auth_config)
                     if token:
                         enhanced_config["auth_token"] = token
@@ -1293,6 +1302,18 @@ class MCPManager:
             # Load current config or use provided config
             if new_config:
                 server_config = new_config
+                # Register the config, not just the client. get_server_status()
+                # and the MCP status modal enumerate server_configs, so a
+                # server started from a config the manager had never seen (the
+                # registry install path) was live — tools active — yet absent
+                # from every listing until a full reinitialize re-read the
+                # file from disk. A user/registry server is never builtin,
+                # mirroring the config loader; a builtin keeps its flag.
+                prior = self.server_configs.get(server_name) or {}
+                self.server_configs[server_name] = {
+                    **new_config,
+                    "builtin": new_config.get("builtin", prior.get("builtin", False)),
+                }
             else:
                 # Get the specific server's config from current configs
                 server_config = self.server_configs.get(server_name)
