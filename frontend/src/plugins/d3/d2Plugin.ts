@@ -164,6 +164,35 @@ export function buildElkNodeLabels(node: any): Array<{ text: string }> {
     return node && node.label ? [{ text: node.label }] : [];
 }
 
+// Build one ELK child for the FLAT (container-less) layout path.
+//
+// D-065..D-070 REGRESSION FIX: every leaf is pinned to its measured box with
+// the MINIMUM_SIZE constraint. In a headless render ELK has no font metrics,
+// so the NODE_LABELS constraint used to resolve the bare {text} label from
+// buildElkNodeLabels (D-084) to a 0x0 node — ELK then packed point-sized nodes,
+// adjacent boxes overlapped and every connection was hidden under the target
+// rect. Before D-084 the flat path threw and fell back to d2SimpleLayout (which
+// sizes with d2GridPitch), so the collapse was latent; once ELK stopped
+// throwing it surfaced as a full-graph overlap. The hierarchy path already pins
+// leaves to MINIMUM_SIZE for exactly this reason (see D2_CONTAINER_ELK_PADDING
+// block); this keeps the two paths consistent so ELK spaces boxes by their real
+// width/height in both. Theme-invariant: geometry only, no colour resolved.
+export function buildElkFlatChild(node: any): any {
+    const box = d2NodeBoxSize(node);
+    return {
+        id: node.id,
+        width: box.width,
+        height: box.height,
+        labels: buildElkNodeLabels(node),
+        layoutOptions: {
+            'elk.nodeSize.constraints': 'MINIMUM_SIZE',
+            'elk.nodeSize.minimum': `(${box.width},${box.height})`,
+            'elk.nodeSize.options': 'DEFAULT_MINIMUM_SIZE COMPUTE_PADDING',
+            'elk.padding': '[top=10,left=15,bottom=10,right=15]'
+        }
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Shared node sizing / label wrapping (G-13: D-086 / D-087 / D-088).
 //
@@ -572,6 +601,50 @@ export function stripD2Quotes(v: string): string {
         return s.slice(1, -1);
     }
     return s;
+}
+
+// Index of the first TOP-LEVEL ':' in a line — the one that separates a
+// node/edge from its label — skipping any ':' that sits inside a quoted span or
+// a `{...}`/`(...)`/`[...]` bracket group. Returns -1 when there is none. This
+// is what lets a label like `ratio 16:9 aspect` or an inline `{near: top}`
+// attribute block keep its own colons instead of being read as the label
+// separator (D-061 / D-366).
+export function d2LabelColonIndex(line: string): number {
+    const s = String(line ?? '');
+    let depth = 0, inS = false, inD = false;
+    for (let i = 0; i < s.length; i++) {
+        const ch = s[i];
+        if (ch === "'" && !inD) { inS = !inS; continue; }
+        if (ch === '"' && !inS) { inD = !inD; continue; }
+        if (inS || inD) continue;
+        if (ch === '{' || ch === '(' || ch === '[') { depth++; continue; }
+        if (ch === '}' || ch === ')' || ch === ']') { depth = Math.max(0, depth - 1); continue; }
+        if (ch === ':' && depth === 0) return i;
+    }
+    return -1;
+}
+
+// True when a structural connection operator (`->` / `<-` / `<->`) appears in
+// the line's STRUCTURAL region: before the first top-level label colon and
+// outside any quoted span. A connector that occurs only inside label text —
+// `arrowLabel: uses -> as text`, `braceLabel -> pipeLabel: sep -> here` — is
+// literal and must NOT turn the line (or the label) into a phantom edge (D-366).
+// parseLine dispatches connection-vs-node on this, and parseConnection splits
+// the label off at d2LabelColonIndex before splitting the rest on connectors.
+export function d2HasStructuralConnector(line: string): boolean {
+    const s = String(line ?? '');
+    const colon = d2LabelColonIndex(s);
+    const end = colon >= 0 ? colon : s.length;
+    let inS = false, inD = false;
+    for (let i = 0; i < end; i++) {
+        const ch = s[i];
+        if (ch === "'" && !inD) { inS = !inS; continue; }
+        if (ch === '"' && !inS) { inD = !inD; continue; }
+        if (inS || inD) continue;
+        if (ch === '-' && s[i + 1] === '>') return true;   // ->
+        if (ch === '<' && s[i + 1] === '-') return true;   // <- and <->
+    }
+    return false;
 }
 
 // Strip a trailing `# comment` from a D2 line. A `#` begins a comment only when
@@ -1206,7 +1279,7 @@ export class D2Parser {
         // `id: int`, `style: { fill: red }` etc. into boxes, discarding the
         // node's own label (D-097). Connections inside a node body are honoured.
         if (top && top.kind === 'node') {
-            if (line.includes('->') || line.includes('<-')) {
+            if (d2HasStructuralConnector(line)) {
                 this.parseConnection(line);
                 return;
             }
@@ -1214,8 +1287,10 @@ export class D2Parser {
             return;
         }
 
-        // Connections (edges).
-        if (line.includes('->') || line.includes('<->') || line.includes('<-')) {
+        // Connections (edges). A `->`/`<-`/`<->` counts as an edge operator only
+        // when it sits in the structural region (before the label colon, outside
+        // quotes); one that appears only inside label text is literal (D-366).
+        if (d2HasStructuralConnector(line)) {
             this.parseConnection(line);
             return;
         }
@@ -1507,31 +1582,35 @@ export class D2Parser {
         // capturing group keeps the connector tokens, so the result alternates
         // endpoint, connector, endpoint, ... Alternatives are ordered
         // longest-first so '<->' wins over its '<-'/'->' prefixes.
-        const parts = line.split(/(<->|<-|->)/);
-        if (parts.length < 3) {
-            return;
-        }
-
-        // A trailing ": label" belongs to the LAST endpoint; it applies to
-        // every connection in the chain (matching d2's chained-label
-        // semantics). Splitting on the first ':' keeps `a -> b: x` -> label 'x'
-        // and two nodes a,b (D-078 regression guard).
-        // A trailing inline attribute block belongs to the connection, not the
-        // visible label: `... : reads {near: top-center}` -> label 'reads', and
-        // a label-less `a -> b {near: top}` keeps endpoint 'b'. It is stripped
-        // from the tail endpoint BEFORE the ': label' split so the `:` INSIDE
-        // `{near: ...}` is not mistaken for the label separator; previously the
-        // whole `{near: ...}` leaked into the rendered edge label (D-061).
         const stripInlineAttrs = (s: string): string =>
             s.replace(/\s*\{[^{}]*\}\s*$/, '').trim();
-        const lastIdx = parts.length - 1;
-        parts[lastIdx] = stripInlineAttrs(parts[lastIdx]);
 
+        // Separate a trailing ": label" at the FIRST top-level colon — one that
+        // is outside any quoted span or `{...}` attribute block (d2LabelColonIndex).
+        // Everything after it is the label (shared across a chain, per d2), and
+        // ONLY the region before it is split into endpoints/connectors. This is
+        // what keeps a `->`/`:` that lives inside the label text from spawning
+        // phantom nodes: `braceLabel -> pipeLabel: sep -> here` -> one edge
+        // braceLabel->pipeLabel labelled "sep -> here", not edges to phantom
+        // "here"/"as text" nodes (D-366). `a -> b: x` still yields nodes a,b and
+        // label 'x' (D-061/D-078 guard); `a -> b {near: top}` keeps endpoint 'b'
+        // because the colon inside {} is not top-level.
         let label = '';
-        const colonIdx = parts[lastIdx].indexOf(':');
+        let connPart = line;
+        const colonIdx = d2LabelColonIndex(line);
         if (colonIdx >= 0) {
-            label = parts[lastIdx].slice(colonIdx + 1).trim();
-            parts[lastIdx] = parts[lastIdx].slice(0, colonIdx);
+            label = stripInlineAttrs(line.slice(colonIdx + 1).trim());
+            connPart = line.slice(0, colonIdx);
+        }
+
+        // Split into endpoints and connectors at top level. String.split with a
+        // capturing group keeps the connector tokens, so the result alternates
+        // endpoint, connector, endpoint, ... Alternatives are ordered
+        // longest-first so '<->' wins over its '<-'/'->' prefixes. A chain
+        // `a -> b -> c` yields BOTH a->b and b->c (D-084).
+        const parts = connPart.split(/(<->|<-|->)/);
+        if (parts.length < 3) {
+            return;
         }
 
         const endpoints: string[] = [];
@@ -1748,26 +1827,7 @@ class ELKLayoutEngine {
                 'elk.insideSelfLoops.activate': 'true',
                 ...options
             },
-            children: nodes.map(node => {
-                // Shape-aware size so a sql_table reserves room for its column
-                // rows and a circle is squared (D-082). A sql_table is sized by
-                // MINIMUM_SIZE (not NODE_LABELS) so ELK does not shrink it back
-                // to just the title label.
-                const box = d2NodeBoxSize(node);
-                const isTable = node.shape === 'sql_table';
-                return {
-                    id: node.id,
-                    width: box.width,
-                    height: box.height,
-                    labels: buildElkNodeLabels(node),
-                    layoutOptions: {
-                        'elk.nodeSize.constraints': isTable ? 'MINIMUM_SIZE' : 'NODE_LABELS',
-                        'elk.nodeSize.minimum': isTable ? `(${box.width},${box.height})` : undefined,
-                        'elk.nodeSize.options': 'DEFAULT_MINIMUM_SIZE COMPUTE_PADDING',
-                        'elk.padding': '[top=10,left=15,bottom=10,right=15]'
-                    }
-                };
-            }),
+            children: nodes.map(buildElkFlatChild),
             edges: edges.map(edge => ({
                 id: `${edge.source}_${edge.target}`,
                 sources: [edge.source],
@@ -1881,8 +1941,14 @@ export const d2Plugin: D3RenderPlugin = {
             // drawing two boxes both labelled '[' and then throwing
             // Infinity-rect errors. Detect it and say so honestly (D-099).
             if (looksLikeJson(extractedDefinition)) {
+                // Tag the card with data-diagram-error so the headless capture
+                // harness (DiagramRenderPage) surfaces this rejection in
+                // milliseconds. Without the marker the card holds no
+                // svg/canvas/img, the completion poll never fires, and the
+                // render burns the full 30s safety timeout before reporting a
+                // generic svg:0 snapshot (D-367).
                 container.innerHTML = `
-                    <div style="
+                    <div data-diagram-error="This looks like a JSON graph payload, not D2 syntax." style="
                         padding: 20px;
                         background-color: ${isDarkMode ? '#2a1f1f' : '#fff2f0'};
                         border: 1px solid ${isDarkMode ? '#a61d24' : '#ffa39e'};
@@ -1902,8 +1968,10 @@ export const d2Plugin: D3RenderPlugin = {
             // `-->`/`-.->` arrows). The old parser folded each node into two
             // boxes plus a blank endpoint; say so honestly instead (D-102).
             if (looksLikeMermaid(extractedDefinition)) {
+                // data-diagram-error marker: fail fast in the headless harness
+                // instead of stalling to the 30s timeout (D-367).
                 container.innerHTML = `
-                    <div style="
+                    <div data-diagram-error="This looks like Mermaid, not D2 syntax." style="
                         padding: 20px;
                         background-color: ${isDarkMode ? '#2a1f1f' : '#fff2f0'};
                         border: 1px solid ${isDarkMode ? '#a61d24' : '#ffa39e'};
@@ -1925,8 +1993,13 @@ export const d2Plugin: D3RenderPlugin = {
             const { nodes, edges, containers, direction: parsedDirection } = parser.parse(extractedDefinition);
 
             if (nodes.length === 0) {
+                // A definition that reduces to zero nodes (comments/whitespace
+                // only, or otherwise nothing parseable) is a dead end for the
+                // renderer. Tag the card with data-diagram-error so the headless
+                // harness reports it immediately rather than waiting out the 30s
+                // safety timeout with an svg:0 snapshot (D-367).
                 container.innerHTML = `
-                    <div style="text-align: center; padding: 20px; color: ${isDarkMode ? '#ff6b6b' : '#d63031'};">
+                    <div data-diagram-error="No nodes found in D2 definition" style="text-align: center; padding: 20px; color: ${isDarkMode ? '#ff6b6b' : '#d63031'};">
                         <p>No nodes found in D2 definition</p>
                     </div>
                 `;
@@ -2215,35 +2288,63 @@ nodeGroups.each(function (this: any, d: any) {
     drawWrappedLabel();
 });
 
-            // Add edge labels if they exist
-            svg.selectAll('.edge-label')
+            // Add edge labels if they exist. Each label is drawn as a <g> at the
+            // segment midpoint carrying a BACKING RECT (filled with the page
+            // background) beneath the text, because SVG <text> has no honoured
+            // `background` attribute — the previous code set one and it was a
+            // no-op, so the label was painted straight over the arrow line and
+            // arrowhead and read as a strikethrough smear (worst legibility in
+            // dark: white label over the #9aa4b2 arrowhead, 2.52:1) (D-362).
+            //
+            // The rect fill and the text colour both resolve from the theme the
+            // renderer was given (page bg + colors.text), so the label reads on
+            // the SAME maximal-contrast footing in both themes rather than
+            // fighting whatever the arrow paints underneath:
+            //   dark  #ffffff on #1f1f1f  -> 16.48:1
+            //   light #000000 on #ffffff  -> 21.00:1
+            // The rect is sized from the label's character count (headless SVG
+            // has no getBBox), which over-covers the glyph run and is centred on
+            // the midpoint.
+            const EDGE_LABEL_FONT = 10;
+            const EDGE_LABEL_CHAR_W = 6;   // ~0.6em at 10px Arial
+            const EDGE_LABEL_PAD_X = 3;
+            const EDGE_LABEL_PAD_Y = 2;
+            const edgeLabelBg = isDarkMode ? D2_DARK_BG : D2_LIGHT_BG;
+            const edgeLabelText = (d: any): string => (d && d.label != null) ? String(d.label) : '';
+            const edgeLabelMid = (d: any): { x: number; y: number } | null => {
+                if (!d) return null;
+                const s = layoutResult.nodes.find(n => n.id === d.source);
+                const t = layoutResult.nodes.find(n => n.id === d.target);
+                if (!s || !t) return null;
+                return {
+                    x: (s.x + s.width / 2 + t.x + t.width / 2) / 2,
+                    y: (s.y + s.height / 2 + t.y + t.height / 2) / 2,
+                };
+            };
+            const edgeLabelGroups = svg.selectAll('.edge-label')
                 .data(layoutResult.edges.filter(d => d.label))
                 .enter()
-                .append('text')
+                .append('g')
                 .attr('class', 'edge-label')
-                .attr('x', d => {
-                    const sourceNode = layoutResult.nodes.find(n => n.id === d.source);
-                    const targetNode = layoutResult.nodes.find(n => n.id === d.target);
-                    if (sourceNode && targetNode) {
-                        return (sourceNode.x + sourceNode.width / 2 + targetNode.x + targetNode.width / 2) / 2;
-                    }
-                    return 0;
-                })
-                .attr('y', d => {
-                    const sourceNode = layoutResult.nodes.find(n => n.id === d.source);
-                    const targetNode = layoutResult.nodes.find(n => n.id === d.target);
-                    if (sourceNode && targetNode) {
-                        return (sourceNode.y + sourceNode.height / 2 + targetNode.y + targetNode.height / 2) / 2;
-                    }
-                    return 0;
-                })
+                .attr('transform', (d: any) => {
+                    const m = edgeLabelMid(d);
+                    return m ? `translate(${m.x}, ${m.y})` : 'translate(0, 0)';
+                });
+            edgeLabelGroups.append('rect')
+                .attr('class', 'edge-label-bg')
+                .attr('x', (d: any) => -((edgeLabelText(d).length * EDGE_LABEL_CHAR_W) / 2) - EDGE_LABEL_PAD_X)
+                .attr('y', -(EDGE_LABEL_FONT / 2) - EDGE_LABEL_PAD_Y)
+                .attr('width', (d: any) => edgeLabelText(d).length * EDGE_LABEL_CHAR_W + 2 * EDGE_LABEL_PAD_X)
+                .attr('height', EDGE_LABEL_FONT + 2 * EDGE_LABEL_PAD_Y)
+                .attr('rx', 2)
+                .attr('fill', edgeLabelBg);
+            edgeLabelGroups.append('text')
                 .attr('text-anchor', 'middle')
                 .attr('dominant-baseline', 'middle')
                 .attr('fill', colors.text)
                 .attr('font-family', 'Arial, sans-serif')
-                .attr('font-size', '10px')
-                .attr('background', isDarkMode ? '#1f1f1f' : '#ffffff')
-                .text(d => d.label);
+                .attr('font-size', `${EDGE_LABEL_FONT}px`)
+                .text((d: any) => edgeLabelText(d));
 
         } catch (error) {
             console.error('D2 rendering error:', error);
