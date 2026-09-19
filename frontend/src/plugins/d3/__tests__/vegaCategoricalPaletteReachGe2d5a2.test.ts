@@ -1,33 +1,60 @@
 /**
- * G-e2d5a2 / D-253 — categorical palette recycles at >40 data-driven series.
+ * G-e2d5a2 / D-253 — data-driven categorical palette EXTENSION (both themes).
  *
- * The G-14/D-014 data-driven branch of applyCategoricalPaletteFix extends the
- * theme's 10-colour range to a FIXED CATEGORY_EXTEND_TARGET (40). That is
- * injective for the w2-04/11/13 specs (20/40/30 distinct series) but NOT for
- * vega-lite-w2-12, whose `data.sequence{stop:50}` + calculate produces 50
- * distinct `category-name-NN` series — entries 41..50 recycle onto colours
- * 1..10, a silent encoding lie in BOTH themes.
+ * D-253's own fix EXTENDS the theme's 10-colour range with a generated tail so
+ * a data-driven channel with >10 series stays injective (no recycle). That
+ * tail regressed TWICE as a CONTRAST failure: it used a fixed lightness that
+ * ignores hue, so on the light card the yellow/lime band sank to ~1.7:1 and on
+ * the #333 dark card the blue-violet band to ~1.9:1 — series rendered invisible
+ * for THIN/SMALL-mark specs (w2-04 1px lines, w2-12 size-90 points) even though
+ * every hex was unique.
  *
- * The fix sizes the extended palette to the data's row/sequence UPPER BOUND
- * when that bound is modest (> 40, ≤ MAX_ESTIMATED_CATEGORY=64) — 50 for
- * w2-12 — so the range is injective. A huge sequence (w2-04's 2000 rows for
- * ~20 real series) keeps the 40 default (would only bloat the range).
+ * The targeted fix CLAMPS each generated tail colour's lightness (hue + sat
+ * preserved) so it clears CATEGORY_CONTRAST_FLOOR on the ACTIVE theme canvas —
+ * a theme-resolved value, not a swapped constant. The base PREFIX (the theme's
+ * own range) is untouched, so ≤10-series and low-cardinality data-driven specs
+ * are byte-identical and the sibling D-014/D-019/D-260 contracts hold; the base
+ * palette's own muted contrast is a separate concern (D-260).
  *
- * Direction: this imports estimateDataDrivenCardinality / MAX_ESTIMATED_CATEGORY
- * (which did not exist pre-fix → module import fails on the unpatched tree),
- * and the 50-series assertions expect a >=50-entry injective range where the
- * unpatched code emitted exactly 40 and recycled. Both themes are asserted.
+ * Direction the pre-fix tree fails: it imports clampLightnessForContrast /
+ * CATEGORY_CONTRAST_FLOOR (absent → module import fails), and the tail-contrast
+ * assertions expect ≥3:1 where the unclamped tail sat at ~1.7:1. Both themes.
  */
 import {
   applyCategoricalPaletteFix,
   analyzeCategoricalColor,
   estimateDataDrivenCardinality,
   extendCategoricalPalette,
+  clampLightnessForContrast,
+  hslToHex,
+  contrastRatio,
+  CATEGORY_CONTRAST_FLOOR,
   CATEGORY_EXTEND_TARGET,
   MAX_ESTIMATED_CATEGORY,
   EXCEL_CATEGORY_10,
   SATURATED_CATEGORY_10,
 } from '../vegaRecovery';
+
+const LIGHT_BG: [number, number, number] = [255, 255, 255];
+const DARK_BG: [number, number, number] = [51, 51, 51];
+
+const hexToRgb = (hex: string): [number, number, number] => {
+  const h = hex.replace('#', '');
+  return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+};
+const worstContrast = (colors: string[], bg: [number, number, number]): number =>
+  Math.min(...colors.map((c) => contrastRatio(hexToRgb(c), bg)));
+const minPairwiseRgbDistance = (colors: string[]): number => {
+  const rgb = colors.map(hexToRgb);
+  let min = Infinity;
+  for (let i = 0; i < rgb.length; i++) {
+    for (let j = i + 1; j < rgb.length; j++) {
+      const d = Math.hypot(rgb[i][0] - rgb[j][0], rgb[i][1] - rgb[j][1], rgb[i][2] - rgb[j][2]);
+      if (d < min) min = d;
+    }
+  }
+  return min;
+};
 
 // vega-lite-w2-12: 50-entry categorical legend from a sequence + calculate.
 const w2_12 = () => ({
@@ -50,7 +77,7 @@ const w2_04 = () => ({
   $schema: 'https://vega.github.io/schema/vega-lite/v5.json',
   data: { sequence: { start: 0, stop: 2000, step: 1, as: 'n' } },
   transform: [{ calculate: "'series-'+format(floor(datum.n/100),'02d')", as: 's' }],
-  mark: { type: 'line' },
+  mark: { type: 'line', strokeWidth: 1 },
   encoding: {
     x: { field: 'n', type: 'quantitative' },
     y: { field: 'n', type: 'quantitative' },
@@ -70,70 +97,80 @@ describe('estimateDataDrivenCardinality (D-253 helper)', () => {
     expect(estimateDataDrivenCardinality(null)).toBe(0);
   });
   it('surfaces the estimate through analyzeCategoricalColor for a data-driven channel', () => {
-    // Direct distinct count is 0 (transform-derived) → estimate falls to seq len.
     expect(analyzeCategoricalColor(w2_12()).cardinality).toBe(0);
     expect(analyzeCategoricalColor(w2_12()).estimatedCardinality).toBe(50);
   });
 });
 
-describe('applyCategoricalPaletteFix — D-253 reaches a 50-series data-driven legend (both themes)', () => {
-  for (const dark of [false, true]) {
-    it(`${dark ? 'DARK' : 'LIGHT'}: 50-slot sequence gets an injective range covering all 50 series`, () => {
-      const spec: any = w2_12();
-      const applied = applyCategoricalPaletteFix(spec, dark);
-
-      expect(applied).not.toBeNull();
-      // Pre-fix this was exactly CATEGORY_EXTEND_TARGET (40) → 50 series recycled.
-      expect(spec.config.range.category.length).toBeGreaterThanOrEqual(50);
-      expect(spec.config.range.category.length).toBeLessThanOrEqual(MAX_ESTIMATED_CATEGORY);
-      // Injective: no colour repeats within the range → every series distinct.
-      expect(new Set(spec.config.range.category).size).toBe(spec.config.range.category.length);
-      // Prefix still the active theme's own base → ≤10-series specs unchanged.
-      const base = dark ? SATURATED_CATEGORY_10 : EXCEL_CATEGORY_10;
-      expect(spec.config.range.category.slice(0, 10)).toEqual(base);
-    });
-  }
-
-  it('huge sequence (w2-04, ~20 real series in 2000 rows) keeps the 40 default, not a 2000 range', () => {
-    const spec: any = w2_04();
-    const applied = applyCategoricalPaletteFix(spec, false);
-    expect(applied).not.toBeNull();
-    expect(spec.config.range.category).toHaveLength(CATEGORY_EXTEND_TARGET); // 40, covers 20 injectively
+describe('clampLightnessForContrast — theme-resolved lightness (both themes)', () => {
+  it('LIGHT: darkens a low-contrast yellow to clear the floor on #fff (hue preserved)', () => {
+    const s = 0.6, hue = 60, rawL = 0.55; // yellow at the light tier lightness
+    expect(contrastRatio(hexToRgb(hslToHex(hue, s, rawL)), LIGHT_BG)).toBeLessThan(CATEGORY_CONTRAST_FLOOR);
+    const l = clampLightnessForContrast(hue, s, rawL, false);
+    expect(contrastRatio(hexToRgb(hslToHex(hue, s, l)), LIGHT_BG)).toBeGreaterThanOrEqual(3.0);
+    expect(l).toBeLessThanOrEqual(rawL); // readable side on white is darker
+  });
+  it('DARK: lightens a low-contrast blue-violet to clear the floor on #333', () => {
+    const s = 0.62, hue = 265, rawL = 0.54; // blue-violet at the dark tier lightness
+    expect(contrastRatio(hexToRgb(hslToHex(hue, s, rawL)), DARK_BG)).toBeLessThan(CATEGORY_CONTRAST_FLOOR);
+    const l = clampLightnessForContrast(hue, s, rawL, true);
+    expect(contrastRatio(hexToRgb(hslToHex(hue, s, l)), DARK_BG)).toBeGreaterThanOrEqual(3.0);
+    expect(l).toBeGreaterThanOrEqual(rawL); // readable side on #333 is lighter
+  });
+  it('leaves a colour already clearing the floor untouched', () => {
+    const s = 0.7, hue = 0, rawL = 0.35; // deep red, already >3.2:1 on white
+    if (contrastRatio(hexToRgb(hslToHex(hue, s, rawL)), LIGHT_BG) >= CATEGORY_CONTRAST_FLOOR) {
+      expect(clampLightnessForContrast(hue, s, rawL, false)).toBe(rawL);
+    }
   });
 });
 
-// D-253 regression: the generated tail must stay PERCEPTUALLY distinct, not
-// merely hex-unique. The old golden-angle tail dropped to a ~10 RGB min gap at
-// a 40-entry tail (target 50) — two swatches read as the same colour, the
-// perceptual "recycle" the renderer flagged. Even hue spacing keeps the tail
-// well-separated. This asserts the DIRECTION: a floor the golden-angle tree
-// fails (10 < 16) and the even-spaced tail clears, in BOTH themes.
-describe('extendCategoricalPalette — D-253 tail stays perceptually distinct at 50 (both themes)', () => {
-  const hexToRgb = (hex: string): [number, number, number] => {
-    const h = hex.replace('#', '');
-    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
-  };
-  const minPairwiseRgbDistance = (colors: string[]): number => {
-    const rgb = colors.map(hexToRgb);
-    let min = Infinity;
-    for (let i = 0; i < rgb.length; i++) {
-      for (let j = i + 1; j < rgb.length; j++) {
-        const d = Math.hypot(rgb[i][0] - rgb[j][0], rgb[i][1] - rgb[j][1], rgb[i][2] - rgb[j][2]);
-        if (d < min) min = d;
-      }
-    }
-    return min;
-  };
-
+describe('extendCategoricalPalette — D-253 tail is contrast-safe AND injective (both themes)', () => {
   for (const dark of [false, true]) {
     const base = dark ? SATURATED_CATEGORY_10 : EXCEL_CATEGORY_10;
-    it(`${dark ? 'DARK' : 'LIGHT'}: 50-entry palette has no near-duplicate swatches`, () => {
-      const palette = extendCategoricalPalette(base, 50, dark);
-      expect(palette).toHaveLength(50);
-      expect(new Set(palette).size).toBe(50); // hex-unique
-      // Perceptual floor: the golden-angle tail bottomed out at ~10 here.
-      const tail = palette.slice(base.length);
-      expect(minPairwiseRgbDistance(tail)).toBeGreaterThan(16);
+    const bg = dark ? DARK_BG : LIGHT_BG;
+    it(`${dark ? 'DARK' : 'LIGHT'}: 50-entry palette — base prefix preserved, tail all >=3:1, injective`, () => {
+      const pal = extendCategoricalPalette(base, 50, dark);
+      expect(pal).toHaveLength(50);
+      // Base PREFIX byte-identical → ≤10-series / low-card specs unchanged.
+      expect(pal.slice(0, 10)).toEqual(base);
+      // Injective — no colour repeats (D-253's original no-recycle guarantee).
+      expect(new Set(pal).size).toBe(50);
+      // The GENERATED tail is the part D-253's fix owns: every tail colour must
+      // clear the floor (the unclamped tail bottomed out near 1.7:1 here).
+      const tail = pal.slice(base.length);
+      expect(worstContrast(tail, bg)).toBeGreaterThanOrEqual(3.0);
+      // Tail stays perceptually separable (no near-duplicate swatches).
+      expect(minPairwiseRgbDistance(tail)).toBeGreaterThan(12);
+    });
+  }
+});
+
+describe('applyCategoricalPaletteFix — D-253 sizes + contrast-clamps the extension (both themes)', () => {
+  for (const dark of [false, true]) {
+    const bg = dark ? DARK_BG : LIGHT_BG;
+    const base = dark ? SATURATED_CATEGORY_10 : EXCEL_CATEGORY_10;
+
+    it(`${dark ? 'DARK' : 'LIGHT'}: w2-12 (50-slot) — >=50 injective, base prefix intact, tail >=3:1`, () => {
+      const spec: any = w2_12();
+      const applied = applyCategoricalPaletteFix(spec, dark);
+      expect(applied).not.toBeNull();
+      const cat: string[] = spec.config.range.category;
+      expect(cat.length).toBeGreaterThanOrEqual(50);
+      expect(cat.length).toBeLessThanOrEqual(MAX_ESTIMATED_CATEGORY);
+      expect(new Set(cat).size).toBe(cat.length); // injective — no recycle
+      expect(cat.slice(0, 10)).toEqual(base);      // low-card contract preserved
+      expect(worstContrast(cat.slice(10, 50), bg)).toBeGreaterThanOrEqual(3.0); // tail contrast
+    });
+
+    it(`${dark ? 'DARK' : 'LIGHT'}: w2-04 (20 series in 2000 rows) keeps the 40 default, tail >=3:1`, () => {
+      const spec: any = w2_04();
+      const applied = applyCategoricalPaletteFix(spec, dark);
+      expect(applied).not.toBeNull();
+      const cat: string[] = spec.config.range.category;
+      expect(cat).toHaveLength(CATEGORY_EXTEND_TARGET); // huge seq → default 40
+      expect(new Set(cat).size).toBe(cat.length);
+      expect(worstContrast(cat.slice(10), bg)).toBeGreaterThanOrEqual(3.0);
     });
   }
 });

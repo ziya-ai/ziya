@@ -22,7 +22,15 @@
  * change and passes with it. Structural + theme-independent (no colour emitted;
  * the mode assertion is checked for isDarkMode=false AND true).
  */
-import { isVegaLiteBody, buildVegaEmbedOptions } from '../vegaPlugin';
+import {
+  isVegaLiteBody,
+  buildVegaEmbedOptions,
+  reconcileVlBodySchema,
+  normalizeVegaEncodeLifecycle,
+  applyVegaMinimalDefaults,
+  coalesceVegaSplitGeometry,
+  rewriteVegaV2Dialect,
+} from '../vegaPlugin';
 
 // The exact vega-w4-07 body (from .ziya/gfx-sweep/specs/vega/vega-w4-07.json):
 // a Vega $schema + Vega-typed render carrying a Vega-LITE body.
@@ -87,5 +95,59 @@ describe('D-277 the VL body compiles in vega-lite mode in BOTH themes', () => {
     const fullVega: any = { marks: [{ type: 'rect' }] };
     const mode = buildVegaEmbedOptions(false, isVegaLiteBody(fullVega) ? 'vega-lite' : 'vega').mode;
     expect(mode).toBe('vega');
+  });
+});
+
+/**
+ * D-277 recurrence guard. The mode decision is only half the recovery: after
+ * render() picks 'vega-lite' for the VL body, it strips the misleading Vega
+ * `$schema` (reconcileVlBodySchema) and then runs the Vega-only preprocessors
+ * (normalizeVegaEncodeLifecycle / applyVegaMinimalDefaults /
+ * coalesceVegaSplitGeometry / rewriteVegaV2Dialect) over the SAME object. If any
+ * of those ever mutated the VL body into something the Vega runtime paints blank
+ * — injecting a `marks[]`, coercing object `data.values` into a Vega data array,
+ * or dropping `encoding` — vega-w4-07 would silently blank again even though the
+ * mode was correct. This pins the invariant: those transforms must leave the VL
+ * body's mode-critical shape intact (singular `mark`, `encoding`, object `data`,
+ * NO `marks[]`) AND must NOT re-introduce a Vega `$schema`. Flip any transform
+ * to touch a VL body and this fails.
+ */
+describe('D-277 the post-mode Vega pipeline leaves the VL body VL-shaped', () => {
+  const runPipeline = (body: any) => {
+    // Mirrors render(): schema stripped, then the Vega-only rewrites in order.
+    reconcileVlBodySchema(body);
+    let s = body;
+    s = normalizeVegaEncodeLifecycle(s);
+    s = applyVegaMinimalDefaults(s);
+    s = coalesceVegaSplitGeometry(s);
+    s = rewriteVegaV2Dialect(s);
+    return s;
+  };
+
+  it('reconcileVlBodySchema strips the misleading Vega $schema', () => {
+    const body: any = W4_07_BODY();
+    expect(reconcileVlBodySchema(body)).toBe(true);
+    expect(body.$schema).toBeUndefined();
+  });
+
+  it('still classifies as a VL body after the full pipeline (both themes agree)', () => {
+    const out = runPipeline(W4_07_BODY());
+    // The mode is recomputed from the SAME predicate the mode decision used, so
+    // if the pipeline corrupted the shape the mode would silently flip to 'vega'.
+    expect(isVegaLiteBody(out)).toBe(true);
+    expect(buildVegaEmbedOptions(false, isVegaLiteBody(out) ? 'vega-lite' : 'vega').mode).toBe('vega-lite');
+    expect(buildVegaEmbedOptions(true, isVegaLiteBody(out) ? 'vega-lite' : 'vega').mode).toBe('vega-lite');
+  });
+
+  it('does not re-introduce a Vega $schema or a marks[] array', () => {
+    const out = runPipeline(W4_07_BODY());
+    // A leftover /vega/ $schema would let vega-embed guessMode override the mode.
+    expect(out.$schema === undefined || !String(out.$schema).includes('/vega/')).toBe(true);
+    // A synthesised marks[] would flip the runtime into the blank-canvas path.
+    expect(Array.isArray(out.marks)).toBe(false);
+    // Mode-critical VL fields survive untouched.
+    expect(out.mark).toBe('bar');
+    expect(out.encoding && typeof out.encoding).toBe('object');
+    expect(out.data && Array.isArray(out.data.values)).toBe(true);
   });
 });

@@ -26,6 +26,7 @@ import {
   fixBogusColorNameValues,
   resolveColorToRgb,
   contrastRatio,
+  isIndistinguishableRange,
   SATURATED_CATEGORY_10,
 } from '../vegaRecovery';
 import { hideRedundantColorLegend } from '../vegaLitePlugin';
@@ -138,7 +139,7 @@ describe('D-319 mark fills that vanish into the canvas are reconciled in both th
     },
   });
 
-  it('w3-06: an all-invisible pastel range on white is swapped for the saturated palette; dark untouched', () => {
+  it('w3-06: an all-invisible pastel range on white is swapped for the saturated palette', () => {
     const light = reconcileThemeColors(clone(w306()), false);
     const range = light.encoding.color.scale.range;
     expect(range).toEqual(SATURATED_CATEGORY_10.slice(0, 5));
@@ -147,10 +148,26 @@ describe('D-319 mark fills that vanish into the canvas are reconciled in both th
     // distinctness, so the floor is ~2.5:1 rather than the 3:1 text floor).
     for (const c of range) expect(cr(c, LIGHT)).toBeGreaterThanOrEqual(2.0);
     expect(Math.min(...range.map((c: string) => cr(c, LIGHT)))).toBeGreaterThan(cr('#fdf6e3', LIGHT));
+  });
 
+  it('D-504: w3-06 dark — the 5 creams are all VISIBLE on #333 yet mutually indistinguishable, so the range is swapped', () => {
+    // Direction: every cream is 10-12:1 on the #333 dark card, so the
+    // canvas-visibility swap does NOT fire; only the mutual-separability swap
+    // does. On the pre-fix tree (no separability test) the dark range is
+    // preserved and the 5 grouped series/legend swatches collapse together —
+    // this assertion FAILS. With the fix the range is the saturated palette.
     const dark = reconcileThemeColors(clone(w306()), true);
-    // pastels are highly visible on #333 -> not all invisible -> preserved.
-    expect(dark.encoding.color.scale.range).toEqual(w306().encoding.color.scale.range);
+    expect(dark.encoding.color.scale.range).toEqual(SATURATED_CATEGORY_10.slice(0, 5));
+    // and the swapped palette is genuinely separable (a distinguishable pair).
+    expect(isIndistinguishableRange(dark.encoding.color.scale.range)).toBe(false);
+  });
+
+  it('isIndistinguishableRange: flags the cream cluster, spares a real palette and a mixed range', () => {
+    expect(isIndistinguishableRange(['#fdf6e3', '#eee8d5', '#f5f5dc', '#faf0e6', '#fffaf0'])).toBe(true);
+    expect(isIndistinguishableRange(SATURATED_CATEGORY_10.slice(0, 5))).toBe(false);
+    // even ONE distinguishable pair spares the whole range from a swap.
+    expect(isIndistinguishableRange(['#fdf6e3', '#eee8d5', '#1f4e79'])).toBe(false);
+    expect(isIndistinguishableRange(['#4572a7'])).toBe(false); // <2 entries: never
   });
 
   it('w3-07: an invisible gradient stop on the light canvas is nudged to >=3:1; a visible stop is kept', () => {
@@ -243,21 +260,24 @@ describe('D-318 field-driven value labels are reconciled against their own bar f
     encoding: { x: { field: 'c', type: 'nominal' }, y: { field: 'v', type: 'quantitative' } },
   });
 
-  // Theme-independent: the label sits on the mark, so the SAME reconciliation
-  // must hold in both render themes.
+  // Theme-independent invariant: the label sits on the mark, so it must contrast
+  // with its OWN (possibly canvas-reconciled) bar fill in both render themes —
+  // AND (D-503) the bar fill itself must clear the graphical floor against the
+  // canvas, so a pale/dark literal fill no longer vanishes.
+  const CANVAS = { light: '#ffffff', dark: '#333333' } as const;
   it.each([['light', false], ['dark', true]] as const)(
-    'each label contrasts >=3:1 with its own bar fill (%s theme)',
-    (_name, isDark) => {
+    'each label contrasts >=3:1 with its own bar fill, and each fill >=3:1 on the %s canvas',
+    (name, isDark) => {
       const s = reconcileThemeColors(clone(w304()), isDark);
       const rows = s.data.values;
+      const bg = CANVAS[name];
       for (const row of rows) {
-        // fill field values are never touched (only text ink is repainted)
-        expect(cr(row.t, row.f)).toBeGreaterThanOrEqual(3);
+        expect(cr(row.t, row.f)).toBeGreaterThanOrEqual(3); // label vs its fill
+        expect(cr(row.f, bg)).toBeGreaterThanOrEqual(3);     // fill vs canvas (D-503)
       }
-      // and the invisible originals were actually changed
-      expect(rows[0].t).not.toBe('#222222'); // was 1.10:1 on #1b2a41 -> now white ~14.4:1
-      expect(rows[1].t).not.toBe('#ffffff'); // was 1.07:1 on #f7f7f2 -> now black ~19.5:1
-      expect(rows[2].t).not.toBe('#7f8c8d'); // was 1.00:1 on itself -> now black ~6:1
+      // the once-invisible-on-mark labels were reconciled away from their
+      // isoluminant original (mid row #7f8c8d on itself was 1.00:1).
+      expect(rows[2].t).not.toBe('#7f8c8d');
     },
   );
 

@@ -1,0 +1,247 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 780,
+  "height": 470,
+  "padding": 5,
+  "autosize": {
+   "type": "fit",
+   "contains": "padding"
+  },
+  "title": {
+   "text": "Alpha-blended overlapping fills (0.30) + 0.12 overlay",
+   "fontSize": 14
+  },
+  "data": [
+   {
+    "name": "t",
+    "transform": [
+     {
+      "type": "sequence",
+      "start": 0,
+      "stop": 40,
+      "step": 1,
+      "as": "i"
+     },
+     {
+      "type": "formula",
+      "as": "a",
+      "expr": "30+18*sin(datum.i/3)"
+     },
+     {
+      "type": "formula",
+      "as": "b",
+      "expr": "26+16*cos(datum.i/4)"
+     },
+     {
+      "type": "formula",
+      "as": "c",
+      "expr": "22+20*sin(datum.i/5+1)"
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "linear",
+    "domain": [
+     0,
+     39
+    ],
+    "range": "width"
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "domain": [
+     0,
+     55
+    ],
+    "range": "height"
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x",
+    "grid": true,
+    "title": "i"
+   },
+   {
+    "orient": "left",
+    "scale": "y",
+    "grid": true,
+    "title": "value"
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "encode": {
+     "enter": {
+      "x": {
+       "value": 0
+      },
+      "width": {
+       "signal": "width"
+      },
+      "y": {
+       "value": 0
+      },
+      "height": {
+       "signal": "height"
+      },
+      "fill": {
+       "value": "#7f8c8d"
+      },
+      "fillOpacity": {
+       "value": 0.12
+      }
+     }
+    }
+   },
+   {
+    "type": "area",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "i"
+      },
+      "y": {
+       "scale": "y",
+       "field": "a"
+      },
+      "y2": {
+       "scale": "y",
+       "value": 0
+      },
+      "fill": {
+       "value": "#e74c3c"
+      },
+      "fillOpacity": {
+       "value": 0.3
+      }
+     }
+    }
+   },
+   {
+    "type": "area",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "i"
+      },
+      "y": {
+       "scale": "y",
+       "field": "b"
+      },
+      "y2": {
+       "scale": "y",
+       "value": 0
+      },
+      "fill": {
+       "value": "#2980b9"
+      },
+      "fillOpacity": {
+       "value": 0.3
+      }
+     }
+    }
+   },
+   {
+    "type": "area",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "i"
+      },
+      "y": {
+       "scale": "y",
+       "field": "c"
+      },
+      "y2": {
+       "scale": "y",
+       "value": 0
+      },
+      "fill": {
+       "value": "#27ae60"
+      },
+      "fillOpacity": {
+       "value": 0.3
+      }
+     }
+    }
+   },
+   {
+    "type": "symbol",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "i"
+      },
+      "y": {
+       "scale": "y",
+       "field": "a"
+      },
+      "size": {
+       "value": 180
+      },
+      "fill": {
+       "value": "#8e44ad"
+      },
+      "fillOpacity": {
+       "value": 0.2
+      }
+     }
+    }
+   },
+   {
+    "type": "text",
+    "encode": {
+     "enter": {
+      "x": {
+       "signal": "width/2"
+      },
+      "y": {
+       "signal": "height/2"
+      },
+      "text": {
+       "value": "overlay annotation @0.45"
+      },
+      "align": {
+       "value": "center"
+      },
+      "fontSize": {
+       "value": 16
+      },
+      "fill": {
+       "value": "#000000"
+      },
+      "fillOpacity": {
+       "value": 0.45
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "COLOR: three heavily overlapping area marks at fillOpacity 0.30 plus a 0.12-opacity full-panel overlay rect and 0.20-opacity symbol clusters - alpha compositing where the effective colour depends entirely on what is behind it."
+}

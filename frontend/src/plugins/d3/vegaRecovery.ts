@@ -475,11 +475,53 @@ export function inferEncodingTypes(spec: any): number {
 // non-adapting guide colours ('black', greys, 'white'). Anything not resolved
 // here (or as hex / rgb()) is left untouched — we only ever reconcile a colour
 // we can measure.
+// (D-275) The named-colour table was previously grayscale-only, so a chromatic
+// CSS colour name (cornflowerblue, darkseagreen, lightgoldenrodyellow, …)
+// resolved to null and ESCAPED every contrast reconciler: a pale named fill
+// (lightgoldenrodyellow #fafad2 = 1.07:1 on white) or a near-invisible named
+// guide colour could not be MEASURED, so it was left verbatim and vanished into
+// the canvas (vega-w4-13 light). The full CSS Level-4 extended colour keyword
+// set below lets resolveColorToRgb measure ANY named colour, so the existing
+// guide / fill / range reconcilers can act on them in both themes.
 const CSS_NAME_HEX: Record<string, string> = {
-  black: '#000000', white: '#ffffff', gray: '#808080', grey: '#808080',
-  dimgray: '#696969', dimgrey: '#696969', darkgray: '#a9a9a9', darkgrey: '#a9a9a9',
-  lightgray: '#d3d3d3', lightgrey: '#d3d3d3', silver: '#c0c0c0', gainsboro: '#dcdcdc',
-  whitesmoke: '#f5f5f5', snow: '#fffafa', ivory: '#fffff0',
+  aliceblue: '#f0f8ff', antiquewhite: '#faebd7', aqua: '#00ffff', aquamarine: '#7fffd4',
+  azure: '#f0ffff', beige: '#f5f5dc', bisque: '#ffe4c4', black: '#000000',
+  blanchedalmond: '#ffebcd', blue: '#0000ff', blueviolet: '#8a2be2', brown: '#a52a2a',
+  burlywood: '#deb887', cadetblue: '#5f9ea0', chartreuse: '#7fff00', chocolate: '#d2691e',
+  coral: '#ff7f50', cornflowerblue: '#6495ed', cornsilk: '#fff8dc', crimson: '#dc143c',
+  cyan: '#00ffff', darkblue: '#00008b', darkcyan: '#008b8b', darkgoldenrod: '#b8860b',
+  darkgray: '#a9a9a9', darkgrey: '#a9a9a9', darkgreen: '#006400', darkkhaki: '#bdb76b',
+  darkmagenta: '#8b008b', darkolivegreen: '#556b2f', darkorange: '#ff8c00', darkorchid: '#9932cc',
+  darkred: '#8b0000', darksalmon: '#e9967a', darkseagreen: '#8fbc8f', darkslateblue: '#483d8b',
+  darkslategray: '#2f4f4f', darkslategrey: '#2f4f4f', darkturquoise: '#00ced1', darkviolet: '#9400d3',
+  deeppink: '#ff1493', deepskyblue: '#00bfff', dimgray: '#696969', dimgrey: '#696969',
+  dodgerblue: '#1e90ff', firebrick: '#b22222', floralwhite: '#fffaf0', forestgreen: '#228b22',
+  fuchsia: '#ff00ff', gainsboro: '#dcdcdc', ghostwhite: '#f8f8ff', gold: '#ffd700',
+  goldenrod: '#daa520', gray: '#808080', grey: '#808080', green: '#008000',
+  greenyellow: '#adff2f', honeydew: '#f0fff0', hotpink: '#ff69b4', indianred: '#cd5c5c',
+  indigo: '#4b0082', ivory: '#fffff0', khaki: '#f0e68c', lavender: '#e6e6fa',
+  lavenderblush: '#fff0f5', lawngreen: '#7cfc00', lemonchiffon: '#fffacd', lightblue: '#add8e6',
+  lightcoral: '#f08080', lightcyan: '#e0ffff', lightgoldenrodyellow: '#fafad2', lightgray: '#d3d3d3',
+  lightgrey: '#d3d3d3', lightgreen: '#90ee90', lightpink: '#ffb6c1', lightsalmon: '#ffa07a',
+  lightseagreen: '#20b2aa', lightskyblue: '#87cefa', lightslategray: '#778899', lightslategrey: '#778899',
+  lightsteelblue: '#b0c4de', lightyellow: '#ffffe0', lime: '#00ff00', limegreen: '#32cd32',
+  linen: '#faf0e6', magenta: '#ff00ff', maroon: '#800000', mediumaquamarine: '#66cdaa',
+  mediumblue: '#0000cd', mediumorchid: '#ba55d3', mediumpurple: '#9370db', mediumseagreen: '#3cb371',
+  mediumslateblue: '#7b68ee', mediumspringgreen: '#00fa9a', mediumturquoise: '#48d1cc',
+  mediumvioletred: '#c71585', midnightblue: '#191970', mintcream: '#f5fffa', mistyrose: '#ffe4e1',
+  moccasin: '#ffe4b5', navajowhite: '#ffdead', navy: '#000080', oldlace: '#fdf5e6',
+  olive: '#808000', olivedrab: '#6b8e23', orange: '#ffa500', orangered: '#ff4500',
+  orchid: '#da70d6', palegoldenrod: '#eee8aa', palegreen: '#98fb98', paleturquoise: '#afeeee',
+  palevioletred: '#db7093', papayawhip: '#ffefd5', peachpuff: '#ffdab9', peru: '#cd853f',
+  pink: '#ffc0cb', plum: '#dda0dd', powderblue: '#b0e0e6', purple: '#800080',
+  rebeccapurple: '#663399', red: '#ff0000', rosybrown: '#bc8f8f', royalblue: '#4169e1',
+  saddlebrown: '#8b4513', salmon: '#fa8072', sandybrown: '#f4a460', seagreen: '#2e8b57',
+  seashell: '#fff5ee', sienna: '#a0522d', silver: '#c0c0c0', skyblue: '#87ceeb',
+  slateblue: '#6a5acd', slategray: '#708090', slategrey: '#708090', snow: '#fffafa',
+  springgreen: '#00ff7f', steelblue: '#4682b4', tan: '#d2b48c', teal: '#008080',
+  thistle: '#d8bfd8', tomato: '#ff6347', turquoise: '#40e0d0', violet: '#ee82ee',
+  wheat: '#f5deb3', white: '#ffffff', whitesmoke: '#f5f5f5', yellow: '#ffff00',
+  yellowgreen: '#9acd32',
 };
 
 /** Resolve a colour string to [r,g,b] (0-255) or null if unresolvable. */
@@ -586,7 +628,15 @@ export function reconcileThemeColors(spec: any, isDarkMode: boolean): any {
       const v = node[k];
       if (typeof v === 'string' && GUIDE_COLOR_KEYS.has(k)) {
         const rgb = resolveColorToRgb(v);
-        if (rgb && contrastRatio(rgb, bg) < 3) {
+        if (rgb) {
+          if (contrastRatio(rgb, bg) < 3) node[k] = readable;
+        } else if (/^var\(|^--/.test(v.trim())) {
+          // D-515: an unresolvable CSS custom-property colour token
+          // (labelColor:"var(--ziya-text)" on vega-w4-14) reaches the runtime
+          // verbatim and paints NO guide colour at all, so the axis labels are
+          // absent in both themes. `currentColor` DOES resolve via SVG
+          // inheritance, so it is deliberately left untouched; only a var()/
+          // custom-property token is resolved to the themed readable value.
           node[k] = readable;
         }
       } else if (v && typeof v === 'object') {
@@ -612,6 +662,15 @@ export function reconcileThemeColors(spec: any, isDarkMode: boolean): any {
   // fully-invisible categorical range with the theme's saturated palette.
   reconcileMarkFillsVsCanvas(spec, bg, darkCanvas);
 
+  // D-275: reconcileMarkFillsVsCanvas only understands the Vega-LITE shape
+  // (node.mark / node.encoding.color.scale.range). On the NATIVE Vega path the
+  // categorical palette lives in a top-level scales[].range array and mark fills
+  // in marks[].encode.<phase>.fill.value, so an all-pale native palette
+  // (vega-w4-13: lightgoldenrodyellow 1.07:1 / gainsboro 1.37:1 on white) was
+  // never reconciled. Nudge measurably-invisible native fills toward the
+  // readable side, hue-preserving, in both themes; a legible fill is untouched.
+  reconcileNativeVegaFills(spec, bg, darkCanvas);
+
   // D-318: in a layered arc/pie spec the TOP-LEVEL encoding.color channel is
   // shared to every layer, so a text-label layer that declares no colour of its
   // own inherits the SERIES colour and is drawn in the very slice colour it sits
@@ -619,6 +678,17 @@ export function reconcileThemeColors(spec: any, isDarkMode: boolean): any {
   // theme). Break that inheritance: pin an explicit canvas-readable ink on
   // inheriting text layers so labels are never painted with their slice's fill.
   reconcileInheritedArcLabelColors(spec, darkCanvas);
+
+  // D-503: a NON-text mark whose fill is a per-datum literal colour arriving
+  // through a `color.field` with `scale:null` is drawn verbatim by Vega, so a
+  // pale literal fill (#f7f7f2 = 1.07:1 on white) or a dark one (#1b2a41 =
+  // 1.20:1 on the #333 card) vanishes into the canvas. reconcileMarkFillsVsCanvas
+  // only inspects a solid `mark.fill` / `scale.range`, never these per-row
+  // literal values, so those data marks were never contrast-checked. Nudge each
+  // sub-3:1 literal fill toward the readable side of the canvas, hue-preserving.
+  // Runs BEFORE the text-on-fill pass below so labels are reconciled against the
+  // fill actually rendered.
+  reconcileFieldDrivenFillsVsCanvas(spec, bg, darkCanvas);
 
   // D-318 (field-driven sub-case): value labels drawn INSIDE bars whose ink AND
   // fill are both data-driven literal colours (color.field, scale:null) can be
@@ -645,25 +715,91 @@ function isInvisibleOn(color: unknown, bg: [number, number, number]): boolean {
   return !!rgb && contrastRatio(rgb, bg) < 3;
 }
 
+/**
+ * D-518: true when a resolvable colour, COMPOSITED over `bg` at `alpha`
+ * (a mark's fillOpacity/strokeOpacity), is invisible (< 3:1) on that canvas.
+ * alpha == 1 reduces to {@link isInvisibleOn}.
+ */
+export function isInvisibleComposite(color: unknown, bg: [number, number, number], alpha = 1): boolean {
+  if (typeof color !== 'string') return false;
+  const rgb = resolveColorToRgb(color);
+  if (!rgb) return false;
+  const eff = alpha >= 1 ? rgb : compositeOver(rgb, bg, alpha);
+  return contrastRatio(eff, bg) < 3;
+}
+
+/** Euclidean distance between two RGB triples (0-255). */
+function rgbDistance(a: [number, number, number], b: [number, number, number]): number {
+  return Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2);
+}
+
+/**
+ * D-504 (custom-range-series-indistinguishable): true when EVERY entry of a
+ * categorical range resolves AND no two entries are mutually distinguishable —
+ * a pair counts as distinguishable when it differs by >= 45 in RGB Euclidean
+ * distance OR clears a 1.5:1 luminance contrast. An isoluminant near-mono
+ * cluster (w3-06's 5 creams: max pairwise 36.6 RGB / 1.18:1) survives the
+ * canvas-visibility swap in the theme where it happens to be visible (all 5 are
+ * 10-12:1 on the #333 dark card), yet the grouped series and legend swatches
+ * collapse onto one another. A real categorical palette (tableau10: > 200 RGB
+ * apart) always has a distinguishable pair, so this never fires on a usable
+ * palette. Requires >= 2 entries. PURE + exported for unit testing.
+ */
+export function isIndistinguishableRange(range: any[]): boolean {
+  if (!Array.isArray(range) || range.length < 2) return false;
+  const rgbs = range.map(c => (typeof c === 'string' ? resolveColorToRgb(c) : null));
+  if (rgbs.some(r => !r)) return false; // an unresolvable entry — do not judge
+  for (let i = 0; i < rgbs.length; i++) {
+    for (let j = i + 1; j < rgbs.length; j++) {
+      if (rgbDistance(rgbs[i]!, rgbs[j]!) >= 45 || contrastRatio(rgbs[i]!, rgbs[j]!) >= 1.5) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 /** Serialise [r,g,b] (0-255) to #rrggbb. */
 function rgbToHex([r, g, b]: [number, number, number]): string {
   const h = (v: number) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
   return `#${h(r)}${h(g)}${h(b)}`;
 }
 
+/** Alpha-composite a foreground colour over a background (both 0-255 triples). */
+export function compositeOver(
+  fg: [number, number, number],
+  bg: [number, number, number],
+  alpha: number,
+): [number, number, number] {
+  const a = Math.max(0, Math.min(1, alpha));
+  return [
+    fg[0] * a + bg[0] * (1 - a),
+    fg[1] * a + bg[1] * (1 - a),
+    fg[2] * a + bg[2] * (1 - a),
+  ];
+}
+
 /**
- * D-319: nudge an invisible fill toward the readable side of the canvas while
- * preserving its hue direction — blend toward WHITE on a dark canvas, toward
- * BLACK on a light one, in 10% steps until the WCAG floor (3:1) is cleared or
- * the endpoint is reached. Keeps the mark visible without collapsing it onto a
- * single ink constant (a pale blue stays bluish, just darker/lighter).
+ * D-319 / D-518: nudge an invisible fill toward the readable side of the canvas
+ * while preserving its hue direction — blend toward WHITE on a dark canvas,
+ * toward BLACK on a light one, in 10% steps until the WCAG floor (3:1) is
+ * cleared or the endpoint is reached. Keeps the mark visible without collapsing
+ * it onto a single ink constant (a pale blue stays bluish, just darker/lighter).
+ *
+ * D-518: an `alpha` < 1 (a mark's fillOpacity/strokeOpacity) is composited over
+ * the canvas before measuring, so a fill that is opaque-legible but dissolves
+ * once its low opacity blends it into the canvas (w3-07's 0.55-opacity points)
+ * is still nudged until the COMPOSITED colour clears the floor. alpha == 1 is
+ * byte-for-byte the original behaviour.
  */
-export function nudgeFillForContrast(hex: string, bg: [number, number, number], darkCanvas: boolean): string {
+export function nudgeFillForContrast(hex: string, bg: [number, number, number], darkCanvas: boolean, alpha = 1): string {
   const base = resolveColorToRgb(hex);
   if (!base) return hex;
   const target = darkCanvas ? 255 : 0;
+  const eff = (c: [number, number, number]): [number, number, number] =>
+    alpha >= 1 ? c : compositeOver(c, bg, alpha);
   let cur: [number, number, number] = [base[0], base[1], base[2]];
-  for (let f = 0.1; f <= 1.0001 && contrastRatio(cur, bg) < 3; f += 0.1) {
+  for (let f = 0.1; f <= 1.0001 && contrastRatio(eff(cur), bg) < 3; f += 0.1) {
     cur = [
       base[0] + (target - base[0]) * f,
       base[1] + (target - base[1]) * f,
@@ -704,6 +840,91 @@ export function reconcileTextMarkColors(spec: any, bg: [number, number, number],
 }
 
 /**
+ * D-517 (authored-text-mark-fill-not-theme-reconciled): reconcile an AUTHORED
+ * constant text ink on the NATIVE Vega path against the effective theme canvas.
+ *
+ * {@link reconcileTextMarkColors} only walks the Vega-LITE shape (node.mark /
+ * node.encoding.color); {@link reconcileNativeVegaFills} deliberately SKIPS text
+ * marks. So a native text mark's `encode.<phase>.fill.value` reached the runtime
+ * verbatim, and an author ink chosen for one polarity vanished on the other
+ * theme's surface: #333333 value labels (w3-09) survive their authored #fafafa
+ * card but hit 1.00:1 once the wrong-polarity card is dropped under the dark
+ * theme; #eeeeee labels (w3-10) hit 1.16:1 on white; a #b03a2e annotation
+ * (w3-03) is 2.10:1 on the #333 dark card; an rgba(20,20,20,0.9) caption (w4-12)
+ * is 1.42:1 dark; a #000000 @0.45 overlay annotation (w3-11) composites to
+ * 1.35:1 dark / 3.35:1 light. None reach the 4.5 WCAG text floor.
+ *
+ * For each native text mark, resolve the constant `fill.value` (hex / rgb /
+ * rgba / keyword), composite it over the effective canvas at its own
+ * fillOpacity (folding in any rgba() alpha), and — when the composite is below
+ * the 4.5 text floor — repaint it with the themed readable ink at full opacity
+ * (#e8e8e8 on a dark canvas = 10.31:1, #333333 on a light canvas = 12.63:1, so
+ * the replacement itself always clears the floor). A `fill.signal` (a
+ * backdrop-relative label already rewritten by reconcileVegaTextLabelContrast)
+ * and a fill that already clears the floor on THIS canvas are left byte-for-byte
+ * unchanged, so a legible chart on either theme is never recoloured — a #b03a2e
+ * label (6.02:1 on white) is kept in light mode and only lifted in dark.
+ * Mutates spec; PURE and exported for unit testing. Returns the rewrite count.
+ */
+export function reconcileNativeVegaTextInk(spec: any, isDarkMode: boolean): number {
+  if (!spec || typeof spec !== 'object' || !Array.isArray(spec.marks)) return 0;
+  const TEXT_FLOOR = 4.5;
+  const bgSource =
+    (typeof spec.background === 'string' && spec.background) ||
+    (spec.config && typeof spec.config === 'object' && typeof spec.config.background === 'string' &&
+      spec.config.background) ||
+    undefined;
+  const bg = resolveEffectiveBg(bgSource, isDarkMode);
+  const readable = relLuminance(bg) < 0.5 ? '#e8e8e8' : '#333333';
+  const num = (x: any): number | undefined => (typeof x === 'number' ? x : undefined);
+  // Alpha carried INSIDE an rgba()/rgb() literal (the 4th channel), folded into
+  // the mark's fillOpacity so the composited colour we measure is what renders.
+  const cssAlpha = (s: string): number => {
+    const m = s.trim().toLowerCase()
+      .match(/^rgba?\(\s*[\d.]+%?[,\s]+[\d.]+%?[,\s]+[\d.]+%?[,\s/]+([\d.]+)%?\s*\)$/);
+    if (m) {
+      let a = parseFloat(m[1]);
+      if (s.includes('%') && /%\s*\)$/.test(s.trim())) a = a / 100;
+      return Number.isFinite(a) ? Math.max(0, Math.min(1, a)) : 1;
+    }
+    return 1;
+  };
+  let rewritten = 0;
+  const walk = (marks: any): void => {
+    if (!Array.isArray(marks)) return;
+    for (const m of marks) {
+      if (!m || typeof m !== 'object') continue;
+      if (m.type === 'text' && m.encode && typeof m.encode === 'object' && !Array.isArray(m.encode)) {
+        for (const phase of Object.values(m.encode)) {
+          if (!phase || typeof phase !== 'object') continue;
+          const p = phase as any;
+          const def = p.fill;
+          if (!def || typeof def !== 'object' || Array.isArray(def)) continue;
+          // Only a constant literal ink. A `signal` (backdrop-relative label) or
+          // a gradient object is left for its own reconciler / the runtime.
+          if (typeof def.value !== 'string') continue;
+          const rgb = resolveColorToRgb(def.value);
+          if (!rgb) continue;
+          const markOpacity = num(p.opacity?.value);
+          const alpha = (num(p.fillOpacity?.value) ?? markOpacity ?? 1) * cssAlpha(def.value);
+          const eff = alpha >= 1 ? rgb : compositeOver(rgb, bg, alpha);
+          if (contrastRatio(eff, bg) < TEXT_FLOOR) {
+            def.value = readable;
+            // Text must be opaque to read: clear the dimming opacity that made
+            // the ink vanish (a #000 @0.45 overlay annotation, w3-11).
+            if (p.fillOpacity && typeof p.fillOpacity === 'object') p.fillOpacity.value = 1;
+            rewritten += 1;
+          }
+        }
+      }
+      if (Array.isArray(m.marks)) walk(m.marks);
+    }
+  };
+  walk(spec.marks);
+  return rewritten;
+}
+
+/**
  * D-319: reconcile MARK FILLS that vanish into the canvas. For every non-text
  * mark:
  *   - a solid string fill/color invisible (< 3:1) on the canvas is nudged
@@ -734,8 +955,17 @@ export function reconcileMarkFillsVsCanvas(spec: any, bg: [number, number, numbe
       }
     }
     const range = node.encoding?.color?.scale?.range;
-    if (Array.isArray(range) && range.length > 0 && range.every((x: any) => isInvisibleOn(x, bg))) {
-      node.encoding.color.scale.range = SATURATED_CATEGORY_10.slice(0, Math.min(range.length, SATURATED_CATEGORY_10.length));
+    if (Array.isArray(range) && range.length > 0) {
+      // A categorical range is unusable either because every entry is invisible
+      // on THIS canvas (D-319), or because the entries — though visible — are
+      // mutually indistinguishable, an isoluminant near-mono cluster whose
+      // grouped series/legend swatches collapse together in the theme where the
+      // range happens to be visible (D-504, w3-06 dark). Either way, swap for
+      // the theme's saturated hue-separable palette. A palette with even one
+      // visible-and-distinguishable pair is left verbatim.
+      if (range.every((x: any) => isInvisibleOn(x, bg)) || isIndistinguishableRange(range)) {
+        node.encoding.color.scale.range = SATURATED_CATEGORY_10.slice(0, Math.min(range.length, SATURATED_CATEGORY_10.length));
+      }
     }
     for (const k of ['layer', 'vconcat', 'hconcat', 'concat']) {
       if (Array.isArray(node[k])) node[k].forEach(visit);
@@ -743,6 +973,104 @@ export function reconcileMarkFillsVsCanvas(spec: any, bg: [number, number, numbe
     if (node.spec) visit(node.spec);
   };
   visit(spec);
+  return spec;
+}
+
+/**
+ * D-275: native-Vega analogue of {@link reconcileMarkFillsVsCanvas}. The
+ * Vega-Lite reconciler only walks `mark`/`encoding`/`layer`; a native Vega spec
+ * carries its categorical palette in a top-level `scales[].range` array and its
+ * mark fills in `marks[].encode.<phase>.fill.value`, neither of which that
+ * reconciler sees. Nudge each measurably-invisible (< 3:1 on the canvas) colour
+ * toward the readable side, hue-preserving, in BOTH themes:
+ *   - every string entry of a `scales[].range` array (categorical palette);
+ *   - a constant `fill.value` / `stroke.value` on a non-text mark's encode set.
+ * A colour that already clears the contrast floor is left byte-for-byte
+ * unchanged, so a legible spec on either theme is never recoloured. Mutates and
+ * returns spec.
+ */
+export function reconcileNativeVegaFills(spec: any, bg: [number, number, number], darkCanvas: boolean): any {
+  if (!spec || typeof spec !== 'object') return spec;
+  const nudge = (c: string): string => (isInvisibleOn(c, bg) ? nudgeFillForContrast(c, bg, darkCanvas) : c);
+
+  // (1) categorical scale.range palettes.
+  if (Array.isArray(spec.scales)) {
+    for (const sc of spec.scales) {
+      if (sc && typeof sc === 'object' && Array.isArray(sc.range)) {
+        sc.range = sc.range.map((v: any) => (typeof v === 'string' ? nudge(v) : v));
+      }
+    }
+  }
+
+  // (2) constant fill/stroke on native mark encode sets (never a text mark —
+  // those are handled by reconcileTextMarkColors / config.text default).
+  //
+  // D-518: the original pass reconciled only a constant string `fill.value`. A
+  // native mark also collapses into the canvas through (a) a constant
+  // `stroke.value` (w3-12 #cccccc = 1.61:1 on white), (b) a GRADIENT fill/stroke
+  // object whose stops sit at canvas luminance (w3-12 linear gradient fading to
+  // #fff), and (c) a partial `fillOpacity`/`strokeOpacity` that blends an
+  // opaque-legible colour into the canvas (w3-07's 0.55-opacity #34495e points).
+  // Reconcile all three: nudge measurably-invisible (composited) fills AND
+  // strokes, including gradient stops, hue-preserving in both themes; a colour
+  // that already clears the floor at its effective opacity is untouched.
+  const walkMarks = (marks: any): void => {
+    if (!Array.isArray(marks)) return;
+    for (const m of marks) {
+      if (!m || typeof m !== 'object') continue;
+      if (m.type !== 'text' && m.encode && typeof m.encode === 'object') {
+        for (const phase of Object.values(m.encode)) {
+          if (!phase || typeof phase !== 'object') continue;
+          const p = phase as any;
+          const num = (x: any): number | undefined => (typeof x === 'number' ? x : undefined);
+          const markOpacity = num(p.opacity?.value);
+          const fillAlpha = num(p.fillOpacity?.value) ?? markOpacity ?? 1;
+          const strokeAlpha = num(p.strokeOpacity?.value) ?? markOpacity ?? 1;
+          for (const [key, alpha] of [['fill', fillAlpha], ['stroke', strokeAlpha]] as Array<[string, number]>) {
+            const def = p[key];
+            if (!def || typeof def !== 'object') continue;
+            if (typeof def.value === 'string') {
+              if (isInvisibleComposite(def.value, bg, alpha)) {
+                def.value = nudgeFillForContrast(def.value, bg, darkCanvas, alpha);
+                // D-519 (low-opacity-hairline-stroke-dissolves): a hue-preserving
+                // colour nudge cannot rescue a STROKE whose opacity is so low
+                // that even a fully readable ink composites below the floor
+                // (w2-14's #888888 @0.25 reference rule tops out at 1.83:1 on
+                // white / 2.20:1 on the #333 card once blackened/whitened). When
+                // the nudged stroke STILL dissolves at its authored opacity,
+                // raise `strokeOpacity` to the least value at which the nudged
+                // colour clears 3:1 — a visible hairline instead of an absent
+                // one. Stroke-only: fill alpha is left untouched so an intended
+                // translucent area/overlap blend (w3-11's 0.30 areas) is kept.
+                if (key === 'stroke' && alpha < 1 && isInvisibleComposite(def.value, bg, alpha)) {
+                  const nrgb = resolveColorToRgb(def.value);
+                  if (nrgb) {
+                    let raised = alpha;
+                    for (let a = alpha; a <= 1.0001; a += 0.02) {
+                      if (contrastRatio(compositeOver(nrgb, bg, a), bg) >= 3) { raised = Math.min(1, a); break; }
+                      raised = Math.min(1, a);
+                    }
+                    if (raised > alpha) {
+                      if (!p.strokeOpacity || typeof p.strokeOpacity !== 'object') p.strokeOpacity = {};
+                      p.strokeOpacity.value = Math.round(raised * 100) / 100;
+                    }
+                  }
+                }
+              }
+            } else if (def.value && typeof def.value === 'object' && Array.isArray(def.value.stops)) {
+              for (const st of def.value.stops) {
+                if (st && typeof st.color === 'string' && isInvisibleComposite(st.color, bg, alpha)) {
+                  st.color = nudgeFillForContrast(st.color, bg, darkCanvas, alpha);
+                }
+              }
+            }
+          }
+        }
+      }
+      if (Array.isArray(m.marks)) walkMarks(m.marks);
+    }
+  };
+  walkMarks(spec.marks);
   return spec;
 }
 
@@ -838,6 +1166,67 @@ export function reconcileFieldDrivenTextOnFill(spec: any): any {
       row[textField] = contrastRatio(WHITE, fRgb) >= contrastRatio(BLACK, fRgb) ? '#ffffff' : '#000000';
     }
   }
+  return spec;
+}
+
+/**
+ * D-503 (field-driven-literal-fill-not-reconciled-vs-canvas): a NON-text mark
+ * (bar/point/area/…) whose fill comes from a `color.field` with `scale:null`
+ * (or an absent scale over a field whose values are all colour strings) is
+ * painted with those literal hex values verbatim. When a value is
+ * near-isoluminant with the canvas — #f7f7f2 (1.07:1) / #eef3f7 (1.12:1) on the
+ * white light card, #1b2a41 (1.20:1) / #2e1a47 (1.16:1) on the #333 dark card —
+ * the mark disappears. {@link reconcileMarkFillsVsCanvas} only understands a
+ * solid `mark.fill` or a `scale.range` array, so these per-row literal fills
+ * were never contrast-checked. For each shared data row, nudge a fill colour
+ * that is sub-3:1 on the effective canvas toward the readable side
+ * (hue-preserving, via {@link nudgeFillForContrast}); a fill that already clears
+ * the floor is left byte-for-byte unchanged, so a legible spec on either theme
+ * is untouched. Only fires for a literal-colour field on a non-text mark, so a
+ * scaled categorical channel is never hijacked. Mutates + returns the spec.
+ */
+export function reconcileFieldDrivenFillsVsCanvas(spec: any, bg: [number, number, number], darkCanvas: boolean): any {
+  if (!spec || typeof spec !== 'object') return spec;
+  const values = spec.data?.values;
+  if (!Array.isArray(values) || values.length === 0) return spec;
+
+  // A colour encoding carries LITERAL colours (not a category→palette map) when
+  // scale is explicitly null/absent AND every value of the field resolves to a
+  // colour string. A real categorical field ("dark-1", "Alpha") fails the
+  // all-colours test and is skipped, so a scaled channel is never touched.
+  const literalColorField = (layer: any): string | null => {
+    const col = layer?.encoding?.color ?? layer?.encoding?.fill;
+    if (!col || typeof col !== 'object' || typeof col.field !== 'string') return null;
+    if (col.scale !== null && col.scale !== undefined) return null;
+    const f = col.field;
+    const seen = values
+      .map((r: any) => (r && typeof r === 'object' ? r[f] : undefined))
+      .filter((v: any) => v !== undefined && v !== null);
+    if (seen.length === 0) return null;
+    return seen.every((v: any) => typeof v === 'string' && resolveColorToRgb(v)) ? f : null;
+  };
+
+  const nudged = new Map<string, string>();
+  const fixFieldOnNode = (layer: any): void => {
+    const markType = typeof layer?.mark === 'string' ? layer.mark : layer?.mark?.type;
+    if (markType === 'text') return; // text ink is handled by the text-on-fill pass
+    const f = literalColorField(layer);
+    if (!f) return;
+    for (const row of values) {
+      if (!row || typeof row !== 'object') continue;
+      const c = row[f];
+      if (typeof c !== 'string') continue;
+      const rgb = resolveColorToRgb(c);
+      if (!rgb) continue;
+      if (contrastRatio(rgb, bg) >= 3) continue;
+      let out = nudged.get(c);
+      if (out === undefined) { out = nudgeFillForContrast(c, bg, darkCanvas); nudged.set(c, out); }
+      row[f] = out;
+    }
+  };
+
+  fixFieldOnNode(spec);
+  if (Array.isArray(spec.layer)) for (const layer of spec.layer) fixFieldOnNode(layer);
   return spec;
 }
 
@@ -1126,14 +1515,63 @@ export function hslToHex(h: number, s: number, l: number): string {
 }
 
 /**
+ * WCAG contrast floor every GENERATED categorical swatch must clear on the
+ * ACTIVE theme canvas. 3.0 is the WCAG non-text/UI floor; we target a hair
+ * above (3.2) so an 8-bit-rounded swatch still measures ≥3.0 after quantisation.
+ */
+export const CATEGORY_CONTRAST_FLOOR = 3.2;
+
+/** The theme card backgrounds a categorical swatch is composited over: the
+ *  Vega 'excel' light card (#ffffff) and the 'dark' card (#333333). */
+const LIGHT_CANVAS_RGB: [number, number, number] = [255, 255, 255];
+const DARK_CANVAS_RGB: [number, number, number] = [51, 51, 51];
+
+/**
+ * D-253 (theme/contrast): resolve a generated swatch's LIGHTNESS from the
+ * active theme so it clears CATEGORY_CONTRAST_FLOOR against that theme's
+ * canvas, HUE and SATURATION preserved. The fixed L/S tiers below sweep the
+ * whole hue wheel at one lightness, so the yellow/lime band sinks to ~1.7:1 on
+ * white and the blue-violet band to ~1.9:1 on #333 — a theme-blind constant,
+ * not a theme-resolved value. Binary-search lightness toward the readable side
+ * (darker on the white card, lighter on the #333 card) until the ROUNDED hex
+ * clears the floor; a swatch already clearing it is returned unchanged. Hue is
+ * untouched so the palette stays hue-separable. PURE + exported for testing.
+ */
+export function clampLightnessForContrast(
+  h: number,
+  s: number,
+  l: number,
+  darkCanvas: boolean,
+): number {
+  const bg = darkCanvas ? DARK_CANVAS_RGB : LIGHT_CANVAS_RGB;
+  const ratioAt = (ll: number): number => {
+    const rgb = resolveColorToRgb(hslToHex(h, s, ll));
+    return rgb ? contrastRatio(rgb, bg) : 0;
+  };
+  if (ratioAt(l) >= CATEGORY_CONTRAST_FLOOR) return l;
+  // Readable side: on the light card darker (lower L) raises contrast; on the
+  // dark card lighter (higher L) does. Binary-search the boundary, converging
+  // onto the side that satisfies the floor.
+  let lo: number, hi: number;
+  if (darkCanvas) { lo = l; hi = 1; } else { lo = 0; hi = l; }
+  for (let i = 0; i < 24; i++) {
+    const mid = (lo + hi) / 2;
+    const ok = ratioAt(mid) >= CATEGORY_CONTRAST_FLOOR;
+    if (darkCanvas) { if (ok) hi = mid; else lo = mid; }
+    else { if (ok) lo = mid; else hi = mid; }
+  }
+  return darkCanvas ? hi : lo;
+}
+
+/**
  * Generate `n` perceptually-distinct categorical colours by EVEN hue spacing
  * (guaranteed distinct — hue step 360/n) across three lightness/saturation
- * tiers. Lightness is biased toward the active canvas so every entry stays
- * visible on it (a saturated palette cannot clear a WCAG floor on BOTH a white
- * and a dark card at once — the tiers are picked so the min contrast on the
- * ACTIVE background is comparable to the shipped 10-colour scheme). Injective
- * for any n; used when domain cardinality exceeds the 10-entry theme palettes
- * (D-265). Returns exactly `n` colours (min 1).
+ * tiers, tuned so neighbouring hues stay perceptually separable (ΔE) on the
+ * active canvas. Used by the KNOWN-cardinality (>10) branch (D-265); its ΔE
+ * tuning is intentionally NOT WCAG-lightness-clamped, because forcing every
+ * hue to a fixed contrast floor collapses the tier lightness spread and drops
+ * neighbour ΔE below the confusable line at moderate n. Injective for any n.
+ * Returns exactly `n` colours (min 1).
  */
 export function generateCategoricalPalette(n: number, darkCanvas: boolean): string[] {
   const count = Math.max(1, Math.floor(n));
@@ -1341,7 +1779,11 @@ export function extendCategoricalPalette(
     // Even hue spacing over the tail: uniform 360/tailCount gap, no clustering.
     const hue = (20 + (i * 360) / tailCount) % 360;
     const t = i % 3;
-    out.push(hslToHex(hue, S[t], L[t]));
+    // D-253: clamp the generated tail's lightness to clear the contrast floor
+    // on the active canvas (hue preserved), so the tail never introduces the
+    // pale/low-contrast members that the fixed-lightness ramp did.
+    const l = clampLightnessForContrast(hue, S[t], L[t], darkCanvas);
+    out.push(hslToHex(hue, S[t], l));
   }
   return out;
 }
@@ -1362,31 +1804,28 @@ export function applyCategoricalPaletteFix(spec: any, isDarkMode: boolean): stri
     // D-265 (data-driven) — the colour field is produced by a sequence /
     // transform / data.url, so its cardinality is UNKNOWABLE statically and
     // the 10-entry theme range would silently recycle for >10 series (the
-    // vega-lite-w2-04/11/12/13 case). Mirror the full-Vega native path
-    // (extendRecycledOrdinalSchemes): inject a range that BEGINS with the
+    // vega-lite-w2-04/11/12/13 case). Inject a range that BEGINS with the
     // active theme's own 10 colours — byte-identical output for any ≤10-series
-    // spec — and stays injective up to CATEGORY_EXTEND_TARGET beyond it. A
-    // low-opacity light canvas also needs the saturated base (D-260), so the
-    // prefix follows the same theme-resolved choice used below.
+    // spec, and keeping few-series data-driven specs (w3-05: 3 series, w3-12:
+    // 2) on their well-separated theme hues rather than a target-spaced ramp —
+    // and stays injective beyond it. A low-opacity light canvas needs the
+    // saturated base (D-260), so the prefix follows the theme-resolved choice.
     const base =
       (!isDarkMode && info.opacity < CATEGORY_LOW_OPACITY)
         ? SATURATED_CATEGORY_10
         : isDarkMode
           ? SATURATED_CATEGORY_10
           : EXCEL_CATEGORY_10;
-    // D-253: a fixed 40-entry extend recycles once the data-driven domain
-    // exceeds 40 (e.g. vega-lite-w2-12's 50-slot sequence). When the backing
-    // data gives a MODEST upper bound above 40 (≤ MAX_ESTIMATED_CATEGORY), the
-    // distinct count cannot exceed it, so size the palette to that bound and
-    // stay injective. A huge sequence (2000/1200 rows for ~20/30 real series)
-    // would only bloat the range, so keep the CATEGORY_EXTEND_TARGET default
-    // there — its golden-angle prefix already covers the common ≤40-series case
-    // and preserves the theme's first-10 colours byte-for-byte.
+    // Size to the modest data-driven upper bound when known (>40, ≤64) so a
+    // 50-slot sequence stays injective; a huge sequence keeps the default.
     const est = info.estimatedCardinality;
     const target =
       est > CATEGORY_EXTEND_TARGET && est <= MAX_ESTIMATED_CATEGORY
         ? est
         : CATEGORY_EXTEND_TARGET;
+    // D-253: the generated TAIL is contrast-clamped (see extendCategoricalPalette)
+    // so the extension never introduces sub-3:1 members the way the old
+    // fixed-lightness tail did (w2-04/w2-12 pastels).
     palette = extendCategoricalPalette(base, target, isDarkMode);
   } else if (!isDarkMode && info.opacity < CATEGORY_LOW_OPACITY) {
     // D-260 — the muted light range dissolves at low opacity; dark is already
@@ -1399,4 +1838,89 @@ export function applyCategoricalPaletteFix(spec: any, isDarkMode: boolean): stri
   spec.config.range = spec.config.range && typeof spec.config.range === 'object' ? spec.config.range : {};
   spec.config.range.category = palette;
   return palette;
+}
+
+/**
+ * D-258 (regression): effective mark-opacity floor for a LOW-OPACITY
+ * CATEGORICAL scatter under the LIGHT theme.
+ *
+ * applyCategoricalPaletteFix gives the light theme the saturated tableau10 base
+ * (D-260) so the LEGEND swatches stay hue-separable, but that alone does not
+ * carry the PLOT. Compositing a semi-transparent mark over the light canvas is
+ *   out = 255*(1 - a) + c*a
+ * which floods every channel toward 255 and compresses chroma far more than the
+ * same mark composited over the dark theme's near-black canvas. Measured on the
+ * 5-group saturated palette at opacity 0.35: min between-group ΔE(CIE76) is
+ * 16.6 on black (dark passes) but only 12.4 on white — the groups wash back
+ * together under heavy overplot even though the swatches themselves differ.
+ * WCAG luminance contrast is ~1.0 in BOTH themes here (the hues are equal-
+ * lightness, distinct only in chroma), so it is not the governing metric;
+ * between-group ΔE is.
+ *
+ * Lifting the effective light opacity to LIGHT_CATEGORY_OPACITY_FLOOR restores
+ * the on-white composite to dark parity (min-ΔE 16.2 at 0.45 vs dark's 16.6)
+ * while keeping the translucency the "low-opacity survival" spec intends. The
+ * fix is THEME-RESOLVED: it fires only in the light theme (dark already
+ * survives at the authored opacity and is never touched, so the two themes stay
+ * a matched pair), only for a genuinely categorical colour channel, and only
+ * when the authored effective opacity is below the floor — a fully-opaque spec,
+ * or one whose author already set opacity at/above the floor, is left as-is.
+ */
+export const LIGHT_CATEGORY_OPACITY_FLOOR = 0.45;
+
+/**
+ * Raise the effective mark opacity of a low-opacity light-theme categorical
+ * spec to LIGHT_CATEGORY_OPACITY_FLOOR (see the constant's note for the ΔE
+ * rationale). Locates the colour-bearing container the same way
+ * analyzeCategoricalColor does (top-level, else the first layer carrying a
+ * colour channel) and writes the floor onto whichever opacity carrier the mark
+ * uses: an object mark's `opacity`, a string mark promoted to an object, or an
+ * `encoding.opacity.value`. Returns the applied opacity, else null. Mutates
+ * spec. PURE-ish (single spec mutation) + exported for unit testing.
+ */
+export function liftLowOpacityLightCategorical(spec: any, isDarkMode: boolean): number | null {
+  if (!spec || typeof spec !== 'object' || isDarkMode) return null;
+  const info = analyzeCategoricalColor(spec);
+  if (!info.isCategorical) return null;
+  if (!(info.opacity < LIGHT_CATEGORY_OPACITY_FLOOR)) return null;
+
+  // Resolve the same container analyzeCategoricalColor measured: top-level
+  // encoding if it carries colour/fill, else the first layer that does.
+  let container: any = spec;
+  const topEnc = spec.encoding && typeof spec.encoding === 'object' ? spec.encoding : null;
+  if (!(topEnc && (topEnc.color || topEnc.fill)) && Array.isArray(spec.layer)) {
+    for (const layer of spec.layer) {
+      if (layer && layer.encoding && (layer.encoding.color || layer.encoding.fill)) {
+        container = layer;
+        break;
+      }
+    }
+  }
+
+  const floor = LIGHT_CATEGORY_OPACITY_FLOOR;
+  const enc = container.encoding && typeof container.encoding === 'object' ? container.encoding : null;
+
+  // An explicit opacity ENCODING value takes precedence in analyzeCategoricalColor
+  // only when the mark carries no numeric opacity, so mirror that order here.
+  const mark = container.mark ?? spec.mark;
+  if (mark && typeof mark === 'object' && typeof mark.opacity === 'number') {
+    mark.opacity = floor;
+    return floor;
+  }
+  if (enc && enc.opacity && typeof enc.opacity === 'object' && typeof enc.opacity.value === 'number') {
+    enc.opacity.value = floor;
+    return floor;
+  }
+  // A string mark ('point') with no opacity anywhere reads as opacity 1 in
+  // analyzeCategoricalColor, so this branch is only reached when info.opacity
+  // came from a numeric source above; guard anyway by promoting a string mark.
+  if (typeof mark === 'string') {
+    container.mark = { type: mark, opacity: floor };
+    return floor;
+  }
+  if (mark && typeof mark === 'object') {
+    mark.opacity = floor;
+    return floor;
+  }
+  return null;
 }

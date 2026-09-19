@@ -112,15 +112,19 @@ describe('declutterDenseTextMarks (D-262)', () => {
     const textLayer = spec.layer[1] as any;
     const pointLayer = spec.layer[0] as any;
 
-    // The text (label) layer gains a window row_number + modulo filter.
+    // The text (label) layer gains a collision-based grid cull (D-501): a
+    // row_number window PARTITIONED by x/y grid cells, keeping one label per
+    // cell — a position-keyed cull, not the old every-Nth index sample.
     expect(Array.isArray(textLayer.transform)).toBe(true);
-    const hasWindow = textLayer.transform.some(
+    const winT = textLayer.transform.find(
       (t: any) => Array.isArray(t.window) && t.window.some((w: any) => w.as === TEXT_MARK_DECLUTTER_IDX),
     );
-    expect(hasWindow).toBe(true);
-    // cap=35, count=150 -> stride=ceil(150/35)=5
+    expect(winT).toBeTruthy();
+    expect(Array.isArray(winT.groupby) && winT.groupby.length === 2).toBe(true);
+    // Grid cull keeps the first datum in each cell; NO index-modulo filter.
     const filterT = textLayer.transform.find((t: any) => typeof t.filter === 'string');
-    expect(filterT.filter).toContain('% 5');
+    expect(filterT.filter).toContain('=== 1');
+    expect(filterT.filter).not.toContain('%');
 
     // The point/data layer is NOT thinned — every datum is still plotted.
     expect(pointLayer.transform).toBeUndefined();

@@ -1,0 +1,183 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 460,
+  "height": 280,
+  "padding": 4,
+  "autosize": "none",
+  "data": [
+   {
+    "name": "words",
+    "values": [
+     {
+      "text": "vega",
+      "count": 62,
+      "a": 0
+     },
+     {
+      "text": "mermaid",
+      "count": 48,
+      "a": 0
+     },
+     {
+      "text": "graphviz",
+      "count": 41,
+      "a": 30
+     },
+     {
+      "text": "plotly",
+      "count": 33,
+      "a": 0
+     },
+     {
+      "text": "drawio",
+      "count": 29,
+      "a": -30
+     },
+     {
+      "text": "joint",
+      "count": 24,
+      "a": 0
+     },
+     {
+      "text": "chord",
+      "count": 19,
+      "a": 30
+     },
+     {
+      "text": "packet",
+      "count": 17,
+      "a": 0
+     },
+     {
+      "text": "network",
+      "count": 15,
+      "a": 0
+     },
+     {
+      "text": "force",
+      "count": 13,
+      "a": -30
+     },
+     {
+      "text": "treemap",
+      "count": 11,
+      "a": 0
+     },
+     {
+      "text": "sunburst",
+      "count": 9,
+      "a": 30
+     },
+     {
+      "text": "contour",
+      "count": 8,
+      "a": 0
+     },
+     {
+      "text": "legend",
+      "count": 7,
+      "a": 0
+     },
+     {
+      "text": "axis",
+      "count": 6,
+      "a": 0
+     }
+    ],
+    "transform": [
+     {
+      "type": "wordcloud",
+      "size": [
+       {
+        "signal": "width"
+       },
+       {
+        "signal": "height"
+       }
+      ],
+      "text": {
+       "field": "text"
+      },
+      "rotate": {
+       "field": "a"
+      },
+      "font": "Helvetica Neue, Arial",
+      "fontSize": {
+       "field": "count"
+      },
+      "fontSizeRange": [
+       12,
+       52
+      ],
+      "padding": 2
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "color",
+    "type": "ordinal",
+    "domain": {
+     "data": "words",
+     "field": "text"
+    },
+    "range": [
+     "#1f4e79",
+     "#2e75b6",
+     "#c00000",
+     "#7f6000",
+     "#375623"
+    ]
+   }
+  ],
+  "marks": [
+   {
+    "type": "text",
+    "from": {
+     "data": "words"
+    },
+    "encode": {
+     "enter": {
+      "text": {
+       "field": "text"
+      },
+      "align": {
+       "value": "center"
+      },
+      "baseline": {
+       "value": "alphabetic"
+      },
+      "fill": {
+       "scale": "color",
+       "field": "text"
+      }
+     },
+     "update": {
+      "x": {
+       "field": "x"
+      },
+      "y": {
+       "field": "y"
+      },
+      "angle": {
+       "field": "angle"
+      },
+      "font": {
+       "field": "font"
+      },
+      "fontSize": {
+       "field": "fontSize"
+      },
+      "fillOpacity": {
+       "value": 1
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "Word cloud: `wordcloud` transform with fontSizeRange, per-datum rotation from a precomputed angle field, and an ordinal colour scale over text marks. Explicitly named in the plugin docstring as an unlocked capability."
+}

@@ -1,0 +1,159 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 780,
+  "height": 470,
+  "padding": 5,
+  "autosize": {
+   "type": "fit",
+   "contains": "padding"
+  },
+  "title": {
+   "text": "Single datum — zero-extent linear domain [42,42]",
+   "fontSize": 14
+  },
+  "data": [
+   {
+    "name": "t",
+    "values": [
+     {
+      "c": "only",
+      "v": 42
+     }
+    ]
+   },
+   {
+    "name": "agg",
+    "source": "t",
+    "transform": [
+     {
+      "type": "aggregate",
+      "fields": [
+       "v",
+       "v"
+      ],
+      "ops": [
+       "mean",
+       "stdev"
+      ],
+      "as": [
+       "m",
+       "sd"
+      ]
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "band",
+    "domain": {
+     "data": "t",
+     "field": "c"
+    },
+    "range": "width",
+    "padding": 0.4
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "domain": {
+     "data": "t",
+     "field": "v"
+    },
+    "range": "height"
+   },
+   {
+    "name": "col",
+    "type": "ordinal",
+    "domain": {
+     "data": "t",
+     "field": "c"
+    },
+    "range": "category"
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x",
+    "title": "one category"
+   },
+   {
+    "orient": "left",
+    "scale": "y",
+    "grid": true,
+    "title": "v (domain 42..42)"
+   }
+  ],
+  "legends": [
+   {
+    "fill": "col",
+    "title": "series (n=1)"
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "c"
+      },
+      "width": {
+       "scale": "x",
+       "band": 1
+      },
+      "y": {
+       "scale": "y",
+       "field": "v"
+      },
+      "y2": {
+       "scale": "y",
+       "value": 0
+      },
+      "fill": {
+       "scale": "col",
+       "field": "c"
+      }
+     }
+    }
+   },
+   {
+    "type": "text",
+    "from": {
+     "data": "agg"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "value": 390.0
+      },
+      "y": {
+       "value": 30
+      },
+      "text": {
+       "signal": "'mean ' + datum.m + '  stdev ' + datum.sd"
+      },
+      "align": {
+       "value": "center"
+      },
+      "fontSize": {
+       "value": 13
+      },
+      "fill": {
+       "value": "#b03a2e"
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "DEGENERATE: one single datum, so the linear scale has a zero-width domain [42,42], the band scale has one band, the ordinal legend one entry, and an aggregate over n=1."
+}

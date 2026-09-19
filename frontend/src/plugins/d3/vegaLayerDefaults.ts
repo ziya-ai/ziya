@@ -309,6 +309,87 @@ export function resolveXAxisLabelDefaults(dataNode: any, enc: any): Record<strin
 }
 
 /**
+ * Above this label length a nominal category cannot be shown on a horizontal
+ * (bottom) x axis even when ROTATED, without either overprinting its
+ * neighbours at the band pitch or clipping off the canvas edge. Set well above
+ * LONG_LABEL_CHARS (the in-place rotation threshold) so moderately-long labels
+ * still rotate where they are and only genuinely oversized ones trigger the
+ * more drastic transpose to a horizontal bar chart.
+ */
+export const TRANSPOSE_LABEL_CHARS = 24;
+
+/**
+ * A transpose to horizontal bars is only legible for a SMALL category count —
+ * one flat label per row needs vertical room, so hundreds of rows help nothing.
+ */
+export const TRANSPOSE_MAX_CATEGORIES = 20;
+
+/**
+ * D-309 / D-500 (long-nominal-labels on a bar chart): a bar chart whose x axis
+ * carries a FEW but VERY LONG nominal category names cannot be rescued by axis
+ * label tuning. Laid flat the labels smear; the rotation branch of
+ * resolveXAxisLabelDefaults keeps every label but at 65-75 chars they still
+ * overprint at the band pitch, the leftmost runs off the canvas (x=0 clip), and
+ * the x-axis title collides with the rotated band. The standard, general
+ * degradation for "few categories, labels too long to sit under the axis" is to
+ * TRANSPOSE to a horizontal bar chart: the long labels move to the y axis where
+ * each gets a full row of width and lies flat (bounded only by labelLimit), the
+ * quantitative measure becomes the bar's horizontal extent, and there is no
+ * rotated band for the title to collide with.
+ *
+ * Strictly scoped so an ordinary chart is untouched:
+ *  - a UNIT spec only (no layer/concat/facet/repeat to reason about),
+ *  - a `bar` mark,
+ *  - x nominal/ordinal with a field, y quantitative,
+ *  - inline data.values present so labels can be measured,
+ *  - at most TRANSPOSE_MAX_CATEGORIES distinct categories, and
+ *  - a longest label exceeding TRANSPOSE_LABEL_CHARS.
+ * Structural and theme-independent (no colour touched). Returns whether it
+ * transposed.
+ */
+export function transposeLongLabelBarChart(spec: any): boolean {
+  if (!spec || typeof spec !== 'object') return false;
+  // Only a single-view unit spec — a composition has its own layout rules.
+  if (spec.layer || spec.hconcat || spec.vconcat || spec.concat ||
+      spec.facet || spec.repeat || spec.spec) return false;
+
+  const enc = spec.encoding;
+  if (!enc || typeof enc !== 'object') return false;
+
+  const markType = typeof spec.mark === 'string' ? spec.mark : spec.mark?.type;
+  if (markType !== 'bar') return false;
+
+  const x = enc.x;
+  const y = enc.y;
+  if (!x || typeof x !== 'object' || !y || typeof y !== 'object') return false;
+  if (x.type !== 'nominal' && x.type !== 'ordinal') return false;
+  if (y.type !== 'quantitative') return false;
+  if (!x.field) return false;
+
+  const values = Array.isArray(spec.data?.values) ? spec.data.values : null;
+  if (!values) return false;
+
+  let maxLen = 0;
+  const seen = new Set<any>();
+  for (const row of values) {
+    const v = row?.[x.field];
+    if (v === undefined || v === null || seen.has(v)) continue;
+    seen.add(v);
+    const len = String(v).length;
+    if (len > maxLen) maxLen = len;
+  }
+  if (seen.size === 0 || seen.size > TRANSPOSE_MAX_CATEGORIES) return false;
+  if (maxLen <= TRANSPOSE_LABEL_CHARS) return false;
+
+  // Swap the positional channels. The long labels travel with the encoding
+  // onto the y axis (flat, one per row); the quantitative measure becomes the
+  // horizontal bar extent. Any authored axis title / sort / scale rides along.
+  enc.x = y;
+  enc.y = x;
+  return true;
+}
+
+/**
  * Supply readable axis label defaults to a layered spec, ONCE per channel.
  *
  * Writing these into every layer that lacked an `axis` was not additive: the

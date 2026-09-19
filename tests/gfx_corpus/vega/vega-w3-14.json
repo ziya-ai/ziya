@@ -1,0 +1,171 @@
+{
+ "type": "vega",
+ "definition": {
+  "$schema": "https://vega.github.io/schema/vega/v5.json",
+  "width": 780,
+  "height": 470,
+  "padding": 5,
+  "autosize": {
+   "type": "fit",
+   "contains": "padding"
+  },
+  "title": {
+   "text": "No colours specified anywhere — engine defaults only",
+   "fontSize": 14
+  },
+  "data": [
+   {
+    "name": "t",
+    "values": [
+     {
+      "c": "alpha",
+      "v": 31
+     },
+     {
+      "c": "beta",
+      "v": 58
+     },
+     {
+      "c": "gamma",
+      "v": 24
+     },
+     {
+      "c": "delta",
+      "v": 47
+     },
+     {
+      "c": "epsilon",
+      "v": 66
+     },
+     {
+      "c": "zeta",
+      "v": 39
+     }
+    ]
+   }
+  ],
+  "scales": [
+   {
+    "name": "x",
+    "type": "band",
+    "domain": {
+     "data": "t",
+     "field": "c"
+    },
+    "range": "width",
+    "padding": 0.2
+   },
+   {
+    "name": "y",
+    "type": "linear",
+    "domain": {
+     "data": "t",
+     "field": "v"
+    },
+    "range": "height",
+    "nice": true
+   },
+   {
+    "name": "col",
+    "type": "ordinal",
+    "domain": {
+     "data": "t",
+     "field": "c"
+    }
+   }
+  ],
+  "axes": [
+   {
+    "orient": "bottom",
+    "scale": "x",
+    "title": "category"
+   },
+   {
+    "orient": "left",
+    "scale": "y",
+    "grid": true,
+    "title": "value"
+   }
+  ],
+  "legends": [
+   {
+    "fill": "col",
+    "title": "series"
+   }
+  ],
+  "marks": [
+   {
+    "type": "rect",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "c"
+      },
+      "width": {
+       "scale": "x",
+       "band": 1
+      },
+      "y": {
+       "scale": "y",
+       "field": "v"
+      },
+      "y2": {
+       "scale": "y",
+       "value": 0
+      }
+     }
+    }
+   },
+   {
+    "type": "text",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "c",
+       "band": 0.5
+      },
+      "y": {
+       "scale": "y",
+       "field": "v",
+       "offset": -8
+      },
+      "text": {
+       "field": "v"
+      },
+      "align": {
+       "value": "center"
+      }
+     }
+    }
+   },
+   {
+    "type": "line",
+    "from": {
+     "data": "t"
+    },
+    "encode": {
+     "enter": {
+      "x": {
+       "scale": "x",
+       "field": "c",
+       "band": 0.5
+      },
+      "y": {
+       "scale": "y",
+       "field": "v"
+      }
+     }
+    }
+   }
+  ]
+ },
+ "intent": "COLOR/DEFAULTS: identical chart content to w3-09/w3-10 with NO colour specified anywhere - no background, no fills, no strokes, no config - purely to observe what the engine's own defaults do in each theme."
+}
