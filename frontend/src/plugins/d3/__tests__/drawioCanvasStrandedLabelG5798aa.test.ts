@@ -29,6 +29,7 @@ import {
     drawioFillPaintsOpaque,
     applyTextCellFillDefaults,
     applyLabelFittingDefaults,
+    resolveFitViewport,
 } from '../drawioPlugin';
 import { calculateContrastRatio } from '../../../utils/colorUtils';
 
@@ -115,5 +116,45 @@ describe('D-101 — overflow label fitting (drawio-w2-06)', () => {
         applyLabelFittingDefaults(styleObj, { isEdge: true });
         expect(styleObj['whiteSpace']).toBe('wrap');
         expect(styleObj['overflow']).toBeUndefined();
+    });
+});
+
+/**
+ * D-101 (regression, run eba33191) — the fresh render 2f254c3a failed
+ * drawio-w2-06 / w4-09 / w4-12 in BOTH light AND dark, whereas the contrast
+ * defect only ever affected dark (author #102040 is 16.12:1 on the light
+ * canvas — never a light failure). A both-theme failure is the fit-SKIP
+ * capture regression, not a contrast one: when the headless container measures
+ * clientWidth/clientHeight === 0, the old safeFitCenter SKIPPED fit, so the
+ * diagram was captured at maxGraph's ~2x default, overflowed the capture window
+ * and its labels were clipped / rescaled to illegibility in every theme.
+ *
+ * resolveFitViewport is what removes that skip: it always resolves a definite,
+ * non-zero viewport (own box → nearest laid-out ancestor → canvas default) so
+ * fitCenter computes a finite scale and runs, and the reconciled label colours
+ * are actually captured. It does not exist on the pre-fix committed tree, so
+ * importing it makes this suite RED before the fix (the render-path half of the
+ * regression), while the contrast reconcile above locks the colour half.
+ */
+describe('D-101 (regression) — fit viewport is always definite, so labels are not clipped at capture', () => {
+    it('keeps the container box when it already has a real size (no override)', () => {
+        const vp = resolveFitViewport(640, 480, 0, 0);
+        expect(vp.width).toBe(640);
+        expect(vp.height).toBe(480);
+        expect(vp.usedFallback).toBe(false);
+    });
+
+    it('falls back to the nearest laid-out ancestor when the container is zero-size', () => {
+        // The exact w2-06/w4-09/w4-12 headless race: container 0x0, ancestor laid out.
+        const vp = resolveFitViewport(0, 0, 1230, 800);
+        expect(vp.width).toBe(1230);
+        expect(vp.height).toBe(800);
+        expect(vp.usedFallback).toBe(true);
+    });
+
+    it('never yields a zero viewport (would re-skip fit and re-clip the labels)', () => {
+        const vp = resolveFitViewport(0, 0, 0, 0);
+        expect(vp.width).toBeGreaterThan(0);
+        expect(vp.height).toBeGreaterThan(0);
     });
 });

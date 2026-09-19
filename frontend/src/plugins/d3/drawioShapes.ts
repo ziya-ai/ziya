@@ -128,7 +128,9 @@ export function registerDrawioExtraShapes(maxGraphModule: any): string[] {
  * G-cc6859 / D-091 — custom-and-orthogonal-arrowheads-dropped (the ER crow's-foot half).
  *
  * maxGraph core's `registerDefaultEdgeMarkers` registers only classic/classicThin,
- * block/blockThin, open/openThin, oval, diamond/diamondThin. The drawio ER cardinality
+ * block/blockThin, open/openThin, oval, diamond/diamondThin — and only when that
+ * function is CALLED explicitly (it is not auto-registered on import; the drawio
+ * plugin's loadMaxGraph now calls it, see D-380). The drawio ER cardinality
  * vocabulary (ERone, ERmany, ERzeroToOne, ERzeroToMany, ERoneToMany, ERmandOne) is NOT
  * in that set, so `EdgeMarkerRegistry.createMarker` returns null for those types and the
  * crow's-foot / cardinality terminator is dropped entirely — an ER edge renders as a bare
@@ -262,6 +264,57 @@ export function registerDrawioExtraEdgeMarkers(maxGraphModule: any): string[] {
     } catch {
         // A marker-registration problem must never break drawio rendering — the worst case
         // is the pre-existing bare-line fallback for ER cardinality edges.
+        return [];
+    }
+}
+
+/** The built-in marker names maxGraph's registerDefaultEdgeMarkers wires up. */
+const DEFAULT_EDGE_MARKER_NAMES = [
+    'classic',
+    'classicThin',
+    'block',
+    'blockThin',
+    'open',
+    'openThin',
+    'oval',
+    'diamond',
+    'diamondThin',
+] as const;
+
+/**
+ * G-796ea6 / D-380 — arrowheads-missing-on-default-edges.
+ *
+ * maxGraph 0.18+ does NOT auto-register its built-in edge markers on import: the
+ * marker set (classic/classicThin, block/blockThin, open/openThin, oval,
+ * diamond/diamondThin) only lands in the EdgeMarkerRegistry when the exported
+ * `registerDefaultEdgeMarkers()` is CALLED. The drawio plugin loaded maxGraph and
+ * called registerCoreCodecs() but never this, so EdgeMarkerRegistry.get('classic')
+ * returned null and every default / orthogonal edge painted as a bare line with no
+ * terminator — flow direction lost in BOTH themes (markers stroke/fill in the edge
+ * colour, so this is theme-independent). The earlier ER-only registration wrongly
+ * assumed the core set was already present.
+ *
+ * This wraps that core call: idempotent (maxGraph guards it with an internal flag),
+ * additive, and never throws — a module missing the export leaves the (pre-existing)
+ * bare-line fallback. Runs BEFORE registerDrawioExtraEdgeMarkers so the ER extras
+ * stay purely additive over the core set.
+ *
+ * @returns the built-in marker names present in the registry after the call (for tests).
+ */
+export function registerDrawioDefaultEdgeMarkers(maxGraphModule: any): string[] {
+    try {
+        const register = maxGraphModule?.registerDefaultEdgeMarkers;
+        const EdgeMarkerRegistry = maxGraphModule?.EdgeMarkerRegistry;
+        if (typeof register === 'function') {
+            register();
+        }
+        if (!EdgeMarkerRegistry || typeof EdgeMarkerRegistry.get !== 'function') {
+            return [];
+        }
+        return DEFAULT_EDGE_MARKER_NAMES.filter((n) => EdgeMarkerRegistry.get(n) != null);
+    } catch {
+        // Marker registration must never break drawio rendering — worst case is the
+        // pre-existing bare-line fallback for default-styled edges.
         return [];
     }
 }

@@ -18,7 +18,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.311844Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "c977925804759f9a219c451ff53bb2774eb1572f13663b4db5b84498270fe7fe",
+     "validated_at": "2026-09-19T04:13:54.370770Z"
+    },
+    "dark": {
+     "hash": "8dc90c18e68ccaff6dffae3b5b2ba8781d8cba624330f24d32a784928baf0b74",
+     "validated_at": "2026-09-19T04:13:54.400512Z"
+    }
+   }
   },
   "drawio-w2-02": {
    "themes": [
@@ -36,7 +46,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.314497Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "3201b009610957d94bcf06966d1cbacb5fdd0b66051a27a73c8c90e16708aeff",
+     "validated_at": "2026-09-19T04:15:49.935944Z"
+    },
+    "dark": {
+     "hash": "3afe5a899c3da16f73f5bcec9ebe24841702e71ad11e1af5e2c0c7330496d393",
+     "validated_at": "2026-09-19T04:15:49.960775Z"
+    }
+   }
   },
   "drawio-w2-05": {
    "themes": [
@@ -54,7 +74,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.318199Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "bada3d3b3bc33ad328cb9632d4b7498c743632e0ff7a5c5490d19cd673fd0786",
+     "validated_at": "2026-09-19T04:21:35.790945Z"
+    },
+    "dark": {
+     "hash": "461b3107afeddd556c3387bae151edf0a464d4bb430afc879d919a5b55f6fab3",
+     "validated_at": "2026-09-19T04:21:35.817317Z"
+    }
+   }
   },
   "drawio-w2-07": {
    "themes": [
@@ -72,7 +102,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.322762Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "53db14684914338ae5f85bf92f76a332dbaadbea284a49c25706f6601b514ee0",
+     "validated_at": "2026-09-19T04:24:05.899002Z"
+    },
+    "dark": {
+     "hash": "bfc7d34b8296a8d73f795619e8decc70ed84d6eb759ce68cfdf65e2ce6e30be2",
+     "validated_at": "2026-09-19T04:24:05.929273Z"
+    }
+   }
   },
   "drawio-w2-12": {
    "themes": [
@@ -90,7 +130,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.333328Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "74ecb7b546ea1472d7c2e309d43a200cab520e13e16d8d5fdadad0f090544ff9",
+     "validated_at": "2026-09-19T04:33:48.046629Z"
+    },
+    "dark": {
+     "hash": "aa2185b4fd097fba6dc7097626929a81dc428219d6183d3dc2bb0a42e3b6e469",
+     "validated_at": "2026-09-19T04:33:48.093827Z"
+    }
+   }
   },
   "drawio-w4-03": {
    "themes": [
@@ -108,7 +158,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.336375Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "e6516f1fc862805511811cb8b02fd6f9efbc107c6c9c8d726da587b0f5e52ada",
+     "validated_at": "2026-09-19T04:49:22.415759Z"
+    },
+    "dark": {
+     "hash": "2d8119339d238b7b3ab0c4f26098b41546bfb5d217647e336be636e553c9f3de",
+     "validated_at": "2026-09-19T04:49:22.428136Z"
+    }
+   }
   },
   "drawio-w4-06": {
    "themes": [
@@ -126,7 +186,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.338899Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "4bff4171062f0f6c7d0c3844d2dc54666f39e0d7eef5bb3a6baf2f43bb067298",
+     "validated_at": "2026-09-19T04:51:22.420280Z"
+    },
+    "dark": {
+     "hash": "5a7cfdedc395c632672e569053588bd9795bcc87a19ad369fb3f99176ed92634",
+     "validated_at": "2026-09-19T04:51:22.434705Z"
+    }
+   }
   },
   "drawio-w4-07": {
    "themes": [
@@ -144,7 +214,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.342346Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "969dcd1e4ef74946a9ce761aca26f2472457e682df2e78329c952c9da9684970",
+     "validated_at": "2026-09-19T04:52:07.096414Z"
+    },
+    "dark": {
+     "hash": "f0258dc118567ae176e283180a6d644f186f5bb263b8605f857f8f9d7d8480b7",
+     "validated_at": "2026-09-19T04:52:07.107534Z"
+    }
+   }
   },
   "drawio-w1-02": {
    "themes": [
@@ -401,7 +481,17 @@
      "signature": "swimlane-fillopacity-crushes-label-contrast:dark",
      "at": "2026-09-15T08:56:12.678347Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "bbb1de62bcca26c5c9bf0c1d76bb1889d3144e2e91e21106f254226a0ebba4b5",
+     "validated_at": "2026-09-18T05:50:48.972420Z"
+    },
+    "dark": {
+     "hash": "391503f71a17d7dfa0f334e9cac8aee1543379d00abcc2839f52d2b8f3a9053d",
+     "validated_at": "2026-09-18T05:50:48.992819Z"
+    }
+   }
   },
   "drawio-w1-11": {
    "themes": [
@@ -419,7 +509,17 @@
      "signature": "edge-routing-ignores-waypoints-crosses-vertices-and-bundles",
      "at": "2026-09-15T08:56:12.616394Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "e18b9d5ca0c69ddffa85dda1629248ae8634586a625c93aa421768b5227c15d8",
+     "validated_at": "2026-09-19T04:05:45.039540Z"
+    },
+    "light": {
+     "hash": "93fac36f190918d9c06a640f69f02d0df0161a6f2f05e24f30b865ab10b5ccce",
+     "validated_at": "2026-09-19T04:05:45.018522Z"
+    }
+   }
   },
   "drawio-w2-03": {
    "themes": [
@@ -611,7 +711,17 @@
      "signature": "default-fill-vs-theme-fontcolor:dark",
      "at": "2026-09-15T08:56:12.668795Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "ad5c8ebc78ebc5e1f159d459dc7706b7b819b83eee87de14bab36dd2b373d0d5",
+     "validated_at": "2026-09-18T05:46:31.136735Z"
+    },
+    "dark": {
+     "hash": "b30d100f31e482f72102fccfcec951212d6036770115750d9477b7ca380b3113",
+     "validated_at": "2026-09-18T05:46:31.157308Z"
+    }
+   }
   },
   "drawio-w4-02": {
    "themes": [
@@ -629,7 +739,17 @@
      "signature": "label-stranded-on-dark-canvas-keeps-author-fontcolor:dark",
      "at": "2026-09-15T08:56:12.687710Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "14a722ccebf4f1d568ba600b4398ddf327bfb7e63ed3f76652e1940d4effcc6d",
+     "validated_at": "2026-09-19T04:48:36.087484Z"
+    },
+    "dark": {
+     "hash": "1c81c0bef8d4c36a8cd239d421e5c84e6fdefe384df29035f12acb305becfb0e",
+     "validated_at": "2026-09-19T04:48:36.099839Z"
+    }
+   }
   },
   "drawio-w4-09": {
    "themes": [
@@ -669,8 +789,23 @@
      "origin": "D-106",
      "signature": "silent-semantic-corruption-missing-field-and-style-split",
      "at": "2026-09-15T08:56:12.742385Z"
+    },
+    {
+     "origin": "D-390",
+     "signature": "geometry-less-cell-dropped",
+     "at": "2026-09-18T06:48:15.050173Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "62399eb94f40d07a7f049e67467fcca3dc6a26a756ad2c8812a5660a39804335",
+     "validated_at": "2026-09-19T04:55:37.730313Z"
+    },
+    "dark": {
+     "hash": "c1881f659a0f95b2958fc89049527798fb6d970253f706707b81c1074f514862",
+     "validated_at": "2026-09-19T04:55:37.753580Z"
+    }
+   }
   },
   "drawio-w4-01": {
    "themes": [
@@ -688,7 +823,17 @@
      "signature": "envelope-wrapper-hangs-30s-no-output",
      "at": "2026-09-15T08:56:12.700022Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "64c30f2e9cd9a2143f0aa4e9f045a913e6ee0e2c041dfb706ec75a6b0a6b25c4",
+     "validated_at": "2026-09-19T04:47:44.657706Z"
+    },
+    "dark": {
+     "hash": "50b127763c32b4e79cd33a2d9df694750d3ccb2269a17dec0ac7320862375413",
+     "validated_at": "2026-09-19T04:47:44.670632Z"
+    }
+   }
   },
   "drawio-w4-13": {
    "themes": [
@@ -706,7 +851,17 @@
      "signature": "envelope-wrapper-hangs-30s-no-output",
      "at": "2026-09-15T08:56:12.703240Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "80671e4813027d37f1fbdc955ada26a4b519a34ac888842a0dc148c358df270f",
+     "validated_at": "2026-09-18T06:31:19.387166Z"
+    },
+    "dark": {
+     "hash": "97342248c404e6d6eeb278170b9de757cbb59d6a776581ce5ae22ec4ad663cb3",
+     "validated_at": "2026-09-18T06:31:19.400723Z"
+    }
+   }
   },
   "drawio-w4-15": {
    "themes": [
@@ -723,8 +878,23 @@
      "origin": "D-102",
      "signature": "envelope-wrapper-hangs-30s-no-output",
      "at": "2026-09-15T08:56:12.713561Z"
+    },
+    {
+     "origin": "D-391",
+     "signature": "legacy-array-points-waypoint-blanks-canvas",
+     "at": "2026-09-18T06:48:15.055060Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "19e4667d2457bef1aeee3f91be7c6c9675142636ef40f93f2f4ca1d51b5954ce",
+     "validated_at": "2026-09-18T06:32:49.247043Z"
+    },
+    "dark": {
+     "hash": "eb7ea7cbffd3d32d8317ebf4a6be90faca7a8d6cd995d679f952501ee3602348",
+     "validated_at": "2026-09-18T06:32:49.480400Z"
+    }
+   }
   },
   "drawio-w4-05": {
    "themes": [
@@ -742,7 +912,17 @@
      "signature": "bare-angle-brackets-in-value-unescaped",
      "at": "2026-09-15T08:56:12.717933Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "0ce4d55c1d23fb5c9eda59337b99f8acf7739c0f4105f756ea4a46d26c51494f",
+     "validated_at": "2026-09-16T08:56:36.669797Z"
+    },
+    "dark": {
+     "hash": "1017d7b927fe03bc2b131826b817015e72278c255229a530c3a4d61be842746e",
+     "validated_at": "2026-09-16T08:56:36.683466Z"
+    }
+   }
   },
   "drawio-w4-04": {
    "themes": [
@@ -778,7 +958,17 @@
      "signature": "quote-handling-regexes-double-quote-only",
      "at": "2026-09-15T08:56:12.728039Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "ea1ee738928279320c9f5bfee5060d574c744ba29c7ba17d23f655f4f1e79dbf",
+     "validated_at": "2026-09-19T04:54:47.912873Z"
+    },
+    "dark": {
+     "hash": "511f62cf38dc0305ef3c3524f0357b74abf08f4e10144f819cd3561110db22b4",
+     "validated_at": "2026-09-19T04:54:47.927125Z"
+    }
+   }
   },
   "drawio-w4-08": {
    "themes": [
@@ -796,7 +986,17 @@
      "signature": "color-parse-gaps-named-and-unparseable",
      "at": "2026-09-15T08:56:12.732292Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "e14640e82c37b7e3f39e8809ef83506c9384a6be46935956bea4df51287b6cf5",
+     "validated_at": "2026-09-16T08:58:30.176272Z"
+    },
+    "dark": {
+     "hash": "f396f5f2b2b5c0818d103209a4f26d8b6d7767b106a52769b815e7d1c8fd1527",
+     "validated_at": "2026-09-16T08:58:30.187933Z"
+    }
+   }
   },
   "drawio-w4-10": {
    "themes": [
@@ -814,7 +1014,17 @@
      "signature": "color-parse-gaps-named-and-unparseable",
      "at": "2026-09-15T08:56:12.738512Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "fb2d0fa6cb687effa45734489f13dbe3bc9c6d41e04e0e21a9df1c7dbe38698d",
+     "validated_at": "2026-09-19T04:53:49.358243Z"
+    },
+    "dark": {
+     "hash": "5c8291c873324f30a980d195da1adc25d73f944b380cedda33e191fd4f38fa49",
+     "validated_at": "2026-09-19T04:53:49.381528Z"
+    }
+   }
   },
   "drawio-w4-14": {
    "themes": [
@@ -832,7 +1042,45 @@
      "signature": "silent-semantic-corruption-missing-field-and-style-split",
      "at": "2026-09-15T08:56:12.746285Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "b7c51bb17330968f599d1e14fb338fedc6655c4d627837d9092ac7067411abac",
+     "validated_at": "2026-09-19T04:56:29.522750Z"
+    },
+    "dark": {
+     "hash": "9f6c0bc1d69f618210f0c2827cbfa07f65adf0472223ee742e42a8a5bd44b892",
+     "validated_at": "2026-09-19T04:56:29.541798Z"
+    }
+   }
+  },
+  "drawio-w3-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-386",
+     "signature": "duplicate-cell-ids-blank-canvas",
+     "at": "2026-09-18T06:48:15.044507Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "96fe3b8366d8dedd8895913d7c6d7ee78a341e65081d8d3ecc0b28d575a26d33",
+     "validated_at": "2026-09-18T06:11:55.153556Z"
+    },
+    "light": {
+     "hash": "9c30b745fd81844386673259199e7d51e6fb1c68e8a75b954d722ad690ddb6fa",
+     "validated_at": "2026-09-18T06:11:55.136358Z"
+    }
+   }
   }
  }
 }

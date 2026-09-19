@@ -9,7 +9,11 @@ import { enhanceSVGVisibility, isLightBackground, getOptimalTextColor, hexToRgb,
 import { compositeOver, CHART_DARK_BG, CHART_LIGHT_BG } from './chartTheme';
 import { DrawIOEnhancer } from './drawioEnhancer';
 import { runLayout, applyLayoutToMaxGraph, LayoutNode, LayoutEdge, LayoutContainer } from './layoutEngine';
-import { registerDrawioExtraShapes, registerDrawioExtraEdgeMarkers } from './drawioShapes';
+import { registerDrawioExtraShapes, registerDrawioExtraEdgeMarkers, registerDrawioDefaultEdgeMarkers } from './drawioShapes';
+// D-092 / D-382 / D-389: obstacle-avoiding reroute for the ROUTE-FIX repair pass.
+// (These live in orthogonalRouter.ts, which the render path had never imported —
+// its router was dead code relative to rendering. Wiring it in is the fix.)
+import { rerouteAroundObstacles } from './orthogonalRouter';
 
 /**
  * maxGraph's built-in default vertex fill. A styled vertex that specifies no
@@ -117,10 +121,21 @@ export function reconcileCanvasLabelColor(
 ): string {
     const themeFont = resolveFilllessFontColor(isVertex, hasFillColor, isDarkMode);
     if (!authorFont) return themeFont;
-    const backdrop = (isVertex && !hasFillColor)
+    const onDefaultVertexFill = isVertex && !hasFillColor;
+    const backdrop = onDefaultVertexFill
         ? MAXGRAPH_DEFAULT_VERTEX_FILL
         : (isDarkMode ? CHART_DARK_BG : CHART_LIGHT_BG);
-    return calculateContrastRatio(authorFont, backdrop) < 3.0 ? themeFont : authorFont;
+    // D-387: a label/title on the themed CANVAS must meet the 4.5 WCAG text floor,
+    // not the lax 3.0 "distinguishable" floor. A saturated author hue tuned for one
+    // theme fails the OTHER background — e.g. the trust-boundary titles of drawio-w1-09:
+    // red #b85450 = 4.75 on white but 3.51 on the #1e1e1e dark canvas; blue #6c8ebf =
+    // 4.97 on dark but 3.36 on white. At a 3.0 floor both were kept and each failed its
+    // weak theme; at 4.5 each is kept only on the theme where it is legible and falls
+    // back to the per-theme themeFont (#000000 light / #e0e0e0 dark, both >12:1) on the
+    // other — resolved from the theme the renderer was given, not swapped for a constant.
+    // The default-vertex-fill (#C3D9FF) backdrop keeps the 3.0 floor (unchanged path).
+    const floor = onDefaultVertexFill ? 3.0 : 4.5;
+    return calculateContrastRatio(authorFont, backdrop) < floor ? themeFont : authorFont;
 }
 
 /**
@@ -419,6 +434,70 @@ export function parseAuthoredEdgeWaypoints(geometryElement: Element | null): { x
         if (Number.isFinite(px) && Number.isFinite(py)) out.push({ x: px, y: py });
     }
     return out;
+}
+
+/**
+ * D-390 (geometry-less / zero-size cell dropped): a vertex declared WITH an
+ * <mxGeometry> that has no (or zero) width/height renders 0x0 — invisible, silent
+ * element loss (drawio-w4-12 m3 "No width/height"). drawio itself applies a default
+ * box size in that case. Return the author dimension when it is a finite positive
+ * number, else the standard default vertex box. Pure so it is unit-testable.
+ */
+export function drawioDefaultVertexSize(width: number, height: number): { width: number; height: number } {
+    const DEFAULT_W = 120;
+    const DEFAULT_H = 60;
+    return {
+        width: Number.isFinite(width) && width > 0 ? width : DEFAULT_W,
+        height: Number.isFinite(height) && height > 0 ? height : DEFAULT_H,
+    };
+}
+
+/**
+ * D-391 (legacy-array-points-waypoint-blanks-canvas): a single authored edge waypoint
+ * that is COLLINEAR with and BETWEEN the source/target centres (drawio-w4-15: box
+ * centre (125,80) → waypoint (255,80) → diamond centre (390,80), all y=80) is
+ * redundant, and once loaded into geometry.points it makes maxGraph's
+ * Manhattan/SegmentConnector build a zero-length perpendicular segment while routing
+ * through it → NaN in the route → getGraphBounds collapses to ~0 height and the whole
+ * render aborts to a blank sliver. Ablation confirmed the waypoint child is the sole
+ * trigger (removing it renders everything). Drop waypoints that add no bend: exact
+ * duplicates, points coincident with a terminal centre, and points collinear-and-
+ * within the source→target segment. A genuine bend (off the straight line, or outside
+ * the segment) is kept, preserving the D-092 authored-routing behaviour. Pure helper.
+ */
+export function filterDegenerateWaypoints(
+    points: Array<{ x: number; y: number }>,
+    source: { cx: number; cy: number } | null,
+    target: { cx: number; cy: number } | null
+): Array<{ x: number; y: number }> {
+    if (!points || points.length === 0) return [];
+    const EPS = 0.5; // sub-pixel tolerance
+    const kept: Array<{ x: number; y: number }> = [];
+    for (const p of points) {
+        // Drop exact/near duplicates of the previous kept point.
+        const prev = kept.length ? kept[kept.length - 1] : null;
+        if (prev && Math.abs(prev.x - p.x) < EPS && Math.abs(prev.y - p.y) < EPS) continue;
+        if (source && target) {
+            // Coincident with a terminal centre → no bend.
+            if (Math.abs(p.x - source.cx) < EPS && Math.abs(p.y - source.cy) < EPS) continue;
+            if (Math.abs(p.x - target.cx) < EPS && Math.abs(p.y - target.cy) < EPS) continue;
+            // Collinear with the source→target line AND within its bounding segment
+            // → redundant straight-through point (the degenerate case that crashes
+            // the connector). cross≈0 means on the line; dot in [0,len^2] means between.
+            const vx = target.cx - source.cx;
+            const vy = target.cy - source.cy;
+            const wx = p.x - source.cx;
+            const wy = p.y - source.cy;
+            const cross = vx * wy - vy * wx;
+            const lenSq = vx * vx + vy * vy;
+            const dot = vx * wx + vy * wy;
+            const onLine = lenSq > 0 && Math.abs(cross) < EPS * Math.sqrt(lenSq);
+            const between = lenSq > 0 && dot >= -EPS && dot <= lenSq + EPS;
+            if (onLine && between) continue;
+        }
+        kept.push(p);
+    }
+    return kept;
 }
 
 // Export architecture shapes renderers
@@ -971,6 +1050,69 @@ export function dequoteEntityEscapedStyleValues(xml: string): string {
         .replace(/(fontSize|strokeWidth|opacity|spacing\w*)=&quot;(\d+)&quot;/g, '$1=$2');
 }
 
+/**
+ * D-388 (single-quoted-style-value-token-survives): the literal-quote de-quote passes match a
+ * DOUBLE quote (`fontSize="14"` → `fontSize=14`) and the entity pass matches `&quot;`, but a
+ * value SINGLE-quoted INSIDE the style string — `fontSize='14';opacity='100';arcSize='8';` —
+ * is invisible to both. normalizeSingleQuotedAttributes cannot help either: it masks the
+ * already-double-quoted `style="..."` attribute first, so the single quotes inside it are
+ * treated as content and left intact. The surviving `key='value'` token is then split by the
+ * importer into key `fontSize` / value `'14'` (quotes included) → parseFloat("'14'") = NaN;
+ * an `opacity='100'` → NaN opacity crushes the whole cell to transparent (drawio-w4-11 s2
+ * drops its label + box). Strip the single-quote over-quoting the same way the entity form is
+ * stripped, scoped to the identical colour / numeric style keys so nothing unrelated changes.
+ * Runs AFTER normalizeSingleQuotedAttributes, so any remaining single quote is inside a
+ * double-quoted value; matching a colour/numeric style KEY immediately before it targets only
+ * a style token, never free label text.
+ */
+export function dequoteSingleQuotedStyleValues(xml: string): string {
+    return xml
+        .replace(/(\w*[Cc]olor\w*)='(#[0-9a-fA-F]{3,8})'/g, '$1=$2')
+        .replace(/(fontSize|strokeWidth|opacity|spacing\w*|arcSize)='(\d+\.?\d*)'/g, '$1=$2');
+}
+
+/**
+ * D-386 (duplicate-cell-ids-blank-canvas): drawio keeps the FIRST declaration of
+ * a repeated mxCell id and ignores the rest. Our importer, however, pushes EVERY
+ * <mxCell> element into the vertex/edge lists (per-element) while keying cellMap
+ * by id (last write wins). A repeated id therefore lands in nonRootIds more than
+ * once, all resolving to the SAME cell object, so `graph.addCell(cell, parent)`
+ * runs two-plus times on one already-inserted cell. maxGraph's model then
+ * removes-and-re-inserts that cell on every repeat, churning the parent's child
+ * order until the whole model collapses to a blank canvas (total content loss —
+ * drawio-w3-03: three id="D" vertices + two id="e1" edges → empty render).
+ *
+ * Fix at the preprocessor, matching drawio's own "first declaration wins":
+ * keep the first <mxCell> for each id and drop later duplicates entirely, so the
+ * importer sees each id exactly once and addCell runs once per cell. Children
+ * that named a dropped duplicate as parent attach to the surviving first cell
+ * (same id), which is exactly the drawio semantic. A cell with no id, and any
+ * spec whose ids are already unique, is left byte-identical.
+ *
+ * Pure string→string so it is unit-testable without a DOM, mirroring
+ * breakDrawioParentCycles / clampChildToContainerBounds.
+ */
+export function dedupeDrawioCellIds(xml: string): string {
+    // Match a whole <mxCell>: attrs + (self-closing | inner up to </mxCell>).
+    // mxCell elements are flat under <root> (geometry is <mxGeometry>, never a
+    // nested <mxCell>), so the non-greedy close is unambiguous.
+    const cellRe = /<mxCell\b([^>]*?)(\/>|>[\s\S]*?<\/mxCell>)/g;
+    const seen = new Set<string>();
+    let removed = 0;
+    const out = xml.replace(cellRe, (whole: string, attrs: string) => {
+        const idM = attrs.match(/\bid="([^"]*)"/);
+        if (!idM) return whole;               // no id: leave untouched
+        const id = idM[1];
+        if (seen.has(id)) { removed++; return ''; } // later duplicate: drop element
+        seen.add(id);
+        return whole;
+    });
+    if (removed > 0) {
+        console.log(`📐 DrawIO: Dropped ${removed} duplicate-id mxCell element(s) (first declaration wins, D-386)`);
+    }
+    return out;
+}
+
 export const normalizeDrawIOXml = (xml: string): string => {
     let normalized = xml.trim();
 
@@ -1025,6 +1167,14 @@ export const normalizeDrawIOXml = (xml: string): string => {
     // D-117: mirror the two literal over-quote passes above for the ENTITY-escaped form
     // (fillColor=&quot;#fff9c4&quot;), which those double-quote-only passes never see.
     normalized = dequoteEntityEscapedStyleValues(normalized);
+
+    // D-388: strip SINGLE-quote over-quoting on style-value tokens (fontSize='14';
+    // opacity='100'). These live INSIDE the double-quoted style="..." attribute, so
+    // normalizeSingleQuotedAttributes masks them as content and the literal/entity
+    // de-quote passes above never see them. A surviving opacity='100' parses to NaN
+    // and crushes the cell to transparent (drawio-w4-11 s2). Same colour/numeric key
+    // scope as the other de-quote passes.
+    normalized = dequoteSingleQuotedStyleValues(normalized);
 
     console.log('📐 DrawIO: Removed over-quoted values in style attributes');
 
@@ -1084,6 +1234,13 @@ export const normalizeDrawIOXml = (xml: string): string => {
     normalized = normalized.replace(/&amp;(#x?[0-9a-fA-F]+;)/g, '&$1');
 
     console.log('📐 DrawIO: Normalized quotes and ampersands in XML');
+
+    // CRITICAL FIX (D-386): drop repeated-id mxCell elements, keeping the first
+    // declaration (drawio's own semantic). Runs AFTER quote/attr normalization so
+    // ids are guaranteed double-quoted, and BEFORE the geometry passes and the
+    // importer so a duplicate id is never addCell()'d twice (which churns the
+    // model to a blank canvas). No-op when every id is unique.
+    normalized = dedupeDrawioCellIds(normalized);
 
     // CRITICAL FIX: Clamp relative geometry values for edge labels
     // MaxGraph rejects x/y values outside [-1, 1] range for relative geometries
@@ -1240,6 +1397,24 @@ async function loadMaxGraph(): Promise<any> {
             // Since 0.6.0, codecs must be registered before encode/decode
             if (maxGraphModule.registerCoreCodecs) {
                 maxGraphModule.registerCoreCodecs();
+            }
+            // D-380: register maxGraph's built-in edge markers. Since maxGraph
+            // 0.18 the default marker set (classic/classicThin, block/blockThin,
+            // open/openThin, oval, diamond/diamondThin) is NOT auto-registered on
+            // import — registerDefaultEdgeMarkers() must be called explicitly, or
+            // EdgeMarkerRegistry.get('classic') returns null and EVERY default /
+            // orthogonal edge renders as a bare line with no arrowhead (flow
+            // direction lost, both themes). This was never wired up, so it is the
+            // real root cause behind "arrowheads-missing-on-default-edges" — not
+            // the endSize sizing the triage suspected. Idempotent (guarded by an
+            // internal flag) and additive, and must run BEFORE the ER extras so
+            // those stay purely additive over the core set. Guarded so a missing
+            // export leaves the (pre-existing) bare-line fallback.
+            try {
+                const defMarkers = registerDrawioDefaultEdgeMarkers(maxGraphModule);
+                console.log('📐 DrawIO: Registered default edge markers:', defMarkers.join(', ') || '(none)');
+            } catch (defMarkerErr) {
+                console.warn('📐 DrawIO: default edge-marker registration skipped:', defMarkerErr);
             }
             // D-106: register the drawio-specific shapes maxGraph core omits
             // (parallelogram/process/step/note/cylinder3) so they no longer degrade to a
@@ -2263,8 +2438,22 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                         if (geometryElement) {
                             const x = parseFloat(geometryElement.getAttribute('x') || '0');
                             const y = parseFloat(geometryElement.getAttribute('y') || '0');
-                            const width = parseFloat(geometryElement.getAttribute('width') || '0');
-                            const height = parseFloat(geometryElement.getAttribute('height') || '0');
+                            let width = parseFloat(geometryElement.getAttribute('width') || '0');
+                            let height = parseFloat(geometryElement.getAttribute('height') || '0');
+
+                            // D-390: a VERTEX declared with an mxGeometry but no (or zero)
+                            // width/height renders 0x0 — invisible, silent element loss
+                            // (drawio-w4-12 m3). drawio applies a default box in that case;
+                            // do the same so the cell survives. Edges keep 0 (their route
+                            // comes from terminals + waypoints, not a box).
+                            if (vertex) {
+                                const sz = drawioDefaultVertexSize(width, height);
+                                if (sz.width !== width || sz.height !== height) {
+                                    console.warn(`📐 DrawIO: cell ${cellId} vertex geometry ${width}x${height} → default ${sz.width}x${sz.height} (D-390)`);
+                                }
+                                width = sz.width;
+                                height = sz.height;
+                            }
 
                             const geometry = new Geometry(x, y, width, height);
 
@@ -2283,8 +2472,36 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                                 // authored bends.
                                 const authoredWaypoints = parseAuthoredEdgeWaypoints(geometryElement);
                                 if (authoredWaypoints.length > 0) {
-                                    geometry.points = authoredWaypoints.map(p => new Point(p.x, p.y));
-                                    console.log(`📐 DrawIO: Edge ${cellId} honours ${authoredWaypoints.length} authored waypoint(s)`);
+                                    // D-391: drop degenerate (duplicate / terminal-
+                                    // coincident / collinear-and-between) authored
+                                    // waypoints. A single collinear midpoint makes the
+                                    // Manhattan/SegmentConnector build a zero-length
+                                    // segment → NaN route → getGraphBounds collapses to
+                                    // ~0 height and the whole render blanks (drawio-w4-15).
+                                    // Terminal centres come from cells created so far;
+                                    // when a terminal is not yet in cellMap the points are
+                                    // kept unchanged (only duplicates are pruned).
+                                    const termCenter = (cid: string | null) => {
+                                        if (!cid) return null;
+                                        const tc = cellMap.get(cid);
+                                        const tg = tc?.getGeometry?.();
+                                        if (!tg || !(tg.width > 0) || !(tg.height > 0)) return null;
+                                        return { cx: tg.x + tg.width / 2, cy: tg.y + tg.height / 2 };
+                                    };
+                                    const filtered = filterDegenerateWaypoints(
+                                        authoredWaypoints,
+                                        termCenter(source),
+                                        termCenter(target)
+                                    );
+                                    if (filtered.length > 0) {
+                                        geometry.points = filtered.map(p => new Point(p.x, p.y));
+                                    }
+                                    if (filtered.length !== authoredWaypoints.length) {
+                                        console.warn(`📐 DrawIO: Edge ${cellId} dropped ${authoredWaypoints.length - filtered.length} degenerate authored waypoint(s) (D-391)`);
+                                    }
+                                    if (filtered.length > 0) {
+                                        console.log(`📐 DrawIO: Edge ${cellId} honours ${filtered.length} authored waypoint(s)`);
+                                    }
                                 }
                             }
 
@@ -2292,7 +2509,22 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
 
                             console.log(`📐 DrawIO: Created cell ${cellId} with geometry:`, { x, y, width, height });
                         } else {
-                            console.log(`📐 DrawIO: Created cell ${cellId} (no geometry)`);
+                            // D-390: a cell with NO <mxGeometry> is otherwise left without a
+                            // geometry object and dropped by the renderer. Synthesize one:
+                            // an edge needs a (relative) geometry to route from its terminals
+                            // (drawio-w4-12 mE); a vertex needs a default box.
+                            if (edge) {
+                                const g = new Geometry(0, 0, 0, 0);
+                                g.relative = true;
+                                cell.setGeometry(g);
+                                console.warn(`📐 DrawIO: edge ${cellId} had no <mxGeometry> — synthesized relative geometry (D-390)`);
+                            } else if (vertex) {
+                                const sz = drawioDefaultVertexSize(0, 0);
+                                cell.setGeometry(new Geometry(0, 0, sz.width, sz.height));
+                                console.warn(`📐 DrawIO: vertex ${cellId} had no <mxGeometry> — synthesized default box (D-390)`);
+                            } else {
+                                console.log(`📐 DrawIO: Created cell ${cellId} (no geometry)`);
+                            }
                         }
 
                         cellMap.set(cellId, cell);
@@ -3087,6 +3319,92 @@ const renderDrawIO = async (container: HTMLElement, _d3: any, spec: DrawIOSpec, 
                                 broken.map(b => `${b.id}→[${b.crosses.join(',')}]`).join(' '));
                         } else {
                             console.log('📐 ROUTE-FIX DETECT: all edges clear of vertex interiors');
+                        }
+
+                        // ROUTE-FIX REPAIR (D-092 / D-382 / D-389). Manhattan silently
+                        // fell back to a naive L-bend that cut through a vertex interior
+                        // (or a transparent-fill box's label); the detector above only
+                        // LOGGED it. Now we repair each flagged edge: recompute an
+                        // obstacle-avoiding orthogonal route (rerouteAroundObstacles,
+                        // from the standalone router the render path never used) and
+                        // write its interior bends into geometry.points, so Manhattan
+                        // delegates to SegmentConnector and draws the clear route.
+                        //
+                        // Gated on detection, so non-crossing edges (the engine
+                        // regression set) are untouched. Self-loops (source === target)
+                        // and edges carrying authored <Array as="points"> waypoints are
+                        // skipped — their routing is intentional and must be honoured.
+                        // All coordinates are MODEL-space (matching geometry.points), so
+                        // no view-scale conversion is involved.
+                        if (broken.length > 0) {
+                            const modelAbs = (c: any): { x: number; y: number; width: number; height: number } | null => {
+                                const g = c?.getGeometry?.();
+                                if (!g) return null;
+                                let ax = g.x, ay = g.y;
+                                let p = c.getParent?.();
+                                while (p && p.getId?.() !== '0' && p.getId?.() !== '1') {
+                                    const pg = p.getGeometry?.();
+                                    if (pg) { ax += pg.x; ay += pg.y; }
+                                    p = p.getParent?.();
+                                }
+                                return { x: ax, y: ay, width: g.width, height: g.height };
+                            };
+                            const vBoxes: Array<{ id: string; left: number; top: number; width: number; height: number }> = [];
+                            cellMap.forEach((c, id) => {
+                                if (id === '0' || id === '1' || !c.isVertex?.()) return;
+                                const a = modelAbs(c);
+                                if (a) vBoxes.push({ id, left: a.x, top: a.y, width: a.width, height: a.height });
+                            });
+                            const encloses = (o: any, i: any) =>
+                                i.left >= o.left && i.top >= o.top &&
+                                i.left + i.width <= o.left + o.width && i.top + i.height <= o.top + o.height;
+                            // Only leaf boxes are true obstacles — a container legitimately
+                            // encloses its children and edges may cross its border.
+                            const leafBoxes = vBoxes.filter(v => !vBoxes.some(o => o.id !== v.id && encloses(v, o)));
+                            model.beginUpdate();
+                            try {
+                                broken.forEach(({ id }) => {
+                                    const cell = cellMap.get(id);
+                                    if (!cell) return;
+                                    const src = cell.getTerminal?.(true);
+                                    const tgt = cell.getTerminal?.(false);
+                                    if (!src || !tgt || src === tgt) return; // skip self-loops
+                                    const sId = src.getId?.();
+                                    const tId = tgt.getId?.();
+                                    // Honour authored routing: never override an <Array as="points">.
+                                    const el = edgeCells.find(e => e.id === id)?.element;
+                                    const gEl = el?.querySelector?.('mxGeometry');
+                                    if (gEl && parseAuthoredEdgeWaypoints(gEl).length > 0) return;
+                                    const s = modelAbs(src);
+                                    const t = modelAbs(tgt);
+                                    if (!s || !t) return;
+                                    const obstacles = leafBoxes
+                                        .filter(b => b.id !== sId && b.id !== tId)
+                                        .map(b => ({ left: b.left, top: b.top, width: b.width, height: b.height }));
+                                    const bends = rerouteAroundObstacles(
+                                        { left: s.x, top: s.y, width: s.width, height: s.height },
+                                        { left: t.x, top: t.y, width: t.width, height: t.height },
+                                        obstacles,
+                                        20
+                                    );
+                                    if (bends.length > 0) {
+                                        const geom = cell.getGeometry();
+                                        if (geom) {
+                                            geom.points = bends.map(p => new Point(p.x, p.y));
+                                            geom.relative = false;
+                                            cell.setGeometry(geom);
+                                            // Mark dirty so the view redraws through the new bends.
+                                            graph.view.invalidate(cell, false, false);
+                                            console.log(`📐 ROUTE-FIX REPAIR: ${id} rerouted with ${geom.points.length} bend(s)`);
+                                        }
+                                    } else {
+                                        console.log(`📐 ROUTE-FIX REPAIR: ${id} no clear detour found; left as-is`);
+                                    }
+                                });
+                                graph.view.validate();
+                            } finally {
+                                model.endUpdate();
+                            }
                         }
                     } catch (e) {
                         console.warn('📐 ROUTE-FIX DETECT failed', e);
@@ -4798,6 +5116,47 @@ function extractShapeIdsFromXml(xml: string): string[] {
 }
 
 /**
+ * Resolve a definite (non-zero) viewport for fitCenter.
+ *
+ * D-094/D-095/D-096/D-098/D-099/D-100 regression (introduced by the
+ * fitCenter→safeFitCenter rework in the "DrawIO rendering & layout sweep"):
+ * the headless capture harness screenshots a bounded container, but at the
+ * 50/200/500ms fit retries the drawio graphContainer can still measure
+ * clientWidth/clientHeight === 0 for larger diagrams — its parent has not laid
+ * out yet. The old code then SKIPPED fit entirely, so the diagram was captured
+ * at maxGraph's default ~2x scale: content overflows the capture window and is
+ * clipped (nodes/edge-labels lost, cells "buried", labels illegible after the
+ * server's rescue downscale, arrowheads pushed off-canvas). In the interactive
+ * UI a later retry / ResizeObserver rescued it; headless capture does not wait
+ * that long, so the skip is permanent there and the many symptom signatures all
+ * trace to this one skipped fit.
+ *
+ * Instead of skipping, resolve a definite viewport: the container's own box if
+ * it has one, else the nearest laid-out ancestor's box, else a canvas-sized
+ * default. fitCenter then always computes a FINITE scale and runs. The returned
+ * dims are guaranteed > 0, which is exactly the invariant that prevents
+ * fitCenter's divide-by-zero (newScale=0 → NaN translate) — so the NaN guard is
+ * preserved, not weakened.
+ */
+export function resolveFitViewport(
+    containerWidth: number,
+    containerHeight: number,
+    ancestorWidth: number,
+    ancestorHeight: number,
+    fallbackWidth: number = 1230,
+    fallbackHeight: number = 800,
+): { width: number; height: number; usedFallback: boolean } {
+    const width = containerWidth > 0
+        ? containerWidth
+        : ancestorWidth > 0 ? ancestorWidth : fallbackWidth;
+    const height = containerHeight > 0
+        ? containerHeight
+        : ancestorHeight > 0 ? ancestorHeight : fallbackHeight;
+    const usedFallback = !(containerWidth > 0 && containerHeight > 0);
+    return { width, height, usedFallback };
+}
+
+/**
  * Call FitPlugin.fitCenter with a zero-size guard and a non-finite recovery.
  *
  * Every fitCenter call needs both, so they live here rather than being repeated
@@ -4825,9 +5184,38 @@ function safeFitCenter(graph: any, graphContainer: HTMLElement, label: string): 
     // Re-checked per call, never hoisted: a caller may change the container's
     // width immediately before refitting, so an earlier passing check says
     // nothing about this one.
-    if (graphContainer.clientWidth === 0 || graphContainer.clientHeight === 0) {
-        console.warn(`📐 DrawIO: Skipping fit/center (${label}) — container has zero size`);
-        return false;
+    let clientWidth = graphContainer.clientWidth;
+    let clientHeight = graphContainer.clientHeight;
+    if (clientWidth === 0 || clientHeight === 0) {
+        // Headless capture races the retry/ResizeObserver rescue: rather than
+        // skip fit (which leaves maxGraph at its ~2x default and clips the
+        // capture — the D-094..D-100 regression), give the container a definite
+        // size from the nearest laid-out ancestor (or a canvas-sized default)
+        // so fitCenter computes a finite scale and runs. See resolveFitViewport.
+        let ancestor: HTMLElement | null = graphContainer.parentElement;
+        let ancestorWidth = 0;
+        let ancestorHeight = 0;
+        while (ancestor) {
+            if (ancestor.clientWidth > 0 && ancestor.clientHeight > 0) {
+                ancestorWidth = ancestor.clientWidth;
+                ancestorHeight = ancestor.clientHeight;
+                break;
+            }
+            ancestor = ancestor.parentElement;
+        }
+        const vp = resolveFitViewport(clientWidth, clientHeight, ancestorWidth, ancestorHeight);
+        graphContainer.style.width = `${vp.width}px`;
+        graphContainer.style.height = `${vp.height}px`;
+        clientWidth = graphContainer.clientWidth;
+        clientHeight = graphContainer.clientHeight;
+        if (clientWidth === 0 || clientHeight === 0) {
+            // Truly unmeasurable (detached from layout): keep the original skip.
+            // The retry timeouts / ResizeObserver will call us again once the
+            // container has real dimensions.
+            console.warn(`📐 DrawIO: Skipping fit/center (${label}) — container unmeasurable even after fallback viewport`);
+            return false;
+        }
+        console.warn(`📐 DrawIO: fit/center (${label}) — container had zero size, using fallback viewport ${vp.width}x${vp.height}`);
     }
 
     // fit() lives on the FitPlugin in maxGraph >=0.17; fitCenter both fits and centers
