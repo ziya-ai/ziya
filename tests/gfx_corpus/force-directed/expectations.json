@@ -10,15 +10,31 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "regression_set",
      "signature": "",
      "at": "2026-09-15T08:56:11.345867Z"
+    },
+    {
+     "origin": "D-393",
+     "signature": "sub-pixel-nodes-and-links-under-fit-scale",
+     "at": "2026-09-19T07:23:39.501682Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "5dcb6468d9bd20e5940b07a980409dae0ffc76ee4ce761b4ab9e9025fae42dde",
+     "validated_at": "2026-09-19T06:49:00.248682Z"
+    },
+    "dark": {
+     "hash": "b5dd7aa67aaa7813d2a1b35fd7f3932cd376414b972a46834813fef82cc71505",
+     "validated_at": "2026-09-19T06:49:00.258332Z"
+    }
+   }
   },
   "force-directed-w2-05": {
    "themes": [
@@ -46,15 +62,31 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:layout"
    ],
    "origins": [
     {
      "origin": "regression_set",
      "signature": "",
      "at": "2026-09-15T08:56:11.352411Z"
+    },
+    {
+     "origin": "D-396",
+     "signature": "head-truncation-collapses-distinct-labels",
+     "at": "2026-09-19T07:23:39.519618Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "0e4230aa5c65ae463de2a121650e5c9dbf5274170c6739284476a88a9003d4fc",
+     "validated_at": "2026-09-19T06:51:13.304165Z"
+    },
+    "dark": {
+     "hash": "475fbb803e755e909cc91c13952afdb51cbcb521ee2a22f4746d983bc74760c0",
+     "validated_at": "2026-09-19T06:51:13.311828Z"
+    }
+   }
   },
   "force-directed-w3-01": {
    "themes": [
@@ -72,7 +104,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.355058Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "1256cee118397111b9ee404ad75c8632c2712093222050137e91df5dfc25fdfa",
+     "validated_at": "2026-09-19T07:16:17.070652Z"
+    },
+    "dark": {
+     "hash": "fd184e54d314fc4566b6f29886179d17b9e5baa2f5b8aa6b695dcd117dfef2e9",
+     "validated_at": "2026-09-19T07:16:17.100133Z"
+    }
+   }
   },
   "force-directed-w3-07": {
    "themes": [
@@ -90,7 +132,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.358057Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "a269e33b83afd1dd1f05d29a4553dbf2690dbd55a96dde66fdfa5a73f006d696",
+     "validated_at": "2026-09-19T07:17:16.090046Z"
+    },
+    "dark": {
+     "hash": "a58799115530941d41548bdbb30d2e0d62c67e4adb0b7350ce16273b1de397e7",
+     "validated_at": "2026-09-19T07:17:16.119213Z"
+    }
+   }
   },
   "force-directed-w3-08": {
    "themes": [
@@ -108,7 +160,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.360365Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "020dff8bb151598aa1cc662ff9668ce2d3d5d3aad43e03e9c965b564bb152bba",
+     "validated_at": "2026-09-19T07:18:08.409979Z"
+    },
+    "dark": {
+     "hash": "af72be01903defcd1343f6347c130cb1a2ed7d18de845790752be75015efad23",
+     "validated_at": "2026-09-19T07:18:08.419359Z"
+    }
+   }
   },
   "force-directed-w3-11": {
    "themes": [
@@ -126,7 +188,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.363357Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "52a6608a006c0aefe8fd54a818ca3f0dd513ca5b4ab6f7e71f260298e9781035",
+     "validated_at": "2026-09-19T07:18:57.416943Z"
+    },
+    "dark": {
+     "hash": "5885ae4b5302a3b3ebd620d6a16e24b78d9cb04028cb9cae4a16cebe3f16bc40",
+     "validated_at": "2026-09-19T07:18:57.424036Z"
+    }
+   }
   },
   "force-directed-w4-01": {
    "themes": [
@@ -144,7 +216,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.368156Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "0aae386a8c884cb4d0edd70fe23cc1ef5005323e8afdcb38c4e187cf1c855ca3",
+     "validated_at": "2026-09-19T07:20:48.569812Z"
+    },
+    "dark": {
+     "hash": "5b8debdc03efb2d44b3fed642a8a01a4727d3d04680163d7005923279f3e1431",
+     "validated_at": "2026-09-19T07:20:48.578501Z"
+    }
+   }
   },
   "force-directed-w4-08": {
    "themes": [
@@ -162,7 +244,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.372086Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "49cc85d299769985eaa300b5cef70ddb2bc1fe0ea12f5ebdb520d811c1ac1acb",
+     "validated_at": "2026-09-19T07:21:35.167407Z"
+    },
+    "dark": {
+     "hash": "9ed75972e1ea0cb27248e4c1469694cc3350fc9753de802e5e60f4560b4e9caa",
+     "validated_at": "2026-09-19T07:21:35.183786Z"
+    }
+   }
   },
   "force-directed-w4-11": {
    "themes": [
@@ -172,15 +264,31 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "regression_set",
      "signature": "",
      "at": "2026-09-15T08:56:11.376528Z"
+    },
+    {
+     "origin": "D-400",
+     "signature": "user-link-color-not-lifted-below-3to1:dark",
+     "at": "2026-09-19T07:23:39.535136Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "b8b89ac9843a09f4d215697ec43eee499abc050cf9a69c15092dc7f5337616de",
+     "validated_at": "2026-09-19T07:15:20.267890Z"
+    },
+    "dark": {
+     "hash": "a19900ff0b7024bf681d7f4e973523e6a942bc16a47b616bcf216ff22b136eaf",
+     "validated_at": "2026-09-19T07:15:20.277051Z"
+    }
+   }
   },
   "force-directed-w2-11": {
    "themes": [
@@ -215,8 +323,23 @@
      "origin": "D-107",
      "signature": "fit-pass-clips-graph-that-fits",
      "at": "2026-09-15T08:56:12.760729Z"
+    },
+    {
+     "origin": "D-395",
+     "signature": "blind-label-offset-no-collision-avoidance",
+     "at": "2026-09-19T07:23:39.516044Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "407a07203c49736c95eb8be157ee45c2fdadefdd2a264aa13268cca04f79055e",
+     "validated_at": "2026-09-19T07:02:41.843687Z"
+    },
+    "dark": {
+     "hash": "18deb9a66df98d1588ef2b7a33c35ef6f55929d491c3c2185edbc8769446162a",
+     "validated_at": "2026-09-19T07:02:41.857404Z"
+    }
+   }
   },
   "force-directed-w3-05": {
    "themes": [
@@ -280,15 +403,31 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "D-107",
      "signature": "fit-pass-clips-graph-that-fits",
      "at": "2026-09-15T08:56:12.772565Z"
+    },
+    {
+     "origin": "D-399",
+     "signature": "string-typed-group-collapses-to-palette-0",
+     "at": "2026-09-19T07:23:39.531794Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "8cc90e4e943a6b2e9dd60c8e1dbef4b91d77f461e9208298ff6912c4627faec1",
+     "validated_at": "2026-09-19T07:14:05.417863Z"
+    },
+    "dark": {
+     "hash": "8b862a2f8a7f876d6fb6cfe8bdaae269f119872fae9736466ba7ed5375e7d2b6",
+     "validated_at": "2026-09-19T07:14:05.430505Z"
+    }
+   }
   },
   "force-directed-w2-07": {
    "themes": [
@@ -307,7 +446,17 @@
      "signature": "pathological-canvas-blank-or-illegible",
      "at": "2026-09-15T08:56:12.777597Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "fd4c4b2270038eb9376d359d3b7ecd29005555b33234d4932f5814814d65c9bf",
+     "validated_at": "2026-09-19T06:53:02.535548Z"
+    },
+    "dark": {
+     "hash": "9b53b3c4de1f85e05407e2e5ee2cbc8a8600898965716ec70d45aeb7c099390d",
+     "validated_at": "2026-09-19T06:53:02.550850Z"
+    }
+   }
   },
   "force-directed-w2-08": {
    "themes": [
@@ -337,15 +486,31 @@
     "renders",
     "no_console_errors",
     "ink_present",
-    "visual:min_text_size"
+    "visual:min_text_size",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "D-108",
      "signature": "pathological-canvas-blank-or-illegible",
      "at": "2026-09-15T08:56:12.783979Z"
+    },
+    {
+     "origin": "D-393",
+     "signature": "sub-pixel-nodes-and-links-under-fit-scale",
+     "at": "2026-09-19T07:23:39.505062Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "39692448418bc5725965e31e26a3a3d01a44d111cedf88a2b422e3d2723a37cd",
+     "validated_at": "2026-09-19T06:55:03.284598Z"
+    },
+    "dark": {
+     "hash": "90daa172dadbe843ee08f8b6c3ee6692c8e7c19785ec7ab503a45660d942c446",
+     "validated_at": "2026-09-19T06:55:03.291760Z"
+    }
+   }
   },
   "force-directed-w2-10": {
    "themes": [
@@ -374,15 +539,31 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "D-109",
      "signature": "no-label-decluttering-at-scale",
      "at": "2026-09-15T08:56:12.790850Z"
+    },
+    {
+     "origin": "D-393",
+     "signature": "sub-pixel-nodes-and-links-under-fit-scale",
+     "at": "2026-09-19T07:23:39.498677Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "f4564f0143ea1bce7cf8dae4f3fdf7c2c86ca8b6bad00b991ba3815214157e6c",
+     "validated_at": "2026-09-19T06:41:54.926900Z"
+    },
+    "dark": {
+     "hash": "a12633bd381b4bc0b1f1704f37b5bfbc420d5360d42235c5898e738708109f3b",
+     "validated_at": "2026-09-19T06:41:54.935384Z"
+    }
+   }
   },
   "force-directed-w2-03": {
    "themes": [
@@ -400,7 +581,17 @@
      "signature": "no-label-decluttering-at-scale",
      "at": "2026-09-15T08:56:12.795805Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "65b73a0948b191743a259cd526f2fe34f451ab15f1122c40d020abb8ced36ccc",
+     "validated_at": "2026-09-19T06:47:23.477055Z"
+    },
+    "dark": {
+     "hash": "6a90a47dee4b00c8d56d87db94194058df22a560532b1d7d4f463332be32d2a1",
+     "validated_at": "2026-09-19T06:47:23.486551Z"
+    }
+   }
   },
   "force-directed-w2-12": {
    "themes": [
@@ -410,15 +601,31 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "D-109",
      "signature": "no-label-decluttering-at-scale",
      "at": "2026-09-15T08:56:12.800292Z"
+    },
+    {
+     "origin": "D-393",
+     "signature": "sub-pixel-nodes-and-links-under-fit-scale",
+     "at": "2026-09-19T07:23:39.507907Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "11dd4108206fc97b1ce79c8cb33ab0b0c3cb715496080c348b4a9c9603c31050",
+     "validated_at": "2026-09-19T07:00:32.712367Z"
+    },
+    "dark": {
+     "hash": "56743be170c15586891edfd0189e478d63af46b90dce80431b15c0da43414d99",
+     "validated_at": "2026-09-19T07:00:32.720089Z"
+    }
+   }
   },
   "force-directed-w2-14": {
    "themes": [
@@ -493,7 +700,17 @@
      "signature": "user-linkOpacity-not-floored-faint-edges",
      "at": "2026-09-15T08:56:12.819751Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "bf5de05ce05a5b2dbe8389b35253310cdba0dfd871470d5f8b73a8a79e705f8b",
+     "validated_at": "2026-09-19T07:19:55.044195Z"
+    },
+    "dark": {
+     "hash": "978b471d996e8584c30ee4b96b9b979d6bd50487fa45db22a9ff0a0094da253c",
+     "validated_at": "2026-09-19T07:19:55.051951Z"
+    }
+   }
   },
   "force-directed-w4-13": {
    "themes": [
@@ -512,7 +729,17 @@
      "signature": "hardcoded-label-color:dark",
      "at": "2026-09-15T08:56:12.822578Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "b30cd39bf0eaef4b445ca2468714248a015db3afa116fad901887f67d21b24f8",
+     "validated_at": "2026-09-16T11:13:07.373569Z"
+    },
+    "dark": {
+     "hash": "1cc7da285fc987e1ab84cd87a9db014f08a34b399bea8088008d0e8c6b0b9fba",
+     "validated_at": "2026-09-16T11:13:07.384261Z"
+    }
+   }
   },
   "force-directed-w4-14": {
    "themes": [
@@ -531,7 +758,17 @@
      "signature": "hardcoded-label-color:dark",
      "at": "2026-09-15T08:56:12.826186Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "677700e2a0a482d1e09df9d4db0d73fcb302d4014b8df595a979d11b12c7a67e",
+     "validated_at": "2026-09-19T07:23:16.533187Z"
+    },
+    "dark": {
+     "hash": "2488517b7282583ce7ea446d1f79aad739e1ddd1af2b6d876b11c33ed7f3038a",
+     "validated_at": "2026-09-19T07:23:16.540283Z"
+    }
+   }
   },
   "force-directed-w4-09": {
    "themes": [
@@ -549,7 +786,17 @@
      "signature": "container-shape-unrecognised-silent-timeout",
      "at": "2026-09-15T08:56:12.829210Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "412a9bf4b85a54d6b84cc6c2759204b90eb471f96e1c2d1088f0b46db1636192",
+     "validated_at": "2026-09-19T07:22:24.068277Z"
+    },
+    "dark": {
+     "hash": "9ed75972e1ea0cb27248e4c1469694cc3350fc9753de802e5e60f4560b4e9caa",
+     "validated_at": "2026-09-19T07:22:24.077535Z"
+    }
+   }
   },
   "force-directed-w4-12": {
    "themes": [
@@ -567,7 +814,101 @@
      "signature": "rgb-rgba-with-spaces-dropped-color-collapse",
      "at": "2026-09-15T08:56:12.832175Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "d53f07b74722852558981fe77ea4432e883e8ab6f4f03df5fa109640a14ee64e",
+     "validated_at": "2026-09-16T11:12:18.101438Z"
+    },
+    "dark": {
+     "hash": "c645a048304be3754579b02f2e7d2da0fd40c99c9afeed4afdba533f14a1b3ce",
+     "validated_at": "2026-09-16T11:12:18.110563Z"
+    }
+   }
+  },
+  "force-directed-w1-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-395",
+     "signature": "blind-label-offset-no-collision-avoidance",
+     "at": "2026-09-19T07:23:39.512176Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "bd06fd2b8282f8660fade5430e674c9c98271aad206728c9034eeea73163aecc",
+     "validated_at": "2026-09-19T06:38:45.160972Z"
+    },
+    "light": {
+     "hash": "31044f4e2db47b0297fee8aa6962710f4b59e1c5ad77e5262a379a7c1eb3b8ef",
+     "validated_at": "2026-09-19T06:38:45.151708Z"
+    }
+   }
+  },
+  "force-directed-w3-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-397",
+     "signature": "self-loop-drawn-as-arrowhead-stub",
+     "at": "2026-09-19T07:23:39.524004Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "f6570b4f2653bcf1977f36b4ee8df1d23c868d15e925302496031318b787f793",
+     "validated_at": "2026-09-19T07:09:38.000227Z"
+    },
+    "light": {
+     "hash": "0e585409716b7794e43748b80958671d2aee364a9eb76ae47741f0ee86486827",
+     "validated_at": "2026-09-19T07:09:37.990570Z"
+    }
+   }
+  },
+  "force-directed-w3-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-398",
+     "signature": "pinned-coincident-nodes-stack-into-one-disc",
+     "at": "2026-09-19T07:23:39.528131Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "9fe020c741aa9266af9e33e11df7fee69dbf7fd9a967ebd37bc2ad93947dd041",
+     "validated_at": "2026-09-19T07:10:26.993192Z"
+    },
+    "light": {
+     "hash": "378892119561a5cbd8c715b2337bfd2994643671bd5ea1a73d9e929b42647f55",
+     "validated_at": "2026-09-19T07:10:26.985064Z"
+    }
+   }
   }
  }
 }
