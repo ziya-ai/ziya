@@ -11,6 +11,7 @@ from app.mcp.registry.registry import get_provider_registry, initialize_registry
 from app.mcp.registry.interface import RegistryServiceInfo, ToolSearchResult
 from app.mcp.registry.aggregator import get_registry_aggregator
 from app.mcp.manager import get_mcp_manager
+from app.mcp.description_summary import summarize_description
 from app.utils.logging_utils import logger
 
 
@@ -186,7 +187,8 @@ class RegistryIntegrationManager:
                 'provider': provider.identifier,
                 'installation_path': result.installation_path,
                 'config_updated': True,
-                'connected': connected
+                'connected': connected,
+                'warnings': list(getattr(result, 'warnings', None) or []),
             }
             
         except Exception as e:
@@ -254,7 +256,19 @@ class RegistryIntegrationManager:
             logger.debug(f"No in-memory state to clear for {server_name}: {e}")
 
     def _add_to_config(self, server_name: str, config_entries: Dict[str, Any]) -> None:
-        """Add configuration entries to mcp_config.json."""
+        """Add configuration entries to mcp_config.json.
+
+        Providers copy the registry's serviceDescription into ``description``
+        verbatim, and for some services that is an entire README (the Slack
+        MCP entry is 20 KB of markdown). The field is displayed as the
+        server's name and summary, so it is reduced to one line here — the
+        single chokepoint every provider, including closed plugins, passes
+        through. Mutated in place on purpose: the caller hands the same dict
+        to restart_server(), which must not see the blob either.
+        """
+        desc = config_entries.get("description")
+        if isinstance(desc, str) and desc.strip():
+            config_entries["description"] = summarize_description(desc)
         config = self._load_current_config()
         if "mcpServers" not in config:
             config["mcpServers"] = {}
@@ -280,118 +294,6 @@ class RegistryIntegrationManager:
             )
         except Exception:
             pass  # audit logging must never break an install
-    
-    def _match_installed_with_registry(self, installed_services: List[Dict], registry_services: List[RegistryServiceInfo]) -> List[Dict]:
-        """Match installed services with registry services for unified display."""
-        matched_services = []
-        
-        for installed in installed_services:
-            # Try exact match first (service_id or server_name)
-            registry_match = None
-            service_id = installed.get('service_id') or installed.get('server_name')
-            if service_id:
-                registry_match = next((s for s in registry_services if s.service_id == service_id), None)
-                # Debug logging
-                if service_id == 'builder-mcp' and not registry_match:
-                    logger.info(f"No registry match for builder-mcp. Available service IDs: {[s.service_id for s in registry_services if 'builder' in s.service_id.lower()]}")
-            
-            # Try fuzzy matching by name if no exact match
-            if not registry_match and installed.get('server_name'):
-                server_name = installed['server_name'].lower()
-                # Try different matching strategies
-                for service in registry_services:
-                    service_name_lower = service.service_name.lower()
-                    service_id_lower = service.service_id.lower()
-                    
-                    # Direct name match
-                    if server_name == service_name_lower or server_name == service_id_lower:
-                        registry_match = service
-                        break
-                    
-                    # Partial match (e.g., "builder-mcp" matches "BuilderHub MCP Server")
-                    if (server_name.replace('-', '').replace('_', '') in service_name_lower.replace('-', '').replace('_', '').replace(' ', '') or
-                        server_name.replace('-', '').replace('_', '') in service_id_lower.replace('-', '').replace('_', '')):
-                        registry_match = service
-                        break
-                    
-                    # Reverse partial match
-                    if (service_name_lower.replace('-', '').replace('_', '').replace(' ', '') in server_name.replace('-', '').replace('_', '') or
-                        service_id_lower.replace('-', '').replace('_', '') in server_name.replace('-', '').replace('_', '')):
-                        registry_match = service
-                        break
-            
-            # Create unified service entry
-            service_entry = {
-                'server_name': installed['server_name'],
-                'service_id': registry_match.service_id if registry_match else (installed.get('service_id') or installed['server_name']),
-                'service_name': installed.get('service_name', installed['server_name']),
-                'version': installed.get('version'),
-                'registry_provider': installed.get('registry_provider'),
-                'support_level': installed.get('support_level'),
-                'installed_at': installed.get('installed_at'),
-                'enabled': installed.get('enabled', True),
-                'is_installed': True,
-                'installation_path': installed.get('installation_path'),
-                'security_review_url': installed.get('security_review_url'),
-                '_manually_configured': not installed.get('registry_provider')  # Only manual if no registry provider
-            }
-            
-            # Add registry information if matched
-            if registry_match:
-                service_entry.update({
-                    'service_name': registry_match.service_name,
-                    'serviceDescription': registry_match.service_description,
-                    'supportLevel': registry_match.support_level.value,
-                    'status': registry_match.status.value,
-                    'version': registry_match.version,
-                    'provider': {
-                        'id': registry_match.provider_metadata.get('provider_id'),
-                        'isInternal': registry_match.provider_metadata.get('is_internal', False)
-                    },
-                    'tags': registry_match.tags,
-                    'securityReviewLink': registry_match.security_review_url,
-                    'installationType': registry_match.installation_type.value,
-                    'cti': registry_match.provider_metadata.get('cti'),
-                    'registry_matched': True
-                })
-            
-            matched_services.append(service_entry)
-        
-        return matched_services
-    
-    async def get_installed_services(self) -> List[Dict[str, Any]]:
-        """Get list of currently installed services with registry matching."""
-        config = self._load_current_config()
-        installed = []
-        
-        logger.info(f"Found {len(config['mcpServers'])} servers in config")
-        
-        # Get basic installed service info
-        for server_name, server_config in config["mcpServers"].items():
-            logger.info(f"Processing server: {server_name}, config: {server_config}")
-            installed.append({
-                'server_name': server_name,
-                'service_id': server_config.get('service_id'),
-                'service_name': server_config.get('description', server_name),
-                'version': server_config.get('version'),
-                'support_level': server_config.get('support_level'),
-                'installed_at': server_config.get('installed_at'),
-                'enabled': server_config.get('enabled', True),
-                'registry_provider': server_config.get('registry_provider'),
-                'installation_path': server_config.get('installation_path'),
-                'security_review_url': server_config.get('security_review_url')
-            })
-        
-        logger.info(f"Built installed list with {len(installed)} services")
-        
-        # Get registry services for matching
-        try:
-            registry_services = await self.get_available_services(max_results=1000)
-            matched_services = self._match_installed_with_registry(installed, registry_services)
-            return matched_services
-        except Exception as e:
-            logger.warning(f"Could not match with registry services: {e}")
-            return installed
     
     async def uninstall_service(self, server_name: str) -> Dict[str, Any]:
         """Uninstall a registry service."""
@@ -451,7 +353,10 @@ class RegistryIntegrationManager:
                 installed.append({
                     'server_name': server_name,
                     'service_id': server_config.get('service_id'),
-                    'service_name': server_config.get('description', server_name),
+                    # Configs written before descriptions were summarised at
+                    # install time may still carry the full registry blob.
+                    'service_name': summarize_description(server_config.get('description'))
+                                    or server_name,
                     'version': server_config.get('version'),
                     'support_level': server_config.get('support_level'),
                     'installed_at': server_config.get('installed_at'),
