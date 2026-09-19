@@ -18,7 +18,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.642964Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "36e31118b1b61723e3b91f0cb24dd919d17916545c11c303321d73a7c36bc198",
+     "validated_at": "2026-09-19T09:53:20.012638Z"
+    },
+    "dark": {
+     "hash": "2adda31076515d392686cb07478156442e9dd2250502a0caafc10dd40a0c25e5",
+     "validated_at": "2026-09-19T09:53:20.020791Z"
+    }
+   }
   },
   "tikz-w1-14": {
    "themes": [
@@ -35,8 +45,23 @@
      "origin": "regression_set",
      "signature": "",
      "at": "2026-09-15T08:56:11.646613Z"
+    },
+    {
+     "origin": "D-495",
+     "signature": "double-stroke-gap-white-not-page-colour:dark",
+     "at": "2026-09-19T10:01:01.309250Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "24f5c61c09216a1c225875124ba879de919ef3004f21a64f1d6a9fa340546224",
+     "validated_at": "2026-09-19T09:54:17.237841Z"
+    },
+    "dark": {
+     "hash": "f7594dcb277c5e63afc9da4bedbbcac06cda6edeed39604e985d0d1dfa72a8db",
+     "validated_at": "2026-09-19T09:54:17.244819Z"
+    }
+   }
   },
   "tikz-w1-15": {
    "themes": [
@@ -54,7 +79,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.648995Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "98b9306f915bce4f52854cd24db6afeaece5b14acd8c6c2ba0be1929f530c9c2",
+     "validated_at": "2026-09-19T09:55:08.555391Z"
+    },
+    "dark": {
+     "hash": "51d43158f03af674a629976869f2aa785bbad4ba2f2d72693a5f82fad947ae51",
+     "validated_at": "2026-09-19T09:55:08.560294Z"
+    }
+   }
   },
   "tikz-w2-01": {
    "themes": [
@@ -72,7 +107,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.651771Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "a9610b663e8744bb33cd46c17c2e60ebb03ed7b380dcec12c57c8f22f7553a06",
+     "validated_at": "2026-09-19T09:55:44.054132Z"
+    },
+    "dark": {
+     "hash": "a6e2ea1c2be4da80110dc51e01b98a61b1a608832dba624ea43756e0a1ee531a",
+     "validated_at": "2026-09-19T09:55:44.066544Z"
+    }
+   }
   },
   "tikz-w2-15": {
    "themes": [
@@ -90,7 +135,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.654353Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "a626764d14b95d9df524397a3d7bb5ef6493f316a0ef1ba35375d335b9c3e606",
+     "validated_at": "2026-09-19T09:56:44.848806Z"
+    },
+    "dark": {
+     "hash": "c855abe372c68842d24cb5b69115e0814dfd18c2541da57936a815b0fcb8a950",
+     "validated_at": "2026-09-19T09:56:44.861781Z"
+    }
+   }
   },
   "tikz-w3-09": {
    "themes": [
@@ -108,7 +163,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.657242Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "ae2a24d8345f7e3e26ea99bd8b25ed152d09f4a5a51800788ef29f3e49d2e4ab",
+     "validated_at": "2026-09-19T09:57:59.611104Z"
+    },
+    "dark": {
+     "hash": "2f4dca92bce4a2155e4559a042e45905384ccf585634847419b564452614d45c",
+     "validated_at": "2026-09-19T09:57:59.619974Z"
+    }
+   }
   },
   "tikz-w3-13": {
    "themes": [
@@ -126,7 +191,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.661134Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "446a51a9008d2ad35fb55c649dcec478ad993a7e5240969ed07acc9a1278c8f8",
+     "validated_at": "2026-09-19T09:58:33.674921Z"
+    },
+    "dark": {
+     "hash": "5cd86af297feaf3c4dbbbe811f94fa8029befaf1e46a4c91228fb1d771e4a804",
+     "validated_at": "2026-09-19T09:58:33.682827Z"
+    }
+   }
   },
   "tikz-w3-15": {
    "themes": [
@@ -144,7 +219,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.663702Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "51fe47ea2299b02c1a2081ba6af418d7e8eb3c279b4f8c9b08038a9a0ff20df1",
+     "validated_at": "2026-09-19T09:59:19.238492Z"
+    },
+    "dark": {
+     "hash": "4ad4e8e3996c92e794a2706b326d5e7f8a334b27630d77652749a05f7d16255a",
+     "validated_at": "2026-09-19T09:59:19.247314Z"
+    }
+   }
   },
   "tikz-w4-01": {
    "themes": [
@@ -162,7 +247,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.666587Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "4d536be703945333ef951b099110606fa815aeb5f8463faef0360929ed3cf189",
+     "validated_at": "2026-09-19T09:59:48.449884Z"
+    },
+    "dark": {
+     "hash": "f669cf62ca454eb0847d69bd6e5c0cedfef0b9fbcf044568eea9bc29d9f5a139",
+     "validated_at": "2026-09-19T09:59:48.470318Z"
+    }
+   }
   },
   "tikz-w4-08": {
    "themes": [
@@ -180,7 +275,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.670051Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "191625cfdd55a6bf67237e330dc3327060dfc44db06fa559b06ba276d65ba8ca",
+     "validated_at": "2026-09-19T10:00:19.259000Z"
+    },
+    "dark": {
+     "hash": "2710f44c358c74a4edeae8fa25daf0c4e99137a6b6ba6a26e032fb580164f598",
+     "validated_at": "2026-09-19T10:00:19.268752Z"
+    }
+   }
   },
   "tikz-w1-02": {
    "themes": [
@@ -197,8 +302,23 @@
      "origin": "D-233",
      "signature": "author-color-below-floor-on-dark-plate:dark",
      "at": "2026-09-15T08:56:14.542418Z"
+    },
+    {
+     "origin": "D-490",
+     "signature": "lifted-author-colour-text-under-text-floor:dark",
+     "at": "2026-09-19T10:01:01.293372Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "1298eb216dd1ab02eff756c1f04fdd21d852f3e37509ea90447f7d54b9b40204",
+     "validated_at": "2026-09-19T09:42:40.939478Z"
+    },
+    "dark": {
+     "hash": "5eda2d5b542ad0d175e2145a4627d7f6e64e416322cfecb6ebf9a83c1cf8269e",
+     "validated_at": "2026-09-19T09:42:40.951230Z"
+    }
+   }
   },
   "tikz-w1-04": {
    "themes": [
@@ -215,8 +335,23 @@
      "origin": "D-233",
      "signature": "author-color-below-floor-on-dark-plate:dark",
      "at": "2026-09-15T08:56:14.545923Z"
+    },
+    {
+     "origin": "D-490",
+     "signature": "lifted-author-colour-text-under-text-floor:dark",
+     "at": "2026-09-19T10:01:01.296211Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "e438d716df1d539406e72cfd32dc3f2539342e9c35d3e7c18c676137e17441cf",
+     "validated_at": "2026-09-19T09:43:32.955334Z"
+    },
+    "dark": {
+     "hash": "7852143b9f5699e2b35d20fd95446788fd9df92bac5965b0fdd8bcff2b0a4ad5",
+     "validated_at": "2026-09-19T09:43:32.963394Z"
+    }
+   }
   },
   "tikz-w1-07": {
    "themes": [
@@ -234,7 +369,17 @@
      "signature": "author-color-below-floor-on-dark-plate:dark",
      "at": "2026-09-15T08:56:14.550164Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "df23a28fed39bc2167f5fa86fc15cf61cca0428e05a37067db01aab7c6d64eb5",
+     "validated_at": "2026-09-19T09:44:01.726588Z"
+    },
+    "dark": {
+     "hash": "5154af2460e2700228369ed00b06d3c0cd20bb2494e6259154b93414cbf1b227",
+     "validated_at": "2026-09-19T09:44:01.736007Z"
+    }
+   }
   },
   "tikz-w1-09": {
    "themes": [
@@ -251,8 +396,23 @@
      "origin": "D-233",
      "signature": "author-color-below-floor-on-dark-plate:dark",
      "at": "2026-09-15T08:56:14.554846Z"
+    },
+    {
+     "origin": "D-490",
+     "signature": "lifted-author-colour-text-under-text-floor:dark",
+     "at": "2026-09-19T10:01:01.299185Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "f2d2126ced54150e2e9a374d03617a08d2e2752379bc37c85ffc5fd3a451bf51",
+     "validated_at": "2026-09-19T09:44:29.841669Z"
+    },
+    "dark": {
+     "hash": "2132a36255124e5fdd63427b0460048ad2e424ca4ce9ecab9fde62f55bbada8c",
+     "validated_at": "2026-09-19T09:44:29.856585Z"
+    }
+   }
   },
   "tikz-w2-06": {
    "themes": [
@@ -270,7 +430,17 @@
      "signature": "author-color-below-floor-on-dark-plate:dark",
      "at": "2026-09-15T08:56:14.558927Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "25a7c11a2fa690eb92a262af9a1f89aa26b9c4b49aa2980b61c08ff3e01303d0",
+     "validated_at": "2026-09-19T09:45:18.031409Z"
+    },
+    "dark": {
+     "hash": "a6eeb81a7187f66bf3a62cd47d64c887fb4d83266d5d7417fff4fba1d939e792",
+     "validated_at": "2026-09-19T09:45:18.048303Z"
+    }
+   }
   },
   "tikz-w2-11": {
    "themes": [
@@ -293,8 +463,23 @@
      "origin": "D-238",
      "signature": "categorical-palette-recycles-toward-surface:light",
      "at": "2026-09-15T08:56:14.586449Z"
+    },
+    {
+     "origin": "D-488",
+     "signature": "colour-lift-rewrite-inside-foreach-list-fatal:dark",
+     "at": "2026-09-19T10:01:01.283333Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "1cf1f68327fb89f3fa0c1d44804a8f3da36dcbb3386f7ed704275cd18ed21437",
+     "validated_at": "2026-09-19T09:45:55.936615Z"
+    },
+    "dark": {
+     "hash": "c0c723192ccb6afc1c5920079d606ae64ce56ae0baeef7a09d26084bb9c1b5ac",
+     "validated_at": "2026-09-19T09:45:55.949788Z"
+    }
+   }
   },
   "tikz-w2-13": {
    "themes": [
@@ -311,8 +496,23 @@
      "origin": "D-233",
      "signature": "author-color-below-floor-on-dark-plate:dark",
      "at": "2026-09-15T08:56:14.567940Z"
+    },
+    {
+     "origin": "D-490",
+     "signature": "lifted-author-colour-text-under-text-floor:dark",
+     "at": "2026-09-19T10:01:01.301914Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "a5392eb3e348b84ce512f7a70c874d19a58b715b101db3108c1b593d008291ce",
+     "validated_at": "2026-09-19T09:46:32.414690Z"
+    },
+    "dark": {
+     "hash": "f246971d9c1e7bd36b6c4f30d4bea9c4b7170ac5fe721e277aa791f48eadaa19",
+     "validated_at": "2026-09-19T09:46:32.425641Z"
+    }
+   }
   },
   "tikz-w1-06": {
    "themes": [
@@ -330,8 +530,23 @@
      "origin": "D-234",
      "signature": "light-default-ink-on-pale-author-fill:dark",
      "at": "2026-09-15T08:56:14.572176Z"
+    },
+    {
+     "origin": "D-489",
+     "signature": "text-black-injected-into-shared-style-leaks-to-unfilled-node:dark",
+     "at": "2026-09-19T10:01:01.290561Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "1fb8b3c9783d0f0271a3325a4b908e24e32f700da2e413550340c02721050e22",
+     "validated_at": "2026-09-19T09:47:12.251326Z"
+    },
+    "dark": {
+     "hash": "c7534108d88ccd9f26ba9707f5604d36a6d393640300900e6b451d385772ec6d",
+     "validated_at": "2026-09-19T09:47:12.260061Z"
+    }
+   }
   },
   "tikz-w3-02": {
    "themes": [
@@ -350,7 +565,13 @@
      "signature": "light-default-ink-on-pale-author-fill:dark",
      "at": "2026-09-15T08:56:14.576306Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "49db0f0ab4c8e436a98208f657641f16e244a2b2cb6a1b6d3584292f884c493d",
+     "validated_at": "2026-09-19T09:48:16.309582Z"
+    }
+   }
   },
   "tikz-w3-03": {
    "themes": [
@@ -369,7 +590,17 @@
      "signature": "light-default-ink-on-pale-author-fill:dark",
      "at": "2026-09-15T08:56:14.580049Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "cd330f48047408846317ace6253fa3af32c806ba5be275c0cc49a45a668a7859",
+     "validated_at": "2026-09-19T09:48:52.209866Z"
+    },
+    "dark": {
+     "hash": "ca41fd7a7f3c074e3b5562994aa2f00bf121104a5684aadb1db9c90eb12aec27",
+     "validated_at": "2026-09-19T09:48:52.214398Z"
+    }
+   }
   },
   "tikz-w4-14": {
    "themes": [
@@ -388,7 +619,17 @@
      "signature": "light-default-ink-on-pale-author-fill:dark",
      "at": "2026-09-15T08:56:14.583835Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "81115696969a92e99328a44ba6ff6849c30225af9da792040a060bf121d1d6a8",
+     "validated_at": "2026-09-19T09:49:35.698604Z"
+    },
+    "dark": {
+     "hash": "efcddb330ad68606d1296f5d01857e6b1277b677c2e523b1f7585e149cf48b59",
+     "validated_at": "2026-09-19T09:49:35.705662Z"
+    }
+   }
   },
   "tikz-w2-09": {
    "themes": [
@@ -406,7 +647,17 @@
      "signature": "explicit-width-height-ignored",
      "at": "2026-09-15T08:56:14.591234Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "bed908711939c3c796632fc6e2cab562c5659fe9a5dc6c659d6cb3cba509587c",
+     "validated_at": "2026-09-19T09:50:34.510981Z"
+    },
+    "dark": {
+     "hash": "4e28a5a06b7a87dabea177e7d079c9ed897893a53772a5219137398c5cc0ee3b",
+     "validated_at": "2026-09-19T09:50:34.522797Z"
+    }
+   }
   },
   "tikz-w2-10": {
    "themes": [
@@ -424,7 +675,17 @@
      "signature": "explicit-width-height-ignored",
      "at": "2026-09-15T08:56:14.596505Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "3d4504c8378f2f3da18f8f332cef1523a9be3b96f80056a63da63ff9d24d2bad",
+     "validated_at": "2026-09-19T09:51:19.574427Z"
+    },
+    "dark": {
+     "hash": "89de3298898539a322c8d2f3c790c4afa07b0fc9e47fa97ba8f358f7287958cb",
+     "validated_at": "2026-09-19T09:51:19.578407Z"
+    }
+   }
   },
   "tikz-w2-07": {
    "themes": [
@@ -442,7 +703,17 @@
      "signature": "aspect-ratio-collapses-tick-labels",
      "at": "2026-09-15T08:56:14.600892Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "e612b3f6ab3ddb761b5198c1b493e3bb120dc458247a5bb9e603e8c8d0dc1a49",
+     "validated_at": "2026-09-16T11:46:58.021104Z"
+    },
+    "dark": {
+     "hash": "72668ebe1ddfd91c209da38a8e2dfa6f1dee23b2b4c10ed7e3a62d7e73bc61f6",
+     "validated_at": "2026-09-16T11:46:58.039668Z"
+    }
+   }
   },
   "tikz-w2-14": {
    "themes": [
@@ -460,7 +731,17 @@
      "signature": "pgfmath-dimen-overflow-at-high-index",
      "at": "2026-09-15T08:56:14.605155Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "6592afc4881c22469960c1d420bd29856abad52a4fde134d095a5b488d5dd48c",
+     "validated_at": "2026-09-19T09:56:14.103774Z"
+    },
+    "dark": {
+     "hash": "3cad3c09298eecf0bd76a9e36f8dd4afbc143cc288e14dfcf555d3f2c059a8bd",
+     "validated_at": "2026-09-19T09:56:14.113526Z"
+    }
+   }
   },
   "tikz-w4-06": {
    "themes": [
@@ -478,7 +759,17 @@
      "signature": "rgba-rewrite-inside-definecolor-model-fatal",
      "at": "2026-09-15T08:56:14.609430Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "4e4bdf011793184df68b5f920e6c9b7013bc6502e24ac9fdabe8b1994565d767",
+     "validated_at": "2026-09-16T12:28:02.181404Z"
+    },
+    "dark": {
+     "hash": "d304ada0f883ffcdd9107e0ab1f4036e1b1ef1a9b0fe42ed3926857d932239fd",
+     "validated_at": "2026-09-16T12:28:02.188176Z"
+    }
+   }
   },
   "tikz-w4-10": {
    "themes": [
@@ -496,7 +787,17 @@
      "signature": "inline-usetikzlibrary-stripped-shape-undefined",
      "at": "2026-09-15T08:56:14.613555Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "560dc7dca5d1da80d29ccebbaff418ae03a168abab44a8d14440815c24ca8f05",
+     "validated_at": "2026-09-19T10:00:49.502947Z"
+    },
+    "dark": {
+     "hash": "03cf8213ff76d65fff6e6ebd85531403399b4999682c9f93ea501a0a64cba1ae",
+     "validated_at": "2026-09-19T10:00:49.512070Z"
+    }
+   }
   },
   "tikz-w4-15": {
    "themes": [
@@ -514,7 +815,17 @@
      "signature": "trailing-serialised-newline-defeats-restore-fatal",
      "at": "2026-09-15T08:56:14.619801Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "99943106b4c850ea8d2b0dc8a6ad28627e91f0f47af14fb54cab455cf90c269b",
+     "validated_at": "2026-09-16T12:32:53.976060Z"
+    },
+    "dark": {
+     "hash": "b51e3d7acf2f1128e151dbac2683aec8c580aa567bc26b843c5f36e384908955",
+     "validated_at": "2026-09-16T12:32:53.979446Z"
+    }
+   }
   },
   "tikz-w4-13": {
    "themes": [
@@ -532,7 +843,17 @@
      "signature": "raw-hash-in-option-value-fatal",
      "at": "2026-09-15T08:56:14.626050Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "7a308ca094a77148ea520dbe40cbb94355c8d30f8a8cb4fd931e134596e622a5",
+     "validated_at": "2026-09-16T12:31:55.702287Z"
+    },
+    "dark": {
+     "hash": "28e194a7965e7cbf8c1a884cd1587315e53ea1db474ad5245fe269cd168b5ec4",
+     "validated_at": "2026-09-16T12:31:55.709951Z"
+    }
+   }
   },
   "tikz-w4-03": {
    "themes": [
@@ -550,7 +871,74 @@
      "signature": "missing-path-semicolon-fatal",
      "at": "2026-09-15T08:56:14.632279Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "fd00f932f2661476e189e81ba5b4ac1d93cbfd743ba7440dcc136a5cbca085e0",
+     "validated_at": "2026-09-16T12:25:18.971452Z"
+    },
+    "dark": {
+     "hash": "d8b6c3e99080531589204ac2a56bfeea498a660a0e00213f0d79301c6d5b9306",
+     "validated_at": "2026-09-16T12:25:18.977958Z"
+    }
+   }
+  },
+  "tikz-w3-12": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-488",
+     "signature": "colour-lift-rewrite-inside-foreach-list-fatal:dark",
+     "at": "2026-09-19T10:01:01.287119Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "3c911061e523a9f53fc1b836b5ae2a1dd915e0dc0c2c11dec237a89a9f41e3b6",
+     "validated_at": "2026-09-19T09:52:16.053999Z"
+    },
+    "light": {
+     "hash": "670afbe88c019f8ec5e6492879cf0c12f859a3b6a6b9124b048085eab00183d0",
+     "validated_at": "2026-09-19T09:52:16.045184Z"
+    }
+   }
+  },
+  "tikz-w1-05": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-494",
+     "signature": "pattern-ink-black-on-dark-plate:dark",
+     "at": "2026-09-19T10:01:01.305943Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "aa8573410cf91a4d152c31eac85a82a03533dcb39b2d555dc40593d67bd62d83",
+     "validated_at": "2026-09-19T09:52:45.527747Z"
+    },
+    "light": {
+     "hash": "a0fbde99abeddb1d461f7a5cb4209d285de326459a81a85db7055dc0c79e9a8b",
+     "validated_at": "2026-09-19T09:52:45.522114Z"
+    }
+   }
   }
  }
 }

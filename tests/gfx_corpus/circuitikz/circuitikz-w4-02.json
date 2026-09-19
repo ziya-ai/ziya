@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\\documentclass[border=3pt]{standalone}\n\\usepackage[american]{circuitikz}\n\\begin{document}\n\\begin{circuitikz}\n\\definecolor{plate}{HTML}{16324A}\n\\definecolor{plateink}{HTML}{F2F6FA}\n\\definecolor{plateaccent}{HTML}{5FD4E4}\n\\fill[plate] (-0.9,-1.5) rectangle (7.3,1.9);\n\\draw[color=plateink]\n  (0,0) node[ocirc]{} to[R=$R$] (2.6,0)\n  to[C=$C$] (2.6,-1.4) node[ground]{}\n  (2.6,0) to[short] (4.6,0) node[ocirc]{};\n\\node[plateink] at (2.3,1.4) {RC lowpass};\n\\end{circuitikz}\n\\end{document}\n",
+ "intent": "RECOVERY: model emitted a COMPLETE compilable standalone document rather than a body fragment -- documentclass, usepackage, begin/end document. Extremely common. Evident intent is the RC lowpass inside. Passing means the wrapper is detected and stripped or tolerated."
+}

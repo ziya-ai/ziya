@@ -18,7 +18,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.137371Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "c0578ebd6186b2e44c8bc1e85e5d30ca5d1fb0480fa55d9957abaebb14113f10",
+     "validated_at": "2026-09-19T10:36:53.537394Z"
+    },
+    "dark": {
+     "hash": "1ac970773caf1f2248f5bcfe78f32262462be334d7e8b28cf86e991d5f4d7e10",
+     "validated_at": "2026-09-19T10:36:53.550572Z"
+    }
+   }
   },
   "chemfig-w1-02": {
    "themes": [
@@ -36,7 +46,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.147426Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "922f5863cce07cfdd3eb4eddde304ebcf4020c0711c09b3876429b768fb435be",
+     "validated_at": "2026-09-19T10:37:21.446084Z"
+    },
+    "dark": {
+     "hash": "99dc5cb4603d3a9ede2d293a420635deda61c84d73c2597fc3543fc1f9cba47e",
+     "validated_at": "2026-09-19T10:37:21.452226Z"
+    }
+   }
   },
   "chemfig-w1-04": {
    "themes": [
@@ -54,7 +74,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.151335Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "735d5faf45254d08d6cc3b1707d8940aed481bfa8df848b0eaf36280591f6011",
+     "validated_at": "2026-09-19T10:37:50.831880Z"
+    },
+    "dark": {
+     "hash": "11ae4548d04c3328b90fad404fae9b512768a90aa00fc3c5cf2e52aeff799b16",
+     "validated_at": "2026-09-19T10:37:50.837744Z"
+    }
+   }
   },
   "chemfig-w1-06": {
    "themes": [
@@ -72,7 +102,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.154380Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "246c381720f650d3f3068f99f1f8a98cec8538af87b26a4b767a28087c68755a",
+     "validated_at": "2026-09-19T10:38:51.530654Z"
+    },
+    "dark": {
+     "hash": "f7abbdd548eabcc61a4aed6f4ba86462b33ca77d4047fddfed4eabba87d6dc2d",
+     "validated_at": "2026-09-19T10:38:51.536483Z"
+    }
+   }
   },
   "chemfig-w3-01": {
    "themes": [
@@ -90,7 +130,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.157843Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "7bc656d9b055a71b7916e7589672f98a7601f85ff43b3197397ed92861b49c60",
+     "validated_at": "2026-09-19T10:40:31.522798Z"
+    },
+    "dark": {
+     "hash": "458fc7407893c440d405bdc03d7cd0dffa97a4fec399fe201457750ee395b538",
+     "validated_at": "2026-09-19T10:40:31.527903Z"
+    }
+   }
   },
   "chemfig-w3-04": {
    "themes": [
@@ -108,7 +158,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.160689Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "7d55b60cec8618e540ea4594fad19856fae724c667a51b2a3d452e0de83e35c1",
+     "validated_at": "2026-09-19T10:41:11.099680Z"
+    },
+    "dark": {
+     "hash": "d8a85d8d47926724e1b629d65e843d63813b3b68ea7720d0e0f565edfd01549c",
+     "validated_at": "2026-09-19T10:41:11.104827Z"
+    }
+   }
   },
   "chemfig-w3-15": {
    "themes": [
@@ -126,7 +186,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.164616Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "1b37e595c1a3369fa07eca5451ca84e336d4480adbabcf174e5806a2a9c04377",
+     "validated_at": "2026-09-19T10:42:16.657532Z"
+    },
+    "dark": {
+     "hash": "df948c8428a5c02b5ce46fd30b866202bce7b91cedde7c4fb8118b098784b0d8",
+     "validated_at": "2026-09-19T10:42:16.662423Z"
+    }
+   }
   },
   "chemfig-w4-01": {
    "themes": [
@@ -144,7 +214,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.169677Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "923b0e8acb13deb4548a6525525498e9e8a186d4bba053d708bf2ad0576d4118",
+     "validated_at": "2026-09-19T10:42:49.329016Z"
+    },
+    "dark": {
+     "hash": "75f4af476f6938150d130dcf048c3448f8d493422df5e109fec3f9709cc2767b",
+     "validated_at": "2026-09-19T10:42:49.334337Z"
+    }
+   }
   },
   "chemfig-w4-07": {
    "themes": [
@@ -162,7 +242,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.175911Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "eb8e3a16c487ba1c0f3e72c54c550c3c12a718946a14dfe2f467f46d123dba59",
+     "validated_at": "2026-09-19T10:43:48.081176Z"
+    },
+    "dark": {
+     "hash": "94d1413979a87d33704ad5345500b91945f3a15d239179f1a17fcec5d6b7cc3e",
+     "validated_at": "2026-09-19T10:43:48.101849Z"
+    }
+   }
   },
   "chemfig-w4-13": {
    "themes": [
@@ -180,7 +270,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.187177Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "1f05690b7088557a92b1f6550f9bd00acf8a7c98f98682ef8514c95fe4380360",
+     "validated_at": "2026-09-19T10:44:24.171118Z"
+    },
+    "dark": {
+     "hash": "355729349694ad50605400e491b8c23add06b06686be1b983e97fa1c076c8990",
+     "validated_at": "2026-09-19T10:44:24.182874Z"
+    }
+   }
   },
   "chemfig-w3-02": {
    "themes": [
@@ -198,7 +298,17 @@
      "signature": "ts1-textcomp-font-tcrm1000-missing-fatal",
      "at": "2026-09-15T08:56:12.203867Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "c8eb9e916169d83cd1fb73264ccd64c53d209ea97ab328b6c0d26c4665753344",
+     "validated_at": "2026-09-19T10:23:43.924872Z"
+    },
+    "dark": {
+     "hash": "e370d36d32dc2b56b4b9e567474409957bc241d59653c09ffcab1d4ad2fac2be",
+     "validated_at": "2026-09-19T10:23:43.930230Z"
+    }
+   }
   },
   "chemfig-w3-08": {
    "themes": [
@@ -216,7 +326,17 @@
      "signature": "parameterised-definesubmol-arg-not-substituted-fatal",
      "at": "2026-09-15T08:56:12.206008Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "8067939ef71a7626a49595476bb2154168fc9ca28dc7100b813481cbcc28a31e",
+     "validated_at": "2026-09-16T12:53:22.546580Z"
+    },
+    "dark": {
+     "hash": "601e8f7549005703c2a764a9a8ff1dd86a0a85a82ee0893aba35bacaf8e4b84e",
+     "validated_at": "2026-09-16T12:53:22.549681Z"
+    }
+   }
   },
   "chemfig-w1-11": {
    "themes": [
@@ -235,7 +355,17 @@
      "signature": "literal-color-no-contrast-guard",
      "at": "2026-09-15T08:56:12.218752Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "738d1d4d9d1b6fad8d21a090acc7fbc9d4ab4f951fab65f8ef0aa6834c703fd6",
+     "validated_at": "2026-09-19T10:30:08.095307Z"
+    },
+    "light": {
+     "hash": "eceb9ea1cf56ace81834286eb8f0233cac96179b80efb8cbd127aac72307258e",
+     "validated_at": "2026-09-19T10:30:08.067811Z"
+    }
+   }
   },
   "chemfig-w3-12": {
    "themes": [
@@ -292,7 +422,13 @@
      "signature": "literal-color-no-contrast-guard",
      "at": "2026-09-15T08:56:12.235565Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "3ebee3ae5709fb5c0745ef777940850b7084fe89d78e052cdf5b298d235db7a3",
+     "validated_at": "2026-09-19T10:33:41.891485Z"
+    }
+   }
   },
   "chemfig-w4-03": {
    "themes": [
@@ -310,7 +446,17 @@
      "signature": "recovered-colour-not-theme-adapted-below-floor:dark",
      "at": "2026-09-15T08:56:12.238389Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "ecbf1714fd5c0c9fdf9f8e2127935477a5ebc4e8b1dc86b8e56d897e1b3676cd",
+     "validated_at": "2026-09-16T13:06:30.947076Z"
+    },
+    "dark": {
+     "hash": "f1b9dba8fcb10fd1a84845dbcd5533513349a6e3af01095189e4c231942fa66d",
+     "validated_at": "2026-09-16T13:06:30.952960Z"
+    }
+   }
   },
   "chemfig-w4-04": {
    "themes": [
@@ -328,7 +474,17 @@
      "signature": "colour-argument-normaliser-context-gaps",
      "at": "2026-09-15T08:56:12.241762Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "58d1e8bd3ec4a20217ad254f0a28289ea36b0e73fa4d4163d0121ed17790dfd3",
+     "validated_at": "2026-09-16T13:06:31.234020Z"
+    },
+    "dark": {
+     "hash": "dc14868f6c3f4d62da8a0519232f8ae942a05e4b7e9239aa61259db7d71c4851",
+     "validated_at": "2026-09-16T13:06:31.236663Z"
+    }
+   }
   },
   "chemfig-w4-05": {
    "themes": [
@@ -346,7 +502,17 @@
      "signature": "colour-argument-normaliser-context-gaps",
      "at": "2026-09-15T08:56:12.244349Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "bd87475909481887fe4da790ac736175fabd0830fa55b52b2ffc528ce6f8819b",
+     "validated_at": "2026-09-16T13:07:13.121101Z"
+    },
+    "dark": {
+     "hash": "baccf811d7e996245473f4a7cc10ec8289e362ab271a837601bbc0605844f80b",
+     "validated_at": "2026-09-16T13:07:13.126173Z"
+    }
+   }
   },
   "chemfig-w4-06": {
    "themes": [
@@ -364,7 +530,17 @@
      "signature": "colour-argument-normaliser-context-gaps",
      "at": "2026-09-15T08:56:12.247541Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "d59a302041a2b43986e55f7e04ed6a5dbdd9de05437cf2203c2af3eb6456cbb5",
+     "validated_at": "2026-09-16T13:07:13.337305Z"
+    },
+    "dark": {
+     "hash": "3530497f34da27b53b25b24c1e6e63411b918b4c004de64002a7bb42fc1c1d56",
+     "validated_at": "2026-09-16T13:07:13.342016Z"
+    }
+   }
   },
   "chemfig-w4-15": {
    "themes": [
@@ -382,7 +558,13 @@
      "signature": "colour-argument-normaliser-context-gaps",
      "at": "2026-09-15T08:56:12.252489Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "c1cf0727c04288b4ee124697aae6ebe4e3aa9b0bce5248259234f4ef24caf34d",
+     "validated_at": "2026-09-16T13:11:25.223007Z"
+    }
+   }
   },
   "chemfig-w4-08": {
    "themes": [
@@ -401,7 +583,17 @@
      "signature": "chemname-long-label-overflows-crop-clipped",
      "at": "2026-09-15T08:56:12.257174Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "5f2880c7e85e898975c9977b25fff97a7bb62c2a6c61b42c480fb6c6ad87cc15",
+     "validated_at": "2026-09-19T10:34:21.560566Z"
+    },
+    "dark": {
+     "hash": "9327e436985e1e491589b85cb1f3d193c754b3c144905332c43a4a29cff22fef",
+     "validated_at": "2026-09-19T10:34:21.568017Z"
+    }
+   }
   },
   "chemfig-w4-14": {
    "themes": [
@@ -420,7 +612,17 @@
      "signature": "chemname-long-label-overflows-crop-clipped",
      "at": "2026-09-15T08:56:12.267493Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "fdf1c944bed4d83262d4a813bc7117a80045b64631eff78984c5f4e43f25ff71",
+     "validated_at": "2026-09-19T10:35:00.350486Z"
+    },
+    "dark": {
+     "hash": "98462b2d13910a18a143a92e6e55b3f3c220fc10c5ead9288fbd55740a794ec6",
+     "validated_at": "2026-09-19T10:35:00.354242Z"
+    }
+   }
   },
   "chemfig-w4-12": {
    "themes": [
@@ -438,7 +640,73 @@
      "signature": "stray-statement-terminator-typeset-as-literal",
      "at": "2026-09-15T08:56:12.270345Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "2045ef71278e36ff97670f9c2d5efd18d050b5e3e6d231779d25e160afb29211",
+     "validated_at": "2026-09-16T13:09:44.200328Z"
+    },
+    "dark": {
+     "hash": "cd6f2655df4c9b8f5b6272b279369d2d1cdceeca0def7f6c091d045946cc6873",
+     "validated_at": "2026-09-16T13:09:44.205158Z"
+    }
+   }
+  },
+  "chemfig-w1-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-330",
+     "signature": "lewis-lone-pair-black-on-dark:dark",
+     "at": "2026-09-19T10:44:34.936478Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "dc62810271a967f05db9abbca8030a176a7673b7ce2ec66efa797700808fe64c",
+     "validated_at": "2026-09-19T10:24:18.064129Z"
+    },
+    "light": {
+     "hash": "af052e3ebaeef697dbaa0786153ed9831c43ebbb14948e8490c643935e108ae3",
+     "validated_at": "2026-09-19T10:24:18.058616Z"
+    }
+   }
+  },
+  "chemfig-w4-09": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-338",
+     "signature": "adjacent-chemfig-statements-abut-no-separator",
+     "at": "2026-09-19T10:44:34.940673Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "2238c4c1b139e339f463c85570cfe916c873e1533ee4974ab67c7231190086d7",
+     "validated_at": "2026-09-19T10:28:51.392525Z"
+    },
+    "light": {
+     "hash": "b009b6ce686848176299f9977d057a40576ed50bcd32e1270a7c002b41bd742d",
+     "validated_at": "2026-09-19T10:28:51.389245Z"
+    }
+   }
   }
  }
 }

@@ -1,0 +1,5 @@
+{
+ "type": "chemfig",
+ "definition": "\\setchemfig{atom sep=\"2.4em\"}\n\\chemfig{*\"6\"(-=-=-=)}\n\\chemfig{A-[:\"30\"]B}",
+ "intent": "RECOVERY: numeric arguments quoted as strings -- ring size *\"6\", angle [:\"30\"], key value \"2.4em\"."
+}

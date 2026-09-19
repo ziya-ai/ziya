@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\\draw (0,0) to[spst=$S_1$] (2,0);\n\\draw (3,0) to[cspst=$S_2$] (5,0);\n\\draw (6,0) to[ospst=$S_3$] (8,0);\n\\draw (9,0) to[push button=$S_4$] (11,0);\n\\draw (3,-3) node[spdt](sw){};\n\\draw (sw.in) -- ++(-1,0) node[left]{in};\n\\draw (sw.out 1) -- ++(1,0) node[right]{A};\n\\draw (sw.out 2) -- ++(1,0) node[right]{B};",
+ "intent": "Switch family: spst, closing (cspst), opening (ospst), push button bipoles plus an spdt node with in/out 1/out 2 anchors."
+}

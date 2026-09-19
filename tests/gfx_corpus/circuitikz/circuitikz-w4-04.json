@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\\definecolor{plate}{HTML}{16324A}\n\\definecolor{plateink}{HTML}{F2F6FA}\n\\definecolor{acc}{HTML}{0AF}\n\\fill[plate] (-0.9,-1.5) rectangle (7.3,1.9);\n\\draw[color=plateink] (0,0) to[R=$R_1$] (2.4,0) to[C=$C_1$] (4.8,0) node[ocirc]{};\n\\draw[color=acc] (0,0) to[short] (0,-1.1) node[ground]{};\n\\node[plateink] at (2.4,1.4) {Three-digit hex};\n",
+ "intent": "RECOVERY: colours given as three-digit CSS hex. Two distinct forms: a 3-digit value in xcolor's HTML model (which requires 6), and a bare #0af used directly as an option value. Both are natural LLM output from web habits. Evident intent is a cyan accent on the plate."
+}

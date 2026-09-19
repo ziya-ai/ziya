@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\\definecolor{plate}{HTML}{16324A}\n\\definecolor{plateink}{HTML}{F2F6FA}\n\\definecolor{plateaccent}{HTML}{5FD4E4}\n\\fill[plate] (-0.9,-1.5) rectangle (7.3,1.9);\n\\draw[color=plateink] (0,0) to[resistor=$R_1$] (2.0,0)\n  to[R=$R_2$] (4.0,0) to[americanresistor=$R_3$] (6.0,0) node[ocirc]{};\n\\draw[color=plateaccent] (0,-1.1) to[capacitor=$C_1$] (2.0,-1.1)\n  to[C=$C_2$] (4.0,-1.1);\n\\node[plateink] at (3.0,1.4) {Mixed dialects};\n",
+ "intent": "RECOVERY: mixed dialect versions of component keys in ONE body -- a current long form (resistor), a current short form (R), a legacy alias-style guess (americanresistor, one word), and a deprecated capacitor spelling. Relates to the w1-10 finding that unknown keys degenerate SILENTLY to an invisible rectangle."
+}

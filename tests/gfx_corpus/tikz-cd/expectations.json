@@ -18,7 +18,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.273411Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "692d7fb1273fb8078ae1e034e10b0ad4af92b9126d1ba975562213b8c5249983",
+     "validated_at": "2026-09-19T10:49:40.516378Z"
+    },
+    "dark": {
+     "hash": "79127c721d0be8ad336f3e28957bfa8ec55f5fe254655f81181abcf23f873e32",
+     "validated_at": "2026-09-19T10:49:40.530926Z"
+    }
+   }
   },
   "tikz-cd-w1-02": {
    "themes": [
@@ -36,7 +46,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.277624Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "ece3165988b258c07530c2a283f04ca3712fb7fcc11f394eda19c276c56444fe",
+     "validated_at": "2026-09-19T10:49:40.742328Z"
+    },
+    "dark": {
+     "hash": "74da49d5981702f74df87b9a86ff369b415377b3bf7acb5049cce7cc4c6d7973",
+     "validated_at": "2026-09-19T10:49:40.748493Z"
+    }
+   }
   },
   "tikz-cd-w1-03": {
    "themes": [
@@ -54,7 +74,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.281622Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "c383b82dc5bfade4ae076be65c1b814e8c9965e6760fe436c9b7b69418f95155",
+     "validated_at": "2026-09-19T10:49:40.894702Z"
+    },
+    "dark": {
+     "hash": "54c2517cf168cfa6ecebaf8cf001740ad3e8f7965428d03c54c6e6573075c617",
+     "validated_at": "2026-09-19T10:49:40.902770Z"
+    }
+   }
   },
   "tikz-cd-w1-04": {
    "themes": [
@@ -72,7 +102,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.284241Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "34c0eeadc1b019102260d4cf37918a8a978cbe822586914b79ba4a88e268930a",
+     "validated_at": "2026-09-19T10:50:36.491059Z"
+    },
+    "dark": {
+     "hash": "cb1f41db95b182997efe29d1165ea8e39e619ece90ef580ec5ddcb2b5f8eee6e",
+     "validated_at": "2026-09-19T10:50:36.497894Z"
+    }
+   }
   },
   "tikz-cd-w1-05": {
    "themes": [
@@ -90,7 +130,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.288699Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "73865044589966f0ffe6b107007a71e6cc8fbd1f8f7a36fc9d3867ea668e1b4a",
+     "validated_at": "2026-09-19T10:50:36.653025Z"
+    },
+    "dark": {
+     "hash": "79d922a21ca34eba7aa7b404f6b07605716c19ff65f92373d327ed855672571e",
+     "validated_at": "2026-09-19T10:50:36.660373Z"
+    }
+   }
   },
   "tikz-cd-w1-06": {
    "themes": [
@@ -100,15 +150,31 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "D-227",
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.292282Z"
+    },
+    {
+     "origin": "D-465",
+     "signature": "tikzcd-background-color-white-not-page-colour:dark",
+     "at": "2026-09-19T11:32:01.146667Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "038698d5790d5c38c099a63e3aba5e0e3335e1611dcabeed29d08d186f688022",
+     "validated_at": "2026-09-19T10:50:36.868865Z"
+    },
+    "dark": {
+     "hash": "523ebea778c54754c19f5ed1e7ad15d8955422b949b02580c7fc48c06205f95e",
+     "validated_at": "2026-09-19T10:50:36.878873Z"
+    }
+   }
   },
   "tikz-cd-w1-07": {
    "themes": [
@@ -126,7 +192,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.296743Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "123b32b50321d0a7fbc69a8b144b017e04c392103b903ffcf88698015f5a1256",
+     "validated_at": "2026-09-19T10:51:31.605396Z"
+    },
+    "dark": {
+     "hash": "bd366784b36abf5245bde30c2239bfa376f3139710fdbddcc8010c9da7df4c0d",
+     "validated_at": "2026-09-19T10:51:31.611884Z"
+    }
+   }
   },
   "tikz-cd-w1-08": {
    "themes": [
@@ -144,7 +220,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.307492Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "cd043dfcf888a429e4b11749e13d624b45272a9b174ba9052e4098ab13bf94b7",
+     "validated_at": "2026-09-19T10:51:31.763131Z"
+    },
+    "dark": {
+     "hash": "60c165bb2a2a06398a38b30095890ed5f5bae1c6ed268cb27701c4243651dd45",
+     "validated_at": "2026-09-19T10:51:31.768661Z"
+    }
+   }
   },
   "tikz-cd-w1-09": {
    "themes": [
@@ -154,15 +240,31 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "D-227",
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.311117Z"
+    },
+    {
+     "origin": "D-465",
+     "signature": "tikzcd-background-color-white-not-page-colour:dark",
+     "at": "2026-09-19T11:32:01.150254Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "d88ad3ff23ad021f62dcb092cfbfd0e5969395c04304a029b3328f029189f80b",
+     "validated_at": "2026-09-19T10:51:31.921816Z"
+    },
+    "dark": {
+     "hash": "83b80a983bfaabbf2ac16a6554a9b8503a733acad3bc94da415b3d2ac570aa72",
+     "validated_at": "2026-09-19T10:51:31.928516Z"
+    }
+   }
   },
   "tikz-cd-w1-10": {
    "themes": [
@@ -180,7 +282,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.314423Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "c84f82a6432c74a38c7d9f368b373fdd063b537a76043ac5542a47a24f499409",
+     "validated_at": "2026-09-19T10:52:34.464565Z"
+    },
+    "dark": {
+     "hash": "46177d2c4baf0ce59cb6538c709d9d273189680ffa03fd18b32c9662e795b16a",
+     "validated_at": "2026-09-19T10:52:34.471733Z"
+    }
+   }
   },
   "tikz-cd-w1-11": {
    "themes": [
@@ -190,15 +302,31 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "D-227",
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.317247Z"
+    },
+    {
+     "origin": "D-465",
+     "signature": "tikzcd-background-color-white-not-page-colour:dark",
+     "at": "2026-09-19T11:32:01.154252Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "b1fd28340121db3d4fc4e3b2b44ccd43e98e4bdd4a7d0e71deedd92e1b8da4aa",
+     "validated_at": "2026-09-19T10:52:34.662331Z"
+    },
+    "dark": {
+     "hash": "516a50a206659f38b369161dec9d367f1fd8edacbdf3f9f70da265c418d34585",
+     "validated_at": "2026-09-19T10:52:34.668530Z"
+    }
+   }
   },
   "tikz-cd-w1-12": {
    "themes": [
@@ -208,15 +336,31 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "D-227",
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.320134Z"
+    },
+    {
+     "origin": "D-465",
+     "signature": "tikzcd-background-color-white-not-page-colour:dark",
+     "at": "2026-09-19T11:32:01.157580Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "eb14a50a70a1833184eddf58407f184c36e596fdb5b8be5ad2445eeeac2ac512",
+     "validated_at": "2026-09-19T10:52:34.862638Z"
+    },
+    "dark": {
+     "hash": "c7782886715f45dd8b62c8ebe61e9143b77c3ec51a13662a04e71cf8f0a8b87a",
+     "validated_at": "2026-09-19T10:52:34.870873Z"
+    }
+   }
   },
   "tikz-cd-w1-13": {
    "themes": [
@@ -234,7 +378,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.323389Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "25826b819db2361f054b6c9d9431c9bf3261d6e2a9e470900485b66e5eac0775",
+     "validated_at": "2026-09-19T10:54:03.141327Z"
+    },
+    "dark": {
+     "hash": "70a96d578d2cd53b531b83a43e128d893204d4509cd9472e13bca538b9db76bf",
+     "validated_at": "2026-09-19T10:54:03.147279Z"
+    }
+   }
   },
   "tikz-cd-w1-14": {
    "themes": [
@@ -252,7 +406,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.331450Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "e6319912c8a5530b96105cb7648fa0074dc7a077a4f77c6a0182a69cea32b41c",
+     "validated_at": "2026-09-19T10:54:03.306945Z"
+    },
+    "dark": {
+     "hash": "dac9b1f2e7efad1076ec2b46a8874d917868bf73d4c11b0b0cfa006fe491fd3d",
+     "validated_at": "2026-09-19T10:54:03.313375Z"
+    }
+   }
   },
   "tikz-cd-w1-15": {
    "themes": [
@@ -270,7 +434,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.334617Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "08d4a413af112a0079b9e5e7be49712826d14068adb6a983421361f2f5f59dab",
+     "validated_at": "2026-09-19T10:54:03.471489Z"
+    },
+    "dark": {
+     "hash": "6182ee9c81bfe8401e69c87656d2827781e56749b7a0deaec3da7153454e9fa5",
+     "validated_at": "2026-09-19T10:54:03.475827Z"
+    }
+   }
   },
   "tikz-cd-w2-01": {
    "themes": [
@@ -288,7 +462,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.339002Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "15cc5ac3e2b5d350a6ece2b0ab1c6bb2cff8d1a40911fbbb06aad0b490119500",
+     "validated_at": "2026-09-19T11:05:21.550509Z"
+    },
+    "dark": {
+     "hash": "27cd971823e3c86898a0fa54ab7beb06c1ed74b98fd937b3805bd97aae7b29b8",
+     "validated_at": "2026-09-19T11:05:21.583763Z"
+    }
+   }
   },
   "tikz-cd-w2-02": {
    "themes": [
@@ -306,7 +490,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.342822Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "9b114313bf31002a459ec4722ce7e86b2da92ce89e28c14a95802f185a92ed86",
+     "validated_at": "2026-09-19T10:58:15.171389Z"
+    },
+    "dark": {
+     "hash": "02b4de065cfb0d347abdaad0f5f7a5fa981d38bf53b348bf323d1546572f4a8a",
+     "validated_at": "2026-09-19T10:58:15.182432Z"
+    }
+   }
   },
   "tikz-cd-w2-03": {
    "themes": [
@@ -324,7 +518,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.346514Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "1d7ec890286c951f061e79c11896afb9822d54b0e150c1c0cd2216b4315615e4",
+     "validated_at": "2026-09-19T10:58:15.412172Z"
+    },
+    "dark": {
+     "hash": "a45a0cd223dc070fe16fdf57110ff1e74f493055554a30b618e8847eedd9e439",
+     "validated_at": "2026-09-19T10:58:15.425179Z"
+    }
+   }
   },
   "tikz-cd-w2-04": {
    "themes": [
@@ -360,7 +564,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.352208Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "8530f17ced0720c1362e719a7a72f952e01445548930be4defcc6fbd73b3eda9",
+     "validated_at": "2026-09-19T11:00:58.565276Z"
+    },
+    "dark": {
+     "hash": "d242d27ca61f47907179a073ec382886023fe6aa168f0f2358eb1dc5a5f1e7f9",
+     "validated_at": "2026-09-19T11:00:58.574364Z"
+    }
+   }
   },
   "tikz-cd-w2-06": {
    "themes": [
@@ -396,7 +610,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.358957Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "2ee0aacaff4859b7adc3deaccd2275edcb0ecc77286337254c20c71bfbc48125",
+     "validated_at": "2026-09-19T11:18:35.400372Z"
+    },
+    "dark": {
+     "hash": "3c59e735caa465d85318365265f2af46f582078a77dac246ce5fc18814e3bb3d",
+     "validated_at": "2026-09-19T11:18:35.448884Z"
+    }
+   }
   },
   "tikz-cd-w2-08": {
    "themes": [
@@ -432,7 +656,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.365951Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "f10f78e4d16b074ba1b5de5e8ba115f612272392b4cdb0f498ecb1b92bf4ae33",
+     "validated_at": "2026-09-19T11:00:58.744576Z"
+    },
+    "dark": {
+     "hash": "7d6d1afee560c60b08ffc58265a423455ca15a2a7b1fa532b03ddf5a0cc7def3",
+     "validated_at": "2026-09-19T11:00:58.748158Z"
+    }
+   }
   },
   "tikz-cd-w2-10": {
    "themes": [
@@ -450,7 +684,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.368767Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "611cd01f3eb7f6489afedaea1bb7e0376867eeca08c93d85cad7c5c4a0b18246",
+     "validated_at": "2026-09-19T11:02:17.386825Z"
+    },
+    "dark": {
+     "hash": "2b6ccdc8cc49b316155f609201a3e4f99e39784db4d63f317cb6790fc0b946ac",
+     "validated_at": "2026-09-19T11:02:17.394315Z"
+    }
+   }
   },
   "tikz-cd-w2-11": {
    "themes": [
@@ -486,7 +730,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.379289Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "509b5dde9c58065c52c09bf758d2c6ce0b1821db40558e9b3382ea39bd1c1612",
+     "validated_at": "2026-09-19T11:02:17.572319Z"
+    },
+    "dark": {
+     "hash": "9fb8eaaca40757318671b1e360519b1daa42bed59066dc10d7109cd523d2ff50",
+     "validated_at": "2026-09-19T11:02:17.579749Z"
+    }
+   }
   },
   "tikz-cd-w2-13": {
    "themes": [
@@ -504,7 +758,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.384195Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "177041776fd6bfb6af2b97cdf91b27f6d76a5273750827a6ac7dd423358443d4",
+     "validated_at": "2026-09-19T11:10:14.962793Z"
+    },
+    "dark": {
+     "hash": "a20aa162426262aad0f2351fe95f00c4f4fc380c84fad7cee349cf961f30be00",
+     "validated_at": "2026-09-19T11:10:15.009414Z"
+    }
+   }
   },
   "tikz-cd-w2-14": {
    "themes": [
@@ -514,15 +778,32 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast",
+    "visual:min_text_size"
    ],
    "origins": [
     {
      "origin": "D-227",
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.389526Z"
+    },
+    {
+     "origin": "D-469",
+     "signature": "categorical-palette-recycles-into-illegible-members",
+     "at": "2026-09-19T11:32:01.170520Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "06cee5daa2c28738b0d778cb8683c9cdf02d13e449cff740caf1b5e6ea6adbaf",
+     "validated_at": "2026-09-19T11:07:37.315205Z"
+    },
+    "dark": {
+     "hash": "f4b84fb83f273fae7b097da97ebffd4bd7ccab2c5b415d6f85c2c0210f1cb45b",
+     "validated_at": "2026-09-19T11:07:37.331251Z"
+    }
+   }
   },
   "tikz-cd-w2-15": {
    "themes": [
@@ -576,7 +857,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.403643Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "be5d58df0a02b734273d095283f5d51c6acfab80684d62c9ffdbbdbdc13f4e44",
+     "validated_at": "2026-09-19T11:21:06.147919Z"
+    },
+    "dark": {
+     "hash": "02df8ba067b63d91d4bf55937d34d88b710ce86bc9f0dec5509708cafba368e6",
+     "validated_at": "2026-09-19T11:21:06.152201Z"
+    }
+   }
   },
   "tikz-cd-w3-03": {
    "themes": [
@@ -594,7 +885,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.408093Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "e23eddca32e47e6aa7467060c935995bbfae4aa7ba9e01167a07e86ec17878d3",
+     "validated_at": "2026-09-19T11:19:50.373641Z"
+    },
+    "dark": {
+     "hash": "83bea6836235d5603525c362574dd817c54c79f2df96a59111a628400ee0fd1c",
+     "validated_at": "2026-09-19T11:19:50.394925Z"
+    }
+   }
   },
   "tikz-cd-w3-04": {
    "themes": [
@@ -612,7 +913,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.411990Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "3687b03f10691c0a02a5d96c1a1bc986b5f633f776a7dadaa1f0b99507990aa6",
+     "validated_at": "2026-09-19T11:19:50.632813Z"
+    },
+    "dark": {
+     "hash": "e77c63b07787393f03736ce349da9ec17493c17e30f878adad09a2eb675164cb",
+     "validated_at": "2026-09-19T11:19:50.640752Z"
+    }
+   }
   },
   "tikz-cd-w3-05": {
    "themes": [
@@ -622,15 +933,31 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "D-227",
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.416654Z"
+    },
+    {
+     "origin": "D-465",
+     "signature": "tikzcd-background-color-white-not-page-colour:dark",
+     "at": "2026-09-19T11:32:01.161309Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "35a10555a5915c281d3b118c9a70433936c399dbe948e71ea90321f81eaf3d4a",
+     "validated_at": "2026-09-19T11:19:50.901659Z"
+    },
+    "dark": {
+     "hash": "0360b421fbdb21c9b016c7fb5d868ba191723300ff144c32e24af662083c69c4",
+     "validated_at": "2026-09-19T11:19:50.908448Z"
+    }
+   }
   },
   "tikz-cd-w3-06": {
    "themes": [
@@ -640,15 +967,31 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "D-227",
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.420605Z"
+    },
+    {
+     "origin": "D-465",
+     "signature": "tikzcd-background-color-white-not-page-colour:dark",
+     "at": "2026-09-19T11:32:01.164412Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "fbae9d28369d41c42c1dbc58820dc8600cd38dafcf0318abfa42be291763d763",
+     "validated_at": "2026-09-19T11:19:51.200585Z"
+    },
+    "dark": {
+     "hash": "c82e020a23ea2f16256439e6cb19dbe54ec1e52e54e0177d4696eef48b941913",
+     "validated_at": "2026-09-19T11:19:51.247454Z"
+    }
+   }
   },
   "tikz-cd-w3-07": {
    "themes": [
@@ -658,15 +1001,31 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "D-227",
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.425177Z"
+    },
+    {
+     "origin": "D-465",
+     "signature": "tikzcd-background-color-white-not-page-colour:dark",
+     "at": "2026-09-19T11:32:01.167203Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "50d163439b74cd447833bbe4012c5902a17631500e2eea1421c130cd7bd19d63",
+     "validated_at": "2026-09-19T11:21:05.848184Z"
+    },
+    "dark": {
+     "hash": "d368da53a4d11d2389eac36289022c9fcef1ba360473e978162b01676bffcb8b",
+     "validated_at": "2026-09-19T11:21:05.857736Z"
+    }
+   }
   },
   "tikz-cd-w3-08": {
    "themes": [
@@ -684,7 +1043,13 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.429634Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "abc5921b646e96b8fea419ff287c38bc79b7e2bf5e05696277835dd4817b95a6",
+     "validated_at": "2026-09-19T11:23:08.822306Z"
+    }
+   }
   },
   "tikz-cd-w3-09": {
    "themes": [
@@ -702,7 +1067,13 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.434700Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "1b4a1f19286c50f1d3e382871ad36c99fdcf74fddb30e8f6d5bbab1f6cb53763",
+     "validated_at": "2026-09-19T11:23:09.013832Z"
+    }
+   }
   },
   "tikz-cd-w3-10": {
    "themes": [
@@ -712,15 +1083,31 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "D-227",
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.440373Z"
+    },
+    {
+     "origin": "D-470",
+     "signature": "label-ink-injection-ignores-fill-opacity",
+     "at": "2026-09-19T11:32:01.174379Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "94805061a06e150366605d6958a171836d8ceb3e23f78ead514690f7335ca43a",
+     "validated_at": "2026-09-19T11:25:14.703897Z"
+    },
+    "dark": {
+     "hash": "cd8d3288d7f111d541bcd98cd592ba92ac74c270b5cd81694498de318b274351",
+     "validated_at": "2026-09-19T11:25:14.709780Z"
+    }
+   }
   },
   "tikz-cd-w3-11": {
    "themes": [
@@ -738,7 +1125,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.445611Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "8b6c17c706fa5560f43f48794d4309ff537881ed2e700392381beb6794be81e2",
+     "validated_at": "2026-09-19T11:25:14.953112Z"
+    },
+    "dark": {
+     "hash": "9b2ea8d98cf575642f5838f5dfdee9e407021500a11be68166e189baa5385764",
+     "validated_at": "2026-09-19T11:25:14.957286Z"
+    }
+   }
   },
   "tikz-cd-w3-12": {
    "themes": [
@@ -756,7 +1153,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.449936Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "cdd65e7eb7bdf5a0d2f52b305a22fdee6a4863c7ed0108c8e1ad901828d7156b",
+     "validated_at": "2026-09-19T11:25:15.136071Z"
+    },
+    "dark": {
+     "hash": "43ee0b1ca62cb8499c2ec29d554448c5b4535148c6d34d81ed0076e9945bbbd3",
+     "validated_at": "2026-09-19T11:25:15.142089Z"
+    }
+   }
   },
   "tikz-cd-w3-13": {
    "themes": [
@@ -792,7 +1199,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.459611Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "58b28ff66cf7d34e4ac5630f6dd9f21a1e4434a51bb32529223ec4d9b4dc4972",
+     "validated_at": "2026-09-19T11:27:05.598839Z"
+    },
+    "dark": {
+     "hash": "6f749b404b6fe0a2ee1725be6d02d8b84e2f6019f87a48d9c86a366728cf622c",
+     "validated_at": "2026-09-19T11:27:05.604715Z"
+    }
+   }
   },
   "tikz-cd-w3-15": {
    "themes": [
@@ -828,7 +1245,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.469956Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "692d7fb1273fb8078ae1e034e10b0ad4af92b9126d1ba975562213b8c5249983",
+     "validated_at": "2026-09-19T11:28:13.087640Z"
+    },
+    "dark": {
+     "hash": "79127c721d0be8ad336f3e28957bfa8ec55f5fe254655f81181abcf23f873e32",
+     "validated_at": "2026-09-19T11:28:13.100188Z"
+    }
+   }
   },
   "tikz-cd-w4-02": {
    "themes": [
@@ -846,7 +1273,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.477450Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "c126c4031abe03e2657e3ca7eb6858a84281ac1808ad228549f379b795fe9de4",
+     "validated_at": "2026-09-19T11:28:13.303959Z"
+    },
+    "dark": {
+     "hash": "c66e2352408dad64b3af7759b6f6ae595a3852e8e9f10bd5cc635d40fe1b265a",
+     "validated_at": "2026-09-19T11:28:13.309632Z"
+    }
+   }
   },
   "tikz-cd-w4-03": {
    "themes": [
@@ -864,7 +1301,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.482525Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "b01de2c82ea167818cbcd0adca959fd85f4968cd33eb3f2ad8064a53d6663acf",
+     "validated_at": "2026-09-19T11:28:13.528335Z"
+    },
+    "dark": {
+     "hash": "f1e546dee2dd6674eb399b8010d76cf5e83e1a251def3518040b463321d7a189",
+     "validated_at": "2026-09-19T11:28:13.534872Z"
+    }
+   }
   },
   "tikz-cd-w4-04": {
    "themes": [
@@ -954,7 +1401,17 @@
      "signature": "profile-package-not-installed",
      "at": "2026-09-15T08:56:14.507478Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "c9070ec0ef7395d4a271bfd421618ffd0d7a0a3b0e26813c917e1590501ba882",
+     "validated_at": "2026-09-19T11:29:46.319293Z"
+    },
+    "dark": {
+     "hash": "71bbbe3ce232bfd7f869ade563cea98856ba2ba8cd4d659bf2ceddbbd0d66141",
+     "validated_at": "2026-09-19T11:29:46.328464Z"
+    }
+   }
   },
   "tikz-cd-w4-10": {
    "themes": [

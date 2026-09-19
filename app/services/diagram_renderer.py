@@ -497,6 +497,45 @@ def capture_should_rewrite_svg(measure: Any) -> bool:
     return True
 
 
+def measured_drawing_extent_px(
+    bbox_uu_w: float,
+    bbox_uu_h: float,
+    svg_px_w: float,
+    svg_px_h: float,
+) -> tuple[float, float]:
+    """The drawing's ON-SCREEN px extent for the capture-fit decision.
+
+    D-125 (small-LR-graph viewport bug): an SVG's ``getBBox`` / declared
+    ``viewBox`` extent is in SVG USER UNITS, which for graphviz are POINTS
+    (Viz.js declares ``width="Npt"`` and numbers its viewBox in points), NOT
+    CSS px. ``compute_capture_fit`` compares the "natural" extent against the
+    px ``rendered*`` dims and against the px ``min_dim`` legibility floor, so
+    handing it the user-unit extent understates a graphviz drawing by the
+    point->px factor (and by any CSS width the plugin applied). A wide, short
+    ``rankdir=LR`` graph (natural ~300x50 pt) then read as a sub-pixel island
+    far under the 800px floor; the undersize-upscale branch fired, forced the
+    already-correctly-sized ~1280px drawing back to its point count as px and
+    rescaled it to a thin strip that captured blank/cropped -- while the same
+    nodes laid out ``rankdir=TB`` (tall, narrow) survived.
+
+    When the SVG element's on-screen px box is known (its ``getBoundingClientRect``
+    in the no-overflow branch, where that box equals the drawing), it is the
+    unit-correct natural extent; fall back to the user-unit extent otherwise.
+    Engines whose user units are already CSS px (mermaid, vega) pass the same
+    number either way, so this only corrects point-based graphviz. Pure and
+    side-effect-free so the units contract is unit-testable without a browser;
+    mirrors the no-overflow branch of ``_CAPTURE_MEASURE_JS``.
+    """
+    try:
+        pw = float(svg_px_w)
+        ph = float(svg_px_h)
+    except (TypeError, ValueError):
+        pw = ph = 0.0
+    if pw > 0 and ph > 0:
+        return (pw, ph)
+    return (float(bbox_uu_w), float(bbox_uu_h))
+
+
 # D-117/D-119: the natural extent is the UNION of the declared viewBox and the
 # content getBBox (mirrors content_extent_from_boxes), so content that overflows
 # the declared viewBox (negative-x labels, forced-size upscales, off-canvas
@@ -548,7 +587,27 @@ _CAPTURE_MEASURE_JS = """
       const noOverflow = (c.scrollWidth <= (c.clientWidth + TOL)) &&
                          (c.scrollHeight <= (c.clientHeight + TOL));
       if (noOverflow && gw > 0 && gh > 0) {
-        natW = gw; natH = gh;
+        // D-125 (small-LR-graph viewport bug): gw/gh here are the getBBox /
+        // viewBox extent in SVG USER UNITS -- for graphviz that is POINTS, not
+        // CSS px (a Viz.js SVG declares width in pt and a viewBox numbered in
+        // pt). compute_capture_fit compares this against the px `rendered*`
+        // dims and against the px min_dim floor, so feeding it points made a
+        // wide-short rankdir=LR graph (natural ~300x50 pt) read as a sub-pixel
+        // island far under the 800px floor: the undersize-upscale then FORCED
+        // the (correctly ~1280px-wide) drawing back to its point count as px
+        // and rescaled it to a thin strip, captured blank/cropped -- while a
+        // tall rankdir=TB graph of the same nodes survived. The unit-correct
+        // "natural" extent is the drawing's ON-SCREEN px size, i.e. the SVG
+        // element's own client rect (equal to the drawing here, since this is
+        // the no-overflow branch). Engines whose user units are already CSS px
+        // (mermaid, vega) get the same number, so only point-based graphviz is
+        // corrected. Falls back to the user-unit extent when no rect exists.
+        let dpxW = gw, dpxH = gh;
+        try {
+          const sr = svg.getBoundingClientRect();
+          if (sr && sr.width > 0 && sr.height > 0) { dpxW = sr.width; dpxH = sr.height; }
+        } catch (e) {}
+        natW = Math.ceil(dpxW); natH = Math.ceil(dpxH);
       } else {
         natW = Math.max(natW, gw);
         natH = Math.max(natH, gh);
@@ -746,6 +805,24 @@ def build_chromium_launch_args(no_sandbox: bool = False) -> list:
         "--use-gl=angle",
         "--use-angle=swiftshader",
         "--enable-unsafe-swiftshader",
+    ]
+    # SwiftShader is only the GPU process's FIRST life. Chromium has two
+    # fallback valves that silently retire it for the rest of the browser's
+    # lifetime, and a long-lived server trips both:
+    #   * After the GPU process crashes a third time, Chromium relaunches it
+    #     with --use-gl=disabled (observed on day-old renderers: the gpu-process
+    #     argv carried the SwiftShader flags AND --use-gl=disabled). Every
+    #     WebGL render from then on is the grey "WebGL is not supported" panel.
+    #   * Repeated context losses put localhost on the per-origin 3D-API
+    #     blocklist, which hides WebGL from the page even when GL is up.
+    # Neither is a sensible trade-off for a one-shot capture server: a crashed
+    # software GPU process costs one render, a permanent fallback costs the
+    # whole 3D feature set until restart. Verified by killing the GPU process
+    # repeatedly (tests/test_headless_webgl_survives_gpu_crash.py): without
+    # these, WebGL is gone after the third kill; with them it comes back.
+    args += [
+        "--disable-gpu-process-crash-limit",
+        "--disable-domain-blocking-for-3d-apis",
     ]
     if no_sandbox:
         args.append("--no-sandbox")

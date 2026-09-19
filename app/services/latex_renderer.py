@@ -901,6 +901,27 @@ class LatexRenderer:
         except Exception:                      # pragma: no cover - defensive
             logger.exception("chemfig lint failed; rendering body unchanged")
 
+        # Adjacent-molecule separation (D-338, chemfig-w4-09).  A model emitting
+        # several independent molecules writes them as consecutive top-level
+        # ``\chemfig{...}`` statements with only whitespace between.  The chemfig
+        # profile has no wrapping environment, so the body lands straight in the
+        # standalone crop box, where the two molecule boxes abut with only the
+        # inter-token space -- their bonds reach the box edge and the pair reads
+        # as ONE bonded structure.  Insert a ``\par\medskip`` between adjacent
+        # bare molecules so they stack as the distinct structures written.  Run
+        # last so it sees the fully-recovered body; it only touches whitespace
+        # between two top-level ``\chemfig`` calls, so it is a no-op on the
+        # common single-molecule body.
+        try:
+            from app.utils.chemfig_lint import separate_adjacent_chemfig
+
+            body, sep_fixes = separate_adjacent_chemfig(body)
+            for note in sep_fixes:
+                logger.info("chemfig molecule separation: %s", note)
+            applied.extend(sep_fixes)
+        except Exception:                      # pragma: no cover - defensive
+            logger.exception("chemfig molecule separation failed; body unchanged")
+
         return body, tuple(applied), tuple(warnings)
 
     @staticmethod
@@ -1074,9 +1095,62 @@ class LatexRenderer:
             return None
         return w, h
 
+    @staticmethod
+    def _parse_gs_bbox(out: Optional[str]) -> Optional[tuple[float, float]]:
+        """Natural (width, height) in points from a ``gs -sDEVICE=bbox`` run.
+
+        Ghostscript writes ``%%HiResBoundingBox: x0 y0 x1 y1`` (and a rounded
+        ``%%BoundingBox``) to stderr, which ``_run`` merges into its returned
+        text.  This is robust to the object-stream/xref-stream compression that
+        modern pdfTeX enables by default -- which hides ``/MediaBox`` from a
+        plaintext byte scan and is why the size request silently degraded to
+        the natural-size PNG (D-239 regression).  Returns None on any miss so
+        the caller falls back to the fixed DPI rather than raising.
+        """
+        if not out:
+            return None
+        m = re.search(
+            r"%%HiResBoundingBox:\s*(-?[\d.]+)\s+(-?[\d.]+)\s+"
+            r"(-?[\d.]+)\s+(-?[\d.]+)", out)
+        if m is None:
+            m = re.search(
+                r"%%BoundingBox:\s*(-?[\d.]+)\s+(-?[\d.]+)\s+"
+                r"(-?[\d.]+)\s+(-?[\d.]+)", out)
+        if m is None:
+            return None
+        try:
+            x0, y0, x1, y1 = (float(m.group(i)) for i in range(1, 5))
+        except ValueError:
+            return None
+        w, h = abs(x1 - x0), abs(y1 - y0)
+        if w <= 0 or h <= 0:
+            return None
+        return w, h
+
+    def _pdf_natural_size(self, pdf_path: Path,
+                          cap: Capability) -> Optional[tuple[float, float]]:
+        """Natural (width, height) in points, robust to PDF compression.
+
+        Tries the cheap plaintext ``/MediaBox`` scan first (uncompressed PDFs,
+        the historical path), then falls back to a Ghostscript ``bbox`` probe
+        for the compressed-stream PDFs modern pdfTeX emits, whose MediaBox the
+        byte scan cannot see.  Without that fallback the width/height request
+        was a silent no-op on those PDFs (D-239)."""
+        size = self._pdf_media_box_points(pdf_path)
+        if size is not None:
+            return size
+        if not cap.has_ghostscript:
+            return None
+        out = self._run(
+            ["gs", "-q", "-dNOPAUSE", "-dBATCH", "-dSAFER",
+             "-sDEVICE=bbox", pdf_path.name],
+            pdf_path.parent, cap)
+        return self._parse_gs_bbox(out)
+
     @classmethod
     def _raster_dpi(cls, pdf_path: Path,
-                    width: Optional[int], height: Optional[int]) -> float:
+                    width: Optional[int], height: Optional[int],
+                    size: Optional[tuple[float, float]] = None) -> float:
         """Resolution (DPI) to rasterise ``pdf_path`` at.
 
         With no size request this is the fixed ``PNG_DPI`` -- byte-identical to
@@ -1101,7 +1175,8 @@ class LatexRenderer:
         """
         if not width and not height:
             return float(PNG_DPI)
-        size = cls._pdf_media_box_points(pdf_path)
+        if size is None:
+            size = cls._pdf_media_box_points(pdf_path)
         if size is None:
             return float(PNG_DPI)
         w_pt, h_pt = size
@@ -1202,7 +1277,12 @@ class LatexRenderer:
                 # requested pixel box (D-006).  With no request this is exactly
                 # the previous fixed PNG_DPI; with one, the tight standalone
                 # crop is fit INSIDE width x height, aspect preserved.
-                dpi = self._raster_dpi(artifact, width, height)
+                # Resolve the natural size robustly (plaintext MediaBox, then
+                # a Ghostscript bbox probe for compressed PDFs) so a size
+                # request is honoured even on modern pdfTeX output (D-239).
+                natural = (self._pdf_natural_size(artifact, cap)
+                           if (width or height) else None)
+                dpi = self._raster_dpi(artifact, width, height, size=natural)
                 conv = self._run(
                     ["gs", "-dSAFER", "-dBATCH", "-dNOPAUSE", "-sDEVICE=pngalpha",
                      f"-r{dpi:g}", "-sOutputFile=doc.png", "doc.pdf"], tmpdir, cap)

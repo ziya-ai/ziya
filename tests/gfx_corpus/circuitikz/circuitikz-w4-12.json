@@ -1,0 +1,5 @@
+{
+ "type": "circuitikz",
+ "definition": "\\definecolor{plate}{HTML}{16324A}\n\\definecolor{plateink}{HTML}{F2F6FA}\n\\definecolor{plateaccent}{HTML}{5FD4E4}\n\\fill[plate] (-0.9,-1.5) rectangle (7.3,1.9);\n\\node[op amp, color=plateink] (oa) at (\"0\",\"0\") {};\n\\node[op amp, color=plateink, right=\"2cm\" of oa] (ob) {};\n\\draw[color=plateink, scale=\"0.9\"] (oa.out) to[short] (ob.-);\n\\node[plateink] at (2.4,1.6) {Quoted numbers};\n",
+ "intent": "RECOVERY: numeric values quoted as strings -- right=\"2cm\", scale=\"0.9\", and quoted coordinates. Direct JSON habit leakage. Evident intent is two op-amp stages placed 2cm apart."
+}

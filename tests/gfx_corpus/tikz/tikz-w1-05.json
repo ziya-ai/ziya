@@ -1,0 +1,5 @@
+{
+ "type": "tikz",
+ "definition": "\\foreach \\p/\\i/\\lbl in {horizontal lines/0/horiz, vertical lines/1/vert,\n                        crosshatch/2/crosshatch, dots/3/dots, bricks/4/bricks} {\n  \\draw[pattern=\\p,draw=black,thick] (\\i*1.6,0) rectangle (\\i*1.6+1.3,1.3);\n  \\node[below,font=\\small] at (\\i*1.6+0.65,-0.05) {\\lbl};\n}\n\\draw[pattern=crosshatch dots,draw=black,thick] (0,2) rectangle (2.9,3);\n\\node[right,font=\\small] at (3.1,2.5) {crosshatch dots};",
+ "intent": "patterns library: horizontal lines, vertical lines, crosshatch, dots, bricks fills with labels"
+}
