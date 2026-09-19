@@ -9,11 +9,11 @@ import { D3RenderPlugin } from '../../types/d3';
 import {
   type PacketSpec, type PacketSection, type PacketBracket,
   type LayoutConfig,
-  computeDimensions, defaultLayout, resolveColor,
+  computeDimensions, computeGridMetrics, defaultLayout, resolveColor,
   assignBracketDepths, escapeXml, computeBracketGutters, fitFieldLabel,
   bracketLabelLayout,
   normalizePacketSpec, sanitizeFieldBits, sanitizeBrackets, sectionLabel,
-  normalizeSectionRows, sanitizePacketBitWidth,
+  normalizeSectionRows,
   sectionContentHeight, SECTION_LABEL_LINE_H,
 } from '../../utils/d3Plugins/packetPlugin';
 import { getOptimalTextColor } from '../../utils/colorUtils';
@@ -35,6 +35,63 @@ export function stripPacketFence(raw: string): string {
   if (matched) return matched[1].trim();
   t = t.replace(/^```[a-zA-Z0-9_-]*\s*/, '').replace(/```\s*$/, '');
   return t.trim();
+}
+
+/**
+ * Resolve the definition STRING to bridge/parse from an incoming spec (D-453).
+ * A `packet-beta`/JSON string can arrive either directly on `rawSpec.definition`
+ * (the ```d3 fence carrying a bare string) OR one level deeper as a nested
+ * object envelope `{ definition: { definition: "<dsl/json>" } }` — produced when
+ * a ```d3 fence carries `{"definition": "packet-beta …"}`, which D3Renderer
+ * parses to an object before the plugin sees it. In the nested case the old
+ * `typeof rawSpec.definition === 'string'` gate was false, extractDefinition
+ * handed the engine `{definition: dsl}` (no sections), and the DSL/JSON recovery
+ * never ran. Returns the inner string in both shapes, or `undefined` for a
+ * direct spec (no definition, or a definition object without a string body).
+ * Pure / DOM-free / testable.
+ */
+export function resolvePacketDefinitionString(rawSpec: any): string | undefined {
+  if (typeof rawSpec?.definition === 'string') return rawSpec.definition;
+  if (rawSpec?.definition && typeof rawSpec.definition === 'object'
+      && typeof rawSpec.definition.definition === 'string') {
+    return rawSpec.definition.definition;
+  }
+  return undefined;
+}
+
+/**
+ * Vertical stagger offsets (px, one per input in order) for co-extensive
+ * bracket labels (D-452). Co-extensive brackets get DISTINCT depths, so their
+ * labels share nearly the same y but sit only ~30px apart in x; a horizontal
+ * label wider than that stride overprints its neighbour into a smear. Any
+ * HORIZONTAL label that overlaps an EARLIER horizontal label in y at a DIFFERENT
+ * depth is pushed down past it so each reads on its own line. Rotated labels and
+ * same-depth overlaps (handled by an outward x-shift) get 0. Pure / DOM-free.
+ */
+export interface BracketLabelBox {
+  depth: number;
+  horizontal: boolean;
+  fontSize: number;
+  yMin: number;
+  yMax: number;
+}
+export function coextensiveLabelVShifts(items: BracketLabelBox[], pad: number): number[] {
+  const shifts = new Array(items.length).fill(0);
+  for (let i = 0; i < items.length; i++) {
+    const a = items[i];
+    if (!a.horizontal) continue;
+    let vShift = 0;
+    for (let j = 0; j < i; j++) {
+      const b = items[j];
+      if (!b.horizontal) continue;
+      if (a.depth === b.depth) continue;
+      if (a.yMin < b.yMax + pad && a.yMax > b.yMin - pad) {
+        vShift = Math.max(vShift, shifts[j] + b.fontSize + 4);
+      }
+    }
+    shifts[i] = vShift;
+  }
+  return shifts;
 }
 
 /**
@@ -169,7 +226,16 @@ export function parsePacketBetaDsl(text: string): { type: 'packet'; title: strin
     if (!Number.isFinite(b)) b = a;
     fields.push({ name: label, bits: clampWidth(b - a + 1) });
   }
-  return fields.length > 0 ? { type: 'packet', title, bitWidth: 32, fields } : null;
+  if (fields.length === 0) return null;
+  // Choose a row width that ACCOMMODATES the widest field (D-196/D-197). The
+  // mermaid default is 32 bits/row, but a field wider than the row (Ethernet's
+  // 48-bit MACs, ARP's 48-bit sender address) must not exceed the row it sits
+  // in — otherwise its rect is drawn past the declared grid width and the
+  // element-screenshot capture grabs a blank region. Never below 32 (keeps the
+  // familiar 32-bit ruler for ordinary specs), clamped to the bit-width cap.
+  const widestField = fields.reduce((m, f) => Math.max(m, f.bits), 0);
+  const bitWidth = clampWidth(Math.max(32, widestField));
+  return { type: 'packet', title, bitWidth, fields };
 }
 
 /**
@@ -243,12 +309,17 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
   // Source toggle still shows the author's original definition.
   // extractDefinition also covers the envelope whose definition is ALREADY an
   // object (a 
+  // Resolve the definition STRING to bridge/parse. It may sit directly on
+  // rawSpec.definition, OR one level deeper in a nested object envelope
+  // `{ definition: { definition: "<dsl or json>" } }` (D-453).
+  const defString = resolvePacketDefinitionString(rawSpec);
+
   let pkt: PacketSpec;
-  if (typeof rawSpec?.definition === 'string') {
+  if (defString !== undefined) {
     // De-fence + smart-quote normalise once, then try the DSL bridge (its
     // `/^packet/` sniff needs the fence gone). parsePacketBetaDsl handles both
     // absolute ranges and v11 `+N:` relative widths.
-    const cleaned = normalizePacketSmartQuotes(stripPacketFence(rawSpec.definition));
+    const cleaned = normalizePacketSmartQuotes(stripPacketFence(defString));
     const dsl = parsePacketBetaDsl(cleaned);
     if (dsl) {
       pkt = dsl as unknown as PacketSpec;
@@ -293,9 +364,14 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
   // NaN/Infinity) so the ruler tick loop below and the grid width match
   // computeDimensions, which sanitizes identically. A fractional bitWidth
   // (e.g. 31.5) otherwise leaks into the ruler producing "30.5 29.5 … -0.5".
-  const bits = sanitizePacketBitWidth(pkt.bitWidth);
   const { width, height, layout: L } = computeDimensions(pkt);
-  const GRID_W = bits * L.BIT_W;
+  // Grid geometry from the shared single-source helper (D-451): `bits` labels
+  // the ruler; `gridBits` (>= bits when a row is wider than bitWidth) sets the
+  // grid width so the viewBox always encloses every field rect, and L.BIT_W is
+  // already the (possibly shrunk) per-bit width that keeps GRID_W under the
+  // capture ceiling.
+  const { bits, gridBits } = computeGridMetrics(pkt);
+  const GRID_W = gridBits * L.BIT_W;
 
   // Bracket gutters + side-placement decision — shared with computeDimensions
   // so gridX and the SVG width agree. When no section uses right-side
@@ -458,6 +534,21 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
         labelOffsets.set(a.br, extraShift);
       }
 
+      // Co-extensive brackets (identical/overlapping spans) get DISTINCT depths,
+      // so their labels share nearly the same y but sit only ~30px apart in x;
+      // a horizontal label wider than that stride overprints the neighbouring
+      // depth's label into an illegible smear (D-452 — three 0-2 brackets on
+      // w3-06). Stagger such different-depth, y-overlapping HORIZONTAL labels
+      // vertically so each reads on its own line (shared pure helper). Same-depth
+      // overlaps are still handled by the outward x-shift above.
+      const vShiftArr = coextensiveLabelVShifts(
+        labelInfos.map(li => ({
+          depth: li.br.depth ?? 0, horizontal: li.lay.horizontal,
+          fontSize: li.lay.fontSize, yMin: li.yMin, yMax: li.yMax,
+        })), LABEL_PAD);
+      const labelVOffsets = new Map<PacketBracket, number>();
+      labelInfos.forEach((li, idx) => labelVOffsets.set(li.br, vShiftArr[idx]));
+
       labelInfos.forEach(({ br, by1, by2, labelY, lay }) => {
         const depth = br.depth ?? 0;
         const offset = 4 + depth * 30;
@@ -488,9 +579,12 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
         // dominating the canvas. Shifted outward if it overlaps a neighbour.
         const extraShift = labelOffsets.get(br) ?? 0;
         const labelX = bx + tickDir * ((lay.horizontal ? 10 : 20) + extraShift);
+        // Vertical stagger for co-extensive different-depth horizontal labels
+        // (D-452), so they stack instead of overprinting at the shared y.
+        const labelYFinal = labelY + (labelVOffsets.get(br) ?? 0);
 
         const label = svg.append('text')
-          .attr('x', labelX).attr('y', labelY)
+          .attr('x', labelX).attr('y', labelYFinal)
           .attr('dominant-baseline', 'central')
           .attr('fill', textFill)
           .style('font', `bold ${lay.fontSize}px "Consolas", "Courier New", monospace`)
@@ -499,7 +593,7 @@ function render(container: HTMLElement, d3: any, rawSpec: any, isDarkMode: boole
           label.attr('text-anchor', side === 'right' ? 'start' : 'end');
         } else {
           label.attr('text-anchor', 'middle')
-            .attr('transform', `rotate(${side === 'right' ? 90 : -90}, ${labelX}, ${labelY})`);
+            .attr('transform', `rotate(${side === 'right' ? 90 : -90}, ${labelX}, ${labelYFinal})`);
         }
       });
     };
