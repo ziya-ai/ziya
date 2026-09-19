@@ -710,11 +710,17 @@ class ShellServer:
             return mapping.get(name, m.group(0))
         return re.sub(r'\$(\w+)|\$\{(\w+)\}', _repl, text)
 
-    def _expand_and_tokenize(self, cmd_segment: str, extra_env: dict | None = None) -> list:
+    def _expand_and_tokenize(self, cmd_segment: str, extra_env: dict | None = None,
+                             cwd: str | None = None) -> list:
         """Expand shell features in Python and tokenize into an args list.
 
         Handles environment variables, tilde expansion, and glob patterns
         so that subprocess can be called with shell=False.
+
+        ``cwd`` is the directory the segment will run in.  Relative glob
+        patterns are resolved against it, not against the server process's
+        own cwd, so ``cd pkg && cp src/*.ts out/`` globs inside ``pkg``.
+        Matches stay relative because the subprocess runs with that cwd.
         """
         # Expand environment variables ($VAR, ${VAR}) before tokenizing.
         # When pipeline-local shell variables are supplied, expand against a
@@ -755,7 +761,7 @@ class ShellServer:
                 else globbable[i]
             )
             if should_glob:
-                matches = glob.glob(arg)
+                matches = glob.glob(arg, root_dir=cwd)
                 if matches:
                     result.extend(sorted(matches))
                 else:
@@ -1153,10 +1159,19 @@ class ShellServer:
             # rejected blocked names, so any reason returned here is a
             # belt-and-suspenders no-op.
             resolved, segment_env, _ = self._peel_env_prefix(resolved)
+            # A shell expands the RHS of an assignment at assignment time:
+            # ``P=$HOME/pkg`` stores the resolved path, not the literal
+            # ``$HOME/pkg``.  _peel_env_prefix hands back the raw value, and
+            # later ``$P`` expansion is a single pass, so without this step
+            # ``cp $P/a b`` received a path still containing ``$HOME``.
+            # Assignments are expanded left to right so ``A=x; B=$A/y`` works.
+            for _name, _value in segment_env.items():
+                _value = self._expand_vars(_value, {**seg_vars, **segment_env})
+                segment_env[_name] = os.path.expanduser(_value)
             # Expand using pipeline-local vars plus this segment's own inline
             # VAR=value cmd prefix (the latter wins for the segment).
             seg_vars = {**seg_vars, **segment_env}
-            args = self._expand_and_tokenize(resolved, seg_vars)
+            args = self._expand_and_tokenize(resolved, seg_vars, cwd=seg_cwd)
             if not args:
                 # A bare assignment (no command): record it for later
                 # segments rather than discarding it, then move on.
