@@ -173,6 +173,12 @@ _VARS: List[EnvVar] = [
            "chat path; task cards, goals and delegates are batch work and use "
            "ZIYA_MAX_TOOL_ITERATIONS. Setting ZIYA_MAX_TOOL_ITERATIONS "
            "explicitly overrides this and applies to both modes."),
+    EnvVar("ZIYA_CHAT_TURN_DISCONNECT_GRACE_SECS", int, 60, EnvCategory.MCP,
+           "How long a chat turn keeps running after its last viewer "
+           "disconnects (tab reload, window close) before it is cancelled. "
+           "A reconnect within the window resumes it with a replay. Suspended "
+           "while the turn is waiting on a human decision, and irrelevant to "
+           "an explicit Stop, which cancels immediately."),
     EnvVar("ZIYA_MAX_TOOLS_PER_TURN", int, 1000, EnvCategory.MCP,
            "Per-turn circuit breaker: maximum tool invocations allowed within "
            "a single streaming response (one user turn) before further calls "
