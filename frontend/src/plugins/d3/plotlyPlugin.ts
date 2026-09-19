@@ -17,7 +17,6 @@ import {
   demoteWebglTracesForCapture,
   parsePlotlyDefinition,
   isValidColorToken,
-  KNOWN_PLOTLY_TEMPLATES,
   guardColorscaleAgainstSurface,
   estimateLegendEntries,
   legendAwareRenderHeightPx,
@@ -27,7 +26,7 @@ import {
   isD3HierarchySpec,
   hierarchySpecToPlotly,
 } from './plotlyPreprocessor';
-import { classifyColor, namedColorToHex, isDarkBackground } from './chartTheme';
+import { classifyColor, namedColorToHex, isDarkBackground, ensureReadableFill } from './chartTheme';
 
 declare global {
   interface Window {
@@ -198,8 +197,14 @@ export function sanitizeLayoutColorsForTheme(layout: any, isDarkMode: boolean): 
   };
 
   let cleaned = walk(layout);
-  // Drop a hallucinated string template so the theme defaults are not suppressed.
-  if (typeof cleaned.template === 'string' && !KNOWN_PLOTLY_TEMPLATES.has(cleaned.template)) {
+  // D-458: drop ANY string template (named or not). plotly.js-dist-min ships no
+  // registered named templates (plotly_dark/plotly_white/... are a plotly.py
+  // concept), so a string `template` is silently ignored by plotly and the
+  // figure falls back to LIBRARY light defaults — a white slab on the dark page
+  // and the author's dark request lost. Dropping the string lets applyPlotlyTheme
+  // resolve the ACTIVE renderer theme instead. An OBJECT template (a real inline
+  // template) is left intact and honoured by applyPlotlyTheme's early return.
+  if (typeof cleaned.template === 'string') {
     if (cleaned === layout) cleaned = { ...layout };
     delete cleaned.template;
   }
@@ -253,6 +258,87 @@ export function reconcilePlotlyThemeSurface(merged: any, base: any, isDarkMode: 
   }
   const curFont = out.font && typeof out.font === 'object' ? out.font.color : undefined;
   if (curFont !== themeFont) { clone(); out.font = { ...(out.font || {}), color: themeFont }; }
+  return out;
+}
+
+/**
+ * Reconcile AUTHOR-pinned foreground colours against the RESOLVED theme surface
+ * (D-457). applyPlotlyTheme re-backgrounds the canvas and sets a global font,
+ * but author-pinned colours on specific elements are never checked against the
+ * themed surface they end up on, so under the dark theme:
+ *   • an author title.font.color (e.g. #1f77b4 = 3.46:1 on #1e1e1e) stays below
+ *     the 4.5:1 text floor;
+ *   • an author legend.bgcolor that CLASHES with the theme (a white panel under
+ *     dark) keeps the themed light-on-... global font unreadable on it (1.32:1);
+ *   • an author guide-shape stroke (#333 on #1e1e1e = 1.32:1) vanishes.
+ * Each is resolved FROM the active theme (not a blind constant): the surface is
+ * the theme-resolved paper/plot colour, and every repair uses ensureReadableFill
+ * so the chosen colour satisfies the floor on THAT background — correct in light
+ * and dark alike. Conservative: a colour already clearing the floor, or a legend
+ * background that AGREES with the theme, is left byte-identical. Runs AFTER
+ * applyPlotlyTheme so it sees the resolved surfaces. Exported for unit testing.
+ */
+export function repairAuthorColorsForTheme(layout: any, isDarkMode: boolean): any {
+  if (!layout || typeof layout !== 'object') return layout;
+  const surface = isDarkMode ? '#1e1e1e' : '#ffffff';
+  const themeFont = isDarkMode ? '#e0e0e0' : '#333333';
+  const themeLine = '#767676'; // 4.54:1 on #fff / 3.67:1 on #1e1e1e (line floor)
+  const paperHex = resolveToHex(layout.paper_bgcolor) || surface;
+  const plotHex = resolveToHex(layout.plot_bgcolor) || paperHex;
+
+  let out: any = layout;
+  const clone = () => { if (out === layout) out = { ...layout }; };
+
+  // Title font colour, against the paper surface it is drawn on.
+  const title = layout.title;
+  if (title && typeof title === 'object' && title.font && typeof title.font === 'object'
+      && typeof title.font.color === 'string') {
+    const cur = title.font.color;
+    const repaired = ensureReadableFill(cur, paperHex, themeFont, 4.5);
+    if (repaired !== cur) {
+      clone();
+      out.title = { ...title, font: { ...title.font, color: repaired } };
+    }
+  }
+
+  // Legend: resolve a theme-clashing author bgcolor back to the theme surface so
+  // the themed font reads on it, then repair an explicit legend font colour that
+  // still fails against the (resolved) legend background.
+  const legend = layout.legend;
+  if (legend && typeof legend === 'object') {
+    let nextLegend: any = legend;
+    const legendClone = () => { if (nextLegend === legend) nextLegend = { ...legend }; };
+    let legendBgHex = resolveToHex(legend.bgcolor);
+    if (legendBgHex && isDarkBackground(legendBgHex) !== isDarkMode) {
+      legendClone();
+      nextLegend.bgcolor = surface;
+      legendBgHex = resolveToHex(surface);
+    }
+    const bgForText = legendBgHex || paperHex;
+    if (legend.font && typeof legend.font === 'object' && typeof legend.font.color === 'string') {
+      const repaired = ensureReadableFill(legend.font.color, bgForText, themeFont, 4.5);
+      if (repaired !== legend.font.color) {
+        legendClone();
+        nextLegend.font = { ...legend.font, color: repaired };
+      }
+    }
+    if (nextLegend !== legend) { clone(); out.legend = nextLegend; }
+  }
+
+  // Author guide-shape strokes, against the plot surface (3:1 line floor).
+  if (Array.isArray(layout.shapes)) {
+    let shapesChanged = false;
+    const shapes = layout.shapes.map((sh: any) => {
+      if (!sh || typeof sh !== 'object' || !sh.line || typeof sh.line !== 'object'
+          || typeof sh.line.color !== 'string') return sh;
+      const repaired = ensureReadableFill(sh.line.color, plotHex, themeLine, 3);
+      if (repaired === sh.line.color) return sh;
+      shapesChanged = true;
+      return { ...sh, line: { ...sh.line, color: repaired } };
+    });
+    if (shapesChanged) { clone(); out.shapes = shapes; }
+  }
+
   return out;
 }
 
@@ -480,11 +566,71 @@ export function teardownPlotlyContainer(container: HTMLElement, Plotly?: any): v
   const c = container as any;
   try { c._plotlyResizeObserver?.disconnect(); } catch { /* already gone */ }
   c._plotlyResizeObserver = undefined;
+  try { c._plotlyViewportObserver?.disconnect(); } catch { /* already gone */ }
+  c._plotlyViewportObserver = undefined;
   const div = c._plotlyDiv;
   c._plotlyDiv = undefined;
   if (!div) return;
   const P = Plotly || (typeof window !== 'undefined' ? (window as any).Plotly : undefined);
+  // Collect the canvases before purge detaches them.
+  const canvases: HTMLCanvasElement[] = Array.from(div.querySelectorAll('canvas'));
+  disablePlotlyBuiltinContextRecovery(div);
   try { P?.purge?.(div); } catch { /* plot already torn down */ }
+  // Plotly.purge removes the canvases but never calls WEBGL_lose_context, so
+  // Chromium keeps counting each context as live until the detached canvas is
+  // garbage-collected. In a conversation with many GL charts that lag alone
+  // pushed the page over the ~16-context ceiling on every re-render and
+  // evicted the oldest live chart. Release the contexts now.
+  canvases.forEach(releaseWebglContext);
+}
+
+/**
+ * Lose the WebGL context on a canvas so the browser frees its slot at once.
+ * A canvas that holds (or can take) a 2D context is skipped so this never
+ * creates a GL context just to lose it. Safe on an already-lost context.
+ */
+function releaseWebglContext(canvas: HTMLCanvasElement): void {
+  if (typeof WebGLRenderingContext === 'undefined') return;
+  let gl: any = null;
+  try {
+    if (canvas.getContext('2d')) return;
+    gl = canvas.getContext('webgl') || canvas.getContext('webgl2') || canvas.getContext('experimental-webgl');
+  } catch { return; }
+  if (!gl || typeof gl.getExtension !== 'function') return;
+  try {
+    if (gl.isContextLost && gl.isContextLost()) return;
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
+  } catch { /* context already gone */ }
+}
+
+/**
+ * Plotly's gl3d scenes install their own context-loss handler
+ * (`glplot.oncontextloss = () => scene.recoverContext()`), which disposes the
+ * plot and then polls `scene.glplot.gl.isContextLost()` every frame until the
+ * context returns. Our recovery purges the scene instead, which nulls
+ * `scene.glplot` and turns that poll into a "Cannot read properties of null
+ * (reading 'gl')" throw; the two recoveries also fight over one canvas.
+ * Detach Plotly's handler so ours is the only one. No-op for non-3D plots.
+ */
+function disablePlotlyBuiltinContextRecovery(div: HTMLElement): void {
+  const fl = (div as any)._fullLayout;
+  const ids: string[] = fl?._subplots?.gl3d || [];
+  for (const id of ids) {
+    const glplot = fl[id]?._scene?.glplot;
+    if (glplot) glplot.oncontextloss = null;
+  }
+}
+
+/**
+ * True when `el` is more than one viewport height above or below the visible
+ * area. Unmeasurable elements (detached, zero rect) count as visible.
+ */
+function isFarOffscreen(el: HTMLElement): boolean {
+  if (!el.isConnected || typeof window === 'undefined') return false;
+  const r = el.getBoundingClientRect();
+  if (r.width === 0 && r.height === 0) return false;
+  const vh = window.innerHeight || 0;
+  return r.bottom < -vh || r.top > 2 * vh;
 }
 
 /** Recoveries attempted per container before giving up on a lost context. */
@@ -511,16 +657,53 @@ function installContextLossRecovery(
   isDarkMode: boolean,
   Plotly: any,
 ): void {
+  disablePlotlyBuiltinContextRecovery(renderDiv);
   const canvases = renderDiv.querySelectorAll('canvas');
   if (canvases.length === 0) return;
   let handled = false;
+  const rerender = (s: any, detail: Record<string, unknown>) => {
+    // `render` is async here, but the D3RenderPlugin interface types it as
+    // possibly sync; Promise.resolve normalizes either shape for `.then`.
+    Promise.resolve(plotlyPlugin.render(container, null, s, isDarkMode)).then(
+      () => container.dispatchEvent(new CustomEvent('plotly-context-lost', {
+        detail: { recovered: true, ...detail }, bubbles: true,
+      })),
+      (err: unknown) => console.warn('Plotly context-loss re-render failed:', err),
+    );
+  };
   const onLost = () => {
     if (handled) return;
     handled = true;
     const c = container as any;
+    // A loss raised by teardownPlotlyContainer itself (re-render, unmount)
+    // has already moved _plotlyDiv on; only the current plot recovers.
+    if (c._plotlyDiv !== renderDiv) return;
+    teardownPlotlyContainer(container, Plotly);
+    // Under the context ceiling the browser evicts the OLDEST context, which
+    // is usually a chart scrolled far out of view. Re-rendering it at once
+    // takes a new context, evicts the next-oldest, and cascades down the
+    // page until every GL chart has burnt its recovery. Off-screen, leave a
+    // placeholder and redraw when the chart scrolls back into view; this
+    // does not count against the recovery budget.
+    if (isFarOffscreen(container) && typeof IntersectionObserver !== 'undefined') {
+      container.innerHTML =
+        '<div class="plotly-context-paused" style="padding:16px;text-align:center;color:#888;">' +
+        '📊 Chart paused to stay within the browser\'s WebGL limit; it redraws when scrolled into view.</div>';
+      const io = new IntersectionObserver(entries => {
+        if (!entries.some(e => e.isIntersecting)) return;
+        io.disconnect();
+        if (c._plotlyViewportObserver === io) c._plotlyViewportObserver = undefined;
+        rerender(plotlySpec, { deferred: true });
+      }, { rootMargin: '100% 0px' });
+      io.observe(container);
+      c._plotlyViewportObserver = io;
+      container.dispatchEvent(new CustomEvent('plotly-context-lost', {
+        detail: { recovered: false, deferred: true }, bubbles: true,
+      }));
+      return;
+    }
     const losses = (c._plotlyContextLosses || 0) + 1;
     c._plotlyContextLosses = losses;
-    teardownPlotlyContainer(container, Plotly);
     if (losses > PLOTLY_MAX_CONTEXT_LOSS_RECOVERIES) {
       container.innerHTML =
         '<div class="plotly-context-lost" style="padding:16px;text-align:center;color:#888;">' +
@@ -530,15 +713,7 @@ function installContextLossRecovery(
       }));
       return;
     }
-    const demoted = { ...plotlySpec, data: demoteWebglTracesForCapture(plotlySpec.data, true) };
-    // `render` is async here, but the D3RenderPlugin interface types it as
-    // possibly sync; Promise.resolve normalizes either shape for `.then`.
-    Promise.resolve(plotlyPlugin.render(container, null, demoted, isDarkMode)).then(
-      () => container.dispatchEvent(new CustomEvent('plotly-context-lost', {
-        detail: { recovered: true }, bubbles: true,
-      })),
-      (err: unknown) => console.warn('Plotly context-loss re-render failed:', err),
-    );
+    rerender({ ...plotlySpec, data: demoteWebglTracesForCapture(plotlySpec.data, true) }, {});
   };
   canvases.forEach(cv => cv.addEventListener('webglcontextlost', onLost, { once: true }));
 }
@@ -679,6 +854,9 @@ export const plotlyPlugin: D3RenderPlugin = {
     // D-304: reserve top-margin space for the title so the forced compact
     // margin.t (40px) can never clip it — worst on a legend-grown tall div.
     Object.assign(layout, ensurePlotlyTitleAutomargin(layout));
+    // D-457: repair author-pinned title/legend/shape colours against the
+    // theme-resolved surfaces (runs after applyPlotlyTheme has set them).
+    Object.assign(layout, repairAuthorColorsForTheme(layout, isDarkMode));
     const config = {
       responsive: true,
       displaylogo: false,
@@ -715,6 +893,25 @@ export const plotlyPlugin: D3RenderPlugin = {
         PLOTLY_NEWPLOT_BUDGET_MS,
       )),
     ]);
+
+    // Animation frames. A figure's `frames` array is driven by
+    // layout.updatemenus (Play) and layout.sliders whose steps call
+    // method:"animate" with frame NAMES. The four-argument newPlot above has
+    // no slot for frames, so until they are registered here the Play button
+    // and slider render but do nothing (animate() finds an empty frame
+    // store). addFrames needs a plot on the div, hence after newPlot settles.
+    // The resize path's four-arg Plotly.react() leaves an existing frame
+    // store alone, so a single registration suffices; the context-loss
+    // re-render re-enters render() with the same spec and re-registers.
+    // A malformed frame degrades to a static chart, not an error panel over
+    // a chart newPlot already drew.
+    if (Array.isArray(plotlySpec.frames) && plotlySpec.frames.length > 0) {
+      try {
+        await Plotly.addFrames(renderDiv, plotlySpec.frames);
+      } catch (err) {
+        console.warn('Plotly.addFrames rejected; chart rendered without animation:', err);
+      }
+    }
 
     // Plotly.Plots.resize() returns a Promise that REJECTS asynchronously
     // ("Resize must be passed a displayed plot div element") when the div
