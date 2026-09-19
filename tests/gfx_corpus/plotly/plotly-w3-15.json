@@ -1,0 +1,119 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "scatter",
+    "name": "series one",
+    "x": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7
+    ],
+    "y": [
+     4,
+     6,
+     5,
+     7,
+     6,
+     8,
+     7
+    ],
+    "mode": "lines+markers",
+    "marker": {
+     "size": 9,
+     "color": "#4c78a8"
+    },
+    "line": {
+     "color": "#4c78a8"
+    }
+   },
+   {
+    "type": "scatter",
+    "name": "series two",
+    "x": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7
+    ],
+    "y": [
+     6,
+     4,
+     7,
+     5,
+     8,
+     6,
+     9
+    ],
+    "mode": "lines+markers",
+    "marker": {
+     "size": 9,
+     "color": "#bcbd22"
+    },
+    "line": {
+     "color": "#bcbd22"
+    }
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "SVG vs PNG theme path"
+   },
+   "xaxis": {
+    "title": {
+     "text": "index"
+    },
+    "linecolor": "#333333",
+    "tickcolor": "#333333"
+   },
+   "yaxis": {
+    "title": {
+     "text": "value"
+    },
+    "linecolor": "#333333",
+    "tickcolor": "#333333"
+   },
+   "legend": {
+    "bgcolor": "#ffffff",
+    "bordercolor": "#333333",
+    "borderwidth": 1
+   },
+   "shapes": [
+    {
+     "type": "line",
+     "x0": 1,
+     "x1": 7,
+     "y0": 6.5,
+     "y1": 6.5,
+     "line": {
+      "color": "#333333",
+      "width": 2,
+      "dash": "dot"
+     }
+    }
+   ],
+   "annotations": [
+    {
+     "x": 4,
+     "y": 6.5,
+     "text": "#333 guide line",
+     "showarrow": false,
+     "yshift": 10,
+     "bgcolor": "#ffffff",
+     "font": {
+      "color": "#333333"
+     }
+    }
+   ]
+  }
+ },
+ "intent": "SVG-vs-PNG path test with hardcoded white legend/colorbar chrome and a #333 stroke on shapes"
+}

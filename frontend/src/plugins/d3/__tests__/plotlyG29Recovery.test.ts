@@ -229,9 +229,13 @@ describe('sanitizeLayoutColorsForTheme (D-232 layout side, BOTH themes)', () => 
     expect(applyPlotlyTheme(layout, true).paper_bgcolor).toBe('#1e1e1e');
   });
 
-  it('keeps a real template untouched', () => {
-    const layout = { template: 'plotly_white' };
-    expect(sanitizeLayoutColorsForTheme(layout, false).template).toBe('plotly_white');
+  it('keeps an OBJECT (inline) template untouched, drops a string template (D-458)', () => {
+    // A string template names a plotly.py template plotly.js never registered,
+    // so it is dropped and the theme applies. An object template is a real
+    // inline template and is preserved.
+    expect(sanitizeLayoutColorsForTheme({ template: 'plotly_white' }, false).template).toBeUndefined();
+    const tpl = { layout: { paper_bgcolor: '#eee' } };
+    expect(sanitizeLayoutColorsForTheme({ template: tpl }, false).template).toEqual(tpl);
   });
 
   it('leaves a well-formed layout byte-identical (reference-stable no-op)', () => {

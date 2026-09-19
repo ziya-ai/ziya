@@ -1,0 +1,141 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "bar",
+    "name": "dark bars",
+    "x": [
+     "p",
+     "q",
+     "r",
+     "s",
+     "t"
+    ],
+    "y": [
+     8,
+     9,
+     7,
+     10,
+     8
+    ],
+    "marker": {
+     "color": [
+      "#1f2d3d",
+      "#22303f",
+      "#1a2634",
+      "#243447",
+      "#1c2836"
+     ]
+    },
+    "text": [
+     "8888",
+     "9999",
+     "7777",
+     "1010",
+     "8080"
+    ],
+    "textposition": "inside",
+    "insidetextfont": {
+     "color": "#333333",
+     "size": 14
+    }
+   },
+   {
+    "type": "bar",
+    "name": "pale bars",
+    "x": [
+     "p",
+     "q",
+     "r",
+     "s",
+     "t"
+    ],
+    "y": [
+     3,
+     2,
+     4,
+     2,
+     3
+    ],
+    "marker": {
+     "color": [
+      "#f7f7f7",
+      "#fafafa",
+      "#f2f2f2",
+      "#fbfbfb",
+      "#f5f5f5"
+     ]
+    },
+    "text": [
+     "AAA",
+     "BBB",
+     "CCC",
+     "DDD",
+     "EEE"
+    ],
+    "textposition": "inside",
+    "insidetextfont": {
+     "color": "#ffffff",
+     "size": 14
+    }
+   },
+   {
+    "type": "pie",
+    "labels": [
+     "w1",
+     "w2",
+     "w3",
+     "w4"
+    ],
+    "values": [
+     3,
+     3,
+     2,
+     2
+    ],
+    "domain": {
+     "x": [
+      0.78,
+      1.0
+     ],
+     "y": [
+      0.55,
+      1.0
+     ]
+    },
+    "marker": {
+     "colors": [
+      "#ffffff",
+      "#fafafa",
+      "#f4f4f4",
+      "#eeeeee"
+     ]
+    },
+    "textinfo": "label+percent",
+    "insidetextfont": {
+     "color": "#f8f8f8",
+     "size": 11
+    },
+    "name": "pale pie"
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "Hardcoded text colour ON coloured elements"
+   },
+   "barmode": "group",
+   "xaxis": {
+    "title": {
+     "text": "bucket"
+    }
+   },
+   "yaxis": {
+    "title": {
+     "text": "value"
+    }
+   }
+  }
+ },
+ "intent": "text drawn ON coloured elements with HARDCODED colours: #333 insidetext on dark bars, white outsidetext, pale text on pale pie slices"
+}

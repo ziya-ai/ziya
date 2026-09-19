@@ -121,11 +121,22 @@ describe('applyPlotlyTheme', () => {
     expect(result.font.color).toBe('#333333');
   });
 
-  it('respects user-supplied template (no override)', () => {
-    const layout = { template: 'plotly_white', paper_bgcolor: '#abc' };
-    const result = applyPlotlyTheme(layout, true);
-    expect(result.template).toBe('plotly_white');
+  it('respects a user-supplied OBJECT (inline) template (no override)', () => {
+    // An object template is a real plotly template; the early return preserves
+    // it and the author layout byte-for-byte.
+    const tpl = { layout: { paper_bgcolor: '#abc' } };
+    const result = applyPlotlyTheme({ template: tpl, paper_bgcolor: '#abc' }, true);
+    expect(result.template).toEqual(tpl);
     expect(result.paper_bgcolor).toBe('#abc');
+  });
+
+  it('drops a STRING template so the active theme applies (D-458)', () => {
+    // plotly.js has no registered named templates, so a string template is
+    // silently ignored -> the figure must fall back to the ACTIVE theme, not
+    // plotly light library defaults.
+    const result = applyPlotlyTheme({ template: 'plotly_white' }, true);
+    expect(result.template).toBeUndefined();
+    expect(result.paper_bgcolor).toBe('#1e1e1e');
   });
 
   it('merges dark theme defaults with user layout (user wins on conflict)', () => {

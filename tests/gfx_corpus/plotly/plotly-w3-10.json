@@ -1,0 +1,61 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "scatter",
+    "name": "s1",
+    "x": [
+     1,
+     2,
+     3,
+     4,
+     5
+    ],
+    "y": [
+     2,
+     4,
+     3,
+     5,
+     4
+    ],
+    "mode": "lines+markers"
+   },
+   {
+    "type": "bar",
+    "name": "s2",
+    "x": [
+     1,
+     2,
+     3,
+     4,
+     5
+    ],
+    "y": [
+     1,
+     3,
+     2,
+     4,
+     2
+    ]
+   }
+  ],
+  "layout": {
+   "template": "plotly_dark",
+   "title": {
+    "text": "layout.template short-circuits applyPlotlyTheme"
+   },
+   "xaxis": {
+    "title": {
+     "text": "x"
+    }
+   },
+   "yaxis": {
+    "title": {
+     "text": "y"
+    }
+   }
+  }
+ },
+ "intent": "layout.template present ('plotly_dark' STRING) — source read says applyPlotlyTheme returns early and applies NO theme at all"
+}

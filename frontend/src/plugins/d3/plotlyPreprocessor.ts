@@ -1302,6 +1302,93 @@ export function enforceInShapeTextFloor(spec: PlotlySpec): PlotlySpec {
   return { ...spec, layout: newLayout };
 }
 
+/** WCAG text floor for on-element (in-shape / on-bar) labels. */
+export const PLOTLY_INSHAPE_TEXT_MIN_CONTRAST = 4.5;
+
+/** Resolve a colour token to #hex (hex literal or CSS named), else null. */
+function plotlyTextColorHex(c: any): string | null {
+  const cl = classifyColor(c);
+  if (!cl) return null;
+  if (cl.hex) return cl.hex;
+  if (cl.named) return namedColorToHex(cl.named);
+  return null;
+}
+
+/**
+ * D-459: repair AUTHOR-pinned on-element text colours that fail contrast
+ * against the author's OWN fill, in BOTH themes.
+ *
+ * `enforceInShapeTextFloor` governs text SIZE only; nothing reconciles a
+ * trace's textfont / insidetextfont COLOUR against the fill it lands on. An
+ * author `#333` inside-label on a `#1f2d3d` bar (1.11:1) or a `#f8f8f8` pie
+ * label on a pale slice is illegible — and because both the fill and the text
+ * are author-pinned (theme-independent) it fails on both backgrounds. Here,
+ * for a trace that pins BOTH a fill and a text colour, each failing text colour
+ * is nudged via `ensureReadableFill` toward the readable extreme for that fill
+ * until it clears the 4.5:1 floor. A scalar `marker.color` yields a scalar
+ * repair; a per-element `marker.colors` array yields a matched array so each
+ * slice's label is repaired against its own slice (pie/sunburst/treemap/icicle/
+ * funnelarea). Conservative: fires only when the author pinned the colour AND it
+ * actually fails; an unset colour is left to plotly's own auto-contrast, and a
+ * passing colour is byte-identical. Theme-independent; exported for unit testing.
+ */
+export function repairAuthorTextOnFill(data: any[]): any[] {
+  if (!Array.isArray(data)) return data;
+  let anyChanged = false;
+
+  const out = data.map(trace => {
+    if (!trace || typeof trace !== 'object') return trace;
+    const marker = trace.marker;
+    if (!marker || typeof marker !== 'object') return trace;
+    const fill = marker.color !== undefined ? marker.color : marker.colors;
+    if (fill === undefined) return trace;
+
+    let next: any = trace;
+    const traceClone = () => { if (next === trace) next = { ...trace }; };
+
+    for (const key of ['textfont', 'insidetextfont']) {
+      const tf = trace[key];
+      if (!tf || typeof tf !== 'object' || typeof tf.color !== 'string') continue;
+      const author = tf.color;
+
+      const repairAgainst = (fillToken: any): string => {
+        const fillHex = plotlyTextColorHex(fillToken);
+        if (!fillHex) return author;
+        const authorHex = plotlyTextColorHex(author);
+        if (authorHex && contrastRatio(authorHex, fillHex) >= PLOTLY_INSHAPE_TEXT_MIN_CONTRAST) {
+          return author;
+        }
+        const fallback = isDarkBackground(fillHex) ? '#ffffff' : '#111111';
+        return ensureReadableFill(author, fillHex, fallback, PLOTLY_INSHAPE_TEXT_MIN_CONTRAST);
+      };
+
+      if (Array.isArray(fill)) {
+        let colChanged = false;
+        const colors = fill.map((f: any) => {
+          const r = repairAgainst(f);
+          if (r !== author) colChanged = true;
+          return r;
+        });
+        if (colChanged) {
+          traceClone();
+          next[key] = { ...tf, color: colors };
+          anyChanged = true;
+        }
+      } else {
+        const repaired = repairAgainst(fill);
+        if (repaired !== author) {
+          traceClone();
+          next[key] = { ...tf, color: repaired };
+          anyChanged = true;
+        }
+      }
+    }
+    return next;
+  });
+
+  return anyChanged ? out : data;
+}
+
 /* ======================================================================== *
  * D-305 — pathologically long title / axis-title / legend text is neither
  * wrapped nor ellipsized, so it clips at the paper edges.
@@ -1322,6 +1409,17 @@ export function enforceInShapeTextFloor(spec: PlotlySpec): PlotlySpec {
 export const PLOTLY_TITLE_WRAP_MAXCHARS = 60;
 export const PLOTLY_TITLE_WRAP_MAXLINES = 4;
 export const PLOTLY_LEGEND_NAME_MAXCHARS = 40;
+// D-462: a y-axis title is rotated 90°, so a wrapped line's CHARACTER LENGTH
+// maps to the plot's (limited) HEIGHT, not its (wider) width — the opposite of
+// the main/x-axis titles. At the shared 60-char budget the 158-char y-title of
+// plotly-w2-04 wrapped to 3 lines whose longest ran 58 chars (~460px rotated),
+// taller than the ~450px plot area, so its top line clipped at the canvas edge
+// (axis.automargin only reserves HORIZONTAL room, never vertical). Give rotated
+// y-titles a shorter per-line budget (so each line is ~320px, comfortably
+// inside the plot height) and a larger line cap (the extra lines stack
+// horizontally, which automargin does absorb) so no text is lost to ellipsis.
+export const PLOTLY_YAXIS_TITLE_WRAP_MAXCHARS = 40;
+export const PLOTLY_YAXIS_TITLE_WRAP_MAXLINES = 6;
 
 /** Truncate to `maxChars` including a trailing ellipsis. */
 function ellipsizePlotlyText(s: string, maxChars: number): string {
@@ -1377,22 +1475,28 @@ export function wrapLongTitles(layout: any): any {
   if (!layout || typeof layout !== 'object') return layout;
   let out: any = layout;
   const clone = () => { if (out === layout) out = { ...layout }; };
-  const wrapTitle = (t: any): any => {
+  // D-462: a rotated y-axis title needs a tighter per-line budget than the
+  // horizontally-laid main/x-axis titles, because its line length maps to the
+  // plot HEIGHT rather than its width.
+  const wrapTitle = (t: any, maxChars: number, maxLines: number): any => {
     const title = typeof t === 'string' ? { text: t } : t;
     if (!title || typeof title !== 'object' || typeof title.text !== 'string') return t;
-    const wrapped = wrapPlotlyText(title.text, PLOTLY_TITLE_WRAP_MAXCHARS, PLOTLY_TITLE_WRAP_MAXLINES);
+    const wrapped = wrapPlotlyText(title.text, maxChars, maxLines);
     if (wrapped === title.text) return t;
     return { ...title, text: wrapped };
   };
   if (layout.title !== undefined) {
-    const nt = wrapTitle(layout.title);
+    const nt = wrapTitle(layout.title, PLOTLY_TITLE_WRAP_MAXCHARS, PLOTLY_TITLE_WRAP_MAXLINES);
     if (nt !== layout.title) { clone(); out.title = nt; }
   }
   for (const key of Object.keys(layout)) {
     if (!/^[xy]axis(\d*)$/.test(key)) continue;
     const axis = layout[key];
     if (!axis || typeof axis !== 'object' || Array.isArray(axis) || axis.title === undefined) continue;
-    const nt = wrapTitle(axis.title);
+    const isYAxis = key.charAt(0) === 'y';
+    const maxChars = isYAxis ? PLOTLY_YAXIS_TITLE_WRAP_MAXCHARS : PLOTLY_TITLE_WRAP_MAXCHARS;
+    const maxLines = isYAxis ? PLOTLY_YAXIS_TITLE_WRAP_MAXLINES : PLOTLY_TITLE_WRAP_MAXLINES;
+    const nt = wrapTitle(axis.title, maxChars, maxLines);
     if (nt !== axis.title) { clone(); out[key] = { ...axis, title: nt }; }
   }
   return out;
@@ -1660,6 +1764,9 @@ export function preprocessPlotlySpec(spec: PlotlySpec): PlotlySpec {
   // D-239: min in-shape-text floor so pie/sunburst/treemap labels are dropped
   // when too small rather than shrunk into an illegible smear.
   composed = enforceInShapeTextFloor(composed);
+  // D-459: repair author-pinned on-element text colours that fail contrast
+  // against the author's own fill (theme-independent; both backgrounds).
+  composed = { ...composed, data: repairAuthorTextOnFill(composed.data || []) };
   // D-303: separate an indicator trace's own title from a coexisting layout
   // title (pull the indicator domain top down + reserve a top-margin band).
   composed = separateIndicatorFromLayoutTitle(composed);
@@ -1856,7 +1963,16 @@ export const PLOTLY_EXTENDED_COLORWAY = [
  * an unbounded canvas. Exported for unit testing.
  * ======================================================================== */
 export const PLOTLY_SANKEY_GROW_THRESHOLD = 12;
-export const PLOTLY_SANKEY_NODE_ROW_PX = 26;
+// D-461: the per-node row budget must clear the EMPIRICAL collision onset, not
+// merely give "some" extra room. The sweep measured overprint beginning at ~16
+// nodes/column at a ~680px capture height (~42px per node); at 26px/node a
+// 19-node column (plotly-w2-07) grew to only 19*26+120=614px — BELOW that onset
+// — so labels still smeared. Raise the row budget to 44px so a busy column is
+// spread past the onset (19 nodes -> 19*44+120=956px), while the grow still
+// fires only above PLOTLY_SANKEY_GROW_THRESHOLD and stays capped at
+// PLOTLY_LEGEND_MAX_HEIGHT_PX. Taller-only: strictly more vertical room, so
+// sparser sankeys that already passed are unaffected (they never grow).
+export const PLOTLY_SANKEY_NODE_ROW_PX = 44;
 
 /** Longest-path depth (layout column) of every sankey node from the link graph,
  *  returning the largest node count in any single column. Cycle-safe (depth

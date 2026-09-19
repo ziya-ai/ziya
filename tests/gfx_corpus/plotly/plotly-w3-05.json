@@ -1,0 +1,137 @@
+{
+ "type": "plotly",
+ "definition": {
+  "data": [
+   {
+    "type": "waterfall",
+    "name": "wf",
+    "orientation": "v",
+    "measure": [
+     "absolute",
+     "relative",
+     "relative",
+     "total",
+     "relative",
+     "total"
+    ],
+    "x": [
+     "Start",
+     "Q1",
+     "Q2",
+     "H1",
+     "Q3",
+     "FY"
+    ],
+    "y": [
+     100,
+     30,
+     -20,
+     null,
+     45,
+     null
+    ],
+    "textposition": "outside",
+    "text": [
+     "100",
+     "+30",
+     "-20",
+     "110",
+     "+45",
+     "155"
+    ],
+    "xaxis": "x",
+    "yaxis": "y"
+   },
+   {
+    "type": "funnel",
+    "name": "fn",
+    "y": [
+     "Visit",
+     "Signup",
+     "Trial",
+     "Paid"
+    ],
+    "x": [
+     1000,
+     600,
+     300,
+     90
+    ],
+    "xaxis": "x2",
+    "yaxis": "y2"
+   },
+   {
+    "type": "icicle",
+    "labels": [
+     "root",
+     "a",
+     "b",
+     "a1",
+     "a2",
+     "b1"
+    ],
+    "parents": [
+     "",
+     "root",
+     "root",
+     "a",
+     "a",
+     "b"
+    ],
+    "values": [
+     10,
+     6,
+     4,
+     3,
+     3,
+     4
+    ],
+    "domain": {
+     "x": [
+      0.7,
+      1.0
+     ]
+    }
+   }
+  ],
+  "layout": {
+   "title": {
+    "text": "waterfall + funnel + icicle interaction"
+   },
+   "grid": {
+    "rows": 1,
+    "columns": 2,
+    "pattern": "independent"
+   },
+   "xaxis": {
+    "domain": [
+     0,
+     0.31
+    ],
+    "title": {
+     "text": "waterfall"
+    }
+   },
+   "yaxis": {
+    "title": {
+     "text": "value"
+    }
+   },
+   "xaxis2": {
+    "domain": [
+     0.38,
+     0.64
+    ],
+    "title": {
+     "text": "funnel count"
+    }
+   },
+   "yaxis2": {
+    "title": {
+     "text": "stage"
+    }
+   }
+  }
+ },
+ "intent": "untested dialects combined: waterfall + funnel + icicle in a 1x3 domain layout"
+}
