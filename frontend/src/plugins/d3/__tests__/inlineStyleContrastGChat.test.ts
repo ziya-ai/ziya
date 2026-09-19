@@ -18,7 +18,7 @@ import {
     remediateInlineStyleContrast,
     chatMessageSurface,
 } from '../../../utils/inlineStyleContrast';
-import { calculateContrastRatio } from '../../../utils/colorUtils';
+import { calculateContrastRatio, getOptimalTextColor } from '../../../utils/colorUtils';
 
 const FLOOR = 4.5;
 
@@ -111,6 +111,38 @@ describe('D-019: deliberate legible author styling is left byte-for-byte (both t
         expect(remediateInlineStyleContrast(tok, true)).toBe(tok);
         const plain = '<p>plain themed prose</p>';
         expect(remediateInlineStyleContrast(plain, false)).toBe(plain);
+    });
+});
+
+describe('D-326: white-on-amber HTML status badge is repaired on its own fill (both themes)', () => {
+    // The mermaid-label half of this spec (w3-14) was already exemplary; the
+    // HTML-badge half left the WARN badge white-on-amber at 1.97:1 because
+    // getOptimalTextColor(#f9a825) fell through its luminance>0.5 threshold and
+    // returned WHITE (amber luminance 0.483 is just under 0.5), so the D-019
+    // remediation "repaired" white -> white. Root cause is in getOptimalTextColor.
+    it('getOptimalTextColor(#f9a825) resolves to black (10.66:1), not white (1.97:1)', () => {
+        // The failing direction: white on amber is far below the floor.
+        expect(calculateContrastRatio('#ffffff', '#f9a825')).toBeLessThan(FLOOR);
+        const chosen = getOptimalTextColor('#f9a825');
+        expect(chosen.toLowerCase()).toBe('#000000');
+        expect(calculateContrastRatio(chosen, '#f9a825')).toBeGreaterThanOrEqual(FLOOR);
+    });
+
+    it('w3-14 WARN badge white #ffffff on amber #f9a825 (1.97:1) -> repaired legible, theme-independent', () => {
+        // The badge carries its own opaque fill, so the surface it fails on is
+        // the amber fill in BOTH themes — repair must fire regardless of theme.
+        expect(calculateContrastRatio('#ffffff', '#f9a825')).toBeLessThan(FLOOR);
+        for (const dark of [false, true]) {
+            const out = remediateInlineStyleContrast(
+                '<span style="background:#f9a825;color:#ffffff;padding:2px 8px;border-radius:3px;">WARN</span>',
+                dark,
+            );
+            // Author fill is preserved; only the illegible text colour changes.
+            expect(out.toLowerCase()).toContain('#f9a825');
+            const repaired = styleVal(out, 'color')!;
+            expect(repaired.toLowerCase()).not.toBe('#ffffff');
+            expect(calculateContrastRatio(repaired, '#f9a825')).toBeGreaterThanOrEqual(FLOOR);
+        }
     });
 });
 

@@ -18,7 +18,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.106296Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "a8a96b3f76f461f9bce8c8d084190b0dfde0d8af013ecb643c52ff0f2720e493",
+     "validated_at": "2026-09-19T11:37:57.571282Z"
+    },
+    "dark": {
+     "hash": "47ca32100bd7b4a48bbb23f0383ad0d80e4ea6c06d0a3a54d4dbc0cb93bf9cc0",
+     "validated_at": "2026-09-19T11:37:57.585865Z"
+    }
+   }
   },
   "chat-message-w1-05": {
    "themes": [
@@ -36,7 +46,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.108854Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "bfcf89ed3648405a68c534e4c35e14c5b1314da9830968a7ff4055a50153b1ab",
+     "validated_at": "2026-09-19T11:37:58.204921Z"
+    },
+    "dark": {
+     "hash": "807e6a94fe0aa54b482d9337064aaefa125d4d98076b959ca017830f7e1e5b49",
+     "validated_at": "2026-09-19T11:37:58.215676Z"
+    }
+   }
   },
   "chat-message-w1-14": {
    "themes": [
@@ -54,7 +74,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.111182Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "a60f695d4c66c6a08563ca83fa45ca8e31aeaa337d7fb3d8bb3a690e2a70b97e",
+     "validated_at": "2026-09-19T11:39:18.985639Z"
+    },
+    "dark": {
+     "hash": "81665eebc9bd6782cae535c27381f1b9b957d99ae97d6455a33afc72ad8528ab",
+     "validated_at": "2026-09-19T11:39:18.997294Z"
+    }
+   }
   },
   "chat-message-w2-02": {
    "themes": [
@@ -72,7 +102,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.114245Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "7d795246ba4a2513b1f4987154aed8e929daacea898f56638e0ce97ce682d41a",
+     "validated_at": "2026-09-19T11:41:14.075055Z"
+    },
+    "light": {
+     "hash": "5ebd04970c3c04242471b3622c7559e6aa3d694d8c3480bd42c3e1f5d9e54f7a",
+     "validated_at": "2026-09-19T11:41:14.053751Z"
+    }
+   }
   },
   "chat-message-w2-05": {
    "themes": [
@@ -90,7 +130,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.118095Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "08417d7334c3f567fa66373679e65478094912676658ee991a914000bc69f75f",
+     "validated_at": "2026-09-19T11:43:08.751660Z"
+    },
+    "dark": {
+     "hash": "0ed8e8b6522e57f1adeb6c5fd180717a0b585ad950fb33f77e67f1be146870a6",
+     "validated_at": "2026-09-19T11:43:08.769784Z"
+    }
+   }
   },
   "chat-message-w2-09": {
    "themes": [
@@ -108,7 +158,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.121605Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "3515fbd5a923d98e3e4d38732c78963a659da2a6d24b6e76eebc4335cedc14e2",
+     "validated_at": "2026-09-19T12:03:26.805804Z"
+    },
+    "dark": {
+     "hash": "2f8bb3b9177e48e1f709e9ede7257a8f62ce66d16c15431ec45e688ec08fd7b8",
+     "validated_at": "2026-09-19T12:03:26.825108Z"
+    }
+   }
   },
   "chat-message-w3-02": {
    "themes": [
@@ -126,7 +186,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.124366Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "ec3b8eac0ce83fd08a74600ae031bdc8d37e28e3fd039bc3ef86f1918aff0e66",
+     "validated_at": "2026-09-19T11:52:48.690898Z"
+    },
+    "light": {
+     "hash": "90963704a0e07f9e7c11a7391a8167bc004d0aef9699289a53208f846a23b0a8",
+     "validated_at": "2026-09-19T11:52:48.676206Z"
+    }
+   }
   },
   "chat-message-w3-03": {
    "themes": [
@@ -144,7 +214,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.128385Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "0d43f035bc3231a9c132b9d3a1ef0bd2ae81cf830381b1775b3b6e2ad2f9a177",
+     "validated_at": "2026-09-19T11:52:48.884999Z"
+    },
+    "light": {
+     "hash": "f968f55e1bb115747f909eb6dfa91e22b25a144134512bc14c8dfffb1aafbf0d",
+     "validated_at": "2026-09-19T11:52:48.872343Z"
+    }
+   }
   },
   "chat-message-w4-13": {
    "themes": [
@@ -162,7 +242,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.130984Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "acc733592e2cc81080c51da034e8880ef21e2174500117065a1e5ba2a19a288a",
+     "validated_at": "2026-09-19T12:05:15.656441Z"
+    },
+    "dark": {
+     "hash": "5b4a91e8d7425c346c192b0d186cc83aaaa5feaf91d25ae9e8e5d8fd880eb83a",
+     "validated_at": "2026-09-19T12:05:15.670618Z"
+    }
+   }
   },
   "chat-message-w4-14": {
    "themes": [
@@ -180,7 +270,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.133729Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "679909e4f390bf1f8210447f8d33d10fb59a70410493b153724588aa35a5441d",
+     "validated_at": "2026-09-19T12:05:15.909123Z"
+    },
+    "dark": {
+     "hash": "0fc1a277a81b09fe9a3bb6eb6abceabb2eb291fe643365717b494dd2b33ab9d9",
+     "validated_at": "2026-09-19T12:05:15.918664Z"
+    }
+   }
   },
   "chat-message-w1-12": {
    "themes": [
@@ -197,8 +297,23 @@
      "origin": "D-012",
      "signature": "mermaid-node-label-below-wcag:dark",
      "at": "2026-09-15T08:56:12.004007Z"
+    },
+    {
+     "origin": "D-327",
+     "signature": "embedded-mermaid-capture-race",
+     "at": "2026-09-19T12:05:24.906433Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "79f74aa88decf921884b8150af1d18b0b9e40d64b6d4bb3bce1d6203e7523dea",
+     "validated_at": "2026-09-19T11:39:18.710237Z"
+    },
+    "light": {
+     "hash": "a831c0b5b2f0187d5f8da1c003ddb61a9689cc48508463e1b5f2702ca7c37b85",
+     "validated_at": "2026-09-19T11:39:18.669591Z"
+    }
+   }
   },
   "chat-message-w3-04": {
    "themes": [
@@ -216,7 +331,17 @@
      "signature": "mermaid-node-label-below-wcag:dark",
      "at": "2026-09-15T08:56:12.006060Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "b4acd076fe148ff732ad4d54d8cae17d0320e49973e2a286d9499aac2501ad3e",
+     "validated_at": "2026-09-19T11:52:49.062564Z"
+    },
+    "dark": {
+     "hash": "25982e0cdaeeeaf684b4074e02f49cffe18d9d4179ef4a24f05018ed7366fc06",
+     "validated_at": "2026-09-19T11:52:49.080868Z"
+    }
+   }
   },
   "chat-message-w3-08": {
    "themes": [
@@ -239,8 +364,23 @@
      "origin": "D-019",
      "signature": "author-hardcoded-color-not-theme-normalized",
      "at": "2026-09-15T08:56:12.137038Z"
+    },
+    {
+     "origin": "D-324",
+     "signature": "mermaid-edge-stroke-dissolves-into-canvas:light",
+     "at": "2026-09-19T12:05:24.866612Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "090c6ee45faa80343d6d949fc54ae4416d2c1b59ed7433f0c6bde95eb891d6e5",
+     "validated_at": "2026-09-19T11:55:12.322195Z"
+    },
+    "light": {
+     "hash": "9b7c6edd79d83b3cdd9dba3291b8f1dc0bf51bea2766cf2d17275c0a7c9bbecf",
+     "validated_at": "2026-09-19T11:55:12.311620Z"
+    }
+   }
   },
   "chat-message-w3-09": {
    "themes": [
@@ -264,7 +404,17 @@
      "signature": "author-hardcoded-color-not-theme-normalized",
      "at": "2026-09-15T08:56:12.142241Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "49aff23bdcd231d1fb2901671b7fd39576331d60680c80f98d845d8b011ec4e1",
+     "validated_at": "2026-09-19T11:55:12.510979Z"
+    },
+    "dark": {
+     "hash": "ed4ce8b2c5d8eed129af803b6a6864696ee04d552019ea6e9188c9799c469c27",
+     "validated_at": "2026-09-19T11:55:12.522075Z"
+    }
+   }
   },
   "chat-message-w3-13": {
    "themes": [
@@ -287,7 +437,17 @@
      "signature": "syntax-keyword-below-wcag:light",
      "at": "2026-09-15T08:56:12.164587Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "56b4bed36efb9bc7636167f79a6704972548433948fd5ea65926795f5af56fbc",
+     "validated_at": "2026-09-19T11:58:52.001210Z"
+    },
+    "light": {
+     "hash": "783ce79698d535579821b17fb6e83c9c925d214d1c00f6c214fe41312d52ebde",
+     "validated_at": "2026-09-19T11:58:51.980939Z"
+    }
+   }
   },
   "chat-message-w3-15": {
    "themes": [
@@ -315,8 +475,23 @@
      "origin": "D-019",
      "signature": "author-hardcoded-color-not-theme-normalized",
      "at": "2026-09-15T08:56:12.156970Z"
+    },
+    {
+     "origin": "D-324",
+     "signature": "mermaid-edge-stroke-dissolves-into-canvas:light",
+     "at": "2026-09-19T12:05:24.877051Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "13f95fcbc5bb9f91f0da309579d77ae17d07cf6ce85259c6c3d62856e424bc2d",
+     "validated_at": "2026-09-19T11:58:52.485188Z"
+    },
+    "light": {
+     "hash": "0ac98030efd2c26b6f893052e0a832b5034f837a7cd02eb35b1ef50cdd4eb86d",
+     "validated_at": "2026-09-19T11:58:52.470909Z"
+    }
+   }
   },
   "chat-message-w4-01": {
    "themes": [
@@ -334,7 +509,17 @@
      "signature": "mermaid-node-label-below-wcag:dark",
      "at": "2026-09-15T08:56:12.020542Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "8592f697c08c1a839a75dcf3ab49ec62c7a92220220cb9fe0a17873642483791",
+     "validated_at": "2026-09-19T12:00:44.041863Z"
+    },
+    "dark": {
+     "hash": "9c00c8b01f68addd6a8c7a7381d8e3f30db13403366c1d6c8dfb306183fa3955",
+     "validated_at": "2026-09-19T12:00:44.052144Z"
+    }
+   }
   },
   "chat-message-w4-02": {
    "themes": [
@@ -352,7 +537,17 @@
      "signature": "mermaid-node-label-below-wcag:dark",
      "at": "2026-09-15T08:56:12.023441Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "e81f7604087456852690fd5d614a90c21f8622e176cc515a3ab7def02c0ed274",
+     "validated_at": "2026-09-19T12:00:44.195918Z"
+    },
+    "dark": {
+     "hash": "542ae551dae7f4c9aafd45bc763ed07b4b9791d9a189f088cba48123a8094191",
+     "validated_at": "2026-09-19T12:00:44.209968Z"
+    }
+   }
   },
   "chat-message-w4-03": {
    "themes": [
@@ -370,7 +565,17 @@
      "signature": "mermaid-node-label-below-wcag:dark",
      "at": "2026-09-15T08:56:12.027382Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "c3593f30016ac1dc2ef01ae735505bb53b69a9cf1aa347aa752c2de85a08308a",
+     "validated_at": "2026-09-19T12:00:44.405664Z"
+    },
+    "dark": {
+     "hash": "cadc7c936d96119456af7b5f9238ba1cb6696a4b509ccfb8c263c1c39412dd78",
+     "validated_at": "2026-09-19T12:00:44.419407Z"
+    }
+   }
   },
   "chat-message-w4-04": {
    "themes": [
@@ -388,7 +593,17 @@
      "signature": "mermaid-node-label-below-wcag:dark",
      "at": "2026-09-15T08:56:12.029932Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "beb3e39339647f0df478436d973355b05a9c581aea4a985ce9a158b8edca73ad",
+     "validated_at": "2026-09-19T12:00:44.629074Z"
+    },
+    "dark": {
+     "hash": "490c9601ce3436f6e857e53532c956a6949ccf42e4a50cc686b1f26f1a07b389",
+     "validated_at": "2026-09-19T12:00:44.647502Z"
+    }
+   }
   },
   "chat-message-w4-05": {
    "themes": [
@@ -406,7 +621,17 @@
      "signature": "mermaid-node-label-below-wcag:dark",
      "at": "2026-09-15T08:56:12.032395Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "4a68a2b06d5de069e65e97df66fd025e116b7466e3e5863edc60c7a2c95092ba",
+     "validated_at": "2026-09-19T12:00:44.889896Z"
+    },
+    "dark": {
+     "hash": "4c21392aff774a5ba0f73e78809d459e1db1c87ccde3d4700b22052e95b72aa7",
+     "validated_at": "2026-09-19T12:00:44.915654Z"
+    }
+   }
   },
   "chat-message-w4-10": {
    "themes": [
@@ -430,7 +655,17 @@
      "signature": "transparent-fill-label-invisible:light",
      "at": "2026-09-15T08:56:12.200845Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "31e0e3d6a07800d362cded6d8556772bad9c5d9113c7207874f6c5babd79a0ea",
+     "validated_at": "2026-09-19T12:03:28.083784Z"
+    },
+    "dark": {
+     "hash": "c9ac7125d4dcbcdb189f886aba1c68ae85cad84f4db51856a95bb1672ac7ed6b",
+     "validated_at": "2026-09-19T12:03:28.097044Z"
+    }
+   }
   },
   "chat-message-w4-15": {
    "themes": [
@@ -448,7 +683,17 @@
      "signature": "mermaid-node-label-below-wcag:dark",
      "at": "2026-09-15T08:56:12.038253Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "3303f3b1c5e2ffb12fa1917a820802d6ef9c46bdfcb6c3e9df6c277797c989fc",
+     "validated_at": "2026-09-19T12:05:16.145266Z"
+    },
+    "dark": {
+     "hash": "381e385bbfede6a00c026dee6458fcf82f3e68429729dfbb2e56c765a2a810b7",
+     "validated_at": "2026-09-19T12:05:16.157631Z"
+    }
+   }
   },
   "chat-message-w2-01": {
    "themes": [
@@ -467,7 +712,17 @@
      "signature": "oversize-message-capture-clipped",
      "at": "2026-09-15T08:56:12.042115Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "76a3cba50ad7d6af74bc39140a6bef7aa36df232ea76fa9b6715dad15cb1d29f",
+     "validated_at": "2026-09-19T11:41:13.656902Z"
+    },
+    "dark": {
+     "hash": "dffebf14134b7404f72ebb673a7f337ee7734a8d2eb4ed66523ee63aff3cd5eb",
+     "validated_at": "2026-09-19T11:41:13.724595Z"
+    }
+   }
   },
   "chat-message-w2-03": {
    "themes": [
@@ -486,7 +741,17 @@
      "signature": "oversize-message-capture-clipped",
      "at": "2026-09-15T08:56:12.045062Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "d097a6c300960a3dc59ba2a65d3d6cdf406027fff1e92f0d2cf7a8294ef83463",
+     "validated_at": "2026-09-19T11:43:08.335595Z"
+    },
+    "dark": {
+     "hash": "813d6f1036b365a818660e145f541022a7bc121bc2949e3ade31ce08a6a4e231",
+     "validated_at": "2026-09-19T11:43:08.373599Z"
+    }
+   }
   },
   "chat-message-w2-06": {
    "themes": [
@@ -505,7 +770,17 @@
      "signature": "oversize-message-capture-clipped",
      "at": "2026-09-15T08:56:12.047772Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "14210ac9570e2c8b196e8c47d118da4f79014a386bae282c1961a2117d97ddaa",
+     "validated_at": "2026-09-19T11:46:46.288691Z"
+    },
+    "dark": {
+     "hash": "94291c71520453cf22cc07843f4da34d991116d3a4eff160d117432c5250c031",
+     "validated_at": "2026-09-19T11:46:46.324142Z"
+    }
+   }
   },
   "chat-message-w2-07": {
    "themes": [
@@ -524,7 +799,17 @@
      "signature": "oversize-message-capture-clipped",
      "at": "2026-09-15T08:56:12.050928Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "7cc267e77265824ca91bb2172a3119c7a7c478ab4b714f29d1575ba2d835d09c",
+     "validated_at": "2026-09-19T11:46:46.574542Z"
+    },
+    "dark": {
+     "hash": "2999c3490ae083816443d0669c0e8304b6132a1350ac00dbb5a1e04d0c239710",
+     "validated_at": "2026-09-19T11:46:46.602931Z"
+    }
+   }
   },
   "chat-message-w2-08": {
    "themes": [
@@ -543,7 +828,17 @@
      "signature": "oversize-message-capture-clipped",
      "at": "2026-09-15T08:56:12.054169Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "cb45be2590be2bf84a45dcf64cd204ab55d1a4134b3bc06fa7af8395203dcaeb",
+     "validated_at": "2026-09-19T11:46:46.945892Z"
+    },
+    "dark": {
+     "hash": "137239d78811e35ab5ae4696d28950954c7cb2e590ad0455f60f28b9961e5b1a",
+     "validated_at": "2026-09-19T11:46:46.994246Z"
+    }
+   }
   },
   "chat-message-w2-13": {
    "themes": [
@@ -561,8 +856,23 @@
      "origin": "D-013",
      "signature": "oversize-message-capture-clipped",
      "at": "2026-09-15T08:56:12.056364Z"
+    },
+    {
+     "origin": "D-323",
+     "signature": "syntax-token-below-wcag:light",
+     "at": "2026-09-19T12:05:24.860937Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "402215230f889217f0caa7d36182c67e7aa2bca0940d79d415a60a4ae1674322",
+     "validated_at": "2026-09-19T11:51:04.591106Z"
+    },
+    "light": {
+     "hash": "cf8190dd29da9970335bf07a43320c26a24124ff4e4f1184a51fb3b63989684d",
+     "validated_at": "2026-09-19T11:51:04.526359Z"
+    }
+   }
   },
   "chat-message-w2-14": {
    "themes": [
@@ -581,7 +891,17 @@
      "signature": "oversize-message-capture-clipped",
      "at": "2026-09-15T08:56:12.059467Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "df32fe847d30151fd02d5c8b45fa77013a8fb2c3c95638a7a2d4d91488af59ce",
+     "validated_at": "2026-09-19T11:51:04.887897Z"
+    },
+    "light": {
+     "hash": "68236191643a1557d20c3ff6e3175ab2cb45644cbb9574e26ecffcec0c31c707",
+     "validated_at": "2026-09-19T11:51:04.861798Z"
+    }
+   }
   },
   "chat-message-w2-15": {
    "themes": [
@@ -600,7 +920,17 @@
      "signature": "oversize-message-capture-clipped",
      "at": "2026-09-15T08:56:12.066203Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "c3111400fe257132a2abdee82965b003150559af35fc9d83d6231241d8cf3997",
+     "validated_at": "2026-09-19T11:51:05.175331Z"
+    },
+    "light": {
+     "hash": "fab621ddd3ea9fdd8721df9f6344903932be6d7e8409709183a5db041d08cc8b",
+     "validated_at": "2026-09-19T11:51:05.135630Z"
+    }
+   }
   },
   "chat-message-w2-04": {
    "themes": [
@@ -619,7 +949,17 @@
      "signature": "overflow-x-clipped-no-scroll-no-wrap",
      "at": "2026-09-15T08:56:12.071959Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "3dd8318fef3635bf639b65880555a73a47a958f7a54f88799f477fcad93af6ce",
+     "validated_at": "2026-09-19T11:46:46.004994Z"
+    },
+    "dark": {
+     "hash": "a3c20416e7e1500037ca35583229ef480fffbe039f434d70ec44060bac85a62d",
+     "validated_at": "2026-09-19T11:46:46.032213Z"
+    }
+   }
   },
   "chat-message-w2-11": {
    "themes": [
@@ -638,7 +978,17 @@
      "signature": "overflow-x-clipped-no-scroll-no-wrap",
      "at": "2026-09-15T08:56:12.084946Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "bd8d2506bc828877b47e61119c0b13f240c2f860dbb643616f076af557e563ae",
+     "validated_at": "2026-09-19T11:51:04.226003Z"
+    },
+    "light": {
+     "hash": "39bed20a369e0d602edc1d80949b481f7aa0be1db8317d13bd87dda005b00fe8",
+     "validated_at": "2026-09-19T11:51:04.217829Z"
+    }
+   }
   },
   "chat-message-w1-08": {
    "themes": [
@@ -656,7 +1006,17 @@
      "signature": "blockquote-no-visual-affordance",
      "at": "2026-09-15T08:56:12.089102Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "e2f85e878106107853f2c7b894c5e5f487ed3884dc85821da3229418ec6eded2",
+     "validated_at": "2026-09-19T11:37:58.410811Z"
+    },
+    "dark": {
+     "hash": "85efdd28a8739c17f89ee6088d9dad752945c6af5f336b4c8f67bd54f192bc9b",
+     "validated_at": "2026-09-19T11:37:58.421810Z"
+    }
+   }
   },
   "chat-message-w1-15": {
    "themes": [
@@ -673,8 +1033,23 @@
      "origin": "D-015",
      "signature": "blockquote-no-visual-affordance",
      "at": "2026-09-15T08:56:12.101364Z"
+    },
+    {
+     "origin": "D-323",
+     "signature": "syntax-token-below-wcag:light",
+     "at": "2026-09-19T12:05:24.855731Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "ee54da4fad081f9e8ea9acacde014735f528cadd8ae8b08ac0b0151200751450",
+     "validated_at": "2026-09-19T11:39:19.325252Z"
+    },
+    "light": {
+     "hash": "24fb2d435bb293ac00baa46ace85021ba107f3c24d4a9166ff6a20140dc1a931",
+     "validated_at": "2026-09-19T11:39:19.312618Z"
+    }
+   }
   },
   "chat-message-w2-10": {
    "themes": [
@@ -692,7 +1067,17 @@
      "signature": "blockquote-no-visual-affordance",
      "at": "2026-09-15T08:56:12.104781Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "848d474907f499cb6c335edfe1ec07ba3f6d12e777bc1e9f4646deb2b11214b0",
+     "validated_at": "2026-09-19T11:51:03.919053Z"
+    },
+    "light": {
+     "hash": "429fdb25bd1b7a6dd40e9faee5d3e7a7fd1810b9eb5cb5feef48e7b752b1e291",
+     "validated_at": "2026-09-19T11:51:03.900737Z"
+    }
+   }
   },
   "chat-message-w3-01": {
    "themes": [
@@ -710,7 +1095,17 @@
      "signature": "blockquote-no-visual-affordance",
      "at": "2026-09-15T08:56:12.107904Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "28c88f4176174fbc1fe06d23829e440c86603a041d3b1b6c2694e12775d73a59",
+     "validated_at": "2026-09-19T11:52:48.426027Z"
+    },
+    "light": {
+     "hash": "5215e63e733a70a21ff895ea62b4b94692db009fd7945ecdcf414ab4506979d8",
+     "validated_at": "2026-09-19T11:52:48.392218Z"
+    }
+   }
   },
   "chat-message-w3-05": {
    "themes": [
@@ -727,8 +1122,23 @@
      "origin": "D-017",
      "signature": "markdown-dialect-and-raw-html-unsupported",
      "at": "2026-09-15T08:56:12.111959Z"
+    },
+    {
+     "origin": "D-328",
+     "signature": "footnote-inline-code-leaks-as-literal",
+     "at": "2026-09-19T12:05:24.911538Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "38016b5052e82835070d954d82f69ef9fa84d3ef46c6ab449c0292d6134b3250",
+     "validated_at": "2026-09-19T11:55:11.526820Z"
+    },
+    "dark": {
+     "hash": "f505fefa78049afaa521256c0017eb414ab90010c0e13ac5dc1f18054927b5da",
+     "validated_at": "2026-09-19T11:55:11.547774Z"
+    }
+   }
   },
   "chat-message-w3-06": {
    "themes": [
@@ -745,8 +1155,23 @@
      "origin": "D-017",
      "signature": "markdown-dialect-and-raw-html-unsupported",
      "at": "2026-09-15T08:56:12.116006Z"
+    },
+    {
+     "origin": "D-329",
+     "signature": "details-body-escapes-widget",
+     "at": "2026-09-19T12:05:24.915917Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "71fe3d9a6f1b8d19957c9d26ea2f2422e6553a130f041e55bd8502125c908445",
+     "validated_at": "2026-09-19T11:55:11.801262Z"
+    },
+    "dark": {
+     "hash": "5ca47f020a7c4785883eaf7b41e37ff29525ad885038c12aa1dfebe2874f7630",
+     "validated_at": "2026-09-19T11:55:11.810329Z"
+    }
+   }
   },
   "chat-message-w3-07": {
    "themes": [
@@ -769,7 +1194,17 @@
      "signature": "katex-error-red-below-wcag:dark",
      "at": "2026-09-15T08:56:12.167324Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "0d088a88716585ee52ad21f6fa2799d603b8b0c7fb9d71dbce06cce769c584e8",
+     "validated_at": "2026-09-19T11:55:12.060202Z"
+    },
+    "dark": {
+     "hash": "8050f9da4eb6b516a5ed778b7e24add451b1813059bb43a5c8885c0ab5bcf103",
+     "validated_at": "2026-09-19T11:55:12.072768Z"
+    }
+   }
   },
   "chat-message-w3-10": {
    "themes": [
@@ -793,7 +1228,17 @@
      "signature": "author-hardcoded-color-not-theme-normalized",
      "at": "2026-09-15T08:56:12.146740Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "be309b0c832032b56f6b2d1f763c759709f6b041435c01c680a4c9aa6424385f",
+     "validated_at": "2026-09-19T11:57:17.309968Z"
+    },
+    "dark": {
+     "hash": "90554c0b74892ef42256e5ea7bfd881c5dba2d79d82e836a760ea1cd9647ca96",
+     "validated_at": "2026-09-19T11:57:17.324913Z"
+    }
+   }
   },
   "chat-message-w3-11": {
    "themes": [
@@ -817,7 +1262,17 @@
      "signature": "author-hardcoded-color-not-theme-normalized",
      "at": "2026-09-15T08:56:12.149362Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "d90cb625396d61ef1d72f27798458ae077b0c09a44f3a9854c63260e39f9c792",
+     "validated_at": "2026-09-19T11:57:17.644085Z"
+    },
+    "dark": {
+     "hash": "6cb250353097fe5fd3bd866e309ad52fddd5bef65aa852652103478aa5fbca0a",
+     "validated_at": "2026-09-19T11:57:17.671644Z"
+    }
+   }
   },
   "chat-message-w3-14": {
    "themes": [
@@ -834,8 +1289,23 @@
      "origin": "D-018",
      "signature": "inline-span-style-structure-broken",
      "at": "2026-09-15T08:56:12.131340Z"
+    },
+    {
+     "origin": "D-326",
+     "signature": "optimal-text-color-white-on-amber",
+     "at": "2026-09-19T12:05:24.896987Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "77398c4ff491f7eebdab274fd55a9540bbefe348df04793e06831016b60fd2df",
+     "validated_at": "2026-09-19T11:58:52.227630Z"
+    },
+    "dark": {
+     "hash": "e421a84b7259940ef63c72c49c37238f0e9cf476cd02049f99fbf3d6851ec252",
+     "validated_at": "2026-09-19T11:58:52.239207Z"
+    }
+   }
   },
   "chat-message-w3-12": {
    "themes": [
@@ -854,7 +1324,17 @@
      "signature": "author-hardcoded-color-not-theme-normalized",
      "at": "2026-09-15T08:56:12.153836Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "84ac329e92857419332066e220828dbc0a4f649df730b1fad351b9edd2a2f978",
+     "validated_at": "2026-09-19T11:57:17.921775Z"
+    },
+    "dark": {
+     "hash": "e7ae7d831bca06dc982747f0984c225b9cb35330f705023d29af5ab2397c17c6",
+     "validated_at": "2026-09-19T11:57:17.933930Z"
+    }
+   }
   },
   "chat-message-w1-04": {
    "themes": [
@@ -872,7 +1352,17 @@
      "signature": "syntax-keyword-below-wcag:light",
      "at": "2026-09-15T08:56:12.161601Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "b0ae1492834d259eeb3e0aa0efaedcec89cc2bf8716c87272d230767bac43247",
+     "validated_at": "2026-09-19T11:37:57.855872Z"
+    },
+    "dark": {
+     "hash": "5b8a261a7b423a65e6da99da42d13e4b454c4d22f731f4fc0c13a8bf5874b4e5",
+     "validated_at": "2026-09-19T11:37:57.874512Z"
+    }
+   }
   },
   "chat-message-w4-06": {
    "themes": [
@@ -891,7 +1381,17 @@
      "signature": "init-json-palette-dropped",
      "at": "2026-09-15T08:56:12.170466Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "1ca6598cbd81563cf0c8fae7d44faf9bb2c6f21c1fb452f995a90295a0317989",
+     "validated_at": "2026-09-16T14:29:32.558192Z"
+    },
+    "dark": {
+     "hash": "4eacb9af0e64796eb75f3e0a2e17966351535b573663d3ce839c724fd8870a8e",
+     "validated_at": "2026-09-16T14:29:32.564492Z"
+    }
+   }
   },
   "chat-message-w4-07": {
    "themes": [
@@ -910,7 +1410,17 @@
      "signature": "init-json-palette-dropped",
      "at": "2026-09-15T08:56:12.176192Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "6e603f13a85d4bd661ff282b505d5436e736f7315909c8d6b4674095d7cdb312",
+     "validated_at": "2026-09-19T12:03:27.119326Z"
+    },
+    "dark": {
+     "hash": "8f18a0f9c1870891914b4d8e8641d6b67779e00dcb43c76c921fb634d5be92b1",
+     "validated_at": "2026-09-19T12:03:27.137384Z"
+    }
+   }
   },
   "chat-message-w4-09": {
    "themes": [
@@ -927,8 +1437,23 @@
      "origin": "D-025",
      "signature": "style-rgba-color-form-parse-error",
      "at": "2026-09-15T08:56:12.186654Z"
+    },
+    {
+     "origin": "D-325",
+     "signature": "style-directive-node-boundary-dissolves-into-canvas:dark",
+     "at": "2026-09-19T12:05:24.890616Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "01f6f3424ea31b07be72ac4e2254243f8e58e6a98ee0cbed2916823d481449b8",
+     "validated_at": "2026-09-19T12:03:27.761445Z"
+    },
+    "dark": {
+     "hash": "912305410da9227e0f9d6c654f77abae6d54c3552212e97bde7e6c1525eb953c",
+     "validated_at": "2026-09-19T12:03:27.779371Z"
+    }
+   }
   },
   "chat-message-w4-12": {
    "themes": [
@@ -946,7 +1471,45 @@
      "signature": "table-separator-column-mismatch-pipe-soup",
      "at": "2026-09-15T08:56:12.195068Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "bd903b93d54a56e233c24e406f58a1a755abc5f5cbfdc737e3f1cce75ce8b938",
+     "validated_at": "2026-09-19T12:05:15.308201Z"
+    },
+    "light": {
+     "hash": "9034161915f55458ae52ea9c1511f9f9d079e15475a91c5a13a3cb93482c96ac",
+     "validated_at": "2026-09-19T12:05:15.298512Z"
+    }
+   }
+  },
+  "chat-message-w4-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-325",
+     "signature": "style-directive-node-boundary-dissolves-into-canvas:dark",
+     "at": "2026-09-19T12:05:24.883919Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "65652ee5563fa84d7c61a5ae1c9ff331652e361cd61b4bb42b11c60719aeacba",
+     "validated_at": "2026-09-19T12:03:27.435777Z"
+    },
+    "light": {
+     "hash": "be2f19d076a626f48c70f031c4c535f1f1da4d8dcbf66da3ed40fe96eea2b991",
+     "validated_at": "2026-09-19T12:03:27.426730Z"
+    }
+   }
   }
  }
 }

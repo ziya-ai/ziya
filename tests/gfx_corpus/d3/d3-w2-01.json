@@ -1,0 +1,491 @@
+{
+ "type": "d3",
+ "definition": {
+  "type": "bar",
+  "width": 700,
+  "height": 400,
+  "data": [
+   {
+    "label": "0",
+    "value": 10
+   },
+   {
+    "label": "1",
+    "value": 17
+   },
+   {
+    "label": "2",
+    "value": 24
+   },
+   {
+    "label": "3",
+    "value": 31
+   },
+   {
+    "label": "4",
+    "value": 38
+   },
+   {
+    "label": "5",
+    "value": 45
+   },
+   {
+    "label": "6",
+    "value": 52
+   },
+   {
+    "label": "7",
+    "value": 59
+   },
+   {
+    "label": "8",
+    "value": 66
+   },
+   {
+    "label": "9",
+    "value": 73
+   },
+   {
+    "label": "10",
+    "value": 10
+   },
+   {
+    "label": "11",
+    "value": 17
+   },
+   {
+    "label": "12",
+    "value": 24
+   },
+   {
+    "label": "13",
+    "value": 31
+   },
+   {
+    "label": "14",
+    "value": 38
+   },
+   {
+    "label": "15",
+    "value": 45
+   },
+   {
+    "label": "16",
+    "value": 52
+   },
+   {
+    "label": "17",
+    "value": 59
+   },
+   {
+    "label": "18",
+    "value": 66
+   },
+   {
+    "label": "19",
+    "value": 73
+   },
+   {
+    "label": "20",
+    "value": 10
+   },
+   {
+    "label": "21",
+    "value": 17
+   },
+   {
+    "label": "22",
+    "value": 24
+   },
+   {
+    "label": "23",
+    "value": 31
+   },
+   {
+    "label": "24",
+    "value": 38
+   },
+   {
+    "label": "25",
+    "value": 45
+   },
+   {
+    "label": "26",
+    "value": 52
+   },
+   {
+    "label": "27",
+    "value": 59
+   },
+   {
+    "label": "28",
+    "value": 66
+   },
+   {
+    "label": "29",
+    "value": 73
+   },
+   {
+    "label": "30",
+    "value": 10
+   },
+   {
+    "label": "31",
+    "value": 17
+   },
+   {
+    "label": "32",
+    "value": 24
+   },
+   {
+    "label": "33",
+    "value": 31
+   },
+   {
+    "label": "34",
+    "value": 38
+   },
+   {
+    "label": "35",
+    "value": 45
+   },
+   {
+    "label": "36",
+    "value": 52
+   },
+   {
+    "label": "37",
+    "value": 59
+   },
+   {
+    "label": "38",
+    "value": 66
+   },
+   {
+    "label": "39",
+    "value": 73
+   },
+   {
+    "label": "40",
+    "value": 10
+   },
+   {
+    "label": "41",
+    "value": 17
+   },
+   {
+    "label": "42",
+    "value": 24
+   },
+   {
+    "label": "43",
+    "value": 31
+   },
+   {
+    "label": "44",
+    "value": 38
+   },
+   {
+    "label": "45",
+    "value": 45
+   },
+   {
+    "label": "46",
+    "value": 52
+   },
+   {
+    "label": "47",
+    "value": 59
+   },
+   {
+    "label": "48",
+    "value": 66
+   },
+   {
+    "label": "49",
+    "value": 73
+   },
+   {
+    "label": "50",
+    "value": 10
+   },
+   {
+    "label": "51",
+    "value": 17
+   },
+   {
+    "label": "52",
+    "value": 24
+   },
+   {
+    "label": "53",
+    "value": 31
+   },
+   {
+    "label": "54",
+    "value": 38
+   },
+   {
+    "label": "55",
+    "value": 45
+   },
+   {
+    "label": "56",
+    "value": 52
+   },
+   {
+    "label": "57",
+    "value": 59
+   },
+   {
+    "label": "58",
+    "value": 66
+   },
+   {
+    "label": "59",
+    "value": 73
+   },
+   {
+    "label": "60",
+    "value": 10
+   },
+   {
+    "label": "61",
+    "value": 17
+   },
+   {
+    "label": "62",
+    "value": 24
+   },
+   {
+    "label": "63",
+    "value": 31
+   },
+   {
+    "label": "64",
+    "value": 38
+   },
+   {
+    "label": "65",
+    "value": 45
+   },
+   {
+    "label": "66",
+    "value": 52
+   },
+   {
+    "label": "67",
+    "value": 59
+   },
+   {
+    "label": "68",
+    "value": 66
+   },
+   {
+    "label": "69",
+    "value": 73
+   },
+   {
+    "label": "70",
+    "value": 10
+   },
+   {
+    "label": "71",
+    "value": 17
+   },
+   {
+    "label": "72",
+    "value": 24
+   },
+   {
+    "label": "73",
+    "value": 31
+   },
+   {
+    "label": "74",
+    "value": 38
+   },
+   {
+    "label": "75",
+    "value": 45
+   },
+   {
+    "label": "76",
+    "value": 52
+   },
+   {
+    "label": "77",
+    "value": 59
+   },
+   {
+    "label": "78",
+    "value": 66
+   },
+   {
+    "label": "79",
+    "value": 73
+   },
+   {
+    "label": "80",
+    "value": 10
+   },
+   {
+    "label": "81",
+    "value": 17
+   },
+   {
+    "label": "82",
+    "value": 24
+   },
+   {
+    "label": "83",
+    "value": 31
+   },
+   {
+    "label": "84",
+    "value": 38
+   },
+   {
+    "label": "85",
+    "value": 45
+   },
+   {
+    "label": "86",
+    "value": 52
+   },
+   {
+    "label": "87",
+    "value": 59
+   },
+   {
+    "label": "88",
+    "value": 66
+   },
+   {
+    "label": "89",
+    "value": 73
+   },
+   {
+    "label": "90",
+    "value": 10
+   },
+   {
+    "label": "91",
+    "value": 17
+   },
+   {
+    "label": "92",
+    "value": 24
+   },
+   {
+    "label": "93",
+    "value": 31
+   },
+   {
+    "label": "94",
+    "value": 38
+   },
+   {
+    "label": "95",
+    "value": 45
+   },
+   {
+    "label": "96",
+    "value": 52
+   },
+   {
+    "label": "97",
+    "value": 59
+   },
+   {
+    "label": "98",
+    "value": 66
+   },
+   {
+    "label": "99",
+    "value": 73
+   },
+   {
+    "label": "100",
+    "value": 10
+   },
+   {
+    "label": "101",
+    "value": 17
+   },
+   {
+    "label": "102",
+    "value": 24
+   },
+   {
+    "label": "103",
+    "value": 31
+   },
+   {
+    "label": "104",
+    "value": 38
+   },
+   {
+    "label": "105",
+    "value": 45
+   },
+   {
+    "label": "106",
+    "value": 52
+   },
+   {
+    "label": "107",
+    "value": 59
+   },
+   {
+    "label": "108",
+    "value": 66
+   },
+   {
+    "label": "109",
+    "value": 73
+   },
+   {
+    "label": "110",
+    "value": 10
+   },
+   {
+    "label": "111",
+    "value": 17
+   },
+   {
+    "label": "112",
+    "value": 24
+   },
+   {
+    "label": "113",
+    "value": 31
+   },
+   {
+    "label": "114",
+    "value": 38
+   },
+   {
+    "label": "115",
+    "value": 45
+   },
+   {
+    "label": "116",
+    "value": 52
+   },
+   {
+    "label": "117",
+    "value": 59
+   },
+   {
+    "label": "118",
+    "value": 66
+   },
+   {
+    "label": "119",
+    "value": 73
+   }
+  ]
+ },
+ "intent": "SCALE: bar with 120 categories at 700x400 - band bandwidth ~5px, 120 axis tick labels with no pruning or rotation"
+}

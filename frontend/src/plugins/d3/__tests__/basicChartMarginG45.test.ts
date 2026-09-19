@@ -95,8 +95,10 @@ function makeRecorder() {
         scaleBand, scaleLinear, scaleSqrt, line,
         extent: (arr: any[], fn: any) => { const v = arr.map(fn); return [Math.min(...v), Math.max(...v)]; },
         max: (arr: any[], fn: any) => Math.max(...arr.map(fn)),
-        axisBottom: () => () => selection([]),
-        axisLeft: () => () => selection([]),
+        // Axis generators are callable AND carry a chainable `.ticks()` (D-373):
+        // basicChart now calls `d3.axisLeft(y).ticks(n)`.
+        axisBottom: () => { const g: any = () => selection([]); g.ticks = () => g; return g; },
+        axisLeft: () => { const g: any = () => selection([]); g.ticks = () => g; return g; },
     };
     return { d3, records };
 }

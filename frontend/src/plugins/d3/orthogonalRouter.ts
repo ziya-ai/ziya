@@ -190,10 +190,22 @@ export function routeOrthogonalConnector(options: RoutingOptions): Point[] {
     const shapeA = Rectangle.fromRect(options.pointA.shape).inflate(margin, margin);
     const shapeB = Rectangle.fromRect(options.pointB.shape).inflate(margin, margin);
     
-    // Create obstacles list
+    // Create obstacles list. `obstacles` (source + target + externals) seeds the
+    // routing GRID (rulers), so the grid still has lines hugging every box.
+    // But the SOURCE and TARGET boxes must NOT block grid edges or exclude grid
+    // nodes — the connection points sit on their inflated perimeters, and if the
+    // box is treated as a blocker the endpoint's own neighbours get cut, leaving
+    // it isolated so Dijkstra finds no path and the router falls back to a naive
+    // straight line straight through the real obstacle (D-092/D-382/D-389). Only
+    // EXTERNAL obstacles (`blockers`) are allowed to block. (Bug fix: previously
+    // shapeA/shapeB were in the blocking set, which is why this router produced a
+    // straight crossing route and had been left unused.)
     const obstacles = [shapeA, shapeB];
+    const blockers: Rectangle[] = [];
     if (options.obstacles) {
-        obstacles.push(...options.obstacles.map(r => Rectangle.fromRect(r).inflate(margin, margin)));
+        const inflatedExternals = options.obstacles.map(r => Rectangle.fromRect(r).inflate(margin, margin));
+        obstacles.push(...inflatedExternals);
+        blockers.push(...inflatedExternals);
     }
     
     // Create grid of horizontal and vertical rulers around obstacles
@@ -235,10 +247,18 @@ export function routeOrthogonalConnector(options: RoutingOptions): Point[] {
         for (const y of hRulerArray) {
             const pt = { x, y };
             
-            // Skip points inside obstacles (except connection points)
+            // Skip points STRICTLY inside EXTERNAL obstacles (except connection
+            // points). The test must be strict (interior only): nodes sitting ON
+            // the inflated obstacle boundary are the routing CORRIDOR around it —
+            // excluding them (inclusive contains) severs the perimeter path and
+            // leaves the endpoints unreachable, so Dijkstra fails and the caller
+            // draws a straight line through the box. Source/target boxes never
+            // exclude nodes at all.
             let insideObstacle = false;
-            for (const obs of obstacles) {
-                if (obs.contains(pt)) {
+            const strictlyInside = (obs: Rectangle, q: Point) =>
+                q.x > obs.left && q.x < obs.right && q.y > obs.top && q.y < obs.bottom;
+            for (const obs of blockers) {
+                if (strictlyInside(obs, pt)) {
                     // Allow if it's a connection point
                     if (!(Math.abs(pt.x - ptA.x) < 0.1 && Math.abs(pt.y - ptA.y) < 0.1) &&
                         !(Math.abs(pt.x - ptB.x) < 0.1 && Math.abs(pt.y - ptB.y) < 0.1)) {
@@ -264,7 +284,7 @@ export function routeOrthogonalConnector(options: RoutingOptions): Point[] {
             if (graph.has(ptA) && graph.has(ptB)) {
                 // Check if line crosses any obstacle
                 let crosses = false;
-                for (const obs of obstacles) {
+                for (const obs of blockers) {
                     const line = Rectangle.fromLTRB(
                         Math.min(ptA.x, ptB.x),
                         Math.min(ptA.y, ptB.y),
@@ -293,7 +313,7 @@ export function routeOrthogonalConnector(options: RoutingOptions): Point[] {
             
             if (graph.has(ptA) && graph.has(ptB)) {
                 let crosses = false;
-                for (const obs of obstacles) {
+                for (const obs of blockers) {
                     const line = Rectangle.fromLTRB(
                         Math.min(ptA.x, ptB.x),
                         Math.min(ptA.y, ptB.y),
@@ -355,6 +375,45 @@ export function routeOrthogonalConnector(options: RoutingOptions): Point[] {
 /**
  * Determine optimal connection side for a source-target pair
  */
+/**
+ * D-092 / D-382 / D-389 — ROUTE-FIX repair helper.
+ *
+ * When the drawio plugin's ROUTE-FIX detector finds an edge whose Manhattan
+ * fallback route was drawn straight through a vertex interior (or across a
+ * transparent-fill box's label), it needs an obstacle-avoiding orthogonal route
+ * to replace it. This is the missing "repair" the plugin previously only logged
+ * ("ROUTE-FIX DETECT logs the crossing but does not repair it"): it picks the
+ * optimal connection sides and routes around every obstacle, then returns only
+ * the INTERIOR bend points so maxGraph's SegmentConnector still anchors to the
+ * live cell perimeters (endpoints are dropped — the terminals own those).
+ *
+ * Returns [] when no bend is needed (a clear straight/L route already clears the
+ * obstacles), so the caller only rewrites geometry.points when a genuine detour
+ * is required. Pure (no maxGraph/DOM), so it is unit-testable in isolation.
+ */
+export function rerouteAroundObstacles(
+    source: Rect,
+    target: Rect,
+    obstacles: Rect[],
+    shapeMargin = 20
+): Point[] {
+    const { sourceSide, targetSide } = getOptimalSide(source, target);
+    let route: Point[];
+    try {
+        route = routeOrthogonalConnector({
+            pointA: { shape: source, side: sourceSide, distance: 0.5 },
+            pointB: { shape: target, side: targetSide, distance: 0.5 },
+            obstacles,
+            shapeMargin,
+        });
+    } catch {
+        return [];
+    }
+    // Drop the two perimeter endpoints; keep interior bends only. SegmentConnector
+    // re-derives the perimeter anchor points from the live source/target cells.
+    return route.length > 2 ? route.slice(1, -1) : [];
+}
+
 export function getOptimalSide(source: Rect, target: Rect): { sourceSide: Side; targetSide: Side } {
     const srcCenter = {
         x: source.left + source.width / 2,

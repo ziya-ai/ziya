@@ -1,0 +1,171 @@
+{
+ "type": "d3",
+ "definition": {
+  "type": "bar",
+  "width": 800,
+  "height": 400,
+  "data": [
+   {
+    "label": "service-authentication-token-refresh-worker-00",
+    "value": 10
+   },
+   {
+    "label": "service-payment-settlement-reconciliation-batch-01",
+    "value": 17
+   },
+   {
+    "label": "service-notification-fanout-dispatcher-queue-02",
+    "value": 24
+   },
+   {
+    "label": "service-inventory-availability-projection-cache-03",
+    "value": 31
+   },
+   {
+    "label": "service-authentication-token-refresh-worker-04",
+    "value": 38
+   },
+   {
+    "label": "service-payment-settlement-reconciliation-batch-05",
+    "value": 45
+   },
+   {
+    "label": "service-notification-fanout-dispatcher-queue-06",
+    "value": 52
+   },
+   {
+    "label": "service-inventory-availability-projection-cache-07",
+    "value": 59
+   },
+   {
+    "label": "service-authentication-token-refresh-worker-08",
+    "value": 66
+   },
+   {
+    "label": "service-payment-settlement-reconciliation-batch-09",
+    "value": 73
+   },
+   {
+    "label": "service-notification-fanout-dispatcher-queue-10",
+    "value": 10
+   },
+   {
+    "label": "service-inventory-availability-projection-cache-11",
+    "value": 17
+   },
+   {
+    "label": "service-authentication-token-refresh-worker-12",
+    "value": 24
+   },
+   {
+    "label": "service-payment-settlement-reconciliation-batch-13",
+    "value": 31
+   },
+   {
+    "label": "service-notification-fanout-dispatcher-queue-14",
+    "value": 38
+   },
+   {
+    "label": "service-inventory-availability-projection-cache-15",
+    "value": 45
+   },
+   {
+    "label": "service-authentication-token-refresh-worker-16",
+    "value": 52
+   },
+   {
+    "label": "service-payment-settlement-reconciliation-batch-17",
+    "value": 59
+   },
+   {
+    "label": "service-notification-fanout-dispatcher-queue-18",
+    "value": 66
+   },
+   {
+    "label": "service-inventory-availability-projection-cache-19",
+    "value": 73
+   },
+   {
+    "label": "service-authentication-token-refresh-worker-20",
+    "value": 10
+   },
+   {
+    "label": "service-payment-settlement-reconciliation-batch-21",
+    "value": 17
+   },
+   {
+    "label": "service-notification-fanout-dispatcher-queue-22",
+    "value": 24
+   },
+   {
+    "label": "service-inventory-availability-projection-cache-23",
+    "value": 31
+   },
+   {
+    "label": "service-authentication-token-refresh-worker-24",
+    "value": 38
+   },
+   {
+    "label": "service-payment-settlement-reconciliation-batch-25",
+    "value": 45
+   },
+   {
+    "label": "service-notification-fanout-dispatcher-queue-26",
+    "value": 52
+   },
+   {
+    "label": "service-inventory-availability-projection-cache-27",
+    "value": 59
+   },
+   {
+    "label": "service-authentication-token-refresh-worker-28",
+    "value": 66
+   },
+   {
+    "label": "service-payment-settlement-reconciliation-batch-29",
+    "value": 73
+   },
+   {
+    "label": "service-notification-fanout-dispatcher-queue-30",
+    "value": 10
+   },
+   {
+    "label": "service-inventory-availability-projection-cache-31",
+    "value": 17
+   },
+   {
+    "label": "service-authentication-token-refresh-worker-32",
+    "value": 24
+   },
+   {
+    "label": "service-payment-settlement-reconciliation-batch-33",
+    "value": 31
+   },
+   {
+    "label": "service-notification-fanout-dispatcher-queue-34",
+    "value": 38
+   },
+   {
+    "label": "service-inventory-availability-projection-cache-35",
+    "value": 45
+   },
+   {
+    "label": "service-authentication-token-refresh-worker-36",
+    "value": 52
+   },
+   {
+    "label": "service-payment-settlement-reconciliation-batch-37",
+    "value": 59
+   },
+   {
+    "label": "service-notification-fanout-dispatcher-queue-38",
+    "value": 66
+   },
+   {
+    "label": "service-inventory-availability-projection-cache-39",
+    "value": 73
+   }
+  ]
+ },
+ "intent": "SCALE: 40 categories with 45-character labels - tests tick-label rotation/truncation (basicChart has none)"
+}

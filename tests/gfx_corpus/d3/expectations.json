@@ -18,7 +18,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.271681Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "39b79be0d766102ce467e232032883259ef206bdc7a133fd6c45f8b5e7e65d61",
+     "validated_at": "2026-09-19T09:11:00.717051Z"
+    },
+    "dark": {
+     "hash": "1db90723e8c59ede4ddbe3972666fe6c524db1a6f174a47757c9c0279c6e707e",
+     "validated_at": "2026-09-19T09:11:00.725550Z"
+    }
+   }
   },
   "d3-w1-03": {
    "themes": [
@@ -36,7 +46,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.274192Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "15defe35a16ab908810861c22f812bf356a5e0775da079c03a2ea56ccedaab2a",
+     "validated_at": "2026-09-19T09:12:42.630606Z"
+    },
+    "dark": {
+     "hash": "446d09b2781f7ab0e770a91039cacd3b8294df827a350439f470d42450d64fb2",
+     "validated_at": "2026-09-19T09:12:42.645046Z"
+    }
+   }
   },
   "d3-w1-08": {
    "themes": [
@@ -54,7 +74,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.278282Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "3ac0f0e0f73baadebe489b791e7a0c2d0ceb82d8a18038dd38f7666b4df81a1b",
+     "validated_at": "2026-09-19T09:14:06.926807Z"
+    },
+    "dark": {
+     "hash": "48d7b7facd33663d0ac30baed0a045eb4dad21d51809ac49b566450499cdba09",
+     "validated_at": "2026-09-19T09:14:06.938690Z"
+    }
+   }
   },
   "d3-w1-10": {
    "themes": [
@@ -72,7 +102,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.281205Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "942b74ab26048b504e272a71ad099be7d4d1ad38a0671dd83bc62203ceea20cb",
+     "validated_at": "2026-09-19T09:14:07.108836Z"
+    },
+    "dark": {
+     "hash": "38b94cc11c05efae0edb15f42e54a98e3cb8a792c8a53a9dc672a2d4133ecf53",
+     "validated_at": "2026-09-19T09:14:07.123713Z"
+    }
+   }
   },
   "d3-w2-05": {
    "themes": [
@@ -89,8 +129,23 @@
      "origin": "regression_set",
      "signature": "",
      "at": "2026-09-15T08:56:11.287432Z"
+    },
+    {
+     "origin": "D-373",
+     "signature": "y-axis-tick-count-not-scaled-to-height",
+     "at": "2026-09-19T09:36:50.876482Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "e4a2266a9733d973618006885530e28f4f88c02f2a049166959fa893aa279146",
+     "validated_at": "2026-09-19T09:14:07.345849Z"
+    },
+    "dark": {
+     "hash": "5ee0216164fbbb9562307bd6ede80f770df102da5cdda8c6141ad133fa3d379b",
+     "validated_at": "2026-09-19T09:14:07.352107Z"
+    }
+   }
   },
   "d3-w2-08": {
    "themes": [
@@ -108,7 +163,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.296771Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "ac5375a6572f7b2948b99fd3ef3151b28122abb170b8013ae31cf9724a7cb58d",
+     "validated_at": "2026-09-19T09:15:14.366918Z"
+    },
+    "dark": {
+     "hash": "1409711570730239de7c67203c092ab485c01834d13c005c94631b14206cfd89",
+     "validated_at": "2026-09-19T09:15:14.379092Z"
+    }
+   }
   },
   "d3-w4-01": {
    "themes": [
@@ -126,7 +191,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.300492Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "3ed7f97352ffc442cf5641f432cbc1b32efa91ff31812cd609b9c1c7cbb216c4",
+     "validated_at": "2026-09-19T09:22:26.312564Z"
+    },
+    "dark": {
+     "hash": "2c143913a923f37b139d734005ddc5857089bad13c48a07e79ef5120a3f27161",
+     "validated_at": "2026-09-19T09:22:26.332382Z"
+    }
+   }
   },
   "d3-w4-07": {
    "themes": [
@@ -144,7 +219,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.303438Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "68384bb32c3897b825da42f590b92fb3fed2553800995ffce27f28f8b2ef0e14",
+     "validated_at": "2026-09-19T09:22:26.752519Z"
+    },
+    "dark": {
+     "hash": "a332cac7b6b1c43f0dc876a00f2fad9d13b0e16727013b5758912413b7564a88",
+     "validated_at": "2026-09-19T09:22:26.761278Z"
+    }
+   }
   },
   "d3-w4-10": {
    "themes": [
@@ -162,7 +247,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.305922Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "15964153e313dbf642f6212200ec8902af2c8019bf078a08c0879f70e5795b86",
+     "validated_at": "2026-09-19T09:15:14.889245Z"
+    },
+    "dark": {
+     "hash": "b6a2cfc03876d4a14d69c95f6650b92c164ce91d0c6dbc1066f1440c822ef54a",
+     "validated_at": "2026-09-19T09:15:14.900732Z"
+    }
+   }
   },
   "d3-w4-14": {
    "themes": [
@@ -180,7 +275,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.308666Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "38a33b18dfebc83eba8115c562d087bfb1b5834dc7ad655379c98d24d086df3c",
+     "validated_at": "2026-09-19T09:32:20.858028Z"
+    },
+    "dark": {
+     "hash": "9e2a7ef537aef02d1330f9ca2a61a71ce6a534d7b96652988a534e19ed8e01a1",
+     "validated_at": "2026-09-19T09:32:20.873316Z"
+    }
+   }
   },
   "d3-w4-12": {
    "themes": [
@@ -199,7 +304,17 @@
      "signature": "named-color-bypasses-contrast-guard",
      "at": "2026-09-15T08:56:12.544614Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "8d188562eda6ddffe56331ee3138fb2a5b0b4d54fc5d99960d3f14a2d197ac40",
+     "validated_at": "2026-09-19T09:31:32.581617Z"
+    },
+    "dark": {
+     "hash": "7808aba1ef07b4e226812b9594ce32771e54cad486f2b304f49a751ed6d4b9f3",
+     "validated_at": "2026-09-19T09:31:32.593342Z"
+    }
+   }
   },
   "d3-w4-04": {
    "themes": [
@@ -217,7 +332,17 @@
      "signature": "chart-path-recovery-not-centralized",
      "at": "2026-09-15T08:56:12.548001Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "c09a3f93b393413a6d4025b2724af3f28485f67c396dadb9ccce249e14052183",
+     "validated_at": "2026-09-16T12:13:53.200973Z"
+    },
+    "dark": {
+     "hash": "5c37c519e50ab8d8671610fe96131de925b4d47e5ecd48d0a7d7302193c6acdf",
+     "validated_at": "2026-09-16T12:13:53.208209Z"
+    }
+   }
   },
   "d3-w4-05": {
    "themes": [
@@ -235,7 +360,17 @@
      "signature": "chart-path-recovery-not-centralized",
      "at": "2026-09-15T08:56:12.552011Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "c09a3f93b393413a6d4025b2724af3f28485f67c396dadb9ccce249e14052183",
+     "validated_at": "2026-09-16T12:14:32.842480Z"
+    },
+    "dark": {
+     "hash": "5c37c519e50ab8d8671610fe96131de925b4d47e5ecd48d0a7d7302193c6acdf",
+     "validated_at": "2026-09-16T12:14:32.848756Z"
+    }
+   }
   },
   "d3-w4-06": {
    "themes": [
@@ -253,7 +388,17 @@
      "signature": "chart-path-recovery-not-centralized",
      "at": "2026-09-15T08:56:12.556431Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "c09a3f93b393413a6d4025b2724af3f28485f67c396dadb9ccce249e14052183",
+     "validated_at": "2026-09-16T12:14:33.049143Z"
+    },
+    "dark": {
+     "hash": "5c37c519e50ab8d8671610fe96131de925b4d47e5ecd48d0a7d7302193c6acdf",
+     "validated_at": "2026-09-16T12:14:33.055445Z"
+    }
+   }
   },
   "d3-w4-15": {
    "themes": [
@@ -271,7 +416,102 @@
      "signature": "object-form-graph-nesting-not-recovered",
      "at": "2026-09-15T08:56:12.559800Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "daa9c2dc754f8d896ad2dec17b4aad1c61bdfe905d0d8cd786c64102f11310d6",
+     "validated_at": "2026-09-19T09:31:32.841974Z"
+    },
+    "dark": {
+     "hash": "5419ff342ce30dffac4f8a2f8279360c2cea12f4f8af504c6bc399d9e0621af0",
+     "validated_at": "2026-09-19T09:31:32.848633Z"
+    }
+   }
+  },
+  "d3-w2-02": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:layout"
+   ],
+   "origins": [
+    {
+     "origin": "D-371",
+     "signature": "long-tick-labels-truncated-to-identical-prefix",
+     "at": "2026-09-19T09:36:50.855931Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "f5b41daa884b14681c8bcedd4b115c338fb28b51d270dca65a6907999c58d433",
+     "validated_at": "2026-09-19T09:16:23.798053Z"
+    },
+    "light": {
+     "hash": "6ed23815db97482afae73fc8c7192fe59ddee099db542031f63b5b64f2015b27",
+     "validated_at": "2026-09-19T09:16:23.788480Z"
+    }
+   }
+  },
+  "d3-w2-01": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-372",
+     "signature": "tick-label-pruning-stride-too-small",
+     "at": "2026-09-19T09:36:50.860400Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "37d0fd7a9e8966df81768396e68c15ec616d6b87ae8340734753302d56447cf4",
+     "validated_at": "2026-09-19T09:18:08.240895Z"
+    },
+    "light": {
+     "hash": "d63e28e3c8becbc78e6f81eb53bc72a94b4b952390cc15cdde36069d25638060",
+     "validated_at": "2026-09-19T09:18:08.231006Z"
+    }
+   }
+  },
+  "d3-w2-03": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-372",
+     "signature": "tick-label-pruning-stride-too-small",
+     "at": "2026-09-19T09:36:50.872525Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "3f02c2b533983b4030acdbbc058d401f52265f46a062f61858b56d602fe016a3",
+     "validated_at": "2026-09-19T09:19:17.185441Z"
+    },
+    "light": {
+     "hash": "25e3eaee67563e85fad280138537cafd9219e28e5aceeac24af1e6ff5ca015a0",
+     "validated_at": "2026-09-19T09:19:17.176592Z"
+    }
+   }
   }
  }
 }
