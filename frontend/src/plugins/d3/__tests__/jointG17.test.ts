@@ -191,12 +191,17 @@ describe('D-144 — cell-type guard for raw dia.Element creators', () => {
 describe('D-145 — scale-to-fit bounds the emitted SVG (computeJointFitPlan)', () => {
     const CONTAINER = 1264;
 
-    it('content that fits keeps natural size (scale 1, unchanged behaviour)', () => {
+    it('content that fits keeps natural size (scale 1) at the content aspect (D-404)', () => {
         const plan = computeJointFitPlan(480, 320, CONTAINER, JOINT_MAX_RENDER_HEIGHT);
         expect(plan.scaled).toBe(false);
         expect(plan.scale).toBe(1);
-        expect(plan.paperWidth).toBe(CONTAINER);
+        // D-404: the fit branch now returns the CONTENT box, not the container
+        // width. Returning containerWidth (1264) here gave the paper a different
+        // aspect from the viewBox and preserveAspectRatio 'meet' letterboxed the
+        // drawing with empty side/top bands. Paper aspect must equal content aspect.
+        expect(plan.paperWidth).toBe(480);
         expect(plan.paperHeight).toBe(320);
+        expect(plan.paperWidth / plan.paperHeight).toBeCloseTo(480 / 320, 5);
     });
 
     it('an over-wide graph (100-node row) is downscaled, not cropped', () => {

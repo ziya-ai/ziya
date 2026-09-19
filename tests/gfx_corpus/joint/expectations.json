@@ -18,7 +18,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.436373Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "b2b98048829b2208f66c5eebad984200244dbf85aa51c112cef0c7630b90d9a1",
+     "validated_at": "2026-09-19T05:21:29.456334Z"
+    },
+    "dark": {
+     "hash": "5c6874cb0873e81dcd5e69059ba8c69d98ff8a032af49aee5e4c47b25bc75ba9",
+     "validated_at": "2026-09-19T05:21:29.471894Z"
+    }
+   }
   },
   "joint-w1-08": {
    "themes": [
@@ -36,7 +46,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.438975Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "8632d1dc3ae1bd5c4a9b2c6bba348f832b82a4d13f10917df1c34d2f71a9edff",
+     "validated_at": "2026-09-19T05:21:29.773780Z"
+    },
+    "dark": {
+     "hash": "02df311023283caace56dc0dad0eb19085b14682e83c5aa90c6eab9750eddd75",
+     "validated_at": "2026-09-19T05:21:29.791140Z"
+    }
+   }
   },
   "joint-w1-10": {
    "themes": [
@@ -54,7 +74,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.443157Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "39d2cbd51fe7fcfc6d2a334cda2d8437e54b8b6a40d0868254d4a6bfec0f661e",
+     "validated_at": "2026-09-19T05:21:30.048000Z"
+    },
+    "dark": {
+     "hash": "23a9c06416deaedacb24ff4b785bd4c292c04349b8e2dae615e9d790de939b51",
+     "validated_at": "2026-09-19T05:21:30.062512Z"
+    }
+   }
   },
   "joint-w4-09": {
    "themes": [
@@ -71,8 +101,23 @@
      "origin": "regression_set",
      "signature": "",
      "at": "2026-09-15T08:56:11.446870Z"
+    },
+    {
+     "origin": "D-419",
+     "signature": "v1-dialect-attrs-rect-fill-dropped",
+     "at": "2026-09-18T08:12:36.809364Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "09a4b2faf86f734768f19a8da7a5b48f7637fa593bd5d97d09762b26a3c214bf",
+     "validated_at": "2026-09-19T05:33:06.787918Z"
+    },
+    "dark": {
+     "hash": "cb6ad1094cdb45bb3f576468b61c08481f07065e295070d069886edb7cd627c3",
+     "validated_at": "2026-09-19T05:33:06.799103Z"
+    }
+   }
   },
   "joint-w1-03": {
    "themes": [
@@ -82,15 +127,31 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "D-128",
      "signature": "raw-dia-element-missing-type:cell-dropped",
      "at": "2026-09-15T08:56:12.919171Z"
+    },
+    {
+     "origin": "D-415",
+     "signature": "cylinder-label-low-contrast",
+     "at": "2026-09-18T08:12:36.796661Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "a831efcaf8ccb873dbd1b1254c10a4a98b071dfdf792e557b63e612b421502b3",
+     "validated_at": "2026-09-19T05:16:14.437475Z"
+    },
+    "dark": {
+     "hash": "41797caa79f7f46f0a31c51b5638662a8609d715c54fd582fd001ac9f1324719",
+     "validated_at": "2026-09-19T05:16:14.464284Z"
+    }
+   }
   },
   "joint-w1-05": {
    "themes": [
@@ -100,15 +161,31 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "D-128",
      "signature": "raw-dia-element-missing-type:cell-dropped",
      "at": "2026-09-15T08:56:12.924765Z"
+    },
+    {
+     "origin": "D-416",
+     "signature": "uml-label-hardcoded-light-on-pastel:dark",
+     "at": "2026-09-18T08:12:36.806408Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "6f060561fa5b6bda7a7066f66258f47cd57257788255a6d4a4658b0f37e33615",
+     "validated_at": "2026-09-19T05:17:35.888413Z"
+    },
+    "dark": {
+     "hash": "d83c5254e02a2018c4b603b22914b08db70a59d36a91edec58369422b0a11ef7",
+     "validated_at": "2026-09-19T05:17:35.921561Z"
+    }
+   }
   },
   "joint-w1-07": {
    "themes": [
@@ -126,7 +203,17 @@
      "signature": "raw-dia-element-missing-type:cell-dropped",
      "at": "2026-09-15T08:56:12.928896Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "4b759352ae5410f7ac372745caf7fcabeda2eee95cd04e5bd331a6ac1f17a6d7",
+     "validated_at": "2026-09-19T05:17:36.146389Z"
+    },
+    "dark": {
+     "hash": "44bc756af45fcbcd417a22e63a54d8185fd0d7e7efdb67e87747268acf1f0b0e",
+     "validated_at": "2026-09-19T05:17:36.156422Z"
+    }
+   }
   },
   "joint-w1-12": {
    "themes": [
@@ -136,15 +223,31 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "D-128",
      "signature": "raw-dia-element-missing-type:cell-dropped",
      "at": "2026-09-15T08:56:12.931955Z"
+    },
+    {
+     "origin": "D-415",
+     "signature": "cylinder-label-low-contrast",
+     "at": "2026-09-18T08:12:36.799455Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "c2c1db414bd256d9a79cb63b4135e75cf7db7ef8dd4d348101305e2bb1cd3f23",
+     "validated_at": "2026-09-19T05:17:36.326685Z"
+    },
+    "dark": {
+     "hash": "b449741fda4fc49aafafb2de4ab0adbdbc9cd76debeb1a1fa282e94b61f243d3",
+     "validated_at": "2026-09-19T05:17:36.334658Z"
+    }
+   }
   },
   "joint-w1-14": {
    "themes": [
@@ -162,7 +265,17 @@
      "signature": "raw-dia-element-missing-type:cell-dropped",
      "at": "2026-09-15T08:56:12.935218Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "c6e047053b85238a0c075a73ec9c30c9e888ea2d7316e8d1cce130e81c06d468",
+     "validated_at": "2026-09-19T05:18:31.990347Z"
+    },
+    "dark": {
+     "hash": "3250bfdbd9da70326964ef0cd210278b9b3a6438d9f2226494c0e5a744969c1e",
+     "validated_at": "2026-09-19T05:18:32.003604Z"
+    }
+   }
   },
   "joint-w1-15": {
    "themes": [
@@ -324,7 +437,17 @@
      "signature": "label-geometry-not-fitted-to-node",
      "at": "2026-09-15T08:56:12.980677Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "1a660b9d50f852f2c8a3942b898478e498bd85fb1c0b4cfe957f40598e6af7a0",
+     "validated_at": "2026-09-19T05:23:32.141147Z"
+    },
+    "dark": {
+     "hash": "0e65b63060b9a23c97266027fd474fcf8855af2f03b70fea35efda6bbf003fd7",
+     "validated_at": "2026-09-19T05:23:32.170935Z"
+    }
+   }
   },
   "joint-w2-06": {
    "themes": [
@@ -360,7 +483,17 @@
      "signature": "label-geometry-not-fitted-to-node",
      "at": "2026-09-15T08:56:12.989021Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "d2f52e2a7a5aa3f386be52fb83139be00f5e375ee4cd0f59547883315ac739ed",
+     "validated_at": "2026-09-19T05:46:50.875240Z"
+    },
+    "dark": {
+     "hash": "46d5ebdba58bbeb8774f79400f2a7c1d626d521db34b6f5c4478de5b2c12b546",
+     "validated_at": "2026-09-19T05:46:50.886332Z"
+    }
+   }
   },
   "joint-w1-09": {
    "themes": [
@@ -416,7 +549,17 @@
      "signature": "element-attrs-override-ignored",
      "at": "2026-09-15T08:56:13.001934Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "0c07e7bc66cfbeb98a7aba50d70d386380797d687b3c9e6ad84cdc2ad1db31b8",
+     "validated_at": "2026-09-19T05:18:31.693846Z"
+    },
+    "dark": {
+     "hash": "5dd911446c2e727e801dd77b47ff48b44f3347395cccafb6b9c21ef578e317c2",
+     "validated_at": "2026-09-19T05:18:31.704768Z"
+    }
+   }
   },
   "joint-w4-11": {
    "themes": [
@@ -434,7 +577,17 @@
      "signature": "element-attrs-override-ignored",
      "at": "2026-09-15T08:56:13.004551Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "f2896f63755bf37c51a73bcaeb1ad0a734169f8032cd8256742124081e4490a6",
+     "validated_at": "2026-09-19T05:30:20.869400Z"
+    },
+    "dark": {
+     "hash": "6f9155d45848c5e6c687970415a88fe16c304b9524dc3d29a8a270b177637e2c",
+     "validated_at": "2026-09-19T05:30:20.883886Z"
+    }
+   }
   },
   "joint-w4-12": {
    "themes": [
@@ -452,7 +605,17 @@
      "signature": "element-attrs-override-ignored",
      "at": "2026-09-15T08:56:13.007241Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "64c9e75a5f8daf6ef5154a0347b5921860409759be9d7d46a1d14a10539e75b8",
+     "validated_at": "2026-09-19T05:30:21.174570Z"
+    },
+    "dark": {
+     "hash": "0c7a1156b1229d607e32858328a276b67307670cadd5ae4746bd197da8cd7149",
+     "validated_at": "2026-09-19T05:30:21.184282Z"
+    }
+   }
   },
   "joint-w4-13": {
    "themes": [
@@ -470,7 +633,13 @@
      "signature": "element-attrs-override-ignored",
      "at": "2026-09-15T08:56:13.011527Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "19e88c6f1ab76ee22388c7ce38564bad7bb75456fd8e324b9daddbc814db3d55",
+     "validated_at": "2026-09-16T09:47:57.777262Z"
+    }
+   }
   },
   "joint-w2-02": {
    "themes": [
@@ -524,8 +693,23 @@
      "origin": "D-135",
      "signature": "network-shapes-flattened-to-plain-rect",
      "at": "2026-09-15T08:56:13.021681Z"
+    },
+    {
+     "origin": "D-406",
+     "signature": "cloud-ellipse-collapsed-by-rx-ry",
+     "at": "2026-09-18T08:12:36.789524Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "018d73f6d851a72cbde1aafc189a5021a130132b48ef01e5a6dfbb271df87dfd",
+     "validated_at": "2026-09-18T07:34:15.888982Z"
+    },
+    "dark": {
+     "hash": "a5239eb30464e8f2f97820208e00ad0de95ebf2d9993cb119be7bb12b6967289",
+     "validated_at": "2026-09-18T07:34:15.906614Z"
+    }
+   }
   },
   "joint-w2-07": {
    "themes": [
@@ -562,7 +746,17 @@
      "signature": "shape-palette-label-contrast",
      "at": "2026-09-15T08:56:13.030414Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "2091afd5ca38989ed38d57b8df789fe8ff88b36c7aabf3c90f4dcdac2023a78c",
+     "validated_at": "2026-09-19T05:16:14.780122Z"
+    },
+    "dark": {
+     "hash": "632b52815545f786e9e4d7dea82b3246324a1d8a4f9a1434dfd44179bc1e6291",
+     "validated_at": "2026-09-19T05:16:14.796959Z"
+    }
+   }
   },
   "joint-w1-04": {
    "themes": [
@@ -581,7 +775,17 @@
      "signature": "shape-palette-label-contrast",
      "at": "2026-09-15T08:56:13.047653Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "e5749acde916cc28c87f5bc572ee594dd75f5f08241cebdf29864f877f0d801d",
+     "validated_at": "2026-09-19T05:16:15.057418Z"
+    },
+    "dark": {
+     "hash": "d7fc16f640570d1f6290231d2977144f4877c19b650c360410c1dac4de6345c5",
+     "validated_at": "2026-09-19T05:16:15.075318Z"
+    }
+   }
   },
   "joint-w2-11": {
    "themes": [
@@ -618,7 +822,17 @@
      "signature": "bogus-theme-token-overrides-render-theme:dark",
      "at": "2026-09-15T08:56:13.058909Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "9080f6d76b51bdf0b1de67220c30bf983542a329a65c67693683069393ba35c3",
+     "validated_at": "2026-09-19T05:33:07.182380Z"
+    },
+    "dark": {
+     "hash": "80c254523491b99d35df1b7091151350dfe58dc318784948c7952de3f171ff4e",
+     "validated_at": "2026-09-19T05:33:07.189322Z"
+    }
+   }
   },
   "joint-w4-01": {
    "themes": [
@@ -636,7 +850,17 @@
      "signature": "json-repair-absent",
      "at": "2026-09-15T08:56:13.064991Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "a1cb3f74ebe48aa1cd959d16cdf6cbd866dbae8fd67ef172b6b8f8c8c5895829",
+     "validated_at": "2026-09-19T05:32:06.337780Z"
+    },
+    "dark": {
+     "hash": "0a6d17404a97778ce87667da0f22797378a24ba33b3fb7f3ecb9a66f14cf1a82",
+     "validated_at": "2026-09-19T05:32:06.345586Z"
+    }
+   }
   },
   "joint-w4-02": {
    "themes": [
@@ -654,7 +878,17 @@
      "signature": "json-repair-absent",
      "at": "2026-09-15T08:56:13.070367Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "b9bb3aa3a99447eac0fb51432faf17404bb04892e0814a58c39936397719a96c",
+     "validated_at": "2026-09-16T09:42:58.557341Z"
+    },
+    "dark": {
+     "hash": "e469b863fcf2c170a92fd39fc21bb36bc0bacf47fc24a265e7db2ead3b9323a5",
+     "validated_at": "2026-09-16T09:42:58.569868Z"
+    }
+   }
   },
   "joint-w4-03": {
    "themes": [
@@ -672,7 +906,17 @@
      "signature": "json-repair-absent",
      "at": "2026-09-15T08:56:13.075062Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "ea536a7bbfa63a2e6933a178d9eaae7dd8fdbb2afb247dc4fe8f08f8e345a775",
+     "validated_at": "2026-09-16T09:43:54.533163Z"
+    },
+    "dark": {
+     "hash": "796b0f0deb665f7d47cce9d6ee6a3d4ab646a2c9d42d2a4e221bfb172c4a5f5f",
+     "validated_at": "2026-09-16T09:43:54.540952Z"
+    }
+   }
   },
   "joint-w4-05": {
    "themes": [
@@ -690,7 +934,17 @@
      "signature": "json-repair-absent",
      "at": "2026-09-15T08:56:13.081282Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "25e2834784da3b4cfe929c82b0980285ca778b168909dfd65866dee99168860f",
+     "validated_at": "2026-09-19T05:32:06.585576Z"
+    },
+    "dark": {
+     "hash": "6c48b9975647b5ed38170984849e23ee6f1d930634f9258ecd5f50ee0262ea8d",
+     "validated_at": "2026-09-19T05:32:06.601135Z"
+    }
+   }
   },
   "joint-w4-08": {
    "themes": [
@@ -708,7 +962,17 @@
      "signature": "json-repair-absent",
      "at": "2026-09-15T08:56:13.086853Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "ebabd597451b47599204c813a8af8aad64b91a4214a43afbc4d14f552b0ded2c",
+     "validated_at": "2026-09-16T09:44:59.755713Z"
+    },
+    "dark": {
+     "hash": "afaa3df1e2385a00bb78f67446acc1833609ff0d5807db6e9a2afd42fe5d650c",
+     "validated_at": "2026-09-16T09:44:59.765151Z"
+    }
+   }
   },
   "joint-w4-15": {
    "themes": [
@@ -726,7 +990,17 @@
      "signature": "json-repair-absent",
      "at": "2026-09-15T08:56:13.091261Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "f0e2f4fc024fe9d3615927af570515f09296d9d7c5fbb6735b3413e0fb3234de",
+     "validated_at": "2026-09-16T09:48:49.241893Z"
+    },
+    "dark": {
+     "hash": "8df3549ce74ea3d5b1355250b521f5d7f550267400aaa32db16687f01b229826",
+     "validated_at": "2026-09-16T09:48:49.249004Z"
+    }
+   }
   },
   "joint-w4-04": {
    "themes": [
@@ -744,7 +1018,17 @@
      "signature": "markdown-fence-not-stripped",
      "at": "2026-09-15T08:56:13.102910Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "515c734376614eb1a879897ef5a1d21e285b6a0d338ad9d429145e917b9bb538",
+     "validated_at": "2026-09-16T09:43:54.760253Z"
+    },
+    "dark": {
+     "hash": "9ea3ce8ba4fa94df1f6e9655bf5745d3ad58a8ee03ecb38796eeff242bf543f5",
+     "validated_at": "2026-09-16T09:43:54.770246Z"
+    }
+   }
   },
   "joint-w4-07": {
    "themes": [
@@ -762,7 +1046,17 @@
      "signature": "nesting-depth-off-by-one:no-descent",
      "at": "2026-09-15T08:56:13.107469Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "3496fa57bb4270c4afef6de40ffe31ff48a9cc276ca5b9f686f3dbc7695e6abb",
+     "validated_at": "2026-09-16T09:44:59.452099Z"
+    },
+    "dark": {
+     "hash": "f24c0e307e9cea50c3d745735cdea7dff8d9b62f133e70c6838599dcbb22c033",
+     "validated_at": "2026-09-16T09:44:59.476092Z"
+    }
+   }
   },
   "joint-w4-10": {
    "themes": [
@@ -781,7 +1075,17 @@
      "signature": "link-endpoint-alias-from-to-unmapped:links-dropped",
      "at": "2026-09-15T08:56:13.113905Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "d66de757b39d3a6493c9f2c0b1fddca356adb196484f72ceac370af46a6607d3",
+     "validated_at": "2026-09-19T05:33:06.999498Z"
+    },
+    "dark": {
+     "hash": "d8e89f42924a4bb9dced70d66a7c3b13a954c434246ac1c1d43d1185c591aaa6",
+     "validated_at": "2026-09-19T05:33:07.008122Z"
+    }
+   }
   },
   "joint-w4-06": {
    "themes": [
@@ -801,6 +1105,53 @@
      "at": "2026-09-15T08:56:13.120793Z"
     }
    ]
+  },
+  "joint-w3-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present"
+   ],
+   "origins": [
+    {
+     "origin": "D-409",
+     "signature": "empty-spec-render-timeout",
+     "at": "2026-09-18T08:12:36.794233Z"
+    }
+   ]
+  },
+  "joint-w3-08": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-415",
+     "signature": "cylinder-label-low-contrast",
+     "at": "2026-09-18T08:12:36.803343Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "25fa5e28cc187d05864eb4b5c934f5276eecbe0ee3ec86f610ba8fc0549ba1c6",
+     "validated_at": "2026-09-18T07:44:10.304501Z"
+    },
+    "light": {
+     "hash": "4fe2ac09f093d41655d3bcfab9227efdea5c12625277b36ccf40ba3930590918",
+     "validated_at": "2026-09-18T07:44:10.291261Z"
+    }
+   }
   }
  }
 }

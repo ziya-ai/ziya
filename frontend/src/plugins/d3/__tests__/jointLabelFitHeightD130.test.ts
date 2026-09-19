@@ -19,7 +19,13 @@
  * (unpatched fitJointLabel ignores height and returns 'v0' for the tiny node).
  */
 
-import { fitJointLabel, JOINT_LABEL_ELLIPSIS } from '../jointPlugin';
+import {
+    fitJointLabel,
+    JOINT_LABEL_ELLIPSIS,
+    jointLabelFontSize,
+    fitJointLabelForNode,
+    JOINT_MIN_LABEL_FONT,
+} from '../jointPlugin';
 
 describe('D-130 — fitJointLabel drops a label the undersized node cannot vertically contain', () => {
     it('drops the label when the node is far shorter than the font (joint-w2-13: 14x10 node, 14px font)', () => {
@@ -52,5 +58,52 @@ describe('D-130 — fitJointLabel drops a label the undersized node cannot verti
 
     it('honours the boundary: height exactly fontSize + 2 is tall enough to keep', () => {
         expect(fitJointLabel('v0', 40, 14, 16)).toBe('v0'); // 16 == 14+2 -> keep
+    });
+});
+
+// D-130 REGRESSION: the render judge rejected the plain height-DROP (empty labels
+// on joint-w2-13's 14x10 pills). The fix reconciles by SHRINKING the font to the
+// node instead of deleting the text. These assertions fail against the drop-only
+// code (which had no jointLabelFontSize / fitJointLabelForNode and blanked the
+// tiny node) and pass once the font-shrink reconciliation is in place.
+describe('D-130 regression — jointLabelFontSize shrinks to the node instead of dropping', () => {
+    it('shrinks the base font to fit an undersized node (w2-13: 14x10 -> 7px, not empty)', () => {
+        expect(jointLabelFontSize(14, 10)).toBe(7); // floor(10 - 3) = 7 >= floor 6
+    });
+
+    it('leaves the base font untouched for a node tall enough to hold it (w2-05/w2-06)', () => {
+        expect(jointLabelFontSize(14, 90)).toBe(14);
+        expect(jointLabelFontSize(14, 80)).toBe(14);
+        expect(jointLabelFontSize(14, 16)).toBe(14); // boundary base+2
+    });
+
+    it('drops (returns 0) only when even the legibility floor cannot fit', () => {
+        expect(jointLabelFontSize(14, 8)).toBe(0);  // floor(5) < 6 -> drop
+        expect(jointLabelFontSize(14, 4)).toBe(0);
+        expect(JOINT_MIN_LABEL_FONT).toBe(6);
+    });
+
+    it('is height-agnostic when no/invalid height is given (legacy callers)', () => {
+        expect(jointLabelFontSize(14)).toBe(14);
+        expect(jointLabelFontSize(14, 0)).toBe(14);
+        expect(jointLabelFontSize(14, -5)).toBe(14);
+    });
+
+    it('fitJointLabelForNode KEEPS a (shrunk) label for the 14x10 pill (was empty before)', () => {
+        // The drop-only code returned '' here; the reconciliation keeps the id text.
+        const kept = fitJointLabelForNode('v0', 14, 14, 10);
+        expect(kept).toBe('v0');
+        expect(kept.length).toBeGreaterThan(0);
+    });
+
+    it('fitJointLabelForNode still width-ellipsizes a normal tall node (w2-05)', () => {
+        const LONG = 'The quick brown fox jumps over the lazy dog while carrying an exceptionally verbose identifier';
+        const fitted = fitJointLabelForNode(LONG, 200, 14, 90);
+        expect(fitted.endsWith(JOINT_LABEL_ELLIPSIS)).toBe(true);
+        expect(fitted.length).toBeLessThan(LONG.length);
+    });
+
+    it('fitJointLabelForNode drops only a truly microscopic node', () => {
+        expect(fitJointLabelForNode('v0', 14, 14, 4)).toBe('');
     });
 });

@@ -1,0 +1,10 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "autoLayout": false,
+  "elements": [],
+  "connections": []
+ },
+ "intent": "Degenerate: empty elements array. Expect a clean, legible error surface rather than a blank canvas or a crash."
+}
