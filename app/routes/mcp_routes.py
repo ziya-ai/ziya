@@ -1551,11 +1551,6 @@ async def refresh_registry_provider(provider_id: str):
         result = await provider.list_services(max_results=1000)
 
         # This refreshes the PROVIDER but bypasses the aggregator, which
-        # memoises both its unified listing and its search fan-out.
-        from app.mcp.registry.aggregator import get_registry_aggregator
-        get_registry_aggregator().invalidate_caches()
-
-        # This refreshes the PROVIDER but bypasses the aggregator, which
         # memoises both its unified listing and its search fan-out. Without
         # invalidating them, a refresh appears to do nothing for up to 5 min.
         from app.mcp.registry.aggregator import get_registry_aggregator
@@ -1834,12 +1829,27 @@ async def install_registry_service(request: InstallServiceRequest):
         # status, so returning an error dict with 200 is what made a server
         # that never started look installed — registry description shown, zero
         # tools, no reason given.
+        #
+        # The detail is a structured record rather than one flattened string:
+        # the registry CLI's own diagnosis (e.g. an access-denied on a version
+        # set with a remediation link) is multi-line, and the client log tail
+        # and hint were previously discarded here, so the browser had nothing
+        # to render but a truncated toast. 'message' preserves the old flat
+        # shape for any reader that expects a string.
         if result.get('status') == 'error':
             message = result.get('error') or 'Installation failed'
             for extra in ('detail', 'hint'):
                 if result.get(extra):
                     message = f"{message}\n\n{result[extra]}"
-            raise HTTPException(status_code=400, detail=message)
+            raise HTTPException(status_code=400, detail={
+                'message': message,
+                'error': result.get('error') or 'Installation failed',
+                'detail': result.get('detail'),
+                'hint': result.get('hint'),
+                'failure_code': result.get('failure_code'),
+                'logs': list(result.get('logs') or [])[-20:],
+                'server_name': result.get('server_name'),
+            })
 
         return result
         
@@ -1860,9 +1870,18 @@ async def uninstall_registry_service(request: UninstallServiceRequest):
         manager = get_registry_manager()
         
         result = await manager.uninstall_service(request.server_name)
-        
+
+        # Same contract as install: a failure must not answer 200. The
+        # frontend keys off the HTTP status, so returning the error dict with
+        # 200 showed "Service uninstalled successfully" for a server that was
+        # not found or was refused as non-registry.
+        if result.get('status') == 'error':
+            raise HTTPException(status_code=400, detail=result.get('error') or 'Uninstall failed')
+
         return result
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error uninstalling service: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1961,15 +1980,20 @@ async def get_installed_registry_services():
         manager = get_registry_manager()
         mcp_manager = get_mcp_manager()
         
-        # Get services that were explicitly installed via registry
-        registry_installed_services = manager.get_installed_services()
+        from app.utils.mcp_installed_listing import (
+            installed_entry_to_api, correlate_server_to_registry,
+        )
+        # Services explicitly installed via the registry. The manager returns
+        # snake_case records; the frontend's InstalledService type is camelCase
+        # and ServiceCard drops any entry without `serviceId`, so convert here.
+        services = [
+            installed_entry_to_api(svc) for svc in manager.get_installed_services()
+        ]
         
-        # Build a set of service IDs that are already accounted for
+        # Service IDs already accounted for
         accounted_service_ids = set()
-        for svc in registry_installed_services:
+        for svc in services:
             accounted_service_ids.add(svc.get('serviceId'))
-        
-        services = list(registry_installed_services)
         
         # Add builtin MCP servers (time, shell) if they're enabled
         if mcp_manager.is_initialized:
@@ -2006,10 +2030,6 @@ async def get_installed_registry_services():
             try:
                 all_registry_services = await manager.get_available_services(max_results=10000)
                 
-                # Build correlation map: normalize server names to match registry entries
-                from app.mcp.registry.aggregator import RegistryAggregator
-                aggregator = RegistryAggregator()
-                
                 for server_name, client in mcp_manager.clients.items():
                     # Skip if already accounted for
                     if any(s.get('serverName') == server_name for s in services):
@@ -2018,22 +2038,15 @@ async def get_installed_registry_services():
                     if not client.is_connected:
                         continue
                     
-                    # Try to correlate with a registry entry using fingerprinting
                     server_config = mcp_manager.server_configs.get(server_name, {})
+                    # A registry install is listed above from its config
+                    # record; never re-derive it by name matching.
+                    if server_config.get('registry_provider'):
+                        continue
                     
-                    # Try to match by looking for common patterns
-                    matched_service = None
-                    for registry_service in all_registry_services:
-                        # Match by name similarity or repository
-                        service_name_lower = registry_service.service_name.lower().replace('-', '_').replace(' ', '_')
-                        server_name_lower = server_name.lower().replace('-', '_')
-                        
-                        if (service_name_lower in server_name_lower or 
-                            server_name_lower in service_name_lower or
-                            (registry_service.repository_url and server_config.get('repository_url') and 
-                             registry_service.repository_url == server_config.get('repository_url'))):
-                            matched_service = registry_service
-                            break
+                    matched_service = correlate_server_to_registry(
+                        server_name, server_config, all_registry_services
+                    )
                     
                     if matched_service and matched_service.service_id not in accounted_service_ids:
                         accounted_service_ids.add(matched_service.service_id)
