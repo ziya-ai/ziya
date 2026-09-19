@@ -19,6 +19,11 @@ export interface ContextManagementSettings {
   auto_add_token_limit?: number;
   /** Aggregate token cap across ALL auto-added files combined (0 = no limit). Default 100000. */
   auto_add_aggregate_budget?: number;
+  /**
+   * Replay-time elision of tool-result bodies provably redundant with a later
+   * result (contained in a later read of the same file, or identical). Default true.
+   */
+  elide_redundant_tool_results?: boolean;
 }
 
 export interface ProjectSettings {

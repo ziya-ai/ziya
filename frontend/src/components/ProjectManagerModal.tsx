@@ -732,6 +732,37 @@ const ProjectManagerModal: React.FC<ProjectManagerModalProps> = ({ visible, onCl
                         />
                     </div>
 
+                    <Collapse ghost size="small">
+                        <Panel header="Advanced — replayed history" key="ctx-advanced">
+                            <div>
+                                <strong>Elide redundant tool results on replay</strong>
+                                <div style={{ fontSize: 12, color: '#888', marginBottom: 8 }}>
+                                    When an earlier tool result is provably redundant with a later
+                                    one in the same conversation (its content is contained in a
+                                    later read of the same file, or an identical result recurs),
+                                    the earlier copy is replaced by a one-line note when history is
+                                    sent to the model. The conversation record is never changed.
+                                    Turning this on can cost one prompt-cache miss when an older
+                                    message becomes redundant.
+                                </div>
+                                <Radio.Group
+                                    value={contextManagement.elide_redundant_tool_results !== false}
+                                    onChange={e => setContextManagement(prev => ({
+                                        ...prev,
+                                        elide_redundant_tool_results: e.target.value
+                                    }))}
+                                >
+                                    <Radio.Button value={true} style={{ minWidth: 100, textAlign: 'center' }}>
+                                        Enabled
+                                    </Radio.Button>
+                                    <Radio.Button value={false} style={{ minWidth: 100, textAlign: 'center' }}>
+                                        Disabled
+                                    </Radio.Button>
+                                </Radio.Group>
+                            </div>
+                        </Panel>
+                    </Collapse>
+
                     <Divider style={{ margin: '8px 0' }} />
 
                     <Alert
