@@ -1,7 +1,7 @@
 import { D3RenderPlugin } from '../../types/d3';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
-import { enhanceSVGVisibility, isLightBackground, calculateContrastRatio } from '../../utils/colorUtils';
+import { enhanceSVGVisibility, isLightBackground, calculateContrastRatio, hexToRgb } from '../../utils/colorUtils';
 import { zoomIn, zoomOut, resetZoom, storeOriginalViewBox } from '../../utils/zoomUtils';
 import { downloadSvg } from '../../utils/svgUtils';
 import { escapeHtml } from '../../utils/htmlSanitize';
@@ -96,6 +96,28 @@ export const GRAPHVIZ_MIN_SIZE_INCHES = 0.5;
 export const GRAPHVIZ_MAX_SIZE_INCHES = 20;
 
 /**
+ * STRESS-GUARD (D-118: explicit-undersize-not-upscaled-illegible), graphviz-w2-09:
+ * maximum drawing size, in INCHES, below which a *forced* (`!`) DOT `size=` is
+ * treated as a legibility footgun and dropped.
+ *
+ * The `!` force flag makes graphviz scale the whole drawing to EXACTLY the
+ * given size — up OR down — so `size="1.5,1.5!"` crushes an 80-node graph into
+ * a 1.5in thumbnail, shrinking every label (and the fonts with it) far below
+ * the legible floor. Merely upscaling the already-crushed raster back up in the
+ * capture path recovers the SIZE but not the DETAIL (the fonts were laid out at
+ * the crushed scale). Dropping the forced size instead lets viz.js lay the
+ * graph out at its NATURAL size with natural fonts; the viewport planner then
+ * fits/scrolls it legibly. This is the exact mirror of the forced-OVERSIZE
+ * footgun (`GRAPHVIZ_MAX_SIZE_INCHES`): a `!`-forced size below this floor
+ * crushes, one above the oversize ceiling explodes; both are dropped. A plain
+ * (unforced) small size only caps/scales-down and is left to the fit path, and
+ * a `!`-forced size in the sane middle range (e.g. `size="6,6!"`) is preserved.
+ * Chosen above the sub-pixel degenerate floor (0.5in) yet below any size a real
+ * diagram would force itself to for a screenshot.
+ */
+export const GRAPHVIZ_MIN_FORCED_SIZE_INCHES = 3;
+
+/**
  * Parse the numeric dimensions out of a DOT `size` value.
  * Accepts "W,H", "W", optional trailing "!" (force flag) and surrounding spaces.
  * Returns the finite, parseable dimensions (may be length 0/1/2).
@@ -123,6 +145,27 @@ export function isOversizeForcedGraphvizSize(
     if (!/!/.test(String(raw))) return false; // no force flag -> only scales down, harmless
     const dims = parseGraphvizSizeDims(raw);
     return dims.some((d) => d >= maxInches);
+}
+
+/**
+ * True when a DOT `size` value FORCES the drawing far SMALLER than any legible
+ * screenshot surface — i.e. it carries the `!` force flag AND its LARGEST
+ * positive dimension is below `minInches`. Only the forced form is flagged: a
+ * plain `size="1.5,1.5"` merely caps/scales-down (the fit path recovers it), so
+ * it is left alone; the `!` variant scales the whole drawing — fonts included —
+ * to exactly that tiny box, crushing labels sub-pixel (graphviz-w2-09). The
+ * mirror of `isOversizeForcedGraphvizSize`. See `GRAPHVIZ_MIN_FORCED_SIZE_INCHES`
+ * / D-118. The truly sub-pixel (< 0.5in) case is handled separately by
+ * `isDegenerateGraphvizSize` for BOTH forced and unforced forms.
+ */
+export function isUndersizeForcedGraphvizSize(
+    raw: string,
+    minInches: number = GRAPHVIZ_MIN_FORCED_SIZE_INCHES,
+): boolean {
+    if (!/!/.test(String(raw))) return false; // no force flag -> only scales down, fit path recovers
+    const positive = parseGraphvizSizeDims(raw).filter((d) => d > 0);
+    if (positive.length === 0) return false; // unparseable / non-positive -> leave alone
+    return Math.max(...positive) < minInches;
 }
 
 /**
@@ -156,7 +199,9 @@ export function clampGraphvizSize(dot: string, minInches: number = GRAPHVIZ_MIN_
     // a forced (`!`) oversize footgun (>= GRAPHVIZ_MAX_SIZE_INCHES, D-117
     // graphviz-w2-08) — both collapse legibility in the bounded capture window.
     const shouldDrop = (val: string): boolean =>
-        isDegenerateGraphvizSize(val, minInches) || isOversizeForcedGraphvizSize(val);
+        isDegenerateGraphvizSize(val, minInches) ||
+        isOversizeForcedGraphvizSize(val) ||
+        isUndersizeForcedGraphvizSize(val); // D-118: forced-undersize crush (size="1.5,1.5!")
     // Quoted form: size="0.01,0.01" / size="6,6!" / size="0.01" / size="60,60!"
     out = out.replace(/(?<![-\w])size\s*=\s*"([^"]*)"/gi, (m, val) =>
         shouldDrop(val) ? '' : m
@@ -1169,7 +1214,15 @@ export const graphvizPlugin: D3RenderPlugin = {
                             // Check if this is a light color that needs to be darkened
                             if (isLightBackground(originalFill)) {
                                 // Use a darker color based on the original hue
-                                const darkColor = getDarkVersionOfColor(originalFill);
+                                // D-402: the darkened cluster fill is a backdrop
+                                // that edges cross; if the themed edge colour
+                                // collapses on it (pink #f72585 -> 1.95:1 on
+                                // #4c566a in graphviz-w2-05), darken the fill
+                                // further so the edge keeps the 3:1 stroke floor.
+                                const darkColor = darkenFillForStrokeContrast(
+                                    getDarkVersionOfColor(originalFill),
+                                    colors.edgeColor,
+                                );
                                 el.setAttribute('fill', darkColor);
                                 el.setAttribute('stroke', colors.clusterBorder);
 
@@ -2029,6 +2082,61 @@ export function neutralizeGraphBackgroundForDark(el: Element, isDarkMode: boolea
  * fill or fails the 3:1 graphical floor against it; a cluster with a legible
  * authored border is left untouched. Returns whether a re-stroke was applied.
  */
+/** Serialise an r,g,b triple (0..255, clamped) back to a #rrggbb hex string. */
+function rgbTripleToHex(r: number, g: number, b: number): string {
+    const c = (v: number) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0');
+    return `#${c(r)}${c(g)}${c(b)}`;
+}
+
+/**
+ * D-402: choose a cluster BORDER colour that clears `target` contrast against
+ * the cluster's ACTUAL fill (not the page). Starts from the themed `preferred`
+ * border and, only when that fails the target on this fill, pushes it toward
+ * the higher-contrast pole — darker (toward black) on a light fill, lighter
+ * (toward white) on a dark fill — until the target is met. Pure; a `preferred`
+ * that already clears the target is returned byte-for-byte, so well-contrasting
+ * borders are untouched. `graphviz-w2-05`'s 12 nested `lightgrey` (#d3d3d3)
+ * clusters gave the themed #6e6e6e border only 3.41:1; escalating to #585858
+ * lifts every nested boundary to 4.75:1 on the fill (7.11:1 on the white page).
+ */
+export function clusterBorderForFill(fill: string, preferred: string, target: number = 4.5): string {
+    if (calculateContrastRatio(preferred, fill) >= target) return preferred;
+    const rgb = hexToRgb(preferred);
+    if (!rgb) return preferred;
+    let { r, g, b } = rgb;
+    const fillIsLight = isLightBackground(fill);
+    for (let i = 0; i < 16; i++) {
+        if (fillIsLight) { r *= 0.8; g *= 0.8; b *= 0.8; }
+        else { r += (255 - r) * 0.2; g += (255 - g) * 0.2; b += (255 - b) * 0.2; }
+        const cand = rgbTripleToHex(r, g, b);
+        if (calculateContrastRatio(cand, fill) >= target) return cand;
+    }
+    return fillIsLight ? '#000000' : '#ffffff';
+}
+
+/**
+ * D-402 (dark): darken a (dark-mode-darkened) cluster FILL toward black until a
+ * themed `stroke` drawn OVER it — the edge/arrow colour — clears `target`
+ * contrast, so an edge that crosses a nested cluster interior stays legible.
+ * Pure; a fill on which the stroke already clears the target is returned
+ * unchanged, so only the offending fills move. In `graphviz-w2-05` the
+ * `lightgrey` clusters darken to #4c566a, on which the pink edge #f72585
+ * collapsed to 1.95:1; pushing the fill to #313744 restores the edge to 3.16:1
+ * (white cluster labels 11.93:1, cyan border 6.20:1 — both comfortably clear).
+ */
+export function darkenFillForStrokeContrast(fill: string, stroke: string, target: number = 3): string {
+    const rgb = hexToRgb(fill);
+    if (!rgb) return fill;
+    if (calculateContrastRatio(stroke, fill) >= target) return fill;
+    let { r, g, b } = rgb;
+    for (let i = 0; i < 12; i++) {
+        r *= 0.8; g *= 0.8; b *= 0.8;
+        const cand = rgbTripleToHex(r, g, b);
+        if (calculateContrastRatio(stroke, cand) >= target) return cand;
+    }
+    return '#000000';
+}
+
 export function restrokeInvisibleClusterBorder(polygonEl: Element, clusterBorder: string): boolean {
     const fill = polygonEl.getAttribute('fill');
     if (!fill || fill === 'none') return false;
@@ -2036,7 +2144,12 @@ export function restrokeInvisibleClusterBorder(polygonEl: Element, clusterBorder
     const effectiveStroke = (curStroke && curStroke !== 'none') ? curStroke : fill;
     const identical = effectiveStroke.trim().toLowerCase() === fill.trim().toLowerCase();
     if (identical || calculateContrastRatio(effectiveStroke, fill) < 3) {
-        polygonEl.setAttribute('stroke', clusterBorder);
+        // D-402: the themed border is not guaranteed to clear the 3:1 graphical
+        // floor against THIS fill (lightgrey #d3d3d3 gave #6e6e6e only 3.41:1 and
+        // the nested boundaries stayed faint). Resolve the border against the
+        // actual fill so it is genuinely visible in whatever theme was rendered.
+        const border = clusterBorderForFill(fill, clusterBorder);
+        polygonEl.setAttribute('stroke', border);
         if (!polygonEl.getAttribute('stroke-width')) polygonEl.setAttribute('stroke-width', '1');
         polygonEl.setAttribute('data-restroked-light', 'true');
         return true;

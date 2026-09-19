@@ -112,10 +112,12 @@ describe('D-053(b) light cluster border re-stroke (graphviz-w2-05)', () => {
         const poly = el('polygon', { fill: '#d3d3d3', stroke: '#d3d3d3' });
         const changed = restrokeInvisibleClusterBorder(poly, GRAPHVIZ_LIGHT_CLUSTER_BORDER);
         expect(changed).toBe(true);
-        expect(poly.getAttribute('stroke')).toBe(GRAPHVIZ_LIGHT_CLUSTER_BORDER);
-        // border now clears the 3:1 graphical floor against its own fill
-        expect(calculateContrastRatio(GRAPHVIZ_LIGHT_CLUSTER_BORDER, '#d3d3d3'))
-            .toBeGreaterThanOrEqual(3);
+        // D-402: the applied border is resolved against the actual fill. The
+        // themed #6e6e6e is only 3.41:1 on lightgrey (faint nested boundaries),
+        // so it is escalated; assert the RESULT is clearly visible on the fill
+        // rather than pinning the literal themed constant.
+        const applied = poly.getAttribute('stroke')!;
+        expect(calculateContrastRatio(applied, '#d3d3d3')).toBeGreaterThanOrEqual(3);
     });
 
     it('LIGHT: leaves a cluster that already has a legible border untouched (no needless repaint)', () => {
