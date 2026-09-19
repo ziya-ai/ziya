@@ -925,11 +925,29 @@ export function ensureShapeBordersAgainstCanvas(
   // colour whose contrast against the canvas is below the floor. An unresolvable
   // named/theme token is treated as NOT blending (assume mermaid picked a
   // visible value) so we never repaint a shape we cannot actually measure.
-  const blendsIntoCanvas = (paint: string | null): boolean => {
+  const blendsIntoCanvas = (paint: string | null, testFloor = floor): boolean => {
     if (!paint || paint === 'none' || paint.indexOf('url(') !== -1) return true;
     const rgb = resolveStyleColorToRgb(paint);
     if (!rgb) return false;
-    return contrastRatioRgb(rgb, canvasRgb) < floor;
+    return contrastRatioRgb(rgb, canvasRgb) < testFloor;
+  };
+
+  // A graphical stroke (edge line, arrowhead) is legible only at the WCAG
+  // 1.4.11 non-text floor of 3:1 — well above the 1.6 "effectively invisible"
+  // floor used to gate whether a node BORDER has fully dissolved. A pale author
+  // `lineColor` such as #cccccc reads 1.6:1 on #ffffff (D-324, w3-08): visible
+  // enough to survive the 1.6 gate yet far below the 3:1 a line needs to be
+  // followed. Edges and markers are therefore tested against this higher floor.
+  const GRAPHICAL_FLOOR = 3.0;
+
+  // How strong a boundary the box FILL alone forms against the canvas. An
+  // absent / `none` / paint-server (`url(...)`) fill, or an unresolvable token,
+  // provides no boundary at all (0) and so is treated as fully dissolved.
+  const fillBoundaryContrast = (paint: string | null): number => {
+    if (!paint || paint === 'none' || paint.indexOf('url(') !== -1) return 0;
+    const rgb = resolveStyleColorToRgb(paint);
+    if (!rgb) return 0;
+    return contrastRatioRgb(rgb, canvasRgb);
   };
 
   const forceStroke = (el: Element) => {
@@ -959,12 +977,24 @@ export function ensureShapeBordersAgainstCanvas(
   // the existing stroke have dissolved into the canvas (the box is invisible).
   svg
     .querySelectorAll(
-      '.node rect, .node circle, .node polygon, .node path, .cluster rect, .clusters rect, .block rect, g.blocks rect, rect.node-bkg',
+      '.node rect, .node circle, .node polygon, .node path, .cluster rect, .clusters rect, .block rect, g.blocks rect, g[class*="block"] rect, rect.node-bkg',
     )
     .forEach((box) => {
       const fill = readPaint(box, 'fill');
       const stroke = readPaint(box, 'stroke');
-      if (blendsIntoCanvas(fill) && blendsIntoCanvas(stroke)) {
+      // Repaint the border when the author's stroke has DISSOLVED into the
+      // canvas (below `floor`, effectively invisible) AND the fill does not by
+      // itself form a legible boundary (< 3:1, the WCAG 1.4.11 non-text floor).
+      // This is a strict superset of the old "fill AND stroke both blend" gate:
+      // D-325 (chat-message w4-08/w4-09) is an author `style` box whose fill is
+      // only MARGINALLY visible on the dark canvas (#0000ff = 1.9:1,
+      // rebeccapurple = 1.96:1) but whose explicit border has vanished
+      // (#000099 = 1.15:1) — the box then reads only from its white label. The
+      // old gate skipped it because the fill technically cleared the 1.6 floor.
+      // A shape mermaid drew with a normally-visible border (stroke >= floor) is
+      // still left untouched, so default nodes and the previously-verified
+      // w3-08 (D-295) boxes are unaffected.
+      if (blendsIntoCanvas(stroke) && fillBoundaryContrast(fill) < 3.0) {
         forceStroke(box);
         fixed++;
       }
@@ -976,11 +1006,120 @@ export function ensureShapeBordersAgainstCanvas(
     .querySelectorAll('.edgePath path, .flowchart-link, path.path, .edge path, .relation')
     .forEach((edge) => {
       const stroke = readPaint(edge, 'stroke');
-      if (stroke !== null && blendsIntoCanvas(stroke)) {
+      if (stroke !== null && blendsIntoCanvas(stroke, GRAPHICAL_FLOOR)) {
         forceStroke(edge);
         fixed++;
       }
     });
+
+  // Arrowhead / edge markers (D-324, chat-message w3-08/w3-15, LIGHT). The
+  // marker recolour baked into `applyMermaidTheme` only runs in DARK, so in
+  // LIGHT an author `lineColor` that is pale — or a hollow pale arrowhead —
+  // leaves the arrowheads dissolved into the canvas (#cccccc = 1.47:1,
+  // #e3eef6 = 1.18:1) even after the edge bodies are repaired. Repaint any
+  // marker glyph whose stroke (or, for a filled head, whose fill) blends into
+  // the canvas, resolving to the theme outline. A HOLLOW marker (fill:none /
+  // transparent — ER crow's-foot / cardinality outlines) keeps `fill:none` so
+  // it is never flooded into a solid blob (mirrors resolveMermaidMarkerColors).
+  svg
+    .querySelectorAll('defs marker path, defs marker polygon, marker path, marker polygon')
+    .forEach((glyph) => {
+      const stroke = readPaint(glyph, 'stroke');
+      const fill = readPaint(glyph, 'fill');
+      const cf = (fill || '').trim().toLowerCase();
+      const hollow = cf === 'none' || cf === 'transparent' || cf === '';
+      const strokeBlends = stroke !== null && blendsIntoCanvas(stroke, GRAPHICAL_FLOOR);
+      const fillBlends = !hollow && blendsIntoCanvas(fill, GRAPHICAL_FLOOR);
+      if (!strokeBlends && !fillBlends) return;
+      const styleAttr = (glyph.getAttribute('style') || '')
+        .replace(/stroke\s*:[^;]*;?/gi, '')
+        .replace(/fill\s*:[^;]*;?/gi, '')
+        .replace(/^;+|;+$/g, '');
+      const prefix = styleAttr ? styleAttr.replace(/;?$/, ';') : '';
+      const fillDecl = hollow ? 'fill:none !important;' : `fill:${outline} !important;`;
+      glyph.setAttribute('style', `${prefix}stroke:${outline} !important;${fillDecl}`);
+      glyph.setAttribute('stroke', outline);
+      if (!hollow) glyph.setAttribute('fill', outline);
+      fixed++;
+    });
+
+  return fixed;
+}
+
+/**
+ * D-423 (sequence w3-06): keep a `box <color> <title>` participant-group title
+ * legible on its author-hardcoded box fill. Mermaid draws the box as
+ * `<g><rect class="rect" fill="<box-color>"/><text class="text">Title</text></g>`
+ * and gives the title NO fill that is derived from the box colour — it inherits
+ * the default/theme ink. So a LIGHT box fill (`rgb(200,220,255)`) reads its
+ * title fine under dark ink but drops to ~1.4:1 once the theme ink is light,
+ * and a DARK box fill (`rgb(60,60,60)`) reads ~1.9:1 under dark ink — meaning
+ * exactly ONE of a light+dark box pair is illegible in EACH page theme.
+ *
+ * Because the box fill is author-fixed (independent of the page), the correct
+ * title colour is the black/white that reads best ON THAT FILL — theme-resolved
+ * from the fill, not a page constant — so a single pass fixes BOTH themes:
+ * light box -> #000000 (15.14:1), dark box -> #ffffff (11.03:1). Fires only when
+ * the fill resolves to a solid RGB AND the title's current colour reads below
+ * `floor` on it; a box whose title already clears 4.5:1 (or whose fill is
+ * transparent/theme-token/unresolvable) is left byte-for-byte unchanged.
+ * Returns the count of titles recoloured.
+ */
+export function ensureSequenceBoxTitleContrast(svg: Element, floor = 4.5): number {
+  let fixed = 0;
+
+  const readFill = (el: Element): string | null => {
+    const styleAttr = el.getAttribute('style') || '';
+    const m = styleAttr.match(/fill\s*:\s*([^;!]+)/i);
+    if (m) return m[1].trim();
+    const attr = el.getAttribute('fill');
+    if (attr) return attr.trim();
+    try {
+      if (typeof window !== 'undefined' && window.getComputedStyle) {
+        const c = (window.getComputedStyle(el as any) as any).fill;
+        if (c && c !== 'none') return String(c).trim();
+      }
+    } catch {
+      /* jsdom / non-DOM: fall through */
+    }
+    return null;
+  };
+
+  // A sequence box title is `<text class="text">` sitting inside the same <g>
+  // as the box background `<rect class="rect">`. (Other sequence labels carry
+  // distinct classes — messageText / labelText / loopText / noteText / actor —
+  // so a bare class="text" only matches box titles.)
+  svg.querySelectorAll('text.text').forEach((title) => {
+    const parent = title.parentElement || (title as any).parentNode;
+    if (!parent || typeof (parent as Element).querySelector !== 'function') return;
+    const rect = (parent as Element).querySelector('rect.rect') || (parent as Element).querySelector('rect');
+    if (!rect) return;
+    const fillRgb = resolveStyleColorToRgb(readFill(rect) || '');
+    if (!fillRgb) return; // transparent / theme-token / unresolvable: leave alone
+
+    // Current title ink: inline/attr/computed, else the SVG default (black).
+    const curRaw = readFill(title) ||
+      readFill(title.querySelector('tspan') || title);
+    const curRgb = resolveStyleColorToRgb(curRaw || '') || { r: 0, g: 0, b: 0 };
+    if (contrastRatioRgb(curRgb, fillRgb) >= floor) return; // already legible
+
+    const best = readableTextForFill(fillRgb);
+    const prior = (title.getAttribute('style') || '')
+      .replace(/fill\s*:[^;]*;?/gi, '')
+      .replace(/^;+|;+$/g, '');
+    const prefix = prior ? prior.replace(/;?$/, ';') : '';
+    title.setAttribute('style', `${prefix}fill:${best} !important;`);
+    title.setAttribute('fill', best);
+    title.querySelectorAll('tspan').forEach((ts) => {
+      const tprior = (ts.getAttribute('style') || '')
+        .replace(/fill\s*:[^;]*;?/gi, '')
+        .replace(/^;+|;+$/g, '');
+      const tprefix = tprior ? tprior.replace(/;?$/, ';') : '';
+      ts.setAttribute('style', `${tprefix}fill:${best} !important;`);
+      ts.setAttribute('fill', best);
+    });
+    fixed++;
+  });
 
   return fixed;
 }
@@ -1134,17 +1273,58 @@ export function remediateInitThemeVariableContrast(
  */
 export function balanceSubgraphEnds(definition: string): string {
   if (!definition) return definition;
+  const rawLines = definition.split('\n');
   let opens = 0;
   let closes = 0;
-  for (const raw of definition.split('\n')) {
+  for (const raw of rawLines) {
     const t = raw.trim();
     if (/^subgraph\b/i.test(t)) opens++;
     else if (/^end$/i.test(t)) closes++;
   }
   if (opens <= closes) return definition;
-  const missing = opens - closes;
-  const trimmedTail = definition.replace(/\s+$/, '');
-  return trimmedTail + '\n' + Array(missing).fill('end').join('\n');
+  let missing = opens - closes;
+
+  // D-426 (w4-11): place each missing `end` at the point where its subgraph's
+  // body actually ENDS — the first later line whose indentation dedents to <=
+  // the subgraph header's — instead of blindly appending at EOF. Appending at
+  // the tail closes the OUTERMOST open subgraph last, so any sibling/external
+  // node authored AFTER an inner `end` (w4-11's `A --> C[Task C]` and
+  // `D[Outside] --> A`, both dedented to the Outer header's column) is swallowed
+  // into the outer cluster instead of staying external — the render no longer
+  // hangs, but the nesting is wrong. Indentation is the author's own nesting
+  // signal; a subgraph whose body never dedents (truly open to EOF) still falls
+  // back to the deterministic EOF append, preserving the original recovery.
+  const indentOf = (line: string): number => line.length - line.replace(/^\s*/, '').length;
+  const stack: number[] = []; // indent column of each still-open subgraph header
+  const out: string[] = [];
+  for (const line of rawLines) {
+    const t = line.trim();
+    if (/^end$/i.test(t)) {
+      // An explicit close pops the innermost open subgraph.
+      stack.pop();
+      out.push(line);
+      continue;
+    }
+    if (t !== '') {
+      const indent = indentOf(line);
+      // A non-blank line that has dedented to or past an open header's column
+      // marks the end of that (unclosed) subgraph's body: insert the missing
+      // `end` here, at the header's indentation, before emitting this line.
+      while (stack.length > 0 && missing > 0 && indent <= stack[stack.length - 1]) {
+        const closeIndent = stack.pop() as number;
+        out.push(' '.repeat(closeIndent) + 'end');
+        missing--;
+      }
+    }
+    if (/^subgraph\b/i.test(t)) stack.push(indentOf(line));
+    out.push(line);
+  }
+  let result = out.join('\n');
+  if (missing > 0) {
+    // Bodies that never dedented: append the remaining `end`s at EOF (legacy path).
+    result = result.replace(/\s+$/, '') + '\n' + Array(missing).fill('end').join('\n');
+  }
+  return result;
 }
 
 /**
@@ -5493,8 +5673,17 @@ export function reapplyLinkStyleStrokes(svg: Element, definition: string, isDark
   if (edges.length === 0) return 0;
 
   let applied = 0;
+  // D-421 (w3-05, linkstyle-stroke-low-contrast-on-cluster-fill:dark): a
+  // linkStyle stroke that clears contrast against the dark CANVAS (#1e1e1e) can
+  // still be low-contrast where the edge crosses a subgraph/cluster fill, which
+  // is LIGHTER than the canvas (the dark clusterBkg is #2e3440). Contrast for a
+  // lightened stroke DROPS as the background lightens, so when clusters are
+  // present we resolve readability against the cluster fill (the worse case),
+  // which also clears the darker canvas underneath. No cluster -> unchanged.
+  const hasClusters = svg.querySelector('.cluster rect, g.cluster rect, .cluster > rect') !== null;
+  const refBg = hasClusters ? '#2e3440' : CHART_DARK_BG;
   const apply = (el: Element, stroke: string) => {
-    const safe = ensureReadableFill(stroke, CHART_DARK_BG, '#88c0d0', 3);
+    const safe = ensureReadableFill(stroke, refBg, '#88c0d0', 3);
     (el as unknown as SVGElement).style.setProperty('stroke', safe, 'important');
     applied++;
   };
@@ -5677,4 +5866,123 @@ export function dodgeQuadrantPointCollisions(
     });
   }
   return moved;
+}
+
+/**
+ * G-4e869b / D-422 (mermaid w1-13 / w3-11 quadrantChart point labels, w1-11
+ * mindmap link ribbons; LIGHT theme only): mermaid 11 paints these through its
+ * embedded `<style>`/class palette rather than inline `fill`/`stroke`
+ * attributes, and the quadrant renderer ignores the `quadrantPointTextFill`
+ * light-theme init variable set by `buildMermaidLightThemeVariables`. The
+ * universal `enhanceSVGVisibility` pass keys off inline paint and a fixed
+ * selector list, so on the WHITE canvas the quadrant point labels stay white on
+ * the pale quadrant fill (~1.02:1) and the mindmap branch ribbons keep their
+ * pale per-branch pastel stroke (~1.05:1) — both far below their legibility
+ * floor.
+ *
+ * This pass resolves each element's EFFECTIVE paint via `getComputedStyle` (the
+ * embedded stylesheet is live post-render in the headless renderer, exactly as
+ * `ensureShapeBordersAgainstCanvas.readPaint` does) and repaints ONLY when the
+ * element has dissolved into the theme canvas, to the theme-resolved value:
+ *   point-label text -> light `#1a1a1a` (17.40:1 on #ffffff) /
+ *                       dark  `#f5f5f5` (15.29:1 on #1e1e1e); floor 4.5 (text)
+ *   mindmap ribbon   -> light `#333333` (12.63:1 on #ffffff) /
+ *                       dark  `#e6e6e6` (13.36:1 on #1e1e1e); floor 3.0 (graphic)
+ * The repaint colour is chosen from `isDarkMode`, so it always lands on the
+ * matching surface at strong contrast; a label/ribbon already legible in the
+ * current theme (contrast >= its floor) is left byte-for-byte unchanged, which
+ * is why the passing DARK renders — whose labels/ribbons are already light on
+ * the dark canvas — are untouched. Returns the number of elements repainted.
+ */
+export function enhanceQuadrantAndMindmapLegibility(
+  svg: Element,
+  isDarkMode: boolean,
+): number {
+  const canvasHex = isDarkMode ? CHART_DARK_BG : CHART_LIGHT_BG;
+  const canvasRgb = resolveStyleColorToRgb(canvasHex);
+  if (!canvasRgb) return 0;
+  const ink = isDarkMode ? '#f5f5f5' : '#1a1a1a';       // point-label text
+  const outline = isDarkMode ? '#e6e6e6' : '#333333';   // mindmap ribbon stroke
+  const TEXT_FLOOR = 4.5;
+  const GRAPHICAL_FLOOR = 3.0;
+
+  // Effective paint: inline style, then presentation attribute, then the live
+  // embedded stylesheet via getComputedStyle (mermaid 11's palette path).
+  const readPaint = (el: Element, prop: string): string | null => {
+    const styleAttr = el.getAttribute('style') || '';
+    const m = styleAttr.match(new RegExp(prop + '\\s*:\\s*([^;!]+)', 'i'));
+    if (m) return m[1].trim();
+    const attr = el.getAttribute(prop);
+    if (attr) return attr.trim();
+    try {
+      if (typeof window !== 'undefined' && window.getComputedStyle) {
+        const c = (window.getComputedStyle(el as any) as any)[prop];
+        if (c && c !== 'none') return String(c).trim();
+      }
+    } catch {
+      /* jsdom / non-DOM: fall through */
+    }
+    return null;
+  };
+
+  // A paint has dissolved when it is absent/none/a paint-server ref, or resolves
+  // to a colour whose contrast against the canvas is below `testFloor`. An
+  // unresolvable token is treated as NOT dissolved (assume mermaid picked a
+  // visible value) so a shape we cannot measure is never repainted.
+  const dissolved = (paint: string | null, testFloor: number): boolean => {
+    if (!paint || paint === 'none' || paint.indexOf('url(') !== -1) return true;
+    const rgb = resolveStyleColorToRgb(paint);
+    if (!rgb) return false;
+    return contrastRatioRgb(rgb, canvasRgb) < testFloor;
+  };
+
+  let fixed = 0;
+
+  // quadrantChart point labels: `<text>` inside `g.data-point` / `g.data-points`
+  // (mermaid 11 quadrantRenderer). White-on-pale in light. Repaint to the theme
+  // ink when the label's own fill has dissolved into the canvas — dark ink is
+  // legible on any pale quadrant fill, so measuring against the canvas is a safe
+  // proxy for the true (pale) label background.
+  svg
+    .querySelectorAll(
+      'g.data-point text, g.data-points text, .data-point text, .data-points text',
+    )
+    .forEach((label) => {
+      if (!(label.textContent || '').trim()) return;
+      if (!dissolved(readPaint(label, 'fill'), TEXT_FLOOR)) return;
+      const styleAttr = (label.getAttribute('style') || '')
+        .replace(/fill\s*:[^;]*;?/gi, '')
+        .replace(/^;+|;+$/g, '');
+      const prefix = styleAttr ? styleAttr.replace(/;?$/, ';') : '';
+      label.setAttribute('style', `${prefix}fill:${ink} !important;`);
+      label.setAttribute('fill', ink);
+      fixed++;
+    });
+
+  // mindmap link ribbons: `<path>` edges drawn in the pale per-branch section
+  // palette. They carry the flow as a STROKE (no meaningful fill), so repaint
+  // the stroke to the theme outline when it has dissolved into the canvas.
+  svg
+    .querySelectorAll(
+      'g.mindmap-edges path, .mindmap-edges path, .edge path, path.edge, .mindmap-edge',
+    )
+    .forEach((ribbon) => {
+      if (!dissolved(readPaint(ribbon, 'stroke'), GRAPHICAL_FLOOR)) return;
+      const existingWidthRaw = readPaint(ribbon, 'stroke-width');
+      const parsedWidth = existingWidthRaw ? parseFloat(existingWidthRaw) : NaN;
+      const widthPx = !isNaN(parsedWidth) && parsedWidth > 1.5 ? parsedWidth : 1.5;
+      const styleAttr = (ribbon.getAttribute('style') || '')
+        .replace(/stroke\s*:[^;]*;?/gi, '')
+        .replace(/stroke-width\s*:[^;]*;?/gi, '')
+        .replace(/^;+|;+$/g, '');
+      const prefix = styleAttr ? styleAttr.replace(/;?$/, ';') : '';
+      ribbon.setAttribute(
+        'style',
+        `${prefix}stroke:${outline} !important;stroke-width:${widthPx}px !important;`,
+      );
+      ribbon.setAttribute('stroke', outline);
+      fixed++;
+    });
+
+  return fixed;
 }

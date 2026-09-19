@@ -30,7 +30,13 @@
  * repair is layout-only and theme-independent, so it is asserted to behave
  * identically for a light-themed and a dark-themed pie SVG.
  */
-import { fixPieLayoutAtScale, PIE_LABEL_COLLISION_THRESHOLD, buildPieThemeVariables } from '../mermaidPlugin';
+import {
+    fixPieLayoutAtScale,
+    PIE_LABEL_COLLISION_THRESHOLD,
+    buildPieThemeVariables,
+    recolorPieSlicesAtScale,
+    recolorPieTextForTheme,
+} from '../mermaidPlugin';
 import { calculateContrastRatio } from '../../../utils/colorUtils';
 
 // Build a mermaid-like pie <svg> with `n` slices matching the UPSTREAM default
@@ -242,5 +248,95 @@ describe('G-14a672 D-152 pie legend/section/title text colour resolves per theme
         const light = buildPieThemeVariables(false);
         const dark = buildPieThemeVariables(true);
         expect(light.pieLegendTextColor).not.toBe(dark.pieLegendTextColor);
+    });
+});
+
+// ---------------------------------------------------------------------------
+// G-14a672 / D-152 REGRESSION GUARD — full pie post-render pipeline ORDER.
+//
+// The isolation suites above prove fixPieLayoutAtScale and buildPieThemeVariables
+// are individually correct. But the headless renderer runs THREE post-render
+// passes on the emitted pie SVG, in a fixed order:
+//     recolorPieSlicesAtScale  ->  recolorPieTextForTheme  ->  fixPieLayoutAtScale
+// (see renderSingleDiagram: the `if (diagramType === 'pie')` block). D-152
+// regressed after later passes (the D-157 slice recolour and D-420 text recolour)
+// were inserted AHEAD of the layout fix. Nothing exercised that composition, so a
+// pass that mutated the legend/slice structure the layout fix depends on — e.g.
+// removing `g.legend` rows or `path.pieCircle` slices while recolouring — would
+// silently defeat the viewBox growth and re-clip the legend, exactly the
+// regressed symptom, while every isolation test stayed green.
+//
+// This suite runs the passes in the real pipeline order on a 60-slice pie in
+// BOTH themes and asserts the layout fix STILL sees an intact legend and grows
+// the box to enclose it, the colliding centroid labels are still dropped, and
+// the recoloured legend/title text is legible on the theme's own canvas.
+// DIRECTION: a control run that drops the legend before the layout fix (the
+// shape of the regression) is shown to leave the box UNGROWN, so the guard is
+// verified to be load-bearing.
+// ---------------------------------------------------------------------------
+describe('G-14a672 D-152 full pie pipeline order (regression guard)', () => {
+    const CANVAS = { light: '#ffffff', dark: '#1f1f1f' } as const;
+    const TEXT_FLOOR = 4.5;
+
+    const runPipeline = (svg: SVGSVGElement, isDark: boolean) => {
+        // Exactly the order renderSingleDiagram applies for diagramType === 'pie'.
+        const rc = recolorPieSlicesAtScale(svg, isDark);
+        const tn = recolorPieTextForTheme(svg, isDark);
+        const rl = fixPieLayoutAtScale(svg);
+        return { rc, tn, rl };
+    };
+
+    (['light', 'dark'] as const).forEach((theme) => {
+        const isDark = theme === 'dark';
+
+        it(`[${theme}] the layout fix still encloses the full legend AFTER the recolour passes`, () => {
+            const svg = buildPieSvg(60);
+            // Precondition: the emitted (unfixed) SVG clips both ends.
+            expect(firstLegendTop(svg)).toBeLessThan(vbTop(svg));
+            expect(lastLegendBottom(svg)).toBeGreaterThan(vbBottom(svg));
+
+            const { rc, rl } = runPipeline(svg, isDark);
+
+            // Recolour ran on the >12-slice chart, and CRUCIALLY did not remove
+            // the legend/slice structure the layout fix consumes.
+            expect(rc.recolored).toBe(60);
+            expect(svg.querySelectorAll('g.legend')).toHaveLength(60);
+
+            // Layout fix, running LAST, still grew the box around every row.
+            expect(rl.viewBoxExpanded).toBe(true);
+            expect(vbTop(svg)).toBeLessThanOrEqual(firstLegendTop(svg));
+            expect(vbBottom(svg)).toBeGreaterThanOrEqual(lastLegendBottom(svg));
+            expect(vbRight(svg)).toBeGreaterThan(450);
+            // and the colliding centroid labels are gone.
+            expect(rl.labelsRemoved).toBe(60);
+            expect(svg.querySelectorAll('text.slice')).toHaveLength(0);
+        });
+
+        it(`[${theme}] recoloured legend + title text is legible on the ${theme} canvas`, () => {
+            const svg = buildPieSvg(60);
+            const { tn } = runPipeline(svg, isDark);
+            // Title + one label per legend row were recoloured.
+            expect(tn).toBeGreaterThanOrEqual(61);
+            const bg = CANVAS[theme];
+            svg.querySelectorAll('.pieTitleText, g.legend text').forEach((el) => {
+                const fill = (el as HTMLElement).getAttribute('fill') || '';
+                expect(fill).toBeTruthy();
+                expect(calculateContrastRatio(fill, bg)).toBeGreaterThanOrEqual(TEXT_FLOOR);
+            });
+        });
+    });
+
+    it('DIRECTION: dropping the legend before the layout fix leaves the box UNGROWN (the regressed shape)', () => {
+        const svg = buildPieSvg(60);
+        recolorPieSlicesAtScale(svg, false);
+        recolorPieTextForTheme(svg, false);
+        // Simulate a mis-ordered / destructive pass that removes the legend rows
+        // the layout fix relies on — the exact failure mode this guard protects
+        // against. With no legend to enclose, the box cannot be grown.
+        svg.querySelectorAll('g.legend').forEach((g) => g.parentNode?.removeChild(g));
+        const before = svg.getAttribute('viewBox');
+        const rl = fixPieLayoutAtScale(svg);
+        expect(rl.viewBoxExpanded).toBe(false);
+        expect(svg.getAttribute('viewBox')).toBe(before);
     });
 });

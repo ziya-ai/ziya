@@ -22,11 +22,11 @@
    "golden": {
     "light": {
      "hash": "c5d5b70dea2240193010e4cbf27409c878a361b0bbc4a25128c1a2e46c19ccd1",
-     "validated_at": "2026-09-16T06:25:27.830189Z"
+     "validated_at": "2026-09-19T12:27:31.788206Z"
     },
     "dark": {
      "hash": "ef12df472806ed988d39e950d89e9b21cf973d9f4f6deafea1efd105f0fc20d0",
-     "validated_at": "2026-09-16T06:25:27.835664Z"
+     "validated_at": "2026-09-19T12:27:31.796121Z"
     }
    }
   },
@@ -50,11 +50,11 @@
    "golden": {
     "light": {
      "hash": "3fb1c8ca4cd0f43b23df605f5184bde83da2e392e72d81723c2714fee3890f60",
-     "validated_at": "2026-09-16T06:34:17.433202Z"
+     "validated_at": "2026-09-19T12:32:46.253854Z"
     },
     "dark": {
      "hash": "42a1dfc28b80150e1b86b87ea29d09cdea30631a59c00ab8ad466990c8b3449a",
-     "validated_at": "2026-09-16T06:34:17.443054Z"
+     "validated_at": "2026-09-19T12:32:46.264324Z"
     }
    }
   },
@@ -84,8 +84,12 @@
    ],
    "golden": {
     "dark": {
-     "hash": "c2531d10b4e5a45595886e8276f3ee1d38735e967a6d8ea4178c81b973807718",
-     "validated_at": "2026-09-16T06:48:56.751214Z"
+     "hash": "496d9f6f1524cbd8b7b738c9cf6a7b93da0401122cdd359862ca4ce863d93168",
+     "validated_at": "2026-09-19T12:46:36.017309Z"
+    },
+    "light": {
+     "hash": "770ca64bf0858e793139fd793d8870e3877622643a67c64adfc7149640a55001",
+     "validated_at": "2026-09-19T12:46:36.000593Z"
     }
    }
   },
@@ -105,7 +109,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.459683Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "4c907e78c799dd4f96a1ac7610c03fd51eb0c2030213de3cdadcc17b94dc7b2f",
+     "validated_at": "2026-09-19T13:04:58.198208Z"
+    },
+    "dark": {
+     "hash": "cd48f6907ea943f77b9f57ad16724f995084c15a0dd3b68b7bb39ba20af68937",
+     "validated_at": "2026-09-19T13:04:58.206021Z"
+    }
+   }
   },
   "mermaid-w4-01": {
    "themes": [
@@ -128,7 +142,17 @@
      "signature": "missing-preprocessor-parse-hang",
      "at": "2026-09-15T08:56:13.299277Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "89cd5855edb05581743d9860047be8f08df6b5d45e580280b3f22693406d1cc6",
+     "validated_at": "2026-09-19T13:06:31.215604Z"
+    },
+    "dark": {
+     "hash": "46897692597e5f12f54d294d327b6d8201c7c37a84a73e919ce9e0f0715b1b3d",
+     "validated_at": "2026-09-19T13:06:31.225045Z"
+    }
+   }
   },
   "mermaid-w4-02": {
    "themes": [
@@ -146,7 +170,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.465601Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "74d4391821d35466df17f506c4f3c4a934c57e5a1a1f68a8408eaac7e3fdbe6b",
+     "validated_at": "2026-09-19T13:10:16.640569Z"
+    },
+    "dark": {
+     "hash": "90db3839968c8c188545c7174c2f8a3cc08781c16ab72eb6517cb20861ad73fc",
+     "validated_at": "2026-09-19T13:10:16.648293Z"
+    }
+   }
   },
   "mermaid-w4-03": {
    "themes": [
@@ -164,7 +198,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.468712Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "6826a0393a2e0b3d5c954321b0410b2b941afc19e72d14d872bd40c8225b8abf",
+     "validated_at": "2026-09-19T13:10:16.831942Z"
+    },
+    "dark": {
+     "hash": "dba0c932b2952d0de2db1b03a384bea4a9bd955822bf1809ae1f253550bf38f2",
+     "validated_at": "2026-09-19T13:10:16.838184Z"
+    }
+   }
   },
   "mermaid-w4-04": {
    "themes": [
@@ -187,7 +231,17 @@
      "signature": "missing-preprocessor-parse-hang",
      "at": "2026-09-15T08:56:13.303785Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "2131eaaa6c89befced3fb16b55012e288fabb786d30d79349d7250a6009ac316",
+     "validated_at": "2026-09-19T13:06:31.404410Z"
+    },
+    "dark": {
+     "hash": "81c9798f3d5d4807a19ace91a60c6d1add62ba938984374ac8f79b57a1149406",
+     "validated_at": "2026-09-19T13:06:31.413676Z"
+    }
+   }
   },
   "mermaid-w4-05": {
    "themes": [
@@ -205,7 +259,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.473939Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "63777087b275f9c123072fe21d85c318843aeb134258fb12f72847498cffa6f3",
+     "validated_at": "2026-09-19T13:10:59.334507Z"
+    },
+    "dark": {
+     "hash": "4c97a656adfaaabb1aa1f4e2c367e71a50cdba6193de9be03643ae0c7c64eefa",
+     "validated_at": "2026-09-19T13:10:59.341430Z"
+    }
+   }
   },
   "mermaid-w4-08": {
    "themes": [
@@ -223,7 +287,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.476521Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "b5d4464b02662d4f26335bbb80e9eed77befe9c0d662f4ef89a97707f9e2d764",
+     "validated_at": "2026-09-19T13:10:59.536562Z"
+    },
+    "dark": {
+     "hash": "a7cd7dcddfb25c610716009907be5c3d3955a81829584f68713cc373bcdce01d",
+     "validated_at": "2026-09-19T13:10:59.544284Z"
+    }
+   }
   },
   "mermaid-w4-09": {
    "themes": [
@@ -241,7 +315,17 @@
      "signature": "",
      "at": "2026-09-15T08:56:11.478919Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "57fb78b56ab9cfeed9637aabdca977d152e2b95d440b3b9b9e905160035ab52a",
+     "validated_at": "2026-09-19T13:11:41.583274Z"
+    },
+    "dark": {
+     "hash": "a00fe166be8db664dccf20ba1b9208850bb0465baa782a4b20ef26623da563a7",
+     "validated_at": "2026-09-19T13:11:41.601422Z"
+    }
+   }
   },
   "mermaid-w4-15": {
    "themes": [
@@ -265,7 +349,17 @@
      "signature": "recovery-colour-honoured-no-contrast-remediation",
      "at": "2026-09-15T08:56:13.358653Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "ffd8f838d5c5e5caac88bd9d9f19959a247b7a3d2027acc60199810309f011b0",
+     "validated_at": "2026-09-19T13:09:17.211054Z"
+    },
+    "dark": {
+     "hash": "63f9bd214a66d7d44e1b1b828a7644a95e289c6e3962b52c08d288283c1a3278",
+     "validated_at": "2026-09-19T13:09:17.219004Z"
+    }
+   }
   },
   "mermaid-w1-05": {
    "themes": [
@@ -290,7 +384,17 @@
      "signature": "sequence-alt-else-and-state-choice-semantics-dropped",
      "at": "2026-09-15T08:56:14.966003Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "0fb04d0d835f4d66a985be22da4fa885fcb7351456ff278d93b668396234564a",
+     "validated_at": "2026-09-17T20:04:38.459052Z"
+    },
+    "dark": {
+     "hash": "d4eb875702eca55ee266a73eace82ea4ea00e88adea392795ba71ef868f91718",
+     "validated_at": "2026-09-19T01:25:14.921785Z"
+    }
+   }
   },
   "mermaid-w2-01": {
    "themes": [
@@ -415,7 +519,17 @@
      "signature": "oversize-canvas-content-shrunk-labels-subpixel",
      "at": "2026-09-15T08:56:14.873234Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "03c289e77937d93b404dba1cf5806749e03758f3327cf5522c784a9f2dfca9d1",
+     "validated_at": "2026-09-19T12:58:51.843632Z"
+    },
+    "dark": {
+     "hash": "1a9d2f7339fc3d70845776daef4560d9e8b3c350125c83137935e41a216ba5a5",
+     "validated_at": "2026-09-19T12:58:51.851510Z"
+    }
+   }
   },
   "mermaid-w2-09": {
    "themes": [
@@ -468,12 +582,12 @@
    ],
    "golden": {
     "light": {
-     "hash": "fbf620da987eee61ecbd5fdefb7e0232c935b2b95c43ada79be1f7aa8757d7e8",
-     "validated_at": "2026-09-16T06:48:58.558327Z"
+     "hash": "69d4250f5e583ed3cc535a169b6ffb736443b3c3985fab0a9558ebe0bfa73e1b",
+     "validated_at": "2026-09-19T12:40:26.477256Z"
     },
     "dark": {
-     "hash": "d0b4a323fb8f5b23c8f8484f629aadcb8a5258c9800e33049f2993243918be16",
-     "validated_at": "2026-09-16T06:48:58.571292Z"
+     "hash": "13396222586bac96bd67e017dba386c5ce71019fb0d710f2a7c5a4339014aaa9",
+     "validated_at": "2026-09-19T12:40:26.498927Z"
     }
    }
   },
@@ -603,8 +717,23 @@
      "origin": "D-291",
      "signature": "sequence-alt-else-and-state-choice-semantics-dropped",
      "at": "2026-09-15T08:56:14.962298Z"
+    },
+    {
+     "origin": "D-424",
+     "signature": "sequence-autonumber-digits-invisible",
+     "at": "2026-09-18T04:46:24.894762Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "9d8de647b06a6c798d36cd1e18b276f44a0c485553e58e568d2a0520c3e9d5f1",
+     "validated_at": "2026-09-19T12:27:32.100551Z"
+    },
+    "dark": {
+     "hash": "0f5f13ea36d8774ec3f3c1d92260b616b02d156c606426947a5c800b0054c8fb",
+     "validated_at": "2026-09-19T01:19:36.414566Z"
+    }
+   }
   },
   "mermaid-w1-04": {
    "themes": [
@@ -622,7 +751,17 @@
      "signature": "class-multiplicity-label-collision",
      "at": "2026-09-15T08:56:13.217122Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "2abee5a4f8e17cb6ee674b5394acc4e514723f52264c5d129d720c73f31c029c",
+     "validated_at": "2026-09-19T12:28:32.130171Z"
+    },
+    "dark": {
+     "hash": "e3b04ef8743c183d57dd3df0b82755674c06bd404e22552f1d83f3c5fd2e7904",
+     "validated_at": "2026-09-19T01:25:14.739832Z"
+    }
+   }
   },
   "mermaid-w1-07": {
    "themes": [
@@ -646,7 +785,17 @@
      "signature": "gantt-layout-collapsed-to-thumbnail-blank-canvas",
      "at": "2026-09-15T08:56:14.933883Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "d71de385076d7f416a4eb9d31fe0fdf6b378746db8700e6152767d2401246130",
+     "validated_at": "2026-09-19T12:29:59.044124Z"
+    },
+    "dark": {
+     "hash": "a89affde35af2e6664204cb93a4e8ebbd2a1a7ec786ba2815a2a9c5f3bc157dc",
+     "validated_at": "2026-09-19T12:29:59.061174Z"
+    }
+   }
   },
   "mermaid-w2-15": {
    "themes": [
@@ -671,7 +820,13 @@
      "signature": "pie-default-palette-not-canvas-aware",
      "at": "2026-09-15T08:56:13.289699Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "24669381952ae9da746ced001f5d975e0fc4260bf6598bac1460d3cc565bc66d",
+     "validated_at": "2026-09-19T12:40:26.668905Z"
+    }
+   }
   },
   "mermaid-w1-11": {
    "themes": [
@@ -694,8 +849,23 @@
      "origin": "D-294",
      "signature": "light-palette-not-canvas-aware-hsl-NaN-remediation-aborts",
      "at": "2026-09-15T08:56:14.968213Z"
+    },
+    {
+     "origin": "D-422",
+     "signature": "quadrant-point-labels-white-on-pale:light",
+     "at": "2026-09-17T20:22:45.098184Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "bb39a7df683f149672315b6069ec66545654221ec02a3231537fe505c791435d",
+     "validated_at": "2026-09-17T20:06:19.426442Z"
+    },
+    "dark": {
+     "hash": "cad9737e0810dca8b2c8e49de0f98173eb8a7c39a745c74aa73fdfcbb9adcc1c",
+     "validated_at": "2026-09-17T20:06:19.434078Z"
+    }
+   }
   },
   "mermaid-w1-12": {
    "themes": [
@@ -720,7 +890,17 @@
      "signature": "oversize-canvas-content-shrunk-labels-subpixel",
      "at": "2026-09-15T08:56:14.849403Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "d62fa7dd08e20e9eb825ed4c6ecdf91fc05044c47c334fb42f4bdb8ef4c5ef4d",
+     "validated_at": "2026-09-19T12:31:58.207572Z"
+    },
+    "dark": {
+     "hash": "dcb1d4682868449c29da5c4f93929fbfde8e27f0a88827a35d4a0fbbb396e5a1",
+     "validated_at": "2026-09-19T12:31:58.217366Z"
+    }
+   }
   },
   "mermaid-w1-15": {
    "themes": [
@@ -742,12 +922,12 @@
    ],
    "golden": {
     "light": {
-     "hash": "32e425c6fe8c8c34ef2530da7afd1535bea5dc8c724be8753dbdf80cdd823f53",
-     "validated_at": "2026-09-16T06:34:17.761924Z"
+     "hash": "27697a992bd90232c6050db8a3d94c728596fceaf4cfed3c2f2447883b881b59",
+     "validated_at": "2026-09-19T12:32:46.539960Z"
     },
     "dark": {
-     "hash": "ff9e989f5ef39504c3ae7254cb62e6522dbeb662a230b8a274e1220acd662fc4",
-     "validated_at": "2026-09-16T06:34:17.766756Z"
+     "hash": "985875dd24e4026f7330fd6f179cdf51e8b1c7db168cdc088cf1cffedf01c9fe",
+     "validated_at": "2026-09-19T12:32:46.560078Z"
     }
    }
   },
@@ -767,7 +947,17 @@
      "signature": "er-relationship-marker-filled-occludes-entity:dark",
      "at": "2026-09-15T08:56:13.271320Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "3fae4af772e66ad3871d007c049f74ce37cec4d9ecad63015a5d6de52489b460",
+     "validated_at": "2026-09-19T12:29:58.853870Z"
+    },
+    "dark": {
+     "hash": "3d942a0879854f70938cb1fadc21676a5a9a43391b7e769c4a5c66fda0dd700d",
+     "validated_at": "2026-09-19T12:29:58.866260Z"
+    }
+   }
   },
   "mermaid-w1-08": {
    "themes": [
@@ -786,7 +976,17 @@
      "signature": "pie-default-palette-not-canvas-aware",
      "at": "2026-09-15T08:56:13.286095Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "bd92aae34b8d9d28f0cf473bdd50d6f6221f7ba17158659820c056ba7548dcf2",
+     "validated_at": "2026-09-19T12:31:05.534403Z"
+    },
+    "light": {
+     "hash": "c99c7aa2a47fdbc99c02b81adfbb47c49e8cb94e7d19d0151a865893555a75c1",
+     "validated_at": "2026-09-19T12:31:05.526781Z"
+    }
+   }
   },
   "mermaid-w4-06": {
    "themes": [
@@ -809,7 +1009,17 @@
      "signature": "user-text-on-user-fill-below-floor-not-remediated",
      "at": "2026-09-15T08:56:14.991847Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "246735bd525bf1b5b50811782ea67184114a9a1319a0b122f85b55ae7b1af861",
+     "validated_at": "2026-09-19T13:07:16.171036Z"
+    },
+    "dark": {
+     "hash": "e879f41687cd715f206dd871d6b3ae1b39cc782a498f44ecff7fca6050220b16",
+     "validated_at": "2026-09-19T13:07:16.190406Z"
+    }
+   }
   },
   "mermaid-w4-11": {
    "themes": [
@@ -826,8 +1036,23 @@
      "origin": "D-158",
      "signature": "missing-preprocessor-parse-hang",
      "at": "2026-09-15T08:56:13.321997Z"
+    },
+    {
+     "origin": "D-426",
+     "signature": "unclosed-subgraph-end-appended-at-eof-scope-mismatch",
+     "at": "2026-09-17T20:22:45.111260Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "f8fd6adf3e154dc30a04aacd461c7cfbf72f9476f68aefed2b86358ff580f8cb",
+     "validated_at": "2026-09-19T13:07:16.367862Z"
+    },
+    "dark": {
+     "hash": "64a956512cd79611acbffd7df0743c93ce7c1ff73d1fc12032a16b3c05567a39",
+     "validated_at": "2026-09-19T13:07:16.376144Z"
+    }
+   }
   },
   "mermaid-w4-12": {
    "themes": [
@@ -845,7 +1070,17 @@
      "signature": "missing-preprocessor-parse-hang",
      "at": "2026-09-15T08:56:13.336577Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "aa8eb7b49e0e783dcc1ebf3982375a92f2ee54ba78e2fb841f80e4e1371e7a29",
+     "validated_at": "2026-09-19T13:08:25.919868Z"
+    },
+    "light": {
+     "hash": "233adecf897d2e25737ef25000279837ab13fbafae5ced36b1b7f27ee3367ce6",
+     "validated_at": "2026-09-19T13:08:25.910701Z"
+    }
+   }
   },
   "mermaid-w4-14": {
    "themes": [
@@ -863,7 +1098,17 @@
      "signature": "missing-preprocessor-parse-hang",
      "at": "2026-09-15T08:56:13.349403Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "4e6e3e61f4effe14bdc141725271d147d0ca28e22b76a1ae9dbb3a567af6984f",
+     "validated_at": "2026-09-19T13:08:26.145980Z"
+    },
+    "dark": {
+     "hash": "97e42af2ab43b881494283da9a6596209cd4ad517dd281b53de10bfc5958e88b",
+     "validated_at": "2026-09-19T13:08:26.158905Z"
+    }
+   }
   },
   "mermaid-w4-07": {
    "themes": [
@@ -887,7 +1132,17 @@
      "signature": "user-text-on-user-fill-below-floor-not-remediated",
      "at": "2026-09-15T08:56:14.996655Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "b13dbf931e4cea32a69a2914546f7b63d125235fd75722482b05930b8987ca94",
+     "validated_at": "2026-09-16T07:22:58.709879Z"
+    },
+    "dark": {
+     "hash": "48e1d7834d8008fcc5f298e6a2528d094e3ce236c1d8cd91fc3484a25dfa8b5c",
+     "validated_at": "2026-09-16T07:22:58.720387Z"
+    }
+   }
   },
   "mermaid-w4-13": {
    "themes": [
@@ -905,7 +1160,17 @@
      "signature": "missing-dateFormat-yields-NaN-scale-all-bars-dropped",
      "at": "2026-09-15T08:56:13.369932Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "33b04de05dade9e5f71ada5ccdd20334a74383d45dec2d68ccbb2d4838581b11",
+     "validated_at": "2026-09-19T13:09:17.043254Z"
+    },
+    "dark": {
+     "hash": "df2317e1c1e303a7f87cbac79e1ce9aa448483bbd282b7532a88d9dfddb57994",
+     "validated_at": "2026-09-19T13:09:17.054129Z"
+    }
+   }
   },
   "mermaid-w1-09": {
    "themes": [
@@ -924,7 +1189,17 @@
      "signature": "oversize-canvas-content-shrunk-labels-subpixel",
      "at": "2026-09-15T08:56:14.845278Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "6151d48910027078c16b675fce0d52b6159a679305eaef5043592892a38d1b22",
+     "validated_at": "2026-09-19T12:31:05.714901Z"
+    },
+    "dark": {
+     "hash": "ec99f31e00e76d94539164a3c9261f1efb5a32b602a55f33c716923732181145",
+     "validated_at": "2026-09-19T12:31:05.727338Z"
+    }
+   }
   },
   "mermaid-w2-05": {
    "themes": [
@@ -943,7 +1218,17 @@
      "signature": "oversize-canvas-content-shrunk-labels-subpixel",
      "at": "2026-09-15T08:56:14.866524Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "0297ec82baf80005f1d10ea42d72a5983203e198f955699c6fee18ba831265a4",
+     "validated_at": "2026-09-19T01:46:26.322346Z"
+    },
+    "dark": {
+     "hash": "820721f8c921dfd1af349d5aa03a5cf0a2aea43b77e809c125e6afd0c84db645",
+     "validated_at": "2026-09-19T12:34:00.197485Z"
+    }
+   }
   },
   "mermaid-w3-01": {
    "themes": [
@@ -962,7 +1247,17 @@
      "signature": "oversize-canvas-content-shrunk-labels-subpixel",
      "at": "2026-09-15T08:56:14.908395Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "29d87dc2000048015807a11fedf351f506c9a851aaabe148ce1f78e8587b1a7e",
+     "validated_at": "2026-09-19T13:04:57.943353Z"
+    },
+    "dark": {
+     "hash": "5b912c0f46a77d3f199d7d6a7f3526b94d52254a7bb7d42d41ee872809111724",
+     "validated_at": "2026-09-19T13:04:57.961093Z"
+    }
+   }
   },
   "mermaid-w3-09": {
    "themes": [
@@ -981,7 +1276,17 @@
      "signature": "oversize-canvas-content-shrunk-labels-subpixel",
      "at": "2026-09-15T08:56:14.912553Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "81e3fc79c87ac1a19bd54cce4e3c9b6c0a88bef6c0e630f7e11bb85038181410",
+     "validated_at": "2026-09-19T13:02:38.042740Z"
+    },
+    "dark": {
+     "hash": "a1e37e9d8af40fcff0c2f11dc612c655ecc3e12f1398bb94900016eb93f9311f",
+     "validated_at": "2026-09-17T20:12:32.388804Z"
+    }
+   }
   },
   "mermaid-w3-10": {
    "themes": [
@@ -1000,7 +1305,17 @@
      "signature": "oversize-canvas-content-shrunk-labels-subpixel",
      "at": "2026-09-15T08:56:14.918177Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "3f5be734afacfafb1fd5fc8d350e1e551a5e70fe57f7a779ca347f081d3bf589",
+     "validated_at": "2026-09-19T01:52:58.676458Z"
+    },
+    "dark": {
+     "hash": "17eae463abd7805e08b706b24d81cebe3c80eec82b909d08acae94327a97ba60",
+     "validated_at": "2026-09-19T13:03:56.853732Z"
+    }
+   }
   },
   "mermaid-w3-14": {
    "themes": [
@@ -1019,7 +1334,17 @@
      "signature": "oversize-canvas-content-shrunk-labels-subpixel",
      "at": "2026-09-15T08:56:14.925844Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "de22f94356823792135f4570e0cca91ab2e8de5791a24a0c085f99ef37887cbf",
+     "validated_at": "2026-09-19T13:02:38.241663Z"
+    },
+    "dark": {
+     "hash": "809ac2225bc11917237febbddb138eecc498a235bc960495424dab38131b4d86",
+     "validated_at": "2026-09-17T20:12:33.770686Z"
+    }
+   }
   },
   "mermaid-w3-15": {
    "themes": [
@@ -1038,7 +1363,17 @@
      "signature": "oversize-canvas-content-shrunk-labels-subpixel",
      "at": "2026-09-15T08:56:14.930532Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "3caa8b6856c4cbca95bf01c7223113d9e1f526cf948db4e56201f6676b68bbca",
+     "validated_at": "2026-09-19T13:03:57.053298Z"
+    },
+    "dark": {
+     "hash": "ad1e0d4ce9bedb293aa03d8bc9aec5bf4365c74ecaa708cf80c3fa4a6776398e",
+     "validated_at": "2026-09-19T01:52:59.183479Z"
+    }
+   }
   },
   "mermaid-w1-01": {
    "themes": [
@@ -1056,7 +1391,17 @@
      "signature": "flowchart-parallelogram-shape-not-honored-delimiter-leak",
      "at": "2026-09-15T08:56:14.943821Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "d963520eafec9b55562d942077cc244ed962d18113f98b4fcd7b7dc72347a08a",
+     "validated_at": "2026-09-19T12:26:17.432389Z"
+    },
+    "dark": {
+     "hash": "a6fa379b1a8a026d495dec77319f669c7921dd725b29fa83657456707ef6d123",
+     "validated_at": "2026-09-19T12:26:17.442194Z"
+    }
+   }
   },
   "mermaid-w3-05": {
    "themes": [
@@ -1066,15 +1411,31 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "D-289",
      "signature": "flowchart-parallelogram-shape-not-honored-delimiter-leak",
      "at": "2026-09-15T08:56:14.949291Z"
+    },
+    {
+     "origin": "D-421",
+     "signature": "dark-link-stroke-dissolves:dark",
+     "at": "2026-09-17T20:22:45.090706Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "8e15849d0292c7fc945e02dce6a3ac428de7f627f6a875511ef728d2784a0267",
+     "validated_at": "2026-09-17T20:09:03.729399Z"
+    },
+    "dark": {
+     "hash": "d470ebf5c27aa62b9b1f0fc01b645e41633206af31a6af838b308150b0526c27",
+     "validated_at": "2026-09-17T20:09:03.741277Z"
+    }
+   }
   },
   "mermaid-w3-06": {
    "themes": [
@@ -1084,15 +1445,31 @@
    "invariants": [
     "renders",
     "no_console_errors",
-    "ink_present"
+    "ink_present",
+    "visual:contrast"
    ],
    "origins": [
     {
      "origin": "D-290",
      "signature": "sequence-break-block-refused-empty-svg",
      "at": "2026-09-15T08:56:14.954248Z"
+    },
+    {
+     "origin": "D-423",
+     "signature": "theme-text-on-hardcoded-box-fill-invisible",
+     "at": "2026-09-17T20:22:45.107687Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "6044dee6e9bd5434600d85ae52e7c585153acfe85ac42fe2d9bd279d31c2beff",
+     "validated_at": "2026-09-17T20:10:22.065002Z"
+    },
+    "dark": {
+     "hash": "75f8ed6502b6120d6921e7b981cb9329378133734dc49895e9129384dc28c81e",
+     "validated_at": "2026-09-17T20:10:22.075430Z"
+    }
+   }
   },
   "mermaid-w3-06b": {
    "themes": [
@@ -1110,7 +1487,17 @@
      "signature": "sequence-break-block-refused-empty-svg",
      "at": "2026-09-15T08:56:14.959432Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "043447b2d18c5046a61327e24391ff330127073f22fe64ed06f80030ac475980",
+     "validated_at": "2026-09-19T13:05:44.787556Z"
+    },
+    "dark": {
+     "hash": "e0cd700514ff23866c38e8459a1df49dca074f75e83f62063a104421663101ea",
+     "validated_at": "2026-09-19T13:05:44.794659Z"
+    }
+   }
   },
   "mermaid-w1-13": {
    "themes": [
@@ -1128,12 +1515,21 @@
      "origin": "D-294",
      "signature": "light-palette-not-canvas-aware-hsl-NaN-remediation-aborts",
      "at": "2026-09-15T08:56:14.974441Z"
+    },
+    {
+     "origin": "D-422",
+     "signature": "quadrant-point-labels-white-on-pale:light",
+     "at": "2026-09-17T20:22:45.101398Z"
     }
    ],
    "golden": {
     "dark": {
-     "hash": "57fe6f9c807dc2770dfad8d997f4164c78bab9256e68f56fdc46a972debda511",
-     "validated_at": "2026-09-16T06:32:54.804049Z"
+     "hash": "c89693edfb03e156709cc4a28376d0356c6b559c17f7484bc2f777cd9043d3b7",
+     "validated_at": "2026-09-17T20:07:38.218598Z"
+    },
+    "light": {
+     "hash": "825e033128e1aa5c06d532fdae08158f4b2034e39e5adbfc89c5f16029521bc2",
+     "validated_at": "2026-09-17T20:07:38.197816Z"
     }
    }
   },
@@ -1153,8 +1549,23 @@
      "origin": "D-294",
      "signature": "light-palette-not-canvas-aware-hsl-NaN-remediation-aborts",
      "at": "2026-09-15T08:56:14.978513Z"
+    },
+    {
+     "origin": "D-422",
+     "signature": "quadrant-point-labels-white-on-pale:light",
+     "at": "2026-09-17T20:22:45.104565Z"
     }
-   ]
+   ],
+   "golden": {
+    "dark": {
+     "hash": "11e94d8f9b0b2c0295be72da4a7d8f802c802a4c54385fb3ba837da4b8395957",
+     "validated_at": "2026-09-17T20:12:33.011479Z"
+    },
+    "light": {
+     "hash": "f2edd3cdf792752ee9d52a73ee7d5e85d33228b38a9a13eccc71a2f277605f52",
+     "validated_at": "2026-09-17T20:12:32.992925Z"
+    }
+   }
   },
   "mermaid-w3-08": {
    "themes": [
@@ -1173,7 +1584,17 @@
      "signature": "hardcoded-or-init-fill-merges-with-same-value-canvas",
      "at": "2026-09-15T08:56:14.983534Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "83dcd7df0710e061b9ab7a530a480abd85ac6d593c18a4cc815dbae644a53e93",
+     "validated_at": "2026-09-19T01:52:58.179347Z"
+    },
+    "dark": {
+     "hash": "b258b78460d18ee0369a70daf80568c74be28a45d874f5ce67cba09d00fe9561",
+     "validated_at": "2026-09-19T01:52:58.184612Z"
+    }
+   }
   },
   "mermaid-w3-13": {
    "themes": [
@@ -1192,7 +1613,46 @@
      "signature": "hardcoded-or-init-fill-merges-with-same-value-canvas",
      "at": "2026-09-15T08:56:14.988666Z"
     }
-   ]
+   ],
+   "golden": {
+    "light": {
+     "hash": "afd960d7d2eb3bec052d06434577ec259dbe87391ae5f811fccd5fb6a3402ab1",
+     "validated_at": "2026-09-19T13:00:58.225049Z"
+    },
+    "dark": {
+     "hash": "0664da173eb47706fbd78ac5b92784d9050e3b9d8f4cc66cb08ce71d0431a9f2",
+     "validated_at": "2026-09-19T13:00:58.243886Z"
+    }
+   }
+  },
+  "mermaid-w3-04": {
+   "themes": [
+    "dark",
+    "light"
+   ],
+   "invariants": [
+    "renders",
+    "no_console_errors",
+    "ink_present",
+    "visual:contrast"
+   ],
+   "origins": [
+    {
+     "origin": "D-421",
+     "signature": "dark-link-stroke-dissolves:dark",
+     "at": "2026-09-17T20:22:45.080611Z"
+    }
+   ],
+   "golden": {
+    "dark": {
+     "hash": "76bd772fd7fd8a53754b0d87ba237d1d4384ab146095db3435b92797c15a2721",
+     "validated_at": "2026-09-17T20:09:03.506904Z"
+    },
+    "light": {
+     "hash": "8a65989b820539ba7ff83db482a1bae02954e37edfb7634768ce88a495e8e115",
+     "validated_at": "2026-09-17T20:09:03.496829Z"
+    }
+   }
   }
  }
 }
