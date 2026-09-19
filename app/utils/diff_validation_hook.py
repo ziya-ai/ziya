@@ -13,6 +13,40 @@ from app.utils.diff_utils.validation.pipeline_validator import validate_diff_wit
 from app.utils.diff_utils.parsing.diff_parser import extract_target_file_from_diff
 
 
+def _utf16_units(text: str):
+    """Yield UTF-16 code units, matching JavaScript's charCodeAt() iteration."""
+    for ch in text:
+        cp = ord(ch)
+        if cp > 0xFFFF:
+            cp -= 0x10000
+            yield 0xD800 + (cp >> 10)
+            yield 0xDC00 + (cp & 0x3FF)
+        else:
+            yield cp
+
+
+def diff_body_hash(body: str) -> str:
+    """Content identity of a ```diff fence body, shared with the frontend.
+
+    The frontend marks a rejected diff as superseded by matching this value
+    against each rendered diff token (diffUtils.ts diffBodyHash), so the two
+    implementations must agree byte for byte: CRLF folded to LF, surrounding
+    whitespace stripped (marked drops the fence's trailing newline; the
+    server regex does not), then FNV-1a 32-bit over UTF-16 code units so a
+    non-BMP character hashes the same as JS's surrogate pairs. Pinned by the
+    shared golden vector in test_diff_validation_rejection_marker.py and
+    diffRejectedMarker.test.ts. A fence ordinal was rejected as the identity
+    because the renderer absorbs/merges headerless continuation fences, so
+    its indices do not line up with the server's.
+    """
+    text = body.replace('\r\n', '\n').strip()
+    h = 0x811C9DC5
+    for unit in _utf16_units(text):
+        h ^= unit
+        h = (h * 0x01000193) & 0xFFFFFFFF
+    return format(h, '08x')
+
+
 class DiffValidationHook:
     """
     Hook that validates diffs and manages context automatically.
@@ -36,32 +70,43 @@ class DiffValidationHook:
         self.last_validated_file: Optional[str] = None
         self.successful_diffs: List[str] = []  # Track which diffs passed validation
         self.failed_diff_details: List[Dict[str, Any]] = []  # Track failures with context
+        # Diffs rejected by the most recent validate_and_enhance() call, as
+        # {file_path, body_hash, reason}. server.py attaches this to the
+        # validation_retry event so the frontend can mark exactly those
+        # fences unappliable and explain the pause before the correction.
+        self.last_rejected: List[Dict[str, Any]] = []
         
-    def detect_completed_diff(self, content: str) -> Optional[Dict[str, Any]]:
+    def detect_completed_diffs(self, content: str) -> List[Dict[str, Any]]:
         """
-        Detect if content contains a completed diff block.
+        Every completed, not-yet-validated ```diff fence in content, in order.
+
+        Previously only the LAST fence was returned, so a response carrying
+        several diffs had only its final one validated: an earlier broken
+        hunk sailed through unchecked and failed at apply time with no
+        correction requested.
         """
         pattern = r'(`{3,})diff\n([\s\S]*?)\n\1(?:\n|$)'
-        
-        matches = list(re.finditer(pattern, content))
-        if not matches:
-            return None
-        
-        match = matches[-1]
-        diff_content = match.group(2)
-        file_path = extract_target_file_from_diff(diff_content)
-        diff_key = f"{file_path}:{len(diff_content)}"
-        
-        if diff_key in self.validated_diffs:
-            return None
-        
-        return {
-            "diff_content": diff_content,
-            "start_pos": match.start(),
-            "end_pos": match.end(),
-            "file_path": file_path,
-            "diff_key": diff_key
-        }
+        found: List[Dict[str, Any]] = []
+        for match in re.finditer(pattern, content):
+            diff_content = match.group(2)
+            file_path = extract_target_file_from_diff(diff_content)
+            diff_key = f"{file_path}:{len(diff_content)}"
+            if diff_key in self.validated_diffs:
+                continue
+            found.append({
+                "diff_content": diff_content,
+                "start_pos": match.start(),
+                "end_pos": match.end(),
+                "file_path": file_path,
+                "diff_key": diff_key,
+                "body_hash": diff_body_hash(diff_content),
+            })
+        return found
+
+    def detect_completed_diff(self, content: str) -> Optional[Dict[str, Any]]:
+        """Last unvalidated fence only. validate_and_enhance() checks them all."""
+        found = self.detect_completed_diffs(content)
+        return found[-1] if found else None
     
     def is_file_in_context(self, file_path: str) -> bool:
         """Check if file is in current context."""
@@ -107,7 +152,7 @@ class DiffValidationHook:
         send_event: Optional[Callable[[str, Dict[str, Any]], None]] = None
     ) -> Optional[str]:
         """
-        Validate diffs and automatically enhance context if needed.
+        Validate every completed diff and enhance context for the failures.
         
         Args:
             content: The current streamed content
@@ -115,21 +160,37 @@ class DiffValidationHook:
             send_event: Callback to send SSE events to frontend
             
         Returns:
-            Model feedback string if ANY hunks failed, None if all succeeded
+            Combined model feedback if ANY diff failed, None if all succeeded.
+            The failures are also left on self.last_rejected for the caller.
         """
         if not self.validation_enabled:
             return None
-        
-        diff_info = self.detect_completed_diff(content)
-        if not diff_info:
-            return None
-        
+
+        self.last_rejected = []
+        feedback_parts: List[str] = []
+        for diff_info in self.detect_completed_diffs(content):
+            # Two byte-identical fences share a key; the second is a no-op.
+            if diff_info["diff_key"] in self.validated_diffs:
+                continue
+            feedback = self._validate_one(diff_info, model_messages, send_event)
+            if feedback:
+                feedback_parts.append(feedback)
+        return "\n\n".join(feedback_parts) if feedback_parts else None
+
+    def _validate_one(
+        self,
+        diff_info: Dict[str, Any],
+        model_messages: List[Dict[str, Any]],
+        send_event: Optional[Callable[[str, Dict[str, Any]], None]] = None
+    ) -> Optional[str]:
+        """Validate one detected fence; feedback string if it failed."""
         diff_content = diff_info["diff_content"]
         file_path = diff_info["file_path"]
         diff_key = diff_info["diff_key"]
         
         if not file_path:
             logger.warning("Could not extract file path from diff, skipping validation")
+            self.validated_diffs[diff_key] = True
             return None
         
         self.validated_diffs[diff_key] = True
@@ -156,10 +217,6 @@ class DiffValidationHook:
                 original_levels[logger_name] = target_logger.level
                 target_logger.setLevel(logging.CRITICAL)
         
-        if send_event:
-            send_event("diff_validation_status", {
-            })
-        
         try:
             validation_result = validate_diff_with_full_pipeline(diff_content, file_path)
             
@@ -182,12 +239,21 @@ class DiffValidationHook:
             
             if has_failures:
                 
+                reason_first_line = str(
+                    validation_result["model_feedback"] or ""
+                ).strip().splitlines()[:1]
                 # Record this failure
                 self.failed_diff_details.append({
                     "diff_number": diff_number,
                     "file_path": file_path,
+                    "body_hash": diff_info["body_hash"],
                     "reason": validation_result["model_feedback"],
                     "failed_hunks": len(validation_result["failed_hunks"])
+                })
+                self.last_rejected.append({
+                    "file_path": file_path,
+                    "body_hash": diff_info["body_hash"],
+                    "reason": (reason_first_line[0] if reason_first_line else "")[:200],
                 })
                 
                 # Always inject current file content on failure — even if the file
@@ -236,6 +302,7 @@ class DiffValidationHook:
                 send_event("diff_validation_status", {
                     "file_path": file_path,
                     "diff_number": diff_number,
+                    "body_hash": diff_info["body_hash"],
                     "status": "failed" if has_failures else "success",
                     "failed_hunks": validation_result["failed_hunks"],
                     "total_hunks": validation_result["total_hunks"],
