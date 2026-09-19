@@ -4326,6 +4326,19 @@ export function ChatProvider({ children }: ChatProviderProps) {
             removeStreamingConversation(msg.conversationId);
         };
 
+        // Answer "who is streaming X?" only when THIS tab owns the turn
+        // (streaming it, and not merely mirroring another tab's stream).
+        // The one-shot 'streaming-state' at turn start is missed by a tab
+        // that opens later; without this reply that tab would reattach to
+        // the server relay and render the same turn twice.
+        const handleStreamingProbe = (msg: any) => {
+            const id = msg.conversationId;
+            if (!id) return;
+            if (!streamingConversationsRef.current.has(id)) return;
+            if (remoteStreamingIdsRef.current.has(id)) return;
+            projectSync.post('streaming-state', { conversationId: id, state: 'sending' });
+        };
+
         projectSync.on('conversations-changed', handleConversationsChanged);
         projectSync.on('conversation-created', handleConversationsChanged);
         projectSync.on('conversation-deleted', handleConversationsChanged);
@@ -4353,6 +4366,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
         projectSync.on('streaming-chunk', handleStreamingChunk);
         projectSync.on('streaming-state', handleStreamingState);
         projectSync.on('streaming-ended', handleStreamingEnded);
+        projectSync.on('streaming-probe', handleStreamingProbe);
 
         return () => {
             // Cancel any pending rAF to prevent setState after unmount
@@ -4394,6 +4408,7 @@ export function ChatProvider({ children }: ChatProviderProps) {
             projectSync.off('streaming-chunk', handleStreamingChunk);
             projectSync.off('streaming-state', handleStreamingState);
             projectSync.off('streaming-ended', handleStreamingEnded);
+            projectSync.off('streaming-probe', handleStreamingProbe);
         };
     }, [currentProject?.id, isInitialized, mergeConversations, updateProcessingState, removeStreamingConversation]);
 

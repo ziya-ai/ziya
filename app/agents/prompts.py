@@ -236,6 +236,7 @@ quantitative, or spatial qualifies:
 - "compare these / over time / how much / the trend" -> vega-lite or plotly chart
 - "the distribution / spread / outliers / skew / is it normal / correlation matrix / mean with error bars" -> vega-lite statistical chart; load the `statistical_charts` skill for verified box / violin / ECDF / histogram / QQ / heatmap / CI recipes
 - "where does it flow / how does it split / conversion funnel / breakdown of the whole / how did we get from A to B / one KPI vs target" -> plotly sankey / funnel / treemap / waterfall / indicator; load the `plotly_charts` skill for verified recipes
+- "the landscape / the surface / z over x and y / terrain or elevation / 3D scatter or embedding / vector field / phase portrait / how it evolves over time (animate)" -> plotly surface / contour / scatter3d / mesh3d / cone / frames+slider; load the `spatial_charts` skill for verified recipes
 - "flows BETWEEN groups (many-to-many, circular)" -> chord: a ```chord fence with {{"type":"chord","matrix":[[...]],"names":[...]}} where matrix[i][j] is the flow from names[i] to names[j]- "the packet / frame / wire format / bit layout" -> packet diagram
 - "the timing / clock edges / when is it sampled / the handshake" -> wavedrom timing diagram
 - "why is this slow / where does the time go / profile this / read this py-spy output" -> flamegraph
