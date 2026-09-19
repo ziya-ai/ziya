@@ -25,12 +25,25 @@ Front-matter schema (all keys optional):
     ---
     ziya-doc: 1            # IR version marker (accepted, currently ignored)
     title: "Queue Depth Analysis"
+    subtitle: "Capacity headroom, Q3"   # optional second line of the title block
     author: "dcohn"        # overrides the model/provider default in PDF /Author
-    layout: report         # report (title block) | plain (no chrome at all)
+    date: 2026-09-19       # optional; ISO date or free text; default: today
+    layout: report         # report (title block) | titlepage (title block on
+                           # its own page) | plain (no chrome at all)
+    numbering:             # optional; true/false sets all three
+      sections: false      # "1", "1.1", "1.1.1" prefixes on h1-h3
+      figures: true        # "Figure N" labels under diagrams/images
+      tables: true         # "Table N" labels above tables
     page:
       size: A4             # only A4 in phase 1
       margin: 18mm         # one value for all sides, or {top,bottom,left,right}
     ---
+
+Caption lines (recognised by the PDF decoration pass, plain paragraphs in any
+other viewer): a paragraph beginning ``Figure:`` directly BELOW a diagram or
+image becomes its caption; a paragraph beginning ``Table:`` directly ABOVE (or
+below) a table becomes that table's caption.  See
+``app/utils/document_print_decor.py``.
 
 YAML parsing is defensive: PyYAML is effectively always present (a langchain
 transitive dependency) but is NOT a declared direct dependency, so a minimal
@@ -56,7 +69,9 @@ _PAGEBREAK_RE = re.compile(r'^[ \t]*<!--\s*ziya:pagebreak\s*-->[ \t]*$', re.MULT
 # CSS length accepted for page margins (matches what page.pdf() accepts).
 _MARGIN_VALUE_RE = re.compile(r'^\d+(\.\d+)?(mm|cm|in|px)$')
 
-_VALID_LAYOUTS = ('plain', 'report')
+_VALID_LAYOUTS = ('plain', 'report', 'titlepage')
+
+_NUMBERING_KEYS = ('sections', 'figures', 'tables')
 
 _MARGIN_SIDES = ('top', 'bottom', 'left', 'right')
 
@@ -121,8 +136,11 @@ def normalize_meta(raw: Dict[str, Any]) -> Dict[str, Any]:
     """
     meta: Dict[str, Any] = {
         'title': None,
+        'subtitle': None,
         'author': None,
+        'date': None,
         'layout': 'plain',
+        'numbering': None,
         'page': {},
     }
     if not isinstance(raw, dict):
@@ -131,13 +149,37 @@ def normalize_meta(raw: Dict[str, Any]) -> Dict[str, Any]:
     title = raw.get('title')
     if isinstance(title, str) and title.strip():
         meta['title'] = title.strip()
+    subtitle = raw.get('subtitle')
+    if isinstance(subtitle, str) and subtitle.strip():
+        meta['subtitle'] = subtitle.strip()
     author = raw.get('author')
     if isinstance(author, str) and author.strip():
         meta['author'] = author.strip()
 
+    # PyYAML turns an unquoted `2026-09-19` into a date object; keep it as
+    # the ISO string so the meta stays JSON-serialisable.  Free text passes
+    # through verbatim ("Q3 FY26", "Draft").  Formatting for display happens
+    # in document_print_decor.format_document_date.
+    date = raw.get('date')
+    if hasattr(date, 'isoformat'):
+        meta['date'] = date.isoformat()[:10]
+    elif isinstance(date, (str, int)) and str(date).strip():
+        meta['date'] = str(date).strip()
+
     layout = raw.get('layout')
     if isinstance(layout, str) and layout.strip().lower() in _VALID_LAYOUTS:
         meta['layout'] = layout.strip().lower()
+
+    # numbering: true/false (all knobs) or {sections, figures, tables}.
+    # None means "renderer defaults" (figures and tables on, sections off).
+    numbering = raw.get('numbering')
+    if isinstance(numbering, bool):
+        meta['numbering'] = {k: numbering for k in _NUMBERING_KEYS}
+    elif isinstance(numbering, dict):
+        norm_num = {k: numbering[k] for k in _NUMBERING_KEYS
+                    if isinstance(numbering.get(k), bool)}
+        if norm_num:
+            meta['numbering'] = norm_num
 
     page = raw.get('page')
     if isinstance(page, dict):
