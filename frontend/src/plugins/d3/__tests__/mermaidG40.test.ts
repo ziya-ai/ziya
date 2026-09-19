@@ -253,4 +253,36 @@ describe('D-170 gantt grid z-order', () => {
     }
     expect(contrastRatio('#000000', '#ff0000')).toBeGreaterThanOrEqual(4.5);
   });
+
+  // D-151 regression (oscillation): mermaid's gantt renderer can insert the
+  // grid group in a DEFERRED tick, AFTER the plugin's synchronous fixGantt()
+  // pass. A SINGLE application therefore misses it and the gridlines paint over
+  // the bars at capture. The plugin re-applies moveGanttGridBehind on rAF and
+  // inside the completion window; this test proves the re-application is what
+  // corrects the deferred insertion (a single pass would not).
+  it('DIRECTION: a single pass misses a deferred on-top grid; re-application corrects it', () => {
+    const svg = svgEl('svg');
+    const root = svgEl('g');
+    svg.appendChild(root);
+    // At the synchronous pass, only the bars exist — no grid yet.
+    const task = svgEl('rect', 'task');
+    root.appendChild(task);
+
+    // First pass (synchronous): nothing to move, and crucially NOT a false move.
+    expect(moveGanttGridBehind(root)).toBe(false);
+
+    // Mermaid now inserts the grid group LAST (painted on top of the bars).
+    const grid = svgEl('g', 'grid');
+    root.appendChild(grid);
+    const kidsBefore = Array.from(root.childNodes);
+    expect(kidsBefore.indexOf(grid)).toBeGreaterThan(kidsBefore.indexOf(task));
+
+    // The deferred re-application (rAF / in-window timer) catches it.
+    expect(moveGanttGridBehind(root)).toBe(true);
+    const kidsAfter = Array.from(root.childNodes);
+    expect(kidsAfter.indexOf(grid)).toBeLessThan(kidsAfter.indexOf(task));
+
+    // Idempotent: a further re-application is a no-op, so extra passes are safe.
+    expect(moveGanttGridBehind(root)).toBe(false);
+  });
 });

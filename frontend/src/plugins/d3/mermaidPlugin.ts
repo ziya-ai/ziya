@@ -1,5 +1,5 @@
 import { D3RenderPlugin } from '../../types/d3';
-import initMermaidSupport, { enhancePacketDarkMode, buildTimelineDarkThemeVariables, buildSequenceNoteDarkThemeVariables, reapplyLinkStyleStrokes, moveGanttGridBehind, recolorGanttCritLabels, ensureShapeBordersAgainstCanvas, dodgeQuadrantPointCollisions } from './mermaidEnhancer';
+import initMermaidSupport, { enhancePacketDarkMode, buildTimelineDarkThemeVariables, buildSequenceNoteDarkThemeVariables, reapplyLinkStyleStrokes, moveGanttGridBehind, recolorGanttCritLabels, ensureShapeBordersAgainstCanvas, ensureSequenceBoxTitleContrast, dodgeQuadrantPointCollisions, enhanceQuadrantAndMindmapLegibility } from './mermaidEnhancer';
 import { isDiagramDefinitionComplete } from '../../utils/diagramUtils';
 import { extractDefinitionFromYAML } from '../../utils/diagramUtils';
 import { rerouteSkipEdges, shouldRerouteEdges } from './mermaidEdgeRerouter';
@@ -30,6 +30,39 @@ export function resolveMermaidMarkerColors(
   const cf = (currentFill || '').trim().toLowerCase();
   const hollow = cf === 'none' || cf === 'transparent' || cf === '';
   return { stroke: lineColor, fill: hollow ? null : lineColor };
+}
+
+// ---------------------------------------------------------------------------
+// D-156 / G-c415f5 (mermaid-w1-06, dark): the empty-fill guard above is
+// necessary but NOT sufficient. An ER crow's-foot / cardinality marker is a
+// STROKED OUTLINE glyph — its <path> carries a `stroke` and is meant to read
+// as a thin outline (as it does in light). Mermaid (or an earlier post-render
+// pass) can leave that path with a SOLID inline fill (a theme/CSS-derived
+// colour, not none/transparent/empty), so `resolveMermaidMarkerColors` treats
+// it as filled and the dark marker pass floods it with the teal line colour —
+// turning the hairline outline into a solid blob that occludes the entity box
+// border (the regression). A genuine solid arrowhead (flowchart pointEnd) is
+// instead a FILL-ONLY glyph with no stroke of its own.
+//
+// This stroke-aware resolver keeps every stroked or hollow marker hollow
+// (fill:none, thin outline matching the light render) and floods the fill only
+// for a fill-only solid arrowhead. The stroke is always the theme line colour
+// (dark #88c0d0 on #2e3440 = 6.24:1, light #333333 on #ffffff = 12.63:1), so
+// the marker stays visible in both themes without occluding anything. Pure and
+// exported for unit testing; the injected dark pass mirrors this logic inline.
+// ---------------------------------------------------------------------------
+export function resolveMermaidMarkerPaint(
+  currentFill: string | null | undefined,
+  currentStroke: string | null | undefined,
+  lineColor: string,
+): { stroke: string; fill: string | null } {
+  const cf = (currentFill || '').trim().toLowerCase();
+  const cs = (currentStroke || '').trim().toLowerCase();
+  const hollowFill = cf === 'none' || cf === 'transparent' || cf === '';
+  const strokedOutline = cs !== '' && cs !== 'none' && cs !== 'transparent';
+  // Flood the fill only for a fill-only solid arrowhead (no stroke, real fill).
+  const fill = !strokedOutline && !hollowFill ? lineColor : null;
+  return { stroke: lineColor, fill };
 }
 
 // ---------------------------------------------------------------------------
@@ -195,6 +228,74 @@ export function recolorPieSlicesAtScale(svgElement: Element, isDarkMode: boolean
         }
     });
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// D-420 (mermaid-w1-08 / w2-15 / w4-12): pie TITLE + LEGEND text colour.
+//
+// buildPieThemeVariables pins pieTitleTextColor / pieLegendTextColor per theme,
+// but mermaid's pie renderer paints the title (`text.pieTitleText`) and the
+// legend labels (`g.legend text`) from its base `textColor` / a hard-coded
+// default that OVERRIDES those pie* keys at render time. The observed symptom
+// is inverted per theme: in LIGHT the title/legend came out near-white
+// (~1.0:1, invisible on the white canvas; 2/5 legend rows read as swatch-only)
+// and in DARK they came out near-black (~1.28:1 on the dark canvas).
+//
+// These texts sit on the diagram CANVAS (not on a coloured wedge), so the
+// theme text colour is the correct resolution. Pin it directly on the emitted
+// text nodes with !important — the same attribute-only, idempotent post-render
+// pattern used for the slice palette — so the colour is resolved from the
+// theme the renderer was given rather than a stray vendor default.
+//
+// Contrast (computed, WCAG; text floor 4.5:1):
+//   light  #1a1a1a on #ffffff              = 17.40:1
+//   dark   #eceff4 on #1e1e2e (dark canvas) = 14.23:1  (and 14.30:1 on #1f1f1f)
+// Slice PERCENTAGE labels (`text.slice`) are deliberately NOT touched here:
+// they sit on the wedge fills and are handled by pieSectionTextColor.
+// ---------------------------------------------------------------------------
+export function recolorPieTextForTheme(svgElement: Element, isDarkMode: boolean): number {
+    const color = isDarkMode ? '#eceff4' : '#1a1a1a';
+    let n = 0;
+    // Title + legend labels only (NOT text.slice / .pieCircle percentage text).
+    const sel = 'text.pieTitleText, .pieTitleText, g.legend text, g.legend tspan, .legend text, .legend tspan';
+    svgElement.querySelectorAll(sel).forEach((el) => {
+        (el as HTMLElement).setAttribute('fill', color);
+        (el as unknown as SVGElement).style.setProperty('fill', color, 'important');
+        n++;
+    });
+    return n;
+}
+
+// ---------------------------------------------------------------------------
+// D-421 (mermaid-w3-04, sankey-link-multiply-blend-vanishes:dark).
+//
+// mermaid's sankey renderer paints link ribbons with `mix-blend-mode: multiply`
+// (an inline style and/or the `.link` rule in the SVG's embedded stylesheet).
+// Multiply multiplies the ribbon colour with whatever is behind it: it reads
+// fine over a WHITE page, but on the DARK canvas the product collapses to
+// near-black and the ribbons disappear — losing the flow-magnitude encoding
+// their stroke/ribbon width carries. On dark we neutralise the blend to
+// 'normal' so the ribbon's own colour shows, and floor a very low fill-opacity
+// so faint ribbons stay visible. Ribbon WIDTH (the magnitude encoding) is never
+// touched. Light is left untouched (multiply is correct over white).
+// Attribute/style-only and idempotent.
+// ---------------------------------------------------------------------------
+export function neutralizeSankeyDarkBlend(svgElement: Element): number {
+    let n = 0;
+    const links = svgElement.querySelectorAll(
+        '.link, path.link, path.sankey-link, g.links path, g.link path'
+    );
+    links.forEach((el) => {
+        const s = el as unknown as SVGElement;
+        s.style.setProperty('mix-blend-mode', 'normal', 'important');
+        const foRaw = el.getAttribute('fill-opacity') || (s.style && s.style.fillOpacity) || '';
+        const fo = parseFloat(foRaw);
+        if (!isNaN(fo) && fo < 0.5) {
+            s.style.setProperty('fill-opacity', '0.6', 'important');
+        }
+        n++;
+    });
+    return n;
 }
 
 // ---------------------------------------------------------------------------
@@ -593,6 +694,72 @@ export function shouldEnhanceMermaidVisibility(definition: string): boolean {
     return !explicitTextColor.test(definition);
 }
 
+// POST-RENDER (G-961e2c / D-424): make sequenceDiagram `autonumber` step
+// numerals legible. Mermaid paints the numeral disc from a <marker
+// id$="-sequencenumber"> whose fill is the theme `signalColor`, and the numeral
+// itself is <text class="sequenceNumber"> filled with `sequenceNumberColor`.
+// Neither of our theme overrides pins that pair, so mermaid's stock values land
+// the numeral at essentially the disc colour (light: dark numerals on a solid
+// black disc ~1:1; dark: near-white numerals on a light-grey disc ~1.8:1) and
+// the step numbers are invisible in BOTH themes. We repaint the disc + numeral
+// as a matched, theme-resolved high-contrast pair. Fires ONLY when autonumber
+// numerals exist (no `.sequenceNumber` node on non-autonumber diagrams), so
+// every other sequence render is byte-unchanged; idempotent (re-applying the
+// same inline colours is a no-op).
+export function enhanceSequenceAutonumberLegibility(svg: SVGElement, isDark: boolean): number {
+    const numerals = svg.querySelectorAll('text.sequenceNumber');
+    if (!numerals || numerals.length === 0) return 0;
+
+    // Matched pairs (contrast verified with python3, WCAG relative luminance):
+    //   LIGHT numeral #ffffff on disc #333333 = 12.63:1; disc on #ffffff = 12.63:1
+    //   DARK  numeral #2e3440 on disc #88c0d0 =  6.24:1; disc on dark canvas >= 6.24:1
+    const discColor = isDark ? '#88c0d0' : '#333333';
+    const numeralColor = isDark ? '#2e3440' : '#ffffff';
+
+    let fixed = 0;
+
+    // Recolour the numeral discs (mermaid draws them as marker shapes whose id
+    // ends with "-sequencenumber"; inline style beats the embedded stylesheet).
+    const discMarkers = svg.querySelectorAll('marker[id$="-sequencenumber"], [id$="-sequencenumber"]');
+    discMarkers.forEach((marker: Element) => {
+        (marker as SVGElement).style.fill = discColor;
+        marker.setAttribute('fill', discColor);
+        marker.querySelectorAll('circle, path, ellipse, rect').forEach((shape: Element) => {
+            (shape as SVGElement).style.fill = discColor;
+            shape.setAttribute('fill', discColor);
+        });
+    });
+
+    numerals.forEach((el: Element) => {
+        (el as SVGElement).style.fill = numeralColor;
+        el.setAttribute('fill', numeralColor);
+        fixed++;
+    });
+
+    return fixed;
+}
+
+// PREPROCESS (G-961e2c / D-425, single-label-40k-chars-node-fills-8000px-cap-
+// text-subpixel): a single node label of tens of thousands of characters
+// inflates its node to the renderer's IMAGE_MAX_DIMENSION_PX ceiling, so the
+// whole diagram is downscaled until the text is sub-pixel and unreadable. Cap
+// any pathologically long quoted label body to a bounded, still-legible length
+// with a truncation marker. The threshold sits far above any realistic label
+// (~800 chars), so ordinary diagrams are byte-unchanged; idempotent (a body
+// already ending in the marker is under the threshold on a second pass).
+const MAX_MERMAID_LABEL_CHARS = 800;
+export function clampMermaidNodeLabels(definition: string): string {
+    if (!definition || definition.length <= MAX_MERMAID_LABEL_CHARS) return definition;
+    // Only touch double-quoted label bodies (mermaid's escape for free text in
+    // node shapes: ["..."], ("..."), {"..."}). A body must exceed the ceiling to
+    // be clamped, so realistic labels are never altered.
+    return definition.replace(/"([^"\n]+)"/g, (match, body: string) => {
+        if (body.length <= MAX_MERMAID_LABEL_CHARS) return match;
+        const truncated = body.slice(0, MAX_MERMAID_LABEL_CHARS).replace(/\s+\S*$/, '');
+        return `"${truncated} […]"`;
+    });
+}
+
 const SCALE_CONFIG = {
     TARGET_FONT_SIZE: 14,   // Target font size in pixels
     MIN_FONT_SIZE: 12,      // Minimum font size in pixels
@@ -901,6 +1068,11 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             throw new Error('Invalid mermaid spec: no definition found');
         }
 
+        // G-961e2c / D-425: bound any pathologically long node label so a
+        // 40k-char single label cannot inflate the node past the render px cap
+        // and drive the text sub-pixel. No-op for normal definitions.
+        rawDefinition = clampMermaidNodeLabels(rawDefinition);
+
         // CRITICAL DEBUG: Log what we're about to send to Mermaid
         console.log('🔧 MERMAID-DEBUG: About to render with rawDefinition:', {
             type: typeof rawDefinition,
@@ -938,6 +1110,15 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             startOnLoad: false,
             theme: isDarkMode ? 'dark' : 'default',
             securityLevel: 'loose',
+            // G-961e2c / D-425 (edge-count-over-500-refused-empty-svg): mermaid's
+            // stock maxEdges=500 security cap makes any graph with more edges
+            // return an empty SVG (a blank surface, not a legible diagram). We
+            // are a trusted first-party renderer, so raise the ceiling to a value
+            // that renders the dense scale-probe graphs (620 edges) while still
+            // bounding a runaway input. maxTextSize is raised in step so a large
+            // (but bounded) node label is laid out rather than silently refused.
+            maxEdges: 2000,
+            maxTextSize: 90000,
             fontFamily: '"Arial", sans-serif',
             fontSize: 14,
             themeVariables: (isDarkMode ? Object.assign({
@@ -1229,6 +1410,59 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             setTimeout(() => runDodge('delayed'), 520);
         }
 
+        // POST-RENDER (G-4e869b / D-422, LIGHT): repaint quadrantChart point
+        // labels and mindmap link ribbons that mermaid 11 painted through its
+        // embedded class palette (so enhanceSVGVisibility's inline-attribute
+        // pass never reached them) and that dissolve into the theme canvas —
+        // white point labels ~1.02:1 on the pale quadrant fill, pale pastel
+        // mindmap ribbons ~1.05:1 on white. Theme-resolved (light label #1a1a1a
+        // 17.40:1 / ribbon #333333 12.63:1 on #ffffff; dark #f5f5f5 / #e6e6e6),
+        // firing only on a dissolved element so the passing dark renders are
+        // untouched. Runs regardless of the shouldEnhanceMermaidVisibility gate.
+        if (diagramType === 'quadrantchart' || diagramType === 'quadrant' || diagramType === 'mindmap') {
+            const fixLegibility = (phase: string) => {
+                try {
+                    const n = enhanceQuadrantAndMindmapLegibility(svgElement, isDarkMode);
+                    if (n) console.log(`🎯 QUADRANT-MINDMAP-LEGIBILITY (${phase}): repainted ${n} dissolved label/ribbon(s)`);
+                } catch (e) { console.warn('QUADRANT-MINDMAP-LEGIBILITY failed:', e); }
+            };
+            fixLegibility('immediate');
+            setTimeout(() => fixLegibility('delayed'), 540);
+        }
+
+        // POST-RENDER (G-961e2c / D-424): repaint sequenceDiagram autonumber
+        // step numerals + their discs as a matched theme-resolved high-contrast
+        // pair so the numbers are legible in BOTH themes (mermaid otherwise
+        // paints the numeral at ~the disc colour). Fires only when autonumber
+        // numerals exist, so non-autonumber sequence renders are untouched;
+        // idempotent. Runs regardless of the shouldEnhanceMermaidVisibility gate.
+        if (diagramType === 'sequencediagram' || diagramType === 'sequence') {
+            const fixAutonumber = (phase: string) => {
+                try {
+                    const n = enhanceSequenceAutonumberLegibility(svgElement, isDarkMode);
+                    if (n) console.log(`🔢 SEQ-AUTONUMBER (${phase}): repainted ${n} step numeral(s)`);
+                } catch (e) { console.warn('SEQ-AUTONUMBER failed:', e); }
+            };
+            fixAutonumber('immediate');
+            setTimeout(() => fixAutonumber('delayed'), 560);
+
+            // POST-RENDER (D-423 / w3-06): keep a `box <color> <title>` group
+            // title legible on its author-hardcoded box fill. The title inherits
+            // theme ink, so a light box fails under light ink and a dark box under
+            // dark ink — one of a light+dark pair is illegible in EACH theme. The
+            // repair resolves the best black/white ink FROM the (fixed) fill, so
+            // both themes are corrected in one pass; a title already >= 4.5:1 is
+            // left untouched.
+            const fixBoxTitles = (phase: string) => {
+                try {
+                    const n = ensureSequenceBoxTitleContrast(svgElement);
+                    if (n) console.log(`🏷️ SEQ-BOX-TITLE (${phase}): recoloured ${n} box title(s)`);
+                } catch (e) { console.warn('SEQ-BOX-TITLE failed:', e); }
+            };
+            fixBoxTitles('immediate');
+            setTimeout(() => fixBoxTitles('delayed'), 560);
+        }
+
         // POST-RENDER (D-161 / G-40): re-apply explicit `linkStyle` edge strokes.
         // In dark, the visibility pass repaints every edge with the theme
         // lineColor, silently discarding deliberately colour-coded edges. Run
@@ -1244,6 +1478,21 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
             };
             reapplyLinks();
             setTimeout(reapplyLinks, 650);
+        }
+
+        // POST-RENDER (D-421 / w3-04): neutralise the sankey link `multiply`
+        // blend in DARK so ribbons stop collapsing to near-black on the dark
+        // canvas. Ribbon width (the magnitude encoding) is untouched; light is
+        // left alone (multiply reads correctly over white).
+        if (isDarkMode && (diagramType === 'sankey' || diagramType === 'sankey-beta')) {
+            const fixSankey = () => {
+                try {
+                    const n = neutralizeSankeyDarkBlend(svgElement);
+                    if (n) console.log(`🌊 SANKEY-DARK-BLEND: neutralised multiply on ${n} link(s)`);
+                } catch (e) { console.warn('SANKEY-DARK-BLEND failed:', e); }
+            };
+            fixSankey();
+            setTimeout(fixSankey, 650);
         }
 
         // POST-RENDER (G-632224 / D-295): keep node/block box borders and edge
@@ -1278,8 +1527,25 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                     recolorGanttCritLabels(svgElement, isDarkMode);
                 } catch (e) { console.warn('GANTT-GRID-ZORDER failed:', e); }
             };
+            // D-151 (regression, gantt-gridlines-drawn-over-bars): the grid
+            // group can be inserted by mermaid's gantt renderer in a DEFERRED
+            // tick (rAF/microtask) AFTER this synchronous plugin code runs, so
+            // the immediate fixGantt() sometimes sees no grid to move and the
+            // gridlines end up painted over the bars. The old safety net fired
+            // at 650ms, but DiagramRenderPage marks the render 'complete' (and
+            // the headless capture is taken) ~500ms after the first SVG
+            // mutation — so the 650ms re-run landed AFTER capture and never
+            // corrected the miss, producing the intermittent verified/regression
+            // oscillation. Re-apply on the next animation frame (catches the
+            // deferred grid insertion) AND once more safely INSIDE the 500ms
+            // completion window. All passes are idempotent (moveGanttGridBehind
+            // is a no-op once the grid is already behind; recolour is stable).
             fixGantt();
-            setTimeout(fixGantt, 650);
+            if (typeof requestAnimationFrame === 'function') {
+                requestAnimationFrame(fixGantt);
+            }
+            setTimeout(fixGantt, 120);
+            setTimeout(fixGantt, 450);
         }
 
         // POST-RENDER: Reroute skip edges that cut through intermediate nodes
@@ -1345,6 +1611,15 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                     console.log(`🥧 PIE-RECOLOR: ${rc.recolored}/${rc.sliceCount} slices given distinct canvas-aware fills`);
                 }
             } catch (e) { console.warn('PIE-RECOLOR failed:', e); }
+            // D-420: force the pie TITLE + LEGEND label text to the theme text
+            // colour (mermaid's base textColor overrides the pinned pie* keys at
+            // render, leaving the title near-white on light / near-black on dark).
+            try {
+                const tn = recolorPieTextForTheme(svgElement, isDarkMode);
+                if (tn > 0) {
+                    console.log(`🥧 PIE-TEXT-RECOLOR: ${tn} title/legend text node(s) set to theme colour`);
+                }
+            } catch (e) { console.warn('PIE-TEXT-RECOLOR failed:', e); }
             try {
                 const r = fixPieLayoutAtScale(svgElement);
                 if (r.isPie && (r.viewBoxExpanded || r.labelsRemoved)) {
@@ -1616,7 +1891,20 @@ async function renderSingleDiagram(container: HTMLElement, d3: any, spec: Mermai
                                 var curFill = (el.getAttribute('fill') || el.style.getPropertyValue('fill') || '').trim().toLowerCase();
                                 el.style.setProperty('stroke', colors.lineColor, 'important');
                                 if (curFill !== 'none' && curFill !== 'transparent' && curFill !== '') {
-                                    el.style.setProperty('fill', colors.lineColor, 'important');
+                                    // D-156: a STROKED outline glyph (ER crow's-foot / cardinality
+                                    // marker) can carry a solid fill; flooding it with the line
+                                    // colour makes a teal blob that occludes the entity border.
+                                    // Only a FILL-ONLY solid arrowhead (no stroke of its own) is
+                                    // flooded; a stroked outline is neutralised to a thin outline
+                                    // (fill:none) matching the light render. Mirrors
+                                    // resolveMermaidMarkerPaint.
+                                    var curStroke = (el.getAttribute('stroke') || el.style.getPropertyValue('stroke') || '').trim().toLowerCase();
+                                    var strokedOutline = curStroke !== '' && curStroke !== 'none' && curStroke !== 'transparent';
+                                    if (strokedOutline) {
+                                        el.style.setProperty('fill', 'none', 'important');
+                                    } else {
+                                        el.style.setProperty('fill', colors.lineColor, 'important');
+                                    }
                                 }
                             });
 
