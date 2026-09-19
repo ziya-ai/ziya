@@ -23,8 +23,17 @@ Two modes, keyed on whether ``root`` is supplied:
   * no ``root``  → returns the ``task_cards`` skill body (block grammar,
     scope, artifacts, rules) so the model can author a card, then call
     again.  This is the "execution loads the skill" step.
-  * ``root``     → validate (same checks as launch), save to the deck,
-    stage a tile in this chat.  Errors are returned unsaved.
+  * ``root``     → validate (same checks as launch), save, stage a tile
+    in this chat.  Errors are returned unsaved.
+
+Lifecycle.  A staged card is CONVERSATION-ONLY by default: it is saved
+as an unlisted draft (TaskCard.draft) so the tile, the run, and the
+``bound_to_current_chat`` listing all resolve it by id, but it never
+appears in the deck.  Models are encouraged to stage sub-task cards
+freely to parallelize work and keep the parent context small; each of
+those showing up as a permanent deck entry was noise.  ``persist=True``
+files the card in the deck instead, and the tile's "Save to deck"
+promotes a conversation-only card later without changing its ids.
 """
 from typing import Any, Dict, Optional
 
@@ -46,6 +55,15 @@ class TaskCardStageInput(BaseModel):
         None, description="Card name shown on the tile (required with root).")
     description: Optional[str] = Field(
         None, description="One-line description of what the card does.")
+    persist: bool = Field(
+        False,
+        description=("Save the card to the project's permanent deck (Task "
+                     "Cards library).  Default False: the card is "
+                     "conversation-only — runnable from its tile here, "
+                     "hidden from the deck.  Leave False for sub-task and "
+                     "one-off cards; set True only when the user wants a "
+                     "reusable card."),
+    )
 
 
 class TaskCardStageTool(BaseMCPTool):
@@ -60,9 +78,11 @@ class TaskCardStageTool(BaseMCPTool):
         "conversation as an inline tile with a Run button; the user "
         "launches it.  Call with no arguments first to get the block "
         "grammar and rules, author the root, then call again with root + "
-        "name.  Structural errors are returned unsaved.  Use this instead "
-        "of any external delegate/orchestrate tool — those run with the "
-        "external server's toolset and cannot see your files or tools."
+        "name.  Structural errors are returned unsaved.  The card is "
+        "conversation-only (not filed in the deck) unless persist=true.  "
+        "Use this instead of any external delegate/orchestrate tool — "
+        "those run with the external server's toolset and cannot see "
+        "your files or tools."
     )
     InputSchema = TaskCardStageInput
 
@@ -95,12 +115,20 @@ class TaskCardStageTool(BaseMCPTool):
             }
 
         from app.models.task_card import Block, TaskCardCreate
+        from app.context import get_conversation_id_or_none
+        chat_id = get_conversation_id_or_none()
+        persist = bool(kwargs.get("persist"))
+        # Conversation-only unless asked to persist.  With no conversation
+        # to bind to, an unlisted card would be reachable from nowhere, so
+        # that case files it in the deck regardless.
+        as_draft = bool(chat_id) and not persist
         try:
             card = res["storage"].create(
                 TaskCardCreate(
                     name=name,
                     description=(kwargs.get("description") or ""),
                     root=Block(**root),
+                    draft=as_draft,
                 ),
                 source="agent",
             )
@@ -111,8 +139,6 @@ class TaskCardStageTool(BaseMCPTool):
         # anchor: a mid-turn tool call has no stable message id, and an
         # unanchored binding renders at the conversation tail.
         binding_id = None
-        from app.context import get_conversation_id_or_none
-        chat_id = get_conversation_id_or_none()
         if chat_id:
             try:
                 from app.storage.task_bindings import TaskBindingStorage
@@ -124,17 +150,28 @@ class TaskCardStageTool(BaseMCPTool):
                 binding_id = binding.id
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"task_card_stage: binding failed: {e}")
+        if as_draft and not binding_id:
+            # The binding was the only thing that made an unlisted card
+            # reachable.  Promote it into the deck rather than strand it.
+            from app.models.task_card import TaskCardUpdate
+            card = res["storage"].update(
+                card.id, TaskCardUpdate(draft=False)) or card
+            as_draft = False
 
         logger.info(
             f"🃏 task_card_stage: card {card.id[:8]} '{name}' "
             + (f"staged in chat {chat_id[:8]}" if binding_id
                else "saved to deck (no conversation to stage in)")
+            + (" [conversation-only]" if as_draft else " [deck]")
         )
         if binding_id:
-            msg = ("Card saved and staged in this conversation.  A tile "
-                   "with a Run button is now in the chat — the USER "
-                   "launches it; do not claim it is running.  Tell the "
-                   "user briefly what the card will do.")
+            msg = ("Card staged in this conversation"
+                   + (" as a conversation-only card (not filed in the "
+                      "deck; the tile's 'Save to deck' files it)"
+                      if as_draft else " and saved to the project deck")
+                   + ".  A tile with a Run button is now in the chat — the "
+                   "USER launches it; do not claim it is running.  Tell "
+                   "the user briefly what the card will do.")
         else:
             msg = ("Card saved to the project deck.  No conversation "
                    "context was available to stage a tile; the user can "
@@ -142,6 +179,7 @@ class TaskCardStageTool(BaseMCPTool):
         return {
             "success": True,
             "staged": bool(binding_id),
+            "conversation_only": as_draft,
             "card_id": card.id,
             "binding_id": binding_id,
             "name": card.name,

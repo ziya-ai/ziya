@@ -143,12 +143,6 @@ class TaskCardListTool(BaseMCPTool):
             return {"error": True, "message": res["error"]}
         storage = res["storage"]
 
-        try:
-            cards = storage.list()
-        except Exception as e:
-            logger.warning(f"task_card_list failed: {e}")
-            return {"error": True, "message": str(e)}
-
         bound_ids: Optional[set] = None
         binding_warning: Optional[str] = None
         if kwargs.get("bound_to_current_chat"):
@@ -163,6 +157,16 @@ class TaskCardListTool(BaseMCPTool):
                     "Could not determine the current conversation_id, "
                     "so results are unfiltered (all project cards).")
 
+        # A card bound to this chat is in scope whether or not it is in
+        # the deck: task_card_stage files its cards as conversation-only
+        # drafts, which the deck listing hides.  Without include_drafts the
+        # model could stage a card and then be unable to find it to fix it.
+        try:
+            cards = storage.list(include_drafts=bound_ids is not None)
+        except Exception as e:
+            logger.warning(f"task_card_list failed: {e}")
+            return {"error": True, "message": str(e)}
+
         out = []
         for c in cards:
             if bound_ids is not None and c.id not in bound_ids:
@@ -172,6 +176,7 @@ class TaskCardListTool(BaseMCPTool):
                 "name": c.name,
                 "description": c.description,
                 "root_block_type": getattr(c.root, "block_type", None),
+                "conversation_only": bool(getattr(c, "draft", False)),
             })
         result = {
             "success": True,

@@ -84,6 +84,24 @@ class TaskBindingStorage(BaseStorage[TaskBinding]):
                 logger.warning(f"Skipping corrupt task binding in {path}: {e}")
         return out
 
+    def all_bound_card_ids(self) -> set:
+        """Card ids referenced by ANY chat's bindings in this project.
+
+        Bindings are stored per chat with no card index, so this is a
+        scan of ``chats/*.bindings.json``.  Used by the draft prune to
+        tell a conversation-only card that is still reachable from a
+        tile apart from one nothing points at any more.
+        """
+        ids: set = set()
+        if not self.chats_dir.exists():
+            return ids
+        for path in self.chats_dir.glob("*.bindings.json"):
+            for row in self._read_json_list(path):
+                card_id = row.get("card_id") if isinstance(row, dict) else None
+                if card_id:
+                    ids.add(card_id)
+        return ids
+
     def get(self, chat_id: str, binding_id: str) -> Optional[TaskBinding]:
         for b in self.list_for_chat(chat_id):
             if b.id == binding_id:

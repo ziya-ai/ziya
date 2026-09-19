@@ -469,6 +469,26 @@ export const TaskCardsLibrary: React.FC<Props> = ({
     }
   }, [projectId, draft, reload]);
 
+  // An unlisted (conversation-only) card opens here via a tile's Edit
+  // backlink even though the list never shows it.  Promote in place —
+  // an UPDATE keeps card and block ids, so a signature obtained against
+  // the conversation-only copy still applies.  Plain Save deliberately
+  // leaves the flag alone: editing a card is not the same as filing it.
+  const handleAddToDeck = useCallback(async () => {
+    if (!projectId || !draft) return;
+    try {
+      const updated = await taskCardApi.update(projectId, draft.id, {
+        name: draft.name, description: draft.description,
+        root: draft.root, tags: draft.tags, draft: false,
+      });
+      setDraft(updated);
+      await reload();
+      message.success('Added to deck');
+    } catch (e) {
+      message.error(`Add to deck failed: ${String(e)}`);
+    }
+  }, [projectId, draft, reload]);
+
   const handleDuplicate = useCallback(async (id: string) => {
     if (!projectId) return;
     try {
@@ -1069,6 +1089,13 @@ export const TaskCardsLibrary: React.FC<Props> = ({
                   <Button danger icon={<StopOutlined />} onClick={handleCancel}>Cancel</Button>
                 )}
                 <Button onClick={handleSave}>Save</Button>
+                {draft.draft && (
+                  <Tooltip title="This card lives only in the conversation that staged it. Add it to the deck to keep and reuse it.">
+                    <Button icon={<InboxOutlined />} onClick={handleAddToDeck}>
+                      Add to deck
+                    </Button>
+                  </Tooltip>
+                )}
                 <Tooltip title="Duplicate"><Button icon={<CopyOutlined />} onClick={() => handleDuplicate(draft.id)} /></Tooltip>
                 <Popconfirm title={`Delete "${draft.name}"?`} onConfirm={() => handleDelete(draft.id)}>
                   <Button danger icon={<DeleteOutlined />} />

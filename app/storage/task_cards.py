@@ -43,6 +43,7 @@ class TaskCardStorage(BaseStorage[TaskCard]):
     """CRUD storage for task cards scoped to a project."""
 
     def __init__(self, project_dir: Path):
+        self.project_dir = project_dir
         self.cards_dir = project_dir / "task_cards"
         super().__init__(self.cards_dir)
 
@@ -138,15 +139,38 @@ class TaskCardStorage(BaseStorage[TaskCard]):
         A draft that HAS run is kept regardless of age: its run records
         reference the card by id, and deleting it would leave that history
         unresolvable.
+
+        A draft that is BOUND to a conversation is kept too.  Cards staged
+        by ``task_card_stage`` are conversation-only drafts whose tile may
+        sit unlaunched for longer than the window; pruning one would leave
+        the tile pointing at nothing.  Reachability, not age, is the test.
         """
         cutoff = int(time.time() * 1000) - max_age_ms
+        bound = self._bound_card_ids()
+        if bound is None:
+            return 0
         removed = 0
         for card in self.list(include_drafts=True):
             if (getattr(card, "draft", False) and card.run_count == 0
-                    and card.updated_at < cutoff):
+                    and card.updated_at < cutoff and card.id not in bound):
                 if self.delete(card.id):
                     removed += 1
         return removed
+
+    def _bound_card_ids(self) -> Optional[set]:
+        """Card ids referenced by any conversation's task bindings, or
+        ``None`` when the scan failed.
+
+        None (not an empty set) on failure: unknown reachability must make
+        NOTHING prunable, since an empty set would make every draft
+        eligible — the fail-open direction that deletes a live tile's card.
+        """
+        try:
+            from .task_bindings import TaskBindingStorage
+            return TaskBindingStorage(self.project_dir).all_bound_card_ids()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"Task binding scan failed; skipping draft prune: {e}")
+            return None
 
     def update(self, card_id: str, data: TaskCardUpdate) -> Optional[TaskCard]:
         card = self.get(card_id)
