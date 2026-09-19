@@ -743,6 +743,12 @@ async def lifespan(app: FastAPI):
         logger.debug("Cancelled any ongoing folder scans during shutdown")
     except (OSError, asyncio.CancelledError, RuntimeError) as e:
         logger.warning(f"Error cancelling folder scan: {e}")
+
+    try:
+        from app.agents.chat_turn_relay import shutdown_all as _shutdown_chat_turns
+        await asyncio.wait_for(_shutdown_chat_turns(), timeout=5.0)
+    except Exception as e:  # noqa: BLE001 — shutdown must not be blocked by a stuck turn
+        logger.warning(f"Chat turn relay shutdown: {e}")
     
     # MCP shutdown
     if ziya_env("ZIYA_ENABLE_MCP"):
@@ -1358,8 +1364,28 @@ async def chat_endpoint(request: Request):
             
             logger.info("[CHAT_ENDPOINT] Using StreamingToolExecutor via stream_chunks for unified execution")
             
+            # The turn runs as a server-owned task (app.agents.chat_turn_relay)
+            # and THIS response is merely its first subscriber.  A dropped
+            # socket (tab reload, window close) therefore no longer kills the
+            # turn; a reconnect via GET /api/chat/turn/{id}/stream replays
+            # what was missed.  Explicit Stop arrives at /api/abort-stream.
+            # See design/consent-runtime.md §Chat turn relay.
+            _turn_headers = {
+                "X-Ziya-Model": str(current_model or ""),
+                "X-Ziya-Model-Source": "pin" if pinned_model else "global",
+            }
+            if conversation_id:
+                from app.agents import chat_turn_relay
+                await chat_turn_relay.start_turn(
+                    conversation_id, stream_chunks(formatted_body), headers=_turn_headers)
+                _body_stream = chat_turn_relay.subscribe(conversation_id)
+            else:
+                # No conversation to reattach to (one-shot callers): the
+                # legacy response-owned stream is the correct lifetime.
+                _body_stream = stream_chunks(formatted_body)
+
             return StreamingResponse(
-                _keepalive_wrapper(stream_chunks(formatted_body)),
+                _keepalive_wrapper(_body_stream),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -1375,8 +1401,7 @@ async def chat_endpoint(request: Request):
                     # frontend sync service uses a 'global'-sourced value to
                     # detect drift caused by /api/set-model from another
                     # session (modelSyncService.reportStreamModel).
-                    "X-Ziya-Model": str(current_model or ""),
-                    "X-Ziya-Model-Source": "pin" if pinned_model else "global",
+                    **_turn_headers,
                     # CORS is owned by CORSMiddleware's loopback
                     # allow_origin_regex; a wildcard here overrode it and made
                     # the AI response cross-origin readable (ASR DP-02).
@@ -1398,6 +1423,60 @@ async def chat_endpoint(request: Request):
         # Ensures clients always get a JSON error response, never a bare 500
         logger.error(f"Error in chat_endpoint: {str(e)}")
         return JSONResponse({"error": sanitize_client_error(e)}, status_code=500)
+
+
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "Connection": "keep-alive",
+    "X-Accel-Buffering": "no",
+    "X-Content-Type-Options": "nosniff",
+    "Transfer-Encoding": "chunked",
+    "X-Nginx-Buffering": "no",
+    "Proxy-Buffering": "off",
+}
+
+
+@app.get('/api/chat/turn/{conversation_id}')
+async def chat_turn_status(conversation_id: str):
+    """Is there a turn (running, held, or recently finished) to reattach to?
+
+    200 with ``turn_id: null`` when the relay knows nothing about the
+    conversation.  That is the normal answer on every conversation switch --
+    the reattach watcher asks for each conversation it opens -- not a
+    failure, and the 404 it used to be made Chrome log an error plus a
+    failed-fetch trace per switch.  The stream endpoint below keeps its 404:
+    reattaching to a turn that does not exist IS an error.  A finished
+    turn is reported for the retention window so a tab that reloaded
+    mid-turn and came back after completion can still recover the answer
+    — the frontend persists assistant messages only from a live stream, so
+    the relay is the only place that text still exists.
+    """
+    from app.agents import chat_turn_relay
+    st = chat_turn_relay.status(conversation_id)
+    if st is None:
+        return JSONResponse({"conversation_id": conversation_id, "turn_id": None})
+    return JSONResponse(st)
+
+
+@app.get('/api/chat/turn/{conversation_id}/stream')
+async def chat_turn_stream(conversation_id: str):
+    """Reattach to a turn: replay of buffered frames, then the live tail.
+
+    Same SSE shape and the same model-attribution headers the original
+    /api/chat response carried, so the frontend's existing reader handles
+    it unchanged.  A `relay_replay_truncated` frame leads the replay when
+    the buffer had to drop its head.  Explicit Stop is /api/abort-stream
+    (app/routes/misc_routes.py), which now cancels the relayed turn.
+    """
+    from app.agents import chat_turn_relay
+    if not chat_turn_relay.has_turn(conversation_id):
+        return JSONResponse({"error": "no turn for conversation"}, status_code=404)
+    return StreamingResponse(
+        _keepalive_wrapper(chat_turn_relay.subscribe(conversation_id)),
+        media_type="text/event-stream",
+        headers={**_SSE_HEADERS, **chat_turn_relay.headers_for(conversation_id)},
+    )
+
 
 # Add CORS middleware
 app.add_middleware(
@@ -2013,9 +2092,14 @@ async def stream_chunks(body):
                         )
                         messages.append(HumanMessage(content=enhanced_feedback))
                         
-                        # Send a transition marker so the frontend can show a separator
+                        # Transition marker. 'rejected' names each refused fence by
+                        # content hash so the frontend can mark THAT diff
+                        # unappliable and say why before the correction streams;
+                        # until now the frontend logged this event and dropped
+                        # it, so the user saw silence and then a second diff
+                        # whose relationship to the first was only guessed.
                         separator_content = '\n\n---\n\n**Correcting failed diff(s):**\n\n'
-                        yield f"data: {json.dumps({'type': 'validation_retry', 'content': separator_content})}\n\n"
+                        yield f"data: {json.dumps({'type': 'validation_retry', 'content': separator_content, 'rejected': list(getattr(validation_hook, 'last_rejected', None) or [])})}\n\n"
                         
                         # Generate again with the feedback
                         logger.info("🔄 Restarting stream with validation feedback")
