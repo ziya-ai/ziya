@@ -139,6 +139,26 @@ export function deriveRunControls(run: TaskRun | null | undefined): RunControls 
 }
 
 /**
+ * Whether to offer force-stop: interrupt the in-flight block now and
+ * hold the run there for resume.  Soft-cancel lands only at a block
+ * boundary, so it is offered in exactly two cases -- cancel was already
+ * requested and the run is still live (the flag did not land), or the
+ * run has been silent past the hung threshold (``isHung``).  Never on a
+ * terminal run: there is no executor left to interrupt.
+ *
+ * Separate from deriveRunControls because ``hung`` is a function of the
+ * clock, which that derivation deliberately does not consult.
+ */
+export function canForceAbort(
+  run: TaskRun | null | undefined,
+  hung: boolean,
+): boolean {
+  if (!run) return false;
+  if (TERMINAL.includes(run.status)) return false;
+  return !!run.cancel_requested || hung;
+}
+
+/**
  * Wording for the progress line while a run is held.
  *
  * ``stepping`` is the caller's own record of having just asked for a

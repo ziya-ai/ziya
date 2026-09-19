@@ -269,7 +269,7 @@ export interface TaskRun {
   ask_answers?: Record<string, { decision: string; answer: string }>;
   total_tokens: number;
   total_tool_calls: number;
-  /** Heartbeat: wall-clock seconds of most recent executor activity. */
+  /** Heartbeat: epoch ms of most recent executor activity (schema 2). */
   last_activity_at?: number | null;
   /** Short server-derived line describing the latest activity. */
   progress_note?: string | null;

@@ -28,16 +28,8 @@ interface Props {
   onOpen: (run: TaskRun) => void;
 }
 
-/**
- * `created_at` is epoch MILLIseconds (TaskRunStorage stamps
- * `int(time.time() * 1000)`), while `formatLastActivity` takes epoch
- * SECONDS — it is shared with the tile's heartbeat label, which reads
- * `last_activity_at`, a float in seconds.  Converting at the call site
- * rather than "fixing" either side: both units are correct for their own
- * field, and normalizing one would break the other's caller.
- */
-const ageLabel = (ms: number): string =>
-  formatLastActivity(ms / 1000).label;
+/** `created_at` and `formatLastActivity` are both epoch ms. */
+const ageLabel = (ms: number): string => formatLastActivity(ms).label;
 
 /**
  * One run row.  Rows for runs with no conversation are rendered but not

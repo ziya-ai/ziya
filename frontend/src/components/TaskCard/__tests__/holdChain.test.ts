@@ -245,4 +245,18 @@ describe('describeGate — what the hold is gated on', () => {
     );
     expect(describeGate(chain)).toContain('some new kind');
   });
+
+  it('names the remedy for a restart-killed run', () => {
+    // reconcile_stale_runs writes held_reason='server_restart' for a run
+    // whose executor died with the server.  The generic "Stopped on
+    // server restart." is accurate but not actionable; the user needs to
+    // know their banked work is intact and that Resume is the next step.
+    const chain = deriveHoldChain(
+      heldRun({ held_reason: 'server_restart' }), tree(),
+    );
+    const gate = describeGate(chain)!;
+    expect(gate).toMatch(/restart/i);
+    expect(gate).toMatch(/resume/i);
+    expect(gate).not.toBe('Stopped on server restart.');
+  });
 });

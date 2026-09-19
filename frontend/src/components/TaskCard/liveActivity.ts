@@ -14,6 +14,23 @@ export interface ActivityLabel {
 /** Age threshold (s) after which a running task reads as stalled. */
 export const STALE_AFTER_S = 120;
 
+/**
+ * Age threshold (s) after which a running task reads as HUNG and the
+ * tile offers force-stop even without a prior cancel.  Deliberately far
+ * above STALE_AFTER_S: a legitimate ``npm run build`` under a long
+ * shell grant is silent for minutes, and offering to interrupt it after
+ * two would invite exactly the redo work force-stop is meant to save.
+ */
+export const HUNG_AFTER_S = 600;
+
+/** True when the run has been silent long enough to offer force-stop. */
+export function isHung(
+  tsMs: number,
+  nowMs: number = Date.now(),
+): boolean {
+  return Math.max(0, (nowMs - tsMs) / 1000) >= HUNG_AFTER_S;
+}
+
 const MINUTE = 60;
 const HOUR = 3600;
 const DAY = 86400;
@@ -37,10 +54,12 @@ const YEAR = 365 * DAY;
  * @param nowMs     current time in ms (injectable for tests)
  */
 export function formatLastActivity(
-  tsSeconds: number,
+  tsMs: number,
   nowMs: number = Date.now(),
 ): ActivityLabel {
-  const ageS = Math.max(0, nowMs / 1000 - tsSeconds);
+  // Both arguments are epoch ms — the run record's unit (schema 2) and
+  // what useTaskRunStream converts wire seconds to.
+  const ageS = Math.max(0, (nowMs - tsMs) / 1000);
   const stale = ageS >= STALE_AFTER_S;
   if (ageS < 10) return { label: 'active now', stale };
   if (ageS < MINUTE) return { label: `${Math.round(ageS)}s ago`, stale };

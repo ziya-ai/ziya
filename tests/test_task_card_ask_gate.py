@@ -287,17 +287,23 @@ def test_a_waiting_run_reconciles_to_held_not_failed(storage, run):
     )
 
 
-def test_a_paused_run_still_reconciles_to_failed(storage):
+def test_a_paused_run_reconciles_on_the_restart_branch(storage):
     """Negative control.
 
     Without this, a change that simply stopped reconciling anything would
-    satisfy the test above.  Pause keeps its old behaviour deliberately: a
-    paused run's executor really did die with the server.
+    satisfy the test above.  A paused run's executor really did die with
+    the server, so it IS reconciled -- but on the restart branch, not the
+    Ask branch: both now land on "held" (a restart is an infrastructure
+    fault, not a verdict on the work), and the two are told apart by
+    ``held_reason`` and by the absence of a pending question.
     """
     run = storage.create(TaskRunCreate(card_id="card-1"))
     storage.update_status(run.id, "paused")
     assert storage.reconcile_stale_runs() == 1
-    assert storage.get(run.id).status == "failed"
+    swept = storage.get(run.id)
+    assert swept.status == "held"
+    assert swept.held_reason == "server_restart"
+    assert not swept.pending_ask
 
 
 def test_reconcile_is_idempotent_for_a_waiting_run(storage, run):

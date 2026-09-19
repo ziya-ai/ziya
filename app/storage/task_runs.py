@@ -7,17 +7,24 @@ artifacts across reloads.
 """
 
 import json
+import os
 import time
 import uuid
 import logging
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
+try:
+    import fcntl
+except ImportError:  # Windows: no flock; liveness falls back to the
+    fcntl = None       # process-local registry alone.
+
 from .base import BaseStorage, contained_path
 from ..models.task_run import (
     TaskRun, TaskRunCreate, TaskRunBlockState, IterationSummary, ProgressNote,
     TERMINAL_RUN_STATUSES,
 )
+from ..utils.run_time import normalize_artifact, normalize_run_record
 
 # Cap on the retained progress trail.  Bounded because a long campaign
 # emits a note per tool call: the trail is a readable narrative, not an
@@ -25,6 +32,7 @@ from ..models.task_run import (
 # full on every heartbeat) without bound.  Oldest entries are evicted.
 PROGRESS_NOTE_CAP = 200
 from ..models.task_card import Artifact
+from ..utils.run_time import normalize_artifact, normalize_run_record, now_ms
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +57,13 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         # set the flag, the loop will honor it" and "zombie run from a
         # prior server lifetime — force-cancel directly".
         self._active_runs: set[str] = set()
+        # Open fds of the per-run advisory locks THIS instance holds
+        # (see mark_active).  The lock, not the set above, is what a
+        # sibling server process consults before reconciling a run.
+        self._run_locks: Dict[str, int] = {}
+        # Runs we have already warned about being terminal on disk while
+        # their executor is still live here (status flipped externally).
+        self._desync_warned: set[str] = set()
         # Per-run wall-clock of the last heartbeat WRITE, for the
         # record_activity throttle.  Process-local by design.
         self._last_activity_write: Dict[str, float] = {}
@@ -91,7 +106,10 @@ class TaskRunStorage(BaseStorage[TaskRun]):
     def get(self, run_id: str) -> Optional[TaskRun]:
         data = self._read_json(self._run_file(run_id))
         if data:
-            return TaskRun(**data)
+            # Records written before 2026-09 carry executor-side timestamps
+            # in seconds; upgrade to ms in memory.  Lazy on purpose — see
+            # app/utils/run_time.py for why there is no mass rewrite.
+            return TaskRun(**normalize_run_record(data))
         return None
 
     def read_run_file(self, path: str) -> Optional[Dict[str, Any]]:
@@ -133,7 +151,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
                 data = self._read_json(run_file)
                 if data:
                     try:
-                        run = TaskRun(**data)
+                        run = TaskRun(**normalize_run_record(data))
                     except (ValueError, TypeError) as e:
                         logger.warning(f"Skipping corrupt task run {run_file}: {e}")
                         continue
@@ -144,7 +162,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
 
     def create(self, data: TaskRunCreate) -> TaskRun:
         run_id = str(uuid.uuid4())
-        now = int(time.time() * 1000)
+        now = now_ms()
         run = TaskRun(
             id=run_id,
             card_id=data.card_id,
@@ -207,7 +225,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
             return None
         run.status = status  # type: ignore[assignment]
         if status == "running" and run.started_at is None:
-            run.started_at = time.time()
+            run.started_at = now_ms()
         # Terminal statuses stamp completed_at, which drives the tile's
         # runtime display and stops record_activity from letting
         # heartbeats through.  Uses the shared set rather than an inline
@@ -215,10 +233,10 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         # endpoint guards disagreed with it, and two lists that must
         # agree are what let that drift go unnoticed.
         if status in TERMINAL_RUN_STATUSES:
-            run.completed_at = time.time()
+            run.completed_at = now_ms()
         if error:
             run.error = error
-        run.updated_at = int(time.time() * 1000)
+        run.updated_at = now_ms()
         self._write_json(self._run_file(run_id), run.model_dump())
         # The sidebar's project-wide status index memoises on the run
         # DIRECTORY's mtime, and rewriting a file's contents does not
@@ -264,12 +282,20 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         if not run:
             return None
         if run.status not in ("queued", "running"):
-            # Never resurrect activity on a terminal run.
+            # Never resurrect activity on a terminal run.  If THIS process
+            # still has a live executor for it, something else flipped the
+            # status underneath us; say so once rather than going blind.
+            if run_id in self._active_runs and run_id not in self._desync_warned:
+                self._desync_warned.add(run_id)
+                logger.warning(
+                    f"Run {run_id[:8]} is '{run.status}' on disk but its "
+                    f"executor is live in this process; heartbeats dropped"
+                )
             return None
         if note is not None and note == run.progress_note \
                 and (now - last) < min_interval_s:
             return None
-        run.last_activity_at = now
+        run.last_activity_at = int(now * 1000)
         if note is not None:
             run.progress_note = note
             # Append to the durable trail, skipping an exact consecutive
@@ -278,7 +304,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
             # phase notes that give the trail its value.
             if not run.progress_notes or run.progress_notes[-1].note != note:
                 run.progress_notes.append(
-                    ProgressNote(note=note, at=now, source=source)
+                    ProgressNote(note=note, at=int(now * 1000), source=source)
                 )
                 if len(run.progress_notes) > PROGRESS_NOTE_CAP:
                     del run.progress_notes[:-PROGRESS_NOTE_CAP]
@@ -295,7 +321,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         if not run:
             return None
         run.artifact = artifact
-        run.updated_at = int(time.time() * 1000)
+        run.updated_at = now_ms()
         self._write_json(self._run_file(run_id), run.model_dump())
         return run
 
@@ -306,7 +332,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         if not run:
             return None
         run.block_states[state.block_id] = state
-        run.updated_at = int(time.time() * 1000)
+        run.updated_at = now_ms()
         self._write_json(self._run_file(run_id), run.model_dump())
         return run
 
@@ -332,7 +358,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         if state is None:
             return
         state.status = status  # type: ignore[assignment]
-        now = time.time()
+        now = now_ms()
         if status == "running" and state.started_at is None:
             state.started_at = now
         elif status in ("done", "failed", "cancelled", "skipped", "held"):
@@ -371,7 +397,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
             return
         state.planned_iterations = planned
         run.block_states[block_id] = state
-        run.updated_at = int(time.time() * 1000)
+        run.updated_at = now_ms()
         self._write_json(self._run_file(run_id), run.model_dump())
 
     def set_permissions_snapshot(
@@ -387,7 +413,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         if not run:
             return None
         run.permissions_snapshot = snapshot
-        run.updated_at = int(time.time() * 1000)
+        run.updated_at = now_ms()
         self._write_json(self._run_file(run_id), run.model_dump())
         return run
 
@@ -402,7 +428,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         if not run:
             return None
         run.card_snapshot = snapshot
-        run.updated_at = int(time.time() * 1000)
+        run.updated_at = now_ms()
         self._write_json(self._run_file(run_id), run.model_dump())
         return run
 
@@ -449,7 +475,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
                     dirty = True
         if not dirty:
             return run
-        run.updated_at = int(time.time() * 1000)
+        run.updated_at = now_ms()
         self._write_json(self._run_file(run_id), run.model_dump())
         return run
 
@@ -469,7 +495,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         if not run:
             return None
         run.cancel_requested = True
-        run.updated_at = int(time.time() * 1000)
+        run.updated_at = now_ms()
         self._write_json(self._run_file(run_id), run.model_dump())
         return run
 
@@ -506,8 +532,8 @@ class TaskRunStorage(BaseStorage[TaskRun]):
             run.held_gate_reason = gate_reason
         if error:
             run.error = error
-        run.completed_at = time.time()
-        run.updated_at = int(time.time() * 1000)
+        run.completed_at = now_ms()
+        run.updated_at = now_ms()
         self._write_json(self._run_file(run_id), run.model_dump())
         # Same reason as update_status: a hold is the single most important
         # transition for the sidebar to reflect promptly, and it rewrites a
@@ -520,6 +546,45 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         self._touch_source_conversation(run)
         return run
 
+    def mark_aborted(
+        self, run_id: str, error: Optional[str] = None,
+    ) -> Optional[TaskRun]:
+        """Record a force-stop: the user interrupted a run whose executor
+        was inside a block and not coming back to a boundary.
+
+        Written as ``held`` with reason ``user_abort`` rather than
+        ``cancelled`` because the point of a force-stop is to restart in
+        place: ``held`` + ``held_at_block_id`` is exactly the record the
+        recovery banner turns into "resume from here", so the interrupted
+        block is redone and every completed block is replayed from disk.
+        ``cancel_requested`` is set too, so an executor that outlives
+        this write (a sibling process, or a coroutine that has not
+        unwound yet) still stops at its next boundary instead of running
+        on and later overwriting the hold with its own verdict.
+
+        A no-op on a run that is already terminal: the coroutine's own
+        CancelledError handler and the cancel endpoint both call this,
+        and whichever arrives second must not clobber the first.
+        """
+        run = self.get(run_id)
+        if not run:
+            return None
+        if run.status in TERMINAL_RUN_STATUSES:
+            return run
+        block_id = (
+            self._innermost_running_block(run) or run.held_at_block_id or ""
+        )
+        run.cancel_requested = True
+        run.updated_at = now_ms()
+        self._write_json(self._run_file(run_id), run.model_dump())
+        return self.mark_held(
+            run_id, reason="user_abort", block_id=block_id,
+            error=error or (
+                "Force-stopped by the user while a block was in flight; "
+                "the interrupted block will be redone on resume."
+            ),
+        )
+
     def request_pause(self, run_id: str) -> Optional[TaskRun]:
         """Set the soft-pause flag on a run.  Status is NOT flipped to
         "paused" here — the executor does that when it actually reaches
@@ -529,7 +594,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         if not run:
             return None
         run.pause_requested = True
-        run.updated_at = int(time.time() * 1000)
+        run.updated_at = now_ms()
         self._write_json(self._run_file(run_id), run.model_dump())
         return run
 
@@ -544,7 +609,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         # completion", so a leftover budget must not survive to let a
         # later re-pause silently slip a boundary.
         run.step_budget = 0
-        run.updated_at = int(time.time() * 1000)
+        run.updated_at = now_ms()
         self._write_json(self._run_file(run_id), run.model_dump())
         return run
 
@@ -568,7 +633,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
             return None
         run.pause_requested = True
         run.step_budget = max(0, run.step_budget) + max(1, int(count))
-        run.updated_at = int(time.time() * 1000)
+        run.updated_at = now_ms()
         self._write_json(self._run_file(run_id), run.model_dump())
         return run
 
@@ -589,7 +654,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         if not run or run.step_budget <= 0:
             return False
         run.step_budget = run.step_budget - 1
-        run.updated_at = int(time.time() * 1000)
+        run.updated_at = now_ms()
         self._write_json(self._run_file(run_id), run.model_dump())
         return True
 
@@ -621,10 +686,10 @@ class TaskRunStorage(BaseStorage[TaskRun]):
             "block_id": block_id,
             "question": question,
             "choices": list(choices or []),
-            "opened_at": time.time(),
+            "opened_at": now_ms(),
         }
         run.status = "awaiting_input"  # type: ignore[assignment]
-        run.updated_at = int(time.time() * 1000)
+        run.updated_at = now_ms()
         self._write_json(self._run_file(run_id), run.model_dump())
         self._invalidate_status_index()
         self._touch_source_conversation(run)
@@ -644,7 +709,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         run.pending_ask = None
         if run.status == "awaiting_input":
             run.status = "running"  # type: ignore[assignment]
-        run.updated_at = int(time.time() * 1000)
+        run.updated_at = now_ms()
         self._write_json(self._run_file(run_id), run.model_dump())
         self._invalidate_status_index()
         self._touch_source_conversation(run)
@@ -672,48 +737,128 @@ class TaskRunStorage(BaseStorage[TaskRun]):
             "decision": decision,
             "answer": answer,
             "answered_by": answered_by,
-            "answered_at": time.time(),
+            "answered_at": now_ms(),
         }
         run.ask_answers = answers
-        run.updated_at = int(time.time() * 1000)
+        run.updated_at = now_ms()
         self._write_json(self._run_file(run_id), run.model_dump())
         self._invalidate_status_index()
         return run
 
-    # ---- live-run registry (process-local, not persisted) ----------
+    # ---- live-run registry -----------------------------------------
+    #
+    # Two layers.  ``_active_runs`` is process-local and answers "is the
+    # executor coroutine in THIS process" (the cancel endpoint's
+    # question).  The advisory flock answers the question the startup
+    # reconciler needs, "does ANY live process own this run": several
+    # ziya servers can share one ~/.ziya, and a freshly started one used
+    # to sweep a sibling's healthy in-flight run to "failed" on the
+    # theory that a live row must be a zombie (run d2c18548, 2026-09-16).
+    # The kernel drops a flock when its holder dies, so a crashed
+    # owner's lock is simply not held and the row reconciles as before.
+
+    def _lock_file(self, run_id: str) -> Path:
+        return contained_path(self.runs_dir, f"{run_id}.lock")
 
     def mark_active(self, run_id: str) -> None:
         """Record that ``run_id``'s executor coroutine is alive in this
-        process.  Called from the start of ``_run`` in the launch path."""
+        process and take its cross-process executor lock.  Called from
+        the start of ``_run`` in the launch path."""
         self._active_runs.add(run_id)
+        if fcntl is None or run_id in self._run_locks:
+            return
+        fd = None
+        try:
+            self.runs_dir.mkdir(parents=True, exist_ok=True)
+            fd = os.open(
+                str(self._lock_file(run_id)), os.O_RDWR | os.O_CREAT, 0o600
+            )
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self._run_locks[run_id] = fd
+        except OSError as e:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            logger.warning(
+                f"Could not take executor lock for run {run_id[:8]}: {e}"
+            )
 
     def mark_inactive(self, run_id: str) -> None:
-        """Drop ``run_id`` from the live-run set.  Called from the
-        ``finally`` block of ``_run`` so the entry is removed even if
-        the executor errors out."""
+        """Drop ``run_id`` from the live-run set and release its lock.
+        Called from the ``finally`` block of ``_run`` so the entry is
+        removed even if the executor errors out."""
         self._active_runs.discard(run_id)
+        fd = self._run_locks.pop(run_id, None)
+        if fd is None:
+            return
+        try:
+            os.close(fd)  # closing the descriptor releases the flock
+        except OSError:
+            pass
+        try:
+            self._lock_file(run_id).unlink()
+        except OSError:
+            pass
 
     def is_active(self, run_id: str) -> bool:
         """Return True iff ``run_id``'s executor is currently running
         in this process."""
         return run_id in self._active_runs
 
+    def executor_alive(self, run_id: str) -> bool:
+        """Return True iff some live process, this one or a sibling,
+        holds ``run_id``'s executor lock.
+
+        False when there is no lock file, when the file exists but nobody
+        holds it (the owner exited or crashed), and on platforms without
+        flock, where it degrades to the process-local set.  The probe
+        opens its own descriptor: flock locks are per open-file-
+        description, so this conflicts with a holder even in-process.
+        """
+        if run_id in self._run_locks:
+            return True
+        if fcntl is None:
+            return run_id in self._active_runs
+        try:
+            fd = os.open(str(self._lock_file(run_id)), os.O_RDONLY)
+        except OSError:
+            return False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        finally:
+            os.close(fd)  # releases the probe lock if we got it
+        return False
+
     # ---- startup reconciliation -----------------------------------
 
     def reconcile_stale_runs(self) -> int:
-        """Sweep on-disk runs and reconcile any row left live by a prior
-        server lifetime, which by definition has no executor behind it.
-        "running" / "queued" / "paused" become "failed"; a run holding at an
-        Ask becomes "held" instead, for the reason given below.  Idempotent.
+        """Sweep on-disk runs and reconcile any live row that no running
+        process owns (see ``executor_alive``): a row left behind by a
+        server lifetime that ended has no executor behind it.
+        Every such row becomes "held": a restart is an infrastructure
+        fault, not a verdict on the work, and "held" is the status the
+        recovery banner and resume-from-block flow are built around.
+        Idempotent.
         Safe to call at startup before any new runs are launched.
 
         Returns the count of runs reconciled.
         """
         reconciled = 0
-        now_ms = int(time.time() * 1000)
+        _now = now_ms()
         for run in self.list():
             if run.status not in ("running", "queued", "paused",
                                   "awaiting_input"):
+                continue
+            if self.executor_alive(run.id):
+                # A live process owns this run: this server is a sibling
+                # sharing ~/.ziya, not the successor of a dead one.
+                logger.info(
+                    f"Run {run.id[:8]} has a live executor elsewhere; not reconciling"
+                )
                 continue
             if run.status == "awaiting_input":
                 # A run waiting on a human is not a crashed run.  An Ask can
@@ -739,19 +884,47 @@ class TaskRunStorage(BaseStorage[TaskRun]):
                     "resume from the block it names."
                 )
             else:
-                run.status = "failed"  # type: ignore[assignment]
+                # Same shape as mark_held: the recovery banner keys on
+                # status == "held" plus held_at_block_id.  Reconciling to
+                # "failed" left block_states at running/queued, so
+                # firstFailedBlock found nothing and the only visible
+                # control was Restart, which discards every banked block.
+                run.status = "held"  # type: ignore[assignment]
+                run.held_reason = "server_restart"
+                run.held_at_block_id = (
+                    self._innermost_running_block(run) or run.held_at_block_id
+                )
                 run.error = (
                     "Run did not survive a server restart.  The executor "
                     "was terminated mid-flight; this record was "
-                    "reconciled at the next server start."
+                    "reconciled at the next server start.  Completed "
+                    "blocks and banked iterations are kept; resume from "
+                    "the block it stopped in."
                 )
             run.cancel_requested = False
+            run.pause_requested = False
             if run.completed_at is None:
-                run.completed_at = time.time()
-            run.updated_at = now_ms
+                run.completed_at = _now
+            run.updated_at = _now
             self._write_json(self._run_file(run.id), run.model_dump())
             reconciled += 1
         return reconciled
+
+    @staticmethod
+    def _innermost_running_block(run: TaskRun) -> Optional[str]:
+        """The block the executor was inside when it died: the running
+        block with the LATEST started_at.  A group and the leaf it is
+        executing are both "running"; the leaf started later, and it is
+        the leaf a resume should target so the banner can name where
+        a mid-loop resume lands."""
+        best_id, best_t = None, -1.0
+        for bid, st in (run.block_states or {}).items():
+            if st.status != "running":
+                continue
+            t = st.started_at or 0.0
+            if t >= best_t:
+                best_id, best_t = bid, t
+        return best_id
 
     def append_iteration_summary(
         self, run_id: str, block_id: str, summary: IterationSummary,
@@ -766,7 +939,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
             return
         state.iteration_summaries.append(summary)
         run.block_states[block_id] = state
-        run.updated_at = int(time.time() * 1000)
+        run.updated_at = now_ms()
         self._write_json(self._run_file(run_id), run.model_dump())
 
     def seed_replayed_iterations(
@@ -830,7 +1003,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         merged.sort(key=lambda s: s.index)
         state.iteration_summaries = merged
         run.block_states[block_id] = state
-        run.updated_at = int(time.time() * 1000)
+        run.updated_at = now_ms()
         self._write_json(self._run_file(run_id), run.model_dump())
 
     def write_iteration_artifact(
@@ -857,7 +1030,7 @@ class TaskRunStorage(BaseStorage[TaskRun]):
             data = self._read_json(path)
             if data is None:
                 return None
-            return Artifact(**data)
+            return Artifact(**normalize_artifact(data))
         except (TypeError, ValueError) as e:
             logger.warning(f"Could not read iteration artifact {path}: {e}")
             return None
@@ -880,4 +1053,8 @@ class TaskRunStorage(BaseStorage[TaskRun]):
         if not run_file.exists():
             return False
         run_file.unlink()
+        try:
+            self._lock_file(run_id).unlink()
+        except OSError:
+            pass
         return True
