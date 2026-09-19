@@ -1,0 +1,90 @@
+{
+ "type": "joint",
+ "definition": {
+  "type": "joint",
+  "layout": {
+   "type": "force",
+   "options": {
+    "iterations": 50,
+    "linkDistance": 140
+   }
+  },
+  "snapToGrid": true,
+  "interactive": false,
+  "grid": true,
+  "elements": {
+   "svc": {
+    "type": "rect",
+    "label": "service",
+    "group": "backend",
+    "category": "compute",
+    "icon": "gear",
+    "size": {
+     "width": 140,
+     "height": 70
+    }
+   },
+   "db": {
+    "type": "cylinder",
+    "label": "database",
+    "group": "backend",
+    "category": "storage",
+    "size": {
+     "width": 140,
+     "height": 90
+    }
+   },
+   "ui": {
+    "type": "rect",
+    "label": "frontend",
+    "group": "edge",
+    "category": "compute",
+    "size": {
+     "width": 140,
+     "height": 70
+    }
+   },
+   "cache": {
+    "type": "hexagon",
+    "label": "cache",
+    "group": "backend",
+    "size": {
+     "width": 140,
+     "height": 80
+    }
+   },
+   "q": {
+    "type": "rect",
+    "label": "queue",
+    "group": "async",
+    "size": {
+     "width": 140,
+     "height": 70
+    }
+   }
+  },
+  "connections": [
+   {
+    "source": "ui",
+    "target": "svc",
+    "label": "http"
+   },
+   {
+    "source": "svc",
+    "target": "db",
+    "label": "sql"
+   },
+   {
+    "source": "svc",
+    "target": "cache",
+    "label": "get"
+   },
+   {
+    "source": "svc",
+    "target": "q",
+    "label": "publish"
+   }
+  ]
+ },
+ "intent": "Less-travelled dialects combined: id-keyed elements object, layout.type 'force' with options, snapToGrid, interactive:false, and group/category/icon element fields."
+}

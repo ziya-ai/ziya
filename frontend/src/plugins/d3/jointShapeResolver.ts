@@ -125,6 +125,33 @@ export function extractJointElementLabel(cell: any): string | undefined {
     );
 }
 
+// D-419: JointJS v1/v2 dialect selectors for an element's BODY styling. In the
+// deprecated dialect a `basic.Rect`/`basic.Circle`/... cell carried its fill,
+// stroke, etc. under a geometry-named selector (`attrs.rect`, `attrs.circle`,
+// `attrs.ellipse`, `attrs.path`, `attrs.polygon`, or the jQuery-style
+// `attrs['.body']`) rather than the v3 `attrs.body`. The downstream style
+// reader (computeJointElementStyle) inspects ONLY `attrs.body`, so a v1 spec's
+// `attrs.rect.fill` (#3498db) was structurally preserved but its colour intent
+// silently dropped. Canonical `body` first so an explicit v3 body always wins.
+const JOINT_V1_BODY_SELECTORS = ['rect', 'circle', 'ellipse', 'path', 'polygon', '.body'];
+
+/**
+ * Lift a JointJS v1/v2 element's geometry-selector body attrs (`attrs.rect.*`,
+ * `attrs.circle.*`, ...) into a v3 `body` attrs object so the plugin's style
+ * reader picks up the author's fill/stroke intent (D-419). Returns the merged
+ * body object, or undefined when a v3 `attrs.body` is already present or no v1
+ * selector carries styling. Non-mutating.
+ */
+export function liftJointV1BodyAttrs(attrs: any): Record<string, any> | undefined {
+    if (!attrs || typeof attrs !== 'object') return undefined;
+    if (attrs.body && typeof attrs.body === 'object') return undefined; // v3 body already present
+    for (const sel of JOINT_V1_BODY_SELECTORS) {
+        const v = attrs[sel];
+        if (v && typeof v === 'object') return { ...v };
+    }
+    return undefined;
+}
+
 /**
  * Normalize a single element cell: resolve its shape type and lift its label
  * text out of `attrs` when no plain `text`/`label` is already present.
@@ -136,6 +163,12 @@ export function normalizeJointElement(cell: any): any {
     if (out.text == null && out.label == null) {
         const lbl = extractJointElementLabel(cell);
         if (lbl != null) out.label = lbl;
+    }
+    // D-419: recover the v1/v2 dialect's body styling (attrs.rect.fill etc.) by
+    // lifting it onto attrs.body, the only selector the style reader consults.
+    const liftedBody = liftJointV1BodyAttrs(cell.attrs);
+    if (liftedBody) {
+        out.attrs = { ...(cell.attrs || {}), body: liftedBody };
     }
     return out;
 }

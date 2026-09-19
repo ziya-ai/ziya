@@ -117,3 +117,54 @@ describe('G-159927 / D-132 — author element attrs are merged and colour-normal
         expect(computeJointElementStyle({ id: 'plain' }, opts('dark', '#4c566a'))).toBeNull();
     });
 });
+
+/**
+ * D-132 residual (joint-w4-13 dark): a transparent-fill node's STROKE is its
+ * only visible boundary, yet an author stroke was honoured verbatim with no
+ * contrast reconciliation. `{fill:transparent, stroke:black}` reads on the light
+ * page (black on white = 21:1) but vanishes on the dark page (black on #1e1e1e
+ * ~= 1.26:1) — the whole node disappears in dark. The fix reconciles the stroke
+ * to the 3:1 graphical floor against the page ONLY when the fill is transparent,
+ * so opaque-fill nodes keep their author stroke unchanged.
+ */
+describe('D-132: transparent-fill node stroke stays legible on the page in BOTH themes', () => {
+    const opts = (theme: 'light' | 'dark', pageBg: string) => ({
+        theme, defaultBodyFill: theme === 'dark' ? '#4c566a' : '#ffffff', pageBg,
+        depth: 0, isContainer: false,
+    });
+
+    it('reconciles a black stroke on a transparent fill against the dark page (was invisible)', () => {
+        const patch = computeJointElementStyle(
+            { id: 'mid', attrs: { body: { fill: 'transparent', stroke: 'black' } } },
+            opts('dark', '#1e1e1e'),
+        );
+        expect(patch).not.toBeNull();
+        const stroke = patch!.body!.stroke as string;
+        // The whole point: the node's only boundary must clear the 3:1 graphical
+        // floor on the dark page. Verbatim '#000000' gives ~1.26:1 and would fail.
+        expect(jointContrastRatio(stroke, '#1e1e1e')).toBeGreaterThanOrEqual(3);
+        expect(stroke.toLowerCase()).not.toBe('#000000');
+    });
+
+    it('leaves the same black stroke untouched on the light page (already 21:1)', () => {
+        const patch = computeJointElementStyle(
+            { id: 'mid', attrs: { body: { fill: 'transparent', stroke: 'black' } } },
+            opts('light', '#ffffff'),
+        );
+        expect(patch).not.toBeNull();
+        // Black on white already clears the floor, so it is passed through verbatim.
+        expect((patch!.body!.stroke as string).toLowerCase()).toBe('#000000');
+        expect(jointContrastRatio(patch!.body!.stroke as string, '#ffffff')).toBeGreaterThanOrEqual(3);
+    });
+
+    it('does NOT touch an author stroke on an OPAQUE fill, even a dark-on-dark one (w1-13)', () => {
+        // #7f0000 on the dark page is only 1.51:1, but the OPAQUE #b71c1c fill
+        // makes the node visible, so the author stroke must be preserved verbatim.
+        const patch = computeJointElementStyle(
+            { id: 'hot', attrs: { body: { fill: '#b71c1c', stroke: '#7f0000' } } },
+            opts('dark', '#1e1e1e'),
+        );
+        expect(patch).not.toBeNull();
+        expect((patch!.body!.stroke as string).toLowerCase()).toBe('#7f0000');
+    });
+});
