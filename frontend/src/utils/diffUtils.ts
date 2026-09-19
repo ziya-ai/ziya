@@ -548,3 +548,91 @@ export function findSupersededDiffParts(
 
     return result;
 }
+
+// -- Server-declared diff rejection ------------------------------------------
+//
+// When post-stream validation refuses a diff, the server asks the model for a
+// correction and tells the frontend WHICH fence it refused, identified by a
+// content hash of the fence body. The frontend records that in the message
+// as an HTML-comment marker (the same channel as ZIYA_CONTINUATION_INCOMPLETE:
+// invisible, persisted with the message, survives reload) and the renderer
+// marks the matching diff superseded by declaration. findSupersededDiffIndices
+// above stays as the fallback for corrections the model volunteers on its own;
+// it is a heuristic and misses a correction that merges hunks or re-anchors.
+
+/** Mirror of app/utils/diff_validation_hook.py diff_body_hash(). Both sides
+ *  fold CRLF, trim, then FNV-1a 32-bit over UTF-16 code units. Change one
+ *  only with the other; the shared golden vector lives in both test suites. */
+export function diffBodyHash(body: string): string {
+    const text = body.replace(/\r\n/g, '\n').trim();
+    let h = 0x811c9dc5;
+    for (let i = 0; i < text.length; i++) {
+        h ^= text.charCodeAt(i);
+        h = Math.imul(h, 0x01000193);
+    }
+    return (h >>> 0).toString(16).padStart(8, '0');
+}
+
+const DIFF_REJECTED_MARKER_RE = /<!--\s*ZIYA_DIFF_REJECTED\s+hash=([0-9a-f]{8})(?:\s+file=(\S*))?\s*-->/g;
+
+export function diffRejectedMarker(hash: string, filePath?: string): string {
+    const file = (filePath || '').replace(/[\s>-]/g, '_');
+    return `<!-- ZIYA_DIFF_REJECTED hash=${hash}${file ? ` file=${file}` : ''} -->`;
+}
+
+/** Every hash the server has declared rejected anywhere in this message. */
+export function extractRejectedDiffHashes(markdown: string): Set<string> {
+    const out = new Set<string>();
+    for (const m of markdown.matchAll(DIFF_REJECTED_MARKER_RE)) out.add(m[1]);
+    return out;
+}
+
+/**
+ * Indices (into diffTexts) of diff fences the server declared rejected.
+ * diffTexts must be the RAW token bodies, before header synthesis or
+ * continuation chaining rewrite them -- the server hashed what the model
+ * emitted, not the renderer's repaired form.
+ */
+export function findRejectedDiffIndices(messageText: string, diffTexts: string[]): Set<number> {
+    const rejected = extractRejectedDiffHashes(messageText);
+    const out = new Set<number>();
+    if (rejected.size === 0) return out;
+    diffTexts.forEach((text, i) => {
+        if (rejected.has(diffBodyHash(text))) out.add(i);
+    });
+    return out;
+}
+
+export interface RejectedDiffRecord {
+    file_path?: string;
+    body_hash?: string;
+    reason?: string;
+}
+
+/**
+ * Content appended to the message when the server reports validation_retry:
+ * a marker per rejected fence (for the renderer) and a visible notice (for
+ * the reader) explaining the pause before the correction arrives, then the
+ * server's own separator. Frontend-only text; the model never receives it as
+ * an instruction -- it sees it only as prior-turn history, like every other
+ * notice in the transcript.
+ */
+export function buildDiffRejectionNotice(rejected: RejectedDiffRecord[], separator?: string): string {
+    const markers = rejected
+        .filter(r => r.body_hash)
+        .map(r => diffRejectedMarker(String(r.body_hash), r.file_path));
+    const lines = rejected.map(r => {
+        const file = r.file_path ? ` for \`${r.file_path}\`` : '';
+        const reason = (r.reason || '').replace(/\s+/g, ' ').trim();
+        return `> ⟳ **Patch${file} did not apply cleanly**${reason ? ` — ${reason}` : ''}. ` +
+            'Asked the model for a corrected version; the rejected patch above is disabled.';
+    });
+    const notice = lines.length > 0
+        ? lines.join('\n>\n')
+        : '> ⟳ **A patch did not apply cleanly.** Asked the model for a corrected version.';
+    const parts = ['\n\n'];
+    if (markers.length > 0) parts.push(markers.join('\n'), '\n\n');
+    parts.push(notice, '\n');
+    parts.push(separator ?? '\n\n---\n\n**Correcting failed diff(s):**\n\n');
+    return parts.join('');
+}
