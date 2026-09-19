@@ -75,15 +75,24 @@ def test_current_time_does_not_change_cache_controlled_system_prompt():
         '<CurrentDateTime value="2026-01-02 03:04:06" />'
     )
 
+    # Shadow sessions attached to this machine also ride on the user
+    # message; pin them empty so the test does not depend on whether a
+    # `ziya shadow` terminal happens to be open.
     with mock.patch(
         "app.utils.session_context_prompt.build_session_context_section",
         side_effect=[first_block, second_block],
+    ), mock.patch(
+        "app.shadow.context.attached_sessions_tag", return_value="",
     ):
         first = _build([])
         second = _build([])
 
     assert first[0]["content"] == second[0]["content"]
-    assert "<CurrentDateTime" not in first[0]["content"]
+    # A live TIMESTAMP must not be in the cached prefix.  The tag NAME may
+    # be: the Message Timing paragraph tells the model to "combine these
+    # with <CurrentDateTime>", and that paragraph is deliberately in the
+    # (stable) system block on every turn.
+    assert "<CurrentDateTime value=" not in first[0]["content"]
     assert first[-1]["content"] == '<CurrentDateTime value="2026-01-02 03:04:05" />\ncurrent question'
     assert second[-1]["content"] == '<CurrentDateTime value="2026-01-02 03:04:06" />\ncurrent question'
 
