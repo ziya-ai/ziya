@@ -435,6 +435,12 @@ class BedrockProvider(LLMProvider):
 
         System prompt uses 1 block.  We place 1 block at a conversation
         boundary, leaving 2 blocks as headroom.
+
+        Applied on EVERY call, including iteration 0.  Iteration 0 is the
+        first call of each user turn, not the first turn of the
+        conversation; skipping it meant replayed history was never
+        cache-read at the start of a turn, and on tool-less turns never
+        cache-written either (see design/tool-result-aging.md).
         """
         # Diagnostic / mitigation toggle: when set, send no cache_control
         # blocks at all. Used to isolate whether prompt caching is what an
@@ -444,7 +450,7 @@ class BedrockProvider(LLMProvider):
             logger.info("🧪 PROMPT_CACHE: disabled via ZIYA_DISABLE_PROMPT_CACHE=1")
             return messages
 
-        if iteration == 0 or len(messages) < 6:
+        if len(messages) < 6:
             return messages
 
         messages = copy.deepcopy(messages)
