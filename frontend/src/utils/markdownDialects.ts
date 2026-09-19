@@ -29,6 +29,8 @@
  * pure, unit-testable string transform.
  */
 
+import { applyOutsideCodeSpans } from '../components/fenceScanner';
+
 function escapeHtml(s: string): string {
     return s
         .replace(/&/g, '&amp;')
@@ -98,10 +100,17 @@ export function convertFootnotes(segment: string): string {
     let body = segment.replace(defRe, '').replace(/\n{3,}/g, '\n\n');
 
     // Number references in order of first appearance, but only if defined.
+    // Reference detection runs OUTSIDE inline code spans, so a literal `[^id]`
+    // written in backticks stays verbatim.  This is done here (rather than by
+    // the caller splitting the whole segment on code spans) because a footnote
+    // DEFINITION body may itself end in an inline `code` span — splitting the
+    // segment first truncated the definition body and leaked that span as an
+    // orphan literal paragraph (D-328 w3-05).  Definitions were collected above
+    // from the full segment, so their bodies keep any trailing code.
     const order: string[] = [];
     const numberFor = new Map<string, number>();
     const refRe = /\[\^([^\]\s]+)\](?!:)/g;
-    body = body.replace(refRe, (whole, id: string) => {
+    const replaceRef = (whole: string, id: string): string => {
         if (!defs.has(id)) return whole; // orphan reference — leave as source
         let n = numberFor.get(id);
         if (n === undefined) {
@@ -110,7 +119,8 @@ export function convertFootnotes(segment: string): string {
             numberFor.set(id, n);
         }
         return `<sup class="footnote-ref"><a href="#fn-${escapeHtml(id)}" id="fnref-${escapeHtml(id)}">${n}</a></sup>`;
-    });
+    };
+    body = applyOutsideCodeSpans(body, seg => seg.replace(refRe, replaceRef));
 
     if (order.length === 0) return segment; // no reference resolved to a def
 
@@ -184,10 +194,40 @@ export function normalizeDetailsBlocks(segment: string): string {
     });
 }
 
-/** Apply all dialect transforms to one non-fence markdown segment. */
+/**
+ * Apply all dialect transforms to one non-fence markdown segment.
+ *
+ * The definition-list transform must NOT fire inside inline code spans (a
+ * literal `: definition` line written in code must survive verbatim), so it
+ * runs through `applyOutsideCodeSpans`.  The `<details>` and footnote
+ * transforms, by contrast, run on the FULL segment, because both constructs
+ * legitimately SPAN inline code:
+ *
+ *   - A `<details>` body commonly contains an inline `code` span
+ *     ("Hidden body paragraph with `code` inside."); splitting the segment on
+ *     code spans first tore the `<details>` open tag and `</details>` close tag
+ *     into different segments so `normalizeDetailsBlocks` matched neither and
+ *     the body escaped the widget as an ordinary paragraph (D-017 w3-06).
+ *   - A footnote definition body may end in an inline `code` span; splitting
+ *     first truncated that body and leaked the span as an orphan literal
+ *     (D-328 w3-05).
+ *
+ * Running them on the full segment is safe against the "literal construct
+ * written in code" case: a bare `<details>` mention in a code span has no
+ * matching `</details>` in that span, so the widget regex does not match it,
+ * and `convertFootnotes` skips references inside code spans itself.  Definition
+ * lists have no closing delimiter, so they still need the code-span guard.
+ *
+ * Callers therefore invoke this on the whole (fence-outside) segment and must
+ * NOT additionally wrap it in `applyOutsideCodeSpans`.
+ */
 export function convertMarkdownDialects(segment: string): string {
+    // <details> widgets may enclose inline code in their body, so normalise
+    // them on the full segment BEFORE any code-span split.
     let out = normalizeDetailsBlocks(segment);
+    // Definition lists have no closing delimiter and must not fire inside code.
+    out = applyOutsideCodeSpans(out, seg => convertDefinitionLists(seg));
+    // Footnotes run on the full segment (definition bodies may end in `code`).
     out = convertFootnotes(out);
-    out = convertDefinitionLists(out);
     return out;
 }

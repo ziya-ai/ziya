@@ -120,3 +120,42 @@ describe('D-017 combined dialect pass is fence-agnostic input->HTML', () => {
         expect(out).toContain('<details><summary>S</summary>');
     });
 });
+
+describe('D-017 regression: <details> body containing inline `code` (w3-06)', () => {
+    // The w3-06 spec body is "Hidden body paragraph with `code` inside." — the
+    // inline code span in the body is the trigger. convertMarkdownDialects must
+    // normalise the WHOLE <details>..</details> widget even though its body
+    // crosses an inline code span. The earlier pipeline ran normalizeDetailsBlocks
+    // *inside* applyOutsideCodeSpans, which split the segment at the backtick so
+    // the open tag and close tag landed in different segments and NEITHER matched
+    // — the body then escaped the widget and rendered as an ordinary paragraph.
+    const src =
+        '### Raw HTML surfaces\n\n' +
+        '<details>\n<summary>Click to expand details element</summary>\n\n' +
+        'Hidden body paragraph with `code` inside.\n\n' +
+        '</details>\n\n' +
+        'Trailing paragraph.\n';
+
+    it('keeps the code-bearing body INSIDE the collapsed widget', () => {
+        const out = convertMarkdownDialects(src);
+        // The whole widget must be one blank-line-free block...
+        expect(out).toContain('<details><summary>Click to expand details element</summary>');
+        expect(out).toContain('</details>');
+        // ...with the body (including the rendered inline code) enclosed by it,
+        // not leaked out as a sibling paragraph.
+        const block = out.slice(out.indexOf('<details'), out.indexOf('</details>') + '</details>'.length);
+        expect(block).toContain('<p>Hidden body paragraph with <code>code</code> inside.</p>');
+        // No raw backticks survive anywhere (the code span was rendered, not torn out).
+        expect(out).not.toContain('`code`');
+        // No interior blank line, so marked keeps it as a single html token.
+        expect(block).not.toMatch(/\n[ \t]*\n/);
+    });
+
+    it('still leaves a literal <details> written inside inline code untouched', () => {
+        // A bare `<details>` mention in prose code has no closing tag in the
+        // same span, so it must survive verbatim (no normalisation).
+        const out = convertMarkdownDialects('Use `<details>` to make a collapsible block.\n');
+        expect(out).toContain('`<details>`');
+        expect(out).not.toContain('<summary>');
+    });
+});
