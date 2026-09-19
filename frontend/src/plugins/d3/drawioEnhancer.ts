@@ -94,6 +94,60 @@ export function computeAlignedMarginLeft(params: {
     return params.currentMl + screenDx / accumScale + inset;
 }
 
+/**
+ * D-385 (gfx-sweep G-436a36) — rotation-style-string-breaks-svg-transform.
+ *
+ * A cell authored with `rotation=NN` is drawn by maxGraph inside a group whose
+ * transform carries a `rotate(θ, cx, cy)`. maxGraph ALREADY positions the label
+ * (foreignObject) correctly within that rotated frame using CSS margin-left /
+ * padding-top offsets. The foreignObject-positioning passes below, however,
+ * (a) convert those CSS offsets to SVG x/y additions and (b) clamp margin-left
+ * from the label's axis-aligned getBoundingClientRect. Both assume an
+ * UN-rotated frame: the axis-aligned client rect of a rotated div is wider/
+ * taller than the true label box, so the clamp over-corrects, and adding the
+ * offset to x/y then zeroing the CSS margins displaces the label along the
+ * rotated axes — mirroring/dropping it (drawio-w3-06, dark label -> 1.27).
+ *
+ * The remedy is to LEAVE maxGraph's native placement alone for a rotated cell:
+ * detect a real rotation in the label's ancestor transform chain and skip the
+ * reposition/clamp for that label. This pure string test is extracted so it can
+ * be unit-tested without a browser (transforms are read off ancestor nodes at
+ * runtime). A `rotate(0)` / `rotate(360)` (angle that is a multiple of 360) is
+ * NOT treated as a rotation — it is a no-op transform and the ordinary
+ * positioning must still run, so an unrotated cell is byte-for-byte unchanged.
+ */
+export function transformChainHasRotation(
+    transforms: Array<string | null | undefined>
+): boolean {
+    if (!Array.isArray(transforms)) return false;
+    const rotateRe = /rotate\(\s*(-?[\d.]+)/g;
+    for (const t of transforms) {
+        if (!t || typeof t !== 'string') continue;
+        let m: RegExpExecArray | null;
+        rotateRe.lastIndex = 0;
+        while ((m = rotateRe.exec(t)) !== null) {
+            const angle = parseFloat(m[1]);
+            if (Number.isFinite(angle) && angle % 360 !== 0) return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * DOM wrapper for {@link transformChainHasRotation}: collect the `transform`
+ * attributes on `el` and every ancestor up to (not including) the <svg> root
+ * and report whether any encodes a real rotation.
+ */
+export function elementHasRotatedAncestor(el: Element | null): boolean {
+    const transforms: Array<string | null> = [];
+    let p: Element | null = el;
+    while (p && p.tagName !== 'svg' && p.tagName !== 'SVG') {
+        transforms.push(p.getAttribute && p.getAttribute('transform'));
+        p = p.parentElement;
+    }
+    return transformChainHasRotation(transforms);
+}
+
 export class DrawIOEnhancer {
     /**
      * Fix ALL foreignObject positioning issues
@@ -137,6 +191,17 @@ export class DrawIOEnhancer {
             // Skip foreignObjects already force-positioned by
             // forceTextCellPositioning() above.
             if (foreignObj.getAttribute('data-force-positioned') === 'true') {
+                return;
+            }
+
+            // D-385: a rotated cell's label is already correctly placed by
+            // maxGraph inside the rotate()d group. The reposition/clamp below
+            // assume an axis-aligned frame (they read the label's axis-aligned
+            // client rect and add CSS offsets to SVG x/y), which mirrors/drops
+            // a rotated label. Leave maxGraph's native rotated placement intact.
+            if (elementHasRotatedAncestor(foreignObj)) {
+                foreignObj.setAttribute('data-enhanced', 'true');
+                foreignObj.setAttribute('data-force-positioned', 'true');
                 return;
             }
 
@@ -695,17 +760,54 @@ export class DrawIOEnhancer {
         });
     }
 
+    /**
+     * D-091: the pure size-decision for a rendered arrowhead marker.
+     *
+     * maxGraph draws a marker at `(endSize + strokeWidth)` model units. The drawio plugin
+     * pins `endSize = 3` on every edge on the assumption that fit() magnifies the view
+     * (~2x), landing the marker in a legible ~6-9px band. But a WIDE diagram (many nodes
+     * across, e.g. drawio-w2-11 / drawio-w2-15) is fit-scaled DOWN, so `3 * scale(<1)`
+     * collapses the arrowhead to sub-pixel — the "arrowheads dropped" regression. The
+     * previous normaliser only ever shrank OVER-sized markers, so a collapsed marker was
+     * left dropped.
+     *
+     * Returns the scale to apply about the marker centre:
+     *   - `> maxMarkerPx`  -> shrink (unchanged legacy behaviour),
+     *   - `< minMarkerPx`  -> GROW back to the floor (the fix; > 1),
+     *   - otherwise        -> exactly 1 (no-op): every marker already in the legible band
+     *     — i.e. the entire currently-correct corpus — is left untouched, so this cannot
+     *     regress a spec that already renders. A non-finite / zero measurement (getBBox on
+     *     an unlaid-out node) also yields 1. Geometry only, so theme-independent.
+     */
+    static computeMarkerNormalizationScale(
+        maxDim: number,
+        minMarkerPx: number,
+        maxMarkerPx: number
+    ): number {
+        if (!Number.isFinite(maxDim) || maxDim <= 0) return 1;
+        if (maxDim > maxMarkerPx) return maxMarkerPx / maxDim;
+        if (maxDim < minMarkerPx) return minMarkerPx / maxDim;
+        return 1;
+    }
+
     /*
      * MaxGraph draws markers as inline SVG paths whose size is
      * (endSize + strokeWidth). After fit() scales the view, markers
-     * can appear disproportionately large. This post-processes the
-     * SVG to cap marker paths at a reasonable pixel size.
+     * can appear disproportionately large OR (on a fit-downscaled wide
+     * diagram) collapse to sub-pixel. This post-processes the SVG to
+     * keep marker paths inside a legible [minMarkerPx, maxMarkerPx] band:
+     * oversized markers are shrunk and collapsed ones are grown back
+     * (D-091). Markers already in-band are left byte-for-byte unchanged.
      *
      * Markers are identified as small filled path elements that are
      * children of edge shape groups (groups containing a polyline or
      * path with no fill).
      */
-    static scaleDownArrowMarkers(svgElement: SVGSVGElement, maxMarkerPx: number = 12): void {
+    static scaleDownArrowMarkers(
+        svgElement: SVGSVGElement,
+        maxMarkerPx: number = 12,
+        minMarkerPx: number = 4
+    ): void {
         // Find groups that contain edge shapes (polyline or unfilled path + filled path siblings)
         const allPaths = svgElement.querySelectorAll('path[fill]:not([fill="none"])');
         let scaled = 0;
@@ -727,8 +829,10 @@ export class DrawIOEnhancer {
                 const bbox = path.getBBox();
                 const maxDim = Math.max(bbox.width, bbox.height);
 
-                if (maxDim > maxMarkerPx) {
-                    const scaleFactor = maxMarkerPx / maxDim;
+                const scaleFactor = DrawIOEnhancer.computeMarkerNormalizationScale(
+                    maxDim, minMarkerPx, maxMarkerPx
+                );
+                if (scaleFactor !== 1) {
                     // Scale around the path's center point
                     const cx = bbox.x + bbox.width / 2;
                     const cy = bbox.y + bbox.height / 2;
@@ -744,7 +848,7 @@ export class DrawIOEnhancer {
         });
 
         if (scaled > 0) {
-            console.log(`🔧 DrawIOEnhancer: Scaled down ${scaled} oversized arrow markers (max ${maxMarkerPx}px)`);
+            console.log(`🔧 DrawIOEnhancer: Normalised ${scaled} arrow markers to [${minMarkerPx}, ${maxMarkerPx}]px`);
         }
     }
 
