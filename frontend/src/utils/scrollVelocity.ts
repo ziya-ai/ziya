@@ -25,6 +25,12 @@ export interface ScrollVelocityOptions {
     flingPxPerMs?: number;
     /** Quiet period after the last scroll event before `onSettle` fires. */
     settleMs?: number;
+    /**
+     * How long an input event (wheel, touch, scrollbar pointerdown, nav key)
+     * keeps the tracker armed with no scroll event following it, and how long
+     * each accepted scroll event renews the arm.  Default 500 ms.
+     */
+    armMs?: number;
     /** Injectable clock for tests. */
     now?: () => number;
 }
@@ -44,12 +50,16 @@ export interface ScrollVelocityTracker {
     dispose: () => void;
 }
 
+const NAV_KEYS = new Set(['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown', ' ', 'Spacebar']);
+const EDITABLE_TAG = /^(INPUT|TEXTAREA|SELECT)$/;
+
 export function createScrollVelocityTracker(
     element: HTMLElement,
     options: ScrollVelocityOptions = {},
 ): ScrollVelocityTracker {
     const flingPxPerMs = options.flingPxPerMs ?? 2;
     const settleMs = options.settleMs ?? 120;
+    const armMs = options.armMs ?? 500;
     const now = options.now ?? (() => (typeof performance !== 'undefined' ? performance.now() : Date.now()));
 
     let lastTop = element.scrollTop;
@@ -58,6 +68,31 @@ export function createScrollVelocityTracker(
     let currentVelocity = 0;
     let settleTimer: ReturnType<typeof setTimeout> | null = null;
     let settleCallbacks: Array<() => void> = [];
+
+    // Only gesture-driven scrolling can be a fling.  A scroll event alone
+    // cannot say who caused it: the conversation-switch scrollIntoView / pin
+    // loop moves scrollTop by thousands of pixels in one frame and was read
+    // as a 77 px/ms "fling" -- which parked every deferred mount and held the
+    // VISIBLE message's mount until that fake gesture "settled" (~600 ms on
+    // every switch, per the 2026-09-18 MSG_QUEUE trace).  A real gesture is
+    // always preceded by an input event on the container (wheel, touch,
+    // scrollbar pointerdown) or a navigation key, and a programmatic scroll
+    // never is.  Those inputs ARM the tracker; a scroll event is sampled only
+    // while armed, and each accepted scroll renews the arm so touch momentum
+    // (no touchmove after touchend) and trackpad momentum run to the end.
+    let armedUntil = -Infinity;
+    const arm = () => { armedUntil = now() + armMs; };
+    const onKey = (e: KeyboardEvent) => {
+        const target = e.target as HTMLElement | null;
+        if (target && (target.isContentEditable || EDITABLE_TAG.test(target.tagName || ''))) return;
+        if (NAV_KEYS.has(e.key)) arm();
+    };
+    const doc = element.ownerDocument;
+    element.addEventListener('wheel', arm, { passive: true });
+    element.addEventListener('touchstart', arm, { passive: true });
+    element.addEventListener('touchmove', arm, { passive: true });
+    element.addEventListener('pointerdown', arm, { passive: true });
+    doc?.addEventListener('keydown', onKey);
 
     const fireSettle = () => {
         settleTimer = null;
@@ -72,6 +107,20 @@ export function createScrollVelocityTracker(
     const onScroll = () => {
         const t = now();
         const top = element.scrollTop;
+        // The settle timer runs for every scroll so callbacks registered
+        // during a gesture still fire if a programmatic scroll ends it.
+        if (settleTimer !== null) clearTimeout(settleTimer);
+        settleTimer = setTimeout(fireSettle, settleMs);
+        if (t > armedUntil) {
+            // Programmatic: track position so the next gesture's first
+            // sample is measured from where the content actually is, but
+            // contribute no velocity and do not count as a scroll event.
+            lastTop = top;
+            lastAt = t;
+            currentVelocity = 0;
+            return;
+        }
+        armedUntil = t + armMs;
         // Guard dt against 0 (two events in the same ms) so a tiny nudge
         // can't read as infinite velocity.
         const dt = Math.max(1, t - lastAt);
@@ -83,9 +132,6 @@ export function createScrollVelocityTracker(
         lastTop = top;
         lastAt = t;
         lastEventAt = t;
-
-        if (settleTimer !== null) clearTimeout(settleTimer);
-        settleTimer = setTimeout(fireSettle, settleMs);
     };
 
     element.addEventListener('scroll', onScroll, { passive: true });
@@ -103,12 +149,18 @@ export function createScrollVelocityTracker(
 
     const dispose = () => {
         element.removeEventListener('scroll', onScroll);
+        element.removeEventListener('wheel', arm);
+        element.removeEventListener('touchstart', arm);
+        element.removeEventListener('touchmove', arm);
+        element.removeEventListener('pointerdown', arm);
+        doc?.removeEventListener('keydown', onKey);
         if (settleTimer !== null) { clearTimeout(settleTimer); settleTimer = null; }
         settleCallbacks = [];
         // A disposed tracker must never report a fling — the shared getter
         // may still hand it out for a frame or two during effect teardown.
         currentVelocity = 0;
         lastEventAt = -Infinity;
+        armedUntil = -Infinity;
     };
 
     return { isFlinging, velocity: () => currentVelocity, onSettle, dispose };
