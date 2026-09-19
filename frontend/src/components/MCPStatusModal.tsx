@@ -186,7 +186,11 @@ const MCPStatusModal: React.FC<MCPStatusModalProps> = ({ visible, onClose, onOpe
             // Listen for MCP status changes from other components
             const handleMCPStatusChange = () => {
                 fetchPermissions();
-                setTimeout(() => fetchMCPStatus(), 1000); // Small delay to let server update
+                // Every dispatcher awaits its backend call (install, toggle,
+                // reinitialize) before firing this event, and the manager
+                // registers a server synchronously with its restart, so the
+                // status endpoint is already current — no settle delay needed.
+                fetchMCPStatus(true);
             };
 
             window.addEventListener('mcpStatusChanged', handleMCPStatusChange);
