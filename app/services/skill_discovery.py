@@ -41,8 +41,11 @@ DISCOVERY_PATHS = [
 
 # Home-relative skill roots scanned for user-global skills.  The ``.ziya``
 # user root is resolved via get_ziya_home() (honors $ZIYA_HOME); these are
-# the non-Ziya harness equivalents under $HOME.
-USER_HARNESS_PATHS = [".claude/skills", ".kiro/skills"]
+# the non-Ziya harness equivalents under $HOME.  ``.agents/skills`` is the
+# canonical global root ``npx skills add -g`` writes for every universal
+# agent (Cursor, Codex, Copilot, Cline, Zed, ...), so one global install
+# is visible to Ziya without a second copy.
+USER_HARNESS_PATHS = [".agents/skills", ".claude/skills", ".kiro/skills"]
 
 # YAML frontmatter regex — captures everything between opening and closing ---
 _FRONTMATTER_RE = re.compile(
