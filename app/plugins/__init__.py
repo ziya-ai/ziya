@@ -29,6 +29,9 @@ _encryption_providers = []
 _export_providers = []
 _extraction_pattern_providers = []
 _rate_plan_providers = []
+# auth_type -> RemoteAuthProvider; a remote MCP server's "auth": {"type": X}
+# selects the handler that authenticates its HTTP transport.
+_remote_auth_providers = {}
 _initialized = False
 
 def register_auth_provider(provider):
@@ -91,6 +94,21 @@ def register_tool_result_filter_provider(provider):
     _tool_result_filter_providers.append(provider)
     _tool_result_filter_providers.sort(key=lambda p: getattr(p, 'priority', 0), reverse=True)
     logger.debug(f"Registered tool result filter provider: {getattr(provider, 'provider_id', 'unknown')}")
+
+def register_remote_auth_provider(provider):
+    """
+    Register a remote-MCP authentication handler.
+
+    Keyed by ``provider.auth_type`` (e.g. "midway"); a remote server whose
+    config carries ``"auth": {"type": "<auth_type>"}`` has its HTTP client
+    built by this provider. A later registration for the same type replaces
+    the earlier one.
+    """
+    auth_type = getattr(provider, 'auth_type', None)
+    if not auth_type:
+        raise ValueError("RemoteAuthProvider must declare a non-empty auth_type")
+    _remote_auth_providers[auth_type] = provider
+    logger.debug(f"Registered remote auth provider '{auth_type}': {getattr(provider, 'provider_id', 'unknown')}")
 
 def register_tool_validator_provider(provider):
     """
@@ -390,6 +408,10 @@ def get_directory_scan_providers() -> List:
 def get_tool_result_filter_providers() -> List:
     """Get all registered tool result filter providers."""
     return _tool_result_filter_providers.copy()
+
+def get_remote_auth_provider(auth_type: str):
+    """Return the handler registered for ``auth_type``, or None."""
+    return _remote_auth_providers.get(auth_type) if auth_type else None
 
 def get_tool_validator_providers() -> List:
     """Get all registered tool validator providers."""
