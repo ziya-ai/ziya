@@ -1234,6 +1234,21 @@ The agent iterates (up to 15 times by default), re-evaluating whether the goal i
 > step always finishes before the hold takes effect. A held run shows a
 > distinct non-terminal `paused` status.
 
+#### Force-stopping a stuck run
+
+**Cancel** is honored at the same boundaries as Pause, so a run whose
+in-flight step never returns — a hung shell command, a model stream that
+stalls without erroring — keeps reading `running` after Cancel is pressed.
+When that happens the tile swaps the Cancel button for **Force stop**: it
+appears as soon as a requested cancel has not landed, or once a running tile
+has been silent for ten minutes (the age label turns amber at two). Force
+stop interrupts the in-flight block in place and records the run as `held`
+(reason `user_abort`) at that block, so the recovery banner offers **Resume
+from here** exactly as it does for a credential fault or a server restart:
+completed blocks and banked iterations are replayed from disk and only the
+interrupted block is redone. `POST /task-runs/{id}/cancel?force=true` is the
+same lever from the API.
+
 #### Step-debugging a run
 
 Alongside **Pause** and **Resume**, a live run tile has a labelled **Step**
